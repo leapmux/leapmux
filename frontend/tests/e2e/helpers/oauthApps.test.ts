@@ -1,22 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { callHub } from './api'
+import { fetchHub } from './hubTransport'
 import {
   authorizeParams,
   authorizeURL,
   consentForm,
   CONTROL_CLI_CLIENT_ID,
+  issueControlCLICredentialViaAPI,
   listAppsViaAPI,
   LOOPBACK_REDIRECT_URI,
   registerAppViaAPI,
   TEST_PKCE_CHALLENGE,
+  TEST_PKCE_VERIFIER,
 } from './oauthApps'
 
 vi.mock('./api', () => ({
   callHub: vi.fn(),
 }))
 
+vi.mock('./hubTransport', () => ({
+  fetchHub: vi.fn(),
+}))
+
 beforeEach(() => {
   vi.mocked(callHub).mockReset()
+  vi.mocked(fetchHub).mockReset()
 })
 
 describe('authorizeParams', () => {
@@ -46,6 +54,11 @@ describe('authorizeParams', () => {
     })
     expect(params.scope).toBe('admin:read')
     expect(params.installation_name).toBe('ci')
+  })
+
+  it('carries the step-up target as step_up, and carries no step_up key without one', () => {
+    expect(authorizeParams({ stepUp: 'token:abc' }).step_up).toBe('token:abc')
+    expect(authorizeParams()).not.toHaveProperty('step_up')
   })
 })
 
@@ -115,5 +128,39 @@ describe('listAppsViaAPI', () => {
       apps: [{}],
     })
     await expect(listAppsViaAPI('http://hub.test', 'c')).rejects.toThrow('no client ID')
+  })
+})
+
+describe('issueControlCLICredentialViaAPI', () => {
+  it('exchanges the code from the consent with the PKCE verifier, and returns the token id', async () => {
+    const requests: Array<{ url: string, body: string, redirect: RequestRedirect | undefined }> = []
+    vi.mocked(fetchHub).mockImplementation(async (url, init) => {
+      requests.push({
+        url,
+        body: String(init?.body ?? ''),
+        redirect: init?.redirect,
+      })
+      if (url.endsWith('/oauth/consent')) {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: `${LOOPBACK_REDIRECT_URI}?code=C&state=state-e2e` },
+        })
+      }
+      return new Response(JSON.stringify({ token_id: 'tok-1' }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    await expect(issueControlCLICredentialViaAPI('http://hub.test', 'leapmux-session=elevated'))
+      .resolves
+      .toEqual({ tokenId: 'tok-1' })
+
+    expect(requests.map(({ url, redirect }) => ({ url, redirect }))).toEqual([
+      { url: 'http://hub.test/oauth/consent', redirect: 'manual' },
+      { url: 'http://hub.test/oauth/token', redirect: 'manual' },
+    ])
+    const exchange = new URLSearchParams(requests[1]?.body ?? '')
+    expect(exchange.get('code')).toBe('C')
+    expect(exchange.get('code_verifier')).toBe(TEST_PKCE_VERIFIER)
   })
 })

@@ -14,6 +14,7 @@ import type {
   ResumeDelta,
   WatchUserEvent,
 } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import type { HubUserId } from '~/lib/browserStorage'
 import { clone, create } from '@bufbuild/protobuf'
 import {
   FloatingWindowRecordSchema,
@@ -336,19 +337,20 @@ export class PendingOpsManager {
   private readonly pendingOwnEchoBatchIds = new Set<string>()
 
   constructor(
-    // Seeds the pre-bootstrap placeholder state only, and is deliberately NOT
-    // retained as a field: bootstrap() replaces confirmedState wholesale with
-    // the hub's UserMaterialized, so a kept copy would be a second tenancy key
-    // nothing reads and that could only drift from state.userId.
-    userId: string,
+    // The RAW Hub user id (see `newState`), which seeds the pre-bootstrap
+    // placeholder state only and is deliberately NOT retained as a field:
+    // bootstrap() replaces confirmedState wholesale with the hub's
+    // UserMaterialized, so a kept copy would be a second tenancy key nothing
+    // reads and that could only drift from state.userId.
+    hubUserId: HubUserId,
     public readonly clock: HLCClock,
     notify?: () => void,
   ) {
     // Distinct refs: applying speculative ops must not pollute
     // confirmedState even before bootstrap() arrives.
     this.state = {
-      confirmedState: newState(userId),
-      speculativeState: newState(userId),
+      confirmedState: newState(hubUserId),
+      speculativeState: newState(hubUserId),
       pendingBatches: [],
       currentEpoch: 1n,
     }
@@ -787,7 +789,7 @@ export class PendingOpsManager {
       // this batch and its batch_end back to the originator like any other
       // subscriber -- so the cursor still advances, just at the batch boundary
       // where it is safe. A cursor that lags only costs idempotent
-      // re-delivery, which is exactly the trade the BatchEnd proto doc names.
+      // re-delivery, which is exactly the trade the BatchEnd proto doc specifies.
     }
     // Record the canonical-HLC-stamped batch as a synthesized `batch` frame.
     // consumeBatchCommitted has no inbound wire frame (it fires from the

@@ -64,7 +64,7 @@ func TestMintAuthority(t *testing.T) {
 		// The prompt marker rides the response header, keyed on the sentinel
 		// (NewElevationResponseInterceptor): a refusal that wraps it is the one
 		// a step-up prompt can clear.
-		assert.True(t, errors.Is(err, errElevationRequired),
+		assert.True(t, errors.Is(err, auth.ErrElevationRequired),
 			"the refusal must be the one a step-up prompt can clear")
 	})
 

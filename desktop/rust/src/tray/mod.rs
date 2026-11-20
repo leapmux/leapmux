@@ -860,11 +860,12 @@ pub(crate) fn show_main_window(app: &AppHandle) {
 /// Bring the main window up at launch: the saved size and mode, then
 /// `visibility`.
 ///
-/// The shell owns this rather than the webview, because the webview does not
-/// exist on the distributed-reattach route: the shell navigates straight to the
-/// hub and `LauncherView` -- the only caller of `restoreWindowGeometry` -- never
-/// mounts. `geometry` is the persisted config on that route, and `None` from
-/// the startup safety net, which repairs the visibility alone.
+/// The shell owns this rather than the webview on the route where the launch
+/// finds a live session: `LauncherView` -- the only caller of
+/// `restoreWindowGeometry` and the only reader of `get_startup_info` -- never
+/// mounts there, so nothing else applies the decision or the geometry.
+/// `geometry` is the persisted config on that route, and `None` from the
+/// startup safety net, which repairs the visibility alone.
 ///
 /// The order matches the webview's: size first, so a Wayland compositor sees
 /// the final size at the first map, then the mode, then the reveal. Fullscreen
@@ -996,8 +997,9 @@ pub(crate) const STARTUP_REVEAL_DEADLINE: std::time::Duration = std::time::Durat
 /// full window in front of the user five seconds into a login they asked to
 /// start out of the way.
 ///
-/// `peek`, not `take`: the net asks what THIS launch decided, and the webview
-/// consumes the decision within milliseconds of starting, so a consuming read
+/// `peek`, not `take`: the net asks what THIS launch decided, and the decision
+/// is consumed within milliseconds of starting -- by `setup` on a route with a
+/// live session, by the webview on the launcher route -- so a consuming read
 /// would answer `Normal` and reveal the window that a hidden launch left in the
 /// tray on purpose.
 pub(crate) fn spawn_startup_safety_net(handle: AppHandle, autostart_launch: bool) {

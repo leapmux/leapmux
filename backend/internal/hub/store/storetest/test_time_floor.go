@@ -99,6 +99,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		expiresAt := floorProbe(base, 0)
 		refreshExpiresAt := floorProbe(base, 1)
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               tokenID,
 			UserID:           userid.MustNew(user.ID),
 			ClientID:         oauthapp.ControlCLIClientID,
@@ -186,6 +187,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			UserID:        userid.MustNew(user.ID),
 			CodeChallenge: "challenge",
 			ExpiresAt:     expiresAt,
+			Redemption:    store.RedemptionKindToken,
 		}))
 
 		code, err := st.OAuthAuthorizationCodes().GetActive(ctx, "floor-code", time.Now().UTC())

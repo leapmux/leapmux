@@ -132,6 +132,10 @@ type OAuthServerDeps struct {
 	// store, and the context holds none of the request's values.
 	// Required.
 	ServingCtx context.Context
+	// IssuesSession resolves the build-owned capability at authorization.
+	// Nil uses oauthapp.IssuesSession. Tests may inject a mutable resolver to
+	// prove that redemption follows the consented code row.
+	IssuesSession func(clientID string) bool
 }
 
 // OAuthServerHandler implements /oauth/* and the two metadata documents. It
@@ -152,6 +156,7 @@ type OAuthServerHandler struct {
 	set           *settings.Manager
 	limiter       *ratelimit.Manager
 	refreshFlight singleflight.Group
+	issuesSession func(clientID string) bool
 
 	// The clock every instant the handler mints or compares comes from:
 	// grant expiry, the device-code slow_down throttle, token lifetimes,
@@ -173,6 +178,10 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 	if deps.Store != nil && deps.SessionHasher.IsZero() {
 		panic("OAuth server requires a session secret hasher when a store is configured")
 	}
+	issuesSession := deps.IssuesSession
+	if issuesSession == nil {
+		issuesSession = oauthapp.IssuesSession
+	}
 	return &OAuthServerHandler{
 		sessionHasher: deps.SessionHasher,
 		store:         deps.Store,
@@ -184,24 +193,66 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 		notices:       deps.Notices,
 		set:           deps.Settings,
 		limiter:       deps.Limiter,
+		issuesSession: issuesSession,
 		servingCtx:    deps.ServingCtx,
 	}
 }
 
+type oauthConsentRoute struct {
+	path    string
+	methods []string
+	handle  func(*OAuthServerHandler, http.ResponseWriter, *http.Request, *auth.UserInfo)
+}
+
+// oauthConsentRoutes defines the endpoints that require a recently proven
+// factor and identifies which of them a browser can reach with a GET redirect.
+var oauthConsentRoutes = [...]oauthConsentRoute{
+	{path: "/oauth/authorize", methods: []string{http.MethodGet, http.MethodHead}, handle: (*OAuthServerHandler).handleAuthorize},
+	{path: "/oauth/consent", methods: []string{http.MethodPost}, handle: (*OAuthServerHandler).handleConsent},
+	// Keep the device path short because users type it.
+	{path: "/oauth/device", methods: []string{http.MethodGet, http.MethodHead, http.MethodPost}, handle: (*OAuthServerHandler).handleDevice},
+}
+
+// isConsentRoute reports whether the callback sends the browser to a GET
+// consent route.
+func isConsentRoute(redirect string) bool {
+	path := idpRedirectLocation(redirect)
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	if strings.Contains(path, "%") {
+		// ServeMux unescapes each segment separately. An escaped slash stays
+		// inside its segment, so it cannot match any of these literal paths.
+		segments := strings.Split(path, "/")
+		for i, segment := range segments {
+			decoded, err := url.PathUnescape(segment)
+			if err != nil || strings.Contains(decoded, "/") {
+				return false
+			}
+			segments[i] = decoded
+		}
+		path = strings.Join(segments, "/")
+	}
+	for _, route := range oauthConsentRoutes {
+		if route.path == path && slices.Contains(route.methods, http.MethodGet) {
+			return true
+		}
+	}
+	return false
+}
+
 // RegisterRoutes mounts the authorization server on the mux.
-func (h *OAuthServerHandler) RegisterRoutes(mux *http.ServeMux) {
+func (h *OAuthServerHandler) RegisterRoutes(mux interface {
+	HandleFunc(string, func(http.ResponseWriter, *http.Request))
+}) {
 	// RFC 8414 and RFC 9728 metadata. Both are anonymous by design: a client
 	// library fetches them before it holds anything.
 	mux.HandleFunc("/.well-known/oauth-authorization-server", h.handleAuthorizationServerMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource", h.handleProtectedResourceMetadata)
 
-	// The three CONSENT endpoints mount through consentLeg, so the check is a
-	// property of the route rather than the first line somebody remembered
-	// to write. The rest authenticate by grant, by bearer, or not at all.
-	mux.HandleFunc("/oauth/authorize", h.consentLeg([]string{http.MethodGet, http.MethodHead}, h.handleAuthorize))
-	mux.HandleFunc("/oauth/consent", h.consentLeg([]string{http.MethodPost}, h.handleConsent))
-	// Short, because a human types it.
-	mux.HandleFunc("/oauth/device", h.consentLeg([]string{http.MethodGet, http.MethodHead, http.MethodPost}, h.handleDevice))
+	for _, route := range oauthConsentRoutes {
+		mux.HandleFunc(route.path, h.consentLeg(route))
+	}
 
 	mux.HandleFunc("/oauth/device-authorization", h.anonymousLeg(h.handleDeviceAuthorization))
 	mux.HandleFunc("/oauth/token", h.anonymousLeg(h.handleToken))
@@ -383,9 +434,9 @@ func gateModeFor(r *http.Request) gateMode {
 // An app login is unaffected: the terminal or the app opens the address
 // itself, which is Sec-Fetch-Site: none, and the bounce back from /elevate is
 // same-origin.
-func (h *OAuthServerHandler) consentLeg(methods []string, leg func(http.ResponseWriter, *http.Request, *auth.UserInfo)) http.HandlerFunc {
+func (h *OAuthServerHandler) consentLeg(route oauthConsentRoute) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !slices.Contains(methods, r.Method) {
+		if !slices.Contains(route.methods, r.Method) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -396,7 +447,7 @@ func (h *OAuthServerHandler) consentLeg(methods []string, leg func(http.Response
 		if !httpsec.StartedByAnotherDocument(r) {
 			slideElevation(r.Context(), h.store, user, h.now())
 		}
-		leg(w, r, user)
+		route.handle(h, w, r, user)
 	}
 }
 
@@ -431,7 +482,7 @@ func (h *OAuthServerHandler) requireElevatedSession(w http.ResponseWriter, r *ht
 		return nil
 	}
 	// SOLO has no ceremony to prove a factor with, which is the same answer
-	// requireElevation gives on every other restricted surface. Its synthetic
+	// auth.RequireElevation gives on every other restricted surface. Its synthetic
 	// user carries no credential row, so Elevated is permanently false and the
 	// bounce below would send it to a /elevate page that can never succeed --
 	// making app authorization impossible on exactly the deployment the scope

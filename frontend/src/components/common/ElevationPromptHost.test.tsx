@@ -11,6 +11,8 @@ import { elevationInterceptor } from '~/api/transport'
 import { Dialog } from '~/components/common/Dialog'
 import { ElevationPromptHost } from '~/components/common/ElevationPromptHost'
 import { elevationPrompting, promptForElevation, setElevationPrompter } from '~/lib/elevationPrompt'
+import { deferred, settle } from '~/test-support/async'
+import { browserAuthDriver, resetBrowserAuthDriver } from '~/test-support/browserAuthDriver'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
 // The account most of these tests run as: it holds a password, so the form
@@ -26,6 +28,7 @@ const PASSWORD_USER = {
 
 const mockUser = vi.fn<() => Record<string, unknown> | null>(() => PASSWORD_USER)
 const mockElevateWithPassword = vi.fn()
+const mockReloadUser = vi.fn<() => Promise<boolean>>()
 
 // The CONTEXT runs the ceremony and adopts the deadline, so this test mocks
 // the context at that seam.
@@ -34,6 +37,7 @@ vi.mock('~/context/AuthContext', () => ({
     user: mockUser,
     elevateWithPassword: (...a: unknown[]) => mockElevateWithPassword(...a),
     elevateWithPasskey: vi.fn(),
+    reloadUser: () => mockReloadUser(),
   }),
 }))
 
@@ -43,6 +47,34 @@ vi.mock('~/lib/systemInfo', async () => {
     ...actual,
     passkeyBlocker: () => 'origin-not-allowed' as const,
     passkeysUsableHere: () => false,
+  }
+})
+
+// Remote-Hub mode: the step-up runs in the system browser instead of
+// `ElevateForm`.
+const ceremoniesInBrowser = vi.hoisted(() => vi.fn<() => boolean>(() => false))
+vi.mock('~/lib/hubSite', () => ({
+  ceremoniesRunInBrowser: () => ceremoniesInBrowser(),
+  openHubPage: vi.fn(),
+  hubPageUrl: vi.fn(),
+  hubOrigin: vi.fn(),
+}))
+
+vi.mock('~/api/platformBridge', async () => {
+  const browserAuth = (await import('~/test-support/browserAuthDriver')).browserAuthPlatformMock()
+  return {
+    ...browserAuth,
+    desktopFetch: vi.fn(),
+    desktopHub: () => null,
+    getCapabilities: () => ({
+      mode: 'web',
+      tunnels: false,
+      appControl: false,
+      windowControl: false,
+      systemPermissions: false,
+      localSolo: false,
+    }),
+    isTauriApp: () => false,
   }
 })
 
@@ -88,6 +120,10 @@ describe('ElevationPromptHost', () => {
     // outlives clearAllMocks -- which clears the recorded calls alone.
     mockUser.mockReturnValue(PASSWORD_USER)
     mockElevateWithPassword.mockResolvedValue(undefined)
+    ceremoniesInBrowser.mockReturnValue(false)
+    mockReloadUser.mockReset()
+    mockReloadUser.mockResolvedValue(true)
+    resetBrowserAuthDriver()
     HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
       this.open = true
     })
@@ -459,5 +495,94 @@ describe('ElevationPromptHost', () => {
       + 'the first registration; a mount inside a panel answers only the '
       + 'refusals raised in that panel.',
     ).toEqual(['src/app.tsx'])
+  })
+
+  /** Starts a browser step-up ceremony through the open prompt. */
+  async function openBrowserPrompt() {
+    const opened = browserAuthDriver.openExternalUrl.mock.calls.length
+    const answered = promptForElevation()
+    expect(await screen.findByRole('dialog', { name: 'Verify your identity' })).toBeInTheDocument()
+    fireEvent.click(within(promptDialog()).getByRole('button', { name: 'Verify in your browser' }))
+    await vi.waitFor(() => expect(browserAuthDriver.openExternalUrl).toHaveBeenCalledTimes(opened + 1))
+    // An object, not the promise itself: awaiting the helper must not await
+    // the prompt, which settles only when the ceremony answers.
+    return { answered }
+  }
+
+  async function startBrowserCeremony() {
+    ceremoniesInBrowser.mockReturnValue(true)
+    const host = renderHost()
+    return {
+      ...host,
+      ...await openBrowserPrompt(),
+    }
+  }
+
+  // The prompt settles true only AFTER the account refresh the success
+  // triggers, so a caller can read the new state the moment it continues.
+  it('settles the prompt true after a refresh of the user in remote mode', async () => {
+    const { answered } = await startBrowserCeremony()
+    const refresh = deferred<boolean>()
+    mockReloadUser.mockReturnValue(refresh.promise)
+
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+
+    await vi.waitFor(() => expect(mockReloadUser).toHaveBeenCalledOnce())
+    let settled = false
+    void answered.then(() => {
+      settled = true
+    })
+    await settle()
+    expect(settled).toBe(false)
+
+    refresh.resolve(true)
+    await expect(answered).resolves.toBe(true)
+  })
+
+  it('keeps a successor prompt pending when a dismissed prompt finishes its refresh', async () => {
+    const refresh = deferred<boolean>()
+    mockReloadUser.mockReturnValueOnce(refresh.promise)
+    const { answered: first } = await startBrowserCeremony()
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+    await vi.waitFor(() => expect(mockReloadUser).toHaveBeenCalledOnce())
+
+    dismissPrompt()
+    await expect(first).resolves.toBe(false)
+    browserAuthDriver.startBrowserAuth.mockResolvedValue({
+      ceremonyId: 'c-2',
+      authorizeUrl: 'https://hub.example/authorize',
+    })
+    const { answered: second } = await openBrowserPrompt()
+
+    refresh.resolve(true)
+    await settle()
+
+    expect(promptDialog()).toBeInTheDocument()
+    expect(elevationPrompting()).toBe(true)
+    browserAuthDriver.emit({ ceremonyId: 'c-2', ok: true, failure: '' })
+    await expect(second).resolves.toBe(true)
+    expect(mockReloadUser).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels the ceremony and settles the prompt false when the remote host unmounts', async () => {
+    const { answered, unmount } = await startBrowserCeremony()
+
+    unmount()
+
+    await expect(answered).resolves.toBe(false)
+    expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+    browserAuthDriver.emit({ ceremonyId: 'c-1', ok: false, failure: '' })
+    expect(elevationPrompting()).toBe(false)
+  })
+
+  // A dismissal reports the cancellation and cancels the ceremony, so no
+  // browser side of it lingers.
+  it('cancels the ceremony and settles the prompt false on a dismissal in remote mode', async () => {
+    const { answered } = await startBrowserCeremony()
+
+    dismissPrompt()
+
+    await expect(answered).resolves.toBe(false)
+    await vi.waitFor(() => expect(browserAuthDriver.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1'))
   })
 })

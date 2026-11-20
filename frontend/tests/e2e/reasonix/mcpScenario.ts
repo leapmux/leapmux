@@ -5,7 +5,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { elicitationFieldKey } from '../../../src/components/chat/controls/elicitationForm'
-import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
+import { accountStorageKey, PREFIX_CONTROL_STATE, storageAccountFor } from '../../../src/lib/browserStorage'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
@@ -60,7 +60,10 @@ export async function exerciseReasonixMcpForm(fixtures: NativeContextFixtures): 
         await page.getByRole('menuitemradio', { name: 'Blue', exact: true }).click()
         return form
       },
-      waitForDraft: (page, userId) => waitForStoredEntry(page, accountStorageKey(userId, PREFIX_CONTROL_STATE), reasonixMcpFormDraftSaved, 'the native Reasonix form answers must persist before reload'),
+      waitForDraft: (page, hubUrl, userId) => {
+        const account = storageAccountFor(new URL(hubUrl).origin, userId)
+        return waitForStoredEntry(page, accountStorageKey(account, PREFIX_CONTROL_STATE), reasonixMcpFormDraftSaved, 'the native Reasonix form answers must persist before reload')
+      },
       expectRestored: async (form) => {
         await expect(form.getByLabel('Count', { exact: true })).toHaveValue('0')
         await expect(form.getByRole('button', { name: 'Enabled', exact: true })).toHaveText('No')

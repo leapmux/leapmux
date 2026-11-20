@@ -104,6 +104,8 @@ Click **Sign in** or **Sign in with passkey**. The button stays disabled until t
 - If OAuth providers are configured, their buttons appear above the form under the verb **"Sign in with"** with an **"or"** divider.
 - If you were redirected to login from a protected page, you are sent back there after signing in (LeapMux only honors a same-site relative path, as an open-redirect safeguard).
 
+**From the desktop app** in remote-Hub mode, signing in opens your system browser. The app shows the Hub's address and a **Sign in with your browser** button, and waits while you sign in on the Hub's page there.
+
 {{< callout type="info" >}}
 Both an unknown username and a wrong password produce the same error, and it says only that the credentials are invalid. This is deliberate — it prevents anyone from probing which usernames exist.
 {{< /callout >}}
@@ -176,7 +178,9 @@ Open **Preferences → Account** — it is the first section, and the one the di
 | **Remove passkey** | Deletes one credential. | A verified session. Removing your **last** passkey from an account with **no password** also sets a password in the same step. |
 | **Disable passkey sign-in** | Deletes **all** credentials at once (offered once at least one passkey exists). | A verified session. A passkey-only account sets a password as part of the same flow. |
 
-Every action above is sensitive: the first one in a sitting opens the **Verify your identity** dialog, and one answer covers every further sensitive change for a while. What counts as sensitive, how long the answer lasts, and what you can prove it with are covered once, in [Session elevation](/docs/admin/security/#session-elevation).
+Every action above is sensitive. The first one after the verification window ends opens the **Verify your identity** dialog, and one answer covers further sensitive changes until that window ends — except in the {{< duration fresh-authentication-window >}} after a sign-in with a password or a passkey: that sign-in proved a factor itself, so nothing asks again inside that window. What counts as sensitive, how long the answer lasts, and what you can prove it with are covered once, in [Session elevation](/docs/admin/security/#session-elevation).
+
+In the desktop app's remote-Hub mode, passkeys are added in the browser: the panel offers **Open in browser** and disables **Add passkey**.
 
 {{< callout type="info" >}}
 Passkeys appear only where they can run: the page must be secure (HTTPS or `localhost`), and it must reach the Hub by an address the Hub publishes. When either is missing, the **Passkey** option is disabled with the reason on it — or removed outright — and **Add passkey** carries the reason. See [Passkeys](/docs/admin/configuration/#passkeys) in the administration chapter for the rule and its remedies, or [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears) for diagnosis.
@@ -308,8 +312,8 @@ While the session is verified, a panel at the top of the section says so and off
 ### Password
 
 - The button reads **Change Password** if you already have a password, or **Set Password** if your account is OAuth-only or passkey-only.
-- Changing your password needs a **verified session**: the first sensitive change in a sitting opens a **Verify your identity** dialog, and the next {{< duration elevation-window >}} are covered. You do not retype your current password into this form.
-- An account with no password and no passkey sets its first password without a prompt, but only within five minutes of signing in.
+- Changing your password needs a **verified session**. The first sensitive change after the verification window ends opens a **Verify your identity** dialog. The next {{< duration elevation-window >}} are covered, except in the {{< duration fresh-authentication-window >}} after a sign-in with a password or a passkey, which already proved a factor. You do not retype your current password into this form.
+- An account with no password and no passkey sets its first password without a prompt, but only within {{< duration fresh-authentication-window >}} of signing in.
 - On success the dialog confirms that it changed the password, or that it set the first one.
 
 ### Passkeys

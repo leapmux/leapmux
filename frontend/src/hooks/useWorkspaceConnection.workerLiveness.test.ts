@@ -119,7 +119,7 @@ function mount(place: { type: TabType, id: string, workerId: string, meta: Recor
     dispose = d
     const repoGitStore = createRepoGitStore()
     const hydrators = useTabHydrators({
-      userId: () => harness.userId,
+      hubUserId: () => harness.userId,
       view: stores.view,
       metadata: stores.metadata,
       repoGitStore,

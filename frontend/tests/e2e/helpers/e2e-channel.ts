@@ -11,7 +11,7 @@ import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from '../../../
 import { Buffer } from 'node:buffer'
 import { fromJson } from '@bufbuild/protobuf'
 import { GetWorkerHandshakeParamsResponseSchema } from '../../../src/generated/proto/leapmux/v1/channel_pb'
-import { hydrateStorageAccount, setStorageAccount } from '../../../src/lib/browserStorage'
+import { hydrateStorageAccount, setStorageAccount, storageAccountFor } from '../../../src/lib/browserStorage'
 import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
 import { createInProcessSessionHost } from '../../../src/lib/channelSessionInProcess'
 import { authedHeaders, getUserId } from './api'
@@ -107,15 +107,17 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
   // This harness drives the app's own channel + key-pin code in NODE, where no
   // AuthProvider ever runs. Every `leapmux:` key is scoped to an account and an
   // access with none set throws, so the harness makes the same statement the
-  // app's auth context makes: these calls are this user's.
+  // app's auth context makes: these calls are this user's. The account is the
+  // (hub, user) pair, exactly as `AuthContext.setUser` composes it.
   //
   // HYDRATE FIRST, exactly as `AuthContext` does. The synchronous tier reads an
   // in-memory mirror of an IndexedDB-backed store, and `setStorageAccount`
   // refuses an account it was not run for. Node has no IndexedDB, so this
   // resolves immediately with an empty mirror -- which is the right answer here:
   // the harness starts from nothing and pins whatever the worker serves.
-  await hydrateStorageAccount(userId)
-  setStorageAccount(userId)
+  const account = storageAccountFor(new URL(hubUrl).origin, userId)
+  await hydrateStorageAccount(account)
+  setStorageAccount(account)
   // Use a longer RPC timeout for e2e tests since OpenAgent spawns a subprocess
   // that can take up to 30s to start, and the E2EE round-trip adds overhead.
   //

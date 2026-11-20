@@ -5,26 +5,33 @@
 
 -- name: CreateOAuthAuthorizationCode :exec
 INSERT INTO oauth_authorization_codes (
-    code, user_id, client_id, code_challenge, redirect_uri, granted_scopes,
-    installation_name, expires_at
+    code, user_id, auth_generation, client_id, code_challenge, redirect_uri, granted_scopes,
+    installation_name, expires_at, step_up_kind, step_up_ref_id, redemption_kind
 ) VALUES (
     sqlc.arg(code),
     sqlc.arg(user_id),
+    sqlc.arg(auth_generation),
     sqlc.arg(client_id),
     sqlc.arg(code_challenge),
     sqlc.arg(redirect_uri),
     sqlc.arg(granted_scopes),
     sqlc.arg(installation_name),
-    sqlc.arg(expires_at)
+    sqlc.arg(expires_at),
+    sqlc.narg(step_up_kind),
+    sqlc.arg(step_up_ref_id),
+    sqlc.narg(redemption_kind)
 );
 
--- name: MarkOAuthAuthorizationCodeMinted :exec
--- Records WHICH credential this code produced, so a replay of the same code
--- can revoke it. RFC 6749 section 4.1.2 requires exactly that, and without the
--- column there was nothing to name the token by.
+-- name: MarkOAuthAuthorizationCodeMinted :execresult
+-- Records WHICH credential id this code produced. redemption_kind supplies
+-- the kind, so a replay can revoke the exact credential without a second copy.
 UPDATE oauth_authorization_codes
-SET minted_token_id = sqlc.arg(minted_token_id)
-WHERE code = sqlc.arg(code);
+SET minted_ref_id = sqlc.arg(minted_ref_id)
+WHERE code = sqlc.arg(code)
+  AND consumed_at IS NOT NULL
+  AND step_up_kind IS NULL
+  AND minted_ref_id = ''
+  AND redemption_kind = sqlc.arg(expected_redemption_kind);
 
 -- name: GetOAuthAuthorizationCode :one
 -- The row WHATEVER its state, for the replay path: a consumed code must still
@@ -35,11 +42,10 @@ SELECT * FROM oauth_authorization_codes WHERE code = sqlc.arg(code);
 SELECT * FROM oauth_authorization_codes
 WHERE code = $1 AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
--- name: ConsumeOAuthAuthorizationCode :one
+-- name: ConsumeOAuthAuthorizationCode :execresult
 UPDATE oauth_authorization_codes
 SET consumed_at = NOW()
-WHERE code = $1 AND consumed_at IS NULL AND expires_at > sqlc.arg(now)
-RETURNING *;
+WHERE code = $1 AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: DeleteExpiredOAuthAuthorizationCodes :execrows
 DELETE FROM oauth_authorization_codes

@@ -148,7 +148,7 @@ func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 		nil,
 	)
 
-	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), mustUserID(t, admin.ID), time.Hour)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), mustUserID(t, admin.ID), auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	require.False(t, createdSession.ExpiresAt.IsZero())
 	// The ordinary path demands a proven factor; grant one so the test

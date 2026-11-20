@@ -67,7 +67,7 @@ type fakeCloser struct {
 	mu             sync.Mutex
 	sessionClosed  []string
 	bearerClosed   []string
-	bearerKinds    []auth.BearerKind
+	bearerRefs     []auth.BearerRef
 	userClosed     []string
 	userGeneration []int64
 }
@@ -82,8 +82,8 @@ func (c *fakeCloser) CloseChannelsBySession(sessionID string) int {
 func (c *fakeCloser) CloseChannelsByBearer(ref auth.BearerRef) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.bearerKinds = append(c.bearerKinds, ref.Kind())
 	c.bearerClosed = append(c.bearerClosed, ref.TokenID())
+	c.bearerRefs = append(c.bearerRefs, ref)
 	return 1
 }
 
@@ -109,10 +109,10 @@ func (c *fakeCloser) bearerSnapshot() []string {
 	return append([]string(nil), c.bearerClosed...)
 }
 
-func (c *fakeCloser) bearerKindSnapshot() []auth.BearerKind {
+func (c *fakeCloser) bearerRefSnapshot() []auth.BearerRef {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]auth.BearerKind(nil), c.bearerKinds...)
+	return append([]auth.BearerRef(nil), c.bearerRefs...)
 }
 
 func (c *fakeCloser) userSnapshot() []string {
@@ -190,6 +190,7 @@ func (e *envT) seedAPIToken(t *testing.T) string {
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, e.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(e.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -233,6 +234,7 @@ func TestWatcher_APITokenRotationEvictsRemoteCacheWithoutClosingChannels(t *test
 	expiresAt := time.Now().Add(time.Hour)
 	refreshExpiresAt := time.Now().Add(24 * time.Hour)
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -368,9 +370,9 @@ func TestWatcher_PublishesGaplessSeqAndAppliesEvents(t *testing.T) {
 	env := setup(t)
 	apiToken := env.seedAPIToken(t)
 	delegationToken := env.seedDelegationToken(t)
-	sessionToken, _, _, err := auth.Login(context.Background(), env.st, hubtestutil.TestSecretHasher(), "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	loginResult, _, err := auth.Login(context.Background(), env.st, hubtestutil.TestSecretHasher(), "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
-	sessionID := hubtestutil.SessionIDFromCookie(t, sessionToken)
+	sessionID := hubtestutil.SessionIDFromCookie(t, loginResult.Token)
 
 	_, err = env.st.APITokens().Revoke(context.Background(), apiToken)
 	require.NoError(t, err)
@@ -398,8 +400,10 @@ func TestWatcher_PublishesGaplessSeqAndAppliesEvents(t *testing.T) {
 
 	require.NoError(t, env.watcher.RunOnce(context.Background()))
 	assert.Equal(t, []string{sessionID}, env.closer.sessionSnapshot())
-	assert.ElementsMatch(t, []string{apiToken, delegationToken}, env.closer.bearerSnapshot())
-	assert.ElementsMatch(t, []auth.BearerKind{auth.BearerKindAPI, auth.BearerKindDelegation}, env.closer.bearerKindSnapshot())
+	assert.ElementsMatch(t, []auth.BearerRef{
+		auth.NewBearerRef(auth.BearerKindAPI, apiToken),
+		auth.NewBearerRef(auth.BearerKindDelegation, delegationToken),
+	}, env.closer.bearerRefSnapshot())
 	assert.Equal(t, []string{env.userID}, env.closer.userSnapshot())
 	assert.Equal(t, []int64{userAuthGeneration}, env.closer.userGenerationSnapshot())
 }

@@ -308,7 +308,7 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
       await submitAs('testuser')
 
       expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
-      expect(history.get()).toBe('/verify-email')
+      expect(history.get()).toBe('/verify-email?redirect=%2Foauth%2Fauthorize%3Fclient_id%3Dcli')
       expect(assign).not.toHaveBeenCalled()
     }
     finally {

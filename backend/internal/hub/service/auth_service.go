@@ -238,13 +238,13 @@ func (s *AuthService) setSessionCookie(ctx context.Context, h *connect.Header, t
 
 func (s *AuthService) Login(ctx context.Context, req *leapmuxv1.LoginRequest) (*leapmuxv1.LoginResponse, error) {
 	info := serverCallInfo(ctx)
-	token, user, expiresAt, err := auth.Login(ctx, s.store, s.sessionHasher, req.GetUsername(), req.GetPassword(), s.sessionDuration(ctx))
+	session, user, err := auth.Login(ctx, s.store, s.sessionHasher, req.GetUsername(), req.GetPassword(), s.sessionDuration(ctx))
 	if err != nil {
 		return nil, err
 	}
 
-	resp := &leapmuxv1.LoginResponse{SessionReport: s.loginSessionReport(ctx, user)}
-	s.setSessionCookie(ctx, info.ResponseHeader(), token, expiresAt)
+	resp := &leapmuxv1.LoginResponse{SessionReport: s.loginSessionReport(ctx, user, session.Elevation)}
+	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	return resp, nil
 }
 
@@ -324,29 +324,15 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 			return fmt.Errorf("store the initial solo password: %w", err)
 		}
 		reqInfo := serverCallInfo(ctx)
-		session, err = auth.CreateSession(ctx, tx, s.sessionHasher, uid, settings.SessionDuration(snap), auth.SessionMeta{
+		session, err = auth.CreateSessionAt(ctx, tx, s.sessionHasher, uid, now, auth.SessionCreationOptions{
+			Lifetime:  settings.SessionDuration(snap),
+			Proof:     auth.SignInProvedFactorWithFullWindow,
 			UserAgent: reqInfo.RequestHeader().Get("User-Agent"),
 		})
 		if err != nil {
 			return err
 		}
-		// The same row write every factor path takes, so the window, the
-		// parameters and the zero-row refusal have one home. The cache
-		// invalidation is NOT taken here: it must fire after the commit, or a
-		// concurrent reader refills the cache from the pre-commit row. See
-		// grantSessionElevation, which is that half.
-		//
-		// The session was created two statements above, inside this
-		// transaction, so a zero row count is an internal inconsistency rather
-		// than the ordinary "your session ended" the factor paths report.
-		elevatedUntil, live, err := elevateSessionRow(ctx, tx, session.ID, uid, now)
-		if err != nil {
-			return fmt.Errorf("elevate the initial solo session: %w", err)
-		}
-		if !live {
-			return fmt.Errorf("elevate the initial solo session: the session this transaction created is not active")
-		}
-		elevationExpiresAt = elevatedUntil
+		elevationExpiresAt = session.Elevation.ExpiresAt
 		userCopy := *lockedUser
 		userCopy.PasswordHash = hashed
 		storedUser = &userCopy
@@ -503,7 +489,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 		if mintErr != nil {
 			return nil, mintErr
 		}
-		session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, uid, s.sessionDuration(ctx))
+		session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, uid, auth.SessionCreationOptions{Lifetime: s.sessionDuration(ctx), Proof: auth.SignInProvedFactor})
 		if err != nil {
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
@@ -512,7 +498,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 				Required:              true,
 				EmailSent:             true,
 				NextResendAvailableAt: &nextResend,
-			}), nil),
+			}), elevationTimestamp(session.Elevation)),
 		}
 		s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 		return resp, nil
@@ -569,14 +555,14 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*le
 	if err != nil {
 		return nil, err
 	}
-	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx))
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, auth.SessionCreationOptions{Lifetime: s.sessionDuration(ctx), Proof: auth.SignInProvedFactor})
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 
 	resp := &leapmuxv1.SignUpResponse{
 		// No verification: the address went straight to the email column.
-		SessionReport: signInReport(ctx, s.store, user, nil, nil),
+		SessionReport: signInReport(ctx, s.store, user, nil, elevationTimestamp(session.Elevation)),
 	}
 	info := serverCallInfo(ctx)
 	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
@@ -862,7 +848,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	session, sessionErr := auth.CreateSession(ctx, s.store, s.sessionHasher, finalUID, s.sessionDuration(ctx))
+	session, sessionErr := auth.CreateSession(ctx, s.store, s.sessionHasher, finalUID, auth.SessionCreationOptions{Lifetime: s.sessionDuration(ctx), Proof: auth.SignInProvedNoFactor})
 	if sessionErr != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}

@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { SessionReport } from '~/generated/proto/leapmux/v1/auth_pb'
+import type { CeremonyConfig } from '~/routes/(ceremonies)'
 
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
@@ -18,6 +19,12 @@ import { stringParam } from '~/lib/searchParam'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
 import { errorText, pageCard } from '~/styles/shared.css'
+
+export const ceremonyConfig: CeremonyConfig = {
+  // A gate would bounce the visitor the provider round trip parked here
+  // mid-flow, single-use signup token and all.
+  gate: false,
+}
 
 const OAuthCompleteSignupPage: Component = () => {
   const navigate = useNavigate()
@@ -178,12 +185,12 @@ const OAuthCompleteSignupPage: Component = () => {
               />
             </label>
             {/*
-              A provider-supplied address is fixed -- the hub validated it at
-              the callback and will not accept a substitute. When the provider
-              gave nothing, the field is the only way to supply one, and on a
-              hub that requires verification the sign-up cannot complete
-              without it.
-            */}
+            A provider-supplied address is fixed -- the hub validated it at
+            the callback and will not accept a substitute. When the provider
+            gave nothing, the field is the only way to supply one, and on a
+            hub that requires verification the sign-up cannot complete
+            without it.
+          */}
             <label>
               Email
               <input

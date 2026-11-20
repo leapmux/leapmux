@@ -245,3 +245,40 @@ describe('PreferencesNav compact', () => {
     expect(item).toHaveTextContent('\u26A0')
   })
 })
+
+describe('PreferencesNav unlock entry', () => {
+  it('shows the entry in each layout, and a selection calls the handler', () => {
+    for (const compact of [false, true]) {
+      const onUnlockAdmin = vi.fn()
+      render(() => (
+        <PreferencesNav
+          groups={withAdmin}
+          active={group('appearance')}
+          onSelect={() => {}}
+          restartGroups={() => new Set()}
+          compact={compact}
+          onUnlockAdmin={onUnlockAdmin}
+        />
+      ))
+      fireEvent.click(screen.getByTestId('preferences-nav-unlock-admin'))
+      expect(onUnlockAdmin).toHaveBeenCalledOnce()
+      cleanup()
+    }
+  })
+
+  it('shows no entry in either layout without the handler', () => {
+    for (const compact of [false, true]) {
+      render(() => (
+        <PreferencesNav
+          groups={withAdmin}
+          active={group('appearance')}
+          onSelect={() => {}}
+          restartGroups={() => new Set()}
+          compact={compact}
+        />
+      ))
+      expect(screen.queryByTestId('preferences-nav-unlock-admin')).toBeNull()
+      cleanup()
+    }
+  })
+})

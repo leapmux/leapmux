@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -138,9 +140,12 @@ func (s *AuthService) loginVerificationOutcome(ctx context.Context, user *store.
 // sign-in. It evaluates the verification outcome BEFORE it projects the
 // account, because the outcome can write the account row, and the projection
 // must report the row that the outcome left, as GetCurrentUser does.
-func (s *AuthService) loginSessionReport(ctx context.Context, user *store.User) *leapmuxv1.SessionReport {
+func (s *AuthService) loginSessionReport(ctx context.Context, user *store.User, elevation auth.Elevation) *leapmuxv1.SessionReport {
 	outcome, wrote := s.loginVerificationOutcome(ctx, user)
 	report := &leapmuxv1.SessionReport{EmailVerification: emailVerificationToProto(outcome)}
+	if !elevation.IsZero() {
+		report.ElevationExpiresAt = timestamppb.New(elevation.ExpiresAt)
+	}
 	if wrote {
 		report.User = storedUserProto(ctx, s.store, user.ID, "sign-in")
 	} else {

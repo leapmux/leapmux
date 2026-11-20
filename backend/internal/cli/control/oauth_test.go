@@ -1,9 +1,7 @@
 package control
 
 import (
-	"context"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -140,59 +138,4 @@ func TestDeviceFlowError_ReportsTheStatusWhenTheBodyCarriesNoOAuthError(t *testi
 
 	truncated := answerWith(t, http.StatusBadRequest, "application/json", `{"error":`)
 	assert.Contains(t, DeviceFlowError(truncated).Error(), "400")
-}
-
-func TestOAuthErrorBody_Message(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, "invalid_grant", OAuthErrorBody{Error: "invalid_grant"}.Message())
-	assert.Equal(t, "invalid_grant: token revoked",
-		OAuthErrorBody{Error: "invalid_grant", ErrorDescription: "token revoked"}.Message())
-}
-
-// TestPostForm_SendsAFormBodyAndTheCallersHeaders pins the one request shape
-// every leg of the CLI auth surface uses.
-func TestPostForm_SendsAFormBodyAndTheCallersHeaders(t *testing.T) {
-	t.Parallel()
-
-	type received struct {
-		method      string
-		contentType string
-		authz       string
-		field       string
-	}
-	got := make(chan received, 1)
-	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseForm()
-		got <- received{
-			method:      r.Method,
-			contentType: r.Header.Get("Content-Type"),
-			authz:       r.Header.Get("Authorization"),
-			field:       r.FormValue("device_code"),
-		}
-	}))
-	t.Cleanup(srv.Close)
-
-	resp, err := PostForm(context.Background(), srv.Client(), srv.URL,
-		url.Values{"device_code": {"dev-1"}},
-		func(h http.Header) { h.Set("Authorization", "Bearer lmx_a_1") })
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-
-	r := <-got
-	assert.Equal(t, http.MethodPost, r.method)
-	assert.Equal(t, "application/x-www-form-urlencoded", r.contentType)
-	assert.Equal(t, "Bearer lmx_a_1", r.authz)
-	assert.Equal(t, "dev-1", r.field)
-}
-
-// TestPostForm_ObeysTheCallersContext keeps a hung hub from outliving the
-// deadline of the call that opened the request.
-func TestPostForm_ObeysTheCallersContext(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := PostForm(ctx, http.DefaultClient, "http://127.0.0.1:1/anything", url.Values{})
-	assert.ErrorIs(t, err, context.Canceled)
 }

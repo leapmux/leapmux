@@ -44,6 +44,7 @@ func mintAPIToken(t *testing.T, st store.Store, v *auth.TokenValidator, userID s
 	currentSecret = auth.MintAccessSecret()
 	refreshSecret = auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -59,19 +60,26 @@ func TestRefreshReuse_CompromiseRevocationCascadesToAccessBearer(t *testing.T) {
 	st := newTestStore(t)
 	v := newValidator(t, st)
 	userID := seedUser(t, st)
-	tokenID, accessSecret, prevSecret := mintAPIToken(t, st, v, userID)
+	tokenID, _, prevSecret := mintAPIToken(t, st, v, userID)
 
 	// Rotate so prevSecret moves to previous_refresh_hash with an
 	// already-expired grace expiry. Reuse-after-grace must revoke.
 	expiredGrace := time.Now().Add(-time.Hour)
-	_, err := st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
+	accessSecret := auth.MintAccessSecret()
+	rows, err := st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
 		ID:                       tokenID,
-		NewSecretHash:            v.HashSecret(auth.MintAccessSecret()),
+		NewSecretHash:            v.HashSecret(accessSecret),
 		NewRefreshHash:           v.HashSecret(auth.MintAccessSecret()),
 		PreviousRefreshHash:      v.HashSecret(prevSecret),
 		PreviousRefreshExpiresAt: &expiredGrace,
 	})
 	require.NoError(t, err)
+	require.EqualValues(t, 1, rows)
+	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, accessSecret))
+	require.NoError(t, err, "precondition: the rotated access bearer is live before refresh reuse")
+	row, err := st.APITokens().GetByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	require.Nil(t, row.RevokedAt)
 
 	// Reuse outside grace → compromise → row revoked.
 	_, _, err = v.ValidateAPIRefresh(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, prevSecret))
@@ -83,6 +91,9 @@ func TestRefreshReuse_CompromiseRevocationCascadesToAccessBearer(t *testing.T) {
 	// hour-long TTL ran out.
 	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, accessSecret))
 	require.Error(t, err, "access bearer must fail after compromise revocation")
+	row, err = st.APITokens().GetByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.NotNil(t, row.RevokedAt)
 }
 
 func TestRefreshReuse_RevokedRowRefreshFails(t *testing.T) {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"math"
 	"strings"
 	"testing"
 
@@ -19,6 +20,7 @@ import (
 func TestFrame_MaxUserEventsMessageFitsBudget(t *testing.T) {
 	frame := &desktoppb.Frame{
 		Message: &desktoppb.Frame_Event{Event: &desktoppb.Event{
+			RelayId: math.MaxUint64,
 			Payload: &desktoppb.Event_UserEventsMessage{
 				UserEventsMessage: &desktoppb.UserEventsMessageEvent{
 					Data: make([]byte, channelwire.UserEventsReadLimit),
@@ -43,10 +45,11 @@ func TestFrame_roundTrip_request(t *testing.T) {
 				Id: 42,
 				Method: &desktoppb.Request_ProxyHttp{
 					ProxyHttp: &desktoppb.ProxyHttpRequest{
-						Method:  "POST",
-						Path:    "/api/v1/data",
-						Headers: map[string]string{"Content-Type": "application/json"},
-						Body:    []byte(`{"key":"value"}`),
+						Method:    "POST",
+						Path:      "/api/v1/data",
+						Headers:   map[string]string{"Content-Type": "application/json"},
+						Body:      []byte(`{"key":"value"}`),
+						RequestId: "request-42",
 					},
 				},
 			},
@@ -67,6 +70,7 @@ func TestFrame_roundTrip_request(t *testing.T) {
 	require.NotNil(t, proxy)
 	assert.Equal(t, "POST", proxy.Method)
 	assert.Equal(t, "/api/v1/data", proxy.Path)
+	assert.Equal(t, "request-42", proxy.RequestId)
 	assert.Equal(t, []byte(`{"key":"value"}`), proxy.Body)
 }
 
@@ -137,7 +141,8 @@ func TestFrame_roundTrip_channelMessage(t *testing.T) {
 				Id: 1,
 				Method: &desktoppb.Request_SendChannelMessage{
 					SendChannelMessage: &desktoppb.SendChannelMessageRequest{
-						Data: data,
+						RelayId: 9,
+						Data:    data,
 					},
 				},
 			},
@@ -152,6 +157,7 @@ func TestFrame_roundTrip_channelMessage(t *testing.T) {
 
 	req := got.GetRequest()
 	require.NotNil(t, req)
+	assert.Equal(t, uint64(9), req.GetSendChannelMessage().GetRelayId())
 	assert.Equal(t, data, req.GetSendChannelMessage().Data)
 }
 

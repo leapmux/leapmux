@@ -121,6 +121,31 @@ describe('useWorkerPrivateStreams', () => {
     })
   })
 
+  it('opens a stream when the metadata account is composed around the state\'s raw Hub user id', async () => {
+    // The metadata store tracks the STORAGE account -- `hub/user` -- while
+    // `UserCrdtState.userId` keeps the raw Hub user id `bootstrap` copies off
+    // `UserMaterialized`. The open gate compares the state's id against the
+    // metadata account to decide the CRDT state is these rows' account, so it
+    // must take the user ID the account identifies: the two values themselves never
+    // match, and no stream ever opens.
+    setStorageAccountForTests(TEST_USER_ID)
+    await createRoot(async (dispose) => {
+      const s = mount()
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
+      s.run()
+      await flush()
+
+      expect(opened.map(o => o.workerId)).toEqual(['w1'])
+      dispose()
+    })
+  })
+
   it('delivers a rename for an off-screen workspace into metadata', async () => {
     await createRoot(async (dispose) => {
       const s = mount()

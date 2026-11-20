@@ -1,8 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { create, toBinary } from '@bufbuild/protobuf'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { desktopFetch, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema, RelayCloseSchema, RelayReadResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { deferred, settle } from '~/test-support/async'
+import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -20,6 +24,41 @@ vi.mock('~/lib/shortcuts/platform', () => ({
 const showWarnToastWithLoggedCause = vi.hoisted(() => vi.fn())
 vi.mock('~/components/common/Toast', () => ({ showWarnToastWithLoggedCause }))
 
+function encodeProxyResponseEnvelope(response: {
+  status: number
+  headers: Record<string, string[]>
+  body: ArrayBuffer
+}): ArrayBuffer {
+  const bytes = toBinary(ProxyHttpResponseSchema, create(ProxyHttpResponseSchema, {
+    status: response.status,
+    headers: Object.fromEntries(
+      Object.entries(response.headers).map(([name, values]) => [
+        name,
+        create(HeaderValuesSchema, { values }),
+      ]),
+    ),
+    body: new Uint8Array(response.body),
+  }))
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
+
+function encodeRelayRead(
+  cursor: bigint,
+  item: { data: Uint8Array } | { close: { code: number, reason: string, wasClean: boolean } },
+): ArrayBuffer {
+  const value = 'data' in item
+    ? { case: 'data' as const, value: item.data }
+    : {
+        case: 'close' as const,
+        value: create(RelayCloseSchema, item.close),
+      }
+  const bytes = toBinary(RelayReadResponseSchema, create(RelayReadResponseSchema, {
+    cursor,
+    item: value,
+  }))
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
+
 describe('desktopFetch', () => {
   beforeEach(() => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
@@ -33,19 +72,219 @@ describe('desktopFetch', () => {
   it('preserves repeated response header values', async () => {
     mockIPC((cmd) => {
       if (cmd === 'proxy_http') {
-        return {
+        return encodeProxyResponseEnvelope({
           status: 200,
           headers: {
             'x-repeated': ['one', 'two'],
           },
-          body: '',
-        }
+          body: new ArrayBuffer(0),
+        })
       }
       throw new Error(`unmocked Tauri command: ${cmd}`)
     })
 
     const response = await desktopFetch('https://hub.example/test')
     expect(response.headers.get('x-repeated')).toBe('one, two')
+  })
+
+  it('accepts raw response bytes serialized by Tauri fallback IPC', async () => {
+    const wire = encodeProxyResponseEnvelope({
+      status: 200,
+      headers: {
+        'content-type': [
+          'text/plain',
+        ],
+      },
+      body: new TextEncoder().encode('fallback').buffer,
+    })
+    mockIPC((cmd) => {
+      if (cmd === 'proxy_http')
+        return Array.from(new Uint8Array(wire))
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const response = await desktopFetch('https://hub.example/test')
+
+    expect(await response.text()).toBe('fallback')
+  })
+
+  it('constructs a bodyless response for status 204', async () => {
+    mockIPC((cmd) => {
+      if (cmd === 'proxy_http') {
+        return encodeProxyResponseEnvelope({
+          status: 204,
+          headers: {},
+          body: new ArrayBuffer(0),
+        })
+      }
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const response = await desktopFetch('https://hub.example/no-content')
+
+    expect(response.status).toBe(204)
+    expect(await response.text()).toBe('')
+  })
+
+  it('rejects with AbortError when the signal aborts while the call is in flight', async () => {
+    const started = deferred<void>()
+    const cancelled = deferred<void>()
+    const reply = deferred<ArrayBuffer>()
+    let proxyRequestId = ''
+    let cancelledRequestId = ''
+    ;(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+      invoke: (cmd: string, args?: unknown, options?: { headers?: Record<string, string> }) => {
+        if (cmd === 'proxy_http') {
+          proxyRequestId = options?.headers?.['request-id'] ?? ''
+          started.resolve()
+          return reply.promise
+        }
+        if (cmd === 'cancel_proxy_http') {
+          cancelledRequestId = (args as { requestId: string }).requestId
+          cancelled.resolve()
+          return Promise.resolve(null)
+        }
+        throw new Error(`unmocked Tauri command: ${cmd}`)
+      },
+    }
+
+    const controller = new AbortController()
+    const call = desktopFetch('https://hub.example/test', { signal: controller.signal })
+    await started.promise
+    const rejected = vi.fn()
+    const observed = call.catch(rejected)
+    controller.abort()
+    try {
+      await cancelled.promise
+      // Drain the queued promise callbacks while the native reply is still held.
+      await settle()
+      expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: 'AbortError' }))
+      expect(proxyRequestId).not.toBe('')
+      expect(cancelledRequestId).toBe(proxyRequestId)
+    }
+    finally {
+      reply.resolve(encodeProxyResponseEnvelope({
+        status: 200,
+        headers: {},
+        body: new ArrayBuffer(0),
+      }))
+      await observed
+    }
+  })
+
+  it('rejects with AbortError when the signal is already aborted', async () => {
+    const invoked: string[] = []
+    mockIPC((cmd) => {
+      invoked.push(cmd)
+      return encodeProxyResponseEnvelope({
+        status: 200,
+        headers: {},
+        body: new ArrayBuffer(0),
+      })
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    await expect(desktopFetch('https://hub.example/test', { signal: controller.signal }))
+      .rejects
+      .toMatchObject({ name: 'AbortError' })
+    expect(invoked).toEqual([])
+  })
+
+  it('removes the abort listener once the call settles', async () => {
+    mockIPC((cmd) => {
+      if (cmd === 'proxy_http') {
+        return encodeProxyResponseEnvelope({
+          status: 200,
+          headers: {},
+          body: new ArrayBuffer(0),
+        })
+      }
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const controller = new AbortController()
+    const removed = vi.spyOn(controller.signal, 'removeEventListener')
+    await desktopFetch('https://hub.example/test', { signal: controller.signal })
+    expect(removed).toHaveBeenCalledWith('abort', expect.any(Function))
+  })
+
+  it('sends the request body raw and the request metadata in invoke headers', async () => {
+    // mockIPC drops the InvokeOptions, and the metadata rides there -- hand-roll
+    // the internals invoke so the headers are observable.
+    const calls: Array<{ cmd: string, args: unknown, options?: { headers?: Record<string, string> } | undefined }> = []
+    ;(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+      invoke: (cmd: string, args?: unknown, options?: { headers?: Record<string, string> }) => {
+        calls.push({ cmd, args, options })
+        return Promise.resolve(encodeProxyResponseEnvelope({
+          status: 200,
+          headers: {},
+          body: new ArrayBuffer(0),
+        }))
+      },
+    }
+
+    const body = new Uint8Array([1, 2, 3])
+    await desktopFetch('https://hub.example/rpc/Method?x=1', {
+      method: 'POST',
+      headers: { 'content-type': 'application/grpc+proto' },
+      body,
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.cmd).toBe('proxy_http')
+    // The body crosses as the raw invoke body: no base64 anywhere.
+    expect(calls[0]!.args).toBe(body)
+    const headers = calls[0]!.options?.headers ?? {}
+    expect(headers.method).toBe('POST')
+    expect(headers.path).toBe('/rpc/Method?x=1')
+    expect(JSON.parse(atob(headers['headers-b64']!))).toEqual({
+      'content-type': 'application/grpc+proto',
+    })
+  })
+})
+
+describe('ProxyHttpResponse wire data', () => {
+  it('round-trips meta and a multi-KB binary body through encode and decode', () => {
+    const body = new Uint8Array(4096)
+    for (let i = 0; i < body.length; i++)
+      body[i] = (i * 7) % 256
+    const resp = {
+      status: 201,
+      headers: {
+        'x-repeated': ['one', 'two'],
+        'content-type': ['application/grpc+proto'],
+      },
+      body: body.buffer as ArrayBuffer,
+    }
+
+    const decoded = decodeProxyResponseEnvelope(encodeProxyResponseEnvelope(resp))
+
+    expect(decoded.status).toBe(201)
+    expect(decoded.headers).toEqual(resp.headers)
+    // Array.from: jsdom typed arrays of another realm defeat toEqual.
+    expect(Array.from(new Uint8Array(decoded.body))).toEqual(Array.from(body))
+  })
+
+  it('round-trips an empty body', () => {
+    const decoded = decodeProxyResponseEnvelope(encodeProxyResponseEnvelope({
+      status: 204,
+      headers: {},
+      body: new ArrayBuffer(0),
+    }))
+    expect(decoded.status).toBe(204)
+    expect(decoded.headers).toEqual({})
+    expect(decoded.body.byteLength).toBe(0)
+  })
+
+  it('rejects a truncated envelope instead of slicing past the buffer', () => {
+    const encoded = encodeProxyResponseEnvelope({
+      status: 200,
+      headers: {},
+      body: new ArrayBuffer(0),
+    })
+    expect(() => decodeProxyResponseEnvelope(encoded.slice(0, 2))).toThrow(/premature EOF/)
+    expect(() => decodeProxyResponseEnvelope(new Uint8Array([0x1A, 0x05, 0x01]))).toThrow(/premature EOF/)
   })
 })
 
@@ -819,6 +1058,102 @@ describe('platformBridge getStartupInfo', () => {
   })
 })
 
+describe('channel relay bridge', () => {
+  beforeEach(() => {
+    window.__TAURI_INTERNALS__ = {}
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete window.__TAURI_INTERNALS__
+  })
+
+  it('acknowledges a raw frame before reading its following close', async () => {
+    const firstRead = deferred<ArrayBuffer>()
+    mockIPC((cmd, args) => {
+      if (cmd === 'open_channel_relay' || cmd === 'close_channel_relay')
+        return null
+      if (cmd === 'read_channel_relay') {
+        const after = (args as { afterCursor: string }).afterCursor
+        if (after === '0')
+          return firstRead.promise
+        if (after === '1') {
+          return encodeRelayRead(2n, {
+            close: { code: 1001, reason: 'going away', wasClean: true },
+          })
+        }
+      }
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const socket = new TauriRelayWebSocket()
+    const delivered: (ArrayBuffer | CloseEvent)[] = []
+    socket.onmessage = event => delivered.push(event.data as ArrayBuffer)
+    socket.onclose = event => delivered.push(event)
+    const opened = deferred<void>()
+    socket.onopen = () => opened.resolve()
+    await opened.promise
+
+    expect(delivered).toEqual([])
+    const frame = new Uint8Array(1024).fill(255)
+    firstRead.resolve(encodeRelayRead(1n, { data: frame }))
+    await vi.waitFor(() => expect(delivered).toHaveLength(2))
+    expect(Array.from(new Uint8Array(delivered[0] as ArrayBuffer))).toEqual(Array.from(frame))
+    expect(delivered[1]).toMatchObject({ code: 1001, reason: 'going away', wasClean: true })
+  })
+
+  it('accepts a raw frame serialized by Tauri fallback IPC', async () => {
+    const hold = deferred<ArrayBuffer>()
+    mockIPC((cmd, args) => {
+      if (cmd === 'open_channel_relay')
+        return null
+      if (cmd === 'read_channel_relay') {
+        if ((args as { afterCursor: string }).afterCursor === '0') {
+          return Array.from(new Uint8Array(encodeRelayRead(1n, {
+            data: new Uint8Array([1, 2, 3]),
+          })))
+        }
+        return hold.promise
+      }
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+    const socket = new TauriRelayWebSocket()
+    const opened = deferred<void>()
+    const frame = deferred<ArrayBuffer>()
+    socket.onopen = () => opened.resolve()
+    socket.onmessage = event => frame.resolve(event.data as ArrayBuffer)
+    await opened.promise
+
+    expect(Array.from(new Uint8Array(await frame.promise))).toEqual([1, 2, 3])
+  })
+
+  it('skips IPC when the attempt ends before the Tauri import settles', async () => {
+    const invoke = vi.fn()
+    mockIPC(invoke)
+    let abandoned = false
+    const open = platformBridge.openUserEventsRelay(42, {
+      isAbandoned: () => abandoned,
+      onMessage: vi.fn(),
+    })
+
+    abandoned = true
+    await expect(open).resolves.toBe(false)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('closes the wrapper when the open is rejected before reaching Rust', async () => {
+    mockIPC((cmd) => {
+      throw new Error(`IPC refused the command: ${cmd}`)
+    })
+    const socket = new TauriRelayWebSocket()
+    const failed = deferred<void>()
+    socket.onclose = () => failed.resolve()
+    await failed.promise
+
+    expect(socket.readyState).toBe(WebSocket.CLOSED)
+  })
+})
+
 // The relay ids the sidecar fences on are only useful if they reach it: an open or
 // close that dropped its id would be indistinguishable from any other attempt's, and
 // the sidecar would be back to inferring intent from goroutine scheduling order.
@@ -835,11 +1170,16 @@ describe('userevents relay bridge', () => {
   it('forwards the relay id with the user events subscription on open', async () => {
     const calls: Array<{ cmd: string, args: unknown }> = []
     mockIPC((cmd, args) => {
+      if (cmd === 'read_userevents_relay')
+        return new Promise(() => {})
       calls.push({ cmd, args })
       return null
     })
 
-    await platformBridge.openUserEventsRelay(42, ['ws-1'])
+    await platformBridge.openUserEventsRelay(42, {
+      isAbandoned: () => false,
+      onMessage: vi.fn(),
+    }, ['ws-1'])
 
     expect(calls).toEqual([
       {
@@ -863,11 +1203,16 @@ describe('userevents relay bridge', () => {
     // but make the desktop sidecar reject the relay-open on every reconnect.
     const calls: Array<{ cmd: string, args: unknown }> = []
     mockIPC((cmd, args) => {
+      if (cmd === 'read_userevents_relay')
+        return new Promise(() => {})
       calls.push({ cmd, args })
       return null
     })
 
-    await platformBridge.openUserEventsRelay(7, ['ws-1'], {
+    await platformBridge.openUserEventsRelay(7, {
+      isAbandoned: () => false,
+      onMessage: vi.fn(),
+    }, ['ws-1'], {
       hlc: { physical: 1754100000000n, logical: 3n, clientId: 'c-abc' },
       epoch: 7n,
     })
@@ -1056,9 +1401,7 @@ describe('parseRelayClosePayload', () => {
   })
 
   it('defaults each field when the payload is missing or wrong-typed', () => {
-    // The untyped Tauri event boundary can deliver anything; every field is
-    // guarded and code defaults to 1006 (abnormal closure), the shared wire
-    // default both relay-close paths agree on.
+    // A malformed close uses 1006 (abnormal closure) as its default code.
     expect(parseRelayClosePayload(null)).toEqual({ code: 1006, reason: '', wasClean: false })
     expect(parseRelayClosePayload({ code: '1000', reason: 42, wasClean: 'yes' }))
       .toEqual({ code: 1006, reason: '', wasClean: false })
@@ -1156,5 +1499,132 @@ describe('openExternalUrl', () => {
 
     expect(invoked).toEqual([])
     expect(openSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('getCapabilities', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    resetPlatformRuntimeState()
+  })
+
+  afterEach(() => {
+    clearMocks()
+    resetPlatformRuntimeState()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  // A capability the shell has not confirmed stays false, so no local-only
+  // feature shows before the runtime state answers.
+  it('reports every local capability false before the shell answers, under Tauri', () => {
+    expect(getCapabilities()).toEqual({
+      mode: 'tauri-desktop-distributed',
+      tunnels: false,
+      appControl: false,
+      windowControl: false,
+      systemPermissions: false,
+      localSolo: false,
+    })
+  })
+})
+
+describe('platformBridge connectDistributed', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    resetPlatformRuntimeState()
+  })
+
+  afterEach(() => {
+    clearMocks()
+    resetPlatformRuntimeState()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('reads the runtime state again after the command succeeds', async () => {
+    let runtimeStateReads = 0
+    const commands: string[] = []
+    mockIPC((cmd) => {
+      commands.push(cmd)
+      if (cmd === 'connect_distributed')
+        return undefined
+      if (cmd === 'get_runtime_state') {
+        runtimeStateReads++
+        return runtimeStateReads === 1
+          // The state before the connect: the launcher, not yet connected.
+          ? {
+              shellMode: 'launcher',
+              connected: false,
+              hubUrl: '',
+              capabilities: getCapabilities(),
+            }
+          : {
+              shellMode: 'distributed',
+              connected: true,
+              hubUrl: 'https://hub.example',
+              capabilities: {
+                mode: 'tauri-desktop-distributed',
+                tunnels: false,
+                appControl: true,
+                windowControl: true,
+                systemPermissions: true,
+                localSolo: false,
+              },
+            }
+      }
+      return undefined
+    })
+
+    await platformBridge.getRuntimeState()
+    expect(runtimeStateReads).toBe(1)
+
+    await platformBridge.connectDistributed('https://hub.example')
+
+    // The command alone would leave the pre-connect state cached; the refresh
+    // is what makes the connected Hub observable here.
+    expect(runtimeStateReads).toBe(2)
+    expect(desktopHub()).toEqual({ kind: 'remote', url: 'https://hub.example' })
+
+    // The first runtime-state read starts the sidecar log listener on a
+    // floating import chain; let it land before the mock goes away.
+    await vi.waitFor(() => expect(commands).toContain('plugin:event|listen'))
+  })
+})
+
+describe('platformBridge startBrowserAuth', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('starts each ceremony kind through one command carrying the kind', async () => {
+    const invoked: Array<[string, unknown]> = []
+    mockIPC((cmd, args) => {
+      invoked.push([cmd, args])
+      return { ceremonyId: 'c-1', authorizeUrl: 'https://hub.example/authorize' }
+    })
+
+    await expect(platformBridge.startBrowserAuth('sign-in')).resolves.toEqual({
+      ceremonyId: 'c-1',
+      authorizeUrl: 'https://hub.example/authorize',
+    })
+    await expect(platformBridge.startBrowserAuth('step-up')).resolves.toEqual({
+      ceremonyId: 'c-1',
+      authorizeUrl: 'https://hub.example/authorize',
+    })
+
+    expect(invoked).toEqual([
+      [
+        'start_browser_auth',
+        { kind: BrowserAuthKind.SIGN_IN },
+      ],
+      [
+        'start_browser_auth',
+        { kind: BrowserAuthKind.STEP_UP },
+      ],
+    ])
   })
 })

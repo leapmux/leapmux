@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,11 +36,15 @@ var zeroUserIDDenyFuncs = []string{
 	"WorkspacesReadableByUser",
 	"WorkerCanUse",
 	"CreateSession",
+	"CreateSessionAt",
 	"ResolveDelegationWorkerScope",
 	"CheckDelegationWorkerScope",
 	"(*DelegationScopeCache).Resolve",
 	"RevokeAllUserCredentials",
 	"RevokeUserCredentialsExceptAPIToken",
+	"RequireElevation",
+	"RequireElevatableCredential",
+	"RequireElevatableSession",
 }
 
 // TestZeroUserIDDenies exercises the deny-closed contract for every entry in
@@ -129,18 +134,26 @@ func TestZeroUserIDDenies(t *testing.T) {
 				got, err = auth.WorkspacesReadableByUser(ctx, st, zero, []string{workspaceID})
 				require.NoError(t, err)
 				assert.Empty(t, got, "a zero id must not resolve another user's workspace")
-			case "CreateSession":
+			case "CreateSession", "CreateSessionAt":
 				// Not an access predicate, but it takes the type, so the table
 				// requires it to state a contract: a session must never be
 				// written for an id that names no user -- that row would then
 				// authenticate as blank on every subsequent request.
-				_, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), zero, auth.DefaultSessionDuration)
+				create := func(userID userid.UserID) (auth.CreatedSession, error) {
+					if name == "CreateSessionAt" {
+						return auth.CreateSessionAt(ctx, st, hubtestutil.TestSecretHasher(), userID, time.Now().UTC(), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
+
+					}
+					return auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
+
+				}
+				_, err := create(zero)
 				require.Error(t, err, "a zero UserID must not create a session")
 				// Control, per this test's own contract: without it the case
 				// passes if CreateSession ever starts erroring for an unrelated
 				// reason (a schema change, a newly-required column), proving
 				// nothing about the zero id.
-				_, err = auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), ownerID, auth.DefaultSessionDuration)
+				_, err = create(ownerID)
 				require.NoError(t, err, "control: a real user's session is created")
 			case "WorkerCanUse":
 				w, ok, err := auth.WorkerCanUse(ctx, st, worker.ID, ownerID)
@@ -253,6 +266,35 @@ func TestZeroUserIDDenies(t *testing.T) {
 				require.NoError(t, err)
 				assert.False(t, scope.Allows(worker.ID),
 					"the cached answer must be the same denial, not a widened one")
+			case "RequireElevation":
+				// A nil UserInfo carries no credential row, so the rule answers
+				// "cannot elevate" -- the no-marker refusal. The control is the
+				// solo short-circuit: solo mode has no ceremony and passes.
+				err := auth.RequireElevation(nil, time.Now())
+				require.Error(t, err, "a nil UserInfo must not pass the elevation gate")
+
+				solo := &auth.UserInfo{Solo: true}
+				require.NoError(t, auth.RequireElevation(solo, time.Now()),
+					"control: solo mode passes the elevation gate")
+			case "RequireElevatableCredential":
+				// A nil UserInfo has no elevatable row. The control is a
+				// session credential, which has a row to stamp.
+				err := auth.RequireElevatableCredential(nil)
+				require.Error(t, err, "a nil UserInfo has no elevatable credential")
+
+				sessionUser := &auth.UserInfo{Credential: auth.SessionCredential("s1")}
+				require.NoError(t, auth.RequireElevatableCredential(sessionUser),
+					"control: a session credential is elevatable")
+			case "RequireElevatableSession":
+				// A nil UserInfo has no session to return. The control is a
+				// session credential, whose id the rule returns.
+				_, err := auth.RequireElevatableSession(nil)
+				require.Error(t, err, "a nil UserInfo has no session")
+
+				sessionUser := &auth.UserInfo{Credential: auth.SessionCredential("s1")}
+				sessionID, err := auth.RequireElevatableSession(sessionUser)
+				require.NoError(t, err, "control: a session credential yields its session id")
+				assert.Equal(t, "s1", sessionID)
 			default:
 				t.Fatalf("zeroUserIDDenyFuncs lists %q but TestZeroUserIDDenies has no case for it", name)
 			}
@@ -479,7 +521,7 @@ func TestIdentityStructTypes_ScopesToOptionsStructs(t *testing.T) {
 	assert.True(t, carries["HTTPAuthOpts"], "it declares SoloUser *UserInfo")
 	assert.True(t, carries["UserInfo"], "it declares ID userid.UserID")
 	assert.False(t, carries["AuthContextRegistry"], "it reaches a *UserInfo only through internal state")
-	assert.False(t, carries["SessionMeta"], "it carries a user agent, no identity")
+	assert.False(t, carries["SessionCreationOptions"], "it carries session settings, no identity")
 }
 
 func TestCarriesNamedStruct(t *testing.T) {
@@ -492,7 +534,7 @@ func TestCarriesNamedStruct(t *testing.T) {
 		"behind a pointer":           {"*InterceptorOptions", true},
 		"behind a slice":             {"[]InterceptorOptions", true},
 		"as a map value":             {"map[string]InterceptorOptions", true},
-		"a struct that carries none": {"SessionMeta", false},
+		"a struct that carries none": {"SessionCreationOptions", false},
 		"a plain string":             {"string", false},
 	} {
 		t.Run(name, func(t *testing.T) {

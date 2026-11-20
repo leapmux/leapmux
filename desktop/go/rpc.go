@@ -29,6 +29,82 @@ type RPCSession struct {
 	shutdownCleanup *drain.Counter
 	peerDone        chan struct{}
 	onShutdown      func()
+	proxyRequests   proxyRequestRegistry
+}
+
+const proxyPrecancelCapacity = 1024
+
+type proxyRequestEntry struct {
+	cancel context.CancelFunc
+}
+
+type proxyRequestRegistry struct {
+	mu             sync.Mutex
+	active         map[string]*proxyRequestEntry
+	precancelled   map[string]struct{}
+	precancelOrder []string
+}
+
+func validProxyRequestID(requestID string) bool {
+	return requestID != "" && len(requestID) <= 128
+}
+
+func (r *proxyRequestRegistry) begin(parent context.Context, requestID string) (context.Context, func(), error) {
+	if !validProxyRequestID(requestID) {
+		return nil, nil, fmt.Errorf("proxy request id is invalid")
+	}
+	ctx, cancel := context.WithCancel(parent)
+	entry := &proxyRequestEntry{cancel: cancel}
+	r.mu.Lock()
+	if r.active == nil {
+		r.active = make(map[string]*proxyRequestEntry)
+	}
+	if _, exists := r.active[requestID]; exists {
+		r.mu.Unlock()
+		cancel()
+		return nil, nil, fmt.Errorf("proxy request %q is already active", requestID)
+	}
+	if _, cancelled := r.precancelled[requestID]; cancelled {
+		delete(r.precancelled, requestID)
+		cancel()
+	}
+	r.active[requestID] = entry
+	r.mu.Unlock()
+	return ctx, func() {
+		r.mu.Lock()
+		if r.active[requestID] == entry {
+			delete(r.active, requestID)
+		}
+		r.mu.Unlock()
+		cancel()
+	}, nil
+}
+
+func (r *proxyRequestRegistry) cancel(requestID string) error {
+	if !validProxyRequestID(requestID) {
+		return fmt.Errorf("proxy request id is invalid")
+	}
+	r.mu.Lock()
+	if entry := r.active[requestID]; entry != nil {
+		cancel := entry.cancel
+		r.mu.Unlock()
+		cancel()
+		return nil
+	}
+	if r.precancelled == nil {
+		r.precancelled = make(map[string]struct{})
+	}
+	if _, exists := r.precancelled[requestID]; !exists {
+		r.precancelled[requestID] = struct{}{}
+		r.precancelOrder = append(r.precancelOrder, requestID)
+	}
+	for len(r.precancelled) > proxyPrecancelCapacity && len(r.precancelOrder) > 0 {
+		expired := r.precancelOrder[0]
+		r.precancelOrder = r.precancelOrder[1:]
+		delete(r.precancelled, expired)
+	}
+	r.mu.Unlock()
+	return nil
 }
 
 type frameReadResult struct {
@@ -58,7 +134,6 @@ func NewRPCSession(app *App, reader io.Reader, writer io.Writer, onShutdown func
 
 func (s *RPCSession) Run() error {
 	s.app.SetEventSink(s.emitEvent)
-	s.app.SetEventSinkForRelay(s.emitEventForRelay)
 
 	sessionCtx, cancelSession := context.WithCancelCause(s.app.ctx)
 	readResults := make(chan frameReadResult, 1)
@@ -67,7 +142,6 @@ func (s *RPCSession) Run() error {
 	defer func() {
 		cancelSession(nil)
 		s.app.SetEventSink(nil)
-		s.app.SetEventSinkForRelay(nil)
 		s.drainHandlers(&handlers, context.Cause(sessionCtx))
 	}()
 	for {
@@ -210,17 +284,9 @@ func isBenignSessionReadError(err error) bool {
 	return strings.Contains(err.Error(), "use of closed network connection")
 }
 
+// emitEvent writes events to the shell and reports any undeliverable relay frame
+// with the owner it carries.
 func (s *RPCSession) emitEvent(event *desktoppb.Event) {
-	s.emitEventForRelay(0, event)
-}
-
-// emitEventForRelay is the relay-aware emit: it writes the event frame to the
-// shell pipe, and on a delivery failure (oversize frame, broken pipe) tells
-// CloseRelayForUndeliverableEvent WHICH relay emitted it so the close can gate on
-// ownership. owner is 0 for non-relay events (the generic emitEvent path), which
-// CloseRelayForUndeliverableEvent treats as "no relay to close" (only *Message
-// payloads name a relay, and 0 matches no installed owner).
-func (s *RPCSession) emitEventForRelay(owner uint64, event *desktoppb.Event) {
 	frame := &desktoppb.Frame{
 		Message: &desktoppb.Frame_Event{Event: event},
 	}
@@ -232,20 +298,20 @@ func (s *RPCSession) emitEventForRelay(owner uint64, event *desktoppb.Event) {
 	// same failFrameForRelay path a failed write would, so an oversized relay
 	// frame still tears its relay down instead of being silently skipped.
 	if err := validateFrameSize(frame); err != nil {
-		s.failFrameForRelay(owner, frame, err)
+		s.failFrameForRelay(frame, err)
 		return
 	}
 	// Inline the write rather than routing through writeFrameUnchecked: a write
 	// failure on a relay event frame must close THAT relay (the stream is
 	// desynced), and writeFrameUnchecked's failure path is the log-only
-	// failFrameForRelay(0, ...) used for non-relay response frames. Doing the
+	// failFrameForRelay used for non-relay response frames. Doing the
 	// write here keeps both the budget and the write failure paths on
 	// failFrameForRelay.
 	s.mu.Lock()
 	werr := writeFrameTo(s.writer, frame)
 	s.mu.Unlock()
 	if werr != nil {
-		s.failFrameForRelay(owner, frame, werr)
+		s.failFrameForRelay(frame, werr)
 	}
 }
 
@@ -289,12 +355,8 @@ func (s *RPCSession) emitEventForRelay(owner uint64, event *desktoppb.Event) {
 // wedged UI. Anything else (a response, a non-relay event) is order-independent,
 // so logging it is the whole remedy.
 //
-// failFrameForRelay threads the emitting relay's owner id into
-// CloseRelayForUndeliverableEvent so the close gates on ownership: without it,
-// the close goroutine (spawned here) could run after a successor's open
-// superseded the emitter and tear down the successor's relay for the emitter's
-// fault. owner is 0 for non-relay frames, which no installed relay matches.
-func (s *RPCSession) failFrameForRelay(owner uint64, frame *desktoppb.Frame, err error) {
+// The owner on the event prevents cleanup from tearing down a successor.
+func (s *RPCSession) failFrameForRelay(frame *desktoppb.Frame, err error) {
 	slog.Error("failed to write frame", "error", err)
 	event := frame.GetEvent()
 	if event == nil {
@@ -302,7 +364,7 @@ func (s *RPCSession) failFrameForRelay(owner uint64, frame *desktoppb.Frame, err
 	}
 	// Off this goroutine: the emit that failed may BE the relay's read loop, and
 	// tearing the relay down joins that loop.
-	go s.app.CloseRelayForUndeliverableEvent(owner, event)
+	go s.app.CloseRelayForUndeliverableEvent(event)
 }
 
 // writeFrameUnchecked writes frame under the session write mutex WITHOUT
@@ -315,11 +377,8 @@ func (s *RPCSession) writeFrameUnchecked(frame *desktoppb.Frame) {
 	err := writeFrameTo(s.writer, frame)
 	s.mu.Unlock()
 	if err != nil {
-		// owner 0 matches no installed relay, so this logs and returns for the
-		// response frames writeFrameUnchecked carries -- the same log-only remedy
-		// the removed failFrame wrapper gave, without a second failure path to
-		// keep in sync.
-		s.failFrameForRelay(0, frame, err)
+		// This response carries no event. The failure needs only a log.
+		s.failFrameForRelay(frame, err)
 	}
 }
 
@@ -447,7 +506,13 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 		s.writeSidecarInfo(id)
 
 	case *desktoppb.Request_ProxyHttp:
-		resp, body, err := s.app.ProxyHTTP(ctx, m.ProxyHttp.Method, m.ProxyHttp.Path, m.ProxyHttp.Headers, m.ProxyHttp.Body)
+		requestCtx, finish, err := s.proxyRequests.begin(ctx, m.ProxyHttp.GetRequestId())
+		if err != nil {
+			s.writeError(id, err)
+			return
+		}
+		defer finish()
+		resp, body, err := s.app.ProxyHTTP(requestCtx, m.ProxyHttp.Method, m.ProxyHttp.Path, m.ProxyHttp.Headers, m.ProxyHttp.Body)
 		if err != nil {
 			s.writeError(id, err)
 			return
@@ -467,7 +532,7 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 		s.writeErrOrOK(id, s.app.OpenChannelRelay(ctx, m.OpenChannelRelay.GetRelayId()))
 
 	case *desktoppb.Request_SendChannelMessage:
-		s.writeErrOrOK(id, s.app.SendChannelMessage(ctx, m.SendChannelMessage.Data))
+		s.writeErrOrOK(id, s.app.SendChannelMessage(ctx, m.SendChannelMessage.GetRelayId(), m.SendChannelMessage.Data))
 
 	case *desktoppb.Request_CloseChannelRelay:
 		s.writeErrOrOK(id, s.app.CloseChannelRelay(m.CloseChannelRelay.GetRelayId()))
@@ -601,6 +666,27 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 			Id:     id,
 			Result: &desktoppb.Response_CliInstallSymlink{CliInstallSymlink: result},
 		})
+
+	case *desktoppb.Request_StartBrowserAuth:
+		ceremonyID, authorizeURL, err := s.app.StartBrowserAuth(m.StartBrowserAuth.GetKind())
+		if err != nil {
+			s.writeError(id, err)
+			return
+		}
+		s.writeResponse(&desktoppb.Response{
+			Id: id,
+			Result: &desktoppb.Response_StartBrowserAuth{StartBrowserAuth: &desktoppb.StartBrowserAuthResponse{
+				CeremonyId:   ceremonyID,
+				AuthorizeUrl: authorizeURL,
+			}},
+		})
+
+	case *desktoppb.Request_CancelBrowserAuth:
+		s.app.CancelBrowserAuth(m.CancelBrowserAuth.GetCeremonyId())
+		s.writeOK(id)
+
+	case *desktoppb.Request_CancelProxyHttp:
+		s.writeErrOrOK(id, s.proxyRequests.cancel(m.CancelProxyHttp.GetRequestId()))
 
 	default:
 		s.writeError(id, fmt.Errorf("unknown method: %T", req.Method))

@@ -1,3 +1,4 @@
+import type { HubUserId } from '~/lib/browserStorage'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
@@ -6,6 +7,7 @@ import { createComputed, createEffect, createMemo, createSignal, onCleanup, untr
 import { workerAgent, workerPrivate, workerTerminal } from '~/api/workerRpc'
 import { TabHydrationStatus, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { resolveSettingsTabFields } from '~/hooks/agentEvents'
+import { storageAccountUserId } from '~/lib/browserStorage'
 import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
 import { tabPayloadView } from '~/lib/tabPayload'
@@ -115,7 +117,12 @@ export interface TabHydrators {
  * update) don't re-walk the tab list.
  */
 export interface UseTabHydratorsOpts {
-  userId: () => string | undefined
+  /**
+   * The raw Hub user id the session authenticates as; undefined until it
+   * resolves. NOT the composed storage account `metadata.state.userId` tracks,
+   * which is why `isCurrent` narrows one to the other before comparing.
+   */
+  hubUserId: () => HubUserId | undefined
   view: TabView
   metadata: TabMetadataStore
   repoGitStore: ReturnType<typeof createRepoGitStore>
@@ -156,7 +163,7 @@ export interface UseTabHydratorsOpts {
 export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
   let current: TabHydrators | undefined
   createComputed(() => {
-    const account = opts.userId()
+    const account = opts.hubUserId()
     const accountGeneration = opts.metadata.state.accountGeneration
     if (!account)
       return
@@ -166,8 +173,9 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
       current = undefined
     })
     current = untrack(() => createAccountTabHydrators(opts, () =>
-      alive && opts.userId() === account && opts.view.ownerUserId() === account
-      && opts.metadata.state.userId === account && opts.metadata.state.accountGeneration === accountGeneration))
+      alive && opts.hubUserId() === account && opts.view.ownerUserId() === account
+      && storageAccountUserId(opts.metadata.state.userId) === account
+      && opts.metadata.state.accountGeneration === accountGeneration))
   })
   return {
     reaskWorkerTerminals: workerId => current?.reaskWorkerTerminals(workerId),

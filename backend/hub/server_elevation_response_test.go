@@ -45,7 +45,7 @@ func TestElevationResponseInterceptorIsMounted(t *testing.T) {
 		FirstCredentialExempt: true, IsAdmin: true,
 	})
 	require.NoError(t, err)
-	token, _, _, err := auth.Login(ctx, st, srv.hasher, "admin", "adminpass123", auth.DefaultSessionDuration)
+	session, _, err := auth.Login(ctx, st, srv.hasher, "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// A window close to lapsing, so the slide has somewhere to move to. The
@@ -53,7 +53,7 @@ func TestElevationResponseInterceptorIsMounted(t *testing.T) {
 	// full-length elevation would slide nothing and report nothing.
 	now := time.Now().UTC()
 	n, err := st.Sessions().Elevate(ctx, store.ElevateSessionParams{
-		SessionID:          hubtestutil.SessionIDFromCookie(t, token),
+		SessionID:          hubtestutil.SessionIDFromCookie(t, session.Token),
 		UserID:             userid.MustNew(admin.ID),
 		ElevationProvenAt:  now,
 		ElevationExpiresAt: now.Add(time.Minute),
@@ -66,7 +66,7 @@ func TestElevationResponseInterceptorIsMounted(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost,
 		"/leapmux.v1.AdminSettingsService/UpdateSettings", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Cookie", auth.CookieName+"="+token)
+	req.Header.Set("Cookie", auth.CookieName+"="+session.Token)
 	rec := httptest.NewRecorder()
 	srv.server.Handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -78,7 +78,7 @@ func TestElevationResponseInterceptorIsMounted(t *testing.T) {
 	// The value is the deadline the STORE now holds, which is also what
 	// proves the write really slid rather than the header carrying a
 	// constant.
-	row, err := st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
+	row, err := st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, session.Token), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, row.ElevationExpiresAt)
 	assert.Equal(t, row.ElevationExpiresAt.UTC().Format(time.RFC3339Nano), reported)

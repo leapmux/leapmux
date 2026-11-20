@@ -1,21 +1,24 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
+import type { Location } from '@solidjs/router'
 import type { ParentComponent } from 'solid-js'
 import type { EmailVerificationStatus, GetCurrentUserResponse, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
+import type { StorageAccount } from '~/lib/browserStorage'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
-import { createEffect, createSignal, on, onMount, useContext } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { platformBridge } from '~/api/platformBridge'
-import { loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
+import { advanceAuthSessionEpoch, loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
 import { channelManager } from '~/api/workerRpc'
 import { LoginRequestSchema } from '~/generated/proto/leapmux/v1/auth_pb'
 import { setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
-import { hydrateStorageAccount, setStorageAccount } from '~/lib/browserStorage'
+import { prepareStorageAccount, setStorageAccount, storageAccountFor } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWithPasskeyRequest, elevateWithPassword as elevateWithPasswordRequest } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
+import { hubOrigin } from '~/lib/hubSite'
 import { createLogger } from '~/lib/logger'
 import { isAutoAuthenticated, isPasswordSetupGate, loadSystemInfo } from '~/lib/systemInfo'
 import { authenticateForChallenge, passkeyErrorMessage } from '~/lib/webauthn'
@@ -35,10 +38,16 @@ const log = createLogger('auth')
  */
 export type SignInOutcome = 'adopted' | 'recovering' | 'superseded'
 
+type SignInRecoveryRedirect = string | ((location: Location) => string | null | undefined)
+
 /** Where a sign-in was asked to continue, for the navigation recovery owns. */
 export interface SignInOptions {
-  /** The address to continue to, such as the CLI consent page; see `postAuthNavigate`. */
-  redirect?: string | undefined
+  /**
+   * The address to continue to, such as the CLI consent page. A resolver reads
+   * the router's location after recovery adopts the account. It returns null
+   * to stay on the current page or undefined to use the default destination.
+   */
+  redirect?: SignInRecoveryRedirect | undefined
 }
 
 /**
@@ -64,10 +73,10 @@ export interface SignInRecovery {
    * once, and a failure whose message is empty still reads as a failure.
    */
   read: SignInRecoveryRead
-  /** The sign-in reported that the account must verify an email address. */
-  verificationRequired: boolean
-  /** The address the sign-in was asked to continue to. */
-  redirect?: string
+  /** Whether email verification is required, once a response reports it. */
+  verificationRequired?: boolean
+  /** Where to continue after recovery adopts the account. */
+  redirect?: SignInRecoveryRedirect
 }
 
 /**
@@ -86,7 +95,9 @@ const RECOVERY_ADOPTION_DISPLACED = 'Your account changed while it was loading. 
  *   while its rows loaded, and the caller's rule still holds the read
  *   current. Nothing else adopts the account then.
  */
-type AccountReadOutcome = 'adopted' | 'superseded' | 'displaced'
+type AccountReadResult
+  = | { outcome: 'adopted', verificationRequired: boolean | undefined }
+    | { outcome: 'superseded' | 'displaced' }
 
 export interface AuthLoginResult {
   outcome: SignInOutcome
@@ -105,6 +116,10 @@ export type UserAdoption = (user: User | undefined, verification?: EmailVerifica
 
 export interface AuthState {
   user: () => User | null
+  /** The hydrated browser-storage identity published with `user`. */
+  storageAccount: () => StorageAccount | null
+  /** Subscribe to an authenticated account ending before its shell unmounts. */
+  onAccountEnd: (listener: (account: StorageAccount) => void) => () => void
   loading: () => boolean
   error: () => string | null
   /**
@@ -171,6 +186,12 @@ export interface AuthState {
   retryBootstrap: () => Promise<void>
   login: (username: string, password: string, captcha?: CaptchaRequestFields, opts?: SignInOptions) => Promise<AuthLoginResult>
   loginWithPasskey: (username: string, captcha?: CaptchaRequestFields, opts?: SignInOptions) => Promise<AuthLoginResult>
+  /**
+   * Adopt the session the sidecar's jar already holds, after a successful
+   * browser handoff. Reads the account through `GetCurrentUser`; a failed
+   * read starts sign-in recovery.
+   */
+  adoptBrowserSignIn: (opts?: SignInOptions) => Promise<AuthLoginResult>
   logout: () => Promise<void>
   /**
    * Adopt the session a sign-up, the OAuth completion or the first solo
@@ -210,6 +231,8 @@ export interface AuthState {
    * fail.
    */
   openUserAdoption: () => UserAdoption
+  /** Re-read the account and report whether this response was adopted. */
+  reloadUser: () => Promise<boolean>
   refreshUser: () => Promise<void>
   isAuthenticated: () => boolean
 }
@@ -217,7 +240,14 @@ export interface AuthState {
 const AuthContext = createStableContext<AuthState>('context/AuthContext')
 
 export const AuthProvider: ParentComponent = (props) => {
-  const [user, setUserSignal] = createSignal<User | null>(null)
+  const [identity, setIdentity] = createSignal<{ user: User, storageAccount: StorageAccount } | null>(null)
+  const user = createMemo(() => identity()?.user ?? null)
+  const storageAccount = createMemo(() => identity()?.storageAccount ?? null)
+  const accountEndListeners = new Set<(account: StorageAccount) => void>()
+  const onAccountEnd = (listener: (account: StorageAccount) => void): (() => void) => {
+    accountEndListeners.add(listener)
+    return () => accountEndListeners.delete(listener)
+  }
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string | null>(null)
   const [bootstrapError, setBootstrapError] = createSignal<string | null>(null)
@@ -346,7 +376,7 @@ export const AuthProvider: ParentComponent = (props) => {
    * READ before the namespace may point at them -- `setStorageAccount` refuses
    * an account it was not hydrated for. Every caller of this already awaits the
    * hub round trip that produced the User, so the gate costs no extra hop; and
-   * `hydrateStorageAccount` never rejects, so a browser with no IndexedDB signs
+   * `prepareStorageAccount` never rejects, so a browser with no IndexedDB signs
    * in on defaults rather than failing to sign in.
    *
    * The two writes after that await stay ADJACENT and synchronous, which is the
@@ -368,21 +398,38 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const setUser = async (next: User | null): Promise<boolean> => {
     const generation = ++authGeneration
+    const outgoingAccount = identity()?.storageAccount ?? null
     if (next && !next.id) {
       log.error('the hub returned a user with no id; treating the session as signed out', { user: next })
       next = null
     }
+    let account: StorageAccount | null = null
     if (next) {
-      await hydrateStorageAccount(next.id)
+      account = storageAccountFor(hubOrigin(), next.id)
+      const prepared = await prepareStorageAccount(account)
       // A later identity superseded this one while its rows were loading. It
       // owns the mirror now, so publishing this one would point the namespace
       // at an account the mirror no longer holds -- which `setStorageAccount`
       // would refuse anyway, loudly, in the middle of a sign-in.
       if (generation !== authGeneration)
         return false
-      setStorageAccount(next.id)
+      if (!prepared.commit())
+        return false
+      setStorageAccount(account)
     }
-    setUserSignal(next)
+    if (!next && outgoingAccount) {
+      for (const listener of [...accountEndListeners]) {
+        try {
+          listener(outgoingAccount)
+        }
+        catch (err) {
+          log.error('authenticated account cleanup failed', { err })
+        }
+      }
+    }
+    setIdentity(next && account
+      ? { user: next, storageAccount: account }
+      : null)
     return true
   }
 
@@ -430,6 +477,7 @@ export const AuthProvider: ParentComponent = (props) => {
   }, { defer: true }))
 
   const clearAuthUser = () => {
+    advanceAuthSessionEpoch()
     // No await: the null branch takes none, so the signal still moves in this
     // turn. See `setUser`.
     void setUser(null)
@@ -494,12 +542,12 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   /**
-   * Read the account, and adopt the answer only while `isSuperseded` still
-   * holds the read current. A failed read rejects.
+   * Read the account and reject on a failed request. Ask `isSuperseded`
+   * whether the answer still applies before adopting it.
    *
-   * The ONE call site of `GetCurrentUser`, and the caller states the
-   * staleness rule, so a new reader cannot forget the check: it cannot read
-   * at all without one. Two rules exist, and each is right for its reader:
+   * The caller states the staleness rule. Desktop sign-in reads
+   * `GetCurrentUser` through `runSignIn`, which checks its operation before
+   * adopting the session. The other readers use one of these rules.
    *
    * - `refreshUser` and the bootstrap restore pass `supersededByAnyWrite()`,
    *   because a response that an unrelated write outdated puts older account
@@ -508,25 +556,35 @@ export const AuthProvider: ParentComponent = (props) => {
    *   that an unrelated write discarded leaves the gate waiting with no read
    *   in flight. See `readForRecovery`.
    */
-  const readCurrentUser = async (isSuperseded: () => boolean): Promise<AccountReadOutcome> => {
+  const readCurrentUser = async (isSuperseded: () => boolean): Promise<AccountReadResult> => {
     const resp = await authClient.getCurrentUser({})
     if (isSuperseded())
-      return 'superseded'
-    if (await adoptCurrentUser(resp))
-      return 'adopted'
+      return { outcome: 'superseded' }
+    if (await adoptCurrentUser(resp)) {
+      return {
+        outcome: 'adopted',
+        verificationRequired: resp.sessionReport?.emailVerification?.verificationRequired,
+      }
+    }
     // `setUser` moved `authGeneration` itself, so `supersededByAnyWrite` reads
     // every refusal as superseded, which it is for that rule: a newer write
     // owns the state. The operation rule tells the two cases apart.
-    return isSuperseded()
-      ? 'superseded'
-      : 'displaced'
+    return {
+      outcome: isSuperseded()
+        ? 'superseded'
+        : 'displaced',
+    }
+  }
+
+  const reloadUser = async (): Promise<boolean> => {
+    return (await readCurrentUser(supersededByAnyWrite())).outcome === 'adopted'
   }
 
   const refreshUser = async () => {
     try {
       // Every outcome leaves the newest account state in place, which is all
       // a refresh asks for.
-      await readCurrentUser(supersededByAnyWrite())
+      await reloadUser()
     }
     catch {
       // Ignore — user state unchanged.
@@ -590,13 +648,13 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const readForRecovery = async (op: number) => {
     try {
-      const outcome = await readCurrentUser(() => !isCurrent(op))
+      const result = await readCurrentUser(() => !isCurrent(op))
       // The operation check also covers an adopted account: a newer
       // operation that started while the account's rows loaded owns the
       // state, and writes the rest of it.
-      if (outcome === 'superseded' || !isCurrent(op))
+      if (result.outcome === 'superseded' || !isCurrent(op))
         return
-      if (outcome === 'displaced') {
+      if (result.outcome !== 'adopted') {
         // `setUser` refused the account because a local write landed while
         // its rows loaded, yet no newer operation owns the state. Nothing
         // else will finish this recovery, so the gate offers Retry.
@@ -609,6 +667,7 @@ export const AuthProvider: ParentComponent = (props) => {
       loadTimeouts().catch(() => {})
       patchRecovery({
         read: { kind: 'completed' },
+        verificationRequired: signInRecovery()?.verificationRequired ?? result.verificationRequired ?? false,
       })
     }
     catch (err) {
@@ -625,13 +684,12 @@ export const AuthProvider: ParentComponent = (props) => {
 
   /**
    * Adopt what a SUCCESSFUL sign-in reported, under the operation that ran it.
-   * The one adoption both sign-in paths share: `runSignIn` (Login,
-   * FinishPasskeyLogin) and `setAuth` (the sign-ups, the OAuth completion and
-   * the first solo password).
+   * `runSignIn` handles password, passkey and desktop browser sign-in.
+   * `setAuth` handles sign-up, OAuth completion and the first solo password.
    *
    * With an account, this is the identity transition `adoptSignedInUser`
-   * makes, then the verification cooldown, then the elevation the reply
-   * granted -- only `SetInitialSoloPassword` grants one.
+   * makes, followed by the verification cooldown and any elevation the
+   * reply reports.
    *
    * Without an account, the sign-in still SUCCEEDED: the session cookie now
    * belongs to an account this page cannot read yet. The identity transition
@@ -673,7 +731,9 @@ export const AuthProvider: ParentComponent = (props) => {
     setBootstrapError(null)
     setSignInRecovery({
       read: { kind: 'reading' },
-      verificationRequired: verification?.verificationRequired ?? false,
+      ...(verification
+        ? { verificationRequired: verification.verificationRequired }
+        : {}),
       ...(opts.redirect !== undefined
         ? { redirect: opts.redirect }
         : {}),
@@ -758,14 +818,18 @@ export const AuthProvider: ParentComponent = (props) => {
     setElevationExpiresAt(undefined)
   }
 
-  // Register auth error callback for auto-logout on 401.
-  setOnAuthError(() => {
-    // isAutoAuthenticated, not isSoloMode: the question is whether THIS
-    // connection holds a session to lose. A solo hub reached at a network
-    // address does -- it signed in -- so a 401 there must clear the user like
-    // anywhere else, or the app keeps rendering a session the hub refused.
-    if (!isAutoAuthenticated())
-      clearAuthUser()
+  onMount(() => {
+    // Register the process-global transport callback only for this provider's
+    // lifetime, so a disposed provider cannot receive a later 401.
+    setOnAuthError(() => {
+      // isAutoAuthenticated, not isSoloMode: the question is whether THIS
+      // connection holds a session to lose. A solo hub reached at a network
+      // address does -- it signed in -- so a 401 there must clear the user like
+      // anywhere else, or the app keeps rendering a session the hub refused.
+      if (!untrack(isAutoAuthenticated))
+        clearAuthUser()
+    })
+    onCleanup(() => setOnAuthError(null))
   })
 
   /**
@@ -786,7 +850,7 @@ export const AuthProvider: ParentComponent = (props) => {
       // superseded the restore. When that sign-in then fails, or its passkey
       // prompt is dismissed, the restored account is this document's account,
       // and nothing else loads the hub's timeouts for it.
-      if (await readCurrentUser(supersededByAnyWrite()) === 'adopted')
+      if ((await readCurrentUser(supersededByAnyWrite())).outcome === 'adopted')
         loadTimeouts().catch(() => {})
     }
     catch (err) {
@@ -903,6 +967,7 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(true)
     try {
       const resp = await attempt()
+      advanceAuthSessionEpoch()
       // Through adoptSignInReport: setUser drives the eager release of the
       // previous user's pooled channels through the createEffect above,
       // rather than leaving them to the lazy per-request identity check
@@ -950,6 +1015,18 @@ export const AuthProvider: ParentComponent = (props) => {
       })
     })
 
+  const adoptBrowserSignIn = (opts: SignInOptions = {}): Promise<AuthLoginResult> =>
+    runSignIn('Sign-in failed', opts, async () => {
+      try {
+        return await authClient.getCurrentUser({})
+      }
+      catch {
+        // The handoff succeeded; a failed account read starts sign-in
+        // recovery through adoptSignInReport with no session report.
+        return {}
+      }
+    })
+
   const logout = async () => {
     // A credential-free connection has no session to end; every other one,
     // solo or not, signs out normally.
@@ -974,6 +1051,7 @@ export const AuthProvider: ParentComponent = (props) => {
     // completion and the first solo password all land a NEW identity in a
     // document that may still hold the previous one's elevation.
     const op = beginOperation()
+    advanceAuthSessionEpoch()
     const outcome = await adoptSignInReport(report, op, opts)
     if (isCurrent(op))
       setLoading(false)
@@ -982,6 +1060,8 @@ export const AuthProvider: ParentComponent = (props) => {
 
   const state: AuthState = {
     user,
+    storageAccount,
+    onAccountEnd,
     loading,
     error,
     verificationResendAvailableAt,
@@ -991,12 +1071,14 @@ export const AuthProvider: ParentComponent = (props) => {
     dropElevation,
     login,
     loginWithPasskey,
+    adoptBrowserSignIn,
     logout,
     setAuth,
     signInRecovery,
     retrySignInRecovery,
     finishSignInRecovery,
     openUserAdoption,
+    reloadUser,
     refreshUser,
     bootstrapError,
     retryBootstrap,

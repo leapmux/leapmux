@@ -1,4 +1,5 @@
 import type { Navigator } from '@solidjs/router'
+import { ceremoniesRunInBrowser, openHubPage } from '~/lib/hubSite'
 import { escapeRegExp } from '~/lib/regexp'
 import { safeRedirect } from '~/lib/safeRedirect'
 
@@ -154,6 +155,17 @@ export function postAuthDestination(target: string | undefined, fallback: string
 /** The page where a signed-in account verifies its email address. */
 export const VERIFY_EMAIL_PATH = '/verify-email'
 
+function verificationContinuation(redirect: string | undefined): string | undefined {
+  const safe = safeRedirect(redirect)
+  if (!safe || pathOf(safe).toLowerCase() === VERIFY_EMAIL_PATH)
+    return undefined
+  return safe
+}
+
+export function postVerificationDestination(redirect: string | undefined): PostAuthDestination {
+  return postAuthDestination(verificationContinuation(redirect), '/')
+}
+
 /**
  * Where a successful sign-in or sign-up continues.
  *
@@ -166,8 +178,15 @@ export const VERIFY_EMAIL_PATH = '/verify-email'
  * which navigates on behalf of a sign-in that could not report its account.
  */
 export function postSignInDestination(verificationRequired: boolean, redirect: string | undefined): PostAuthDestination {
-  if (verificationRequired)
-    return { kind: 'route', path: VERIFY_EMAIL_PATH }
+  if (verificationRequired) {
+    const continuation = verificationContinuation(redirect)
+    return {
+      kind: 'route',
+      path: continuation
+        ? `${VERIFY_EMAIL_PATH}?redirect=${encodeURIComponent(continuation)}`
+        : VERIFY_EMAIL_PATH,
+    }
+  }
   return postAuthDestination(redirect, '/')
 }
 
@@ -176,10 +195,18 @@ export function postSignInDestination(verificationRequired: boolean, redirect: s
  * a client-side transition that replaces the current history entry for a
  * route of this SPA.
  */
-export function followDestination(navigate: Navigator, destination: PostAuthDestination): void {
+export type FollowDestinationResult = 'document' | 'route' | 'external-browser'
+
+export function followDestination(navigate: Navigator, destination: PostAuthDestination): FollowDestinationResult {
   if (destination.kind === 'document') {
+    if (ceremoniesRunInBrowser()) {
+      void openHubPage(destination.path)
+      navigate('/', { replace: true })
+      return 'external-browser'
+    }
     window.location.assign(destination.path)
-    return
+    return 'document'
   }
   navigate(destination.path, { replace: true })
+  return 'route'
 }

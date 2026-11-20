@@ -21,6 +21,7 @@ vi.mock('./clipboard', () => ({ copyTextToClipboard }))
 const openExternalUrl = vi.hoisted(() => vi.fn(async (_url: string) => {}))
 vi.mock('~/api/platformBridge', async importOriginal => ({
   ...await importOriginal<typeof import('~/api/platformBridge')>(),
+  desktopHub: () => null,
   openExternalUrl,
 }))
 

@@ -67,11 +67,31 @@ func (s *Suite) testOAuthStates(t *testing.T) {
 		assert.Equal(t, sess.ID, found.SessionID)
 	})
 
+	t.Run("a consent login row round-trips without a session", func(t *testing.T) {
+		st := s.NewStore(t)
+		state := id.Generate()
+		prov := SeedOAuthProvider(t, st, "state-consent-login-prov")
+
+		require.NoError(t, st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
+			State:        state,
+			ProviderID:   prov.ID,
+			PkceVerifier: "verifier",
+			RedirectURI:  "/oauth/authorize",
+			Purpose:      store.OAuthStatePurposeConsentLogin,
+			ExpiresAt:    time.Now().Add(10 * time.Minute),
+		}))
+
+		found, err := st.OAuthStates().Get(ctx, state)
+		require.NoError(t, err)
+		assert.Equal(t, store.OAuthStatePurposeConsentLogin, found.Purpose)
+		assert.Empty(t, found.SessionID)
+	})
+
 	// purpose is an enumerated column, and the schema is what enforces the
 	// enumeration. Go's zero value is 0 (UNSPECIFIED), never LOGIN, so an
 	// explicit insert never reaches the column DEFAULT -- and the callback reads
-	// every value that is not REAUTH as a login, which may create a session or
-	// link an identity. The CHECK refuses the row instead.
+	// only the two explicit login purposes may create a session or link an
+	// identity. The CHECK refuses every other row.
 	//
 	// The cases below are the three ways a bad value arrives: the unset zero,
 	// an ordinal above the range, and a negative one.
@@ -80,7 +100,7 @@ func (s *Suite) testOAuthStates(t *testing.T) {
 		prov := SeedOAuthProvider(t, st, "state-badpurpose-prov")
 
 		for _, purpose := range []leapmuxv1.OAuthStatePurpose{
-			leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_UNSPECIFIED, 3, -1,
+			leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_UNSPECIFIED, 4, -1,
 		} {
 			err := st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
 				State:        id.Generate(),

@@ -11,8 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/lifecycle"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 type privilegedDefinitionCommand func(context.Context, []string) error

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // The control protocol's two operations and their shapes. Every request

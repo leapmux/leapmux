@@ -142,8 +142,29 @@ func (c *recordingBearerCloser) closed(tokenID string) bool {
 
 func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	t.Helper()
+	return setupAPIAuthWithStore(t, nil)
+}
+
+// setupAPIAuthWithStore runs the standard setup with the store wrapped before
+// the handler sees it, so one test can fail a store call and read the answer
+// the HTTP surface gives for it. wrap may be nil for the plain store.
+func setupAPIAuthWithStore(t *testing.T, wrap func(store.Store) store.Store) *apiAuthEnv {
+	return setupAPIAuthWithStoreAndSessionResolver(t, wrap, nil)
+}
+
+func setupAPIAuthWithSessionResolver(t *testing.T, issuesSession func(string) bool) *apiAuthEnv {
+	return setupAPIAuthWithStoreAndSessionResolver(t, nil, issuesSession)
+}
+
+func setupAPIAuthWithStoreAndSessionResolver(
+	t *testing.T, wrap func(store.Store) store.Store, issuesSession func(string) bool,
+) *apiAuthEnv {
+	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
+	if wrap != nil {
+		st = wrap(st)
+	}
 	hubtestutil.CreateTestAdmin(t, st)
 
 	pepper := []byte("0123456789abcdef0123456789abcdef")
@@ -178,11 +199,12 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	advance := func(d time.Duration) { clock.Advance(d).MustWait(t.Context()) }
 	set := servicetest.NewSettingsManager(t, st, nil)
 	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
-		Store:     st,
-		Validator: tv,
-		Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer),
-		Settings:  set,
-		HubURL:    func() string { return srv.URL },
+		Store:         st,
+		Validator:     tv,
+		Lifecycle:     auth.NewCredentialLifecycleEffects(sc, closer, closer),
+		Settings:      set,
+		HubURL:        func() string { return srv.URL },
+		IssuesSession: issuesSession,
 	})
 	h.Now = now
 	h.RegisterRoutes(mux)
@@ -208,9 +230,8 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 // that depend on `requireSession` see an authenticated browser session.
 func (e *apiAuthEnv) adminCookie(t *testing.T) *http.Cookie {
 	t.Helper()
-	tok, _, _, err := auth.Login(context.Background(), e.store, hubtestutil.TestSecretHasher(), hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
-	require.NoError(t, err)
-	return &http.Cookie{Name: auth.CookieName, Value: tok}
+	session, _ := hubtestutil.LoginWithoutWindow(t, e.store, hubtestutil.TestSecretHasher(), hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	return &http.Cookie{Name: auth.CookieName, Value: session.Token}
 }
 
 // elevate stamps a live elevation window on the session the cookie specifies,
@@ -338,6 +359,29 @@ func TestAPIAuth_LocalRedirect_HappyPath(t *testing.T) {
 	assert.Equal(t, env.userID, info.ID.String())
 }
 
+// TestAPIAuth_AuthorizationCodeExchangeRecordsItsCeremony pins the issuance
+// the authorization-code mint writes: each of the three mint sites records
+// its own ceremony, and a swapped constant fails here.
+func TestAPIAuth_AuthorizationCodeExchangeRecordsItsCeremony(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	code, verifier := issueLocalRedirectCode(t, env)
+	resp, err := exchangeAuthorizationCode(env.server.URL, code, verifier)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var token struct {
+		TokenID string `json:"token_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&token))
+	require.NotEmpty(t, token.TokenID)
+	row, err := env.store.APITokens().GetByID(t.Context(), token.TokenID)
+	require.NoError(t, err)
+	assert.Equal(t, store.APITokenIssuanceAuthorizationCode, row.Issuance)
+}
+
 func TestAPIAuth_LocalRedirect_RejectsNonLoopback(t *testing.T) {
 	t.Parallel()
 
@@ -453,6 +497,7 @@ func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
 		GrantedScopes: authscope.NonAdminGrant().String(),
 		Code:          code, UserID: userid.MustNew(env.userID), CodeChallenge: challenge, InstallationName: "test", ExpiresAt: time.Now().Add(time.Minute),
 		RedirectURI: "http://127.0.0.1:54321/callback",
+		Redemption:  store.RedemptionKindToken,
 	}))
 	before, err := env.store.OAuthClients().CountTokens(context.Background(), oauthapp.ControlCLIClientID)
 	require.NoError(t, err)
@@ -551,6 +596,7 @@ func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(time.Minute),
 		RedirectURI:      "http://127.0.0.1:54321/callback",
+		Redemption:       store.RedemptionKindToken,
 	}))
 	bad, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeAuthorizationCode},
@@ -627,6 +673,43 @@ func TestAPIAuth_DeviceCode_Pending_Approval_Success(t *testing.T) {
 	info, err := env.validator.ValidateBearer(context.Background(), access)
 	require.NoError(t, err)
 	assert.Equal(t, env.userID, info.ID.String())
+}
+
+// TestAPIAuth_DeviceCodeExchangeRecordsItsCeremony is the device-code twin of
+// the authorization-code pin: the mint must record the device-code issuance
+// on the row.
+func TestAPIAuth_DeviceCodeExchangeRecordsItsCeremony(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	cookie := env.elevatedAdminCookie(t)
+	deviceCode, userCode := startDeviceAuthorization(t, env, url.Values{"installation_name": {"server-1"}})
+
+	approveResp, err := postForm(env.server.URL+"/oauth/device", url.Values{
+		"user_code": {userCode}, "decision": {"allow"},
+	}, cookie)
+	require.NoError(t, err)
+	defer func() { _ = approveResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, approveResp.StatusCode)
+
+	env.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
+	successResp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":  {service.GrantTypeDeviceCode},
+		"client_id":   {oauthapp.ControlCLIClientID},
+		"device_code": {deviceCode},
+	})
+	require.NoError(t, err)
+	defer func() { _ = successResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, successResp.StatusCode)
+
+	var token struct {
+		TokenID string `json:"token_id"`
+	}
+	require.NoError(t, json.NewDecoder(successResp.Body).Decode(&token))
+	require.NotEmpty(t, token.TokenID)
+	row, err := env.store.APITokens().GetByID(t.Context(), token.TokenID)
+	require.NoError(t, err)
+	assert.Equal(t, store.APITokenIssuanceDeviceCode, row.Issuance)
 }
 
 func TestAPIAuth_DeviceCode_SlowDown_OnRapidPoll(t *testing.T) {
@@ -937,6 +1020,7 @@ func TestAPIAuth_Refresh_ReusedWithinGraceReturnsSamePair(t *testing.T) {
 	tokenID := id.Generate()
 	prev := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -983,7 +1067,8 @@ func TestAPIAuth_Refresh_GraceRetryReportsStoredRemainingLifetime(t *testing.T) 
 		auth.BearerKindAPI, tokenID, previousHash, now, auth.AccessTokenTTL, auth.RefreshTokenTTL,
 	)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: previousHash,
 	}))
 	storedExpiry := now.Add(10 * time.Second)
@@ -1020,6 +1105,7 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 	tokenID := id.Generate()
 	previousRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -1102,7 +1188,8 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 	tokenID := id.Generate()
 	currentRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(currentRefresh),
 	}))
 	underlying := env.store.APITokens()
@@ -1147,6 +1234,7 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 	currentRefresh := auth.MintAccessSecret()
 	currentRefreshHash := env.validator.HashSecret(currentRefresh)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -1194,6 +1282,7 @@ func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
 	cur := auth.MintAccessSecret()
 	expiredGrace := time.Now().Add(-time.Hour)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -1446,6 +1535,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(time.Minute),
 		RedirectURI:      "http://127.0.0.1:54321/callback",
+		Redemption:       store.RedemptionKindToken,
 	}))
 	failing := userLookupFailStore{
 		Store: env.store,
@@ -1687,6 +1777,7 @@ func TestAPIAuth_Revoke_AcceptsRefreshSecrets(t *testing.T) {
 			tokenID := id.Generate()
 			refreshSecret := auth.MintAccessSecret()
 			require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+				Issuance:         store.APITokenIssuanceAuthorizationCode,
 				ID:               tokenID,
 				UserID:           userid.MustNew(env.userID),
 				ClientID:         oauthapp.ControlCLIClientID,
@@ -2001,6 +2092,7 @@ func TestAPIAuth_Revoke_AnswersEveryPresentedTokenIdentically(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -2496,6 +2588,7 @@ func TestAPIAuth_Refresh_RequiresClientAuthentication(t *testing.T) {
 		tokenID = id.Generate()
 		refresh = auth.MintAccessSecret()
 		require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               tokenID,
 			UserID:           userid.MustNew(env.userID),
 			ClientID:         oauthapp.ControlCLIClientID,
@@ -2549,6 +2642,7 @@ func TestAPIAuth_Revoke_ANamedRetiredAppIsTheIdempotentSuccess(t *testing.T) {
 	tokenID := id.Generate()
 	refresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -2591,7 +2685,8 @@ func TestAPIAuth_Refresh_GraceRetryKeepsTheCallersOwnNarrowing(t *testing.T) {
 		auth.BearerKindAPI, tokenID, previousHash, now, auth.AccessTokenTTL, auth.RefreshTokenTTL,
 	)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test",
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test",
 		GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash:    env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: previousHash,
 	}))
@@ -2699,9 +2794,9 @@ type markMintedSpyCodes struct {
 	contextErrs chan error
 }
 
-func (c markMintedSpyCodes) MarkMinted(ctx context.Context, code, tokenID string) error {
+func (c markMintedSpyCodes) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
 	c.contextErrs <- ctx.Err()
-	return c.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, tokenID)
+	return c.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, minted)
 }
 
 // issueLocalRedirectCode runs the consent that yields a one-shot code for the
@@ -2791,7 +2886,8 @@ func seedRefreshableToken(t *testing.T, env *apiAuthEnv) (tokenID, refreshSecret
 	tokenID = id.Generate()
 	refreshSecret = auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(t.Context(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(refreshSecret),
 	}))
@@ -2826,14 +2922,14 @@ type authorizationLinkCodes struct {
 	beforeLink func()
 }
 
-func (s authorizationLinkCodes) MarkMinted(ctx context.Context, code, tokenID string) error {
+func (s authorizationLinkCodes) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
 	if s.beforeLink != nil {
 		s.beforeLink()
 	}
 	if s.linkErr != nil {
 		return s.linkErr
 	}
-	return s.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, tokenID)
+	return s.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, minted)
 }
 
 func codeExchangeServer(t *testing.T, env *apiAuthEnv, st store.Store) *httptest.Server {
@@ -2882,7 +2978,7 @@ func TestAPIAuth_CodeLinkFailureRollsBackIssuance(t *testing.T) {
 	require.NoError(t, json.NewDecoder(retry.Body).Decode(&token))
 	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), code)
 	require.NoError(t, err)
-	assert.Equal(t, token.TokenID, row.MintedTokenID)
+	assert.Equal(t, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: token.TokenID}, row.Minted)
 }
 
 func TestAPIAuth_ConcurrentValidatedReuseRevokesTheWinner(t *testing.T) {
@@ -2938,7 +3034,7 @@ func TestAPIAuth_ConcurrentValidatedReuseRevokesTheWinner(t *testing.T) {
 	require.NoError(t, json.NewDecoder(winner.Body).Decode(&token))
 	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), code)
 	require.NoError(t, err)
-	require.Equal(t, token.TokenID, row.MintedTokenID)
+	require.Equal(t, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: token.TokenID}, row.Minted)
 	releaseOnce()
 	result := <-loser
 	completed = true
@@ -3010,8 +3106,16 @@ func mountCachedBearerProbe(mux *http.ServeMux, server *httptest.Server, interce
 	return probe
 }
 func (p *cachedBearerProbe) authenticate(bearer string) (*auth.UserInfo, error) {
+	return p.authenticateWithHeader("Authorization", "Bearer "+bearer)
+}
+
+func (p *cachedBearerProbe) authenticateSession(cookie *http.Cookie) (*auth.UserInfo, error) {
+	return p.authenticateWithHeader("Cookie", cookie.Name+"="+cookie.Value)
+}
+
+func (p *cachedBearerProbe) authenticateWithHeader(header, value string) (*auth.UserInfo, error) {
 	ctx, info := connect.NewClientContext(context.Background())
-	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+	info.RequestHeader().Set(header, value)
 	_, err := p.client.ListWorkspaces(ctx, &leapmuxv1.ListWorkspacesRequest{})
 	if err != nil {
 		return nil, err
@@ -3076,4 +3180,499 @@ type countedDelegationReads struct {
 func (s countedDelegationReads) GetByID(ctx context.Context, id string) (*store.DelegationToken, error) {
 	s.count.Add(1)
 	return s.DelegationTokenStore.GetByID(ctx, id)
+}
+
+// The desktop handoff's sign-in page: the sign-in variant of the consent
+// screen. It asks to sign the desktop in AS the account -- the handoff mints a
+// Hub session -- so it offers no permission list at all.
+func TestAPIAuth_DesktopAuthorize_ShowsTheSignInPage(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	cookie := env.elevatedAdminCookie(t)
+	q := startQuery(url.Values{"client_id": {oauthapp.DesktopClientID}})
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	page := bodyOf(t, resp)
+	assert.Contains(t, page, "Sign in to LeapMux Desktop?")
+	assert.Contains(t, page, "It will act as you")
+	assert.NotContains(t, page, "It would be able to:", "the sign-in page lists no permissions")
+	assert.NotContains(t, page, "It asks for no permissions",
+		"the sign-in page never says it asks for nothing; it asks to sign in")
+}
+
+// The desktop registration states NO scope, so a request that asks for one is
+// refused by the scope check before any page renders.
+func TestAPIAuth_DesktopAuthorize_RefusesAScope(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	cookie := env.elevatedAdminCookie(t)
+	q := startQuery(url.Values{"client_id": {oauthapp.DesktopClientID}, "scope": {"file:read"}})
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	dest, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, "invalid_scope", dest.Query().Get("error"))
+}
+
+// The session code exchange for leapmux-desktop: 200, a session cookie,
+// the body {"signed_in": true}, a row with issued_to_client, and a session
+// with no elevation pair.
+func TestSessionCodeExchange_IssuesSession(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	ctx := t.Context()
+	code, verifier := desktopSessionCode(t, env, "laptop")
+
+	resp := exchangeSessionCode(t, env, code, verifier)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.JSONEq(t, `{"signed_in":true}`, bodyOf(t, resp))
+	cookie := issuedSessionCookie(t, resp)
+
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind)
+	assert.Equal(t, hubtestutil.SessionIDFromCookie(t, cookie.Value), row.Minted.ID,
+		"the code must record the session the cookie identifies")
+
+	user, err := env.probe.authenticateSession(cookie)
+	require.NoError(t, err, "the issued cookie must authenticate")
+	assert.Equal(t, env.userID, user.ID.String())
+	assert.Equal(t, row.Minted.ID, user.Credential.SessionID())
+
+	sess, err := env.store.Sessions().GetByID(ctx, row.Minted.ID, env.now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, oauthapp.DesktopClientID, sess.IssuedToClient)
+	assert.Nil(t, sess.ElevationProvenAt, "a fresh session carries no proof")
+	assert.Nil(t, sess.ElevationExpiresAt, "a fresh session carries no window")
+}
+
+// An empty installation label leaves the session's UserAgent the app's name
+// alone. "LeapMux Desktop on " is not a name, and the session list would
+// show it.
+func TestSessionCodeExchange_EmptyInstallationNameLeavesTheAppAlone(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, verifier := desktopSessionCode(t, env, "")
+	resp := exchangeSessionCode(t, env, code, verifier)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, true, sessionCodeExchangeBody(t, resp)["signed_in"])
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	sess, err := env.store.Sessions().GetByID(ctx, row.Minted.ID, env.now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, oauthapp.DesktopName, sess.UserAgent,
+		"no installation label means the app's name alone, with no trailing 'on '")
+}
+
+// desktopSessionCode walks the desktop consent and returns the one-shot code
+// plus the PKCE verifier its exchange must present. installationName is the
+// label the requester gives itself.
+func desktopSessionCode(t *testing.T, env *apiAuthEnv, installationName string) (code, verifier string) {
+	t.Helper()
+	cookie := env.elevatedAdminCookie(t)
+	verifier, challenge := pkceVerifierAndChallenge()
+	form := url.Values{
+		"client_id":             {oauthapp.DesktopClientID},
+		"response_type":         {"code"},
+		"code_challenge_method": {"S256"},
+		"redirect_uri":          {"http://127.0.0.1:54321/callback"},
+		"state":                 {id.Generate()},
+		"code_challenge":        {challenge},
+		"decision":              {"allow"},
+		"installation_name":     {installationName},
+	}
+	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/oauth/consent", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.AddCookie(cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := noRedirectClient().Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	code = loc.Query().Get("code")
+	require.NotEmpty(t, code)
+	return code, verifier
+}
+
+// exchangeSessionCode redeems a desktop session code at /oauth/token.
+func exchangeSessionCode(t *testing.T, env *apiAuthEnv, code, verifier string) *http.Response {
+	t.Helper()
+	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {oauthapp.DesktopClientID},
+		"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+		"code":          {code},
+		"code_verifier": {verifier},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// sessionCodeExchangeBody decodes one exchange's JSON answer.
+func sessionCodeExchangeBody(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	return body
+}
+
+// issuedSessionCookie returns the session cookie an exchange response set.
+func issuedSessionCookie(t *testing.T, resp *http.Response) *http.Cookie {
+	t.Helper()
+	for _, c := range resp.Cookies() {
+		if c.Name == auth.CookieName && c.Value != "" {
+			return c
+		}
+	}
+	t.Fatal("the exchange must set a session cookie")
+	return nil
+}
+
+// A session code presented twice is the RFC 6749 section 4.1.2 case: a second
+// presentation means the code reached somebody who should not hold it, so the
+// session the first exchange minted is presumed compromised and revoked. The
+// cookie it issued must stop authenticating, or the remedy would leave the
+// attacker's real prize live.
+func TestSessionCodeExchange_ReplayRevokesTheIssuedSession(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, verifier := desktopSessionCode(t, env, "laptop")
+
+	// An RPC with a session cookie, through the interceptor a real client
+	// hits. The same call runs again after the replay, so the assertion reads
+	// the revocation rather than only the store row.
+	callRPC := func(token string) error {
+		callCtx, info := connect.NewClientContext(context.Background())
+		info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+		_, err := env.probe.client.ListWorkspaces(callCtx, &leapmuxv1.ListWorkspacesRequest{})
+		return err
+	}
+
+	first := exchangeSessionCode(t, env, code, verifier)
+	require.Equal(t, http.StatusOK, first.StatusCode, "the first exchange must sign the desktop in")
+	assert.Equal(t, true, sessionCodeExchangeBody(t, first)["signed_in"])
+	issued := issuedSessionCookie(t, first)
+
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	require.Equal(t, hubtestutil.SessionIDFromCookie(t, issued.Value), row.Minted.ID,
+		"the exchange must record the session it minted")
+
+	require.NoError(t, callRPC(issued.Value),
+		"precondition: the issued session authenticates before the replay")
+
+	second := exchangeSessionCode(t, env, code, verifier)
+	assert.Equal(t, http.StatusBadRequest, second.StatusCode)
+	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, second)["error"])
+
+	_, err = env.store.Sessions().GetByID(ctx, row.Minted.ID, time.Now().UTC())
+	assert.ErrorIs(t, err, store.ErrNotFound,
+		"the replay must revoke the session the code already minted")
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(callRPC(issued.Value)),
+		"the issued cookie must stop authenticating the moment the session is revoked")
+}
+
+func TestAuthorizationCodeReplayRequiresProof(t *testing.T) {
+	t.Parallel()
+
+	for _, client := range []struct {
+		id    string
+		other string
+	}{
+		{oauthapp.ControlCLIClientID, oauthapp.DesktopClientID},
+		{oauthapp.DesktopClientID, oauthapp.ControlCLIClientID},
+	} {
+		t.Run(client.id, func(t *testing.T) {
+			t.Parallel()
+
+			for _, invalid := range []struct {
+				name  string
+				field string
+				value string
+			}{
+				{"wrong redirect", "redirect_uri", "http://127.0.0.1:54322/callback"},
+				{"wrong verifier", "code_verifier", strings.Repeat("a", 43)},
+				{"wrong app", "client_id", client.other},
+			} {
+				t.Run(invalid.name, func(t *testing.T) {
+					t.Parallel()
+
+					env := setupAPIAuth(t)
+					var code, verifier string
+					if client.id == oauthapp.DesktopClientID {
+						code, verifier = desktopSessionCode(t, env, "laptop")
+					} else {
+						code, verifier = issueLocalRedirectCode(t, env)
+					}
+
+					form := url.Values{
+						"grant_type":    {service.GrantTypeAuthorizationCode},
+						"client_id":     {client.id},
+						"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+						"code":          {code},
+						"code_verifier": {verifier},
+					}
+					exchange := func() *http.Response {
+						t.Helper()
+						resp, err := http.PostForm(env.server.URL+"/oauth/token", form)
+						require.NoError(t, err)
+						t.Cleanup(func() { _ = resp.Body.Close() })
+						return resp
+					}
+					initial := exchange()
+					require.Equal(t, http.StatusOK, initial.StatusCode)
+					body := sessionCodeExchangeBody(t, initial)
+
+					var authHeader, authValue string
+					if client.id == oauthapp.DesktopClientID {
+						authHeader = "Cookie"
+						cookie := issuedSessionCookie(t, initial)
+						authValue = cookie.Name + "=" + cookie.Value
+					} else {
+						token, ok := body["access_token"].(string)
+						require.True(t, ok)
+						require.NotEmpty(t, token)
+						authHeader = "Authorization"
+						authValue = "Bearer " + token
+					}
+					_, err := env.probe.authenticateWithHeader(authHeader, authValue)
+					require.NoError(t, err, "the initial credential must authenticate")
+
+					valid := form.Get(invalid.field)
+					form.Set(invalid.field, invalid.value)
+					refusal := exchange()
+					require.Equal(t, http.StatusBadRequest, refusal.StatusCode)
+					require.JSONEq(t, `{"error":"invalid_grant","error_description":"code expired or already consumed"}`, bodyOf(t, refusal))
+					_, err = env.probe.authenticateWithHeader(authHeader, authValue)
+					require.NoError(t, err, "a replay without matching proof must leave the credential usable")
+
+					form.Set(invalid.field, valid)
+					replay := exchange()
+					require.Equal(t, http.StatusBadRequest, replay.StatusCode)
+					require.JSONEq(t, `{"error":"invalid_grant","error_description":"code expired or already consumed"}`, bodyOf(t, replay))
+					_, err = env.probe.authenticateWithHeader(authHeader, authValue)
+					assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+						"a replay with matching proof must revoke the minted credential")
+				})
+			}
+		})
+	}
+}
+
+// Two exchanges of one session code at the same time: exactly one signs the
+// desktop in and the other answers invalid_grant -- never a 500, which would
+// tell the caller to retry a code that is already spent. The winner's session
+// is revoked on the same RFC 6749 rule the sequential replay takes.
+func TestSessionCodeExchange_ConcurrentExchangesIssueOneSession(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, verifier := desktopSessionCode(t, env, "laptop")
+
+	start := make(chan struct{})
+	type exchangeResult struct {
+		status int
+		body   []byte
+		err    error
+	}
+	results := make(chan exchangeResult, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+				"grant_type":    {service.GrantTypeAuthorizationCode},
+				"client_id":     {oauthapp.DesktopClientID},
+				"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+				"code":          {code},
+				"code_verifier": {verifier},
+			})
+			if err != nil {
+				results <- exchangeResult{err: err}
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			results <- exchangeResult{status: resp.StatusCode, body: body, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	statuses := make([]int, 0, 2)
+	for result := range results {
+		require.NoError(t, result.err)
+		statuses = append(statuses, result.status)
+		switch result.status {
+		case http.StatusOK:
+			assert.JSONEq(t, `{"signed_in":true}`, string(result.body))
+		case http.StatusBadRequest:
+			assert.JSONEq(t, `{"error":"invalid_grant","error_description":"code expired or already consumed"}`, string(result.body))
+		}
+	}
+	require.ElementsMatch(t, []int{http.StatusOK, http.StatusBadRequest}, statuses)
+
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	require.Equal(t, store.CredentialRefKindSession, row.Minted.Kind,
+		"the winner must have minted a session")
+	require.NotEmpty(t, row.Minted.ID, "the winner must have minted a session")
+	_, err = env.store.Sessions().GetByID(ctx, row.Minted.ID, time.Now().UTC())
+	assert.ErrorIs(t, err, store.ErrNotFound,
+		"the losing presentation revokes the session the code already minted")
+}
+
+// A wrong verifier proves nothing, so the exchange must mint no session. The
+// shape check passes -- 43 unreserved characters -- and only the S256
+// comparison fails, which is the case a stolen code with no verifier reaches.
+func TestSessionCodeExchange_WrongVerifierIssuesNoSession(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, _ := desktopSessionCode(t, env, "laptop")
+
+	resp := exchangeSessionCode(t, env, code, strings.Repeat("v", 43))
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, resp)["error"])
+	assertNoCallbackSession(t, resp)
+
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	assert.Zero(t, row.Minted, "a failed proof must mint no session")
+}
+
+func TestSessionCodeExchange_RefusesApprovalFromAnOlderCredentialGeneration(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, verifier := desktopSessionCode(t, env, "laptop")
+	uid := userid.MustNew(env.userID)
+	require.NoError(t, env.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+		_, _, err := auth.RevokeAllUserCredentials(ctx, tx, uid)
+		return err
+	}))
+
+	resp := exchangeSessionCode(t, env, code, verifier)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, resp)["error"])
+	assertNoCallbackSession(t, resp)
+
+	row, err := env.store.OAuthAuthorizationCodes().GetActive(ctx, code, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Zero(t, row.Minted)
+}
+
+// The redemption kind the consent bound decides the fork at redeem, not a
+// property of the app re-read then. The two must be able to DISAGREE, which is
+// what makes the row the decider: a compare of the app id answers from the app
+// alone and could not.
+func TestSessionCodeExchange_TheConsentDecidesTheForkNotTheRegistration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a consented session still mints a session after the build capability turns off", func(t *testing.T) {
+		t.Parallel()
+		var issuesSession atomic.Bool
+		issuesSession.Store(true)
+		env := setupAPIAuthWithSessionResolver(t, func(clientID string) bool {
+			return clientID == oauthapp.DesktopClientID && issuesSession.Load()
+		})
+		ctx := context.Background()
+		code, verifier := desktopSessionCode(t, env, "laptop")
+
+		issuesSession.Store(false)
+
+		resp := exchangeSessionCode(t, env, code, verifier)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, true, sessionCodeExchangeBody(t, resp)["signed_in"],
+			"the code must still redeem along the consented path")
+
+		row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+		require.NoError(t, err)
+		assert.Equal(t, store.RedemptionKindSession, row.Redemption)
+		assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind)
+	})
+
+	t.Run("a consented token still mints a token after the build capability turns on", func(t *testing.T) {
+		t.Parallel()
+		var issuesSession atomic.Bool
+		env := setupAPIAuthWithSessionResolver(t, func(clientID string) bool {
+			return clientID == oauthapp.DesktopClientID && issuesSession.Load()
+		})
+		ctx := context.Background()
+		// The build capability mints no session at consent, so the page shows the
+		// ordinary permission consent and the code records a token redemption
+		// -- for the very app a compare of the id would have sent down the
+		// session path.
+		code, verifier := desktopSessionCode(t, env, "laptop")
+
+		issuesSession.Store(true)
+
+		resp := exchangeSessionCode(t, env, code, verifier)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		body := sessionCodeExchangeBody(t, resp)
+		assert.NotContains(t, body, "signed_in", "a token redemption signs nobody in")
+		assert.Contains(t, body, "token_id", "the code must mint an app credential")
+
+		row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+		require.NoError(t, err)
+		assert.Equal(t, store.RedemptionKindToken, row.Redemption)
+		assert.Equal(t, store.CredentialRefKindToken, row.Minted.Kind)
+	})
+}
+
+// passwordSignInCookie signs in with the bootstrap password, so the session
+// carries the FreshAuthenticationWindow the sign-in wrote. adminCookie drops
+// that window on purpose: the gate tests must start from a session with none.
+func passwordSignInCookie(t *testing.T, env *apiAuthEnv) *http.Cookie {
+	t.Helper()
+	session, _, err := auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(),
+		hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	return &http.Cookie{Name: auth.CookieName, Value: session.Token}
+}
+
+// The consent gate reads the window, and a password sign-in writes one. The
+// user is at the keyboard having just proved the factor, so the consent page
+// must render rather than bounce them to prove it again.
+func TestConsent_APasswordSignInOpensTheConsentPageDirectly(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	cookie := passwordSignInCookie(t, env)
+
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+startQuery(nil).Encode(), cookie)
+	body := bodyOf(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	assert.Empty(t, resp.Header.Get("Location"), "a fresh sign-in must not bounce the user to /elevate")
+	assert.Contains(t, body, "Authorize LeapMux control CLI?",
+		"the consent page is what a current window admits")
+}
+
+// Six minutes later the five-minute window the sign-in wrote has closed, and
+// no other proof was given. The same request must bounce to /elevate exactly
+// as a session with no window does.
+func TestConsent_SixMinutesAfterTheSignInBouncesToElevate(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	cookie := passwordSignInCookie(t, env)
+	moveElevationPairBack(t, env.store, cookie.Value, env.userID, 6*time.Minute)
+
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+startQuery(nil).Encode(), cookie)
+	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, "/elevate", loc.Path,
+		"an expired sign-in window is exactly what the elevate step exists to restore")
 }

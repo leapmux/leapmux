@@ -95,10 +95,12 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 //
 // It admits every ELEVATABLE credential: a browser session, and a
 // command-line credential, which proves its factor in a browser through the
-// /oauth/step-up leg and carries a window of its own. A
-// delegation bearer and solo mode carry no window and cannot obtain one, so
-// requireElevation refuses them with the plain message that states the
-// remedy: sign in from a browser.
+// /oauth/step-up leg and carries a window of its own. A delegation bearer
+// carries no window and cannot obtain one, so auth.RequireElevation refuses
+// it with the plain message that states the remedy: sign in from a browser.
+// Solo mode carries no window either, but auth.RequireElevation exempts it
+// outright, and the transport re-decides that exemption on every request
+// rather than storing it.
 //
 // There is NO extra session rule here, and an earlier pass that added one was
 // wrong twice over. It refused a credential the whole elevation design admits
@@ -115,7 +117,7 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 // management verbs (rename, delete, deactivate) and ChangePassword work from
 // an elevated command-line credential.
 //
-// Every admitted account elevates, through requireElevation: one proven
+// Every admitted account elevates, through auth.RequireElevation: one proven
 // factor admits every sensitive action for auth.ElevationWindow, and each
 // success slides the window.
 //
@@ -139,7 +141,7 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 //
 // Each branch answers "a credential that never can prove itself" for itself,
 // so neither one gives such a caller a prompt that its retry would fail
-// again: requireElevation reaches requireElevatableCredential on the
+// again: auth.RequireElevation reaches auth.RequireElevatableCredential on the
 // elevation branch, and assertFirstCredentialAuthIsFresh refuses a bearer on
 // the first-credential branch. The two answers differ, and the difference is
 // the account shape rather than an oversight. An elevated command-line
@@ -189,7 +191,7 @@ func (s *UserService) stepUpMutationAuth(ctx context.Context, p stepUpParams, us
 		return stepUpAdmission{firstCredential: true}, admitFirstCredential(ctx, s.store, p.userInfo, user, now, p.firstCredentialWindow())
 	}
 	// An account that holds a factor must present it.
-	return stepUpAdmission{}, requireElevation(p.userInfo, p.elevationInstant(now))
+	return stepUpAdmission{}, auth.RequireElevation(p.userInfo, p.elevationInstant(now))
 }
 
 // assertFirstCredentialWithoutPasswordAllowed refuses a session-only first
@@ -234,14 +236,6 @@ func assertFirstCredentialWithoutPasswordAllowed(ctx context.Context, tx store.S
 	return connect.Errorf(connect.CodeFailedPrecondition,
 		"verify your email or link an OAuth provider before setting this account's first password or passkey")
 }
-
-// firstCredentialAuthFreshness limits how long after an authentication a
-// session may START attaching the account's FIRST lasting credential.
-//
-// Five minutes is a re-sign-in, not a work session: long enough to complete
-// an identity provider that asks for a second factor, short enough that a
-// cookie captured earlier in the day is already stale.
-const firstCredentialAuthFreshness = 5 * time.Minute
 
 // ceremonyGrace is the slack the FINISH leg of a passkey registration adds
 // to BOTH freshness rules.
@@ -305,7 +299,7 @@ func assertFirstCredentialAuthIsFresh(userInfo *auth.UserInfo, now time.Time, ma
 		// NO marker, and the message states the remedy instead. A delegation
 		// bearer can carry no elevation at all, so a step-up prompt would ask
 		// for a factor and then refuse the retry for the same reason -- what
-		// requireElevatableCredential says about its own refusal. A
+		// auth.RequireElevatableCredential says about its own refusal. A
 		// command-line credential can carry one, and the elevated branch
 		// above already took it if it did; reaching this line means it did
 		// not, and this account elevates only at its identity provider, in a
@@ -324,7 +318,7 @@ func assertFirstCredentialAuthIsFresh(userInfo *auth.UserInfo, now time.Time, ma
 		// password"), which is this message. Without the marker the client
 		// printed this sentence as raw text beside a form and offered
 		// nothing.
-		return elevationRequiredErrorSaying(
+		return auth.ElevationRequiredErrorSaying(
 			"sign in again, or verify with your identity provider, then set this account's first password or passkey")
 	}
 	return nil
@@ -371,7 +365,7 @@ type stepUpParams struct {
 // be. It is the whole first-credential rule the leg applies, so a caller
 // cannot apply the window and forget the grace.
 func (p stepUpParams) firstCredentialWindow() time.Duration {
-	return firstCredentialAuthFreshness + p.grace
+	return auth.FreshAuthenticationWindow + p.grace
 }
 
 // elevationInstant is the instant this leg evaluates the elevation window
@@ -597,7 +591,7 @@ func recheckStepUpUnderLock(
 // api_tokens row for the one further fact this call needs, which is the
 // window.
 //
-// Nil-safe, like the elevatable-credential rules in elevation_service.go.
+// Nil-safe, like the elevatable-credential rules in auth/elevation.go.
 // recheckCredentialEpochUnderLock already refuses a nil UserInfo before this
 // runs, so this guard is the second one; it stays because a rule that reads
 // a credential must never panic on the absence of one.
@@ -608,12 +602,11 @@ func recheckActingCredentialUnderLock(ctx context.Context, tx store.Store, p ste
 	// A solo caller the hub authenticated with no credentials has no row to
 	// re-read: it holds the zero CredentialIdentity, so there is no session
 	// whose elevation could lapse and no token that could be revoked. Its
-	// admission comes from the TRANSPORT -- requireElevation exempts it -- and
+	// admission comes from the TRANSPORT -- auth.RequireElevation exempts it -- and
 	// the transport is re-decided on every request rather than stored.
 	//
 	// The case became reachable when ChangePassword stopped refusing solo
-	// mode; before that, rejectSolo was what kept it out, which is why the
-	// paragraph above still says requireElevation refuses it first.
+	// mode; before that, rejectSolo was what kept it out.
 	//
 	// The window this leaves open is two credential-free callers racing to set
 	// the first password, where the second overwrites the first. Both held
@@ -622,15 +615,16 @@ func recheckActingCredentialUnderLock(ctx context.Context, tx store.Store, p ste
 	if p.userInfo.SoloAuthenticated() {
 		return nil
 	}
-	sessionID, apiTokenID, ok := p.userInfo.Credential.ElevatableRow()
-	switch {
-	case !ok:
+	ref := p.userInfo.Credential.ElevatableRef()
+	switch ref.Kind {
+	case store.CredentialRefKindNone:
 		return stepUpStateMovedError()
-	case sessionID != "":
-		return recheckActingSessionUnderLock(ctx, tx, sessionID, p, now)
-	default:
-		return recheckActingAPITokenUnderLock(ctx, tx, apiTokenID, p, now)
+	case store.CredentialRefKindSession:
+		return recheckActingSessionUnderLock(ctx, tx, ref.ID, p, now)
+	case store.CredentialRefKindToken:
+		return recheckActingAPITokenUnderLock(ctx, tx, ref.ID, p, now)
 	}
+	return stepUpStateMovedError()
 }
 
 // recheckActingSessionUnderLock is the session branch of the re-check.
@@ -678,6 +672,17 @@ func recheckActingSessionUnderLock(
 	if !auth.NewElevation(session.ElevationProvenAt, session.ElevationExpiresAt).IsCurrent(p.elevationInstant(now)) {
 		return stepUpStateMovedError()
 	}
+	if session.UserID != p.userInfo.ID.String() || session.AuthGeneration < p.userInfo.UserAuthGeneration {
+		return stepUpStateMovedError()
+	}
+	if session.IssuedToClient != "" {
+		if err := tx.OAuthClients().LockForElevation(ctx, session.IssuedToClient); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return stepUpStateMovedError()
+			}
+			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("lock the acting session app: %w", err))
+		}
+	}
 	return nil
 }
 
@@ -714,11 +719,20 @@ func recheckActingAPITokenUnderLock(
 		}
 		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("re-read the acting credential: %w", err))
 	}
-	if row.RevokedAt != nil {
+	if row.RevokedAt != nil || row.UserID != p.userInfo.ID.String() || row.AuthGeneration < p.userInfo.UserAuthGeneration {
+		return stepUpStateMovedError()
+	}
+	if row.ExpiresAt != nil && !now.Before(*row.ExpiresAt) || !now.Before(row.CreatedAt.Add(auth.AbsoluteTokenLifetime)) {
 		return stepUpStateMovedError()
 	}
 	if !auth.NewElevation(row.ElevationProvenAt, row.ElevationExpiresAt).IsCurrent(p.elevationInstant(now)) {
 		return stepUpStateMovedError()
+	}
+	if err := tx.OAuthClients().LockForElevation(ctx, row.ClientID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return stepUpStateMovedError()
+		}
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("lock the acting credential app: %w", err))
 	}
 	return nil
 }
@@ -1152,9 +1166,17 @@ func (s *UserService) revokeOtherCredentialsPreservingActingCredential(
 	if err != nil {
 		return 0, err
 	}
-	// ok is false for a credential that carries no window: it keeps nothing,
-	// so both ids stay empty and both statements address the whole set.
-	actingSessionID, actingAPITokenID, _ := acting.ElevatableRow()
+	// A credential that carries no window keeps nothing, so both ids stay empty
+	// and both statements address the whole set.
+	actingRef := acting.ElevatableRef()
+	var actingSessionID, actingAPITokenID string
+	switch actingRef.Kind {
+	case store.CredentialRefKindSession:
+		actingSessionID = actingRef.ID
+	case store.CredentialRefKindToken:
+		actingAPITokenID = actingRef.ID
+	case store.CredentialRefKindNone:
+	}
 	if err := tx.Sessions().DeleteOthers(ctx, store.DeleteOtherSessionsParams{
 		UserID: rowUID,
 		KeepID: actingSessionID,
@@ -1164,7 +1186,7 @@ func (s *UserService) revokeOtherCredentialsPreservingActingCredential(
 	if _, _, err := auth.RevokeUserCredentialsExceptAPIToken(ctx, tx, rowUID, actingAPITokenID); err != nil {
 		return 0, err
 	}
-	if err := restampActingCredential(ctx, tx, rowUID, actingSessionID, actingAPITokenID); err != nil {
+	if err := restampActingCredential(ctx, tx, rowUID, actingRef); err != nil {
 		return 0, err
 	}
 	updatedUser, err := tx.Users().GetByID(ctx, userID)
@@ -1182,23 +1204,21 @@ func (s *UserService) revokeOtherCredentialsPreservingActingCredential(
 // A free function rather than two branches inline, so the rule that each
 // preserved kind takes a restamp reads once. See the caller for why the
 // restamp is half of "preserve", and for what n==0 means.
-func restampActingCredential(
-	ctx context.Context, tx store.Store, userID userid.UserID, sessionID, apiTokenID string,
-) error {
+func restampActingCredential(ctx context.Context, tx store.Store, userID userid.UserID, ref store.CredentialRef) error {
 	var n int64
 	var err error
-	switch {
-	case sessionID != "":
+	switch ref.Kind {
+	case store.CredentialRefKindSession:
 		n, err = tx.Sessions().RefreshAuthGeneration(ctx, store.RefreshSessionAuthGenerationParams{
-			SessionID: sessionID,
+			SessionID: ref.ID,
 			UserID:    userID,
 		})
-	case apiTokenID != "":
+	case store.CredentialRefKindToken:
 		n, err = tx.APITokens().RefreshAuthGeneration(ctx, store.RefreshAPITokenAuthGenerationParams{
-			TokenID: apiTokenID,
+			TokenID: ref.ID,
 			UserID:  userID,
 		})
-	default:
+	case store.CredentialRefKindNone:
 		return nil
 	}
 	if err != nil {

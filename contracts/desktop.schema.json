@@ -10,6 +10,7 @@
     "envVars",
     "devFrontendUrl",
     "tauriEvents",
+    "ipcHeaders",
     "windowBehavior",
     "launchVisibility",
     "windowMode",
@@ -36,15 +37,24 @@
     "tauriEvents": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["channelMessage", "channelClose", "userEventsMessage", "userEventsClose", "sidecarLog", "menuShowAbout", "menuShowPreferences"],
+      "required": ["sidecarLog", "browserAuthResult", "menuShowAbout", "menuShowPreferences"],
       "properties": {
-        "channelMessage": { "$ref": "#/$defs/tauriEvent" },
-        "channelClose": { "$ref": "#/$defs/tauriEvent" },
-        "userEventsMessage": { "$ref": "#/$defs/tauriEvent" },
-        "userEventsClose": { "$ref": "#/$defs/tauriEvent" },
         "sidecarLog": { "$ref": "#/$defs/tauriEvent" },
+        "browserAuthResult": { "$ref": "#/$defs/tauriEvent" },
         "menuShowAbout": { "$ref": "#/$defs/tauriEvent" },
         "menuShowPreferences": { "$ref": "#/$defs/tauriEvent" }
+      }
+    },
+    "ipcHeaders": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path", "headers", "relayId", "requestId"],
+      "properties": {
+        "method": { "$ref": "#/$defs/ipcHeader" },
+        "path": { "$ref": "#/$defs/ipcHeader" },
+        "headers": { "$ref": "#/$defs/ipcHeader" },
+        "relayId": { "$ref": "#/$defs/ipcHeader" },
+        "requestId": { "$ref": "#/$defs/ipcHeader" }
       }
     },
     "windowBehavior": {
@@ -111,7 +121,8 @@
     }
   },
   "$defs": {
-    "tauriEvent": { "type": "string", "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$" },
+    "ipcHeader": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "tauriEvent": { "type": "string", "pattern": "^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*$" },
     "settingToken": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", "maxLength": 32 }
   }
 }

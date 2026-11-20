@@ -16,6 +16,8 @@ import (
 	"connectrpc.com/connect/v2"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -917,6 +919,9 @@ func (a *authInterceptor) wrap(next connect.ServerFunc) connect.ServerFunc {
 		// throttle gives the cookie no other request to ride.
 		refresh.applyTo(info.ResponseHeader(), p.SecureCookies)
 		if err != nil {
+			if errors.Is(err, ErrElevationRequired) {
+				info.ResponseHeader().Set(contracts.ElevationRequiredHeader, "1")
+			}
 			return err
 		}
 		return next(ctx, spec, stream)
@@ -1032,7 +1037,7 @@ func (a *authInterceptor) authorize(procedure string, userInfo *UserInfo, p Poli
 	if err := a.enforceEmailVerification(procedure, userInfo, p); err != nil {
 		return err
 	}
-	return enforceAdmin(procedure, userInfo)
+	return enforceAdmin(procedure, userInfo, time.Now())
 }
 
 // currentPolicy resolves the settings-backed auth policy once per
@@ -1060,6 +1065,32 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 	return connect.Errorf(connect.CodePermissionDenied, "email verification required")
 }
 
+// sessionOnlyAdminProcedures holds the admin procedures that refuse every
+// non-session credential before the elevation check, because their handlers
+// call requireElevatedSessionForDurableAuthority and a bearer there would
+// open a step-up that cannot help. The set moves that refusal ahead of the
+// prompt so no client starts a ceremony that must end in the same refusal.
+var sessionOnlyAdminProcedures = map[string]bool{
+	leapmuxv1connect.AdminUserServiceCreateUserProcedure:    true,
+	leapmuxv1connect.AdminUserServiceSetUserAdminProcedure:  true,
+	leapmuxv1connect.AdminUserServiceResetPasswordProcedure: true,
+}
+
+// IsSessionOnlyAdminProcedure reports whether a procedure refuses every
+// non-session credential. Exported for the agreement test in
+// admin_procedures_internal_test.go.
+func IsSessionOnlyAdminProcedure(procedure string) bool {
+	return sessionOnlyAdminProcedures[procedure]
+}
+
+// UpdateUserRequiresSession identifies the variants that change recovery
+// authority. The mixed RPC keeps ordinary profile edits available to an
+// elevated bearer, while email and verification changes require a browser
+// session.
+func UpdateUserRequiresSession(req *leapmuxv1.UpdateUserRequest) bool {
+	return req != nil && (req.Email != nil || req.EmailVerified != nil)
+}
+
 // enforceAdmin rejects a non-admin caller from an admin procedure, in the
 // shape of enforceEmailVerification so the two checks read as one family.
 // The unauthenticated case never reaches here: both callers sit behind a
@@ -1079,14 +1110,18 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 // (usernames.IsReservedSystem) is what keeps a stored row from taking
 // that identity.
 //
-// It asks about the ACCOUNT alone. The parallel question -- was this
-// CREDENTIAL granted hub administration? -- used to live beside it as
-// enforceAdminScope, reading a single api_tokens.admin_scope boolean. It is
-// now the named admin scopes (admin:read, admin:users, admin:settings,
-// admin:workers, admin:apps) that enforceScope decides one rung earlier, so a
-// credential minted to administer users can no longer also rewrite the hub's
-// security settings.
-func enforceAdmin(procedure string, userInfo *UserInfo) error {
+// It asks about the ACCOUNT, the CREDENTIAL KIND and a current elevation
+// window. The account question is administrator privileges. The
+// credential-kind question refuses every non-session credential on a
+// session-only procedure before the elevation check, so no client starts a
+// step-up that cannot help. The window question is RequireElevation. A
+// fourth question -- was this CREDENTIAL granted hub administration? -- used
+// to live beside it as enforceAdminScope, reading a single
+// api_tokens.admin_scope boolean. It is now the named admin scopes
+// (admin:read, admin:users, admin:settings, admin:workers, admin:apps) that
+// enforceScope decides one rung earlier, so a credential minted to
+// administer users can no longer also rewrite the hub's security settings.
+func enforceAdmin(procedure string, userInfo *UserInfo, now time.Time) error {
 	// Deny by PREFIX, never by a list of procedures. See
 	// adminProcedurePrefix: a list that missed a procedure would open one
 	// that admin.proto declares.
@@ -1096,7 +1131,25 @@ func enforceAdmin(procedure string, userInfo *UserInfo) error {
 	if !userInfo.IsAdmin {
 		return connect.Errorf(connect.CodePermissionDenied, "administrator privileges are required")
 	}
-	return nil
+	// Solo mode short-circuits in authenticate and never reaches here, but
+	// the guard keeps the rule correct if that ever changes.
+	if userInfo.SoloAuthenticated() {
+		return nil
+	}
+	// UpdateUser's credential requirement depends on its optional fields. Its
+	// handler applies that rule before reading the target and the elevation
+	// response interceptor adds the recoverable marker only to profile edits.
+	if procedure == leapmuxv1connect.AdminUserServiceUpdateUserProcedure {
+		return nil
+	}
+	// A session-only procedure refuses every non-session credential before
+	// the elevation check, so no client starts a step-up that cannot help.
+	if sessionOnlyAdminProcedures[procedure] {
+		if userInfo.Credential.SessionID() == "" {
+			return CredentialNotElevatableError()
+		}
+	}
+	return RequireElevation(userInfo, now)
 }
 
 // tryAuthenticateBearer attempts Bearer-token auth. Returns (info, true,

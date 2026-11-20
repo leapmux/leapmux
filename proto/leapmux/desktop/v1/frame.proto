@@ -55,7 +55,38 @@ message Request {
     // Cache the resolved Desktop preferences on this device. See
     // SetDesktopBehaviorRequest below for why the shell needs a copy at all.
     SetDesktopBehaviorRequest set_desktop_behavior = 34;
+    // Start a browser ceremony for the connected remote Hub. See
+    // BrowserAuthKind. A new start ends the ceremony in progress.
+    StartBrowserAuthRequest start_browser_auth = 35;
+    CancelBrowserAuthRequest cancel_browser_auth = 36;
+    CancelProxyHttpRequest cancel_proxy_http = 37;
   }
+}
+
+// The ceremony that the system browser runs for the desktop's session.
+enum BrowserAuthKind {
+  BROWSER_AUTH_KIND_UNSPECIFIED = 0;
+  // Issue a session to this app.
+  BROWSER_AUTH_KIND_SIGN_IN = 1;
+  // Stamp the step-up window on the session that this app holds.
+  BROWSER_AUTH_KIND_STEP_UP = 2;
+}
+
+message StartBrowserAuthRequest {
+  BrowserAuthKind kind = 1;
+}
+
+// Cancel one ceremony. A request for a ceremony that already ended does
+// nothing.
+message CancelBrowserAuthRequest {
+  string ceremony_id = 1;
+}
+
+// Cancels the proxied HTTP request that carries the same renderer request id.
+// Cancellation can arrive before request admission, so the sidecar retains a
+// short pre-cancel tombstone.
+message CancelProxyHttpRequest {
+  string request_id = 1;
 }
 
 // Parameterless requests
@@ -75,7 +106,7 @@ message ConnectSoloRequest {}
 // ordering (see desktop/go/rpc.go), so a close sent for relay A can execute AFTER a
 // later open adopted the relay as B -- tearing down the relay B just took ownership
 // of. The teardown cancels the relay context before the read loop can emit, so no
-// channel:close event ever reaches the frontend: the socket stays readyState=OPEN
+// channel relay close event ever reaches the frontend: the socket stays readyState=OPEN
 // forever, ensureWebSocket keeps early-returning, and every worker call fails until
 // the page is reloaded.
 //
@@ -176,10 +207,28 @@ message ProxyHttpRequest {
   string path = 2;
   map<string, string> headers = 3;
   bytes body = 4;
+  string request_id = 5;
 }
 
 message SendChannelMessageRequest {
-  bytes data = 1;
+  uint64 relay_id = 1;
+  bytes data = 2;
+}
+
+// One owner-scoped relay item returned by an acknowledged Tauri read. The
+// renderer sends cursor back on its next read, which releases this item.
+message RelayReadResponse {
+  uint64 cursor = 1;
+  oneof item {
+    bytes data = 2;
+    RelayClose close = 3;
+  }
+}
+
+message RelayClose {
+  uint32 code = 1;
+  string reason = 2;
+  bool was_clean = 3;
 }
 
 message CreateTunnelRequest {
@@ -216,7 +265,16 @@ message Response {
     CliPathStatusResponse cli_path_status = 20;
     CliInstallSymlinkResponse cli_install_symlink = 21;
     SetDesktopBehaviorResponse set_desktop_behavior = 22;
+    StartBrowserAuthResponse start_browser_auth = 23;
   }
+}
+
+message StartBrowserAuthResponse {
+  // Identifies this ceremony in its BrowserAuthResultEvent.
+  string ceremony_id = 1;
+  // The address that the webview opens in the system browser. The sidecar
+  // builds it from the Hub URL that the user entered.
+  string authorize_url = 2;
 }
 
 // --- CLI PATH integration (macOS) ---
@@ -353,7 +411,19 @@ message Event {
     // terminated; the frontend resets its bootstrap state in the
     // same way it does on a native WebSocket `close` event.
     UserEventsCloseEvent user_events_close = 5;
+    // One ceremony ended. The sidecar emits exactly one for each ceremony.
+    BrowserAuthResultEvent browser_auth_result = 6;
   }
+  // The owner at emission time for a relay frame or close. Zero identifies
+  // an event unrelated to a relay.
+  uint64 relay_id = 7;
+}
+
+message BrowserAuthResultEvent {
+  string ceremony_id = 1;
+  bool ok = 2;
+  // The reason, when ok is false. Empty for a cancellation.
+  string failure = 3;
 }
 
 message ChannelMessageEvent {

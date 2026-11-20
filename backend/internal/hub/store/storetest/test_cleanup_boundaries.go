@@ -116,7 +116,8 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		seed := func(name string, expiresAt, refreshExpiresAt *time.Time) string {
 			tokenID := id.Generate()
 			require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-				ID: tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID, InstallationName: name, GrantedScopes: authscope.NonAdminGrant().String(),
+				Issuance: store.APITokenIssuanceAuthorizationCode,
+				ID:       tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID, InstallationName: name, GrantedScopes: authscope.NonAdminGrant().String(),
 				SecretHash: []byte("secret"), ExpiresAt: expiresAt, RefreshExpiresAt: refreshExpiresAt,
 			}))
 			return tokenID
@@ -170,6 +171,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		// whatever the dialect's precision.
 		apiID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               apiID,
 			UserID:           userid.MustNew(user.ID),
 			ClientID:         oauthapp.ControlCLIClientID,
@@ -235,6 +237,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 				UserID:        userid.MustNew(user.ID),
 				CodeChallenge: "challenge",
 				ExpiresAt:     c.expiresAt,
+				Redemption:    store.RedemptionKindToken,
 			}))
 		}
 

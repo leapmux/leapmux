@@ -293,7 +293,7 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	}))
 	seedPasskeyCredential(t, st, userID, "Laptop")
 	uid := userid.MustNew(userID)
-	oldSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration)
+	oldSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	ceremonyID := id.Generate()
 	now := time.Now().UTC()
@@ -332,7 +332,7 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	_, err = st.WebAuthnSessions().Get(context.Background(), ceremonyID)
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
-	_, _, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "wipeme", "newpass123", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "wipeme", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 
@@ -419,7 +419,7 @@ func TestCompleteAccountRecoveryPassword_SetsFirstPassword(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, count, "the lost passkey must be wiped by the break-glass posture")
 
-	_, _, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "recoverless", "firstpass123", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "recoverless", "firstpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 

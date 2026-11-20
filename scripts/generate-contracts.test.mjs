@@ -545,15 +545,17 @@ describe('emitters', () => {
 
   it('emits every Tauri event the shell and webview spell, including the log and menu events', () => {
     // Both sides once stated `sidecar:log` and the two menu events manually.
-    // A change on one side could disable a listener without a failure. The name
-    // tables now contain all seven events.
+    // A change on one side could disable a listener. Both emitters now use
+    // the desktop contract.
     const d = readContract('desktop')
     const rs = emitRsDesktop(d)
     expect(rs).toContain('pub const EVENT_SIDECAR_LOG: &str = "sidecar:log"')
     expect(rs).toContain('pub const EVENT_MENU_SHOW_ABOUT: &str = "menu:show-about"')
+    expect(rs).toContain('pub const IPC_HEADER_RELAY_ID: &str = "relay-id"')
     const ts = emitTsDesktop(d)
     expect(ts).toContain('TAURI_EVENT_SIDECAR_LOG = "sidecar:log"')
     expect(ts).toContain('TAURI_EVENT_MENU_SHOW_PREFERENCES = "menu:show-preferences"')
+    expect(ts).toContain('TAURI_IPC_HEADER_REQUEST_ID = "request-id"')
   })
 
   it('shields the macOS-only menu consts from dead_code off macOS', () => {
@@ -564,7 +566,7 @@ describe('emitters', () => {
     const rs = emitRsDesktop(d)
     expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_ABOUT: &str = "menu:show-about"')
     expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_PREFERENCES: &str = "menu:show-preferences"')
-    expect(rs).not.toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_CHANNEL_MESSAGE')
+    expect(rs).not.toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_BROWSER_AUTH_RESULT')
   })
 
   it('emits durations as const expressions, not runtime values', () => {
@@ -3521,15 +3523,35 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   // Supply every event when a fixture must pass the tauriEvents coverage check.
-  // Older four-event fixtures fail before they reach that check.
   const events = () => ({
-    channelMessage: 'c:m',
-    channelClose: 'c:c',
-    userEventsMessage: 'u:m',
-    userEventsClose: 'u:c',
     sidecarLog: 's:l',
+    browserAuthResult: 'b:r',
     menuShowAbout: 'm:a',
     menuShowPreferences: 'm:p',
+  })
+
+  const ipcHeaders = () => ({
+    method: 'x-method',
+    path: 'x-path',
+    headers: 'x-headers',
+    relayId: 'x-relay-id',
+    requestId: 'x-request-id',
+  })
+
+  it('rejects a missing IPC header table with a contract error', () => {
+    expectContractError(() => checkDesktop({
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
+      devFrontendUrl: 'http://localhost:4328',
+      tauriEvents: events(),
+      windowBehavior: behavior(),
+      launchVisibility: launch(),
+      windowMode: windowMode(),
+    }), 'ipcHeaders must be an object')
   })
 
   it('rejects a missing or empty DEV frontend URL', () => {
@@ -3541,6 +3563,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3554,6 +3577,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: '',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3635,11 +3659,11 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: {
-        channelMessage: 'same:event',
-        channelClose: 'same:event',
-        userEventsMessage: 'u:m',
-        userEventsClose: 'u:c',
+        ...events(),
+        sidecarLog: 'same:event',
+        browserAuthResult: 'same:event',
       },
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3656,6 +3680,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3672,12 +3697,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
         extra: 'D_W',
       },
       devFrontendUrl: 'http://localhost:4328',
-      tauriEvents: {
-        channelMessage: 'c:m',
-        channelClose: 'c:c',
-        userEventsMessage: 'u:m',
-        userEventsClose: 'u:c',
-      },
+      tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3691,12 +3712,10 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: {
-        channelMessage: 'c:m',
-        channelClose: 'c:c',
-        userEventsMessage: 'u:m',
-        userEventsClose: 'u:c',
+        ...events(),
         extra: 'e:x',
       },
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3710,6 +3729,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: {
         ...behavior(),
         extra: { one: 'x', two: 'y' },
@@ -3732,12 +3752,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
           agentHelper: 'E_V',
         },
         devFrontendUrl: 'http://localhost:4328',
-        tauriEvents: {
-          channelMessage: 'c:m',
-          channelClose: 'c:c',
-          userEventsMessage: 'u:m',
-          userEventsClose: 'u:c',
-        },
+        tauriEvents: events(),
+        ipcHeaders: ipcHeaders(),
         windowBehavior: behavior(),
       }), 'missing from DESKTOP_RS_EVENT_NAMES')
     }
@@ -3757,6 +3773,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: {
         ...behavior(),
         trayOnClose: { tray: 'tray', quit: 'tray' },
@@ -3779,6 +3796,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: {
         ...behavior(),
         closeToDock: { dock: 'dock', tray: 'dock' },
@@ -3810,6 +3828,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: {
         ...launch(),
@@ -3829,6 +3848,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: {
         ...launch(),
@@ -3851,6 +3871,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: {
@@ -3881,7 +3902,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     const rs = emitRsDesktop(d)
     expect(rs).toContain('pub const ENV_DEV_ENDPOINT: &str = "LEAPMUX_DESKTOP_DEV_ENDPOINT"')
     expect(rs).toContain('pub const ENV_DEV_FRONTEND: &str = "LEAPMUX_HUB_DEV_FRONTEND"')
-    expect(rs).toContain('pub const EVENT_CHANNEL_MESSAGE: &str = "channel:message"')
+    expect(rs).toContain('pub const EVENT_BROWSER_AUTH_RESULT: &str = "browser-auth:result"')
     expect(rs).not.toContain('//!')
   })
 

@@ -1,7 +1,11 @@
 package auth
 
 import (
+	"errors"
+	"fmt"
 	"time"
+
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
@@ -15,6 +19,35 @@ import (
 // their password answers one prompt, and short enough that a browser left
 // open over lunch is no longer elevated.
 const ElevationWindow = 2 * time.Hour
+
+// FreshAuthenticationWindow is how long a sign-in that proved a factor
+// counts as fresh authentication. A sensitive action inside this window
+// passes without a step-up, and the first such action slides the ordinary
+// ElevationWindow forward from the sign-in instant.
+const FreshAuthenticationWindow = 5 * time.Minute
+
+// SignInProof states whether a sign-in proved a factor. CreateSession
+// refuses the zero value so a forgotten write fails instead of silently
+// granting no window.
+type SignInProof int
+
+const (
+	// SignInProvedNoFactor is a sign-in that proved no factor, such as an
+	// OAuth handoff or a provider sign-in without re-authentication.
+	SignInProvedNoFactor SignInProof = 1
+	// SignInProvedFactor is a sign-in that proved a factor: a password, a
+	// passkey, or a provider sign-in for a consent route that asked for
+	// fresh authentication. The provider sign-in counts only for an account
+	// that elevates only through that provider, one holding neither a
+	// password nor a passkey. A consent-route sign-in for any other account
+	// proves nothing here: its factor is the password or the passkey, and
+	// the provider sign-in did not present it.
+	SignInProvedFactor SignInProof = 2
+	// SignInProvedFactorWithFullWindow is the solo first-password setup. The
+	// local operator already controls the Hub, and the existing contract grants
+	// the ordinary two-hour window in the session's insert transaction.
+	SignInProvedFactorWithFullWindow SignInProof = 3
+)
 
 // ElevationMaxTotal caps the total life of ONE elevation, measured from the
 // instant the factor was proven rather than from the last slide.
@@ -126,7 +159,7 @@ func (u *UserInfo) ElevationDeadline(now time.Time) (time.Time, bool) {
 	if u == nil {
 		return time.Time{}, false
 	}
-	if _, _, ok := u.Credential.ElevatableRow(); !ok {
+	if u.Credential.ElevatableRef().IsZero() {
 		return time.Time{}, false
 	}
 	return u.Elevation.Deadline(now)
@@ -138,4 +171,163 @@ func (u *UserInfo) ElevationDeadline(now time.Time) (time.Time, bool) {
 func (u *UserInfo) Elevated(now time.Time) bool {
 	_, ok := u.ElevationDeadline(now)
 	return ok
+}
+
+// ErrElevationRequired is the SENTINEL every elevation refusal wraps, so
+// errors.Is answers for all of them however each one is worded. There is no
+// rate-limit budget keyed on it, because being un-elevated is not a failed
+// attempt.
+var ErrElevationRequired = errors.New("this action needs a recent sign-in")
+
+// elevationRequiredMessage is the remedy every caller but one states.
+const elevationRequiredMessage = "verify your identity and try again"
+
+// ElevationRequiredError refuses a sensitive action on a session that is not
+// elevated.
+//
+// FailedPrecondition, deliberately, NOT Unauthenticated. The frontend's
+// global interceptor treats Unauthenticated as "your session ended" and
+// signs the user out, so the one refusal whose remedy is "prove a factor and
+// try again" would instead discard the session the user is about to prove
+// a factor for.
+//
+// The wording is elevationRequiredMessage, the default every caller but one
+// takes. See ElevationRequiredErrorSaying for the exception.
+func ElevationRequiredError() error {
+	return ElevationRequiredErrorSaying(elevationRequiredMessage)
+}
+
+// ElevationRequiredErrorSaying is the same refusal with different wording,
+// for the one caller whose remedy is WIDER than "prove a factor": the
+// first-credential rule, where verifying at an identity provider AND signing
+// in again both admit, and only that rule can say so.
+//
+// The message is a required parameter rather than a variadic. A variadic
+// accepts two strings and silently ignores all but the first, which is a call
+// a reader cannot get right from the signature.
+//
+// It still WRAPS ErrElevationRequired, so errors.Is keeps answering for every
+// refusal of this kind. Replacing the cause left the sentinel true of five
+// refusals and false of the sixth, with nothing but the header to distinguish
+// them.
+//
+// The refusal WRAPS ErrElevationRequired, which is also what decides the
+// ElevationRequiredHeader marker: see the elevation response interceptor.
+// The marker is not set here, because connect v2 carries no metadata on an
+// error and this function reaches no response header. Keying the marker on
+// the sentinel instead of on construction is a stronger contract than the
+// v1 marker-on-the-error was: every refusal of this kind carries it, and a
+// caller cannot forget to add it.
+func ElevationRequiredErrorSaying(message string) error {
+	// The message is what the caller reads; the wrapped sentinel travels as
+	// the cause, so errors.Is still answers and the interceptor can key the
+	// marker on it. connect.NewError takes a string and serializes only
+	// that, so the wrap has to be attached separately or the sentinel
+	// dissolves into prose.
+	cause := fmt.Errorf("%w: %s", ErrElevationRequired, message)
+	return connect.NewError(connect.CodeFailedPrecondition, cause.Error()).WithCause(cause)
+}
+
+// RequireElevation refuses a sensitive action on a session that did not
+// prove a factor inside the window.
+//
+// This is the PLAIN gate, and every sensitive action outside passkey
+// management uses it. It has no first-credential branch, because it needs
+// none: an account that can sign in holds at least one of a password, a
+// passkey, or an OAuth link, and each of the three elevates.
+//
+// The two refusals are DIFFERENT, and the difference is the marker rather
+// than the wording. A session that did not prove a factor gets
+// ElevationRequiredError, which carries ElevationRequiredHeader and means
+// "prove one and retry". A credential that can never carry an elevation --
+// a delegation bearer, which a worker mints for an agent with nobody at a
+// keyboard -- gets the plain refusal from RequireElevatableCredential, with
+// NO marker, because a step-up prompt cannot help it: it would ask for a
+// factor and then refuse the retry for the same reason.
+func RequireElevation(userInfo *UserInfo, now time.Time) error {
+	// Solo mode has no ceremony to prove a factor with, so the rule has
+	// nothing to decide.
+	if userInfo.SoloAuthenticated() {
+		return nil
+	}
+	if userInfo.Elevated(now) {
+		return nil
+	}
+	// Not elevated. Either the credential could be and is not, or it never
+	// can be; only the second has no remedy the caller can act on here.
+	if err := RequireElevatableCredential(userInfo); err != nil {
+		return err
+	}
+	if userInfo.Credential.AppElevationDisabled() {
+		return AppElevationDisabledError()
+	}
+	return ElevationRequiredError()
+}
+
+// AppElevationDisabledError refuses a command-line credential whose app owner
+// disabled every step-up ceremony. It deliberately does not wrap
+// ErrElevationRequired: a verification prompt cannot recover this request.
+func AppElevationDisabledError() error {
+	return connect.NewError(connect.CodeFailedPrecondition,
+		"the application owner disabled identity verification for this credential; enable app elevation and try again")
+}
+
+// RequireElevatableCredential refuses a credential that can carry no
+// elevation at all.
+//
+// TWO kinds can: a session cookie, and a command-line credential, which
+// proves its factor through the browser path at /oauth/step-up. Each has a
+// row to stamp and a person who can be prompted. A
+// DELEGATION bearer has neither -- a worker mints it for an agent that reads
+// untrusted input -- and neither does solo mode, which authenticates a
+// synthetic user against no row.
+//
+// The refusal deliberately carries NO ElevationRequiredHeader. The marker
+// means "prove a factor and retry", and there is nothing this caller can
+// prove: a step-up prompt would collect a factor and then refuse the retry
+// for the same reason. See RequireElevation, which chooses between the two
+// refusals.
+//
+// Nil-safe, like every sibling in this family. RequireElevation reaches it
+// through UserInfo.Elevated, which is documented nil-safe, so a nil that
+// slipped past would turn a refusal into a handler panic here.
+func RequireElevatableCredential(userInfo *UserInfo) error {
+	if userInfo != nil {
+		if !userInfo.Credential.ElevatableRef().IsZero() {
+			return nil
+		}
+	}
+	return CredentialNotElevatableError()
+}
+
+// RequireElevatableSession returns the acting SESSION id, refusing every
+// other credential -- a command-line credential included.
+//
+// The narrower rule, and the two service callers need it. The elevation RPCs
+// collect a factor and stamp a row: a bearer that could call them would
+// elevate ITSELF, which is exactly the property the browser verification exists to
+// prevent (the factor must be proven somewhere the credential file cannot
+// reach). requireElevatedSessionForDurableAuthority needs it for its own
+// reason, which it states.
+//
+// Nil-safe, like every sibling in this family.
+func RequireElevatableSession(userInfo *UserInfo) (string, error) {
+	var sessionID string
+	if userInfo != nil {
+		sessionID = userInfo.Credential.SessionID()
+	}
+	if sessionID == "" {
+		return "", CredentialNotElevatableError()
+	}
+	return sessionID, nil
+}
+
+// CredentialNotElevatableError is the refusal both elevatable-credential
+// rules return. One constructor, because the two rules differ in WHICH
+// credentials they admit and not in what they tell a caller that holds none
+// of them: the remedy is the same sentence, and two copies of a security
+// message drift the moment somebody rewords one.
+func CredentialNotElevatableError() error {
+	return connect.NewError(connect.CodeFailedPrecondition,
+		"this credential cannot verify your identity; sign in from a browser to perform this action")
 }

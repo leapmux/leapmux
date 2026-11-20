@@ -45,4 +45,13 @@ describe('auth method pill group (AuthMethodPillGroup)', () => {
     renderGroup()
     expect(screen.getAllByRole('radio').map(radio => radio.textContent)).toEqual(['Password'])
   })
+
+  // Remote-Hub mode: the ceremony runs in the system browser, so the pill
+  // would offer an action this app cannot perform. It drops the pill exactly
+  // as for an origin the hub refuses.
+  it('drops passkey when the ceremonies run in the browser', () => {
+    setSystemInfoMock({ passkeyBlocker: 'needs-browser' })
+    renderGroup()
+    expect(screen.getAllByRole('radio').map(radio => radio.textContent)).toEqual(['Password'])
+  })
 })

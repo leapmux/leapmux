@@ -3,7 +3,7 @@ import type { MockModelRequestRecord } from './mockModelScript'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { elicitationFieldKey } from '../../../src/components/chat/controls/elicitationForm'
-import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
+import { accountStorageKey, PREFIX_CONTROL_STATE, storageAccountFor } from '../../../src/lib/browserStorage'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { MCP_FORM_SERVER_NAME } from './mcpFormServer'
 import { nativeTextStep, nativeToolOutcome } from './nativeScenario'
@@ -50,8 +50,9 @@ export function mcpProbeFormDraftSaved(record: unknown): boolean {
  * rows through `waitForStoredEntry`. The caller lacks the agent ID, so the wait reads every control answer row of the
  * account.
  */
-export async function waitForMcpProbeFormDraft(page: Page, userId: string): Promise<void> {
-  await waitForStoredEntry(page, accountStorageKey(userId, PREFIX_CONTROL_STATE), mcpProbeFormDraftSaved, 'the probe form answers must be persisted before the reload')
+export async function waitForMcpProbeFormDraft(page: Page, hubUrl: string, userId: string): Promise<void> {
+  const account = storageAccountFor(new URL(hubUrl).origin, userId)
+  await waitForStoredEntry(page, accountStorageKey(account, PREFIX_CONTROL_STATE), mcpProbeFormDraftSaved, 'the probe form answers must be persisted before the reload')
 }
 
 /** Require the answers of `fillMcpProbeForm` in the form that the page restored after a reload. */
@@ -72,7 +73,7 @@ export interface McpProbeFormRoundTrip {
   /** The form that the native provider actually sends when it transforms the MCP schema. */
   form?: {
     fill: (page: Page) => Promise<Locator>
-    waitForDraft: (page: Page, userId: string) => Promise<void>
+    waitForDraft: (page: Page, hubUrl: string, userId: string) => Promise<void>
     expectRestored: (form: Locator) => Promise<void>
   }
 }
@@ -109,7 +110,7 @@ export async function exerciseMcpProbeFormRoundTrip(
   const form = await surface.fill(page)
   if (options.reloadBeforeSubmit && userId) {
     // The page saves the last answer through a write queue. A reload that overtakes the write drops that answer.
-    await surface.waitForDraft(page, userId)
+    await surface.waitForDraft(page, context.leapmuxServer.hubUrl, userId)
     await page.reload()
     await surface.expectRestored(form)
   }

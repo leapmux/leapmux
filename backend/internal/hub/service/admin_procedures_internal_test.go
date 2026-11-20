@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/hub/auth"
 )
 
 // The admin surface takes the elevation gate by a hand-written call in each
@@ -42,8 +44,12 @@ const (
 	// adminNeedsElevatedSessionForSomeFields takes the strict session rule
 	// for one class of field and the credential rule for the rest.
 	adminNeedsElevatedSessionForSomeFields
-	// adminNeedsNoElevation reads, or only reduces access.
-	adminNeedsNoElevation
+	// adminNeedsElevationFromInterceptor means the interceptor's window
+	// check is the whole elevation requirement. The handler adds no gate of
+	// its own: what the procedure does (a read, a revocation, a purge of
+	// expired rows) needs nothing beyond the step-up the interceptor already
+	// demands for every Admin* procedure.
+	adminNeedsElevationFromInterceptor
 )
 
 // adminProcedureElevation records the class of every admin procedure, with
@@ -59,10 +65,10 @@ var adminProcedureElevation = map[string]struct {
 }{
 	// --- AdminSettingsService ---
 	//
-	// Every WRITE takes writeUnderElevation and every READ takes nothing. A
-	// hub setting is deployment-wide, and several of these keys are the hub's
-	// own security controls.
-	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:   {adminNeedsNoElevation, "a read; it reports which keys HOLD a secret and never a secret value"},
+	// Every WRITE takes writeUnderElevation and every READ takes nothing
+	// beyond the interceptor. A hub setting is deployment-wide, and several
+	// of these keys are the hub's own security controls.
+	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:   {adminNeedsElevationFromInterceptor, "a read; the interceptor's check is the whole requirement"},
 	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure: {adminNeedsElevatedCredential, "rewrites instance configuration, both halves including the encrypted secrets, in one transaction; the CLI is the documented headless path"},
 	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:  {adminNeedsElevatedCredential, "returns instance configuration to defaults in one transaction, which can turn a control off"},
 
@@ -72,7 +78,7 @@ var adminProcedureElevation = map[string]struct {
 	// answers on is AdminSettingsService.UpdateSettings, which is elevated
 	// above; this only reports what that write produced, so demanding a fresh
 	// factor to LOOK would ask for a proof and grant nothing.
-	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: {adminNeedsNoElevation, "a read; it reports the host's interfaces and which addresses the hub serves on"},
+	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: {adminNeedsElevationFromInterceptor, "a read; the interceptor's check is the whole requirement"},
 
 	// --- AdminUserService ---
 	//
@@ -91,30 +97,31 @@ var adminProcedureElevation = map[string]struct {
 	leapmuxv1connect.AdminUserServiceIssueAPITokenProcedure: {adminNeedsElevatedCredential, "mints a credential that outlives the session; the mint's own clamp contains the bearer path"},
 	leapmuxv1connect.AdminUserServiceDeleteUserProcedure:    {adminNeedsElevatedCredential, "irreversible destruction of an account and everything it owns"},
 
-	// Reads, and revokes that only reduce access.
-	leapmuxv1connect.AdminUserServiceListUsersProcedure:             {adminNeedsNoElevation, "a read across accounts"},
-	leapmuxv1connect.AdminUserServiceGetUserProcedure:               {adminNeedsNoElevation, "a read of one account"},
-	leapmuxv1connect.AdminUserServiceListUserSessionsProcedure:      {adminNeedsNoElevation, "a read of one user's sessions"},
-	leapmuxv1connect.AdminUserServiceListSessionsProcedure:          {adminNeedsNoElevation, "a read of every live session"},
-	leapmuxv1connect.AdminUserServiceRevokeSessionProcedure:         {adminNeedsNoElevation, "only REDUCES access; a delay is the attacker's gain"},
-	leapmuxv1connect.AdminUserServiceRevokeUserSessionsProcedure:    {adminNeedsNoElevation, "only reduces access, for every credential the user holds"},
-	leapmuxv1connect.AdminUserServicePurgeExpiredSessionsProcedure:  {adminNeedsNoElevation, "deletes rows that already expired; it grants nothing"},
-	leapmuxv1connect.AdminUserServiceListAPITokensProcedure:         {adminNeedsNoElevation, "metadata only; no secret and no hash leaves the store layer"},
-	leapmuxv1connect.AdminUserServiceRevokeAPITokenProcedure:        {adminNeedsNoElevation, "only reduces access"},
-	leapmuxv1connect.AdminUserServiceListDelegationTokensProcedure:  {adminNeedsNoElevation, "a read of the delegation bearers"},
-	leapmuxv1connect.AdminUserServiceRevokeDelegationTokenProcedure: {adminNeedsNoElevation, "only reduces access"},
+	// Reads, and revokes that only reduce access. The interceptor's check is
+	// the whole requirement for each.
+	leapmuxv1connect.AdminUserServiceListUsersProcedure:             {adminNeedsElevationFromInterceptor, "a read across accounts; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceGetUserProcedure:               {adminNeedsElevationFromInterceptor, "a read of one account; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceListUserSessionsProcedure:      {adminNeedsElevationFromInterceptor, "a read of one user's sessions; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceListSessionsProcedure:          {adminNeedsElevationFromInterceptor, "a read of every live session; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceRevokeSessionProcedure:         {adminNeedsElevationFromInterceptor, "only reduces access; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceRevokeUserSessionsProcedure:    {adminNeedsElevationFromInterceptor, "only reduces access, for every credential the user holds; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServicePurgeExpiredSessionsProcedure:  {adminNeedsElevationFromInterceptor, "deletes rows that already expired; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceListAPITokensProcedure:         {adminNeedsElevationFromInterceptor, "metadata only; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceRevokeAPITokenProcedure:        {adminNeedsElevationFromInterceptor, "only reduces access; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceListDelegationTokensProcedure:  {adminNeedsElevationFromInterceptor, "a read of the delegation bearers; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminUserServiceRevokeDelegationTokenProcedure: {adminNeedsElevationFromInterceptor, "only reduces access; the interceptor's check is the whole requirement"},
 
 	// --- AdminWorkerService ---
 	//
 	// Nothing here moves a credential or a recovery identity. A worker is a
 	// machine the hub trusts, and every verb below either reads that trust or
-	// withdraws it.
-	leapmuxv1connect.AdminWorkerServiceListWorkersProcedure:                  {adminNeedsNoElevation, "a read across workers"},
-	leapmuxv1connect.AdminWorkerServiceGetWorkerProcedure:                    {adminNeedsNoElevation, "a read of one worker"},
-	leapmuxv1connect.AdminWorkerServiceDeregisterWorkerProcedure:             {adminNeedsNoElevation, "withdraws the hub's trust in one worker; it only reduces access"},
-	leapmuxv1connect.AdminWorkerServiceListRegistrationKeysProcedure:         {adminNeedsNoElevation, "a read of the registration keys"},
-	leapmuxv1connect.AdminWorkerServiceRevokeRegistrationKeyProcedure:        {adminNeedsNoElevation, "only reduces access"},
-	leapmuxv1connect.AdminWorkerServicePurgeExpiredRegistrationKeysProcedure: {adminNeedsNoElevation, "deletes rows that already expired; it grants nothing"},
+	// withdraws it. The interceptor's check is the whole requirement for each.
+	leapmuxv1connect.AdminWorkerServiceListWorkersProcedure:                  {adminNeedsElevationFromInterceptor, "a read across workers; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminWorkerServiceGetWorkerProcedure:                    {adminNeedsElevationFromInterceptor, "a read of one worker; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminWorkerServiceDeregisterWorkerProcedure:             {adminNeedsElevationFromInterceptor, "withdraws the hub's trust in one worker; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminWorkerServiceListRegistrationKeysProcedure:         {adminNeedsElevationFromInterceptor, "a read of the registration keys; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminWorkerServiceRevokeRegistrationKeyProcedure:        {adminNeedsElevationFromInterceptor, "only reduces access; the interceptor's check is the whole requirement"},
+	leapmuxv1connect.AdminWorkerServicePurgeExpiredRegistrationKeysProcedure: {adminNeedsElevationFromInterceptor, "deletes rows that already expired; the interceptor's check is the whole requirement"},
 
 	// --- AdminIdPService ---
 	//
@@ -122,7 +129,7 @@ var adminProcedureElevation = map[string]struct {
 	// trust_email set links an incoming identity to any account whose verified
 	// address it presents. writeUnderElevation states the rest.
 	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:        {adminNeedsElevatedCredential, "installs an identity provider, which is a sign-in route for every account"},
-	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:      {adminNeedsNoElevation, "a read of the provider inventory; the client secret stays encrypted in the store"},
+	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:      {adminNeedsElevationFromInterceptor, "a read of the provider inventory; the interceptor's check is the whole requirement"},
 	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:     {adminNeedsElevatedCredential, "removes a login method for every user"},
 	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure: {adminNeedsElevatedCredential, "turns a login method on or off for every user"},
 }
@@ -166,9 +173,9 @@ func TestEveryAdminProcedureIsElevationClassified(t *testing.T) {
 // somebody classified in their head as harmless. So the record states its own
 // invariant: a verb called Add, Create, Update, Set or Reset changes state
 // that other accounts stand on, and none of those may sit in
-// adminNeedsNoElevation. The verbs that legitimately need nothing all read
-// (List, Get), only reduce access (Revoke, Deregister), or delete rows that
-// already expired (Purge).
+// adminNeedsElevationFromInterceptor. The verbs that legitimately need
+// nothing beyond the interceptor all read (List, Get), only reduce access
+// (Revoke, Deregister), or delete rows that already expired (Purge).
 func TestAdminWriteProceduresAreClassifiedProtected(t *testing.T) {
 	t.Parallel()
 
@@ -179,8 +186,28 @@ func TestAdminWriteProceduresAreClassifiedProtected(t *testing.T) {
 			if !strings.HasPrefix(method, verb) {
 				continue
 			}
-			assert.NotEqualf(t, adminNeedsNoElevation, entry.class,
-				"procedure %q creates or rewrites state that other accounts stand on, so it may not be classified adminNeedsNoElevation -- wire it to a gate, or rename it if it only reduces access", procedure)
+			assert.NotEqualf(t, adminNeedsElevationFromInterceptor, entry.class,
+				"procedure %q creates or rewrites state that other accounts stand on, so it may not be classified adminNeedsElevationFromInterceptor -- wire it to a gate, or rename it if it only reduces access", procedure)
 		}
 	}
+}
+
+// TestIsSessionOnlyAdminProcedureMatchesElevatedSessionClass pins the
+// agreement between the interceptor's session-only set and the
+// classification: exactly the procedures whose handlers demand an elevated
+// SESSION (and refuse every bearer) are the ones the interceptor refuses
+// non-session credentials for before the step-up prompt.
+func TestIsSessionOnlyAdminProcedureMatchesElevatedSessionClass(t *testing.T) {
+	t.Parallel()
+
+	seen := false
+	for procedure, entry := range adminProcedureElevation {
+		want := entry.class == adminNeedsElevatedSession
+		if want {
+			seen = true
+		}
+		assert.Equalf(t, want, auth.IsSessionOnlyAdminProcedure(procedure),
+			"the session-only set and adminNeedsElevatedSession must agree on %q", procedure)
+	}
+	require.True(t, seen, "no procedure holds adminNeedsElevatedSession; the agreement proves nothing")
 }

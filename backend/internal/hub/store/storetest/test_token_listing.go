@@ -21,6 +21,7 @@ func seedAPITokenForList(t *testing.T, st store.Store, userID, clientID, install
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         clientID,

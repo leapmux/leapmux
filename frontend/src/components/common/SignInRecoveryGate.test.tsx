@@ -1,5 +1,5 @@
 import type { SignInRecovery, SignInRecoveryRead } from '~/context/AuthContext'
-import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
+import { createMemoryHistory, MemoryRouter, Route, useLocation } from '@solidjs/router'
 /// <reference types="vitest/globals" />
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
@@ -37,6 +37,7 @@ function renderGate(path: string) {
   const history = createMemoryHistory()
   history.set({ value: path, replace: true, scroll: false })
   const navigations: string[] = []
+  const homeMountFragments: string[] = []
   history.listen(value => navigations.push(value))
   render(() => (
     <MemoryRouter history={history} root={props => <SignInRecoveryGate>{props.children}</SignInRecoveryGate>}>
@@ -65,12 +66,13 @@ function renderGate(path: string) {
         path="/"
         component={() => {
           mounts.home++
+          homeMountFragments.push(useLocation().hash)
           return <div data-testid="app-home" />
         }}
       />
     </MemoryRouter>
   ))
-  return { history, navigations }
+  return { history, homeMountFragments, navigations }
 }
 
 /** Recovery with its read running; `redirect` is the address the sign-in asked for. */
@@ -246,6 +248,20 @@ describe('SignInRecoveryGate', () => {
     expect(navigations).toEqual(['/?from=cli'])
     expect(mockFinish).toHaveBeenCalledOnce()
     expect(assign).not.toHaveBeenCalled()
+  })
+
+  it('waits for the destination fragment before remounting a route', async () => {
+    const { homeMountFragments, navigations } = renderGate('/?same=query#before')
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+
+    setRecovery(recoveryState({ redirect: '/?same=query#after' }))
+    expect(await screen.findByTestId('signin-recovery-pending')).toBeInTheDocument()
+    setRecovery(recoveryState({ redirect: '/?same=query#after', read: COMPLETED }))
+
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+    expect(homeMountFragments).toEqual(['#before', '#after'])
+    expect(navigations).toEqual(['/?same=query#after'])
+    expect(mockFinish).toHaveBeenCalledOnce()
   })
 
   // The router matches `/a/` as `/a`, so a redirect with a trailing slash

@@ -9,11 +9,14 @@ import { AuthProvider, useAuth } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import {
   flushStorageWrites,
+  hydrateStorageAccount,
   KEY_BROWSER_PREFS,
   localStorageClearForTests,
   localStorageSet,
   resetStorageAccountForTests,
+  setStorageAccount,
   setStorageAccountForTests,
+  storageAccountFor,
 } from '~/lib/browserStorage'
 import { untilTrue } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
@@ -53,11 +56,20 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-// `~/api/transport` reads these from the same module at load time, so the
-// factory must supply them beside the bridge the auth provider uses.
+// `~/api/transport` reads `desktopFetch` and `isTauriApp` from the same module
+// at load time, so the factory must supply them beside the bridge the auth
+// provider uses.
 vi.mock('~/api/platformBridge', () => ({
   desktopFetch: vi.fn(),
-  getCapabilities: () => ({ hubTransport: 'direct' }),
+  desktopHub: () => null,
+  getCapabilities: () => ({
+    mode: 'web',
+    tunnels: false,
+    appControl: false,
+    windowControl: false,
+    systemPermissions: false,
+    localSolo: false,
+  }),
   isTauriApp: () => false,
   platformBridge: {
     resetTunnels: vi.fn().mockResolvedValue(undefined),
@@ -153,7 +165,13 @@ function renderApp() {
  * Therefore, the seed must exist before the identity arrives.
  */
 async function seedDeviceTierFor(userId: string, prefs: BrowserPreferences) {
-  setStorageAccountForTests(userId)
+  // These cases run in bundled mode, so the account the bootstrap composes is
+  // keyed to `window.location.origin` -- not the `TEST_HUB`
+  // `setStorageAccountForTests` composes under. The seed moves through the
+  // production seam to write under the account the identity will hydrate.
+  const account = storageAccountFor(window.location.origin, userId)
+  await hydrateStorageAccount(account)
+  setStorageAccount(account)
   localStorageSet(KEY_BROWSER_PREFS, prefs)
   // FLUSHED to the database. Sign-in re-reads the account's rows from there
   // before it moves the namespace, so a seed that is only in this tab's mirror
@@ -372,7 +390,7 @@ describe('usePreferencesForIdentity', () => {
   })
 
   // This hook does not control the device tier. The provider subscribes to
-  // `onStorageAccountChange`, which runs inside `setStorageAccountForTests`. Thus, the
+  // `onStorageAccountChange`, which runs inside `setStorageAccount`. Thus, the
   // device tier changes with the identity write. These cases verify that
   // behavior through `login`.
   it('seeds the device tier as the first identity is written, with no reload', async () => {
@@ -388,7 +406,7 @@ describe('usePreferencesForIdentity', () => {
 
     await app.auth().login('u1', 'pw')
 
-    // Do not use `waitFor` here. `AuthContext` calls `setStorageAccountForTests` as it
+    // Do not use `waitFor` here. `AuthContext` calls `setStorageAccount` as it
     // writes the identity. The seed therefore exists before a consumer can
     // observe the new identity.
     expect(app.prefs().theme()).toEqual({ name: 'nord', mode: 'dark' })

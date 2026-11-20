@@ -70,9 +70,9 @@ let disposeBridgeRoot: (() => void) | null = null
 beforeEach(() => {
   createRoot((dispose) => {
     disposeBridgeRoot = dispose
-    // No `userId`: `installTestBridge` defaults to `TEST_USER_ID`, which is the
-    // account the storage namespace is set to below. Stating it here as a
-    // literal is how the two identities drift apart.
+    // No `userId`: `installTestBridge` defaults to `TEST_USER_ID`, the RAW Hub
+    // user id the storage namespace set below is composed around. Stating it
+    // here as a literal is how the two identities drift apart.
     installTestBridge({ workspaceId: 'ws-test', rootTileId: 'main-tile' })
   })
   // Clear browser storage: several stores now seed themselves from sessionStorage

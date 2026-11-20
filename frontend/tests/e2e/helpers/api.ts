@@ -183,7 +183,13 @@ function describeTransportFailure(error: unknown): string {
  * The error of a hub call that reached the hub and that the hub refused.
  * A caller that polls tells it apart from a request that never reached the hub.
  */
-class HubCallRefusedError extends Error {}
+class HubCallRefusedError extends Error {
+  responseHeaders: Headers
+  constructor(message: string, responseHeaders: Headers) {
+    super(message)
+    this.responseHeaders = responseHeaders
+  }
+}
 
 /**
  * Throw for a refused hub response. The message holds the operation, the RPC, the status, and the body, because the
@@ -191,7 +197,7 @@ class HubCallRefusedError extends Error {}
  */
 async function requireHubOk(res: Response, method: HubMethod, operation: string): Promise<void> {
   if (!res.ok)
-    throw new HubCallRefusedError(`${operation} failed: ${method} returned HTTP ${res.status}: ${await res.text()}`)
+    throw new HubCallRefusedError(`${operation} failed: ${method} returned HTTP ${res.status}: ${await res.text()}`, res.headers)
 }
 
 /**
@@ -327,12 +333,22 @@ export async function loginViaAPI(hubUrl: string, username: string, password: st
  * leave the shared session in a state of its own, signs in for itself.
  */
 export async function freshAdminSessionViaAPI(hubUrl: string): Promise<string> {
-  return loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+  const cookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
+  await dropElevationViaAPI(hubUrl, cookie)
+  return cookie
+}
+
+/**
+ * Drop the step-up window on a session. After A10 a sign-in starts a
+ * five-minute window; tests that expect the step-up prompt must drop it.
+ */
+export async function dropElevationViaAPI(hubUrl: string, cookie: string): Promise<void> {
+  await callHub(hubUrl, 'UserService/DropElevation', {}, { cookie, operation: 'dropElevationViaAPI' })
 }
 
 /** A session of its own for the test administrator, elevated with the password. See `freshAdminSessionViaAPI`. */
 export async function elevatedAdminSessionViaAPI(hubUrl: string): Promise<string> {
-  const cookie = await freshAdminSessionViaAPI(hubUrl)
+  const cookie = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
   await elevateSessionViaAPI(hubUrl, cookie, TEST_ADMIN_PASSWORD)
   return cookie
 }
@@ -987,8 +1003,29 @@ export interface CustomizedHubSetting {
   valueJson: string
 }
 
-/** List the hub settings that hold a stored value. A setting at its code default is absent from the result. */
-export async function listCustomizedHubSettingsViaAPI(hubUrl: string, cookie: string): Promise<CustomizedHubSetting[]> {
+/**
+ * List the hub settings that hold a stored value. A setting at its code default is absent from the result.
+ * When the Hub refuses with the elevation-required header and `password` is set, the helper elevates and retries.
+ */
+export async function listCustomizedHubSettingsViaAPI(hubUrl: string, cookie: string, password?: string): Promise<CustomizedHubSetting[]> {
+  try {
+    return await listCustomizedHubSettings(hubUrl, cookie)
+  }
+  catch (err) {
+    if (password !== undefined && isElevationRequiredRefusal(err)) {
+      await elevateSessionViaAPI(hubUrl, cookie, password)
+      return await listCustomizedHubSettings(hubUrl, cookie)
+    }
+    throw err
+  }
+}
+
+function isElevationRequiredRefusal(err: unknown): err is HubCallRefusedError {
+  return err instanceof HubCallRefusedError
+    && err.responseHeaders.get('Leapmux-Elevation-Required') !== null
+}
+
+async function listCustomizedHubSettings(hubUrl: string, cookie: string): Promise<CustomizedHubSetting[]> {
   const data = await callHub<{ values?: Array<{ key?: string, valueJson?: string, customized?: boolean }> }>(
     hubUrl,
     'AdminSettingsService/ListSettings',
@@ -1040,15 +1077,26 @@ export async function resetHubSettingsViaAPI(
   cookie: string,
   options: { baseline: readonly CustomizedHubSetting[], password: string },
 ): Promise<void> {
-  const { reset, changedBaseline } = hubSettingsDrift(await listCustomizedHubSettingsViaAPI(hubUrl, cookie), options.baseline)
+  const { reset, changedBaseline } = hubSettingsDrift(await listCustomizedHubSettingsViaAPI(hubUrl, cookie, options.password), options.baseline)
   if (changedBaseline.length > 0) {
     throw new Error(`The hub settings ${changedBaseline.join(', ')} differ from their values at the start of the run. `
       + 'The reset cannot restore a value that the hub generated, so restore it in the test that changed it.')
   }
   if (reset.length === 0)
     return
-  await elevateSessionViaAPI(hubUrl, cookie, options.password)
-  await callHub(hubUrl, 'AdminSettingsService/ResetSettings', { keys: reset }, { cookie, operation: `resetHubSettingsViaAPI(${reset.join(', ')})` })
+  const resetSettings = () => callHub(hubUrl, 'AdminSettingsService/ResetSettings', { keys: reset }, {
+    cookie,
+    operation: `resetHubSettingsViaAPI(${reset.join(', ')})`,
+  })
+  try {
+    await resetSettings()
+  }
+  catch (err) {
+    if (!isElevationRequiredRefusal(err))
+      throw err
+    await elevateSessionViaAPI(hubUrl, cookie, options.password)
+    await resetSettings()
+  }
 }
 
 /**

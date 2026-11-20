@@ -127,6 +127,8 @@ The user code is six characters from an ambiguity-free alphabet (no `0`/`1`/`I`/
 }
 ```
 
+The flow you pick also decides how a later step-up runs. A credential from the default flow verifies through the loopback ceremony: a refused command opens a browser on the CLI's own machine, and the command runs once you prove the factor there. A credential from `--device-code` keeps the device-code ceremony, printing an address and a short code instead. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
+
 ### `--scope`: what the credential may do
 
 An omitted `--scope` asks for everything you can do **except** administer the hub. So a routine login leaves no hub-administration credential on disk, and `leapmux control admin ...` refuses it even when your account is an administrator.

@@ -12,7 +12,9 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/loopbackauth"
 )
 
 // Step-up ("sudo mode") for this CLI's own credential.
@@ -21,16 +23,16 @@ import (
 // recently, and marks that refusal with ElevationRequiredHeader. The marker
 // means "prove a factor and retry", and this file is what does it.
 //
-// The factor is proven IN A BROWSER, and deliberately somewhere this process
-// cannot reach: a CLI that could elevate itself from the terminal would hand a
-// stolen credential file everything the window exists to withhold. So the
-// ceremony is the device-code ceremony -- ask, show a URL and a code, wait for
-// a human -- and it works from an SSH session or a container, where the
-// browser is on another machine entirely.
+// The account holder proves a factor in a browser. A credential issued
+// through the authorization-code grant uses a loopback ceremony and needs
+// a browser on the CLI's machine. A credential issued through the device-code
+// grant or by an administrator uses a device-code ceremony, which can be
+// approved in a browser on another machine.
 //
-// What it grants is a WINDOW on the credential this CLI already holds. It
-// mints nothing: the file on disk is unchanged, and every restricted command
-// inside the window lands without another prompt.
+// Step-up opens a window on the CLI's existing credential. The CLI may
+// refresh the bearer and save the rotated tokens before redeeming a loopback
+// code. While the window is current, commands that require it can proceed
+// without another step-up prompt.
 
 // ElevationRequiredHeader marks a hub refusal whose remedy is "prove a
 // factor and retry". It mirrors the constant the hub sets; the value is
@@ -80,9 +82,8 @@ func NeedsElevation(err error, responseHeader *connect.Header) bool {
 //
 // One ceremony needs one person, and a CLI command fans its calls out on one
 // client -- the entity resolver runs its lookups in an errgroup, and the
-// workspace cleanup fans out too. Without this, the first restricted verb on such
-// a path posts one device-authorization row per call and prints that many
-// interleaved URL and code triples, which a person cannot answer.
+// workspace cleanup fans out too. Without this, each refused call could
+// start a separate ceremony and ask the person to verify again.
 //
 // The followers take the LEADER's answer, including its context. That costs
 // nothing to repair -- a step-up mints no credential, so a cancelled stage
@@ -94,10 +95,9 @@ var elevateFlight singleflight.Group
 // Elevate runs one browser step-up for this client's credential and returns
 // when the hub reports it granted.
 //
-// It BLOCKS on a human, for up to the grant's own lifetime, and prints the
-// address and the code to this package's Err. A process with nobody at a
-// keyboard gets ErrElevationNeedsAPerson at once instead, so a caller may
-// call this without testing first.
+// Elevate waits for approval until the ceremony expires. It prints the
+// browser address to Err and includes a code for a device-code ceremony.
+// A process with nobody at a keyboard gets ErrElevationNeedsAPerson at once.
 //
 // Err, never Out: a restricted verb prints its JSON envelope to Out in the same
 // invocation, and four lines of prose in that stream stop `... | jq` from
@@ -116,12 +116,30 @@ func (c *Client) Elevate(ctx context.Context) error {
 	return err
 }
 
+// errBrowserStepUpRequired identifies an authorization-code credential that
+// needs a loopback step-up. The browser must run on the same machine as the
+// CLI. The hub refuses the device ceremony with
+// oauthapp.BrowserStepUpRequiredCode and creates no device row.
+var errBrowserStepUpRequired = errors.New("this credential must be verified in the browser that issued it")
+
+// errStepUpNeedsSignIn reports a loopback step-up with nothing to verify: the
+// credential file holds no token id, so the ceremony has no step_up target
+// and the hub could not bind a code to this credential.
+var errStepUpNeedsSignIn = errors.New("no token id is recorded for this credential; sign in again with `leapmux control auth login`")
+
 // elevateOnce runs the ceremony itself. Elevate wraps it in the flight.
+//
+// The CLI asks the Hub to start a device-code ceremony. If the Hub replies
+// that the credential requires browser step-up, the CLI starts the loopback
+// ceremony on this machine.
 func (c *Client) elevateOnce(ctx context.Context) error {
 	if !c.promptAllowed {
 		return ErrElevationNeedsAPerson
 	}
 	grant, err := c.startElevation(ctx)
+	if errors.Is(err, errBrowserStepUpRequired) {
+		return c.elevateViaLoopback(ctx, loopbackauth.Start)
+	}
 	if err != nil {
 		return err
 	}
@@ -157,23 +175,16 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 	form := url.Values{"installation_name": {DefaultDeviceName()}}
 	// The credential itself is the right to ASK. What it cannot do is
 	// approve, which needs a browser session that proves a factor.
-	resp, err := PostForm(ctx, c.HTTPClient,
+	resp, err := loopbackauth.PostForm(ctx, c.HTTPClient,
 		locallisten.JoinPath(c.connectURL, "/oauth/step-up"),
 		form, c.ApplyAuth)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// 403 is the app's own registration refusing the stage: its owner has not
-	// allowed it to verify a factor. 400 and 401 are the credential kinds that
-	// carry no window at all. All three are permanent for this credential, so
-	// the caller reports the remedy instead of retrying.
-	//
-	// 403 decodes the BODY, because the hub states the one-step remedy there
-	// (allow elevation under Preferences › Apps › App registrations). The
-	// sentinel's own two causes are both wrong for this refusal, and an
-	// operator who reads them retries a browser ceremony the hub keeps
-	// refusing.
+	// The Hub checks the app's elevation permission before checking the
+	// credential's issuance. Its 403 response can explain how to allow
+	// elevation in Preferences › Apps › App registrations.
 	if resp.StatusCode == http.StatusForbidden {
 		var body struct {
 			ErrorDescription string `json:"error_description"`
@@ -184,7 +195,19 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 		}
 		return nil, ErrElevationUnsupported
 	}
-	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+	// 400 is the credential kind the device ceremony cannot carry: a
+	// browser-issued credential gets the refusal that identifies the browser ceremony,
+	// and every other 400 is a credential kind that carries no window at
+	// all. Both are permanent for the device ceremony -- but the first one
+	// has a working alternative, so it is a sentinel rather than a failure.
+	if resp.StatusCode == http.StatusBadRequest {
+		body := loopbackauth.ReadOAuthError(resp)
+		if body.Error == oauthapp.BrowserStepUpRequiredCode {
+			return nil, errBrowserStepUpRequired
+		}
+		return nil, ErrElevationUnsupported
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrElevationUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -210,7 +233,7 @@ func (c *Client) pollElevation(ctx context.Context, deviceCode, clientID string)
 		"client_id":   {clientID},
 		"device_code": {deviceCode},
 	}
-	resp, err := PostForm(ctx, c.HTTPClient,
+	resp, err := loopbackauth.PostForm(ctx, c.HTTPClient,
 		locallisten.JoinPath(c.connectURL, "/oauth/token"), form)
 	if err != nil {
 		return err
@@ -220,4 +243,100 @@ func (c *Client) pollElevation(ctx context.Context, deviceCode, clientID string)
 		return nil
 	}
 	return DeviceFlowError(resp)
+}
+
+// elevateViaLoopback runs the browser step-up of a credential the hub
+// refuses to verify through the device ceremony. The person at the browser
+// is on THIS machine, so the redirect comes back to a loopback listener here.
+func (c *Client) elevateViaLoopback(
+	ctx context.Context, start func(loopbackauth.Request) (*loopbackauth.Flow, error),
+) error {
+	creds, err := LoadCredentials(c.HubURL)
+	if err != nil {
+		// Only a missing credential means "sign in again". A file that
+		// will not parse is a different problem with a different remedy,
+		// and the parse error must reach the user instead of the
+		// sign-in message.
+		if errors.Is(err, ErrNotLoggedIn) {
+			return errStepUpNeedsSignIn
+		}
+		return err
+	}
+	if creds.TokenID == "" {
+		return errStepUpNeedsSignIn
+	}
+	flow, err := start(loopbackauth.Request{
+		HubBaseURL:       c.HubURL,
+		App:              CLIApp(creds.ClientIDOrBuiltIn()),
+		InstallationName: DefaultDeviceName(),
+		StepUp:           loopbackauth.StepUpForToken(creds.TokenID),
+	})
+	if err != nil {
+		return err
+	}
+	defer flow.Close()
+
+	authorizeURL := flow.AuthorizeURL()
+	_, _ = fmt.Fprintln(Err, "This command needs you to verify your identity.")
+	_, _ = fmt.Fprintln(Err, "Open this URL in your browser:")
+	_, _ = fmt.Fprintln(Err, " ", authorizeURL)
+	_ = OpenBrowser(authorizeURL)
+
+	code, err := flow.Wait(ctx)
+	if err != nil {
+		return err
+	}
+	// The access token can expire or rotate while the person is at the
+	// browser; the redemption must present the credential the code identifies.
+	if err := c.EnsureFreshBearer(ctx); err != nil {
+		return err
+	}
+	return c.redeemStepUpCode(ctx, flow, code)
+}
+
+// redeemStepUpCode exchanges the loopback step-up's code for the window.
+// A step-up mints nothing, so the answer is the confirmation alone.
+func (c *Client) redeemStepUpCode(ctx context.Context, flow *loopbackauth.Flow, code string) error {
+	resp, err := c.postStepUpRedemption(ctx, flow, code)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		_ = resp.Body.Close()
+		// The hub keeps the code valid after a 401, so a repaired bearer is
+		// worth one more post rather than a lost ceremony.
+		if err := c.repairAfterUnauthenticated(ctx); err != nil {
+			return err
+		}
+		resp, err = c.postStepUpRedemption(ctx, flow, code)
+		if err != nil {
+			return err
+		}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body := loopbackauth.ReadOAuthError(resp)
+		if body.Error != "" {
+			return errors.New(body.Message())
+		}
+		return fmt.Errorf("the hub refused the verification request: %s", resp.Status)
+	}
+	var out struct {
+		Elevated bool `json:"elevated"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return err
+	}
+	if !out.Elevated {
+		return errors.New("the hub did not confirm the verification")
+	}
+	return nil
+}
+
+// postStepUpRedemption performs one redemption attempt, presenting the
+// bearer this client holds.
+func (c *Client) postStepUpRedemption(ctx context.Context, flow *loopbackauth.Flow, code string) (*http.Response, error) {
+	return loopbackauth.PostForm(ctx, c.HTTPClient,
+		locallisten.JoinPath(c.connectURL, "/oauth/token"),
+		flow.TokenForm(code), c.ApplyAuth)
 }

@@ -38,6 +38,7 @@ func seedAPITokenForApp(t *testing.T, env *userTestEnv, clientID, installationNa
 	expires := time.Now().Add(time.Hour)
 	refreshExpires := time.Now().Add(90 * 24 * time.Hour)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         clientID,
@@ -129,7 +130,8 @@ func TestListMyAPITokens_IsScopedToTheCaller(t *testing.T) {
 	}))
 	expires := time.Now().Add(time.Hour)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: id.Generate(), UserID: userid.MustNew(otherID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "theirs", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       id.Generate(), UserID: userid.MustNew(otherID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "theirs", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("x"), ExpiresAt: &expires,
 	}))
 
@@ -229,7 +231,8 @@ func TestRevokeMyAPIToken_RefusesAnotherUsersToken(t *testing.T) {
 	victimToken := id.Generate()
 	expires := time.Now().Add(time.Hour)
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: victimToken, UserID: userid.MustNew(otherID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "victim-laptop", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       victimToken, UserID: userid.MustNew(otherID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "victim-laptop", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("x"), ExpiresAt: &expires,
 	}))
 
@@ -347,7 +350,8 @@ func TestDisconnectApp_IsScopedToTheCaller(t *testing.T) {
 	}))
 	victimToken := id.Generate()
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: victimToken, UserID: userid.MustNew(otherID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       victimToken, UserID: userid.MustNew(otherID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "victim-laptop", GrantedScopes: "workspace:read", SecretHash: []byte("x"),
 	}))
 
@@ -490,6 +494,7 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 		RedirectURI:   "http://127.0.0.1:54321/callback",
 		GrantedScopes: "workspace:read",
 		ExpiresAt:     time.Now().Add(10 * time.Minute),
+		Redemption:    store.RedemptionKindToken,
 	}))
 
 	deviceCode := id.Generate()

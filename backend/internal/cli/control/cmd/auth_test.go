@@ -6,11 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -763,6 +763,89 @@ func TestRunAuthLogin_LocalRedirectRefusesSocketURL(t *testing.T) {
 	assert.Contains(t, env.Error["message"], "--device-code")
 }
 
+// TestRunAuthLogin_LocalRedirectLoginWithOpenBrowserReplaced drives the whole
+// local-redirect login without a browser: the opener is replaced, and the
+// test answers the callback of the URL the CLI printed. The credential file
+// must land on disk from that exchange alone -- and no real browser may
+// start, which the replaced opener makes structural rather than observed.
+func TestRunAuthLogin_LocalRedirectLoginWithOpenBrowserReplaced(t *testing.T) {
+	isolateCLIEnv(t)
+
+	var (
+		mu        sync.Mutex
+		opened    string
+		openHits  int
+		tokenForm url.Values
+	)
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth/token" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		tokenForm = r.Form
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "lmx_a_at_loop",
+			"refresh_token": "lmx_a_rt_loop",
+			"expires_in":    3600,
+			"user_id":       "user-loop",
+			"username":      "loopuser",
+			"token_id":      "tok-loop",
+		})
+	}))
+	defer srv.Close()
+
+	prev := control.OpenBrowser
+	control.OpenBrowser = func(authorizeURL string) error {
+		mu.Lock()
+		opened = authorizeURL
+		openHits++
+		mu.Unlock()
+		// The test is the person at the browser: it answers the callback of
+		// the authorize URL, which carries the loopback redirect and the
+		// state in its query.
+		u, err := url.Parse(authorizeURL)
+		require.NoError(t, err)
+		q := u.Query()
+		resp, err := http.Get(q.Get("redirect_uri") + "?" + url.Values{
+			"state": {q.Get("state")},
+			"code":  {"C-9"},
+		}.Encode())
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		return nil
+	}
+	t.Cleanup(func() { control.OpenBrowser = prev })
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-name", "test-laptop"}))
+	})
+
+	creds, err := control.LoadCredentials(srv.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "lmx_a_at_loop", creds.AccessToken)
+	assert.Equal(t, "user-loop", creds.UserID)
+	assert.Equal(t, "loopuser", creds.Username)
+	assert.Equal(t, "tok-loop", creds.TokenID)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, openHits, "one login opens the detour once")
+	assert.Contains(t, opened, "/oauth/authorize?")
+	assert.Contains(t, string(out), opened, "the opener gets the URL the CLI printed")
+	require.NotNil(t, tokenForm)
+	assert.Equal(t, "authorization_code", tokenForm.Get("grant_type"))
+	assert.Equal(t, "C-9", tokenForm.Get("code"))
+	assert.NotEmpty(t, tokenForm.Get("code_verifier"))
+}
+
 // TestRunAuthLogin_DeviceCodeFlowSocketUnreachable pins the error
 // path of the same socket dial: when the unix:/npipe: path has no
 // listener, the CLI must still use cliHTTPClient (so the failure is a
@@ -1076,105 +1159,6 @@ func TestRunAuthCredentials_AFailedLaterPageFailsTheListing(t *testing.T) {
 	assert.Empty(t, env.Data, "a failed listing prints no partial data")
 	assert.NotContains(t, string(out), "tok-1", "the rows of the first page must not print")
 	assert.Equal(t, []string{"", "page-2"}, stub.requestedCursors())
-}
-
-// TestCallbackHandlerNeverBlocksOnDuplicates pins the local-redirect login's
-// wedge fix: the browser can re-GET the success page (or a stale tab can
-// re-send a bad state) after the CLI already holds its one outcome. A
-// blocking send would park the handler goroutine and the deferred
-// srv.Shutdown would wait for it forever -- a login that already succeeded
-// hanging the CLI. Every duplicate here must answer within the timeout.
-func TestCallbackHandlerNeverBlocksOnDuplicates(t *testing.T) {
-	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-	// Pre-fill both channels: the CLI has consumed neither, so both buffers
-	// are full -- the exact state a duplicate arrival meets.
-	codeCh <- "code-1"
-	errCh <- errors.New("first error")
-
-	handler := callbackHandler("state-1", codeCh, errCh)
-	serve := func(path, state, code string) bool {
-		req := httptest.NewRequest(http.MethodGet, path+"?state="+state+"&code="+code, nil)
-		done := make(chan struct{})
-		go func() {
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-			close(done)
-		}()
-		select {
-		case <-done:
-			return true
-		case <-time.After(2 * time.Second):
-			return false
-		}
-	}
-
-	require.True(t, serve("/callback", "state-1", "code-1"),
-		"a duplicate success callback must answer, not block")
-	require.True(t, serve("/callback", "wrong", "code-1"),
-		"a duplicate bad-state callback must answer, not block")
-	require.True(t, serve("/callback", "state-1", "code-1"),
-		"a third duplicate must still answer")
-	// The FIRST outcome survives; duplicates dropped rather than replaced it.
-	require.Equal(t, "code-1", <-codeCh)
-	require.EqualError(t, <-errCh, "first error")
-}
-
-// TestCallbackHandlerReportsTheServerErrorParameter pins the RFC 6749 section
-// 4.1.2.1 branch of the local-redirect callback: the hub redirects every
-// refusal it could validate back with `error` (a Deny, an invalid_scope, a
-// server error), and folding those into the state-mismatch branch told a user
-// who deliberately refused that the state check had failed -- a CSRF suspicion
-// they can neither check nor act on. The state check stays first: a mismatched
-// state is a mismatch whatever else the query carries.
-func TestCallbackHandlerReportsTheServerErrorParameter(t *testing.T) {
-	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-	handler := callbackHandler("state-1", codeCh, errCh)
-
-	serve := func(t *testing.T, query string) *httptest.ResponseRecorder {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/callback?"+query, nil))
-		return rec
-	}
-
-	// A refusal with the matching state reports the ACTUAL cause.
-	rec := serve(t, "state=state-1&error=access_denied&error_description=the+account+owner+refused")
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	select {
-	case err := <-errCh:
-		require.ErrorContains(t, err, "access_denied")
-		require.ErrorContains(t, err, "the account owner refused")
-	default:
-		t.Fatal("the refusal must reach the CLI's error channel")
-	}
-	select {
-	case code := <-codeCh:
-		t.Fatalf("a refused authorization must not carry a code: %q", code)
-	default:
-	}
-
-	// A mismatched state is reported as the mismatch even when an error rides
-	// along: the state check decides first.
-	rec = serve(t, "state=wrong&error=access_denied")
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	select {
-	case err := <-errCh:
-		require.ErrorContains(t, err, "callback state mismatch")
-	default:
-		t.Fatal("a mismatched state must reach the CLI's error channel")
-	}
-
-	// Neither a code nor an error is its own answer, not silence about which.
-	rec = serve(t, "state=state-1")
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	select {
-	case err := <-errCh:
-		require.ErrorContains(t, err, "neither a code nor an error")
-	default:
-		t.Fatal("an empty callback must reach the CLI's error channel")
-	}
 }
 
 // --- the hub check behind auth status / whoami ------------------------

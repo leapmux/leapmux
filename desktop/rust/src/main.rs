@@ -27,6 +27,11 @@ mod alloc_probe;
 #[cfg(test)]
 mod asset_csp;
 
+// Test-only guards for the window config the shell builds the main window
+// from, the way `asset_csp` guards the served CSP.
+#[cfg(test)]
+mod window_config;
+
 mod sidecar_ipc;
 
 // Windows-only connect/handshake + its tests. A single module-level `cfg`
@@ -57,16 +62,22 @@ mod file_save;
 // `cfg` attributes inside the module, the way `windows_impl` does.
 mod tray;
 
+// The navigation allow-list, registered as a plugin so it covers every
+// webview the shell serves.
+mod navigation;
+
 #[cfg(target_os = "linux")]
 mod tabfix_linux;
 
 use base64::Engine;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::file_save::{
     file_save_abort, file_save_commit, file_save_open, file_save_open_dialog, file_save_write,
-    SaveStreamRegistry, SAVE_HANDLE_GC_INTERVAL, SAVE_HANDLE_IDLE_TIMEOUT,
+    read_b64_header, read_header_str, SaveStreamRegistry, SAVE_HANDLE_GC_INTERVAL,
+    SAVE_HANDLE_IDLE_TIMEOUT,
 };
 use crate::frame::{get_sidecar_info_request, read_frame, write_frame};
 use crate::sidecar::bootstrap_sidecar;
@@ -87,7 +98,7 @@ use crate::sidecar::connect_and_handshake_dev_sidecar;
 #[cfg(all(unix, test))]
 use std::os::unix::net::UnixStream;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{self, BufReader, Read, Write},
     path::PathBuf,
     process::Child,
@@ -98,6 +109,102 @@ use std::{
     thread,
     time::Duration,
 };
+
+const RAW_INVOKE_CACHE_CAPACITY: usize = 1024;
+const RAW_INVOKE_CACHE_MAX_BYTES: usize = MAX_FRAME_SIZE_BYTES as usize * 2;
+
+#[derive(Clone)]
+enum RawInvokeResult {
+    Proxy(Result<Vec<u8>, String>),
+    Send(Result<(), String>),
+}
+
+impl RawInvokeResult {
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Proxy(Ok(body)) => body.len(),
+            Self::Proxy(Err(message)) | Self::Send(Err(message)) => message.len(),
+            Self::Send(Ok(())) => 0,
+        }
+    }
+}
+
+enum RawInvokeEntry {
+    InFlight(&'static str),
+    Complete(RawInvokeResult),
+}
+
+struct RawInvokeCache {
+    entries: HashMap<String, RawInvokeEntry>,
+    completed: VecDeque<(String, usize)>,
+    completed_bytes: usize,
+}
+
+struct RawInvokeRegistry {
+    cache: Mutex<RawInvokeCache>,
+    capacity: usize,
+    max_completed_bytes: usize,
+}
+
+impl Default for RawInvokeRegistry {
+    fn default() -> Self {
+        Self::with_limits(RAW_INVOKE_CACHE_CAPACITY, RAW_INVOKE_CACHE_MAX_BYTES)
+    }
+}
+
+impl RawInvokeRegistry {
+    fn with_limits(capacity: usize, max_completed_bytes: usize) -> Self {
+        Self {
+            cache: Mutex::new(RawInvokeCache {
+                entries: HashMap::new(),
+                completed: VecDeque::new(),
+                completed_bytes: 0,
+            }),
+            capacity,
+            max_completed_bytes,
+        }
+    }
+
+    fn begin(
+        &self,
+        request_id: &str,
+        kind: &'static str,
+    ) -> Result<Option<RawInvokeResult>, String> {
+        if request_id.is_empty() || request_id.len() > 128 {
+            return Err("raw invoke request id is invalid".to_string());
+        }
+        let mut cache = recover(&self.cache);
+        match cache.entries.get(request_id) {
+            Some(RawInvokeEntry::InFlight(existing)) => {
+                return Err(format!("{existing} request is already in progress"));
+            }
+            Some(RawInvokeEntry::Complete(result)) => return Ok(Some(result.clone())),
+            None => {}
+        }
+        cache
+            .entries
+            .insert(request_id.to_string(), RawInvokeEntry::InFlight(kind));
+        Ok(None)
+    }
+
+    fn finish(&self, request_id: String, result: RawInvokeResult) {
+        let retained_bytes = request_id.len() + result.retained_bytes();
+        let mut cache = recover(&self.cache);
+        cache
+            .entries
+            .insert(request_id.clone(), RawInvokeEntry::Complete(result));
+        cache.completed.push_back((request_id, retained_bytes));
+        cache.completed_bytes += retained_bytes;
+        while cache.completed.len() > self.capacity
+            || (cache.completed_bytes > self.max_completed_bytes && cache.completed.len() > 1)
+        {
+            if let Some((expired, expired_bytes)) = cache.completed.pop_front() {
+                cache.completed_bytes -= expired_bytes;
+                cache.entries.remove(&expired);
+            }
+        }
+    }
+}
 // `Command` is used only by the macOS relaunch helper (it shells out to
 // `/usr/bin/open -n` via LaunchServices); restrict it to macOS so the other
 // targets do not trip `-D unused-imports`.
@@ -180,12 +287,18 @@ const CACHED_CONFIG_TIMEOUT: Duration = Duration::from_secs(5);
 // Cross-language env-var contract, generated from contracts/desktop.json
 // (the Go sidecar reads the same names from its generated contracts package;
 // the Tauri event names live in the same generated module).
+//
+// `allow(dead_code)`: the generated vocabulary serves every language, and a
+// token this binary does not use must not fail its build. Relay frames use raw
+// acknowledged reads, so the older event vocabulary remains unused here.
+#[allow(dead_code)]
 mod contracts_generated {
     include!("generated/contracts.rs");
 }
 pub(crate) use contracts_generated::{
     DEV_FRONTEND_URL, ENV_AGENT_HELPER, ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND,
-    MAX_FRAME_SIZE_BYTES,
+    IPC_HEADER_HEADERS, IPC_HEADER_METHOD, IPC_HEADER_PATH, IPC_HEADER_RELAY_ID,
+    IPC_HEADER_REQUEST_ID, MAX_FRAME_SIZE_BYTES,
 };
 
 /// The shell's own record of the dev sidecar it last bootstrapped, written for
@@ -217,13 +330,6 @@ enum PlatformMode {
     TauriMobileDistributed,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum HubTransport {
-    Direct,
-    Proxy,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ShellMode {
@@ -236,7 +342,6 @@ enum ShellMode {
 #[serde(rename_all = "camelCase")]
 struct PlatformCapabilities {
     mode: PlatformMode,
-    hub_transport: HubTransport,
     tunnels: bool,
     app_control: bool,
     window_control: bool,
@@ -282,13 +387,6 @@ struct BuildInfoResponse {
     commit_time: String,
     build_time: String,
     branch: String,
-}
-
-#[derive(Serialize)]
-struct ProxyHttpResponsePayload {
-    status: i32,
-    headers: HashMap<String, Vec<String>>,
-    body: String,
 }
 
 #[derive(Serialize)]
@@ -366,7 +464,6 @@ struct ShellState {
     shell_mode: ShellMode,
     connected: bool,
     hub_url: String,
-    local_app_url: String,
 }
 
 struct SidecarProcess {
@@ -449,11 +546,6 @@ impl DesktopShell {
     /// the other launch read instead of before it. A shell this returns holds
     /// the launcher defaults until that call completes.
     fn connect(app_handle: AppHandle) -> Result<Self, String> {
-        let local_app_url = if cfg!(debug_assertions) {
-            crate::DEV_FRONTEND_URL.to_string()
-        } else {
-            "tauri://localhost".to_string()
-        };
         let sidecar_path = resolve_sidecar_path(&app_handle)?;
         let bootstrap = bootstrap_sidecar(&sidecar_path)?;
 
@@ -476,7 +568,6 @@ impl DesktopShell {
                 shell_mode: ShellMode::Launcher,
                 connected: false,
                 hub_url: String::new(),
-                local_app_url,
             }),
         };
 
@@ -717,29 +808,49 @@ fn handle_sidecar_frame(app_handle: &AppHandle, pending: &PendingMap, frame: pro
 
 fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
     let Some(payload) = event.payload else { return };
+    let relay_id = event.relay_id;
 
     match payload {
         proto::event::Payload::ChannelMessage(msg) => {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
-            let _ = app_handle.emit(contracts_generated::EVENT_CHANNEL_MESSAGE, b64);
+            app_handle
+                .state::<RelaySlots>()
+                .channel
+                .send_raw(relay_id, msg.data);
         }
         proto::event::Payload::ChannelClose(close) => {
-            let _ = app_handle.emit(
-                contracts_generated::EVENT_CHANNEL_CLOSE,
-                json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
+            app_handle.state::<RelaySlots>().channel.send_close(
+                relay_id,
+                close.code,
+                close.reason,
+                close.was_clean,
             );
         }
         proto::event::Payload::UserEventsMessage(msg) => {
-            // Forward the hub's length-prefixed WatchUserEvent frame
-            // verbatim to the webview. The frontend's `useUserEvents`
-            // hook decodes identically to native WS frames.
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
-            let _ = app_handle.emit(contracts_generated::EVENT_USER_EVENTS_MESSAGE, b64);
+            // Forward the length-prefixed WatchUserEvent frame verbatim. The
+            // frontend decodes it the same way as a native WebSocket frame.
+            app_handle
+                .state::<RelaySlots>()
+                .user_events
+                .send_raw(relay_id, msg.data);
         }
         proto::event::Payload::UserEventsClose(close) => {
+            app_handle.state::<RelaySlots>().user_events.send_close(
+                relay_id,
+                close.code,
+                close.reason,
+                close.was_clean,
+            );
+        }
+        proto::event::Payload::BrowserAuthResult(result) => {
+            // The one result of one browser-auth ceremony, forwarded
+            // verbatim: the webview resolves the ceremony's promise from it.
             let _ = app_handle.emit(
-                contracts_generated::EVENT_USER_EVENTS_CLOSE,
-                json!({ "code": close.code, "reason": close.reason, "wasClean": close.was_clean }),
+                contracts_generated::EVENT_BROWSER_AUTH_RESULT,
+                json!({
+                    "ceremonyId": result.ceremony_id,
+                    "ok": result.ok,
+                    "failure": result.failure,
+                }),
             );
         }
         proto::event::Payload::SidecarLog(log) => {
@@ -756,11 +867,13 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
 
 // --- Static helpers ---
 
+// No transport field on `PlatformCapabilities`: every desktop mode reaches
+// the Hub through the shell's proxy, so the webview derives the transport
+// from the platform it runs on instead of reading a reported value.
 fn capabilities_for(state: &ShellState) -> PlatformCapabilities {
     match state.shell_mode {
         ShellMode::Solo | ShellMode::Launcher => PlatformCapabilities {
             mode: PlatformMode::TauriDesktopSolo,
-            hub_transport: HubTransport::Proxy,
             tunnels: true,
             app_control: true,
             window_control: true,
@@ -769,7 +882,6 @@ fn capabilities_for(state: &ShellState) -> PlatformCapabilities {
         },
         ShellMode::Distributed => PlatformCapabilities {
             mode: PlatformMode::TauriDesktopDistributed,
-            hub_transport: HubTransport::Direct,
             tunnels: true,
             app_control: true,
             window_control: true,
@@ -942,10 +1054,12 @@ async fn connect_solo(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String>
     Ok(())
 }
 
+/// Connect to a remote Hub. The window keeps showing the bundled frontend:
+/// every mode reaches the Hub through the shell's proxy, so no navigation
+/// follows the connect.
 #[tauri::command]
 async fn connect_distributed(
     shell: State<'_, Arc<DesktopShell>>,
-    window: WebviewWindow,
     hub_url: String,
 ) -> Result<(), String> {
     let resp = check_response(
@@ -956,60 +1070,117 @@ async fn connect_distributed(
             .await?,
     )?;
     let info = sidecar_info_from_response(resp, "connect_distributed")?;
-    let normalized_hub_url = info.hub_url.clone();
     apply_sidecar_info(&shell.state, info);
-
-    let target_url =
-        Url::parse(&normalized_hub_url).map_err(|err| format!("parse hub url: {err}"))?;
-    window
-        .navigate(target_url)
-        .map_err(|err| format!("navigate to hub: {err}"))?;
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct ProxyHttpPayload {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    #[serde(rename = "bodyBase64")]
-    body_base64: String,
+fn read_raw_invoke_body(request: &tauri::ipc::Request<'_>) -> Result<Vec<u8>, String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        tauri::ipc::InvokeBody::Json(serde_json::Value::Array(values)) => json_bytes(values),
+        _ => Err("expected raw bytes body".to_string()),
+    }
 }
 
+fn json_bytes(values: &[serde_json::Value]) -> Result<Vec<u8>, String> {
+    if values.len() > MAX_FRAME_SIZE_BYTES as usize {
+        return Err("raw invoke body exceeds the frame limit".to_string());
+    }
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|byte| *byte <= u8::MAX as u64)
+                .map(|byte| byte as u8)
+                .ok_or_else(|| "raw invoke byte array contains an invalid value".to_string())
+        })
+        .collect()
+}
+
+fn raw_response(bytes: Vec<u8>) -> tauri::ipc::Response {
+    tauri::ipc::Response::new(tauri::ipc::InvokeResponseBody::Raw(bytes))
+}
+
+/// One proxied HTTP round trip. The request body crosses the Tauri IPC as the
+/// raw invoke body (`InvokeBody::Raw`), the `file_save_write` pattern -- the
+/// base64 round-trip was the dominant cost for multi-MB payloads. The method,
+/// the path and the proxied headers ride InvokeOptions headers instead (the
+/// `file_save_open` pattern), because the invoke-args slot holds the raw body.
+/// The response comes back as the existing ProxyHttpResponse protobuf. The raw
+/// Tauri body avoids base64 while the generated schema keeps Rust and the
+/// webview on one framing definition.
 #[tauri::command]
 async fn proxy_http(
     shell: State<'_, Arc<DesktopShell>>,
-    payload: ProxyHttpPayload,
-) -> Result<ProxyHttpResponsePayload, String> {
-    let body = if payload.body_base64.is_empty() {
-        Vec::new()
-    } else {
-        decode_b64(&payload.body_base64).map_err(|err| format!("decode request body: {err}"))?
+    registry: State<'_, RawInvokeRegistry>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<tauri::ipc::Response, String> {
+    let request_id = read_header_str(&request, IPC_HEADER_REQUEST_ID)?.to_string();
+    if let Some(cached) = registry.begin(&request_id, "HTTP proxy")? {
+        return match cached {
+            RawInvokeResult::Proxy(result) => result.map(raw_response),
+            RawInvokeResult::Send(_) => {
+                Err("raw invoke request id was reused by another command".to_string())
+            }
+        };
+    }
+
+    let parsed = (|| {
+        let method = read_header_str(&request, IPC_HEADER_METHOD)?.to_string();
+        let path = read_header_str(&request, IPC_HEADER_PATH)?.to_string();
+        // The proxied headers are arbitrary Unicode key/value pairs (the JSON body
+        // used to carry them as-is), and an invoke header value must stay visible
+        // ASCII, so the map rides base64-encoded -- the `filename-b64` pattern.
+        let headers: HashMap<String, String> =
+            serde_json::from_str(&read_b64_header(&request, IPC_HEADER_HEADERS)?)
+                .map_err(|err| format!("parse proxy headers: {err}"))?;
+        let body = read_raw_invoke_body(&request)?;
+        Ok::<_, String>((method, path, headers, body))
+    })();
+    let (method, path, headers, body) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            registry.finish(request_id, RawInvokeResult::Proxy(Err(error.clone())));
+            return Err(error);
+        }
     };
 
-    let resp = check_response(
+    let result = async {
+        let resp = check_response(
+            shell
+                .send_request_async(proto::request::Method::ProxyHttp(proto::ProxyHttpRequest {
+                    method,
+                    path,
+                    headers,
+                    body,
+                    request_id: request_id.clone(),
+                }))
+                .await?,
+        )?;
+        match resp.result {
+            Some(proto::response::Result::ProxyHttp(r)) => Ok(r.encode_to_vec()),
+            _ => Err("unexpected response for proxy_http".to_string()),
+        }
+    }
+    .await;
+    registry.finish(request_id, RawInvokeResult::Proxy(result.clone()));
+    result.map(raw_response)
+}
+
+#[tauri::command]
+async fn cancel_proxy_http(
+    shell: State<'_, Arc<DesktopShell>>,
+    request_id: String,
+) -> Result<(), String> {
+    check_response(
         shell
-            .send_request_async(proto::request::Method::ProxyHttp(proto::ProxyHttpRequest {
-                method: payload.method,
-                path: payload.path,
-                headers: payload.headers,
-                body,
-            }))
+            .send_request_async(proto::request::Method::CancelProxyHttp(
+                proto::CancelProxyHttpRequest { request_id },
+            ))
             .await?,
     )?;
-
-    match resp.result {
-        Some(proto::response::Result::ProxyHttp(r)) => Ok(ProxyHttpResponsePayload {
-            status: r.status,
-            headers: r
-                .headers
-                .into_iter()
-                .map(|(name, values)| (name, values.values))
-                .collect(),
-            body: base64::engine::general_purpose::STANDARD.encode(&r.body),
-        }),
-        _ => Err("unexpected response for proxy_http".to_string()),
-    }
+    Ok(())
 }
 
 // --- CLI PATH integration (macOS only at the sidecar level) ---
@@ -1080,46 +1251,380 @@ async fn cli_install_symlink(
     }
 }
 
-// relay_id names which frontend relay wrapper is asking, so the sidecar can ignore
-// a close that a later open has already superseded. See the proto's comment on
-// OpenChannelRelayRequest.
+const NOTICE_WINDOW_LABEL: &str = "notice";
+
+fn notice_window_url() -> tauri::WebviewUrl {
+    tauri::WebviewUrl::App("NOTICE.html".into())
+}
+
+// WebView2 cannot create a webview from a synchronous command. Tauri's async
+// command dispatcher runs the window builder outside the main thread.
+#[tauri::command]
+async fn open_notice_window(window: WebviewWindow) -> Result<(), String> {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("only the main window can open third-party licenses".to_string());
+    }
+
+    let app = window.app_handle();
+    if let Some(notice) = app.get_webview_window(NOTICE_WINDOW_LABEL) {
+        return notice.set_focus().map_err(|error| error.to_string());
+    }
+
+    // The initial URL must be local by construction. WebView2 can start
+    // its first navigation before the navigation hook is installed.
+    match tauri::WebviewWindowBuilder::new(app, NOTICE_WINDOW_LABEL, notice_window_url())
+        .title("Third-party Licenses")
+        .inner_size(800.0, 600.0)
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+        .build()
+    {
+        Ok(_) => Ok(()),
+        Err(
+            error @ (tauri::Error::WindowLabelAlreadyExists(_)
+            | tauri::Error::WebviewLabelAlreadyExists(_)),
+        ) => app
+            .get_webview_window(NOTICE_WINDOW_LABEL)
+            .ok_or_else(|| error.to_string())?
+            .set_focus()
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+// --- Relay frame delivery ---
+
+const RELAY_QUEUE_MAX_BYTES: usize = MAX_FRAME_SIZE_BYTES as usize * 2;
+
+#[derive(Clone)]
+enum RelayReadItem {
+    Data(Vec<u8>),
+    Close(proto::RelayClose),
+}
+
+struct QueuedRelayRead {
+    cursor: u64,
+    bytes: usize,
+    item: RelayReadItem,
+}
+
+#[derive(Default)]
+struct RelayOwnerQueue {
+    next_cursor: u64,
+    queued_bytes: usize,
+    closed: bool,
+    items: VecDeque<QueuedRelayRead>,
+}
+
+impl RelayOwnerQueue {
+    fn push(&mut self, item: RelayReadItem, bytes: usize) {
+        self.next_cursor += 1;
+        self.queued_bytes += bytes;
+        self.items.push_back(QueuedRelayRead {
+            cursor: self.next_cursor,
+            bytes,
+            item,
+        });
+    }
+
+    fn acknowledge(&mut self, cursor: u64) {
+        while self.items.front().is_some_and(|item| item.cursor <= cursor) {
+            let item = self.items.pop_front().expect("front item exists");
+            self.queued_bytes -= item.bytes;
+        }
+    }
+}
+
+#[derive(Default)]
+struct RelayReceivers {
+    accepted: Option<u64>,
+    closed_through: u64,
+    owners: HashMap<u64, RelayOwnerQueue>,
+}
+
+/// The active receiver and pending candidates for one relay kind. Sidecar
+/// events enqueue by exact owner. The renderer acknowledges one cursor per
+/// read, so a failed invoke can repeat without losing or reordering an item.
+struct RelayChannelSlot {
+    receivers: Mutex<RelayReceivers>,
+    changed: tokio::sync::Notify,
+    max_bytes: usize,
+}
+
+impl Default for RelayChannelSlot {
+    fn default() -> Self {
+        Self {
+            receivers: Mutex::new(RelayReceivers::default()),
+            changed: tokio::sync::Notify::new(),
+            max_bytes: RELAY_QUEUE_MAX_BYTES,
+        }
+    }
+}
+
+impl RelayChannelSlot {
+    fn is_accepted(&self, relay_id: u64) -> bool {
+        recover(&self.receivers).accepted == Some(relay_id)
+    }
+
+    fn register(&self, relay_id: u64) -> bool {
+        let mut receivers = recover(&self.receivers);
+        if relay_id == 0
+            || relay_id <= receivers.closed_through
+            || receivers.accepted.is_some_and(|active| active >= relay_id)
+            || receivers.owners.contains_key(&relay_id)
+        {
+            return false;
+        }
+        receivers
+            .owners
+            .insert(relay_id, RelayOwnerQueue::default());
+        true
+    }
+
+    fn accept(&self, relay_id: u64) -> bool {
+        let mut receivers = recover(&self.receivers);
+        if !receivers.owners.contains_key(&relay_id) {
+            return false;
+        }
+        receivers.owners.retain(|id, _| *id >= relay_id);
+        receivers.accepted = Some(relay_id);
+        self.changed.notify_waiters();
+        true
+    }
+
+    async fn open(
+        &self,
+        relay_id: u64,
+        request: impl std::future::Future<Output = Result<proto::Response, String>>,
+        repeat_close: impl std::future::Future<Output = Result<proto::Response, String>>,
+    ) -> Result<(), String> {
+        if !self.register(relay_id) {
+            return Err("relay receiver could not be registered".to_string());
+        }
+        if let Err(error) = request.await.and_then(check_response) {
+            self.close_if_owner(relay_id);
+            return Err(error);
+        }
+        if self.accept(relay_id) {
+            return Ok(());
+        }
+        if let Err(error) = repeat_close.await.and_then(check_response) {
+            shell_log!("relay {relay_id} cleanup after open failed: {error}");
+        }
+        Err("relay receiver closed or superseded during open".to_string())
+    }
+
+    fn send_raw(&self, relay_id: u64, data: Vec<u8>) {
+        let mut receivers = recover(&self.receivers);
+        let Some(owner) = receivers.owners.get_mut(&relay_id) else {
+            return;
+        };
+        if owner.closed {
+            return;
+        }
+        if data.len() > self.max_bytes || owner.queued_bytes + data.len() > self.max_bytes {
+            owner.items.clear();
+            owner.queued_bytes = 0;
+            owner.closed = true;
+            owner.push(
+                RelayReadItem::Close(proto::RelayClose {
+                    code: 1006,
+                    reason: "the renderer fell behind the native relay".to_string(),
+                    was_clean: false,
+                }),
+                0,
+            );
+        } else {
+            let bytes = data.len();
+            owner.push(RelayReadItem::Data(data), bytes);
+        }
+        drop(receivers);
+        self.changed.notify_waiters();
+    }
+
+    fn send_close(&self, relay_id: u64, code: u32, reason: String, was_clean: bool) {
+        let mut receivers = recover(&self.receivers);
+        let Some(owner) = receivers.owners.get_mut(&relay_id) else {
+            return;
+        };
+        if owner.closed {
+            return;
+        }
+        owner.closed = true;
+        owner.push(
+            RelayReadItem::Close(proto::RelayClose {
+                code,
+                reason,
+                was_clean,
+            }),
+            0,
+        );
+        drop(receivers);
+        self.changed.notify_waiters();
+    }
+
+    async fn read(
+        &self,
+        relay_id: u64,
+        after_cursor: u64,
+    ) -> Result<proto::RelayReadResponse, String> {
+        loop {
+            let notified = self.changed.notified();
+            {
+                let mut receivers = recover(&self.receivers);
+                let owner = receivers
+                    .owners
+                    .get_mut(&relay_id)
+                    .ok_or_else(|| "relay receiver is closed or superseded".to_string())?;
+                owner.acknowledge(after_cursor);
+                if let Some(item) = owner.items.front() {
+                    let item = match &item.item {
+                        RelayReadItem::Data(data) => {
+                            proto::relay_read_response::Item::Data(data.clone())
+                        }
+                        RelayReadItem::Close(close) => {
+                            proto::relay_read_response::Item::Close(close.clone())
+                        }
+                    };
+                    return Ok(proto::RelayReadResponse {
+                        cursor: owner.items.front().expect("front item exists").cursor,
+                        item: Some(item),
+                    });
+                }
+            }
+            notified.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn has_receiver(&self, relay_id: u64) -> bool {
+        recover(&self.receivers).owners.contains_key(&relay_id)
+    }
+
+    #[cfg(test)]
+    fn with_max_bytes(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            ..Self::default()
+        }
+    }
+
+    fn close_if_owner(&self, relay_id: u64) -> bool {
+        let mut receivers = recover(&self.receivers);
+        receivers.closed_through = receivers.closed_through.max(relay_id);
+        if receivers.accepted == Some(relay_id) {
+            receivers.accepted = None;
+        }
+        let removed = receivers.owners.remove(&relay_id).is_some();
+        drop(receivers);
+        self.changed.notify_waiters();
+        removed
+    }
+}
+
+/// Both relays' delivery slots: the channel relay and the user-events relay.
+#[derive(Default)]
+struct RelaySlots {
+    channel: RelayChannelSlot,
+    user_events: RelayChannelSlot,
+}
+
+// The sidecar uses relay_id to ignore a close after a newer open takes
+// ownership. See the comment on OpenChannelRelayRequest.
 #[tauri::command]
 async fn open_channel_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    slots: State<'_, RelaySlots>,
     relay_id: u64,
 ) -> Result<(), String> {
-    check_response(
-        shell
-            .send_request_async(proto::request::Method::OpenChannelRelay(
+    if slots.channel.is_accepted(relay_id) {
+        return Ok(());
+    }
+    slots
+        .channel
+        .open(
+            relay_id,
+            shell.send_request_async(proto::request::Method::OpenChannelRelay(
                 proto::OpenChannelRelayRequest { relay_id },
-            ))
-            .await?,
-    )?;
-    Ok(())
+            )),
+            shell.send_request_async(proto::request::Method::CloseChannelRelay(
+                proto::CloseChannelRelayRequest { relay_id },
+            )),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn read_channel_relay(
+    slots: State<'_, RelaySlots>,
+    relay_id: u64,
+    after_cursor: String,
+) -> Result<tauri::ipc::Response, String> {
+    let cursor = after_cursor
+        .parse::<u64>()
+        .map_err(|error| format!("parse relay cursor: {error}"))?;
+    let response = slots.channel.read(relay_id, cursor).await?;
+    Ok(raw_response(response.encode_to_vec()))
 }
 
 #[tauri::command]
 async fn send_channel_message(
     shell: State<'_, Arc<DesktopShell>>,
-    b64_data: String,
+    registry: State<'_, RawInvokeRegistry>,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<(), String> {
-    let data = decode_b64(&b64_data).map_err(|err| format!("decode channel message: {err}"))?;
+    // The frame crosses the Tauri IPC as the raw invoke body, the
+    // `file_save_write` pattern -- no base64 round-trip. Relay frames are
+    // Noise ciphertext chunks (contracts/wire.json's
+    // maxCiphertextForChunkBytes), which limits the size of this copy.
+    let request_id = read_header_str(&request, IPC_HEADER_REQUEST_ID)?.to_string();
+    if let Some(cached) = registry.begin(&request_id, "channel send")? {
+        return match cached {
+            RawInvokeResult::Send(result) => result,
+            RawInvokeResult::Proxy(_) => {
+                Err("raw invoke request id was reused by another command".to_string())
+            }
+        };
+    }
 
-    check_response(
-        shell
-            .send_request_async(proto::request::Method::SendChannelMessage(
-                proto::SendChannelMessageRequest { data },
-            ))
-            .await?,
-    )?;
-    Ok(())
+    let parsed = (|| {
+        let data = read_raw_invoke_body(&request)?;
+        let relay_id = read_header_str(&request, IPC_HEADER_RELAY_ID)?
+            .parse::<u64>()
+            .map_err(|err| format!("parse relay id: {err}"))?;
+        Ok::<_, String>((relay_id, data))
+    })();
+    let (relay_id, data) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            registry.finish(request_id, RawInvokeResult::Send(Err(error.clone())));
+            return Err(error);
+        }
+    };
+
+    let result = async {
+        check_response(
+            shell
+                .send_request_async(proto::request::Method::SendChannelMessage(
+                    proto::SendChannelMessageRequest { relay_id, data },
+                ))
+                .await?,
+        )?;
+        Ok(())
+    }
+    .await;
+    registry.finish(request_id, RawInvokeResult::Send(result.clone()));
+    result
 }
 
 #[tauri::command]
 async fn close_channel_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    slots: State<'_, RelaySlots>,
     relay_id: u64,
 ) -> Result<(), String> {
+    // Drop the owner's delivery target before waiting for the sidecar. The
+    // wrapper has already closed.
+    slots.channel.close_if_owner(relay_id);
     check_response(
         shell
             .send_request_async(proto::request::Method::CloseChannelRelay(
@@ -1133,31 +1638,54 @@ async fn close_channel_relay(
 #[tauri::command]
 async fn open_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    slots: State<'_, RelaySlots>,
     relay_id: u64,
     workspace_ids: Vec<String>,
     resume_hlc: Option<String>,
     resume_epoch: Option<String>,
 ) -> Result<(), String> {
-    check_response(
-        shell
-            .send_request_async(proto::request::Method::OpenUserEventsRelay(
+    if slots.user_events.is_accepted(relay_id) {
+        return Ok(());
+    }
+    slots
+        .user_events
+        .open(
+            relay_id,
+            shell.send_request_async(proto::request::Method::OpenUserEventsRelay(
                 proto::OpenUserEventsRelayRequest {
                     relay_id,
                     workspace_ids,
                     resume_hlc,
                     resume_epoch,
                 },
-            ))
-            .await?,
-    )?;
-    Ok(())
+            )),
+            shell.send_request_async(proto::request::Method::CloseUserEventsRelay(
+                proto::CloseUserEventsRelayRequest { relay_id },
+            )),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn read_userevents_relay(
+    slots: State<'_, RelaySlots>,
+    relay_id: u64,
+    after_cursor: String,
+) -> Result<tauri::ipc::Response, String> {
+    let cursor = after_cursor
+        .parse::<u64>()
+        .map_err(|error| format!("parse relay cursor: {error}"))?;
+    let response = slots.user_events.read(relay_id, cursor).await?;
+    Ok(raw_response(response.encode_to_vec()))
 }
 
 #[tauri::command]
 async fn close_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    slots: State<'_, RelaySlots>,
     relay_id: u64,
 ) -> Result<(), String> {
+    slots.user_events.close_if_owner(relay_id);
     check_response(
         shell
             .send_request_async(proto::request::Method::CloseUserEventsRelay(
@@ -1343,8 +1871,11 @@ async fn switch_mode(
     let (info, cleanup_errors) = lifecycle_from_response(response)?;
     apply_sidecar_info(&shell.state, info);
 
-    let local_app_url = recover(&shell.state).local_app_url.clone();
-    let (target_url, cleanup_message) = launcher_url(&local_app_url, &cleanup_errors)?;
+    let window_url = window
+        .url()
+        .map_err(|err| format!("read the window url: {err}"))?;
+    let base_url = launcher_base_url(&window_url);
+    let (target_url, cleanup_message) = launcher_url(base_url.as_str(), &cleanup_errors)?;
     if let Err(err) = window.navigate(target_url) {
         if cleanup_message.is_empty() {
             return Err(format!("navigate to launcher: {err}"));
@@ -1354,6 +1885,21 @@ async fn switch_mode(
         ));
     }
     Ok(())
+}
+
+/// The launcher's own origin, derived from the URL the window holds.
+///
+/// The window always shows the bundled frontend -- on the app origin in a
+/// release build, on the dev server in a dev build -- so its origin IS the
+/// launcher URL, and no stored copy can drift from it. The path, query and
+/// fragment of the current URL carry the route the user is on, not the
+/// launcher, so they are dropped here.
+fn launcher_base_url(window_url: &Url) -> Url {
+    let mut base = window_url.clone();
+    base.set_path("/");
+    base.set_query(None);
+    base.set_fragment(None);
+    base
 }
 
 fn launcher_url(local_app_url: &str, cleanup_errors: &[String]) -> Result<(Url, String), String> {
@@ -1623,6 +2169,73 @@ fn reset_webview_zoom(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String>
     shell.set_zoom(1.0)
 }
 
+// --- Browser auth commands ---
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserAuthStart {
+    ceremony_id: String,
+    authorize_url: String,
+}
+
+/// The `kind` argument of the one start command, validated against the
+/// proto enum. `Unspecified` identifies no ceremony, and an unknown value can
+/// only come from a webview built against another enum. Both fail here
+/// rather than reach the sidecar with a kind nobody chose.
+fn parse_browser_auth_kind(kind: i32) -> Result<proto::BrowserAuthKind, String> {
+    match proto::BrowserAuthKind::try_from(kind) {
+        Ok(auth_kind @ (proto::BrowserAuthKind::SignIn | proto::BrowserAuthKind::StepUp)) => {
+            Ok(auth_kind)
+        }
+        Ok(proto::BrowserAuthKind::Unspecified) | Err(_) => {
+            Err(format!("invalid browser auth kind: {kind}"))
+        }
+    }
+}
+
+#[tauri::command]
+async fn start_browser_auth(
+    shell: State<'_, Arc<DesktopShell>>,
+    kind: i32,
+) -> Result<BrowserAuthStart, String> {
+    let auth_kind = parse_browser_auth_kind(kind)?;
+    let resp = check_response(
+        shell
+            .send_request_async(proto::request::Method::StartBrowserAuth(
+                proto::StartBrowserAuthRequest {
+                    kind: auth_kind as i32,
+                },
+            ))
+            .await?,
+    )?;
+    match resp.result {
+        Some(proto::response::Result::StartBrowserAuth(start)) => Ok(BrowserAuthStart {
+            ceremony_id: start.ceremony_id,
+            authorize_url: start.authorize_url,
+        }),
+        // The kind is in the message so a sign-in answer and a step-up
+        // answer stay distinguishable.
+        _ => Err(format!(
+            "unexpected response for start_browser_auth({auth_kind:?})"
+        )),
+    }
+}
+
+#[tauri::command]
+async fn cancel_browser_auth(
+    shell: State<'_, Arc<DesktopShell>>,
+    ceremony_id: String,
+) -> Result<(), String> {
+    check_response(
+        shell
+            .send_request_async(proto::request::Method::CancelBrowserAuth(
+                proto::CancelBrowserAuthRequest { ceremony_id },
+            ))
+            .await?,
+    )?;
+    Ok(())
+}
+
 // --- Window/app helpers ---
 
 fn open_main_web_inspector(app: &AppHandle) {
@@ -1835,7 +2448,10 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![tray::AUTOSTART_ARG]),
-        ));
+        ))
+        // The navigation allow-list covers every webview, not just the main
+        // window; see `navigation::plugin`.
+        .plugin(navigation::plugin());
 
     // Linux and Windows render the app menu as a hamburger dropdown inside
     // the custom titlebar (`CustomTitlebar.tsx`). Only macOS uses a native
@@ -1902,6 +2518,24 @@ fn main() {
             }
         })
         .setup(|app| {
+            // The `main` window is declared with `"create": false`, so the
+            // shell builds it here. `on_new_window` refuses every new window
+            // the PAGE requests (`window.open`, a `target="_blank"` link).
+            // The native command opens the bundled licenses window with the
+            // same popup policy. The navigation plugin covers both windows.
+            let window_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == MAIN_WINDOW_LABEL)
+                .ok_or_else(|| {
+                    format!("tauri.conf.json must declare the {MAIN_WINDOW_LABEL} window")
+                })?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), window_config)?
+                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+                .build()?;
+
             // titleBarStyle "Overlay" is a macOS-only option. On Linux and
             // Windows the native decorations are left in place by default,
             // which causes the OS title bar to render alongside our custom
@@ -1944,6 +2578,11 @@ fn main() {
             // seconds and delivers forty.
             tray::spawn_startup_safety_net(app.handle().clone(), autostart_launch);
 
+            // The relay delivery slots the sidecar reader thread sends frames
+            // through. Managed BEFORE `DesktopShell::connect`, whose reader
+            // thread starts delivering the moment the sidecar speaks.
+            app.manage(RelaySlots::default());
+            app.manage(RawInvokeRegistry::default());
             let shell = Arc::new(DesktopShell::connect(app.handle().clone())?);
 
             // The handshake and the device cache of the Desktop preferences,
@@ -1976,30 +2615,16 @@ fn main() {
             let launch_state = tray::install(app.handle(), &cached, autostart_launch);
 
             let runtime_state = shell.runtime_state();
-            if runtime_state.connected && runtime_state.shell_mode == ShellMode::Distributed {
-                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    let target_url = Url::parse(&runtime_state.hub_url)
-                        .map_err(|err| format!("parse reattach hub url: {err}"))?;
-                    window
-                        .navigate(target_url)
-                        .map_err(|err| format!("navigate to reattached hub: {err}"))?;
-                }
-                // The shell reveals the window on THIS route, because
-                // `LauncherView` -- the only caller of `restoreWindowGeometry`
-                // -- never mounts once the webview navigates to the hub. It
-                // also carries the saved geometry for the same reason: nothing
-                // else sizes the window here, so without it every reattach
-                // launch opens at the built-in default.
-                //
-                // IMMEDIATELY, and not once the hub page loads. `navigate` only
-                // requests the navigation, so the window maps before the first
-                // byte arrives and the user sees an empty window for the length
-                // of the page load. That is the accepted trade: the load is
-                // over a NETWORK and can be slow, can serve an error, or can
-                // never finish, and a hub that is unreachable would then leave
-                // no window at all until the safety net fires five seconds in.
-                // A window the user can act on -- switch mode, quit -- beats a
-                // painted one that may never come.
+            if runtime_state.connected {
+                // A launch that finds a live session enters the session
+                // surface directly and never mounts `LauncherView` -- the only
+                // caller of `restoreWindowGeometry` and the only reader of the
+                // launch decision through `get_startup_info`. The shell
+                // therefore applies the decision here, in every mode, and
+                // navigates nowhere: the window already holds the bundled
+                // frontend. Without it, such a launch would open at the
+                // built-in default size and the visibility the decision asks
+                // for would reach nothing.
                 //
                 // Through `take()`, so the decision is CONSUMED here: a later
                 // "Switch mode..." navigates back to the launcher, which mounts
@@ -2056,12 +2681,16 @@ fn main() {
             connect_solo,
             connect_distributed,
             proxy_http,
+            cancel_proxy_http,
             cli_path_status,
             cli_install_symlink,
+            open_notice_window,
             open_channel_relay,
+            read_channel_relay,
             send_channel_message,
             close_channel_relay,
             open_userevents_relay,
+            read_userevents_relay,
             close_userevents_relay,
             create_tunnel,
             delete_tunnel,
@@ -2079,6 +2708,8 @@ fn main() {
             restart_app,
             save_window_geometry,
             set_desktop_behavior,
+            start_browser_auth,
+            cancel_browser_auth,
             quit_app,
             open_web_inspector,
             set_menu_item_accelerator,
@@ -2175,6 +2806,313 @@ mod tests {
             !claim_exit(&flag),
             "the second claim must read the latched flag"
         );
+    }
+
+    // `proxy_http` sends the existing protobuf over a raw Tauri response. This
+    // pins the generated wire data and its binary body through the IPC wrapper.
+    #[test]
+    fn proxy_response_wraps_generated_wire_data_as_raw_ipc_bytes() {
+        use tauri::ipc::IpcResponse;
+
+        let response = proto::ProxyHttpResponse {
+            status: 204,
+            headers: HashMap::from([(
+                "x-repeated".to_string(),
+                proto::HeaderValues {
+                    values: vec!["one".to_string(), "two".to_string()],
+                },
+            )]),
+            body: prost::bytes::Bytes::from_static(b"payload"),
+        };
+        let wire = response.encode_to_vec();
+        let response = tauri::ipc::Response::new(tauri::ipc::InvokeResponseBody::Raw(wire.clone()));
+        match response.body().expect("the response body") {
+            tauri::ipc::InvokeResponseBody::Raw(bytes) => {
+                assert_eq!(bytes, wire);
+                let decoded = proto::ProxyHttpResponse::decode(bytes.as_slice())
+                    .expect("decode the generated response");
+                assert_eq!(decoded.status, 204);
+                assert_eq!(decoded.headers["x-repeated"].values, ["one", "two"]);
+                assert_eq!(decoded.body.as_ref(), b"payload");
+            }
+            tauri::ipc::InvokeResponseBody::Json(_) => panic!("expected a raw response body"),
+        }
+    }
+
+    #[test]
+    fn raw_invoke_fallback_accepts_only_byte_arrays() {
+        assert_eq!(
+            json_bytes(&[json!(0), json!(127), json!(255)]).expect("valid bytes"),
+            [0, 127, 255]
+        );
+        assert!(json_bytes(&[json!(-1)]).is_err());
+        assert!(json_bytes(&[json!(256)]).is_err());
+        assert!(json_bytes(&[json!(1.5)]).is_err());
+    }
+
+    #[test]
+    fn raw_invoke_replay_returns_the_first_result() {
+        let registry = RawInvokeRegistry::default();
+        assert!(registry
+            .begin("request-1", "HTTP proxy")
+            .expect("admit first request")
+            .is_none());
+        registry.finish(
+            "request-1".to_string(),
+            RawInvokeResult::Proxy(Ok(vec![1, 2, 3])),
+        );
+
+        match registry
+            .begin("request-1", "HTTP proxy")
+            .expect("replay cached request")
+            .expect("cached result")
+        {
+            RawInvokeResult::Proxy(result) => assert_eq!(result.expect("cached reply"), [1, 2, 3]),
+            RawInvokeResult::Send(_) => panic!("cached the wrong command result"),
+        }
+    }
+
+    #[test]
+    fn raw_invoke_replay_evicts_the_oldest_body_at_the_byte_budget() {
+        let registry = RawInvokeRegistry::with_limits(10, 8);
+        for request_id in ["r1", "r2"] {
+            assert!(registry
+                .begin(request_id, "HTTP proxy")
+                .expect("admit request")
+                .is_none());
+            registry.finish(
+                request_id.to_string(),
+                RawInvokeResult::Proxy(Ok(vec![1, 2, 3])),
+            );
+        }
+
+        let cache = recover(&registry.cache);
+        assert!(!cache.entries.contains_key("r1"));
+        assert!(cache.entries.contains_key("r2"));
+        assert_eq!(cache.completed_bytes, 5);
+    }
+
+    #[test]
+    fn relay_close_before_registration_refuses_that_open() {
+        let slot = RelayChannelSlot::default();
+        assert!(!slot.close_if_owner(7));
+        assert!(!slot.register(7));
+        assert!(slot.register(8));
+    }
+
+    #[tokio::test]
+    async fn relay_open_retains_one_shot_bootstrap_before_the_reply() {
+        let slots = RelaySlots::default();
+        let slot = &slots.user_events;
+        let one_shot = vec![0, 0, 0, 3, 9, 8, 7];
+
+        slot.open(
+            1,
+            async {
+                slot.send_raw(1, one_shot.clone());
+                Ok(proto::Response::default())
+            },
+            async { panic!("a successful open needs no cleanup") },
+        )
+        .await
+        .expect("the relay open should succeed");
+
+        let delivery = slot.read(1, 0).await.expect("read bootstrap");
+        assert_eq!(delivery.cursor, 1);
+        assert_eq!(
+            delivery.item,
+            Some(proto::relay_read_response::Item::Data(one_shot))
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_routes_frames_to_their_owner_while_a_new_open_is_pending() {
+        let slots = RelaySlots::default();
+        for slot in [&slots.channel, &slots.user_events] {
+            assert!(slot.register(1));
+            assert!(slot.accept(1));
+
+            slot.open(
+                2,
+                async {
+                    slot.send_raw(1, vec![10]);
+                    slot.send_raw(2, vec![20]);
+                    assert_eq!(
+                        slot.read(1, 0).await.expect("read predecessor").item,
+                        Some(proto::relay_read_response::Item::Data(vec![10]))
+                    );
+                    assert_eq!(
+                        slot.read(2, 0).await.expect("read pending successor").item,
+                        Some(proto::relay_read_response::Item::Data(vec![20]))
+                    );
+                    Ok(proto::Response::default())
+                },
+                async { panic!("a successful open needs no cleanup") },
+            )
+            .await
+            .expect("the successor open should succeed");
+
+            slot.send_raw(1, vec![12]);
+            slot.send_raw(2, vec![22]);
+            assert!(!slot.has_receiver(1));
+            assert_eq!(
+                slot.read(2, 1).await.expect("read successor").item,
+                Some(proto::relay_read_response::Item::Data(vec![22]))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_repeats_unacknowledged_data_then_delivers_close_in_order() {
+        let slots = RelaySlots::default();
+        for slot in [&slots.channel, &slots.user_events] {
+            assert!(slot.register(2));
+            assert!(slot.accept(2));
+
+            let frame = vec![0xff; 1024];
+            slot.send_raw(2, frame.clone());
+            slot.send_close(1, 1011, "stale close".to_string(), false);
+            slot.send_close(2, 1000, "done".to_string(), true);
+
+            let first = slot.read(2, 0).await.expect("read frame");
+            let repeated = slot.read(2, 0).await.expect("repeat frame");
+            assert_eq!(first, repeated);
+            assert_eq!(
+                first.item,
+                Some(proto::relay_read_response::Item::Data(frame))
+            );
+            let close = slot.read(2, first.cursor).await.expect("read close");
+            assert_eq!(
+                close.item,
+                Some(proto::relay_read_response::Item::Close(proto::RelayClose {
+                    code: 1000,
+                    reason: "done".to_string(),
+                    was_clean: true,
+                }))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_overflow_closes_only_the_slow_owner() {
+        let slot = RelayChannelSlot::with_max_bytes(4);
+        assert!(slot.register(1));
+        assert!(slot.accept(1));
+        assert!(slot.register(2));
+        slot.send_raw(1, vec![1, 2, 3]);
+        slot.send_raw(2, vec![9]);
+        slot.send_raw(1, vec![4, 5]);
+
+        let overflow = slot.read(1, 0).await.expect("read overflow close");
+        let Some(proto::relay_read_response::Item::Close(close)) = overflow.item else {
+            panic!("overflow must close the slow owner")
+        };
+        assert_eq!(close.code, 1006);
+        assert!(!close.was_clean);
+        assert_eq!(
+            slot.read(2, 0).await.expect("read other owner").item,
+            Some(proto::relay_read_response::Item::Data(vec![9]))
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_preserves_the_predecessor_when_a_new_open_fails() {
+        let slot = RelayChannelSlot::default();
+        assert!(slot.register(1));
+        assert!(slot.accept(1));
+
+        assert_eq!(
+            slot.open(2, async { Err("dial failed".to_string()) }, async {
+                panic!("a rejected open needs no cleanup")
+            },)
+                .await,
+            Err("dial failed".to_string())
+        );
+        assert!(!slot.has_receiver(2));
+        slot.send_raw(2, vec![20]);
+        slot.send_raw(1, vec![10]);
+        assert_eq!(
+            slot.read(1, 0).await.expect("read predecessor").item,
+            Some(proto::relay_read_response::Item::Data(vec![10]))
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_repeats_an_owner_close_that_raced_its_open() {
+        let slot = RelayChannelSlot::default();
+        let repeated = AtomicBool::new(false);
+
+        assert!(slot
+            .open(
+                1,
+                async {
+                    assert!(slot.close_if_owner(1));
+                    assert!(!slot.has_receiver(1));
+                    Ok(proto::Response::default())
+                },
+                async {
+                    repeated.store(true, Ordering::Relaxed);
+                    Ok(proto::Response::default())
+                },
+            )
+            .await
+            .is_err());
+        assert!(repeated.load(Ordering::Relaxed));
+        assert!(!slot.has_receiver(1));
+    }
+
+    #[tokio::test]
+    async fn relay_keeps_the_newer_receiver_when_open_replies_arrive_out_of_order() {
+        let slot = RelayChannelSlot::default();
+        let closed_older = AtomicBool::new(false);
+
+        let result = slot
+            .open(
+                1,
+                async {
+                    slot.open(2, async { Ok(proto::Response::default()) }, async {
+                        panic!("the newer open needs no cleanup")
+                    })
+                    .await
+                    .expect("the newer open should succeed");
+                    Ok(proto::Response::default())
+                },
+                async {
+                    closed_older.store(true, Ordering::Relaxed);
+                    Ok(proto::Response::default())
+                },
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(closed_older.load(Ordering::Relaxed));
+        slot.send_raw(1, vec![10]);
+        slot.send_raw(2, vec![20]);
+        assert!(!slot.has_receiver(1));
+        assert_eq!(
+            slot.read(2, 0).await.expect("read newer owner").item,
+            Some(proto::relay_read_response::Item::Data(vec![20]))
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_slot_rejects_a_stale_open_and_close() {
+        let slot = RelayChannelSlot::default();
+        assert!(slot.register(2));
+        assert!(slot.accept(2));
+        assert!(!slot.register(1));
+        assert!(!slot.close_if_owner(1));
+        slot.send_raw(1, vec![10]);
+        slot.send_raw(2, vec![20]);
+        let delivered = slot.read(2, 0).await.expect("read current owner");
+        assert_eq!(
+            delivered.item,
+            Some(proto::relay_read_response::Item::Data(vec![20]))
+        );
+
+        assert!(slot.close_if_owner(2));
+        slot.send_raw(2, vec![21]);
+        assert!(!slot.has_receiver(2));
     }
 
     // The sidecar sends its build in the shared leapmux.v1.BuildInfo message;
@@ -2627,7 +3565,6 @@ mod tests {
             shell_mode: ShellMode::Launcher,
             connected: false,
             hub_url: String::new(),
-            local_app_url: "http://localhost:4328".to_string(),
         })
     }
 
@@ -2704,6 +3641,60 @@ mod tests {
         assert!(url.query().is_none());
     }
 
+    // `switch_mode` navigates to the launcher root of the URL the window
+    // holds, so the route the user is on never survives the switch and the
+    // origin -- app protocol or dev server -- needs no stored copy.
+    #[test]
+    fn launcher_base_url_strips_the_path_query_and_fragment() {
+        let base = launcher_base_url(&Url::parse("http://tauri.localhost/app?x=1#f").expect("url"));
+        assert_eq!(base.as_str(), "http://tauri.localhost/");
+
+        let base = launcher_base_url(&Url::parse("tauri://localhost/settings").expect("url"));
+        assert_eq!(base.as_str(), "tauri://localhost/");
+    }
+
+    #[test]
+    fn launcher_url_on_the_launcher_base_carries_one_cleanup_message() {
+        let base = launcher_base_url(&Url::parse("http://tauri.localhost/app?x=1#f").expect("url"));
+        let (url, message) = launcher_url(base.as_str(), &["lease release failed".to_string()])
+            .expect("valid launcher url");
+
+        assert_eq!(message, "lease release failed");
+        assert_eq!(
+            url.as_str(),
+            "http://tauri.localhost/?cleanup_error=lease+release+failed"
+        );
+    }
+
+    // The transport is derivable from the platform -- every desktop mode
+    // reaches the Hub through the shell's proxy -- so the capabilities carry
+    // no transport field for the webview to read.
+    #[test]
+    fn capabilities_of_each_mode_carry_no_transport_field() {
+        for (shell_mode, local_solo) in [
+            (ShellMode::Launcher, true),
+            (ShellMode::Solo, true),
+            (ShellMode::Distributed, false),
+        ] {
+            let state = ShellState {
+                shell_mode,
+                connected: false,
+                hub_url: String::new(),
+            };
+            let json =
+                serde_json::to_value(capabilities_for(&state)).expect("serialize the capabilities");
+            assert!(
+                json.get("hubTransport").is_none(),
+                "{shell_mode:?}: the transport must not be reported"
+            );
+            assert_eq!(
+                json.get("localSolo"),
+                Some(&serde_json::Value::Bool(local_solo)),
+                "{shell_mode:?}: local_solo is true for solo and launcher only"
+            );
+        }
+    }
+
     #[test]
     fn switch_mode_response_rejects_top_level_transition_error() {
         let response = proto::Response {
@@ -2732,6 +3723,33 @@ mod tests {
         assert_eq!(
             lifecycle_from_response(response).expect_err("sidecar info is required"),
             "lifecycle response missing sidecar info"
+        );
+    }
+
+    // The one start command carries the proto enum's ordinal. Only the two
+    // start kinds name a ceremony, so the unset value and a value this enum
+    // does not know must fail here instead of reaching the sidecar.
+    #[test]
+    fn parse_browser_auth_kind_accepts_the_two_ceremony_kinds() {
+        assert_eq!(
+            parse_browser_auth_kind(proto::BrowserAuthKind::SignIn as i32),
+            Ok(proto::BrowserAuthKind::SignIn)
+        );
+        assert_eq!(
+            parse_browser_auth_kind(proto::BrowserAuthKind::StepUp as i32),
+            Ok(proto::BrowserAuthKind::StepUp)
+        );
+    }
+
+    #[test]
+    fn parse_browser_auth_kind_rejects_an_unset_or_unknown_kind() {
+        assert_eq!(
+            parse_browser_auth_kind(proto::BrowserAuthKind::Unspecified as i32),
+            Err("invalid browser auth kind: 0".to_string())
+        );
+        assert_eq!(
+            parse_browser_auth_kind(7),
+            Err("invalid browser auth kind: 7".to_string())
         );
     }
 

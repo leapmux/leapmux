@@ -1,6 +1,6 @@
 -- name: CreateAPIToken :exec
 INSERT INTO api_tokens (
-    id, user_id, client_id, installation_name, granted_scopes, secret_hash,
+    id, user_id, client_id, installation_name, granted_scopes, issuance, secret_hash,
     refresh_hash, expires_at, refresh_expires_at, auth_generation
 ) VALUES (
     sqlc.arg(id),
@@ -8,6 +8,7 @@ INSERT INTO api_tokens (
     sqlc.arg(client_id),
     sqlc.arg(installation_name),
     sqlc.arg(granted_scopes),
+    sqlc.arg(issuance),
     sqlc.arg(secret_hash),
     sqlc.arg(refresh_hash),
     sqlc.arg(expires_at),

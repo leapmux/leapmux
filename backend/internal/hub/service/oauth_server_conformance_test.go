@@ -59,6 +59,7 @@ func seedCode(t *testing.T, env *apiAuthEnv, clientID, redirectURI, challenge, s
 			Code: code, UserID: userid.MustNew(env.userID), ClientID: clientID,
 			CodeChallenge: challenge, RedirectURI: redirectURI, GrantedScopes: scopes,
 			InstallationName: "laptop", ExpiresAt: time.Now().Add(time.Minute),
+			Redemption: store.RedemptionKindToken,
 		}))
 	return code
 }
@@ -256,7 +257,8 @@ func TestAuthorizationServer_RefreshNarrowsAndCannotReWiden(t *testing.T) {
 	tokenID := id.Generate()
 	refresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "laptop",
 		GrantedScopes:    "workspace:read workspace:write worker:read file:read",
 		SecretHash:       env.validator.HashSecret(auth.MintAccessSecret()),
@@ -510,6 +512,7 @@ func seedReversibleToken(t *testing.T, env *apiAuthEnv, clientID string) (bearer
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         clientID,

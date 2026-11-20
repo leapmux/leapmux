@@ -21,6 +21,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
   return {
     ...actual,
+    desktopHub: () => null,
     getRuntimeState: () => runtimeStateMock(),
     platformBridge: {
       ...actual.platformBridge,
@@ -47,7 +48,6 @@ function soloRuntimeState(localSolo: boolean) {
     hubUrl: '',
     capabilities: {
       mode: localSolo ? 'tauri-desktop-solo' : 'tauri-desktop-distributed',
-      hubTransport: localSolo ? 'proxy' : 'direct',
       tunnels: true,
       appControl: true,
       windowControl: true,

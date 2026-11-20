@@ -103,6 +103,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			require.NoErrorf(t, err, "the store open must seed %s", clientID)
 			assert.Equal(t, store.OAuthClientSourceBuiltin, app.RegistrationSource)
 			assert.Empty(t, app.OwnerUserID, "a built-in registration is hub-wide")
+			assert.Equalf(t, clientID == oauthapp.DesktopClientID, oauthapp.IssuesSession(clientID),
+				"only the Desktop descriptor may issue sessions, checked %s", clientID)
 			// Against the column's FALSE default, and stated by the seed on
 			// purpose: a seeded row that lost it would take
 			// `leapmux control admin ...` away with no error anybody could
@@ -329,7 +331,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		for _, owner := range []string{alice.ID, bob.ID} {
 			tokenID := id.Generate()
 			require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-				ID: tokenID, UserID: userid.MustNew(owner), ClientID: clientID,
+				Issuance: store.APITokenIssuanceAuthorizationCode,
+				ID:       tokenID, UserID: userid.MustNew(owner), ClientID: clientID,
 				InstallationName: "laptop", GrantedScopes: "workspace:read",
 				SecretHash: []byte("hash"),
 			}))
@@ -365,7 +368,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		other := seedApp(t, st, "second", "", store.OAuthClientSourceAdmin)
 		for _, owner := range []string{alice.ID, bob.ID} {
 			require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-				ID: id.Generate(), UserID: userid.MustNew(owner), ClientID: other,
+				Issuance: store.APITokenIssuanceAuthorizationCode,
+				ID:       id.Generate(), UserID: userid.MustNew(owner), ClientID: other,
 				InstallationName: "laptop", GrantedScopes: "workspace:read",
 				SecretHash: []byte("hash"),
 			}))
@@ -390,7 +394,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: owner, ClientID: clientID,
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: owner, ClientID: clientID,
 			InstallationName: "laptop", GrantedScopes: "workspace:read",
 			SecretHash: []byte("hash"),
 		}))
@@ -422,7 +427,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: owner, ClientID: clientID,
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: owner, ClientID: clientID,
 			InstallationName: "laptop", GrantedScopes: "workspace:read", SecretHash: []byte("hash"),
 		}))
 
@@ -475,7 +481,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			Code: authorizationCode, UserID: owner, ClientID: clientID,
 			CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
 			GrantedScopes: "workspace:read", InstallationName: "laptop",
-			ExpiresAt: time.Now().Add(time.Minute),
+			ExpiresAt:  time.Now().Add(time.Minute),
+			Redemption: store.RedemptionKindToken,
 		}))
 
 		rows, err := st.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
@@ -536,6 +543,28 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		}
 	}
 
+	t.Run("a metadata update preserves the dedicated elevation policy", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "metadata-policy")
+		ownerID := userid.MustNew(owner.ID)
+		clientID := seedApp(t, st, "metadata-policy-app", owner.ID, store.OAuthClientSourceUser)
+		rows, err := st.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
+			ClientID: clientID, CallerUserID: ownerID, ElevationAllowed: false,
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+
+		rows, err = st.OAuthClients().Update(ctx, store.UpdateOAuthClientParams{
+			ClientID: clientID, ClientName: "renamed", CallerUserID: ownerID,
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+		app, err := st.OAuthClients().Get(ctx, clientID)
+		require.NoError(t, err)
+		assert.Equal(t, "renamed", app.ClientName)
+		assert.False(t, app.ElevationAllowed)
+	})
+
 	t.Run("a built-in registration refuses every write but its elevation", func(t *testing.T) {
 		st := s.NewStore(t)
 		admin := SeedUser(t, st, "builtin-admin")
@@ -585,6 +614,45 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		assert.False(t, app.ElevationAllowed)
 	})
 
+	t.Run("locks only live apps that can elevate", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "elevation-lock")
+		ownerID := userid.MustNew(owner.ID)
+		appID := seedApp(t, st, "elevation-lock-app", owner.ID, store.OAuthClientSourceUser)
+		retiredID := seedApp(t, st, "retired-elevation-lock", owner.ID, store.OAuthClientSourceUser)
+		setAllowed := func(clientID string, allowed bool) {
+			t.Helper()
+			rows, err := st.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
+				ClientID: clientID, CallerUserID: ownerID, CallerIsAdmin: true,
+				ElevationAllowed: allowed,
+			})
+			require.NoError(t, err)
+			require.EqualValues(t, 1, rows)
+		}
+		setAllowed(appID, true)
+		setAllowed(retiredID, true)
+
+		require.ErrorIs(t, st.OAuthClients().LockForElevation(ctx, appID), store.ErrLockingReadOutsideTransaction)
+		lock := func(clientID string) error {
+			return st.RunInTransaction(ctx, func(tx store.Store) error {
+				return tx.OAuthClients().LockForElevation(ctx, clientID)
+			})
+		}
+		require.NoError(t, lock(appID))
+		assert.ErrorIs(t, lock("unknown-client"), store.ErrNotFound)
+
+		setAllowed(appID, false)
+		assert.ErrorIs(t, lock(appID), store.ErrNotFound)
+
+		require.NoError(t, lock(retiredID))
+		rows, err := st.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
+			ClientID: retiredID, CallerUserID: ownerID,
+		})
+		require.NoError(t, err)
+		require.EqualValues(t, 1, rows)
+		assert.ErrorIs(t, lock(retiredID), store.ErrNotFound)
+	})
+
 	t.Run("a write refuses an unminted caller", func(t *testing.T) {
 		st := s.NewStore(t)
 		alice := SeedUser(t, st, "guarded")
@@ -627,6 +695,191 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		assert.Equal(t, "guarded-app", app.ClientName)
 		assert.Nil(t, app.RevokedAt)
 	})
+
+	// One reference carries one kind and one id, so "at most one step-up
+	// target" is structural: the old column pair that a CHECK had to guard
+	// cannot be written at all. What the row CAN still get wrong is a
+	// half-written reference, and the tie CHECK refuses each half.
+	t.Run("a code row with a half-written step-up reference fails", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			step       store.CredentialRef
+			redemption store.RedemptionKind
+		}{
+			{name: "a kind with no id", step: store.CredentialRef{Kind: store.CredentialRefKindSession}},
+			{name: "an id with no kind", step: store.CredentialRef{ID: "some-token"}, redemption: store.RedemptionKindToken},
+			{name: "a space id with no kind", step: store.CredentialRef{ID: " "}, redemption: store.RedemptionKindToken},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				st := s.NewStore(t)
+				alice := SeedUser(t, st, "stepup-both")
+				owner := userid.MustNew(alice.ID)
+				clientID := seedApp(t, st, "stepup-both-app", alice.ID, store.OAuthClientSourceUser)
+
+				err := st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+					Code:             id.Generate(),
+					UserID:           owner,
+					ClientID:         clientID,
+					CodeChallenge:    "challenge",
+					RedirectURI:      "https://app.example.com/callback",
+					GrantedScopes:    "workspace:read",
+					InstallationName: "laptop",
+					ExpiresAt:        time.Now().Add(time.Minute),
+					StepUp:           tc.step,
+					Redemption:       tc.redemption,
+				})
+				require.Error(t, err,
+					"the step-up reference CHECK must refuse a half-written reference")
+			})
+		}
+	})
+
+	// The row must state what it does: a code verifies OR redeems, never both
+	// and never neither. Without the tie a forgotten redemption kind would
+	// pass for a token redemption at the exchange.
+	t.Run("a code row that neither verifies nor redeems, or does both, fails", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			step       store.CredentialRef
+			redemption store.RedemptionKind
+		}{
+			{
+				name:       "neither a step-up nor a redemption",
+				redemption: store.RedemptionKindNone,
+			},
+			{
+				name:       "both a step-up and a redemption",
+				step:       store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "sess-stepup-1"},
+				redemption: store.RedemptionKindToken,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				st := s.NewStore(t)
+				alice := SeedUser(t, st, "stepup-xor")
+				owner := userid.MustNew(alice.ID)
+				clientID := seedApp(t, st, "stepup-xor-app", alice.ID, store.OAuthClientSourceUser)
+
+				err := st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+					Code:             id.Generate(),
+					UserID:           owner,
+					ClientID:         clientID,
+					CodeChallenge:    "challenge",
+					RedirectURI:      "https://app.example.com/callback",
+					GrantedScopes:    "workspace:read",
+					InstallationName: "laptop",
+					ExpiresAt:        time.Now().Add(time.Minute),
+					StepUp:           tc.step,
+					Redemption:       tc.redemption,
+				})
+				require.Error(t, err,
+					"CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)) must hold a code to exactly one of the two")
+			})
+		}
+	})
+
+	t.Run("a code row with one step-up reference round-trips", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			set      func(p *store.CreateOAuthAuthorizationCodeParams)
+			expected store.CredentialRef
+		}{
+			{
+				name: "a session target",
+				set: func(p *store.CreateOAuthAuthorizationCodeParams) {
+					p.StepUp = store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "sess-stepup-1"}
+				},
+				expected: store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "sess-stepup-1"},
+			},
+			{
+				name: "a token target",
+				set: func(p *store.CreateOAuthAuthorizationCodeParams) {
+					p.StepUp = store.CredentialRef{Kind: store.CredentialRefKindToken, ID: "token-stepup-1"}
+				},
+				expected: store.CredentialRef{Kind: store.CredentialRefKindToken, ID: "token-stepup-1"},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				st := s.NewStore(t)
+				alice := SeedUser(t, st, "stepup-one")
+				owner := userid.MustNew(alice.ID)
+				clientID := seedApp(t, st, "stepup-one-app", alice.ID, store.OAuthClientSourceUser)
+
+				code := id.Generate()
+				params := store.CreateOAuthAuthorizationCodeParams{
+					Code:             code,
+					UserID:           owner,
+					ClientID:         clientID,
+					CodeChallenge:    "challenge",
+					RedirectURI:      "https://app.example.com/callback",
+					GrantedScopes:    "workspace:read",
+					InstallationName: "laptop",
+					ExpiresAt:        time.Now().Add(time.Minute),
+					Redemption:       store.RedemptionKindNone,
+				}
+				tc.set(&params)
+				require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, params))
+
+				row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
+				require.NoError(t, err)
+				assert.Equal(t, tc.expected, row.StepUp, "the reference must round-trip as exactly one kind and one id")
+				err = st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
+				require.NoError(t, err)
+				assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code,
+					store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "must-not-mint"}),
+					store.ErrNotFound, "a step-up code cannot record a minted credential")
+			})
+		}
+	})
+
+	t.Run("MarkMinted stamps a session on a consumed code", func(t *testing.T) {
+		st := s.NewStore(t)
+		alice := SeedUser(t, st, "mark-minted-sess")
+		owner := userid.MustNew(alice.ID)
+		clientID := seedApp(t, st, "mark-minted-sess-app", alice.ID, store.OAuthClientSourceUser)
+
+		code := id.Generate()
+		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+			Code:             code,
+			UserID:           owner,
+			AuthGeneration:   42,
+			ClientID:         clientID,
+			CodeChallenge:    "challenge",
+			RedirectURI:      "https://app.example.com/callback",
+			GrantedScopes:    "",
+			InstallationName: "desktop",
+			ExpiresAt:        time.Now().Add(time.Minute),
+			Redemption:       store.RedemptionKindSession,
+		}))
+		minted := store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "session-abc"}
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted), store.ErrNotFound,
+			"an active code cannot record a credential before consumption")
+
+		err := st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
+		require.NoError(t, err)
+
+		for _, ref := range []store.CredentialRef{
+			{Kind: store.CredentialRefKindSession},
+			{ID: "session-abc"},
+			{ID: " "},
+		} {
+			assert.Errorf(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, ref),
+				"the minted reference CHECK must refuse a half-written reference: %#v", ref)
+		}
+
+		wrongKind := store.CredentialRef{Kind: store.CredentialRefKindToken, ID: "token-abc"}
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, wrongKind), store.ErrNotFound,
+			"the minted credential kind must match the consented redemption kind")
+
+		require.NoError(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted))
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted), store.ErrNotFound,
+			"a consumed issuance accepts exactly one minted credential")
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, "missing-code", minted), store.ErrNotFound)
+
+		row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
+		require.NoError(t, err)
+		assert.Equal(t, int64(42), row.AuthGeneration)
+		assert.Equal(t, minted, row.Minted, "the minted reference must read back on the consumed code")
+	})
 }
 
 func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.UserID) (deviceCode, authorizationCode string) {
@@ -642,6 +895,8 @@ func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.U
 		CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
 		GrantedScopes: "workspace:read", InstallationName: "laptop",
 		ExpiresAt: time.Now().Add(time.Minute),
+		// No step-up target, so the code redeems into an app credential.
+		Redemption: store.RedemptionKindToken,
 	}))
 	return deviceCode, authorizationCode
 }

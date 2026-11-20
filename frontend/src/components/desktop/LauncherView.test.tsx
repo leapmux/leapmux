@@ -1,4 +1,4 @@
-import { render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageGet, resetStorageAccountForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
@@ -10,18 +10,21 @@ const bridgeMocks = vi.hoisted(() => ({
   getStartupInfo: vi.fn(),
   checkFullDiskAccess: vi.fn(),
   restoreWindowGeometry: vi.fn(),
+  connectDistributed: vi.fn(),
 }))
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
   return {
     ...actual,
+    desktopHub: () => null,
     getRuntimeState: bridgeMocks.getRuntimeState,
     restoreWindowGeometry: bridgeMocks.restoreWindowGeometry,
     platformBridge: {
       ...actual.platformBridge,
       getStartupInfo: bridgeMocks.getStartupInfo,
       checkFullDiskAccess: bridgeMocks.checkFullDiskAccess,
+      connectDistributed: bridgeMocks.connectDistributed,
     },
   }
 })
@@ -48,6 +51,8 @@ describe('LauncherView', () => {
     })
     bridgeMocks.checkFullDiskAccess.mockResolvedValue(true)
     bridgeMocks.restoreWindowGeometry.mockResolvedValue(undefined)
+    bridgeMocks.connectDistributed.mockReset()
+    bridgeMocks.connectDistributed.mockResolvedValue(undefined)
     localStorageClearForTests()
     applyTheme(DEFAULT_THEME_VALUE)
   })
@@ -132,5 +137,47 @@ describe('LauncherView', () => {
     await vi.waitFor(() => {
       expect(bridgeMocks.restoreWindowGeometry).toHaveBeenCalledWith(1280, 800, 'maximized', 'hidden')
     })
+  })
+
+  /** Selects the distributed mode card and types a Hub URL. */
+  async function chooseDistributed(hubUrl: string) {
+    fireEvent.click(await screen.findByRole('button', { name: /Distributed/ }))
+    fireEvent.input(await screen.findByLabelText('Hub URL'), {
+      target: { value: hubUrl },
+    })
+  }
+
+  // E3: the distributed branch runs its connect call and then hands control
+  // over, exactly as the solo branch does -- it does not wait for the shell to
+  // replace the page.
+  it('runs onConnected once after a distributed connect succeeds', async () => {
+    const onConnected = vi.fn()
+    render(() => <LauncherView onConnected={onConnected} />)
+    await screen.findByText('lease release failed')
+
+    await chooseDistributed('https://hub.example')
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+
+    await vi.waitFor(() => {
+      expect(onConnected).toHaveBeenCalledTimes(1)
+    })
+    expect(bridgeMocks.connectDistributed).toHaveBeenCalledExactlyOnceWith('https://hub.example')
+  })
+
+  // A failure restores the launcher and reports why, and no connection is
+  // announced.
+  it('shows the message when a distributed connect fails', async () => {
+    const onConnected = vi.fn()
+    bridgeMocks.connectDistributed.mockReset()
+    bridgeMocks.connectDistributed.mockRejectedValue(new Error('no such hub'))
+    render(() => <LauncherView onConnected={onConnected} />)
+    await screen.findByText('lease release failed')
+
+    await chooseDistributed('https://hub.example')
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+
+    expect(await screen.findByText('no such hub')).toBeInTheDocument()
+    expect(onConnected).not.toHaveBeenCalled()
+    expect(bridgeMocks.connectDistributed).toHaveBeenCalledExactlyOnceWith('https://hub.example')
   })
 })

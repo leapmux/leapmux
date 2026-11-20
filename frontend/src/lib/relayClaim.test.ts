@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { flushStorageWrites } from '~/lib/browserStorage'
-import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { TEST_ACCOUNT } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { relayClaim } from './relayClaim'
 
@@ -93,7 +93,7 @@ describe('relayClaim', () => {
     await flushStorageWrites()
     vi.resetModules()
     const storage = await import('~/lib/browserStorage')
-    await storage.hydrateStorageAccount(TEST_USER_ID)
+    await storage.hydrateStorageAccount(TEST_ACCOUNT)
     const { relayClaim: reloaded } = await import('./relayClaim')
 
     expect(reloaded.claim()).toBeGreaterThan(second)

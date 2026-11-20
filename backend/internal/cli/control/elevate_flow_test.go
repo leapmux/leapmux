@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/loopbackauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,8 +35,20 @@ type elevationHub struct {
 	grant       map[string]any
 	// startStatus, when non-zero, is the answer instead of the grant.
 	startStatus int
+	// startBody is the body of that refusal, for a refusal that identifies an
+	// OAuth error code.
+	startBody string
 	// pollAnswer answers one poll. nil means "granted".
 	pollAnswer func(w http.ResponseWriter, n int)
+	// codeAnswer answers one authorization_code redemption, which is the
+	// loopback step-up's token request. nil means "granted".
+	codeAnswer func(w http.ResponseWriter, n int)
+	// redemptions counts the authorization_code token requests, and
+	// redemptionAuth / redemptionForm hold the last one's credential and
+	// form.
+	redemptions    int
+	redemptionAuth string
+	redemptionForm url.Values
 	// onStart runs inside the start handler, before it answers. A test that
 	// needs two ceremonies to OVERLAP blocks the first one here.
 	onStart func()
@@ -74,12 +89,17 @@ func (h *elevationHub) startLeg() http.HandlerFunc {
 		h.authorization = r.Header.Get("Authorization")
 		h.deviceLabel = r.FormValue("installation_name")
 		status, grant, hook := h.startStatus, h.grant, h.onStart
+		body := h.startBody
 		h.mu.Unlock()
 		if hook != nil {
 			hook()
 		}
 		if status != 0 {
+			if body != "" {
+				w.Header().Set("Content-Type", "application/json")
+			}
 			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -90,31 +110,46 @@ func (h *elevationHub) startLeg() http.HandlerFunc {
 // tokenEndpoint answers /oauth/token, routing by grant_type.
 //
 // `other` handles every grant this fixture does not: a nil `other` means the
-// fixture serves the device-code poll alone. A caller that also stands in for
-// the refresh grant passes its own handler, and the two share ONE registration
-// -- which is what the hub does now, and what makes a second mux.HandleFunc for
+// fixture serves the device-code poll and the loopback step-up's
+// authorization_code redemption alone. A caller that also stands in for the
+// refresh grant passes its own handler, and the two share ONE registration --
+// which is what the hub does now, and what makes a second mux.HandleFunc for
 // the same path a panic rather than a silent shadow.
 func (h *elevationHub) tokenEndpoint(other http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
-		if r.FormValue("grant_type") != GrantTypeDeviceCode {
+		switch r.FormValue("grant_type") {
+		case GrantTypeDeviceCode:
+			h.mu.Lock()
+			h.polls++
+			n, answer := h.polls, h.pollAnswer
+			h.mu.Unlock()
+			if answer == nil {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"elevated":true}`))
+				return
+			}
+			answer(w, n)
+		case GrantTypeAuthorizationCode:
+			h.mu.Lock()
+			h.redemptions++
+			h.redemptionAuth = r.Header.Get("Authorization")
+			h.redemptionForm = r.Form
+			n, answer := h.redemptions, h.codeAnswer
+			h.mu.Unlock()
+			if answer == nil {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"elevated":true}`))
+				return
+			}
+			answer(w, n)
+		default:
 			if other != nil {
 				other(w, r)
 				return
 			}
 			http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
-			return
 		}
-		h.mu.Lock()
-		h.polls++
-		n, answer := h.polls, h.pollAnswer
-		h.mu.Unlock()
-		if answer == nil {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"elevated":true}`))
-			return
-		}
-		answer(w, n)
 	}
 }
 
@@ -145,6 +180,94 @@ func (h *elevationHub) presentedDeviceName() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.deviceLabel
+}
+
+// redemption records what the loopback step-up's token request carried.
+func (h *elevationHub) redemption() (n int, bearer string, form url.Values) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.redemptions, h.redemptionAuth, h.redemptionForm
+}
+
+// browserStepUpRefusal is the hub's answer to a device ceremony for a
+// browser-issued credential: no device row, and one working alternative.
+const browserStepUpRefusal = `{"error":"browser_step_up_required","error_description":"this credential was issued through a browser on its own computer; verify it through that browser"}`
+
+// browserStub stands in for the person at the browser during a loopback
+// ceremony: it records the authorize URL and answers its callback.
+type browserStub struct {
+	mu        sync.Mutex
+	calls     int
+	authorize string
+}
+
+// stubBrowser replaces OpenBrowser for the rest of the test. The replacement
+// answers the callback of the authorize URL with callbackQuery of the URL's
+// own state -- the test IS the person at the browser, and no real browser
+// starts.
+func stubBrowser(t *testing.T, callbackQuery func(state string) string) *browserStub {
+	t.Helper()
+	stub := &browserStub{}
+	prev := OpenBrowser
+	OpenBrowser = func(authorizeURL string) error {
+		stub.mu.Lock()
+		stub.calls++
+		stub.authorize = authorizeURL
+		stub.mu.Unlock()
+		u, err := url.Parse(authorizeURL)
+		require.NoError(t, err)
+		q := u.Query()
+		resp, err := http.Get(q.Get("redirect_uri") + "?" + callbackQuery(q.Get("state")))
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		return nil
+	}
+	t.Cleanup(func() { OpenBrowser = prev })
+	return stub
+}
+
+// approve answers a loopback callback with a code, as a person who approves
+// would.
+func approve(state string) string {
+	return url.Values{"state": {state}, "code": {"C-9"}}.Encode()
+}
+
+// deny answers a loopback callback with the consent page's Deny.
+func deny(state string) string {
+	return url.Values{"state": {state}, "error": {"access_denied"}}.Encode()
+}
+
+func (s *browserStub) callsMade() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *browserStub) authorizeURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.authorize
+}
+
+// elevatableBrowserClient is elevatableClient for a credential whose token id
+// lets a loopback step-up specify its target: the shape a login through the
+// browser leaves on disk.
+func elevatableBrowserClient(t *testing.T, hubURL string, expiresAt time.Time) *Client {
+	t.Helper()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, SaveCredentials(hubURL, CredentialFile{
+		HubURL:       hubURL,
+		AccessToken:  "lmx_a_access_0",
+		RefreshToken: "lmx_a_refresh_0",
+		ExpiresAt:    expiresAt,
+		UserID:       "usr_1",
+		Username:     "alice",
+		TokenID:      "tok-1",
+	}))
+	c, err := NewClient(hubURL)
+	require.NoError(t, err)
+	c.promptAllowed = true
+	return c
 }
 
 // elevatableClient builds a client for the stub hub that is allowed to
@@ -491,4 +614,206 @@ func TestElevate_LeavesStdoutParseableForTheVerbThatOpenedIt(t *testing.T) {
 	assert.Equal(t, "ch-1", envelope.Data["channel_id"])
 	assert.Contains(t, errOut.String(), "verify your identity",
 		"the prose the person must read still reaches them, on the other stream")
+}
+
+// TestElevate_FallsBackToTheLoopbackCeremonyWhenTheHubDemandsABrowser is the
+// fallback: a browser-issued credential cannot prove its factor in the
+// device ceremony, and the hub says so. The loopback ceremony runs instead,
+// and the redemption presents the bearer this client holds.
+func TestElevate_FallsBackToTheLoopbackCeremonyWhenTheHubDemandsABrowser(t *testing.T) {
+	hub := newElevationHub(t)
+	hub.startStatus = http.StatusBadRequest
+	hub.startBody = browserStepUpRefusal
+	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
+	stub := stubBrowser(t, approve)
+	captureStreams(t)
+
+	require.NoError(t, c.Elevate(context.Background()))
+
+	assert.Equal(t, 1, stub.callsMade(), "the person sees exactly one detour")
+	u, err := url.Parse(stub.authorizeURL())
+	require.NoError(t, err)
+	require.Equal(t, "/oauth/authorize", u.Path)
+	assert.Equal(t, "token:tok-1", u.Query().Get("step_up"),
+		"the ceremony identifies the credential it verifies")
+
+	n, bearer, form := hub.redemption()
+	assert.Equal(t, 1, n, "one redemption for one approval")
+	assert.Equal(t, "Bearer lmx_a_access_0", bearer, "the token request carries the bearer")
+	assert.Equal(t, "authorization_code", form.Get("grant_type"))
+	assert.Equal(t, "C-9", form.Get("code"))
+	assert.NotEmpty(t, form.Get("code_verifier"))
+	starts, polls := hub.counts()
+	assert.Equal(t, 1, starts, "the device ceremony is still the first ask")
+	assert.Zero(t, polls, "a refused device ceremony never polls")
+}
+
+// TestElevate_RunsTheDeviceCeremonyWhenTheHubGrantsIt is the other half of
+// the fallback: a grant answers the device ask, so no loopback detour may
+// open beside it.
+func TestElevate_RunsTheDeviceCeremonyWhenTheHubGrantsIt(t *testing.T) {
+	hub := newElevationHub(t)
+	c := elevatableClient(t, hub.server.URL)
+	stub := stubBrowser(t, approve)
+	captureStreams(t)
+
+	require.NoError(t, c.Elevate(context.Background()))
+
+	assert.Zero(t, stub.callsMade(), "the device ceremony needs no browser of its own")
+	starts, polls := hub.counts()
+	assert.Equal(t, 1, starts)
+	assert.Equal(t, 1, polls, "the approval comes through the device poll")
+	n, _, _ := hub.redemption()
+	assert.Zero(t, n, "a device step-up redeems no code")
+}
+
+// TestElevateViaLoopback_WithoutATokenIDTellsTheUserToSignInAgain
+// checks that the CLI rejects a credential with no step-up target before it
+// starts the loopback flow, which would bind a listener.
+func TestElevateViaLoopback_WithoutATokenIDTellsTheUserToSignInAgain(t *testing.T) {
+	// seedCredentials writes a credential file without a token id.
+	c := elevatableClient(t, "https://hub.example")
+	var starts int
+	start := func(loopbackauth.Request) (*loopbackauth.Flow, error) {
+		starts++
+		return nil, assert.AnError
+	}
+
+	err := c.elevateViaLoopback(context.Background(), start)
+
+	assert.ErrorIs(t, err, errStepUpNeedsSignIn)
+	assert.ErrorContains(t, err, "sign in again with `leapmux control auth login`")
+	assert.Zero(t, starts, "the loopback flow must start only after identifying the target")
+}
+
+// TestElevate_RefreshesTheExpiredBearerOnlyAfterApproval expires the bearer
+// during the browser ceremony. Approval must renew the credential before
+// redemption. A denial must return without renewing it.
+func TestElevate_RefreshesTheExpiredBearerOnlyAfterApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		callback func(string) string
+		approved bool
+	}{
+		{name: "approval", callback: approve, approved: true},
+		{name: "denial", callback: deny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := newRepairHub(t, 3600)
+			hub.elevation.startStatus = http.StatusBadRequest
+			hub.elevation.startBody = browserStepUpRefusal
+			c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
+			stub := stubBrowser(t, func(state string) string {
+				assert.Zero(t, hub.rotations.Load(), "the CLI has not refreshed before the browser answers")
+				creds, err := LoadCredentials(hub.server.URL)
+				require.NoError(t, err)
+				creds.ExpiresAt = time.Now().Add(-time.Hour)
+				require.NoError(t, SaveCredentials(hub.server.URL, *creds))
+				c.setBearer(creds.AccessToken, creds.ExpiresAt)
+				return tc.callback(state)
+			})
+			captureStreams(t)
+
+			err := c.Elevate(context.Background())
+
+			assert.Equal(t, 1, stub.callsMade())
+			assert.Equal(t, "Bearer lmx_a_access_0", hub.elevation.presentedCredential())
+			n, bearer, _ := hub.elevation.redemption()
+			if tc.approved {
+				require.NoError(t, err)
+				assert.EqualValues(t, 1, hub.rotations.Load(), "approval renews the expired bearer once")
+				assert.Equal(t, 1, n)
+				assert.Equal(t, "Bearer lmx_a_access_1", bearer)
+			} else {
+				require.ErrorContains(t, err, "access_denied")
+				assert.Zero(t, hub.rotations.Load(), "denial ends the ceremony before renewal")
+				assert.Zero(t, n, "denial redeems no code")
+			}
+		})
+	}
+}
+
+// TestElevate_RepairsTheBearerAndPostsAgainAfterA401 pins the second post.
+// The hub keeps the code valid after a 401, so a repaired bearer is worth
+// one more redemption rather than a lost ceremony.
+func TestElevate_RepairsTheBearerAndPostsAgainAfterA401(t *testing.T) {
+	hub := newRepairHub(t, 3600)
+	hub.elevation.startStatus = http.StatusBadRequest
+	hub.elevation.startBody = browserStepUpRefusal
+	hub.elevation.codeAnswer = func(w http.ResponseWriter, n int) {
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"elevated":true}`))
+	}
+	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
+	stub := stubBrowser(t, approve)
+	captureStreams(t)
+
+	require.NoError(t, c.Elevate(context.Background()))
+
+	assert.Equal(t, 1, stub.callsMade(), "the person answers once; the repair is the CLI's own")
+	assert.GreaterOrEqual(t, hub.rotations.Load(), int64(1),
+		"a 401 must repair the bearer before the replay")
+	n, bearer, _ := hub.elevation.redemption()
+	assert.Equal(t, 2, n, "one refused redemption, then the replay")
+	assert.Equal(t, "Bearer lmx_a_access_1", bearer,
+		"the replay carries the repaired bearer")
+}
+
+// TestElevate_ReportsTheHubsRefusalOfTheCode keeps the hub's own
+// description: it is the only thing that says WHY a valid-looking callback
+// did not produce a window.
+func TestElevate_ReportsTheHubsRefusalOfTheCode(t *testing.T) {
+	hub := newElevationHub(t)
+	hub.startStatus = http.StatusBadRequest
+	hub.startBody = browserStepUpRefusal
+	hub.codeAnswer = func(w http.ResponseWriter, _ int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"code expired or already consumed"}`))
+	}
+	c := elevatableBrowserClient(t, hub.server.URL, time.Now().Add(time.Hour))
+	stub := stubBrowser(t, approve)
+	captureStreams(t)
+
+	err := c.Elevate(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid_grant")
+	assert.Contains(t, err.Error(), "code expired or already consumed")
+	assert.Equal(t, 1, stub.callsMade())
+}
+
+// TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt
+// separates the two reasons LoadCredentials can fail. A missing file means
+// "sign in again", because there is no credential to verify. A file that will
+// not parse is a different problem with a different remedy: the credential
+// may only need repair, and mapping it to the sign-in message hides that.
+func TestElevateViaLoopback_ReportsACorruptCredentialFileRatherThanASignInPrompt(t *testing.T) {
+	hubURL := "https://hub.example"
+	c := &Client{HubURL: hubURL}
+
+	t.Run("a missing credential file says sign in again", func(t *testing.T) {
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+		err := c.elevateViaLoopback(context.Background(), loopbackauth.Start)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sign in again with `leapmux control auth login`")
+	})
+
+	t.Run("a corrupt credential file surfaces the parse error", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+		path, err := CredentialsPath(hubURL)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
+
+		err = c.elevateViaLoopback(context.Background(), loopbackauth.Start)
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, errStepUpNeedsSignIn,
+			"a corrupt file is not a credential without a token id")
+		assert.Contains(t, err.Error(), "parse credentials")
+	})
 }

@@ -8,13 +8,14 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/sessioncookie"
 )
 
 const (
 	// CookieName is the session cookie name used without TLS.
-	CookieName = "leapmux-session"
+	CookieName = sessioncookie.Name
 	// SecureCookieName is the session cookie name used with TLS (__Host- prefix).
-	SecureCookieName = "__Host-leapmux-session"
+	SecureCookieName = sessioncookie.SecureName
 	// OAuthNonceCookieName is the OAuth flow-binding cookie name used without TLS.
 	OAuthNonceCookieName = "leapmux-oauth"
 	// SecureOAuthNonceCookieName is the OAuth flow-binding cookie name used
@@ -314,7 +315,7 @@ func (r sessionRefresh) applyTo(h *connect.Header, secure bool) {
 		// something this code cannot read, and losing one refresh costs a
 		// throttle window, where overwriting a cookie meant for the browser
 		// could sign a user in again after a logout.
-		if err != nil || c.Name == CookieName || c.Name == SecureCookieName {
+		if err != nil || sessioncookie.IsName(c.Name) {
 			return
 		}
 	}

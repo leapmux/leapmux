@@ -1,4 +1,5 @@
 import type { BatchRejection, OpBatch } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import type { StorageAccount } from '~/lib/browserStorage'
 import type { PendingOpsManager } from '~/lib/crdt'
 import { onCleanup } from 'solid-js'
 import { userCRDTClient, userCRDTUnloadClient } from '~/api/clients'
@@ -6,6 +7,7 @@ import { MAX_KEEPALIVE_BODY_BYTES } from '~/api/transport'
 import { showWarnToast } from '~/components/common/Toast'
 import { BatchRejectionReason } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { coalesceQueuedBatches, supersededParkedBatchIds } from '~/lib/crdt/coalesce'
+import { loadCrdtOutbox, outboxBatchIsStale, storeCrdtOutbox } from '~/lib/crdt/outbox'
 import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff } from '~/lib/retry'
 
@@ -60,6 +62,8 @@ const MAX_REJECTION_RETRIES = 5
  */
 export interface CreateOpsSubmitterOpts {
   pending: () => PendingOpsManager | null
+  /** Current authenticated storage account. Enables the durable outbox. */
+  storageAccount?: () => StorageAccount | null
   /** Optional override for the SubmitOps client (tests). */
   client?: typeof userCRDTClient
   /**
@@ -131,10 +135,127 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
     multiplier: 2,
     jitterFactor: 0,
   })
+  let outboxAccount: StorageAccount | null = null
+  let restoredAccount: StorageAccount | null = null
+  let restoringAccount: StorageAccount | null = null
+  let restorePromise: Promise<void> | null = null
+  let outboxDurability: Promise<boolean> | null = null
+  let outboxGeneration = 0
+  const outboxBatches = new Map<string, OpBatch>()
+
+  function activateOutbox(account: StorageAccount): void {
+    if (outboxAccount === account)
+      return
+    queue = []
+    transportBackoff.cancelAll()
+    rejectionBackoff.cancelAll()
+    parked.clear()
+    transportRetries.clear()
+    rejectionRetries.clear()
+    outboxGeneration++
+    outboxAccount = account
+    restoredAccount = null
+    restoringAccount = null
+    restorePromise = null
+    outboxDurability = null
+    outboxBatches.clear()
+  }
+
+  function persistOutbox(account: StorageAccount): void {
+    if (outboxAccount !== account || opts.storageAccount?.() !== account)
+      return
+    const write = storeCrdtOutbox(outboxBatches.values())
+    outboxDurability = write.durable
+    void outboxDurability.then((durable) => {
+      if (!durable)
+        log.warn('could not persist the CRDT outbox')
+    })
+  }
+
+  function stageOutbox(batch: OpBatch): void {
+    const account = opts.storageAccount?.() ?? null
+    if (!account)
+      return
+    activateOutbox(account)
+    if (restoredAccount !== account && restoringAccount !== account)
+      void restoreOutbox()
+    outboxBatches.set(batch.batchId, cloneBatch(batch))
+    if (restoredAccount === account)
+      persistOutbox(account)
+  }
+
+  function finishOutboxBatch(batchId: string, account = outboxAccount): void {
+    if (!account || outboxAccount !== account || opts.storageAccount?.() !== account)
+      return
+    if (outboxBatches.delete(batchId))
+      persistOutbox(account)
+  }
+
+  function restoreOutbox(): Promise<void> {
+    const account = opts.storageAccount?.() ?? null
+    const pending = opts.pending()
+    if (!account || !pending || restoredAccount === account)
+      return Promise.resolve()
+    if (restoringAccount === account && restorePromise)
+      return restorePromise
+    activateOutbox(account)
+    const generation = outboxGeneration
+    restoringAccount = account
+    const currentRestore = (async () => {
+      try {
+        const stored = await loadCrdtOutbox()
+        if (outboxGeneration !== generation || opts.storageAccount?.() !== account || opts.pending() !== pending)
+          return
+        const stagedBatches = [
+          ...outboxBatches.values(),
+        ]
+        const stagedBatchIds = new Set(stagedBatches.map(batch => batch.batchId))
+        const restoredBatches: OpBatch[] = []
+        for (const batch of stored) {
+          if (outboxBatchIsStale(batch, pending.state.confirmedState, pending.state.currentEpoch))
+            continue
+          if (stagedBatchIds.has(batch.batchId))
+            continue
+          const restored = cloneBatch(batch)
+          restoredBatches.push(restored)
+          pending.submit(restored)
+        }
+        outboxBatches.clear()
+        for (const batch of [
+          ...restoredBatches,
+          ...stagedBatches,
+        ])
+          outboxBatches.set(batch.batchId, batch)
+        queue = [
+          ...restoredBatches,
+          ...queue,
+        ]
+        restoredAccount = account
+        // Rewrite even when every stored batch was valid. An enqueue that raced
+        // this initial load lives in `outboxBatches`, and corrupt entries that
+        // the codec skipped must not remain on disk.
+        persistOutbox(account)
+        if (queue.length > 0 && !timer)
+          timer = setTimeout(flush, SUBMIT_FLUSH_MS)
+      }
+      finally {
+        if (outboxGeneration === generation && restoringAccount === account) {
+          restoringAccount = null
+          restorePromise = null
+        }
+      }
+    })()
+    restorePromise = currentRestore
+    return currentRestore
+  }
 
   function enqueue(batch: OpBatch): void {
-    queue.push(batch)
     const pending = opts.pending()
+    if (opts.storageAccount && pending && batch.epoch === 0n)
+      batch.epoch = pending.state.currentEpoch
+    if (pending)
+      stageOutbox(batch)
+    queue.push(batch)
     if (pending)
       pending.submit(batch)
     if (!timer)
@@ -146,9 +267,8 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
    *
    * Keepalive requests share a 64 KiB budget across all in-flight ones and fail
    * outright above it, so an oversized unload flush falls back to the ordinary
-   * client. That send will very likely be cancelled with the page -- but a
-   * cancelled request is no worse than the keepalive one the browser would have
-   * refused. This module keeps queued batches and retry state only in memory.
+   * client. That send will very likely be cancelled with the page. The durable
+   * outbox retains the original batch id, so the next load can retry it safely.
    */
   function submitClientFor(unload: boolean, batches: OpBatch[]): typeof client {
     if (!unload)
@@ -233,6 +353,12 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       timer = setTimeout(flush, SUBMIT_FLUSH_MS)
       return
     }
+    const account = opts.storageAccount?.() ?? null
+    if (account && restoredAccount !== account) {
+      await restoreOutbox()
+      if (opts.storageAccount?.() !== account || opts.pending() !== pending)
+        return
+    }
     // Merge same-register writes that piled up in this window. High-frequency
     // gestures emit the same LWW register repeatedly, and only the last write
     // can survive the merge anywhere, so the earlier ones are pure wire,
@@ -248,6 +374,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       pending.revertPendingBatch(batchId)
       dropTransportRetryCounter(batchId)
       dropRejectionRetryCounter(batchId)
+      finishOutboxBatch(batchId)
     }
     if (droppedOps > 0)
       log.debug('coalesced superseded ops before submit', { droppedOps, droppedBatches: droppedBatchIds.length })
@@ -259,6 +386,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       dropTransportRetryCounter(batchId)
       dropRejectionRetryCounter(batchId)
       pending.revertPendingBatch(batchId)
+      finishOutboxBatch(batchId)
       log.debug('cancelled a parked retry superseded by a newer write', { batchId })
     }
     if (batches.length === 0)
@@ -268,13 +396,20 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
     for (const batch of batches) {
       if (batch.epoch === 0n)
         batch.epoch = pending.state.currentEpoch
+      stageOutbox(batch)
     }
+    const submissionAccount = outboxAccount
+    const durability = outboxDurability
+    if (submissionAccount && durability)
+      await durability
+    if (submissionAccount && opts.storageAccount?.() !== submissionAccount)
+      return
     let resp: Awaited<ReturnType<typeof client.submitOps>>
     try {
       resp = await submitClientFor(flushOpts?.unload === true, batches).submitOps({ batches })
     }
     catch (err) {
-      handleTransportFailure(pending, batches, err)
+      handleTransportFailure(pending, batches, err, submissionAccount)
       return
     }
     try {
@@ -289,6 +424,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
             anyCommitted = true
             dropTransportRetryCounter(result.batchId)
             dropRejectionRetryCounter(result.batchId)
+            finishOutboxBatch(result.batchId, submissionAccount)
             break
           }
           case 'rejected': {
@@ -328,6 +464,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
               // state (a batch retryable on an earlier attempt may now be
               // terminally rejected) and warn the user.
               dropRejectionRetryCounter(result.batchId)
+              finishOutboxBatch(result.batchId, submissionAccount)
               showRejectionToast(rejection)
             }
             break
@@ -353,6 +490,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
           // visible.
           pending.revertPendingBatch(batch.batchId)
           dropRejectionRetryCounter(batch.batchId)
+          finishOutboxBatch(batch.batchId, submissionAccount)
           showWarnToast('Couldn\'t sync your change (your view needs to reconnect). Please retry the action manually.')
           continue
         }
@@ -362,6 +500,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
           // across the retries (retryable rejection); revert them now.
           pending.revertPendingBatch(batch.batchId)
           dropRejectionRetryCounter(batch.batchId)
+          finishOutboxBatch(batch.batchId, submissionAccount)
           showWarnToast(`Couldn't sync your change after ${MAX_REJECTION_RETRIES} attempts. Please retry the action manually.`)
           continue
         }
@@ -381,6 +520,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
         pending.revertPendingBatch(batch.batchId)
         dropTransportRetryCounter(batch.batchId)
         dropRejectionRetryCounter(batch.batchId)
+        finishOutboxBatch(batch.batchId, submissionAccount)
       }
       showWarnToast('Couldn\'t confirm your layout change. Please reconnect before trying again.', err)
     }
@@ -400,7 +540,12 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
     }
   }
 
-  function handleTransportFailure(pending: PendingOpsManager, batches: OpBatch[], err: unknown): void {
+  function handleTransportFailure(
+    pending: PendingOpsManager,
+    batches: OpBatch[],
+    err: unknown,
+    submissionAccount: StorageAccount | null,
+  ): void {
     for (const batch of batches) {
       const attempts = (transportRetries.get(batch.batchId) ?? 0) + 1
       if (attempts > MAX_TRANSPORT_RETRIES) {
@@ -412,6 +557,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
         // rejection: nothing may treat a transport give-up as the server having
         // refused the change. Surface a toast so the failure isn't silent.
         pending.consumeBatchRejected(batch.batchId, { $typeName: 'leapmux.v1.BatchRejection', reason: 0, offendingOpId: '' })
+        finishOutboxBatch(batch.batchId, submissionAccount)
         showWarnToast(`Connection failed — couldn't reach the server after ${MAX_TRANSPORT_RETRIES} retries.`, err)
         continue
       }
@@ -430,13 +576,16 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
 
   return {
     enqueue,
+    restoreOutbox,
     /**
      * Force-flush.
      *
      * `{ unload: true }` routes the request through the keepalive transport so
      * it survives the document being torn down. A normal fetch started from a
      * `pagehide` handler is cancelled with the page, which is why simply
-     * enqueueing at unload was never enough: the 16 ms timer never fires.
+     * enqueueing at unload was never enough: the 16 ms timer never fires. The
+     * durable outbox remains the fallback when the keepalive request receives
+     * no acknowledgement.
      */
     flush,
   }

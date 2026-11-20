@@ -3,8 +3,10 @@ import type { CheckpointRead } from './checkpointStore'
 import type { HlcShape } from './hlc'
 import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import type { StorageAccount } from '~/lib/browserStorage'
 import { fromBinary } from '@bufbuild/protobuf'
 import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { storageAccountUserId } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
 import { applyChunk, isChunkKind, parseHeader } from './checkpointChunks'
 import {
@@ -146,7 +148,7 @@ function tryApplyChunk(state: UserCrdtState, kind: ChunkKind, entityId: string, 
  * Wipe this owner's persisted pair.
  *
  * It reports NOTHING about what to do next. It used to return `Promise<null>`
- * and be named `wipeAndFail`, because a wipe WAS the cold-start decision at all
+ * and be called `wipeAndFail`, because a wipe WAS the cold-start decision at all
  * eight call sites that returned its result directly. It no longer is: the sole
  * caller now falls through to the sibling seed, and a name that still advertises
  * the old control flow invites the next failure arm to write
@@ -164,27 +166,27 @@ function tryApplyChunk(state: UserCrdtState, kind: ChunkKind, entityId: string, 
  * `clearCheckpointAndOpLog` (user-wide) stays for logout / user switch, where
  * spanning every tab is the intent.
  */
-async function wipeOwnCheckpoint(userId: string, clientId: string): Promise<void> {
+async function wipeOwnCheckpoint(storageAccount: StorageAccount, clientId: string): Promise<void> {
   // A wipe that did not happen leaves the poison record in place, so the next
   // reload reads it, fails identically, and pays a full projection snapshot --
   // forever, and silently. The wipe is still best-effort (there is nothing
   // better to do here), but "self-healing" is a claim this module makes in its
   // own header, and an unobservable failure makes that claim unfalsifiable.
-  if (!await clearOwnerCheckpointAndOpLog(userId, clientId))
+  if (!await clearOwnerCheckpointAndOpLog(storageAccount, clientId))
     log.warn('could not wipe the corrupt checkpoint; the next reload will re-read it', { clientId })
 }
 
 /**
- * Load and validate the persisted checkpoint + op-log for `userId`.
+ * Load and validate the persisted checkpoint + op-log for `storageAccount`.
  *
  * It tries THIS OWNER first, and falls through to a SIBLING owner when this one
  * has nothing usable -- either because there is no row at all (a genuinely new
  * tab, the first tab after a browser restart, a re-minted duplicate), or
  * because this owner's row failed validation:
  *   - the checkpoint header blob fails to deserialize,
- *   - the header names a different tenant,
+ *   - the header identifies a different tenant,
  *   - the watermark/epoch is missing or out of range,
- *   - an entity chunk names an unknown kind or fails to deserialize.
+ *   - an entity chunk identifies an unknown kind or fails to deserialize.
  *
  * Each of THOSE wipes THIS OWNER's pair (see wipeOwnCheckpoint) so the next
  * reload isn't poisoned by the same corrupt record. The wipe and the seed are separate
@@ -200,17 +202,17 @@ async function wipeOwnCheckpoint(userId: string, clientId: string): Promise<void
  * checkpoint to drop the bad tail.
  */
 export async function loadHydrationState(
-  userId: string,
+  storageAccount: StorageAccount,
   clientId: string,
   opts: HydrationOptions = {},
 ): Promise<HydrationPayload | null> {
-  if (!isCheckpointStoreAvailable() || !userId || !clientId)
+  if (!isCheckpointStoreAvailable() || !storageAccount || !clientId)
     return null
 
-  const read = await readCheckpoint(userId, clientId)
+  const read = await readCheckpoint(storageAccount, clientId)
   if (read.status === 'miss')
-    return seedFromSibling(userId, clientId, opts)
-  const payload = validateCheckpoint(userId, read)
+    return seedFromSibling(storageAccount, clientId, opts)
+  const payload = validateCheckpoint(storageAccount, read)
   if (payload)
     return payload
   // Our own record is unusable. Wipe it so the next reload is not poisoned by
@@ -229,8 +231,8 @@ export async function loadHydrationState(
   // reached from the write side.
   if (opts.superseded?.())
     return null
-  await wipeOwnCheckpoint(userId, clientId)
-  return seedFromSibling(userId, clientId, opts)
+  await wipeOwnCheckpoint(storageAccount, clientId)
+  return seedFromSibling(storageAccount, clientId, opts)
 }
 
 /**
@@ -251,7 +253,7 @@ export async function loadHydrationState(
  * the discriminant was an arm every reader had to check was handled and then
  * find was not.
  */
-function validateCheckpoint(userId: string, read: CheckpointRead): HydrationPayload | null {
+function validateCheckpoint(storageAccount: StorageAccount, read: CheckpointRead): HydrationPayload | null {
   // A 'failed' read is NOT the same as a miss to the CALLER, which wipes on the
   // former: a checkpoint row that EXISTS but cannot be read (a structured-clone
   // failure on the stored bytes, a corrupt key entry) would otherwise survive
@@ -277,15 +279,19 @@ function validateCheckpoint(userId: string, read: CheckpointRead): HydrationPayl
   // the same way. Wipe rather than merely skip: a row keyed under this user but
   // carrying another user's state is corrupt by construction.
   //
+  // The row key is the composed STORAGE account (`hub/user`), while `user_id`
+  // keeps the raw Hub user id `bootstrap` copies off `UserMaterialized`, so the
+  // tenant to check against is the one the key identifies -- not the key itself.
+  //
   // A MISSING user_id is corrupt too, and is checked by the same comparison
   // rather than short-circuited past it. Guarding with `state.userId &&` would
-  // admit the one blob that names no tenant at all -- the only record here whose
+  // admit the one blob that identifies no tenant at all -- the only record here whose
   // provenance is completely unknown -- while every other validation in this
   // function (watermark, epoch, chunk kind) treats absent as fatal. No writer
   // produces one: `newState(userId)` seeds even the cold-start manager, a
   // bootstrap copies `materialized.userId`, and a checkpoint is only ever
   // written once a watermark exists, which requires one of those two.
-  if (state.userId !== userId) {
+  if (state.userId !== storageAccountUserId(storageAccount)) {
     return null
   }
 
@@ -313,7 +319,7 @@ function validateCheckpoint(userId: string, read: CheckpointRead): HydrationPayl
   }
 
   // (2b) Re-assemble the entity maps from the chunks. EVERY chunk must land:
-  // one that names a kind this build does not know, or that fails to decode,
+  // one that identifies a kind this build does not know, or that fails to decode,
   // yields a state missing exactly that record while the header's watermark
   // still claims to describe it -- and the resume cursor would then be sent
   // for a base that is silently short. That is worse than no checkpoint at
@@ -391,7 +397,7 @@ export interface HydrationOptions {
   /**
    * Test seam: how many candidates to try before giving up.
    *
-   * Named to match `SeedCandidateOptions.limit`, which it is forwarded to
+   * Its name matches `SeedCandidateOptions.limit`, which it is forwarded to
    * verbatim one call later -- one knob should not have two names a single hop
    * apart. (A sibling `now`/`maxAgeMs` pair was declared here too and deleted:
    * nothing ever set `now`, and `maxAgeMs` was never forwarded at all, so the
@@ -423,17 +429,17 @@ export interface HydrationOptions {
  * policy over rows we do not own is enough.
  */
 async function seedFromSibling(
-  userId: string,
+  storageAccount: StorageAccount,
   clientId: string,
   opts: HydrationOptions,
 ): Promise<HydrationPayload | null> {
-  const candidates = await listSeedCandidates(userId, clientId, {
+  const candidates = await listSeedCandidates(storageAccount, clientId, {
     ...(opts.limit !== undefined
       ? { limit: opts.limit }
       : {}),
   })
   for (const candidate of candidates) {
-    const read = await readCheckpoint(userId, candidate.clientId)
+    const read = await readCheckpoint(storageAccount, candidate.clientId)
     // Narrow ONCE, here, so everything below reads the candidate's bytes off a
     // `read` the type system has already proven to be present.
     //
@@ -447,7 +453,7 @@ async function seedFromSibling(
     // header calls impossible.
     if (read.status !== 'ok')
       continue
-    const payload = validateCheckpoint(userId, read)
+    const payload = validateCheckpoint(storageAccount, read)
     if (!payload)
       continue
     // Checked HERE, and again inside adoptCheckpoint immediately before its
@@ -509,7 +515,7 @@ async function seedFromSibling(
     // removes the second `adopted &&` guard this expression used to need -- an
     // ordinal cannot outlive the base it counts.
     const persistedBase = adoptCheckpoint(
-      userId,
+      storageAccount,
       clientId,
       {
         headerBytes: read.checkpoint.headerBytes,

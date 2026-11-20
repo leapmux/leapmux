@@ -86,14 +86,13 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	require.NoError(t, err)
 	userID := user.ID
 
-	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 
 	return &sectionTestEnv{
 		client:          client,
 		workspaceClient: workspaceClient,
 		store:           st,
-		token:           token,
+		token:           session.Token,
 		userID:          userID,
 	}
 }
@@ -214,8 +213,8 @@ func TestSectionService_ListSections_NeverWrites(t *testing.T) {
 		DisplayName:           "Unseeded",
 		FirstCredentialExempt: true,
 	}))
-	bareToken, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "unseeded", "testpass", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	sess, _ := hubtestutil.LoginWithoutWindow(t, env.store, hubtestutil.TestSecretHasher(), "unseeded", "testpass", auth.DefaultSessionDuration)
+	bareToken := sess.Token
 	userID := userid.MustNew(bareID)
 
 	require.Empty(t, mustListSections(t, env, userID),

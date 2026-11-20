@@ -2,9 +2,10 @@ import type { SoloServerFixtures } from './helpers/solo'
 import { connect } from 'node:net'
 import { expect } from '@playwright/test'
 import { test as base } from './fixtures'
+import { elevateSessionViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
 import { findFreePort } from './helpers/server'
-import { completeSoloPasswordSetup, signInToSoloViaUI, soloServerFixtures } from './helpers/solo'
-import { logoutViaUI, openAppAs, openSettingsAt } from './helpers/ui'
+import { completeSoloPasswordSetup, signInToSoloViaUI, SOLO_PASSWORD, soloServerFixtures } from './helpers/solo'
+import { logoutViaUI, openAppAs, openSettingsAt, readSessionCookie } from './helpers/ui'
 
 const test = base.extend<SoloServerFixtures>(soloServerFixtures)
 
@@ -43,6 +44,9 @@ test.describe('Network access', () => {
   test('publishes an address, then asks every address for the password', async ({ page, soloServer: solo }) => {
     await page.goto(`${solo.hubUrl}/`)
     await completeSoloPasswordSetup(page)
+    // The Administration section loads only in a session that holds a current
+    // window (E9).
+    await elevateSessionViaAPI(solo.hubUrl, await readSessionCookie(page, 'the network access panel'), SOLO_PASSWORD)
 
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
@@ -101,6 +105,9 @@ test.describe('Network access', () => {
   test('removes an address and stops answering there', async ({ page, soloServer: solo }) => {
     await page.goto(`${solo.hubUrl}/`)
     await completeSoloPasswordSetup(page)
+    // The Administration section loads only in a session that holds a current
+    // window (E9).
+    await elevateSessionViaAPI(solo.hubUrl, await readSessionCookie(page, 'the network access panel'), SOLO_PASSWORD)
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
 
@@ -136,6 +143,9 @@ test.describe('Network access', () => {
   test('stores trusted proxy providers symbolically', async ({ page, soloServer: solo }) => {
     await page.goto(`${solo.hubUrl}/`)
     await completeSoloPasswordSetup(page)
+    // The Administration section loads only in a session that holds a current
+    // window (E9).
+    await elevateSessionViaAPI(solo.hubUrl, await readSessionCookie(page, 'the network access panel'), SOLO_PASSWORD)
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="trusted_proxy_ranges"]')
 
@@ -168,6 +178,9 @@ test.describe('Network access', () => {
  */
 test.describe('Network access outside solo mode', () => {
   test('keeps the section for the trusted-proxy row when the listen row is hidden', async ({ page, leapmuxServer }) => {
+    // Elevate before the app reads the shared session's deadline. The
+    // suite's elevation may already have expired.
+    await elevateSessionViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, TEST_ADMIN_PASSWORD)
     await openAppAs(page, leapmuxServer.adminToken)
 
     const dialog = await openSettingsAt(page, 'admin-network')

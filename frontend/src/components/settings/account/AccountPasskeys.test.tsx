@@ -17,6 +17,7 @@ const mockBeginPasskeyRegistration = vi.fn()
 const mockFinishPasskeyRegistration = vi.fn()
 const mockRegisterForChallenge = vi.fn()
 const mockUser = vi.fn()
+const mockOpenHubPage = vi.fn()
 // The adoption the surface opens before the write leaves. The order records when
 // it opened relative to the RPC.
 const callOrder: string[] = []
@@ -64,6 +65,13 @@ vi.mock('~/lib/webauthn', async importOriginal => ({
   passkeyErrorMessage: (_e: unknown, fallback: string) => fallback,
   signalPasskeyRemoved: (...args: unknown[]) => mockSignalPasskeyRemoved(...args),
   signalAcceptedPasskeys: (...args: unknown[]) => mockSignalAcceptedPasskeys(...args),
+}))
+
+// The `needs-browser` remedy opens the hub in the system browser; spy on the
+// open rather than driving a real one.
+vi.mock('~/lib/hubSite', async importOriginal => ({
+  ...await importOriginal<typeof import('~/lib/hubSite')>(),
+  openHubPage: (...args: unknown[]) => mockOpenHubPage(...args),
 }))
 
 vi.mock('~/lib/passkeyManagement', async () => {
@@ -510,6 +518,30 @@ describe('AccountPasskeys on a page that cannot run a ceremony', () => {
     expect(add).toBeDisabled()
     expect(reasonOf(add)).toMatch(/does not run passkey ceremonies at this address/i)
     expect(screen.getByRole('alert').textContent).toMatch(/configured URL/i)
+  })
+
+  // Remote-Hub mode: the ceremony runs in the system browser. Listing,
+  // renaming and removing keep working here; the remedy for an addition is
+  // the hub's own page.
+  it('disables Add passkey and opens the hub from the browser remedy', async () => {
+    setSystemInfoMock({ passkeyBlocker: 'needs-browser' })
+    mockListPasskeys.mockResolvedValue({
+      passkeys: [
+        {
+          id: 'pk-1',
+          friendlyName: 'Laptop',
+          transports: [],
+          credentialId: 'cred-abc',
+        },
+      ],
+      rpId: 'localhost',
+    })
+    render(() => <AccountPasskeys />)
+
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add passkey' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
+    expect(mockOpenHubPage).toHaveBeenCalledWith('/?prefs=account')
   })
 
   /**

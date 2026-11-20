@@ -121,6 +121,49 @@ func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 	assert.True(t, resp.GetSessionReport().GetUser().GetIsAdmin())
 }
 
+// workspaceListProbe answers ListWorkspaces only. What is under test is the
+// interceptor's admission of a non-admin procedure, so the handler marks that
+// the call reached it and nothing more.
+type workspaceListProbe struct {
+	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
+	ran atomic.Bool
+}
+
+func (p *workspaceListProbe) ListWorkspaces(context.Context, *leapmuxv1.ListWorkspacesRequest) (*leapmuxv1.ListWorkspacesResponse, error) {
+	p.ran.Store(true)
+	return &leapmuxv1.ListWorkspacesResponse{}, nil
+}
+
+// TestInterceptor_NonAdminProcedureRunsForAnUnelevatedAdministrator pins that
+// the admin gate leaves non-admin procedures alone: an administrator whose
+// session holds no step-up window reaches WorkspaceService/ListWorkspaces and
+// the handler runs. The elevation rung belongs to Admin* procedures only.
+func TestInterceptor_NonAdminProcedureRunsForAnUnelevatedAdministrator(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+
+	probe := &workspaceListProbe{}
+	mux := http.NewServeMux()
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, probe)
+	connecthttp.Mount(mux, connectServer)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	workspaceClient := leapmuxv1connect.NewWorkspaceServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+
+	// A sign-in writes a FreshAuthenticationWindow (A10), so the RPC login
+	// would hand this test an ELEVATED session and the admin gate under test
+	// could never refuse it. LoginWithoutWindow signs in and then drops the
+	// window, which is the session shape this test asserts against.
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	_, err := workspaceClient.ListWorkspaces(authedReq(context.Background(), &leapmuxv1.ListWorkspacesRequest{}, session.Token))
+	require.NoError(t, err, "a non-admin procedure must run for an un-elevated session")
+	assert.True(t, probe.ran.Load(), "the handler must run")
+}
+
 func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 
@@ -197,6 +240,7 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(soloRow.ID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -449,6 +493,7 @@ func TestInterceptor_LeapMuxBearer_RejectsExpired(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	pastExpiry := time.Now().Add(-1 * time.Minute)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -479,6 +524,7 @@ func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T
 	tv.Now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
 	expiresAt := start.Add(10 * time.Second)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -958,7 +1004,8 @@ func seedInterceptorAPIToken(t *testing.T, st store.Store, validator *auth.Token
 	tokenID = newTestTokenID()
 	secret = auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(t.Context(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(userID), ClientID: oauthapp.ControlCLIClientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(userID), ClientID: oauthapp.ControlCLIClientID,
 		InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(), SecretHash: validator.HashSecret(secret),
 	}))
 	return tokenID, secret

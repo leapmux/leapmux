@@ -146,7 +146,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *leapmuxv1.Req
 	// early spares them a prompt they would answer for nothing; the
 	// availability probe answers a question about OTHER accounts, so it must
 	// not be reachable without the factor.
-	if err := requireElevation(userInfo, s.now()); err != nil {
+	if err := auth.RequireElevation(userInfo, s.now()); err != nil {
 		return nil, err
 	}
 
@@ -444,7 +444,7 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *leapmuxv1.Un
 	// unreachable, but it does not make this reversible: the owner cannot
 	// re-attach the link without signing in through it. So this requires the
 	// factor first, exactly as a password change does.
-	if err := requireElevation(userInfo, s.now()); err != nil {
+	if err := auth.RequireElevation(userInfo, s.now()); err != nil {
 		return nil, err
 	}
 

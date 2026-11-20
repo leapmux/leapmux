@@ -9,7 +9,7 @@ import { useAuth } from '~/context/AuthContext'
 import { CAPTCHA_ACTION } from '~/generated/contracts/captcha'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
-import { VERIFY_EMAIL_PATH } from '~/lib/postAuthNavigate'
+import { followDestination, postVerificationDestination, VERIFY_EMAIL_PATH } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
 import { useVerificationResend } from '~/lib/useVerificationResend'
 import { errorText, pageCard } from '~/styles/shared.css'
@@ -58,14 +58,20 @@ export const VerifyEmailPage: Component = () => {
     // Pull the URL code (used for both prefill and auto-submit). It may
     // arrive in display form ("XXX-XXX") or raw ("XXXXXX").
     const urlCode = stringParam(searchParams.code) ?? ''
+    const redirect = stringParam(searchParams.redirect)
 
     if (!auth.user()) {
       // Not signed in. Send the user through login first, preserving the
       // code so the page can resume on the round-trip back. Note: login
       // already honors `?redirect=` (see LoginPage.tsx) — do NOT use a
       // different param name here.
-      const next = urlCode
-        ? `${VERIFY_EMAIL_PATH}?code=${encodeURIComponent(urlCode)}`
+      const query = new URLSearchParams()
+      if (urlCode)
+        query.set('code', urlCode)
+      if (redirect)
+        query.set('redirect', redirect)
+      const next = query.size > 0
+        ? `${VERIFY_EMAIL_PATH}?${query.toString()}`
         : VERIFY_EMAIL_PATH
       navigate(`/login?redirect=${encodeURIComponent(next)}`, { replace: true })
       return
@@ -126,7 +132,7 @@ export const VerifyEmailPage: Component = () => {
       // elevation column. The adoption never writes the elevation, and it
       // re-reads the account when the reply carries none.
       await adopt(resp.user, resp.emailVerification)
-      navigate('/', { replace: true })
+      followDestination(navigate, postVerificationDestination(stringParam(searchParams.redirect)))
     }
     catch (e) {
       setError(formatErrorMessage(e, 'Verification failed'))

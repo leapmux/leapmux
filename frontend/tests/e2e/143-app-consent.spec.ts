@@ -9,13 +9,16 @@
  * browser that walks the whole round trip shows that.
  */
 
+import type { Page, Request } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { AppClientType, AppVisibility } from '../../src/generated/proto/leapmux/v1/app_pb'
 import { Scope } from '../../src/generated/proto/leapmux/v1/scope_pb'
 import { test } from './fixtures'
-import { elevatedAdminSessionViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
-import { authorizeURL, consentForm, LOOPBACK_REDIRECT_URI, registerAppViaAPI } from './helpers/oauthApps'
+import { elevatedAdminSessionViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
+import { authorizeURL, consentForm, issueControlCLICredentialViaAPI, LOOPBACK_REDIRECT_URI, registerAppViaAPI } from './helpers/oauthApps'
 import { answerElevationPrompt, loginViaToken } from './helpers/ui'
+
+const APP_HOME_URL_RE = /\/$/
 
 /**
  * Register an UNVERIFIED app through the Connect RPC, as an elevated session.
@@ -241,5 +244,66 @@ test.describe('app consent needs an elevated session', () => {
     expect(location).toContain('error=access_denied')
     expect(location).toContain('state=state-deny')
     expect(location).not.toContain('code=')
+  })
+})
+
+async function expectConsentPage(page: Page, url: string, heading: string, confirm: string) {
+  await expect(page).toHaveURL(url)
+  await expect(page.getByRole('heading', { level: 1, name: heading, exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Deny', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: confirm, exact: true })).toBeVisible()
+}
+
+test.describe('consent page variants', () => {
+  test('shows the desktop sign-in heading and no permission list', async ({ page, leapmuxServer }) => {
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
+    await loginViaToken(page, cookie)
+    const consentURL = authorizeURL(leapmuxServer.hubUrl, {
+      clientId: 'leapmux-desktop',
+      state: 's1',
+    })
+    await page.goto(consentURL)
+
+    await expectConsentPage(page, consentURL, 'Sign in to LeapMux Desktop?', 'Sign in')
+    await expect(page.locator('.scopes')).toHaveCount(0)
+  })
+
+  test('shows the verify heading and button for control CLI step-up', async ({ page, leapmuxServer }) => {
+    const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
+    const { tokenId } = await issueControlCLICredentialViaAPI(leapmuxServer.hubUrl, cookie)
+    await loginViaToken(page, cookie)
+    const consentURL = authorizeURL(leapmuxServer.hubUrl, {
+      state: 's2',
+      stepUp: `token:${tokenId}`,
+    })
+    await page.goto(consentURL)
+
+    await expectConsentPage(page, consentURL, 'Verify LeapMux control CLI?', 'Verify')
+  })
+
+  test('reaches the consent page directly after a fresh sign-in', async ({ page, leapmuxServer }) => {
+    // Signing in through the page starts a five-minute window.
+    await page.goto(`${leapmuxServer.hubUrl}/login`)
+    await page.getByLabel(/username/i).fill(TEST_ADMIN_USERNAME)
+    await page.getByLabel(/password/i).fill(TEST_ADMIN_PASSWORD)
+    await page.getByRole('button', { name: /sign in/i }).click()
+    await expect(page).toHaveURL(APP_HOME_URL_RE)
+
+    const consentURL = authorizeURL(leapmuxServer.hubUrl, { state: 's3' })
+    const navigationURLs: string[] = []
+    const recordNavigation = (request: Request) => {
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+        navigationURLs.push(request.url())
+    }
+    // Request events include redirects whose responses never commit a document.
+    page.on('request', recordNavigation)
+    try {
+      await page.goto(consentURL)
+      await expectConsentPage(page, consentURL, 'Authorize LeapMux control CLI?', 'Allow')
+      expect(navigationURLs).toEqual([consentURL])
+    }
+    finally {
+      page.off('request', recordNavigation)
+    }
   })
 })

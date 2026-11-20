@@ -1,16 +1,23 @@
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
+import { fromBinary } from '@bufbuild/protobuf'
 import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import {
   LAUNCH_VISIBILITY_HIDDEN,
   LAUNCH_VISIBILITY_MINIMIZED,
   LAUNCH_VISIBILITY_NORMAL,
   TAURI_EVENT_SIDECAR_LOG,
+  TAURI_IPC_HEADER_HEADERS,
+  TAURI_IPC_HEADER_METHOD,
+  TAURI_IPC_HEADER_PATH,
+  TAURI_IPC_HEADER_RELAY_ID,
+  TAURI_IPC_HEADER_REQUEST_ID,
   WINDOW_MODE_FULLSCREEN,
   WINDOW_MODE_MAXIMIZED,
   WINDOW_MODE_NORMAL,
 } from '~/generated/contracts/desktop'
-import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
+import { BrowserAuthKind as ProtoBrowserAuthKind, ProxyHttpResponseSchema, RelayReadResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { arrayBufferToBase64 } from '~/lib/base64'
 import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
@@ -20,7 +27,6 @@ export type PlatformMode = 'web' | 'tauri-desktop-solo' | 'tauri-desktop-distrib
 
 export interface PlatformCapabilities {
   mode: PlatformMode
-  hubTransport: 'direct' | 'proxy'
   tunnels: boolean
   appControl: boolean
   windowControl: boolean
@@ -168,10 +174,40 @@ export interface DesktopRuntimeState {
   capabilities: PlatformCapabilities
 }
 
+/** The ceremony that the system browser runs for the desktop's session. */
+export type BrowserAuthKind = 'sign-in' | 'step-up'
+
+export interface BrowserAuthStart {
+  ceremonyId: string
+  authorizeUrl: string
+}
+
+/**
+ * One proxied HTTP round trip decoded from the generated protobuf response.
+ */
 export interface ProxyHttpResponse {
   status: number
   headers: Record<string, string[]>
-  body: string
+  body: Uint8Array<ArrayBuffer>
+}
+
+/** Decode the generated ProxyHttpResponse carried by the raw Tauri reply. */
+export function decodeProxyResponse(bytes: ArrayBuffer | Uint8Array): ProxyHttpResponse {
+  const decoded = fromBinary(
+    ProxyHttpResponseSchema,
+    bytes instanceof Uint8Array
+      ? bytes
+      : new Uint8Array(bytes),
+  )
+  return {
+    status: decoded.status,
+    headers: Object.fromEntries(
+      Object.entries(decoded.headers).map(([name, values]) => [name, values.values]),
+    ),
+    // ipcBytes always supplies an ArrayBuffer-backed view. protobuf-es keeps
+    // bytes fields as subarrays of that input.
+    body: decoded.body as Uint8Array<ArrayBuffer>,
+  }
 }
 
 export interface TunnelConfig {
@@ -301,6 +337,21 @@ declare global {
 }
 
 let runtimeStateCache: DesktopRuntimeState | null = null
+
+/**
+ * Returns the connected Hub's identity, or null outside Tauri and before the
+ * shell answers. The remote Hub's URL is what `hubOrigin()` and
+ * `ceremoniesRunInBrowser()` read.
+ */
+export function desktopHub(): { kind: 'solo' } | { kind: 'remote', url: string } | null {
+  if (!isTauriApp() || !runtimeStateCache)
+    return null
+  if (runtimeStateCache.shellMode === 'solo')
+    return { kind: 'solo' }
+  if (runtimeStateCache.shellMode === 'distributed' && runtimeStateCache.hubUrl)
+    return { kind: 'remote', url: runtimeStateCache.hubUrl }
+  return null
+}
 let runtimeStateFetch: Promise<DesktopRuntimeState> | null = null
 let sidecarLogListening = false
 const mobileUserAgentRegex = /android|iphone|ipad|ipod/i
@@ -310,7 +361,6 @@ const sidecarLog = createLogger('sidecar')
 function caps(mode: PlatformMode, overrides: Partial<Omit<PlatformCapabilities, 'mode'>> = {}): PlatformCapabilities {
   return {
     mode,
-    hubTransport: 'direct',
     tunnels: false,
     appControl: false,
     windowControl: false,
@@ -326,21 +376,7 @@ const MOBILE_CAPABILITIES = caps('tauri-mobile-distributed', {
   appControl: true,
 })
 
-const LOCAL_DESKTOP_LAUNCHER_CAPABILITIES = caps('tauri-desktop-solo', {
-  hubTransport: 'proxy',
-  tunnels: true,
-  appControl: true,
-  windowControl: true,
-  systemPermissions: true,
-  localSolo: true,
-})
-
-const DISTRIBUTED_DESKTOP_CAPABILITIES = caps('tauri-desktop-distributed', {
-  tunnels: true,
-  appControl: true,
-  windowControl: true,
-  systemPermissions: true,
-})
+const DESKTOP_PENDING_CAPABILITIES = caps('tauri-desktop-distributed')
 
 export function isTauriApp(): boolean {
   return typeof window.__TAURI_INTERNALS__ !== 'undefined'
@@ -348,12 +384,6 @@ export function isTauriApp(): boolean {
 
 export function isTunnelAvailable(): boolean {
   return getCapabilities().tunnels
-}
-
-export function isSoloTauriApp(): boolean {
-  if (!isTauriApp())
-    return false
-  return window.location.protocol === 'tauri:' || window.location.hostname === 'tauri.localhost'
 }
 
 function isMobileViewport(): boolean {
@@ -413,12 +443,10 @@ export function resetPlatformRuntimeState(): void {
 export function getCapabilities(): PlatformCapabilities {
   if (runtimeStateCache)
     return runtimeStateCache.capabilities
-  if (isSoloTauriApp())
-    return LOCAL_DESKTOP_LAUNCHER_CAPABILITIES
   if (isTauriApp() && isMobileViewport())
     return MOBILE_CAPABILITIES
   if (isTauriApp())
-    return DISTRIBUTED_DESKTOP_CAPABILITIES
+    return DESKTOP_PENDING_CAPABILITIES
   return WEB_CAPABILITIES
 }
 
@@ -972,20 +1000,54 @@ export const platformBridge = {
     await refreshRuntimeState()
   },
   async connectDistributed(hubUrl: string): Promise<void> {
-    // Note: the Rust shell navigates the webview to the hub URL after
-    // this resolves, so the current page is torn down — no need to
-    // refresh runtime state here.
     await tauriInvoke('connect_distributed', { hubUrl })
+    await refreshRuntimeState()
   },
-  async proxyHttp(method: string, path: string, headers: Record<string, string>, bodyBase64: string): Promise<ProxyHttpResponse> {
-    return tauriInvoke('proxy_http', {
-      payload: {
-        method,
-        path,
-        headers,
-        bodyBase64,
+  async startBrowserAuth(kind: BrowserAuthKind): Promise<BrowserAuthStart> {
+    // The kind crosses as the proto ordinal the sidecar forwards in
+    // StartBrowserAuthRequest.kind. The map is exhaustive over the token
+    // union, so a new token is a compile error instead of a wrong kind.
+    const protoKind: Record<BrowserAuthKind, ProtoBrowserAuthKind> = {
+      'sign-in': ProtoBrowserAuthKind.SIGN_IN,
+      'step-up': ProtoBrowserAuthKind.STEP_UP,
+    }
+    return tauriInvoke<BrowserAuthStart>('start_browser_auth', { kind: protoKind[kind] })
+  },
+  async cancelBrowserAuth(ceremonyId: string): Promise<void> {
+    await tauriInvoke('cancel_browser_auth', { ceremonyId })
+  },
+  /**
+   * One proxied HTTP round trip through the desktop sidecar. The request body
+   * crosses the Tauri IPC as the raw invoke body (the `fileSaveWrite`
+   * pattern); the method, the path and the proxied headers ride InvokeOptions
+   * headers (the `fileSaveOpen` pattern), because the invoke-args slot holds
+   * the raw body. The proxied headers are arbitrary Unicode pairs and an
+   * invoke header value must stay visible ASCII, so the map rides
+   * base64-encoded JSON -- the `filename-b64` pattern.
+   *
+   * Resolves with raw ProxyHttpResponse protobuf bytes, never a JSON body.
+   */
+  async proxyHttp(requestId: string, method: string, path: string, headers: Record<string, string>, body: ArrayBuffer | Uint8Array | string | null | undefined): Promise<ArrayBuffer> {
+    const bytes = body === null || body === undefined
+      ? new Uint8Array(0)
+      : typeof body === 'string'
+        ? new TextEncoder().encode(body)
+        : body
+    const response = await tauriInvoke<unknown>('proxy_http', bytes, {
+      headers: {
+        [TAURI_IPC_HEADER_METHOD]: method,
+        [TAURI_IPC_HEADER_PATH]: path,
+        [TAURI_IPC_HEADER_HEADERS]: arrayBufferToBase64(JSON.stringify(headers)),
+        [TAURI_IPC_HEADER_REQUEST_ID]: requestId,
       },
     })
+    const responseBytes = ipcBytes(response)
+    if (responseBytes === null)
+      throw new Error('native HTTP proxy returned no byte response')
+    return responseBytes
+  },
+  async cancelProxyHttp(requestId: string): Promise<void> {
+    await tauriInvoke('cancel_proxy_http', { requestId })
   },
   // Returns null off-Tauri or off-macOS so callers can skip the IPC.
   async cliPathStatus(): Promise<CliPathStatus | null> {
@@ -1000,49 +1062,42 @@ export const platformBridge = {
     const payload = await tauriInvoke<CliInstallSymlinkPayload>('cli_install_symlink', { force })
     return decodeCliInstallResult(payload)
   },
-  // relayId names which relay wrapper is asking. It travels to the sidecar so a
-  // close can be ignored once a later open has superseded it — the two are separate
-  // requests and the sidecar runs each on its own goroutine with no ordering, so
-  // wire order is not execution order.
-  async openChannelRelay(relayId: number): Promise<void> {
-    await tauriInvoke('open_channel_relay', { relayId })
+  // The sidecar checks the id before acting on a close. It runs open and
+  // close requests on separate goroutines, so a stale close can arrive late.
+  async openChannelRelay(relayId: number, receiver: RelayReceiver): Promise<boolean> {
+    return openRelay('open_channel_relay', { relayId }, receiver)
   },
-  async sendChannelMessage(b64Data: string): Promise<void> {
-    await tauriInvoke('send_channel_message', { b64Data })
+  async sendChannelMessage(relayId: number, data: ArrayBuffer | Uint8Array): Promise<void> {
+    await tauriInvoke('send_channel_message', data, {
+      headers: {
+        [TAURI_IPC_HEADER_RELAY_ID]: String(relayId),
+        [TAURI_IPC_HEADER_REQUEST_ID]: crypto.randomUUID(),
+      },
+    })
   },
   async closeChannelRelay(relayId: number): Promise<void> {
     await tauriInvoke('close_channel_relay', { relayId })
   },
-  // UserEvents relay (`/ws/userevents`). The webview can't dial the
-  // unix-socket hub natively in desktop solo mode, so the Go sidecar
-  // opens the WebSocket on our behalf and forwards each binary
-  // frame as a Tauri `userevents:message` event (base64-encoded
-  // length-prefixed WatchUserEvent bytes).
-  //
-  // relayId names the attempt, exactly like the channel relay above. It carries more
-  // weight here: this open force-restarts the relay (the hub sends UserMaterialized
-  // only at subscribe time, so reusing a live relay would leave a fresh page without
-  // its bootstrap), so the sidecar also uses the id to ignore an OPEN that a newer
-  // one has already superseded. `resume`, when present, is the per-user resume
-  // cursor the sidecar threads into the /ws/userevents URL so the hub can ship a
-  // ResumeDelta; serialized as a wire string + epoch (Tauri IPC carries no
-  // bigint), mirroring the resume_after_hlc query-param shape the Go side parses.
+  // The Go sidecar opens the user-events WebSocket on behalf of the
+  // webview. Each attempt replaces the prior subscription so the Hub sends
+  // a fresh bootstrap. The sidecar uses relayId to reject superseded opens.
+  // A resume cursor crosses IPC as a wire HLC string and an epoch string.
   async openUserEventsRelay(
     relayId: number,
+    receiver: RelayReceiver,
     workspaceIds: string[] = [],
     resume?: { hlc: { physical: bigint, logical: bigint, clientId: string }, epoch: bigint } | null,
-  ): Promise<void> {
-    const resumeHlc = resume
-      ? formatHlcWire(resume.hlc)
-      : null
-    await tauriInvoke('open_userevents_relay', {
+  ): Promise<boolean> {
+    return openRelay('open_userevents_relay', {
       relayId,
       workspaceIds,
-      resumeHlc,
+      resumeHlc: resume
+        ? formatHlcWire(resume.hlc)
+        : null,
       resumeEpoch: resume
         ? resume.epoch.toString()
         : null,
-    })
+    }, receiver)
   },
   async closeUserEventsRelay(relayId: number): Promise<void> {
     await tauriInvoke('close_userevents_relay', { relayId })
@@ -1066,6 +1121,9 @@ export const platformBridge = {
   },
   async checkFullDiskAccess(): Promise<boolean> {
     return tauriInvoke('check_full_disk_access')
+  },
+  async openNoticeWindow(): Promise<void> {
+    await tauriInvoke('open_notice_window')
   },
   async openFullDiskAccessSettings(): Promise<void> {
     await tauriInvoke('open_full_disk_access_settings')
@@ -1127,20 +1185,103 @@ export const platformBridge = {
   },
 }
 
-/** A sidecar `*:close` relay event payload, after defensive parsing. */
-export interface RelayClosePayload {
+interface RelayClosePayload {
   code: number
   reason: string
   wasClean: boolean
 }
 
-/**
- * Defensively parse a sidecar `channel:close` / `userevents:close` event
- * payload. The sidecar emits a well-formed object, but the payload crosses the
- * untyped Tauri event boundary, so each field is guarded and the shared 1006
- * (abnormal-closure) default lives here -- one home for the wire default both
- * relay-close paths must agree on, rather than duplicated at each listener.
- */
+type RelayMessage = ArrayBuffer | RelayClosePayload
+
+function ipcBytes(payload: unknown): ArrayBuffer | null {
+  if (payload instanceof ArrayBuffer)
+    return payload
+  if (ArrayBuffer.isView(payload)) {
+    const view = new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
+    return new Uint8Array(view).buffer
+  }
+  if (!Array.isArray(payload))
+    return null
+  const bytes = new Uint8Array(payload.length)
+  for (let index = 0; index < payload.length; index++) {
+    const value = payload[index]
+    if (!Number.isInteger(value) || value < 0 || value > 255)
+      throw new Error('native IPC byte array contains an invalid value')
+    bytes[index] = value
+  }
+  return bytes.buffer
+}
+
+export interface RelayReceiver {
+  isAbandoned: () => boolean
+  onMessage: (message: RelayMessage) => void
+}
+
+async function openRelay(
+  command: 'open_channel_relay' | 'open_userevents_relay',
+  args: Record<string, unknown>,
+  receiver: RelayReceiver,
+): Promise<boolean> {
+  const { invoke } = await loadTauriCore()
+  if (receiver.isAbandoned())
+    return false
+
+  await invoke(command, args)
+  const relayId = args.relayId as number
+  const readCommand = command === 'open_channel_relay'
+    ? 'read_channel_relay'
+    : 'read_userevents_relay'
+  void pumpRelay(readCommand, relayId, receiver, invoke)
+  return true
+}
+
+async function pumpRelay(
+  command: 'read_channel_relay' | 'read_userevents_relay',
+  relayId: number,
+  receiver: RelayReceiver,
+  invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>,
+): Promise<void> {
+  let cursor = 0n
+  try {
+    while (!receiver.isAbandoned()) {
+      const payload = await invoke<unknown>(command, {
+        relayId,
+        afterCursor: cursor.toString(),
+      })
+      const bytes = ipcBytes(payload)
+      if (bytes === null)
+        throw new Error('native relay read returned no byte response')
+      const delivery = fromBinary(RelayReadResponseSchema, new Uint8Array(bytes))
+      if (delivery.cursor <= cursor)
+        throw new Error('native relay cursor did not advance')
+      cursor = delivery.cursor
+      if (delivery.item.case === 'data') {
+        const data = delivery.item.value
+        receiver.onMessage(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer)
+        continue
+      }
+      if (delivery.item.case === 'close') {
+        receiver.onMessage({
+          code: delivery.item.value.code,
+          reason: delivery.item.value.reason,
+          wasClean: delivery.item.value.wasClean,
+        })
+        return
+      }
+      throw new Error('native relay read returned no item')
+    }
+  }
+  catch (err) {
+    if (!receiver.isAbandoned()) {
+      receiver.onMessage({
+        code: 1006,
+        reason: String(err),
+        wasClean: false,
+      })
+    }
+  }
+}
+
 export function parseRelayClosePayload(payload: unknown): RelayClosePayload {
   const close = payload as Partial<RelayClosePayload> | null
   return {
@@ -1169,16 +1310,46 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
     : (input as Request).url
   const method = init?.method ?? 'POST'
   const headers = Object.fromEntries(new Headers(init?.headers).entries())
-  const body = init?.body
-    ? arrayBufferToBase64(init.body as ArrayBuffer | Uint8Array | string)
-    : ''
+  // The body crosses as the raw invoke body, not base64 (see proxyHttp).
+  const body = (init?.body ?? null) as ArrayBuffer | Uint8Array | string | null
   const parsed = new URL(url)
   const path = parsed.pathname + parsed.search
-  const resp = await platformBridge.proxyHttp(method, path, headers, body)
+
+  // The request id correlates cancellation across the renderer, Rust shell and
+  // Go sidecar. The listener is removed as soon as either side settles, so a
+  // late abort cannot cancel a call that already has its answer.
+  const signal = init?.signal ?? undefined
+  if (signal?.aborted)
+    throw new DOMException('The operation was aborted.', 'AbortError')
+  const requestId = crypto.randomUUID()
+  let onAbort: (() => void) | undefined
+  let proxied = platformBridge.proxyHttp(requestId, method, path, headers, body)
+  if (signal) {
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => {
+        void platformBridge.cancelProxyHttp(requestId).catch(err => log.warn('native HTTP proxy cancellation failed', err))
+        reject(new DOMException('The operation was aborted.', 'AbortError'))
+      }
+      signal.addEventListener('abort', onAbort)
+    })
+    proxied = Promise.race([proxied, aborted])
+  }
+  let envelope: ArrayBuffer
+  try {
+    envelope = await proxied
+  }
+  finally {
+    if (onAbort)
+      signal?.removeEventListener('abort', onAbort)
+  }
+  const resp = decodeProxyResponse(envelope)
   const responseHeaders = Object.entries(resp.headers).flatMap(([name, values]) =>
     values.map(value => [name, value] as [string, string]),
   )
-  return new Response(base64ToArrayBuffer(resp.body), {
+  const responseBody = resp.status === 204 || resp.status === 205 || resp.status === 304
+    ? null
+    : resp.body
+  return new Response(responseBody, {
     status: resp.status,
     headers: responseHeaders,
   })

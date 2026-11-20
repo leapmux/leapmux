@@ -3,7 +3,9 @@ import { useLocation } from '@solidjs/router'
 import { createSignal, onCleanup, Show } from 'solid-js'
 import { Dialog } from '~/components/common/Dialog'
 import { ElevateForm } from '~/components/common/ElevateForm'
+import { BrowserStepUp } from '~/components/desktop/BrowserStepUp'
 import { setElevationPrompter } from '~/lib/elevationPrompt'
+import { ceremoniesRunInBrowser } from '~/lib/hubSite'
 
 /**
  * The one step-up prompt the app can open, and the only thing that registers
@@ -106,11 +108,13 @@ export const ElevationPromptHost: Component = () => {
     target?.focus()
   }
 
-  const settle = (proven: boolean) => {
-    const done = resolve()
+  const settle = (done: (proven: boolean) => void, proven: boolean) => {
+    // A dismissed prompt can still be finishing an account refresh.
+    if (resolve() !== done)
+      return
     setResolve(null)
     uncover()
-    done?.(proven)
+    done(proven)
   }
 
   setElevationPrompter(() => new Promise<boolean>((done) => {
@@ -137,32 +141,45 @@ export const ElevationPromptHost: Component = () => {
     // the hub's refusal and the surface renders it. Settling here also releases
     // the covered dialogs, which would otherwise stay inert with nothing left
     // to un-inert them.
-    settle(false)
+    const done = resolve()
+    if (done)
+      settle(done, false)
   })
 
   return (
-    <Show when={resolve() !== null}>
-      {/*
-        Dismissing REPORTS the cancellation. Silence is the wrong answer: a
-        dropped action would leave the page looking exactly as it did before
-        the click, with the new password still typed in and nothing to say that
-        the app did not save it. Resolving false makes the transport rethrow
-        the hub's own refusal, which every surface already renders.
-      */}
-      <Dialog title="Verify your identity" onClose={() => settle(false)}>
-        <div class="vstack gap-4">
-          <p>This change needs a recent sign-in.</p>
-          <ElevateForm
-            // The OAuth option leaves this document entirely, so it cannot
-            // resume the refused request. The hub sends the browser back to
-            // the address it left, which now carries the open panel, so the
-            // user lands where they were and repeats the action -- and it
-            // succeeds on the first attempt, because the session is elevated.
-            oauthRedirect={here()}
-            onElevated={() => settle(true)}
-          />
-        </div>
-      </Dialog>
+    <Show keyed when={resolve()}>
+      {done => (
+        <>
+          {/*
+            Dismissing REPORTS the cancellation. Silence is the wrong answer: a
+            dropped action would leave the page looking exactly as it did before
+            the click, with the new password still typed in and nothing to say that
+            the app did not save it. Resolving false makes the transport rethrow
+            the hub's own refusal, which every surface already renders.
+          */}
+          <Dialog title="Verify your identity" onClose={() => settle(done, false)}>
+            <div class="vstack gap-4">
+              <p>This change needs a recent sign-in.</p>
+              <Show
+                when={ceremoniesRunInBrowser()}
+                fallback={(
+                  <ElevateForm
+                    // The OAuth option leaves this document entirely, so it cannot
+                    // resume the refused request. The hub sends the browser back to
+                    // the address it left, which now carries the open panel, so the
+                    // user lands where they were and repeats the action -- and it
+                    // succeeds on the first attempt, because the session is elevated.
+                    oauthRedirect={here()}
+                    onElevated={() => settle(done, true)}
+                  />
+                )}
+              >
+                <BrowserStepUp onElevated={() => settle(done, true)} />
+              </Show>
+            </div>
+          </Dialog>
+        </>
+      )}
     </Show>
   )
 }

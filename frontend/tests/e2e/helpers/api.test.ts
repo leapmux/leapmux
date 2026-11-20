@@ -2,6 +2,7 @@ import type { DescMethod, JsonValue } from '@bufbuild/protobuf'
 import type { ChannelTransport } from '../../../src/lib/channel'
 import { fromJson } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ELEVATION_REQUIRED_HEADER } from '~/generated/contracts/headers'
 import { MAX_PAGE_LIMIT } from '~/generated/contracts/pagination'
 import { AdminSettingsService } from '~/generated/proto/leapmux/v1/admin_pb'
 import { AgentProvider, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -31,6 +32,7 @@ import {
   getWorkerId,
   hubRefusal,
   hubSettingsDrift,
+  listCustomizedHubSettingsViaAPI,
   listOnlineWorkerIDsViaAPI,
   listWorkersViaAPI,
   loginViaAPI,
@@ -453,7 +455,7 @@ describe('resetHubSettingsViaAPI', () => {
     return requests
   }
 
-  it('elevates the session and resets every customized key outside the baseline in one request', async () => {
+  it('resets every customized key outside the baseline in one request', async () => {
     const requests = settingsResponses([
       { ...altcha, customized: true },
       { key: 'smtp', valueJson: '{"host":"127.0.0.1"}', customized: true },
@@ -467,15 +469,40 @@ describe('resetHubSettingsViaAPI', () => {
     expect(requests).toEqual([
       { method: 'ListSettings', body: {} },
       {
-        method: 'ElevateSession',
-        body: { currentPassword: 'secret' },
-      },
-      {
         method: 'ResetSettings',
         body: {
           keys: ['smtp', 'open_app_registration'],
         },
       },
+    ])
+  })
+
+  it('elevates once and retries a reset refused for an expired window', async () => {
+    let resetCalls = 0
+    const requests = recordedRequests((method) => {
+      if (method === 'AdminSettingsService/ListSettings') {
+        return Response.json({
+          values: [
+            { key: 'smtp', valueJson: '{}', customized: true },
+          ],
+        })
+      }
+      if (method === 'AdminSettingsService/ResetSettings' && resetCalls++ === 0) {
+        return new Response('window ended', {
+          status: 403,
+          headers: { 'Leapmux-Elevation-Required': '1' },
+        })
+      }
+      return Response.json({})
+    })
+
+    await resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [], password: 'secret' })
+
+    expect(requests.map(request => request.method)).toEqual([
+      'AdminSettingsService/ListSettings',
+      'AdminSettingsService/ResetSettings',
+      'UserService/ElevateSession',
+      'AdminSettingsService/ResetSettings',
     ])
   })
 
@@ -516,13 +543,62 @@ describe('resetHubSettingsViaAPI', () => {
 
   it.each([
     { method: 'ListSettings', message: 'listCustomizedHubSettingsViaAPI failed: AdminSettingsService/ListSettings returned HTTP 403: refused ListSettings' },
-    { method: 'ElevateSession', message: 'elevateSessionViaAPI failed: UserService/ElevateSession returned HTTP 403: refused ElevateSession' },
     { method: 'ResetSettings', message: 'resetHubSettingsViaAPI(smtp) failed: AdminSettingsService/ResetSettings returned HTTP 403: refused ResetSettings' },
   ])('reports a refused $method with its status and body', async ({ method, message }) => {
     settingsResponses([
       { key: 'smtp', valueJson: '{}', customized: true },
     ], { [method]: 403 })
     await expect(resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [], password: 'secret' })).rejects.toThrow(message)
+  })
+})
+
+describe('listCustomizedHubSettingsViaAPI', () => {
+  it('lists the customized settings through one request when the hub accepts', async () => {
+    const requests = recordedRequests(() => Response.json({
+      values: [
+        { key: 'smtp', valueJson: '{"host":"127.0.0.1"}', customized: true },
+        { key: 'signup_enabled', valueJson: 'true', customized: false },
+      ],
+    }))
+    await expect(listCustomizedHubSettingsViaAPI(hubUrl, 'session', 'secret')).resolves.toEqual([
+      { key: 'smtp', valueJson: '{"host":"127.0.0.1"}' },
+    ])
+    expect(requests.map(request => request.method)).toEqual([
+      'AdminSettingsService/ListSettings',
+    ])
+  })
+
+  // A write needs an elevated session, and so does a read after the step-up
+  // rule landed. The helper elevates on the MARKER alone, then lists once
+  // more: its session is shared with every later cleanup call, so a password
+  // check on each run would cost the whole suite.
+  it('elevates and lists once more when the hub refuses with the elevation marker', async () => {
+    let listCalls = 0
+    const requests = recordedRequests((method) => {
+      if (method !== 'AdminSettingsService/ListSettings')
+        return Response.json({})
+      listCalls++
+      if (listCalls > 1) {
+        return Response.json({
+          values: [
+            { key: 'smtp', valueJson: '{"host":"127.0.0.1"}', customized: true },
+          ],
+        })
+      }
+      return new Response('{"code":"failed_precondition"}', {
+        status: 403,
+        headers: { [ELEVATION_REQUIRED_HEADER]: '1' },
+      })
+    })
+    await expect(listCustomizedHubSettingsViaAPI(hubUrl, 'session', 'secret')).resolves.toEqual([
+      { key: 'smtp', valueJson: '{"host":"127.0.0.1"}' },
+    ])
+    expect(requests.map(request => request.method)).toEqual([
+      'AdminSettingsService/ListSettings',
+      'UserService/ElevateSession',
+      'AdminSettingsService/ListSettings',
+    ])
+    expect(requests[1]!.body).toEqual({ currentPassword: 'secret' })
   })
 })
 
@@ -934,7 +1010,7 @@ describe('loginViaAPI', () => {
 })
 
 describe('freshAdminSessionViaAPI', () => {
-  it('signs in as the test administrator and elevates nothing', async () => {
+  it('signs in as the test administrator and drops the sign-in window', async () => {
     const requests = recordedRequests(() => new Response('{}', {
       headers: { 'Set-Cookie': 'leapmux-session=fresh; Path=/' },
     }))
@@ -947,6 +1023,10 @@ describe('freshAdminSessionViaAPI', () => {
           password: TEST_ADMIN_PASSWORD,
           captcha: { payload: 'solved-captcha', honeypot: '' },
         },
+      ],
+      [
+        'UserService/DropElevation',
+        {},
       ],
     ])
   })

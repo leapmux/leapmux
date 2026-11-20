@@ -28,6 +28,16 @@ const ControlCLIClientID = "leapmux-control-cli"
 // model carries perfectly well.
 const ServiceAccountClientID = "leapmux-service-account"
 
+// DesktopGrantTypes is the flow set the desktop's seeded registration runs.
+// See ControlCLIScopes for why it is a constant.
+const DesktopGrantTypes = GrantTypeAuthorizationCode
+
+// DesktopScopes is empty on purpose: the handoff issues a SESSION, which is
+// the account itself signed in. A session carries no scope ceiling, so the
+// registration states none -- and resolveRequestedScopes then refuses any
+// request that asks for one with invalid_scope.
+const DesktopScopes = ""
+
 // ControlCLIScopes is the ceiling the control CLI's seeded registration
 // carries. It is a constant of the build for the same reason the redirect
 // address is: a credential minted for the built-in CLI authenticates against
@@ -40,7 +50,7 @@ const ControlCLIScopes = "account:read account:write workspace:read workspace:wr
 
 // ControlCLIGrantTypes is the flow set the CLI's seeded registration runs.
 // See ControlCLIScopes for why it is a constant.
-const ControlCLIGrantTypes = "authorization_code refresh_token urn:ietf:params:oauth:grant-type:device_code"
+const ControlCLIGrantTypes = GrantTypeAuthorizationCode + " " + GrantTypeRefreshToken + " " + GrantTypeDeviceCode
 
 // The three grant types /oauth/token serves, as RFC-defined wire identifiers.
 // They live in this package beside the built-in ids because it is the
@@ -69,15 +79,101 @@ const (
 	ServiceAccountName = "Administrator-issued credential"
 )
 
-// IsBuiltIn reports whether a client id is one this build ships with. The two
+// DesktopClientID is the built-in desktop app: the sidecar's browser sign-in
+// and step-up, whose code mints a Hub session rather than an app credential.
+//
+// Its one registered redirect URI is the same RFC 8252 section 7.3 loopback
+// form as the CLI's: the sidecar's ephemeral listener matches on scheme, host
+// and path with the port free.
+const DesktopClientID = "leapmux-desktop"
+
+// DesktopName is what the consent screen and the credential list show for the
+// desktop app.
+const DesktopName = "LeapMux Desktop"
+
+// DesktopRedirectURI is the loopback redirect the desktop app registers. The
+// port is absent on purpose; see ControlCLIRedirectURI.
+const DesktopRedirectURI = "http://127.0.0.1/callback"
+
+// IsBuiltIn reports whether a client id is one this build ships with. The
 // built-in registrations cannot be deleted or edited, because their fields are
 // constants of the build rather than rows an administrator owns.
 func IsBuiltIn(clientID string) bool {
-	return clientID == ControlCLIClientID || clientID == ServiceAccountClientID
+	for _, app := range BuiltInRegistrations() {
+		if app.ClientID == clientID {
+			return true
+		}
+	}
+	return false
+}
+
+// IssuesSession reports whether this build authorizes clientID to mint a Hub
+// session rather than a scoped app credential.
+func IssuesSession(clientID string) bool {
+	for _, app := range BuiltInRegistrations() {
+		if app.ClientID == clientID {
+			return app.IssuesSessions
+		}
+	}
+	return false
 }
 
 // BuiltInClientIDs lists them in a stable order, for a test or a listing that
-// must cover both.
+// must cover all of them.
 func BuiltInClientIDs() []string {
-	return []string{ControlCLIClientID, ServiceAccountClientID}
+	apps := BuiltInRegistrations()
+	ids := make([]string, len(apps))
+	for index, app := range apps {
+		ids[index] = app.ClientID
+	}
+	return ids
+}
+
+// DesktopIssuesSessions records that an authorization for the desktop mints a
+// SESSION on the Hub rather than an app credential: the browser handoff of its
+// remote-Hub mode. The consent page reads the built-in descriptor to pick its
+// variant and writes that decision onto the code row. Exactly one built-in
+// answers true.
+//
+// Minting a session hands out the account itself, so this is a constant of the
+// build and not a registration field any caller can turn on.
+const DesktopIssuesSessions = true
+
+// BuiltInRegistration is the immutable half of one registration this build
+// ships. The store adds timestamps, source, and the operator-owned elevation
+// setting when it reconciles these descriptors.
+type BuiltInRegistration struct {
+	ClientID       string
+	ClientName     string
+	ClientURI      string
+	RedirectURIs   string
+	Scopes         string
+	GrantTypes     string
+	IssuesSessions bool
+}
+
+// BuiltInRegistrations lists the build-owned registrations in stable order.
+func BuiltInRegistrations() []BuiltInRegistration {
+	return []BuiltInRegistration{
+		{
+			ClientID:     ControlCLIClientID,
+			ClientName:   ControlCLIName,
+			RedirectURIs: ControlCLIRedirectURI,
+			Scopes:       ControlCLIScopes,
+			GrantTypes:   ControlCLIGrantTypes,
+		},
+		{
+			ClientID:   ServiceAccountClientID,
+			ClientName: ServiceAccountName,
+			Scopes:     ServiceAccountScopes,
+		},
+		{
+			ClientID:       DesktopClientID,
+			ClientName:     DesktopName,
+			RedirectURIs:   DesktopRedirectURI,
+			Scopes:         DesktopScopes,
+			GrantTypes:     DesktopGrantTypes,
+			IssuesSessions: DesktopIssuesSessions,
+		},
+	}
 }

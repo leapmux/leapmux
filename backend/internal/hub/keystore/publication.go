@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/canonicalpath"
 	"github.com/leapmux/leapmux/internal/util/filelock"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 var errKeyRingMutationBusy = errors.New("another process is changing the key ring; retry when it finishes")

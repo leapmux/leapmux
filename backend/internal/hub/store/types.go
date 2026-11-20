@@ -120,6 +120,10 @@ type UserSession struct {
 	ElevationExpiresAt *time.Time
 	UserAgent          string
 	IPAddress          string
+	// IssuedToClient identifies the built-in app this session was issued to through
+	// the browser handoff. Empty for a session that signed in on the Hub's own
+	// page. NULL reads as the empty string.
+	IssuedToClient string
 }
 
 // PageCursor returns the keyset position for the per-user session listing
@@ -438,11 +442,12 @@ type OAuthState struct {
 	// browser cookie for this row.
 	NonceHash   string
 	RedirectURI string
-	// Purpose is OAuthStatePurposeLogin or OAuthStatePurposeReauth. The
+	// Purpose is one of the three explicit OAuthStatePurpose values. The
 	// callback branches on it: a reauth row elevates SessionID and must never
-	// create a session or link an identity.
+	// create a session or link an identity, while consent login records the
+	// fresh provider proof requested at the start.
 	Purpose leapmuxv1.OAuthStatePurpose
-	// SessionID is the session a reauth row elevates. Empty for a login row.
+	// SessionID is the session a reauth row elevates. Empty for login rows.
 	SessionID string
 	ExpiresAt time.Time
 	CreatedAt time.Time
@@ -458,6 +463,9 @@ const (
 	// OAuthStatePurposeReauth proves the identity again for a session that is
 	// ALREADY signed in, to elevate it.
 	OAuthStatePurposeReauth = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_REAUTH
+	// OAuthStatePurposeConsentLogin starts a sign-in that forced fresh provider
+	// authentication because it returns to an OAuth consent route.
+	OAuthStatePurposeConsentLogin = leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_CONSENT_LOGIN
 )
 
 // PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
@@ -852,6 +860,13 @@ type CreateSessionParams struct {
 	ExpiresAt  time.Time
 	UserAgent  string
 	IPAddress  string
+	// IssuedToClient identifies the built-in app this session is issued to through
+	// the browser handoff. Empty stores NULL.
+	IssuedToClient string
+	// ElevationProvenAt and ElevationExpiresAt carry the sign-in window when
+	// the sign-in proved a factor. Both nil means no window.
+	ElevationProvenAt  *time.Time
+	ElevationExpiresAt *time.Time
 }
 
 type TouchSessionParams struct {
@@ -1413,6 +1428,19 @@ type RecoveryRevocation struct {
 
 // --- API token types ---
 
+// APITokenIssuance is a defined type over leapmuxv1.ApiTokenIssuance: which
+// ceremony issued an app credential. api_tokens.issuance stores the ordinal.
+// The Hub offers the device-code step-up only to a credential that was issued
+// without a browser.
+type APITokenIssuance leapmuxv1.ApiTokenIssuance
+
+const (
+	APITokenIssuanceUnspecified       = APITokenIssuance(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_UNSPECIFIED)
+	APITokenIssuanceAuthorizationCode = APITokenIssuance(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_AUTHORIZATION_CODE)
+	APITokenIssuanceDeviceCode        = APITokenIssuance(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_DEVICE_CODE)
+	APITokenIssuanceAdmin             = APITokenIssuance(leapmuxv1.ApiTokenIssuance_API_TOKEN_ISSUANCE_ADMIN)
+)
+
 // APIToken is a durable bearer credential issued to leapmux control CLI
 // (and future external clients). The exposed bearer is composed in code
 // as "lmx_<id>_<secret>"; SecretHash stores HMAC-SHA256(secret, server
@@ -1442,6 +1470,10 @@ type APIToken struct {
 	// lost a member would keep working as a narrower app and nobody would
 	// notice the vocabulary drifted.
 	GrantedScopes string
+	// Issuance records which ceremony issued this credential. The Hub offers
+	// the device-code step-up only to a credential that was issued without a
+	// browser.
+	Issuance APITokenIssuance
 	// The step-up window, the same pair a session row carries. Nil means the
 	// credential never proved a factor, and the two are written and cleared
 	// together -- read them through auth.NewElevation, which refuses half a
@@ -1735,15 +1767,14 @@ type UpsertBuiltInClientParams struct {
 // caller runs first: a read-then-write pair would leave a window in which the
 // row changes hands between the two.
 type UpdateOAuthClientParams struct {
-	ClientID         string
-	ClientName       string
-	ClientURI        string
-	RedirectURIs     string
-	Scopes           string
-	GrantTypes       string
-	ElevationAllowed bool
-	CallerUserID     userid.UserID
-	CallerIsAdmin    bool
+	ClientID      string
+	ClientName    string
+	ClientURI     string
+	RedirectURIs  string
+	Scopes        string
+	GrantTypes    string
+	CallerUserID  userid.UserID
+	CallerIsAdmin bool
 }
 
 // ApplyTo writes the editable columns onto a row, so a response projected
@@ -1756,7 +1787,6 @@ func (p UpdateOAuthClientParams) ApplyTo(row *OAuthClient) {
 	row.RedirectURIs = p.RedirectURIs
 	row.Scopes = p.Scopes
 	row.GrantTypes = p.GrantTypes
-	row.ElevationAllowed = p.ElevationAllowed
 }
 
 // SetOAuthClientElevationAllowedParams toggles the one field the app list
@@ -1851,10 +1881,136 @@ type APITokenRef struct {
 	GrantedScopes string
 }
 
+// CredentialRefKind is a defined type over leapmuxv1.CredentialRefKind: which
+// table a credential reference identifies. oauth_authorization_codes.step_up_kind
+// stores the ordinal, and SQL NULL (the zero value here) means the reference
+// has no target -- the column never stores UNSPECIFIED.
+type CredentialRefKind leapmuxv1.CredentialRefKind
+
+const (
+	// CredentialRefKindNone is the Go spelling of a reference that identifies
+	// nothing. It stores as SQL NULL, never as a 0 ordinal.
+	CredentialRefKindNone    CredentialRefKind = CredentialRefKind(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_UNSPECIFIED)
+	CredentialRefKindSession CredentialRefKind = CredentialRefKind(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_SESSION)
+	CredentialRefKindToken   CredentialRefKind = CredentialRefKind(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_TOKEN)
+)
+
+// IsSession reports whether the reference identifies a user_sessions row.
+func (k CredentialRefKind) IsSession() bool { return k == CredentialRefKindSession }
+
+// IsToken reports whether the reference identifies an api_tokens row.
+func (k CredentialRefKind) IsToken() bool { return k == CredentialRefKindToken }
+
+// CredentialRef identifies one credential an authorization code row points at: the
+// credential a step-up VERIFIES, or the credential the exchange MINTED.
+//
+// The zero value has no target. A present reference carries exactly one kind
+// and one id -- there is no second id field, so "at most one target" is
+// structural rather than a CHECK over a column pair. The row's tie CHECK keeps
+// the id empty exactly when the kind is unset.
+type CredentialRef struct {
+	Kind CredentialRefKind
+	ID   string
+}
+
+// IsZero reports whether the reference has no target.
+func (r CredentialRef) IsZero() bool { return r.Kind == CredentialRefKindNone }
+
+// StoredRef reads one credential reference from its column pair. A nil kind is
+// the SQL NULL that spells "no target". The adapters of every dialect read
+// through here, so the NULL-to-absence rule has one spelling.
+func StoredRef(kind *leapmuxv1.CredentialRefKind, id string) CredentialRef {
+	if kind == nil {
+		return CredentialRef{ID: id}
+	}
+	return CredentialRef{Kind: CredentialRefKind(*kind), ID: id}
+}
+
+// NullableKind returns the ordinal the row stores for r, and its id. A nil
+// kind stores no target at all. The pair is written AS IT STANDS, so the row's
+// tie CHECK refuses a half-written one -- a kind with no id, an id with no
+// kind -- rather than letting the two drift apart.
+func (r CredentialRef) NullableKind() (*leapmuxv1.CredentialRefKind, string) {
+	if r.Kind == CredentialRefKindNone {
+		return nil, r.ID
+	}
+	kind := leapmuxv1.CredentialRefKind(r.Kind)
+	return &kind, r.ID
+}
+
+// RedemptionKind is a defined type over leapmuxv1.RedemptionKind: what an
+// authorization code redeems into. oauth_authorization_codes.redemption_kind
+// stores the ordinal, and SQL NULL (the zero value here) means a step-up code.
+type RedemptionKind leapmuxv1.RedemptionKind
+
+const (
+	// RedemptionKindNone is the Go spelling of a step-up code, which redeems
+	// into an elevation and mints nothing. It stores as SQL NULL.
+	RedemptionKindNone    RedemptionKind = RedemptionKind(leapmuxv1.RedemptionKind_REDEMPTION_KIND_UNSPECIFIED)
+	RedemptionKindSession RedemptionKind = RedemptionKind(leapmuxv1.RedemptionKind_REDEMPTION_KIND_SESSION)
+	RedemptionKindToken   RedemptionKind = RedemptionKind(leapmuxv1.RedemptionKind_REDEMPTION_KIND_TOKEN)
+)
+
+// IssuesSession reports whether the code redeems into a Hub session rather
+// than an app credential.
+func (k RedemptionKind) IssuesSession() bool { return k == RedemptionKindSession }
+
+// MintedRef derives the credential an ordinary code produced from the
+// redemption decision that consent stored. An empty id means no mint yet.
+func (k RedemptionKind) MintedRef(id string) CredentialRef {
+	if id == "" {
+		return CredentialRef{}
+	}
+	switch k {
+	case RedemptionKindSession:
+		return CredentialRef{Kind: CredentialRefKindSession, ID: id}
+	case RedemptionKindToken:
+		return CredentialRef{Kind: CredentialRefKindToken, ID: id}
+	default:
+		return CredentialRef{ID: id}
+	}
+}
+
+// RedemptionForCredentialRef returns the consented redemption kind that must
+// match a minted credential reference.
+func RedemptionForCredentialRef(ref CredentialRef) (RedemptionKind, bool) {
+	if ref.ID == "" {
+		return RedemptionKindNone, false
+	}
+	switch ref.Kind {
+	case CredentialRefKindSession:
+		return RedemptionKindSession, true
+	case CredentialRefKindToken:
+		return RedemptionKindToken, true
+	default:
+		return RedemptionKindNone, false
+	}
+}
+
+// StoredRedemption reads the stored redemption kind. A nil ordinal is the SQL
+// NULL that spells a step-up code. See StoredRef.
+func StoredRedemption(kind *leapmuxv1.RedemptionKind) RedemptionKind {
+	if kind == nil {
+		return RedemptionKindNone
+	}
+	return RedemptionKind(*kind)
+}
+
+// NullableKind returns the ordinal the row stores for k. A nil kind stores the
+// SQL NULL of a step-up code. See CredentialRef.NullableKind.
+func (k RedemptionKind) NullableKind() *leapmuxv1.RedemptionKind {
+	if k == RedemptionKindNone {
+		return nil
+	}
+	kind := leapmuxv1.RedemptionKind(k)
+	return &kind
+}
+
 // OAuthAuthorizationCode is a one-shot RFC 6749 section 4.1 code.
 type OAuthAuthorizationCode struct {
-	Code   string
-	UserID string
+	Code           string
+	UserID         string
+	AuthGeneration int64
 	// ClientID is the app the code was issued TO. The token stage refuses a
 	// code presented by a different one (RFC 6749 section 4.1.3).
 	ClientID      string
@@ -1871,10 +2027,18 @@ type OAuthAuthorizationCode struct {
 	CreatedAt        time.Time
 	ExpiresAt        time.Time
 	ConsumedAt       *time.Time
-	// MintedTokenID is the credential this code produced, stamped at
-	// consumption. A REPLAY revokes it, which is what RFC 6749 section 4.1.2
-	// requires and what nothing could express while the column was absent.
-	MintedTokenID string
+	// Minted is the credential this code produced, stamped at consumption. A
+	// REPLAY revokes it, which is what RFC 6749 section 4.1.2 requires and
+	// what nothing could express while the column was absent. The zero value
+	// means nothing was minted: a code nobody redeemed, or a step-up.
+	Minted CredentialRef
+	// StepUp identifies the credential this code VERIFIES, when it verifies
+	// one rather than issuing one. The zero value means an ordinary issuance.
+	StepUp CredentialRef
+	// Redemption is what this code redeems into, decided at consent and read
+	// at redeem so the fork cannot drift from what the page showed. The zero
+	// value means a step-up code, which redeems into an elevation.
+	Redemption RedemptionKind
 }
 
 type CreateAPITokenParams struct {
@@ -1891,7 +2055,11 @@ type CreateAPITokenParams struct {
 	// unscoped grant. The adapters always bind this field, so omitting it from
 	// a Go literal stores the empty grant. The column requires a non-NULL value
 	// and has no SQL default; that does not detect an omitted Go field.
-	GrantedScopes    string
+	GrantedScopes string
+	// Issuance records which ceremony issued this credential. No DEFAULT on
+	// the column: every mint states it, and an omitted Go field binds 0 and
+	// fails the CHECK.
+	Issuance         APITokenIssuance
 	SecretHash       []byte
 	RefreshHash      []byte
 	ExpiresAt        *time.Time
@@ -2018,12 +2186,21 @@ type ApproveDeviceAuthorizationByUserCodeParams struct {
 type CreateOAuthAuthorizationCodeParams struct {
 	Code             string
 	UserID           userid.UserID
+	AuthGeneration   int64
 	ClientID         string
 	CodeChallenge    string
 	RedirectURI      string
 	GrantedScopes    string
 	InstallationName string
 	ExpiresAt        time.Time
+	// StepUp identifies the credential this code verifies, when it verifies
+	// one rather than issuing one. The zero value stores no target. The row's
+	// tie CHECK refuses a kind without an id and an id without a kind.
+	StepUp CredentialRef
+	// Redemption is what this code redeems into, the decision the consent
+	// page showed. RedemptionKindNone means a step-up code; the row's tie
+	// CHECK holds it exactly when StepUp identifies a credential.
+	Redemption RedemptionKind
 }
 
 type CreatePendingOAuthSignupParams struct {

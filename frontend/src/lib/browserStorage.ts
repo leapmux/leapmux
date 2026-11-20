@@ -6,13 +6,12 @@
  * site can build one by hand and no constant can drift from what is actually
  * stored.
  *
- * EVERY KEY IS SCOPED TO ONE ACCOUNT, because two accounts sharing a browser
- * profile must not share stored state. The scope is part of the stored key:
+ * Every key declares an account or device scope. The scope determines how
+ * the module builds the stored key.
  *
- *   - `account` -> `leapmux:u:<userId>:<name>`, and an access with no account
- *     set THROWS. There is no silent fallback: a value written before the
- *     identity resolves has no correct owner, and guessing one is how one
- *     user's preferences end up on another user's screen.
+ *   - `account` -> `leapmux:u:<encoded account>:<name>`. The account includes
+ *     the Hub origin and the user ID. Access throws until the account is set,
+ *     because a value written before the identity resolves has no owner.
  *   - `device` -> `leapmux:<name>`, for the two relay sequence marks that fence
  *     a process-wide sidecar and therefore CANNOT be partitioned. See
  *     `LOCAL_KEY_SPECS`.
@@ -114,6 +113,7 @@ export const KEY_ACTIVE_WORKSPACE = 'active-workspace'
 export const KEY_WORKSPACE_SORT = 'workspace-sort'
 export const KEY_USER_EVENTS_RELAY_SEQ = 'user-events-relay-seq'
 export const KEY_CHANNEL_RELAY_SEQ = 'channel-relay-seq'
+export const KEY_CRDT_OUTBOX = 'crdt-outbox'
 
 /** Dynamic key prefixes — single source of truth for all consumers. */
 export const PREFIX_EDITOR_DRAFT = 'editor-draft:'
@@ -309,6 +309,16 @@ export const LOCAL_KEY_SPECS = {
     scope: 'account',
     ttlMs: YEAR_MS,
     access: 'sync',
+  },
+  // Unacknowledged CRDT batches staged before unload. The exact account
+  // namespace prevents a Hub or user switch from replaying another identity's
+  // edits. Seven days caps abandoned batches without expiring an ordinary
+  // offline weekend.
+  [KEY_CRDT_OUTBOX]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'async',
   },
   // `sync`: seeded eagerly from the synchronous account-change callback.
   [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN]: {
@@ -597,8 +607,23 @@ export function getTtlForKey(name: string): number | null {
 // The account namespace
 // ---------------------------------------------------------------------------
 
+/**
+ * A composed storage account: `encodeURIComponent(hubOrigin) + '/' +
+ * encodeURIComponent(hubUserId)`, the namespace every `account`-scoped key
+ * resolves under. NOT a Hub user id.
+ */
+export type StorageAccount = string & { readonly _brand: 'storage-account' }
+
+/**
+ * The raw user id the Hub reports (`UserMaterialized.user_id`), the CRDT's
+ * tenant. NOT a storage account: the account carries the Hub origin and is
+ * percent-encoded, so the two never compare equal. The brands make passing one
+ * where the other belongs a compile error.
+ */
+export type HubUserId = string & { readonly _brand: 'hub-user-id' }
+
 /** The account every `account`-scoped key resolves under, or null before sign-in. */
-let storageAccount: string | null = null
+let storageAccount: StorageAccount | null = null
 
 /** One mirrored row, exactly as the database holds it. */
 interface MirrorEntry {
@@ -622,13 +647,13 @@ interface MirrorEntry {
 const mirror = new Map<string, MirrorEntry>()
 
 /** Which account's rows the mirror holds, or null before the first hydration. */
-let mirroredAccount: string | null = null
+let mirroredAccount: StorageAccount | null = null
 
 /** Bumped by every hydration; one whose token went stale discards its rows. */
 let hydrationToken = 0
 
 /**
- * The stored key for `name` under `userId`.
+ * The stored key for `name` under `account`.
  *
  * The id is PERCENT-ENCODED, so the ':' that ends the account segment cannot
  * occur inside it and the parse back is unambiguous for ANY id the hub mints.
@@ -638,17 +663,52 @@ let hydrationToken = 0
  * `AuthContext` can only report as a failed bootstrap. Encoding is the identity
  * function over that alphabet, so the stored keys are the same either way.
  *
- * Exported for the tests and the E2E helpers, which have to name a key for an
- * account other than the signed-in one. Production never does -- `storedKeyFor`
+ * Exported for the tests and the E2E helpers, which have to specify a key for
+ * an account other than the signed-in one. Production never does -- `storedKeyFor`
  * answers that, and the accessors do it themselves.
  */
-export function accountStorageKey(userId: string, name: string): string {
-  return `${NAMESPACE}${ACCOUNT_SEGMENT}${encodeURIComponent(userId)}:${name}`
+export function accountStorageKey(account: string, name: string): string {
+  return `${NAMESPACE}${ACCOUNT_SEGMENT}${encodeURIComponent(account)}:${name}`
 }
 
-/** The prefix every key of `userId` carries. For a caller that matches a whole namespace. */
-export function accountStorageKeyPrefix(userId: string): string {
-  return accountStorageKey(userId, '')
+/** The prefix every key of `account` carries. For a caller that matches a whole namespace. */
+export function accountStorageKeyPrefix(account: string): string {
+  return accountStorageKey(account, '')
+}
+
+/**
+ * Composes a storage account from a Hub origin and a user id. The bundled
+ * origin serves solo mode and every remote Hub, so the account is the pair of
+ * Hub and user. Two Hubs behind one origin can no longer share a namespace
+ * when their user ids collide.
+ */
+export function storageAccountFor(hub: string, hubUserId: string): StorageAccount {
+  return `${encodeURIComponent(hub)}/${encodeURIComponent(hubUserId)}` as StorageAccount
+}
+
+/**
+ * The Hub user id a storage account identifies — the inverse of `storageAccountFor`.
+ *
+ * `storageAccountFor` composes `encodeURIComponent(hub) + '/' + encodeURIComponent(hubUserId)`,
+ * and `encodeURIComponent` emits no `/`, so the last `/` separates the pair and
+ * its tail decodes back to the user id. An account with NO separator is not a
+ * composed account: the writer composes (`setStorageAccountForTests` under
+ * `TEST_HUB`), so the bare form whose account IS its user id no longer exists,
+ * and a bare string here is a programmer error. It throws rather than guess,
+ * because the old fallback read a slash-bearing bare id as a `(hub, user)` pair
+ * -- an account that identified the wrong user.
+ *
+ * Use it wherever a value in the CRDT's identity domain (`UserCrdtState.userId`,
+ * the raw `user_id` the Hub reports) meets a storage account. The two never
+ * compare equal: the account carries the Hub origin and is percent-encoded.
+ */
+export function storageAccountUserId(account: StorageAccount | null): HubUserId | null {
+  if (account === null)
+    return null
+  const separator = account.lastIndexOf('/')
+  if (separator === -1)
+    throw new Error(`Invalid storage account id "${account}": a composed account carries a '/' separator.`)
+  return decodeURIComponent(account.slice(separator + 1)) as HubUserId
 }
 
 /** The stored key for a `device`-scoped `name`. */
@@ -678,7 +738,7 @@ export function onStorageAccountChange(listener: () => void): () => void {
 }
 
 /**
- * Point every `account`-scoped key at `userId`'s namespace.
+ * Point every `account`-scoped key at the account's namespace.
  *
  * Call this SYNCHRONOUSLY as the identity is written, before the signal that
  * carries it notifies. A render effect runs ahead of a user effect in the same
@@ -693,12 +753,12 @@ export function onStorageAccountChange(listener: () => void): () => void {
  * `hasStorageAccount` answers whether a namespace exists to write into, which
  * stays true after a sign-out.
  */
-export function setStorageAccount(userId: string): void {
-  if (userId === '')
+export function setStorageAccount(account: StorageAccount): void {
+  if (account === '')
     throw new Error('Invalid storage account id: the id must not be empty.')
   // An unchanged id is not a move, so it neither disturbs an open batch nor
   // needs to do anything. `refreshUser` replaces the User object on every call.
-  if (userId === storageAccount)
+  if (account === storageAccount)
     return
   // A batch holds ONE account's document in memory and stores it in a `finally`.
   // Moving the namespace underneath it would write the outgoing account's whole
@@ -713,19 +773,19 @@ export function setStorageAccount(userId: string): void {
   // holds that account's rows -- is what every synchronous reader in the app
   // rests on, so it is checked HERE, at the one writer, rather than discovered
   // later at some unrelated read.
-  if (mirroredAccount !== userId) {
+  if (mirroredAccount !== account) {
     throw new Error(
-      `Storage account "${userId}" is not hydrated. `
-      + `Await hydrateStorageAccount(userId) before setStorageAccount(userId).`,
+      `Storage account "${account}" is not hydrated. `
+      + `Await hydrateStorageAccount(account) before setStorageAccount(account).`,
     )
   }
-  storageAccount = userId
+  storageAccount = account
   for (const listener of accountListeners)
     listener()
 }
 
 /** The account whose namespace synchronous storage operations currently use. */
-export function storageAccountId(): string | null {
+export function storageAccountId(): StorageAccount | null {
   return storageAccount
 }
 
@@ -745,8 +805,20 @@ export function resetStorageAccountForTests(): void {
 }
 
 /**
- * Move the namespace to `userId` synchronously, without reading a database.
- * FOR TESTS.
+ * The sentinel Hub origin `setStorageAccountForTests` composes its account
+ * under. A fixed origin, so one user id maps to exactly one test account and
+ * the setter keeps its single job: move the namespace to THIS suite's identity.
+ */
+export const TEST_HUB = 'https://hub.example.com'
+
+/**
+ * Move the namespace to the account `hubUserId` composes under `TEST_HUB`,
+ * synchronously, without reading a database. FOR TESTS.
+ *
+ * The parameter is a RAW Hub user id, and the account is composed HERE. Only
+ * the writer composing closes the ambiguity between a slash-bearing user id and
+ * a `(hub, user)` pair: the two then encode to different accounts, and no
+ * caller can hand the setter a composed account by mistake.
  *
  * Production must `await hydrateStorageAccount` first, because it has rows on
  * disk to load and a synchronous reader downstream that would otherwise take
@@ -754,15 +826,20 @@ export function resetStorageAccountForTests(): void {
  * mirror -- which is keyed by the STORED key, so the outgoing account's rows
  * simply become unreachable rather than needing to be dropped. That models the
  * disk exactly: another account's rows are still there, and only its own
- * namespace can name them.
+ * namespace can identify them.
  *
  * A test that seeds a DATABASE and wants it read awaits `hydrateStorageAccount`
- * itself.
+ * itself. A test that needs an account of ANOTHER Hub composes it with
+ * `storageAccountFor` and moves through `hydrateStorageAccount` +
+ * `setStorageAccount`, the production seam.
  */
-export function setStorageAccountForTests(userId: string): void {
+export function setStorageAccountForTests(hubUserId: string): void {
+  if (hubUserId === '')
+    throw new Error('Invalid storage account id: the user id must not be empty.')
+  const account = storageAccountFor(TEST_HUB, hubUserId)
   hydrationToken++
-  mirroredAccount = userId
-  setStorageAccount(userId)
+  mirroredAccount = account
+  setStorageAccount(account)
 }
 
 /**
@@ -833,8 +910,8 @@ function resolveKey<S extends KeySpec>(name: string, index: SpecIndex<S>): { key
  *
  * The tier is enforced at RUNTIME as well as in the types, because the types
  * cannot reach a key composed from a runtime `string`, a JavaScript caller, or
- * an E2E helper. The message names the accessor to use, so a mismatch reads as
- * an instruction rather than a puzzle.
+ * an E2E helper. The message identifies the accessor to use, so a mismatch reads
+ * as an instruction rather than a puzzle.
  */
 function resolveLocalKey(name: string, access: KeyAccess): { key: string, ttl: number, spec: LocalKeySpec } {
   const resolved = resolveKey(name, LOCAL_INDEX)
@@ -1052,9 +1129,9 @@ const SYNC_PREFIX_NAMES = namesWhere(spec => spec.match === 'prefix' && spec.acc
 const DEVICE_NAMES = namesWhere(spec => spec.scope === 'device')
 
 /**
- * Load `userId`'s synchronous rows, plus the device rows, into the mirror.
+ * Load the account's synchronous rows, plus the device rows, into the mirror.
  *
- * AWAIT THIS BEFORE `setStorageAccount(userId)`. It deliberately does NOT move
+ * AWAIT THIS BEFORE `setStorageAccount(account)`. It deliberately does NOT move
  * the namespace itself: that move must stay synchronous and adjacent to the
  * identity write, which is the ordering `AuthContext` and `PreferencesContext`
  * are built on.
@@ -1070,7 +1147,11 @@ const DEVICE_NAMES = namesWhere(spec => spec.scope === 'device')
  * session, so this gate is already ahead of it, and doing the work here keeps
  * the module free of asynchronous side effects at import time.
  */
-export async function hydrateStorageAccount(userId: string): Promise<void> {
+export interface PreparedStorageAccount {
+  commit: () => boolean
+}
+
+export async function prepareStorageAccount(account: StorageAccount): Promise<PreparedStorageAccount> {
   const token = ++hydrationToken
   // ALREADY HYDRATED FOR THIS ACCOUNT: nothing to do. The token still moves
   // first, so a hydration for a DIFFERENT account that is still in flight
@@ -1083,11 +1164,14 @@ export async function hydrateStorageAccount(userId: string): Promise<void> {
   // mirror from disk, discarding any write this tab issued but has not flushed.
   // The BroadcastChannel keeps the mirror current across tabs, and the sweep
   // publishes its own evictions, so a re-read buys nothing.
-  if (mirroredAccount === userId)
-    return
+  if (mirroredAccount === account) {
+    return {
+      commit: () => token === hydrationToken,
+    }
+  }
   let rows: KvRow[] = []
   try {
-    rows = await readSyncRows(userId)
+    rows = await readSyncRows(account)
   }
   catch (err) {
     log.warn('browser storage hydration failed; this session runs on defaults', err)
@@ -1095,29 +1179,39 @@ export async function hydrateStorageAccount(userId: string): Promise<void> {
   // A newer identity started hydrating while this one was in flight. Installing
   // now would put the outgoing account's rows under the incoming account's
   // namespace -- the exact leak the scoping exists to close.
-  if (token !== hydrationToken)
-    return
-  installMirror(userId, rows)
+  return {
+    commit: () => {
+      if (token !== hydrationToken)
+        return false
+      installMirror(account, rows)
+      return true
+    },
+  }
+}
+
+export async function hydrateStorageAccount(account: StorageAccount): Promise<void> {
+  const prepared = await prepareStorageAccount(account)
+  prepared.commit()
 }
 
 /**
  * The rows the mirror needs: one keyed lookup for the exact names, one bound
  * range per synchronous prefix family.
  *
- * Deliberately NOT one scan of `accountStorageKeyPrefix(userId)`. That would
+ * Deliberately NOT one scan of `accountStorageKeyPrefix(account)`. That would
  * also materialize every `chat-row-heights:` and `local-messages:` row -- the
  * unbounded families -- on the sign-in path, which is precisely the cost the
  * tier split exists to avoid. A handful of index ranges is cheap; reading a
  * megabyte of drafts is not.
  */
-async function readSyncRows(userId: string): Promise<KvRow[]> {
+async function readSyncRows(account: StorageAccount): Promise<KvRow[]> {
   // The two lists are disjoint by construction, so each name composes under the
   // one function that answers for its scope and no key is requested twice.
   const exactKeys = [
-    ...SYNC_EXACT_ACCOUNT_NAMES.map(name => accountStorageKey(userId, name)),
+    ...SYNC_EXACT_ACCOUNT_NAMES.map(name => accountStorageKey(account, name)),
     ...DEVICE_NAMES.map(name => deviceStorageKey(name)),
   ]
-  const accountPrefix = accountStorageKeyPrefix(userId)
+  const accountPrefix = accountStorageKeyPrefix(account)
   const [exact, ...families] = await Promise.all([
     readKvRows(exactKeys),
     ...SYNC_PREFIX_NAMES.map(prefix => readKvPrefix(accountPrefix + prefix)),
@@ -1135,7 +1229,7 @@ async function readSyncRows(userId: string): Promise<KvRow[]> {
  * hydration is a read, and a read has always been where an expired value is
  * noticed and removed.
  */
-function installMirror(userId: string, rows: readonly KvRow[]): void {
+function installMirror(account: StorageAccount, rows: readonly KvRow[]): void {
   const now = Date.now()
   mirror.clear()
   for (const row of rows) {
@@ -1157,7 +1251,7 @@ function installMirror(userId: string, rows: readonly KvRow[]): void {
     }
     mirror.set(row.k, { v: row.v, e: row.e })
   }
-  mirroredAccount = userId
+  mirroredAccount = account
 }
 
 /**

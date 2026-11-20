@@ -30,6 +30,7 @@ func liveElevatedCredentialAt(
 	uid := userid.MustNew(user.ID)
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           uid,
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -46,6 +47,24 @@ func liveElevatedCredentialAt(
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 	return &auth.UserInfo{ID: uid, Credential: auth.APICredential(tokenID)}, tokenID
+}
+
+func recheckStepUpWithUserAuthLock(
+	ctx context.Context,
+	st store.Store,
+	locked, peek *store.User,
+	admission stepUpAdmission,
+	p stepUpParams,
+	now time.Time,
+) error {
+	uid := userid.MustNew(locked.ID)
+	return st.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+		current, err := tx.Users().GetByID(ctx, locked.ID)
+		if err != nil {
+			return err
+		}
+		return recheckStepUpUnderLock(ctx, tx, current, peek, admission, p, now)
+	})
 }
 
 // TestRecheckStepUpUnderLock_CommandLineCredential drives the locked
@@ -70,7 +89,7 @@ func TestRecheckStepUpUnderLock_CommandLineCredential(t *testing.T) {
 		info, _ := liveElevatedCredentialAt(t, st, user, now)
 
 		assert.NoError(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, entryStepUp(info), now),
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, entryStepUp(info), now),
 			"an elevated command-line credential must reach the mutation")
 	})
 
@@ -87,12 +106,12 @@ func TestRecheckStepUpUnderLock_CommandLineCredential(t *testing.T) {
 		info, _ := liveElevatedCredentialAt(t, st, user, now)
 
 		require.NoError(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, entryStepUp(info), now),
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, entryStepUp(info), now),
 			"precondition: the live window passes")
 
 		later := now.Add(auth.ElevationWindow + time.Minute)
 		requireStepUpStateMoved(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, entryStepUp(info), later))
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, entryStepUp(info), later))
 	})
 
 	// The Finish leg's grace reaches this branch too, because it is one
@@ -108,9 +127,9 @@ func TestRecheckStepUpUnderLock_CommandLineCredential(t *testing.T) {
 
 		finishAt := provenAt.Add(auth.ElevationWindow + time.Second)
 		requireStepUpStateMoved(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, entryStepUp(info), finishAt))
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, entryStepUp(info), finishAt))
 		assert.NoError(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, finishStepUp(info), finishAt))
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, finishStepUp(info), finishAt))
 	})
 
 	// A single-credential revoke leaves the account's credential epoch where
@@ -126,7 +145,7 @@ func TestRecheckStepUpUnderLock_CommandLineCredential(t *testing.T) {
 		info, tokenID := liveElevatedCredentialAt(t, st, user, now)
 
 		require.NoError(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, entryStepUp(info), now),
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, entryStepUp(info), now),
 			"precondition: the live credential passes")
 
 		n, err := st.APITokens().Revoke(ctx, tokenID)
@@ -138,7 +157,7 @@ func TestRecheckStepUpUnderLock_CommandLineCredential(t *testing.T) {
 			"precondition: a single-credential revoke leaves the epoch where it is")
 
 		requireStepUpStateMoved(t,
-			recheckStepUpUnderLock(ctx, st, locked, user, elevated, entryStepUp(info), now))
+			recheckStepUpWithUserAuthLock(ctx, st, locked, user, elevated, entryStepUp(info), now))
 	})
 
 	// An ABSENT row refuses, where the session branch tolerates one. The
@@ -156,7 +175,7 @@ func TestRecheckStepUpUnderLock_CommandLineCredential(t *testing.T) {
 		}
 
 		requireStepUpStateMoved(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, entryStepUp(info), now))
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, entryStepUp(info), now))
 	})
 
 	// A credential that carries no elevatable row at all keeps the refusal.
@@ -174,12 +193,12 @@ func TestRecheckStepUpUnderLock_CommandLineCredential(t *testing.T) {
 			Credential: auth.DelegationCredential("del-1", "w-1"),
 		}
 		requireStepUpStateMoved(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, entryStepUp(delegated), now))
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, entryStepUp(delegated), now))
 
 		// The zero value (solo mode's synthetic credential) answers the same
 		// way rather than reading as a session with an empty id.
 		zeroCredential := &auth.UserInfo{ID: userid.MustNew(user.ID)}
 		requireStepUpStateMoved(t,
-			recheckStepUpUnderLock(ctx, st, user, user, elevated, entryStepUp(zeroCredential), now))
+			recheckStepUpWithUserAuthLock(ctx, st, user, user, elevated, entryStepUp(zeroCredential), now))
 	})
 }

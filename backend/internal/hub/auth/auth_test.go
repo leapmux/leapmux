@@ -27,7 +27,7 @@ func TestCreateSessionMaximumDuration(t *testing.T) {
 	st := newTestStore(t)
 	userID := userid.MustNew(seedUser(t, st))
 	before := time.Now()
-	session, err := auth.CreateSession(t.Context(), st, hubtestutil.TestSecretHasher(), userID, math.MaxInt64)
+	session, err := auth.CreateSession(t.Context(), st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: math.MaxInt64, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	assert.True(t, session.ExpiresAt.After(before.Add(time.Duration(math.MaxInt64))))
 	stored, err := st.Sessions().GetByID(t.Context(), session.ID, before)
@@ -64,11 +64,9 @@ func createTestUser(t *testing.T, st store.Store) string {
 func TestLogin_Success(t *testing.T) {
 	st := setupStore(t)
 	userID := createTestUser(t, st)
-	ctx := context.Background()
 
-	token, user, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
-	assert.NotEmpty(t, token)
+	session, user := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
+	assert.NotEmpty(t, session.Token)
 	assert.Equal(t, userID, user.ID)
 }
 
@@ -81,13 +79,12 @@ func TestLogin_StampsTheGivenLifetime(t *testing.T) {
 
 	const lifetime = 90 * time.Minute
 	before := time.Now()
-	token, _, expiresAt, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "password123", lifetime)
-	require.NoError(t, err)
-	hubtestutil.AssertSessionLifetime(t, before, lifetime, expiresAt)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "testuser", "password123", lifetime)
+	hubtestutil.AssertSessionLifetime(t, before, lifetime, session.ExpiresAt)
 
-	sess, err := st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
+	sess, err := st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, session.Token), time.Now().UTC())
 	require.NoError(t, err)
-	assert.WithinDuration(t, expiresAt, sess.ExpiresAt, time.Second,
+	assert.WithinDuration(t, session.ExpiresAt, sess.ExpiresAt, time.Second,
 		"the returned expiry and the stored row must be the same deadline")
 }
 
@@ -104,7 +101,7 @@ func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := time.Now()
-			createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, lifetime)
+			createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: lifetime, Proof: auth.SignInProvedNoFactor})
 			require.NoError(t, err)
 			hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, createdSession.ExpiresAt)
 		})
@@ -113,7 +110,7 @@ func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
 	// A positive lifetime must also reach the session. This detects an implementation that always uses the default.
 	t.Run("positive is honoured", func(t *testing.T) {
 		before := time.Now()
-		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, time.Hour)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 		require.NoError(t, err)
 		hubtestutil.AssertSessionLifetime(t, before, time.Hour, createdSession.ExpiresAt)
 	})
@@ -127,11 +124,83 @@ func TestCreateSession_RecordsVerifiedClientIP(t *testing.T) {
 	user, err := st.Users().GetByUsername(ctx, hubtestutil.TestAdminUsername)
 	require.NoError(t, err)
 
-	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), time.Hour)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 	session, err := st.Sessions().GetByID(ctx, createdSession.ID, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Equal(t, "2001:db8::7", session.IPAddress)
+}
+
+// TestCreateSession_SignInProvedFactorStampsTheSignInWindow pins the pair a
+// factor sign-in writes: the anchor is the sign-in instant, and the window
+// ends five minutes after elevation_proven_at.
+func TestCreateSession_SignInProvedFactorStampsTheSignInWindow(t *testing.T) {
+	st := setupStore(t)
+	userID := userid.MustNew(createTestUser(t, st))
+	ctx := context.Background()
+
+	before := time.Now()
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedFactor})
+	require.NoError(t, err)
+
+	row, err := st.Sessions().GetByID(ctx, createdSession.ID, time.Now().UTC())
+	require.NoError(t, err)
+	require.NotNil(t, row.ElevationProvenAt, "a factor sign-in stamps the pair")
+	require.NotNil(t, row.ElevationExpiresAt)
+	provenAt := *row.ElevationProvenAt
+	assert.WithinDuration(t, before, provenAt, time.Second,
+		"the anchor is the sign-in instant")
+	assert.WithinDuration(t, provenAt.Add(5*time.Minute), *row.ElevationExpiresAt, time.Second,
+		"the window ends five minutes after elevation_proven_at")
+}
+
+func TestCreateSessionAt_FullWindowUsesTheSuppliedInstant(t *testing.T) {
+	st := setupStore(t)
+	userID := userid.MustNew(createTestUser(t, st))
+	ctx := context.Background()
+	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+
+	created, err := auth.CreateSessionAt(ctx, st, hubtestutil.TestSecretHasher(), userID, now, auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedFactorWithFullWindow})
+
+	require.NoError(t, err)
+	row, err := st.Sessions().GetByID(ctx, created.ID, now)
+	require.NoError(t, err)
+	require.NotNil(t, row.ElevationProvenAt)
+	require.NotNil(t, row.ElevationExpiresAt)
+	assert.Equal(t, now, *row.ElevationProvenAt)
+	assert.Equal(t, now.Add(auth.ElevationWindow), *row.ElevationExpiresAt)
+	assert.Equal(t, now.Add(auth.ElevationWindow), created.Elevation.ExpiresAt)
+}
+
+// TestCreateSession_SignInProvedNoFactorStampsNoWindow pins the other side:
+// a sign-in that proved no factor writes no elevation pair at all.
+func TestCreateSession_SignInProvedNoFactorStampsNoWindow(t *testing.T) {
+	st := setupStore(t)
+	userID := userid.MustNew(createTestUser(t, st))
+	ctx := context.Background()
+
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
+	require.NoError(t, err)
+
+	row, err := st.Sessions().GetByID(ctx, createdSession.ID, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Nil(t, row.ElevationProvenAt, "a sign-in that proved no factor writes no pair")
+	assert.Nil(t, row.ElevationExpiresAt)
+}
+
+// TestCreateSession_ZeroSignInProofRefused pins the guard that makes a
+// forgotten proof write fail instead of silently granting no window: the zero
+// value is an error, and it leaves no row behind.
+func TestCreateSession_ZeroSignInProofRefused(t *testing.T) {
+	st := setupStore(t)
+	userID := createTestUser(t, st)
+	ctx := context.Background()
+
+	_, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProof(0)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sign-in proof",
+		"the zero proof must be the reported cause")
+	assert.Empty(t, storetest.ListAllSessions(t, st, userID), "a refused creation writes no row")
 }
 
 // Workspace access is owner-only: no other user may read someone else's workspace.
@@ -261,7 +330,7 @@ func TestLogin_InvalidPassword(t *testing.T) {
 	createTestUser(t, st)
 	ctx := context.Background()
 
-	_, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "wrongpassword", auth.DefaultSessionDuration)
+	_, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "wrongpassword", auth.DefaultSessionDuration)
 	require.Error(t, err)
 }
 
@@ -269,7 +338,7 @@ func TestLogin_UnknownUser(t *testing.T) {
 	st := setupStore(t)
 	ctx := context.Background()
 
-	_, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "nonexistent", "password", auth.DefaultSessionDuration)
+	_, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "nonexistent", "password", auth.DefaultSessionDuration)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -287,7 +356,7 @@ func TestLogin_PasswordNotSet_SameAsUnknownUser(t *testing.T) {
 		IsAdmin:               false,
 	}))
 
-	_, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "pkonly", "any-password", auth.DefaultSessionDuration)
+	_, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "pkonly", "any-password", auth.DefaultSessionDuration)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "invalid credentials")
@@ -302,8 +371,7 @@ func TestLogin_HashUnchangedAfterLogin(t *testing.T) {
 	require.NoError(t, err)
 	originalHash := user.PasswordHash
 
-	_, _, _, err = auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
 
 	user, err = st.Users().GetByUsername(ctx, "testuser")
 	require.NoError(t, err)
@@ -346,7 +414,7 @@ func TestLogin_RejectsOldPasswordRotatedAtTransactionBoundary(t *testing.T) {
 		},
 	}
 
-	_, _, _, err = auth.Login(ctx, hooked, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, hooked, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	sessions := storetest.ListAllSessions(t, st, userID)
@@ -373,9 +441,8 @@ func TestLogin_AcceptsNewPasswordRotatedAtTransactionBoundary(t *testing.T) {
 		},
 	}
 
-	sessionToken, user, _, err := auth.Login(ctx, hooked, hubtestutil.TestSecretHasher(), "testuser", "new-password123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
-	assert.NotEmpty(t, sessionToken)
+	session, user := hubtestutil.LoginWithoutWindow(t, hooked, hubtestutil.TestSecretHasher(), "testuser", "new-password123", auth.DefaultSessionDuration)
+	assert.NotEmpty(t, session.Token)
 	assert.Equal(t, userID, user.ID)
 	sessions := storetest.ListAllSessions(t, st, userID)
 	require.Len(t, sessions, 1)
@@ -387,7 +454,7 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 		userID := createTestUser(t, st)
 		ctx := context.Background()
 
-		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 		require.NoError(t, err)
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
@@ -408,7 +475,7 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
 			return err
 		}))
-		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 		require.NoError(t, err)
 
 		info, err := auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), createdSession.Token)
@@ -425,6 +492,7 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               id.Generate(),
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -466,17 +534,16 @@ func TestValidateToken_Success(t *testing.T) {
 	createTestUser(t, st)
 	ctx := context.Background()
 
-	token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
 
-	info, err := auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), token)
+	info, err := auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), session.Token)
 	require.NoError(t, err)
 	assert.Equal(t, "testuser", info.Username)
 	assert.True(t, info.IsAdmin)
 
-	session, err := st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
+	sess, err := st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, session.Token), time.Now().UTC())
 	require.NoError(t, err)
-	assert.True(t, info.AuthenticatedAt.Equal(session.CreatedAt.UTC()),
+	assert.True(t, info.AuthenticatedAt.Equal(sess.CreatedAt.UTC()),
 		"session authentication must use the database session creation timestamp")
 }
 
@@ -604,11 +671,11 @@ func TestLogin_BlankUserIDRowIsRefusedNotPanicked(t *testing.T) {
 	}
 
 	require.NotPanics(t, func() {
-		sessionToken, user, _, loginErr := auth.Login(context.Background(), wrapped, hubtestutil.TestSecretHasher(), "blank", "correct-horse-battery", auth.DefaultSessionDuration)
+		session, user, loginErr := auth.Login(context.Background(), wrapped, hubtestutil.TestSecretHasher(), "blank", "correct-horse-battery", auth.DefaultSessionDuration)
 		require.Error(t, loginErr)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(loginErr),
 			"a blank-id row is refused as bad credentials, not surfaced as an internal error")
-		assert.Empty(t, sessionToken, "no session token is handed back for a blank-id row")
+		assert.Empty(t, session.Token, "no session token is handed back for a blank-id row")
 		assert.Nil(t, user, "no user is handed back for a blank-id row")
 	})
 }

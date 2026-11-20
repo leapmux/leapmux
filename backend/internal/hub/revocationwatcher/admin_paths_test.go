@@ -32,7 +32,8 @@ func TestAdminPath_APITokenRevoke_ClosesBearerChannels(t *testing.T) {
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       apiTokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("hash"),
 	}))
 
@@ -56,7 +57,8 @@ func TestAdminPath_UserDelete_TearsDownEverything(t *testing.T) {
 
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)
@@ -89,7 +91,8 @@ func TestAdminPath_ResetPassword_RevokesTokensAndChannels(t *testing.T) {
 	env := setup(t)
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)
@@ -120,7 +123,8 @@ func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {
 	env := setup(t)
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       apiTok, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)

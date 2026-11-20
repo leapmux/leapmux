@@ -130,15 +130,17 @@ func TestAdminSettingsService_WriteGate(t *testing.T) {
 	}
 }
 
-// Reads need no elevation. The dialog lists every key before the operator
-// edits one, so restricting the listing would prompt for a factor to look at
-// a page.
-func TestAdminSettingsService_ListNeedsNoElevation(t *testing.T) {
+// Every Admin* procedure now takes the interceptor's elevation check, reads
+// included. A listing refuses an un-elevated session with the marker.
+func TestAdminSettingsService_ListNeedsElevation(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
-	resp, err := env.client.ListSettings(authedReq(context.Background(),
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := env.client.ListSettings(authedReq(ctx,
 		&leapmuxv1.ListSettingsRequest{}, env.token))
-	require.NoError(t, err)
-	assert.NotEmpty(t, resp.GetDescriptors())
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"the refusal must be the one a step-up prompt can clear")
 }
 
 // The same rule for a COMMAND-LINE credential, which is where it matters most:
@@ -228,11 +230,12 @@ func TestAdminSettingsService_RefusedWriteDoesNotSlideTheWindow(t *testing.T) {
 		session.ElevationExpiresAt, nearly)
 }
 
-// The hub reports an unknown key as an unknown key even without a factor, so
-// it does not ask the operator to verify for a request that it refuses on its
-// arguments anyway.
+// The handler reports an unknown key as InvalidArgument before its own write
+// gate. The interceptor's elevation gate fires before the handler for an
+// un-elevated caller, so this test uses an elevated session to reach the
+// handler's argument validation.
 func TestAdminSettingsService_UnknownKeyIsReportedBeforeTheGate(t *testing.T) {
-	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
+	env := setupAdminSettingsTest(t, &config.Config{})
 	_, err := env.client.UpdateSettings(authedReq(context.Background(), oneWrite("no_such_setting_key", `true`), env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))

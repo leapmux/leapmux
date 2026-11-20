@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/servicelaunch/servicefixture"
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
+	"github.com/leapmux/leapmux/util/atomicfile"
 	"go.yaml.in/yaml/v4"
 )
 

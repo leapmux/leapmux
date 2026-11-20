@@ -171,7 +171,7 @@ func (s *AdminSettingsService) deploymentName() string {
 //
 // It delegates to the free function of the same name, which states the rule.
 // The method exists so the settings handlers read as they did.
-func (s *AdminSettingsService) writeUnderElevation(ctx context.Context, write func() error) error {
+func (s *AdminSettingsService) writeUnderElevation(ctx context.Context, write func(tx store.Store) error) error {
 	return writeUnderElevation(ctx, s.store, s.now, write)
 }
 
@@ -198,14 +198,15 @@ func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *leapmuxv
 			Secret: json.RawMessage(w.GetSecretPartialJson()),
 		})
 	}
-	if err := s.writeUnderElevation(ctx, func() error {
-		if err := s.set.UpdateMany(ctx, writes); err != nil {
+	if err := s.writeUnderElevation(ctx, func(tx store.Store) error {
+		if err := s.set.UpdateManyInTransaction(ctx, tx, writes); err != nil {
 			return settingWriteConnectError(err)
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
+	s.set.PublishCommittedWrite(ctx)
 	descs := make([]settings.Descriptor, 0, len(writes))
 	for _, w := range writes {
 		descs = append(descs, w.Desc)
@@ -230,12 +231,16 @@ func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *leapmuxv1
 		}
 		descs = append(descs, desc)
 	}
-	if err := s.writeUnderElevation(ctx, func() error {
-		if err := s.set.ResetMany(ctx, descs); err != nil {
+	if err := s.writeUnderElevation(ctx, func(tx store.Store) error {
+		if err := s.set.ResetManyInTransaction(ctx, tx, descs); err != nil {
 			return settingWriteConnectError(err)
 		}
-		return s.runAfterReset(ctx, descs)
+		return nil
 	}); err != nil {
+		return nil, err
+	}
+	s.set.PublishCommittedWrite(ctx)
+	if err := s.runAfterReset(ctx, descs); err != nil {
 		return nil, err
 	}
 	return &leapmuxv1.ResetSettingsResponse{

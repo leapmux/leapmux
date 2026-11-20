@@ -1,6 +1,10 @@
 package auth
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/leapmux/leapmux/internal/hub/store"
+)
 
 // CredentialIdentity is the immutable authentication credential attached to a
 // request or long-lived channel. The zero value represents synthetic solo-mode
@@ -8,6 +12,10 @@ import "fmt"
 type CredentialIdentity struct {
 	kind credentialKind
 	id   string
+	// appElevationDisabled carries the current registration policy joined onto
+	// an API credential. It is false for sessions, delegation credentials and
+	// API credentials built in tests without a persisted app row.
+	appElevationDisabled bool
 	// workerID is the worker that MINTED a delegation token. It limits where the
 	// token may be used (see ChannelService.verifyDelegationWorkerScope); empty
 	// for every other kind.
@@ -36,6 +44,20 @@ func APICredential(tokenID string) CredentialIdentity {
 		panic("auth: API credential requires an ID")
 	}
 	return CredentialIdentity{kind: credentialAPI, id: tokenID}
+}
+
+// APICredentialWithElevationPolicy identifies an API credential and carries
+// whether its current app registration permits a new elevation ceremony.
+func APICredentialWithElevationPolicy(tokenID string, elevationAllowed bool) CredentialIdentity {
+	credential := APICredential(tokenID)
+	credential.appElevationDisabled = !elevationAllowed
+	return credential
+}
+
+// AppElevationDisabled reports whether the credential's current app policy
+// prevents every available step-up ceremony.
+func (c CredentialIdentity) AppElevationDisabled() bool {
+	return c.kind == credentialAPI && c.appElevationDisabled
 }
 
 // DelegationCredential identifies a delegation_tokens row minted by workerID.
@@ -96,7 +118,7 @@ func (c CredentialIdentity) SessionID() string {
 // input, so it must never carry a window and must never mark a row as the
 // caller's own.
 //
-// ElevatableRow below answers the same question for both elevatable kinds at
+// ElevatableRef below answers the same question for both elevatable kinds at
 // once, and every rule that must treat a session and a command-line
 // credential alike reads that instead.
 func (c CredentialIdentity) APITokenID() string {
@@ -106,20 +128,20 @@ func (c CredentialIdentity) APITokenID() string {
 	return ""
 }
 
-// ElevatableRow returns the row a step-up window may be stamped on: a session
+// ElevatableRef returns the row a step-up window may be stamped on: a session
 // or a command-line credential, whichever this identity specifies.
 //
 // ONE answer for the three places that ask -- the admission, the slide, and
 // the grant -- so a credential kind cannot be elevatable to one of them and
 // not to another. The zero value (solo) and a delegation bearer report false.
-func (c CredentialIdentity) ElevatableRow() (sessionID, apiTokenID string, ok bool) {
+func (c CredentialIdentity) ElevatableRef() store.CredentialRef {
 	switch c.kind {
 	case credentialSession:
-		return c.id, "", true
+		return store.CredentialRef{Kind: store.CredentialRefKindSession, ID: c.id}
 	case credentialAPI:
-		return "", c.id, true
+		return store.CredentialRef{Kind: store.CredentialRefKindToken, ID: c.id}
 	default:
-		return "", "", false
+		return store.CredentialRef{}
 	}
 }
 

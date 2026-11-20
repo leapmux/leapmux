@@ -105,6 +105,31 @@ func TestTerminalSessionError(t *testing.T) {
 	require.ErrorIs(t, completedSessionError(protocolErr), protocolErr)
 }
 
+func TestRelayEventsCarryTheEmittingOwnerOnTheWire(t *testing.T) {
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	var output bytes.Buffer
+	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+	app.SetEventSink(session.emitEvent)
+	var relay wsRelay
+	emit := app.emitForOwner(&relay)
+	events := []*desktoppb.Event{
+		{Payload: &desktoppb.Event_ChannelMessage{ChannelMessage: &desktoppb.ChannelMessageEvent{Data: []byte("channel")}}},
+		{Payload: &desktoppb.Event_ChannelClose{ChannelClose: &desktoppb.ChannelCloseEvent{Code: 1000}}},
+		{Payload: &desktoppb.Event_UserEventsMessage{UserEventsMessage: &desktoppb.UserEventsMessageEvent{Data: []byte("bootstrap")}}},
+		{Payload: &desktoppb.Event_UserEventsClose{UserEventsClose: &desktoppb.UserEventsCloseEvent{Code: 1000}}},
+	}
+	for i, event := range events {
+		owner := uint64(i + 1)
+		relay.stampOwner(owner)
+		emit(event)
+
+		frame, err := ReadFrame(&output)
+		require.NoError(t, err)
+		assert.Equal(t, owner, frame.GetEvent().GetRelayId(), "relay owner for %T", event.GetPayload())
+	}
+}
+
 func TestHandleCreateTunnelRejectsMissingConfig(t *testing.T) {
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
@@ -501,11 +526,11 @@ func TestRPCSessionClosesRelayOnUndeliverableEventFrame(t *testing.T) {
 	app.connection.relay = relay
 
 	var mu sync.Mutex
-	var closeEvents []*desktoppb.ChannelCloseEvent
+	var closeEvents []*desktoppb.Event
 	app.SetEventSink(func(event *desktoppb.Event) {
 		if ev := event.GetChannelClose(); ev != nil {
 			mu.Lock()
-			closeEvents = append(closeEvents, ev)
+			closeEvents = append(closeEvents, event)
 			mu.Unlock()
 		}
 	})
@@ -513,7 +538,8 @@ func TestRPCSessionClosesRelayOnUndeliverableEventFrame(t *testing.T) {
 	// Stand in for a frame the sidecar could not put on the wire (one past the
 	// frame budget, or a short write): the ordered stream now has a hole. The
 	// emitter's owner id (1) matches the installed relay, so the close fires.
-	app.CloseRelayForUndeliverableEvent(1, &desktoppb.Event{
+	app.CloseRelayForUndeliverableEvent(&desktoppb.Event{
+		RelayId: 1,
 		Payload: &desktoppb.Event_ChannelMessage{
 			ChannelMessage: &desktoppb.ChannelMessageEvent{Data: []byte("frame that never made it")},
 		},
@@ -527,17 +553,15 @@ func TestRPCSessionClosesRelayOnUndeliverableEventFrame(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Len(t, closeEvents, 1, "the frontend is told, so it reconnects instead of going quiet")
-	assert.False(t, closeEvents[0].GetWasClean(), "an undeliverable frame is not a clean close")
-	assert.Contains(t, closeEvents[0].GetReason(), "could not deliver")
+	assert.Equal(t, uint64(1), closeEvents[0].GetRelayId())
+	assert.False(t, closeEvents[0].GetChannelClose().GetWasClean(), "an undeliverable frame is not a clean close")
+	assert.Contains(t, closeEvents[0].GetChannelClose().GetReason(), "could not deliver")
 }
 
 // TestCloseRelayForUndeliverableEvent_LeavesSuccessorRelayAlone pins WRAPPERS-1:
 // the undeliverable close is spawned on its own goroutine, so by the time it
 // acquires lifecycleMu a successor wrapper's open may have installed a new relay.
-// The close must gate on the EMITTER's owner id (threaded through emitForOwner ->
-// EmitRelayEvent -> failFrameForRelay) and leave the successor's relay alone --
-// without the gate, the close would tear down the successor for the emitter's
-// fault, forcing a spurious reconnect.
+// The close uses the event's owner id to leave the successor's relay alone.
 func TestCloseRelayForUndeliverableEvent_LeavesSuccessorRelayAlone(t *testing.T) {
 	app := NewApp("")
 	installTestConnection(app, mustNewProxy(t, "http://localhost"), nil, "")
@@ -571,7 +595,8 @@ func TestCloseRelayForUndeliverableEvent_LeavesSuccessorRelayAlone(t *testing.T)
 
 	// The emitter's close carries owner 1; the installed relay's owner is 2, so
 	// the gate must refuse the close rather than tearing the successor down.
-	app.CloseRelayForUndeliverableEvent(1, &desktoppb.Event{
+	app.CloseRelayForUndeliverableEvent(&desktoppb.Event{
+		RelayId: 1,
 		Payload: &desktoppb.Event_ChannelMessage{
 			ChannelMessage: &desktoppb.ChannelMessageEvent{Data: []byte("frame from the superseded relay")},
 		},
@@ -666,8 +691,9 @@ func TestRPCSessionBurstDoesNotHidePeerDisconnect(t *testing.T) {
 			Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
 				Id: uint64(i + 1),
 				Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
-					Method: http.MethodGet,
-					Path:   "/blocked",
+					Method:    http.MethodGet,
+					Path:      "/blocked",
+					RequestId: fmt.Sprintf("burst-%d", i),
 				}},
 			}},
 		}))
@@ -707,8 +733,9 @@ func TestRPCSessionShutdownProceedsWithInFlightProxyHandlers(t *testing.T) {
 			Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
 				Id: uint64(i + 1),
 				Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
-					Method: http.MethodGet,
-					Path:   "/blocked",
+					Method:    http.MethodGet,
+					Path:      "/blocked",
+					RequestId: fmt.Sprintf("shutdown-%d", i),
 				}},
 			}},
 		}))
@@ -789,8 +816,9 @@ func TestRPCSessionDisconnectCancelsBlockedProxyHandler(t *testing.T) {
 		Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
 			Id: 1,
 			Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
-				Method: http.MethodGet,
-				Path:   "/blocked",
+				Method:    http.MethodGet,
+				Path:      "/blocked",
+				RequestId: "disconnect-blocked",
 			}},
 		}},
 	}))
@@ -805,6 +833,98 @@ func TestRPCSessionDisconnectCancelsBlockedProxyHandler(t *testing.T) {
 		assert.NoError(t, <-runDone)
 		t.Fatal("RPC session did not cancel its blocked handler after peer disconnect")
 	}
+	require.NoError(t, app.Shutdown())
+}
+
+func TestProxyRequestRegistryHandlesCancellationBeforeAndAfterAdmission(t *testing.T) {
+	var registry proxyRequestRegistry
+	require.NoError(t, registry.cancel("before"))
+	beforeCtx, beforeDone, err := registry.begin(t.Context(), "before")
+	require.NoError(t, err)
+	defer beforeDone()
+	select {
+	case <-beforeCtx.Done():
+	default:
+		t.Fatal("a cancellation received before admission must cancel the admitted request")
+	}
+
+	activeCtx, activeDone, err := registry.begin(t.Context(), "active")
+	require.NoError(t, err)
+	defer activeDone()
+	require.NoError(t, registry.cancel("active"))
+	select {
+	case <-activeCtx.Done():
+	default:
+		t.Fatal("an active request must observe its correlated cancellation")
+	}
+}
+
+func TestRPCSessionCancelProxyHTTPCancelsTheHubRequest(t *testing.T) {
+	deadline, cancelDeadline := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancelDeadline)
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	upstream := hubtransporttest.NewServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+		close(cancelled)
+	}))
+	t.Cleanup(upstream.Close)
+
+	app := NewApp("")
+	installTestConnection(app, mustNewProxy(t, upstream.URL), nil, upstream.URL)
+	serverConn, clientConn := net.Pipe()
+	runDone := make(chan error, 1)
+	go func() { runDone <- NewRPCSession(app, serverConn, serverConn, nil).Run() }()
+	responses := make(chan uint64, 2)
+	go func() {
+		reader := bufio.NewReader(clientConn)
+		for range 2 {
+			frame, err := ReadFrame(reader)
+			if err != nil {
+				return
+			}
+			if response := frame.GetResponse(); response != nil {
+				responses <- response.Id
+			}
+		}
+	}()
+
+	require.NoError(t, WriteFrame(clientConn, &desktoppb.Frame{
+		Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
+			Id: 1,
+			Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
+				Method: http.MethodGet, Path: "/blocked", RequestId: "request-1",
+			}},
+		}},
+	}))
+	<-entered
+	require.NoError(t, WriteFrame(clientConn, &desktoppb.Frame{
+		Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
+			Id: 2,
+			Method: &desktoppb.Request_CancelProxyHttp{CancelProxyHttp: &desktoppb.CancelProxyHttpRequest{
+				RequestId: "request-1",
+			}},
+		}},
+	}))
+
+	select {
+	case <-cancelled:
+	case <-deadline.Done():
+		t.Fatal("the Hub request did not observe renderer cancellation")
+	}
+	seen := map[uint64]bool{}
+	for range 2 {
+		select {
+		case id := <-responses:
+			seen[id] = true
+		case <-deadline.Done():
+			t.Fatal("the RPC session did not answer both proxy and cancel requests")
+		}
+	}
+	assert.Equal(t, map[uint64]bool{1: true, 2: true}, seen)
+	require.NoError(t, clientConn.Close())
+	require.NoError(t, <-runDone)
 	require.NoError(t, app.Shutdown())
 }
 
@@ -943,8 +1063,10 @@ func TestRPCSessionAdmitsEveryRequestWithoutExhaustion(t *testing.T) {
 	for i := 0; i < burst; i++ {
 		require.NoError(t, WriteFrame(clientConn, &desktoppb.Frame{
 			Message: &desktoppb.Frame_Request{Request: &desktoppb.Request{
-				Id:     uint64(i + 1),
-				Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{Method: http.MethodGet, Path: "/ok"}},
+				Id: uint64(i + 1),
+				Method: &desktoppb.Request_ProxyHttp{ProxyHttp: &desktoppb.ProxyHttpRequest{
+					Method: http.MethodGet, Path: "/ok", RequestId: fmt.Sprintf("admit-%d", i),
+				}},
 			}},
 		}))
 	}

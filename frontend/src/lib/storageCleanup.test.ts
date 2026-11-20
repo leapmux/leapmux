@@ -19,10 +19,12 @@ import {
   SESSION_KEY_SPECS,
   sessionStorageSet,
   setStorageAccountForTests,
+  storageAccountFor,
   storedKeyFor,
+  TEST_HUB,
 } from '~/lib/browserStorage'
 import { enqueueKvPut, readKvRow } from '~/lib/browserStorageDb'
-import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { TEST_ACCOUNT, TEST_USER_ID } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 
 // The sweep works over IndexedDB now, so it needs a database to sweep.
@@ -46,8 +48,9 @@ const YEAR_MS = 365 * DAY_MS
  */
 const IDLE_FALLBACK_MS = 1
 
-const ACCOUNT = TEST_USER_ID
-const OTHER = 'otheraccount'
+const ACCOUNT = TEST_ACCOUNT
+const OTHER_USER = 'otheraccount'
+const OTHER = storageAccountFor(TEST_HUB, OTHER_USER)
 
 /** A fresh `{v,e}` envelope, written straight to the store under a stored key. */
 function writeFresh(storage: Storage, stored: string, ttlMs = 7 * DAY_MS): void {
@@ -100,7 +103,7 @@ describe('storageCleanup', () => {
   afterEach(() => {
     sessionStorage.clear()
     vi.useRealTimers()
-    setStorageAccountForTests(ACCOUNT)
+    setStorageAccountForTests(TEST_USER_ID)
   })
 
   describe('getTtlForKey', () => {
@@ -271,31 +274,31 @@ describe('storageCleanup', () => {
     // second account on a browser would be reset by the first one opening the
     // app.
     it('preserves a fresh key belonging to a DIFFERENT account', async () => {
-      setStorageAccountForTests(OTHER)
+      setStorageAccountForTests(OTHER_USER)
       localStorageSet('browser-prefs', { diffView: 'split' })
       await flushStorageWrites()
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
 
       await runCleanup()
 
-      setStorageAccountForTests(OTHER)
+      setStorageAccountForTests(OTHER_USER)
       expect(localStorageGet('browser-prefs')).toEqual({ diffView: 'split' })
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
     })
 
     // Kept, but not exempt: an account nobody signs into still ages out.
     it('deletes an EXPIRED row belonging to a different account', async () => {
-      setStorageAccountForTests(OTHER)
+      setStorageAccountForTests(OTHER_USER)
       localStorageSet('browser-prefs', { diffView: 'split' })
       await flushStorageWrites()
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
 
       vi.advanceTimersByTime(YEAR_MS + 1)
       await runCleanup()
 
-      setStorageAccountForTests(OTHER)
+      setStorageAccountForTests(OTHER_USER)
       expect(localStorageGet('browser-prefs')).toBeUndefined()
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
     })
 
     // Unregistered, or registered under a scope the key does not carry: both
@@ -357,7 +360,7 @@ describe('storageCleanup', () => {
       await expect(runCleanup()).resolves.toBeUndefined()
 
       expect(await readKvRow('leapmux:channel-relay-seq')).toBeDefined()
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
     })
 
     // Regression: every per-feature `leapmux:`-prefixed sessionStorage key must
@@ -579,7 +582,7 @@ describe('storageCleanup', () => {
   describe('the device-scoped relay marks', () => {
     it('stores with no account segment, so every account shares one sequence', async () => {
       localStorageSet(KEY_CHANNEL_RELAY_SEQ, 1)
-      setStorageAccountForTests(OTHER)
+      setStorageAccountForTests(OTHER_USER)
       expect(storedKeyFor(KEY_CHANNEL_RELAY_SEQ)).toBe('leapmux:channel-relay-seq')
       // The other account reads the SAME mark, which is the whole point of the
       // device scope: one sidecar, one sequence.

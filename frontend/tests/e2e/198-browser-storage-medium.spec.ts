@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { accountStorageKey, KEY_BROWSER_PREFS, KEY_CLIENT_ID } from '../../src/lib/browserStorage'
+import { accountStorageKey, KEY_BROWSER_PREFS, KEY_CLIENT_ID, storageAccountFor } from '../../src/lib/browserStorage'
 import { test } from './fixtures'
 import { overrideThemeOnThisDevice } from './helpers/preferences'
 import { databaseStores, readEntry, webStorageKeys } from './helpers/storage'
@@ -35,7 +35,8 @@ test.describe('browser storage medium', () => {
     // A device-tier write, so there is certainly a row to find.
     await overrideThemeOnThisDevice(page, 'nord')
 
-    const prefsKey = accountStorageKey(leapmuxServer.adminUserId, KEY_BROWSER_PREFS)
+    const adminAccount = storageAccountFor(new URL(leapmuxServer.hubUrl).origin, leapmuxServer.adminUserId)
+    const prefsKey = accountStorageKey(adminAccount, KEY_BROWSER_PREFS)
     // POLLED: writes go behind, so the row reaches disk a moment after the UI
     // settles.
     await expect.poll(
@@ -61,7 +62,7 @@ test.describe('browser storage medium', () => {
     expect(
       sessionKeys,
       'the CRDT client identity must still be a per-tab sessionStorage key',
-    ).toContain(accountStorageKey(leapmuxServer.adminUserId, KEY_CLIENT_ID))
+    ).toContain(accountStorageKey(adminAccount, KEY_CLIENT_ID))
     // And it is still SCOPED: nothing of the app's own sits at a flat name.
     expect(sessionKeys.filter(key => key.startsWith('leapmux:'))).not.toEqual([])
 

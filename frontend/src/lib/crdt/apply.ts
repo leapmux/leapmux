@@ -25,6 +25,11 @@ import { opHasIdentity, selectsNoRegister } from './ops'
  * Workspaces map is initialized empty; the lifecycle create/delete paths add
  * and remove entries via CreateWorkspaceOp / TombstoneWorkspaceOp in the
  * op log (the same serialized pipeline every other op flows through).
+ *
+ * `userId` is the RAW Hub user id -- the domain `UserCrdtState.userId` keeps
+ * from `bootstrap` onward. Never a composed storage account (`hub/user`), which
+ * `~/lib/browserStorage` keys storage by and which nothing here may compare
+ * `state.userId` against.
  */
 export function newState(userId: string): UserCrdtState {
   return create(UserCrdtStateSchema, {

@@ -16,9 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/servicelaunch"
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 func TestStartupFailureKeepsReasonWhenLogCannotBeRead(t *testing.T) {

@@ -74,8 +74,9 @@ func setupAdminWorkerTestWith(t *testing.T, presence *fakeWorkerPresence) *admin
 		IsAdmin:               true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
+	// Every AdminWorkerService procedure now needs the elevation window.
+	hubtestutil.ElevateSession(t, st, hubtestutil.SessionIDFromCookie(t, session.Token), admin.ID)
 
 	mux := http.NewServeMux()
 	// A real effects value over a real delegation-scope cache. The notifier
@@ -97,7 +98,7 @@ func setupAdminWorkerTestWith(t *testing.T, presence *fakeWorkerPresence) *admin
 	return &adminWorkerEnv{
 		client:   leapmuxv1connect.NewAdminWorkerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:       st,
-		token:    session,
+		token:    session.Token,
 		userID:   admin.ID,
 		presence: presence,
 	}
@@ -267,6 +268,8 @@ func TestAdminWorkerService_ListRegistrationKeysPagesThroughEveryKey(t *testing.
 func TestAdminWorkerService_ListRegistrationKeysCarriesNoKey(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword)
+	// The AdminWorkerService listing below now needs the elevation window.
+	hubtestutil.ElevateSession(t, env.store, hubtestutil.SessionIDFromCookie(t, token), env.adminID(t))
 	key, err := env.mgmtClient.CreateRegistrationKey(authedReq(t.Context(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
 	mux := http.NewServeMux()

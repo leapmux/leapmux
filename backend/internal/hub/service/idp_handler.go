@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -383,6 +385,9 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 	nonce := id.Generate()
 
 	redirectURI := sanitizeRedirectURI(r.URL.Query().Get("redirect"))
+	if purpose == store.OAuthStatePurposeLogin && isConsentRoute(redirectURI) {
+		purpose = store.OAuthStatePurposeConsentLogin
+	}
 
 	if err := h.store.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
 		State:        state,
@@ -407,7 +412,8 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 		// Without this the provider silently reuses its own session, the
 		// browser returns in a fraction of a second, and the "step-up" proved
 		// nothing.
-		ForceReauthentication: purpose == store.OAuthStatePurposeReauth,
+		ForceReauthentication: purpose == store.OAuthStatePurposeReauth ||
+			purpose == store.OAuthStatePurposeConsentLogin,
 	})
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -568,14 +574,14 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 	// The login leg is the one that creates, so it must never be the branch a
 	// value reaches by not matching something else -- and the Go zero value,
 	// UNSPECIFIED, is exactly such a value. oauth_states.purpose carries
-	// CHECK (purpose BETWEEN 1 AND 2) in all three dialects, so a row cannot
+	// CHECK (purpose BETWEEN 1 AND 3) in all three dialects, so a row cannot
 	// hold anything else; this branch keeps the two statements of the rule in
 	// agreement rather than trusting one of them alone.
 	switch oauthState.Purpose {
 	case store.OAuthStatePurposeReauth:
 		h.completeOAuthReauth(w, r, oauthState, link, err)
 		return
-	case store.OAuthStatePurposeLogin:
+	case store.OAuthStatePurposeLogin, store.OAuthStatePurposeConsentLogin:
 		// The rest of this function is the login leg.
 	default:
 		slog.Error("oauth: state row carries an unknown purpose",
@@ -611,7 +617,8 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 			return
 		}
 
-		h.loginOAuthUser(w, r, user.ID, providerID, tokenSet, oauthState.RedirectURI)
+		h.loginOAuthUser(w, r, user.ID, providerID, claims.Subject, "", tokenSet,
+			oauthState.RedirectURI, oauthState.Purpose)
 		return
 	}
 	if !errors.Is(err, store.ErrNotFound) {
@@ -636,25 +643,8 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 			return
 		}
 		if emailErr == nil && existingUser.EmailVerified {
-			linkUID, mintOK := userid.New(existingUser.ID)
-			if !mintOK {
-				slog.Error("oauth: matched user row has a blank id")
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-			if err := h.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
-				UserID:          linkUID,
-				ProviderID:      providerID,
-				ProviderSubject: claims.Subject,
-			}); err != nil {
-				slog.Error("oauth: create user link for auto-link", "error", err)
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-
-			slog.Info("oauth: auto-linked provider to existing account by verified email",
-				"user_id", existingUser.ID, "provider_id", providerID, "email", claims.Email)
-			h.loginOAuthUser(w, r, existingUser.ID, providerID, tokenSet, oauthState.RedirectURI)
+			h.loginOAuthUser(w, r, existingUser.ID, providerID, claims.Subject, claims.Email,
+				tokenSet, oauthState.RedirectURI, oauthState.Purpose)
 			return
 		}
 	}
@@ -770,6 +760,10 @@ func (h *IdPHandler) completeOAuthReauth(
 			http.Error(w, "your session ended during the verification; sign in again", http.StatusUnauthorized)
 			return
 		}
+		if errors.Is(err, errElevationAppNotAllowed) {
+			http.Error(w, errElevationAppNotAllowed.Error(), http.StatusForbidden)
+			return
+		}
 		slog.Error("oauth: record session elevation", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -777,15 +771,9 @@ func (h *IdPHandler) completeOAuthReauth(
 	h.redirectBack(w, r, oauthState.RedirectURI)
 }
 
-// redirectBack sends the browser to the address the flow recorded, or home
-// when it recorded none. The value passed through sanitizeRedirectURI when
-// beginOAuthFlow minted the state row, so it needs no second guard here.
+// redirectBack sends the browser to the effective same-origin destination.
 func (h *IdPHandler) redirectBack(w http.ResponseWriter, r *http.Request, redirectURI string) {
-	redirectTo := "/"
-	if redirectURI != "" {
-		redirectTo = redirectURI
-	}
-	http.Redirect(w, r, redirectTo, http.StatusFound)
+	http.Redirect(w, r, idpRedirectLocation(redirectURI), http.StatusFound)
 }
 
 // secureCookies reports whether this hub writes __Host- prefixed cookies.
@@ -793,14 +781,76 @@ func (h *IdPHandler) secureCookies(ctx context.Context) bool {
 	return settings.SecureCookiesFor(ctx, h.set.Snapshot(ctx))
 }
 
+// createOAuthLoginSession can grant a sign-in window when the consent
+// redirect forced a fresh authentication and the account holds only a
+// provider factor. The user-auth lock serializes the factor reads and the
+// session insert with password and passkey changes.
+func (h *IdPHandler) createOAuthLoginSession(
+	ctx context.Context,
+	userID userid.UserID,
+	providerID, providerSubject, autoLinkEmail string,
+	purpose leapmuxv1.OAuthStatePurpose,
+	options auth.SessionCreationOptions,
+) (auth.CreatedSession, error) {
+	var session auth.CreatedSession
+	if err := h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		user, err := tx.Users().GetByID(ctx, userID.String())
+		if err != nil {
+			return fmt.Errorf("load account for provider sign-in proof: %w", err)
+		}
+		link, err := tx.OAuthUserLinks().Get(ctx, store.GetOAuthUserLinkParams{
+			ProviderID:      providerID,
+			ProviderSubject: providerSubject,
+		})
+		if errors.Is(err, store.ErrNotFound) && autoLinkEmail != "" {
+			if !user.EmailVerified || !strings.EqualFold(user.Email, autoLinkEmail) {
+				return errElevationProofChanged
+			}
+			if err := tx.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+				UserID:          userID,
+				ProviderID:      providerID,
+				ProviderSubject: providerSubject,
+			}); err != nil {
+				return fmt.Errorf("create user link for auto-link: %w", err)
+			}
+			link = &store.OAuthUserLink{UserID: userID.String(), ProviderID: providerID, ProviderSubject: providerSubject}
+			err = nil
+		}
+		if err != nil {
+			return err
+		}
+		if link.UserID != user.ID {
+			return errElevationProofChanged
+		}
+		options.Proof = auth.SignInProvedNoFactor
+		if purpose == store.OAuthStatePurposeConsentLogin {
+			providerOnly, err := accountElevatesOnlyThroughAProvider(ctx, tx, user)
+			if err != nil {
+				return fmt.Errorf("check account factors for provider sign-in proof: %w", err)
+			}
+			if providerOnly {
+				options.Proof = auth.SignInProvedFactor
+			}
+		}
+		session, err = auth.CreateSession(ctx, tx, h.sessionHasher, userID, options)
+		return err
+	}); err != nil {
+		return auth.CreatedSession{}, err
+	}
+	return session, nil
+}
+
 // loginOAuthUser stores tokens, creates a session, and redirects the user.
 // Both the existing-link and auto-link-by-email paths call it.
-func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, userID, providerID string, tokenSet *huboauth.TokenSet, redirectURI string) {
+func (h *IdPHandler) loginOAuthUser(
+	w http.ResponseWriter,
+	r *http.Request,
+	userID, providerID, providerSubject, autoLinkEmail string,
+	tokenSet *huboauth.TokenSet,
+	redirectURI string,
+	purpose leapmuxv1.OAuthStatePurpose,
+) {
 	ctx := r.Context()
-
-	if err := h.storeTokens(ctx, userID, providerID, tokenSet); err != nil {
-		slog.Error("oauth: store tokens", "error", err)
-	}
 
 	loginUID, mintOK := userid.New(userID)
 	if !mintOK {
@@ -808,13 +858,23 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	session, sessionErr := auth.CreateSession(ctx, h.store, h.sessionHasher, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
-		UserAgent: r.UserAgent(),
-	})
+	session, sessionErr := h.createOAuthLoginSession(ctx, loginUID,
+		providerID, providerSubject, autoLinkEmail, purpose,
+		auth.SessionCreationOptions{
+			Lifetime:  settings.SessionDuration(h.set.Snapshot(ctx)),
+			UserAgent: r.UserAgent(),
+		})
 	if sessionErr != nil {
 		slog.Error("oauth: create session", "error", sessionErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	if autoLinkEmail != "" {
+		slog.Info("oauth: auto-linked provider to existing account by verified email",
+			"user_id", userID, "provider_id", providerID, "email", autoLinkEmail)
+	}
+	if err := h.storeTokens(ctx, userID, providerID, tokenSet); err != nil {
+		slog.Error("oauth: store tokens", "error", err)
 	}
 
 	secure := h.secureCookies(ctx)
@@ -857,6 +917,34 @@ func sanitizeRedirectURI(uri string) string {
 		}
 	}
 	return uri
+}
+
+// idpRedirectLocation computes the callback's Location for the redirect sender
+// and the consent route classifier. For a parseable local address, http.Redirect
+// cleans the raw prefix before the first question mark and preserves its trailing
+// slash. The prefix can contain a fragment, and cleaning can change the path
+// before it. Escaped path segments retain their original spelling.
+func idpRedirectLocation(uri string) string {
+	uri = sanitizeRedirectURI(uri)
+	if uri == "" {
+		return "/"
+	}
+	if _, err := url.Parse(uri); err != nil {
+		// http.Redirect sends an unparseable address without cleaning it.
+		return uri
+	}
+	prefix, query, hasQuery := strings.Cut(uri, "?")
+	location := path.Clean(prefix)
+	if location != "/" && strings.HasSuffix(prefix, "/") {
+		location += "/"
+	}
+	if hasQuery {
+		location += "?" + query
+	}
+	if location = sanitizeRedirectURI(location); location == "" {
+		return "/"
+	}
+	return location
 }
 
 // tokenExpiryTime is the provider token's deadline, or a default measured

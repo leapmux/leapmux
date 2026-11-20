@@ -313,7 +313,8 @@ func TestRun_DeletesAPITokensPastBothDeadlines(t *testing.T) {
 	seed := func(name string, expiresAt, refreshExpiresAt *time.Time) string {
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: owner, ClientID: oauthapp.ControlCLIClientID, InstallationName: name, GrantedScopes: authscope.NonAdminGrant().String(),
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: owner, ClientID: oauthapp.ControlCLIClientID, InstallationName: name, GrantedScopes: authscope.NonAdminGrant().String(),
 			SecretHash: []byte("s-" + tokenID), RefreshHash: []byte("r-" + tokenID),
 			ExpiresAt: expiresAt, RefreshExpiresAt: refreshExpiresAt,
 		}))

@@ -14,6 +14,7 @@ import { PillGroup } from '~/components/common/PillGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useAuth } from '~/context/AuthContext'
 import { useCopyButton } from '~/hooks/useCopyButton'
+import { hubOrigin } from '~/lib/hubSite'
 import { getWorkerHubUrl, isEmailEnabled, isSoloMode } from '~/lib/systemInfo'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './RegisterWorkerDialog.css'
@@ -51,9 +52,9 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
     if (!k)
       return null
     // Prefer the URL the hub advertises (unix:/npipe: in desktop's
-    // local-only mode); fall back to the browser origin everywhere else
-    // since that already reflects any reverse-proxy hostname.
-    const hubUrl = getWorkerHubUrl() || window.location.origin
+    // local-only mode); fall back to the hub origin, which reflects the
+    // connected Hub in remote mode and the page origin otherwise.
+    const hubUrl = getWorkerHubUrl() || hubOrigin()
     return workerRegistrationCommands({
       hubUrl,
       registrationKey: k,

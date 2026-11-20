@@ -45,7 +45,7 @@ See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/ad
 
 ## Can the Hub read my code, chats, or terminal output?
 
-A Hub that only observes cannot read that content: Frontend-to-Worker traffic is end-to-end encrypted. The Hub is trusted for identity and code. A Hub that acts can open its own channel as you or serve modified Frontend code.
+A Hub that only observes cannot read that content: Frontend-to-Worker traffic is end-to-end encrypted. The Hub is trusted for identity; a browser also trusts it for code. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser — the desktop app runs its bundled Frontend, so no Hub can serve it code.
 
 The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay.
 
@@ -118,12 +118,12 @@ See [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
 ## What's the difference between the browser and the desktop app?
 
-They are the same SolidJS Frontend. The difference is packaging:
+They run the same SolidJS Frontend. The difference is packaging, and where the code comes from:
 
-- **Browser** — open `http://<host>:4327` against a running Hub, dev, or solo instance.
-- **Desktop app** — a native Tauri app with the Frontend in an embedded WebView. It can run solo mode entirely on your machine (listening only on a local socket, no TCP port) or connect to a remote Hub.
+- **Browser** — open `http://<host>:4327` against a running Hub, dev, or solo instance. The Hub serves the Frontend, so you trust the Hub for that code.
+- **Desktop app** — a native Tauri app that always runs its bundled Frontend in an embedded WebView. It can run solo mode entirely on your machine (listening only on a local socket, no TCP port) or connect to a remote Hub through its local service. A Hub cannot serve it code.
 
-The same end-to-end encryption applies either way. In remote-Hub mode, the desktop app loads its Frontend from the Hub. As in a browser, you trust the Hub for that code. Pick the desktop app for a self-contained local setup; use the browser when connecting to a shared Hub.
+The same end-to-end encryption applies either way. Pick the desktop app for a self-contained local setup; use the browser when connecting to a shared Hub.
 
 See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
 

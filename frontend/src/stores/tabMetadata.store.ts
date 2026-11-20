@@ -2,10 +2,11 @@ import type { FileDiffBase, FileOpenSource, FileViewMode } from './tab.types'
 import type { AgentProvider, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { StorageAccount } from '~/lib/browserStorage'
 import type { TabPayloadView } from '~/lib/tabPayload'
 import { batch, createEffect, createMemo, getOwner, onCleanup } from 'solid-js'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
-import { KEY_TAB_MRU, onStorageAccountChange, sessionStorageGet, sessionStorageSet, storageAccountId } from '~/lib/browserStorage'
+import { KEY_TAB_MRU, onStorageAccountChange, sessionStorageGet, sessionStorageSet, storageAccountId, storageAccountUserId } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { assignDefined } from '~/lib/jsonPick'
 import { sameKeys } from '~/lib/sameKeys'
@@ -428,7 +429,7 @@ export function createTabMetadataStore() {
   )
   let persistMru = createMruPersister(JSON.stringify(mruSnapshot(seedByTabId)))
 
-  const [state, setState] = createStore<{ userId: string | null, accountGeneration: number, byTabId: Record<string, TabMetadata> }>({
+  const [state, setState] = createStore<{ userId: StorageAccount | null, accountGeneration: number, byTabId: Record<string, TabMetadata> }>({
     userId: storageAccountId(),
     accountGeneration: 0,
     byTabId: seedByTabId,
@@ -720,10 +721,14 @@ export function useMetadataSweep(
   metadata: TabMetadataStore,
   onRetire?: (tabIds: ReadonlySet<string>) => void,
 ): void {
+  // The CRDT state identifies its tenant in RAW Hub user ids; the store tracks the
+  // composed STORAGE account its rows live under. The memo compares the two in
+  // one domain -- the user id the store's account identifies -- because "this state
+  // is these rows' account" can never hold between a raw id and an account.
   const liveTabIdSet = createMemo<{ userId: string, live: Set<string> } | null>(
     () => {
       const state = crdtState()
-      return state && state.userId === metadata.state.userId
+      return state && state.userId === storageAccountUserId(metadata.state.userId)
         ? {
             userId: state.userId,
             live: liveTabIds(state),

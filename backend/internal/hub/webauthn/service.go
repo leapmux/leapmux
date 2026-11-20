@@ -132,10 +132,9 @@ func (s *Service) BeginLogin(ctx context.Context, userID, origin string) (sessio
 }
 
 // FinishLogin validates a passkey assertion and returns the authenticated
-// user, derived from the ceremony session.
-func (s *Service) FinishLogin(ctx context.Context, sessionID, credentialJSON string) (*store.User, error) {
-	user, _, err := s.validateAssertion(ctx, sessionID, KindLogin, "", credentialJSON)
-	return user, err
+// user plus the exact stored credential that proved it.
+func (s *Service) FinishLogin(ctx context.Context, sessionID, credentialJSON string) (*store.User, VerifiedCredentialIdentity, error) {
+	return s.validateAssertion(ctx, sessionID, KindLogin, "", credentialJSON)
 }
 
 // beginAssertion runs the shared begin flow for login and elevation: refuse

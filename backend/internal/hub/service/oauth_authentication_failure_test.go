@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,12 +14,15 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/verifycode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -287,4 +291,195 @@ func TestOAuthAppStepUpKeepsCredentialRefusalsAndMethodCheck(t *testing.T) {
 			assert.Zero(t, faults.grantWrites.Load())
 		})
 	}
+}
+
+// A credential issued through a browser on its own computer must verify
+// through that browser, not through the device ceremony.
+func TestOAuthAppStepUp_BrowserIssuedCredentialRefused(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+
+	// Real authorization-code exchange: the bearer of the minted token.
+	code, verifier := issueLocalRedirectCode(t, env)
+	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {oauthapp.ControlCLIClientID},
+		"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+		"code":          {code},
+		"code_verifier": {verifier},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var tokens map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&tokens))
+	bearer, _ := tokens["access_token"].(string)
+	require.NotEmpty(t, bearer)
+
+	faults := &oauthAuthenticationFaults{}
+	server := oauthAuthenticationServer(t, env, faults)
+	stepUpResp := startStepUpAt(t, server, bearer, "browser-issued")
+	assert.Equal(t, http.StatusBadRequest, stepUpResp.StatusCode)
+	assert.JSONEq(t, `{"error":"browser_step_up_required","error_description":"this credential was issued through a browser on its own computer; verify it through that browser"}`, bodyOf(t, stepUpResp))
+	assert.Zero(t, faults.grantWrites.Load(), "a refusal must create no pending grant")
+}
+
+// A credential from a device-code exchange or IssueAPIToken can start the
+// device ceremony.
+func TestOAuthAppStepUp_OtherIssuancesAllowed(t *testing.T) {
+	t.Parallel()
+
+	checkGrant := func(t *testing.T, st store.Store, validator *auth.TokenValidator, bearer string, resp *http.Response) {
+		t.Helper()
+		grant := decodeStepUpGrant(t, resp)
+		row, err := st.DeviceAuthorizations().Get(t.Context(), validator.HashSecret(grant.DeviceCode))
+		require.NoError(t, err, "the response's device code must locate the pending grant")
+		assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State)
+		assert.Equal(t, verifycode.Format(row.UserCode), grant.UserCode)
+		user, err := validator.ValidateBearer(t.Context(), bearer)
+		require.NoError(t, err)
+		assert.Equal(t, user.Credential.APITokenID(), row.ElevateTokenID)
+	}
+
+	t.Run("device exchange", func(t *testing.T) {
+		t.Parallel()
+		env := setupAPIAuth(t)
+		deviceCode, userCode := startDeviceAuthorization(t, env, url.Values{"installation_name": {"device-issued"}})
+		approve := postConsentForm(t, env.server.URL+"/oauth/device", url.Values{
+			"user_code": {userCode}, "decision": {"allow"},
+		}, env.elevatedAdminCookie(t))
+		require.Equal(t, http.StatusOK, approve.StatusCode)
+
+		resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+			"grant_type":  {service.GrantTypeDeviceCode},
+			"client_id":   {oauthapp.ControlCLIClientID},
+			"device_code": {deviceCode},
+		})
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var token struct {
+			AccessToken string `json:"access_token"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&token))
+		require.NotEmpty(t, token.AccessToken)
+
+		stepUp := startStepUp(t, env, token.AccessToken, "device-issued")
+		checkGrant(t, env.store, env.validator, token.AccessToken, stepUp)
+	})
+
+	t.Run("admin RPC", func(t *testing.T) {
+		t.Parallel()
+		admin := setupAdminUserTest(t)
+		issued, err := admin.client.IssueAPIToken(authedReq(t.Context(), &leapmuxv1.IssueAPITokenRequest{
+			User:             service.SelectUserByID(admin.adminID),
+			InstallationName: "admin-issued",
+		}, admin.token))
+		require.NoError(t, err)
+		require.NotEmpty(t, issued.GetAccessToken())
+
+		mux := http.NewServeMux()
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+		newOAuthServerHandler(service.OAuthServerDeps{
+			Store: admin.st, Validator: admin.validator, SessionHasher: hubtestutil.TestSecretHasher(),
+			Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+			HubURL:    func() string { return server.URL },
+		}).RegisterRoutes(mux)
+
+		stepUp := startStepUpAt(t, server, issued.GetAccessToken(), "admin-issued")
+		checkGrant(t, admin.st, admin.validator, issued.GetAccessToken(), stepUp)
+	})
+}
+
+// redeemStepUpCodeAt presents one step-up code to a chosen server, so a test
+// can drive the failing store and then the working one over the same code.
+func redeemStepUpCodeAt(t *testing.T, server *httptest.Server, clientID, code, verifier string, cookie *http.Cookie) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		server.URL+"/oauth/token",
+		strings.NewReader(url.Values{
+			"grant_type":    {"authorization_code"},
+			"client_id":     {clientID},
+			"redirect_uri":  {"/"},
+			"code":          {code},
+			"code_verifier": {verifier},
+		}.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	resp, err := server.Client().Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// A redemption whose credential the Hub cannot read answers 500, not a
+// credential refusal: the caller did nothing wrong and must not be told the
+// code is spent. The exchange consumes the code only inside the transaction
+// that follows authentication, so the same code must redeem once the store
+// reads again.
+func TestStepUpCodeExchange_AFailingCredentialReadAnswersInternalErrorAndKeepsTheCode(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	cookie := env.adminCookie(t)
+	sessionID := hubtestutil.SessionIDFromCookie(t, cookie.Value)
+	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID, store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID})
+
+	faults := &oauthAuthenticationFaults{sessionErr: errors.New("sensitive credential read failure")}
+	failing := oauthAuthenticationServer(t, env, faults)
+	refused := redeemStepUpCodeAt(t, failing, oauthapp.DesktopClientID, code, verifier, cookie)
+	assert.Equal(t, http.StatusInternalServerError, refused.StatusCode,
+		"a credential the Hub cannot read is a Hub failure, not a refusal of the code")
+	assert.NotContains(t, readBody(t, refused), "sensitive credential read failure")
+
+	working := oauthAuthenticationServer(t, env, &oauthAuthenticationFaults{})
+	redeemed := redeemStepUpCodeAt(t, working, oauthapp.DesktopClientID, code, verifier, cookie)
+	require.Equal(t, http.StatusOK, redeemed.StatusCode,
+		"the failed read must leave the code redeemable")
+	assert.Equal(t, true, decodeJSONBody(t, redeemed)["elevated"])
+
+	row, err := env.store.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	require.NoError(t, err)
+	assert.NotNil(t, row.ElevationExpiresAt, "the working store's redemption stamps the window")
+}
+
+// The token rung of the same exchange: a step-up code that identifies a
+// command-line credential redeems with THAT credential's bearer, and the
+// window lands on the credential's own row.
+func TestStepUpCodeExchange_ATokenCodeRedeemsWithItsBearer(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	tokenID, bearer := cliCredential(t, env, "operator-laptop")
+	code, verifier := seedStepUpCode(t, env, oauthapp.ControlCLIClientID, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: tokenID})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		env.server.URL+"/oauth/token",
+		strings.NewReader(url.Values{
+			"grant_type":    {"authorization_code"},
+			"client_id":     {oauthapp.ControlCLIClientID},
+			"redirect_uri":  {"/"},
+			"code":          {code},
+			"code_verifier": {verifier},
+		}.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	resp, err := env.server.Client().Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.Equal(t, http.StatusOK, resp.StatusCode, "the bearer that the code identifies redeems it")
+	assert.Equal(t, true, decodeJSONBody(t, resp)["elevated"])
+
+	row, err := env.store.APITokens().GetByID(ctx, tokenID)
+	require.NoError(t, err)
+	assert.NotNil(t, row.ElevationProvenAt, "the token is elevated")
+	assert.NotNil(t, row.ElevationExpiresAt)
 }

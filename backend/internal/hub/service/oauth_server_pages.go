@@ -190,7 +190,10 @@ const pageChrome = `<!doctype html><html><head>
 </main>
 </body></html>`
 
-// consentPageTmpl is the authorization-code consent form.
+// consentPageTmpl is the authorization-code consent form, in the three
+// variants of the consent screen: the permission consent, the sign-in of an
+// app whose authorization mints a Hub session, and the step-up that verifies a
+// credential the account ALREADY holds.
 //
 // Three deliberate choices in the markup, and each one is a defence:
 //
@@ -198,23 +201,41 @@ const pageChrome = `<!doctype html><html><head>
 //     verdict ("Authorize an unverified app?") and the chosen name appears
 //     afterwards, inside a paragraph, in quotation marks -- so an app named
 //     "LeapMux Official Security Check" cannot borrow the heading's authority.
+//     Every variant keeps that rule: the sign-in and step-up headings state
+//     their verdict for an unverified app too.
 //   - DENY COMES FIRST IN DOM ORDER, so it takes the first tab stop. Neither
 //     button is autofocused, so a stray Enter grants nothing.
 //   - THE REDIRECT IS A LABEL, never a URI. See redirectLabel.
 //
 // The hidden fields carry the whole request back to handleConsent, which
-// re-validates every one of them: the form is attacker-writable, and having
-// rendered a page makes nothing that comes back trustworthy.
-var consentPageTmpl = mustParsePage("consent", `{{define "pageClass"}} wide{{end}}{{define "body"}}
-{{if .App.Verified}}<h1>Authorize {{.App.Name}}?</h1>
+// re-validates every one of them -- `step_up` included, so a tampered target
+// is refused at the POST rather than trusted from the page. The form is
+// attacker-writable, and having rendered a page makes nothing that comes back
+// trustworthy.
+var consentPageTmpl = mustParsePage("consent", `{{define "pageClass"}} wide{{end}}{{define "unverifiedAlert"}}<p class="alert">Nobody verified this app on this hub. It says its name is &ldquo;{{.Name}}&rdquo;. Continue only if you started this yourself.</p>{{end}}{{define "body"}}
+{{if .StepUp}}{{if .App.Verified}}<h1>Verify {{.App.Name}}?</h1>
+{{else}}<h1>Verify an unverified app?</h1>
+{{template "unverifiedAlert" .App}}
+{{end}}
+{{template "appIdentity" .App}}
+<p>This lets a sign-in that already exists make sensitive changes for the next two hours. It issues nothing new.</p>
+{{if .StepUp.Name}}<p>The sign-in is <strong>{{.StepUp.Name}}</strong>, added {{.StepUp.Added}} (UTC).</p>
+{{end}}<p>It will return to {{.RedirectLabel}}.</p>
+{{else if .SignIn}}{{if .App.Verified}}<h1>Sign in to {{.App.Name}}?</h1>
+{{else}}<h1>Sign in to an unverified app?</h1>
+{{template "unverifiedAlert" .App}}
+{{end}}
+{{template "appIdentity" .App}}
+<p>It will act as you (<strong>{{.Username}}</strong>) on this Hub, as this browser does. It will return to {{.RedirectLabel}}.</p>
+{{else}}{{if .App.Verified}}<h1>Authorize {{.App.Name}}?</h1>
 {{else}}<h1>Authorize an unverified app?</h1>
-<p class="alert">Nobody verified this app on this hub. It says its name is &ldquo;{{.App.Name}}&rdquo;. Continue only if you started this yourself.</p>
+{{template "unverifiedAlert" .App}}
 {{end}}
 {{template "appIdentity" .App}}
 <p>It asks to use your account (<strong>{{.Username}}</strong>) and will return to {{.RedirectLabel}}.</p>
 {{if .Permissions}}{{template "permissions" .Permissions}}
 {{else}}<p>It asks for no permissions at all, so it would be able to do nothing with your account.</p>
-{{end}}
+{{end}}{{end}}
 <form method="POST" action="/oauth/consent">
   <input type="hidden" name="client_id" value="{{.ClientID}}"/>
   <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}"/>
@@ -224,9 +245,13 @@ var consentPageTmpl = mustParsePage("consent", `{{define "pageClass"}} wide{{end
   <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}"/>
   <input type="hidden" name="scope" value="{{.Scope}}"/>
   <input type="hidden" name="installation_name" value="{{.InstallationName}}"/>
-  <div class="actions">
+  {{if .StepUp}}<input type="hidden" name="step_up" value="{{.StepUpRaw}}"/>
+  {{end}}<div class="actions">
     <button type="submit" name="decision" value="deny" class="btn btn-outline">Deny</button>
-    <button type="submit" name="decision" value="allow" class="btn">Allow</button>
+    {{if .StepUp}}<button type="submit" name="decision" value="allow" class="btn">Verify</button>
+    {{else if .SignIn}}<button type="submit" name="decision" value="allow" class="btn">Sign in</button>
+    {{else}}<button type="submit" name="decision" value="allow" class="btn">Allow</button>
+    {{end}}
   </div>
 </form>
 {{end}}`)
@@ -274,7 +299,7 @@ const permissionsTmpl = `{{define "permissions"}}
 var devicePageTmpl = mustParsePage("device", `{{define "pageClass"}} wide{{end}}{{define "body"}}
 <h1>{{if .Elevating}}Verify an app credential{{else}}Authorize an app{{end}}</h1>
 {{if .Elevating}}<p>This grants an existing app credential the right to make sensitive changes for the next two hours. It issues nothing new.</p>
-{{with .Credential}}<p>The credential is <strong>{{.Name}}</strong>, added {{.Added}} (UTC).{{if .Revoked}} It was revoked, so verifying it grants nothing.{{end}}</p>
+{{with .Credential}}<p>The credential is <strong>{{.Name}}</strong>, added {{.Added}} (UTC).{{if .Revoked}} It was revoked, so verifying it grants nothing.{{end}}{{if .Expired}} It has expired, so verifying it grants nothing.{{end}}</p>
 {{end}}{{else if .App}}{{if not .App.Verified}}<p class="alert">Nobody verified this app on this hub. It says its name is &ldquo;{{.App.Name}}&rdquo;.</p>
 {{end}}{{template "appIdentity" .App}}
 {{if .ConfirmAdmin}}<p class="alert">This code asks for <strong>hub administration</strong>. Authorizing it grants the app administrator authority over this hub. Continue only if you started this request yourself and meant to grant it.</p>
@@ -392,21 +417,40 @@ type consentPageData struct {
 	CodeChallenge    string
 	Scope            string
 	InstallationName string
+	// StepUpRaw is the request's own `step_up` value, carried into the form so
+	// the POST re-validates exactly what the GET validated. Empty when no
+	// step-up is asked.
+	StepUpRaw string
+	// SignIn selects the sign-in variant: an app whose authorization mints a
+	// Hub session rather than an app credential.
+	SignIn bool
+	// StepUp identifies the credential a step-up verifies, from the hub's own
+	// record. It is built at the parse that validated the credential, so the
+	// page shows exactly what was checked. Nil when no step-up is asked.
+	StepUp *deviceCredential
 }
 
 // deviceCredential identifies the credential a step-up grant elevates, from the
 // hub's OWN record of it.
 //
 // The grant's requester-supplied label identifies nothing a person can trust on
-// a page which asks them to re-arm a credential. Every field here comes from the
-// api_tokens row instead: the name the account's connected-app list shows, the
-// date the account added it, and whether the account already revoked it.
+// a page which asks them to re-arm a credential. Every field here comes from
+// the credential's own row instead: the api_tokens row of a command-line
+// credential, or the user_sessions row of a session -- the name the account's
+// list shows, the date the account added it, and whether the account already
+// revoked it.
 type deviceCredential struct {
 	Name  string
 	Added string
 	// Revoked reports a credential the approval will refuse. The page says so,
 	// rather than asking a person to verify something that grants nothing.
+	// Only the activation page renders it: the consent page's parse refuses a
+	// dead credential outright, so it never shows one.
 	Revoked bool
+	// Expired reports a credential past its lifetime. The approval refuses it
+	// too (the elevate step matches only a live row), so the page says so for
+	// the same reason Revoked does.
+	Expired bool
 }
 
 // devicePageData fills devicePageTmpl.

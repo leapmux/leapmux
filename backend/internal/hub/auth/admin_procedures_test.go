@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
@@ -231,17 +233,42 @@ func TestEnforceAdminDeniesByPrefix(t *testing.T) {
 	require.False(t, adminOnlyProcedures(t)[unlisted],
 		"the fixture must not be a declared procedure, or it proves nothing")
 
+	now := time.Now()
 	plain := &UserInfo{IsAdmin: false}
-	admin := &UserInfo{IsAdmin: true}
+	unelevatedAdmin := &UserInfo{IsAdmin: true, Credential: SessionCredential("s-unelevated")}
+	until := now.Add(ElevationWindow)
+	elevatedAdmin := &UserInfo{
+		IsAdmin:    true,
+		Credential: SessionCredential("s-elevated"),
+		Elevation:  NewElevation(&now, &until),
+	}
 
-	err := enforceAdmin(unlisted, plain)
+	err := enforceAdmin(unlisted, plain, now)
 	require.Error(t, err, "an undeclared Admin*Service procedure must still be denied")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	assert.NoError(t, enforceAdmin(unlisted, admin), "an admin passes every admin procedure")
+
+	// Every declared admin procedure, and the unlisted fixture, refuses an
+	// administrator without a current window with the sentinel and admits one
+	// with a current window. The sentinel is what keys the step-up marker on
+	// the refusal, so a per-procedure bypass of the elevation check and a
+	// refusal that keeps only the Connect code both fail here.
+	checked := adminOnlyProcedures(t)
+	delete(checked, leapmuxv1connect.AdminUserServiceUpdateUserProcedure)
+	checked[unlisted] = true
+	for procedure := range checked {
+		err := enforceAdmin(procedure, unelevatedAdmin, now)
+		require.Errorf(t, err, "an administrator without a current window must be refused %s", procedure)
+		assert.Equalf(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
+			"%s must answer FailedPrecondition to an un-elevated administrator", procedure)
+		assert.Truef(t, errors.Is(err, ErrElevationRequired),
+			"%s must wrap ErrElevationRequired for an un-elevated administrator, got %v", procedure, err)
+		assert.NoErrorf(t, enforceAdmin(procedure, elevatedAdmin, now),
+			"an administrator with a current window passes %s", procedure)
+	}
 
 	// A non-admin service keeps passing for everyone.
-	assert.NoError(t, enforceAdmin(leapmuxv1connect.AuthServiceGetCurrentUserProcedure, plain))
+	assert.NoError(t, enforceAdmin(leapmuxv1connect.AuthServiceGetCurrentUserProcedure, plain, now))
 	// And a service whose name merely CONTAINS "Admin" later in the path
 	// is not caught by the prefix.
-	assert.NoError(t, enforceAdmin("/leapmux.v1.WorkspaceService/AdminishThing", plain))
+	assert.NoError(t, enforceAdmin("/leapmux.v1.WorkspaceService/AdminishThing", plain, now))
 }

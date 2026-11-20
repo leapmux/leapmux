@@ -13,6 +13,7 @@ const isDesktopApp = vi.hoisted(() => vi.fn(() => true))
 // for -- a stubbed narrowing would assert the mock's own answer.
 vi.mock('~/api/platformBridge', async importOriginal => ({
   ...(await importOriginal<typeof import('~/api/platformBridge')>()),
+  desktopHub: () => null,
   setDesktopBehavior,
 }))
 vi.mock('~/lib/systemInfo', () => ({

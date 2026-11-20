@@ -1,12 +1,15 @@
 import type { Component } from 'solid-js'
 import type { SearchEntry } from './search'
-import { createMemo, createSignal, For, onMount, Show } from 'solid-js'
+import { timestampDate } from '@bufbuild/protobuf/wkt'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { Dialog } from '~/components/common/Dialog'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useViewportBelow } from '~/hooks/useViewportBelow'
+import { createDeadlineScheduler } from '~/lib/deadlineScheduler'
 import { desktopShellRefusals } from '~/lib/desktopShellStatus'
+import { isAutoAuthenticated } from '~/lib/systemInfo'
 import { createAdminSettingsStore } from '~/stores/adminSettings.store'
 import { breakpoints } from '~/styles/tokens'
 import { NAV_GROUPS } from './navGroups'
@@ -72,6 +75,47 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
    */
   const isAdmin = createMemo(() => auth.user()?.isAdmin === true)
   const adminStore = createAdminSettingsStore(isAdmin)
+  const [adminWindowEnd, setAdminWindowEnd] = createSignal<number>()
+  const adminUnlocked = createMemo(() => adminWindowEnd() !== undefined)
+  const [expiryTick, setExpiryTick] = createSignal(0)
+  const expiry = createDeadlineScheduler(() => setExpiryTick(tick => tick + 1), {
+    now: () => Date.now(),
+    setTimeout: (handler, delay) => setTimeout(handler, delay),
+    clearTimeout: timer => clearTimeout(timer),
+  })
+  createEffect(on([
+    isAdmin,
+    isAutoAuthenticated,
+    auth.elevationExpiresAt,
+    expiryTick,
+  ], ([admin, autoAuthenticated, deadline]) => {
+    // Check the clock in the effect that starts the request. A window that
+    // was current during render may already have expired by this point.
+    const now = Date.now()
+    const reportedEnd = autoAuthenticated
+      ? Infinity
+      : deadline && timestampDate(deadline).getTime()
+    const currentEnd = admin && reportedEnd !== undefined && reportedEnd > now
+      ? reportedEnd
+      : undefined
+    const previousEnd = adminWindowEnd()
+    // A grant can arrive after the previous deadline, before its timer runs.
+    const windowEnded = previousEnd !== undefined && (currentEnd === undefined || previousEnd <= now)
+    if (!admin || windowEnded)
+      adminStore.clear()
+    setAdminWindowEnd(currentEnd)
+
+    if (currentEnd !== undefined && Number.isFinite(currentEnd))
+      expiry.scheduleAt(currentEnd)
+    else
+      expiry.cancel()
+
+    // Unlock can already have an in-flight list request waiting for step-up.
+    // A grant that arrives during that request lets its retry finish the load.
+    if (currentEnd !== undefined && (previousEnd === undefined || windowEnded) && !adminStore.state.loading)
+      void adminStore.load()
+  }))
+  onCleanup(expiry.cancel)
 
   // A MEMO, not a one-time call: an account-backed entry takes its shape
   // from the hub's descriptor, so the row set changes once, when the reply
@@ -94,7 +138,9 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
     if (!isAdmin())
       return []
     return [
-      ...buildProtoRows(adminStore.state.descriptors, adminStore),
+      ...(adminUnlocked()
+        ? buildProtoRows(adminStore.state.descriptors, adminStore)
+        : []),
       ...ADMIN_ROWS,
     ]
   })
@@ -186,9 +232,11 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
     matchSettings(searchIndex(), query(), visibleGroups().map(g => g.id)),
   )
 
+  const handleUnlockAdmin = (): void => {
+    void adminStore.load()
+  }
+
   onMount(() => {
-    if (isAdmin())
-      void adminStore.load()
     // RETRY a failed account load, here, where its rows are about to be
     // rendered. The context loads once at PROVIDER mount, and
     // `usePreferencesForIdentity` covers the one failure that
@@ -229,6 +277,11 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
                 onSelect={props.onCategory}
                 restartGroups={restartGroups}
                 compact={narrow()}
+                onUnlockAdmin={
+                  isAdmin() && !adminUnlocked() && !adminStore.state.loading
+                    ? handleUnlockAdmin
+                    : undefined
+                }
               />
             )}
           </Show>

@@ -73,7 +73,7 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 	// credential, and another browser session.
 	otherBearer := env.bearerFor(t)
 	otherTokenID := tokenIDOf(t, otherBearer)
-	otherSession, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration)
+	otherSession, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	_, err = env.client.ChangePassword(bearerReq(ctx, &leapmuxv1.ChangePasswordRequest{
@@ -83,7 +83,7 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 
 	// The password really changed, so nothing below passes because the
 	// mutation quietly did nothing.
-	_, _, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// THE regression, read from the store where no cache can mask it.
@@ -163,7 +163,7 @@ func TestDeactivatePasskeyAuth_FromAnElevatedSessionKeepsThatSession(t *testing.
 
 	ctx := context.Background()
 	// A passwordless account (setupOAuthUserTest) that holds one passkey: the
-	// account HAS a factor, so requireElevation is the rule, and
+	// account HAS a factor, so auth.RequireElevation is the rule, and
 	// commitPasskeyDeactivation takes the passkey-only path that sets the
 	// replacement password and revokes.
 	env := setupOAuthUserTest(t)

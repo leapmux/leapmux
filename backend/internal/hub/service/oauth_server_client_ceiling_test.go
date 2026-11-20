@@ -39,7 +39,8 @@ func mintAppCredentialWithGrant(t *testing.T, env *apiAuthEnv, clientID, granted
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
 		InstallationName: "laptop", GrantedScopes: granted,
 		SecretHash: env.validator.HashSecret(secret),
 	}))
@@ -191,7 +192,8 @@ func TestClientCeiling_TheRefreshLegMeasuresAgainstWhatTheCredentialReaches(t *t
 	tokenID := id.Generate()
 	refresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
 		InstallationName: "laptop",
 		GrantedScopes:    "workspace:read file:read worker:read",
 		SecretHash:       env.validator.HashSecret(auth.MintAccessSecret()),
@@ -263,7 +265,8 @@ func TestClientCeiling_TheGraceRetryReportsTheReachableGrantToo(t *testing.T) {
 	tokenID := id.Generate()
 	prev := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: clientID,
 		InstallationName: "laptop",
 		GrantedScopes:    "workspace:read file:read worker:read",
 		SecretHash:       env.validator.HashSecret(auth.MintAccessSecret()),

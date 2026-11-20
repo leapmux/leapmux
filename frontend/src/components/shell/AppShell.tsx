@@ -13,6 +13,7 @@ import type { BranchRef } from '~/components/workspace/workspaceTabTree.model'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { LinkConfirmState } from '~/hooks/createLinkConfirm'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
+import type { HubUserId } from '~/lib/browserStorage'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { TabView } from '~/stores/tabView'
@@ -125,7 +126,7 @@ const log = createLogger('shell')
 
 export const AppShell: Component = () => {
   const auth = useAuth()
-  const userId = () => auth.user()?.id ?? ''
+  const userId = (): HubUserId => (auth.user()?.id ?? '') as HubUserId
   const workspace = useWorkspace()
   const preferences = usePreferences()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -163,7 +164,9 @@ export const AppShell: Component = () => {
     effectiveClientId,
     ownClientId,
   } = useCrdtRuntime({
-    userId: () => userId(),
+    storageAccount: auth.storageAccount,
+    onAccountEnd: auth.onAccountEnd,
+    hubUserId: userId,
     getWorkspaceId: () => workspace.activeWorkspaceId() ?? null,
     activeClient,
     // Created/renamed/deleted events on the user WS stream refresh the sidebar
@@ -373,7 +376,7 @@ export const AppShell: Component = () => {
   // off one best-effort fetch per pending tab; see useTabHydrators for
   // the per-type predicates.
   const tabHydrators = useTabHydrators({
-    userId,
+    hubUserId: userId,
     view: tabView,
     metadata: tabMetadata,
     repoGitStore,
@@ -1064,7 +1067,7 @@ export const AppShell: Component = () => {
     // normally lands BEFORE the CRDT bootstrap arrives over the userevents
     // socket, so clearing the flag on that first pass would paint a placeholder
     // tree as a real one — and `DesktopLayout`'s action handlers would emit ops
-    // naming a node the hub has never heard of.
+    // identifying a node the hub has never heard of.
     //
   })
 
@@ -1892,7 +1895,7 @@ export const AppShell: Component = () => {
       <TunnelProvider store={workerSection.tunnelStore}>
         {/*
         Rendered unconditionally. There used to be a "workspace not found" case
-        here, for a URL naming a workspace the user does not own. No URL identifies
+        here, for a URL identifying a workspace the user does not own. No URL identifies
         one any more: the active id is either this user's own click on their own
         sidebar, or a saved id that `resolveActiveWorkspace` has already checked
         against the loaded list — so the dead-end 404 has no way to be reached,

@@ -2,7 +2,7 @@ import type { DescService, MessageInitShape } from '@bufbuild/protobuf'
 import type { ChannelTransport } from '~/lib/channel'
 import { create, getOption } from '@bufbuild/protobuf'
 import { Code } from '@connectrpc/connect'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MLKEM_PUBLIC_KEY_SIZE, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import { host, ServiceHost } from '~/generated/proto/leapmux/v1/access_pb'
 import { WorkerAgentInputService, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -15,6 +15,7 @@ import { WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_privat
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import { WorkerTabService } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import { ChannelError } from '~/lib/channelError'
+import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 // The retry lives inside `callWorker`, which is private — so these drive it
 // through a real client method and control the one seam beneath it.
@@ -47,6 +48,27 @@ vi.mock('~/api/transport', () => ({
   transport: { unary: seams.unary },
   apiLoadingTimeoutMs: () => 30_000,
 }))
+
+// Replace the bridge's relay operations. The real isTauriApp still chooses
+// the transport from the test's Tauri flag.
+const bridgeMocks = vi.hoisted(() => ({
+  openChannelRelay: vi.fn<() => Promise<boolean>>(),
+  closeChannelRelay: vi.fn<() => Promise<void>>(),
+  sendChannelMessage: vi.fn(),
+}))
+
+vi.mock('~/api/platformBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/platformBridge')>()
+  return {
+    ...actual,
+    platformBridge: {
+      ...actual.platformBridge,
+      openChannelRelay: bridgeMocks.openChannelRelay,
+      closeChannelRelay: bridgeMocks.closeChannelRelay,
+      sendChannelMessage: bridgeMocks.sendChannelMessage,
+    },
+  }
+})
 
 function unavailable() {
   return new ChannelError('rpc', 'provider scan did not finish; retry', { code: Code.Unavailable })
@@ -503,4 +525,31 @@ describe('the browser channel transport', () => {
       })
     }
   }
+})
+
+describe('BrowserChannelTransport createWebSocket', () => {
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    bridgeMocks.openChannelRelay.mockReset()
+    bridgeMocks.openChannelRelay.mockResolvedValue(true)
+    bridgeMocks.closeChannelRelay.mockReset()
+    bridgeMocks.closeChannelRelay.mockResolvedValue(undefined)
+    bridgeMocks.sendChannelMessage.mockReset()
+  })
+
+  afterEach(() => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  // The webview cannot dial the Hub's channel WebSocket in the bundled
+  // desktop, so under Tauri a channel socket is the sidecar's relay wrapper.
+  // The scenario is the distributed desktop; the selection itself reads
+  // `isTauriApp()` alone and takes no mode.
+  it('returns a TauriRelayWebSocket under Tauri in distributed mode', async () => {
+    await import('./workerRpc')
+
+    const socket = (seams.channelTransport as ChannelTransport).createWebSocket()
+
+    expect(socket).toBeInstanceOf(TauriRelayWebSocket)
+  })
 })

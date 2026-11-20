@@ -8,6 +8,7 @@ import { VerificationResendControl } from '~/components/common/VerificationResen
 import { useAuth } from '~/context/AuthContext'
 import { KEY_EMAIL_CHANGE_DRAFT, sessionStorageGet, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
 import { elevationPrompting } from '~/lib/elevationPrompt'
+import { ceremoniesRunInBrowser, openHubPage } from '~/lib/hubSite'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { useVerificationResend } from '~/lib/useVerificationResend'
 import { validateEmail } from '~/lib/validate'
@@ -128,11 +129,27 @@ export const AccountEmail: Component = () => {
         Resend is the leg that works: it seeds a pending row from the stored
         address when there is none.
       */}
-      <Show when={auth.user()?.email && !auth.user()?.emailVerified && isEmailEnabled()}>
-        <VerificationResendControl
-          resend={verification}
-          footerExtra={<A href="/verify-email">Enter the code</A>}
-        />
+      <Show
+        when={auth.user()?.email && !auth.user()?.emailVerified && isEmailEnabled()}
+        fallback={undefined}
+      >
+        <Show
+          when={ceremoniesRunInBrowser()}
+          fallback={(
+            <VerificationResendControl
+              resend={verification}
+              footerExtra={<A href="/verify-email">Enter the code</A>}
+            />
+          )}
+        >
+          <div class={warningText}>
+            Verify this address in your browser.
+            {' '}
+            <button type="button" onClick={() => void openHubPage('/verify-email')}>
+              Open in browser
+            </button>
+          </div>
+        </Show>
       </Show>
       <Show when={auth.user()?.pendingEmail}>
         <div class={warningText}>

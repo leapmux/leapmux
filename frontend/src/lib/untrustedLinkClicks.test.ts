@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { interceptUntrustedLinkClicks, UNTRUSTED_LINK_ATTRIBUTE } from './untrustedLinkClicks'
 
 const openExternalUrl = vi.hoisted(() => vi.fn(async (_url: string) => {}))
-vi.mock('~/api/platformBridge', () => ({ openExternalUrl }))
+vi.mock('~/api/platformBridge', () => ({
+  desktopHub: () => null,
+  openExternalUrl,
+}))
 
 describe('interceptUntrustedLinkClicks', () => {
   let root: HTMLElement

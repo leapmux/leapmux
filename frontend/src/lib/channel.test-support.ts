@@ -308,9 +308,9 @@ export class MockWebSocket {
     }
   }
 
-  close(_code?: number, _reason?: string) {
+  close(code = 1000, reason = '') {
     this.readyState = MockWebSocket.CLOSED
-    this.emit('close')
+    this.emit('close', { code, reason, wasClean: true } as CloseEvent)
   }
 
   // -- Test helpers --

@@ -51,6 +51,11 @@ vi.mock('~/lib/systemInfo', () => ({
   isCaptchaEnabled: () => false,
 }))
 
+const mockHubOrigin = vi.fn<() => string>()
+vi.mock('~/lib/hubSite', () => ({
+  hubOrigin: () => mockHubOrigin(),
+}))
+
 // Helpers --------------------------------------------------------------
 
 beforeAll(() => {
@@ -85,6 +90,7 @@ beforeEach(() => {
   mockSoloMode.mockReturnValue(false)
   mockWorkerHubUrl.mockReturnValue('')
   mockEmailEnabled.mockReturnValue(true)
+  mockHubOrigin.mockReturnValue('http://hub.test')
   mockCreate.mockResolvedValue({
     registrationKey: 'KEY-ABC',
     expiresAt: timestampFromDate(new Date(Date.now() + 5 * 60_000)),
@@ -186,6 +192,17 @@ describe('RegisterWorkerDialog', () => {
     })
     const block = await screen.findByTestId('registration-command')
     expect(block.textContent).toContain('leapmux worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'')
+  })
+
+  it('shows the hub origin in the registration command in remote mode', async () => {
+    mockHubOrigin.mockReturnValue('https://hub.example.com')
+    renderDialog()
+
+    await waitFor(() => {
+      expect(mockCreate).toHaveBeenCalledOnce()
+    })
+    const block = await screen.findByTestId('registration-command')
+    expect(block.textContent).toContain('https://hub.example.com')
   })
 
   it('copies the rendered command to the clipboard', async () => {

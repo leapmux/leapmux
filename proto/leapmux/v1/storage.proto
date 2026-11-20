@@ -78,8 +78,9 @@ enum AppRegistrationSource {
 // oauth_states.purpose.
 //
 // The callback branches on this, and the two branches differ in what they are
-// allowed to do, so the column may not carry an unset value: a LOGIN may create
-// a session and link an identity, and a REAUTH must do neither. The CHECK
+// allowed to do, so the column may not carry an unset value: LOGIN and
+// CONSENT_LOGIN may create a session and link an identity, and REAUTH must do
+// neither. The CHECK
 // excludes UNSPECIFIED for that reason -- an insert that forgot the purpose
 // fails rather than defaulting into the branch with more authority.
 enum OAuthStatePurpose {
@@ -89,6 +90,9 @@ enum OAuthStatePurpose {
   // Proves the identity again for a session that is already signed in, to
   // elevate it. Must never create a session or link an identity.
   OAUTH_STATE_PURPOSE_REAUTH = 2;
+  // Starts a sign-in that returns to an OAuth consent route. The provider must
+  // reauthenticate, and a provider-only account may receive a sign-in window.
+  OAUTH_STATE_PURPOSE_CONSENT_LOGIN = 3;
 }
 
 // WebAuthnSessionKind is which ceremony a short-lived WebAuthn session row
@@ -134,6 +138,49 @@ enum DeviceAuthorizationState {
   DEVICE_AUTHORIZATION_STATE_PENDING = 1;
   DEVICE_AUTHORIZATION_STATE_APPROVED = 2;
   DEVICE_AUTHORIZATION_STATE_DENIED = 3;
+}
+
+// ApiTokenIssuance records which ceremony issued an app credential.
+// api_tokens.issuance stores the ordinal. The Hub offers the device-code
+// step-up only to a credential that was issued without a browser.
+enum ApiTokenIssuance {
+  API_TOKEN_ISSUANCE_UNSPECIFIED = 0;
+  // The authorization-code grant: a browser on the credential's own machine.
+  API_TOKEN_ISSUANCE_AUTHORIZATION_CODE = 1;
+  // The RFC 8628 device-code grant: no browser on that machine.
+  API_TOKEN_ISSUANCE_DEVICE_CODE = 2;
+  // AdminUserService.IssueAPIToken: issued out of band.
+  API_TOKEN_ISSUANCE_ADMIN = 3;
+}
+
+// CredentialRefKind is the kind of credential a reference identifies. Numbers
+// oauth_authorization_codes.step_up_kind.
+//
+// The reference is one pair of columns -- a kind and an id -- so a row identifies
+// exactly one credential or none. NULL (this enum's UNSPECIFIED, which no
+// column stores) means no target: the CHECK range starts at 1, and the tie
+// keeps the id empty exactly then.
+enum CredentialRefKind {
+  CREDENTIAL_REF_KIND_UNSPECIFIED = 0;
+  // A user_sessions row.
+  CREDENTIAL_REF_KIND_SESSION = 1;
+  // An api_tokens row.
+  CREDENTIAL_REF_KIND_TOKEN = 2;
+}
+
+// RedemptionKind is what an authorization code redeems into: the fork the
+// consent page decided and the token stage must read from the row rather than
+// re-derive. Numbers oauth_authorization_codes.redemption_kind.
+//
+// NULL means a step-up code, which redeems into an elevation and mints
+// nothing. A tie CHECK makes one code verify XOR redeem, so the column never
+// stores 0 and a forgotten write cannot pass for a token redemption.
+enum RedemptionKind {
+  REDEMPTION_KIND_UNSPECIFIED = 0;
+  // A Hub session, the desktop's browser handoff.
+  REDEMPTION_KIND_SESSION = 1;
+  // An app credential.
+  REDEMPTION_KIND_TOKEN = 2;
 }
 
 // AgentInputQueuePauseOwner records which cause created the pause that still

@@ -4,7 +4,10 @@ import { readTerminalLinkLabel } from './terminalLinkLabel'
 import { activateUntrustedLink, classifyUntrustedLink, linkLabelFromText } from './untrustedLinks'
 
 const openExternalUrl = vi.hoisted(() => vi.fn(async (_url: string) => {}))
-vi.mock('~/api/platformBridge', () => ({ openExternalUrl }))
+vi.mock('~/api/platformBridge', () => ({
+  desktopHub: () => null,
+  openExternalUrl,
+}))
 
 /**
  * The placement of a link whose visible text is exactly `label`, on a row of

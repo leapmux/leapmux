@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
-import { accountStorageKey, KEY_KEY_PINS } from '../../src/lib/browserStorage'
+import { accountStorageKey, KEY_KEY_PINS, storageAccountFor } from '../../src/lib/browserStorage'
 import { test } from './fixtures'
 import { readEntry, writeEntry } from './helpers/storage'
 import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
@@ -10,10 +10,11 @@ import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/u
  *
  * Composed by `browserStorage`'s own builder rather than written out: the
  * layout is that module's to state, and a literal here is what went stale the
- * moment the layout changed.
+ * moment the layout changed. The account is the (hub, user) pair the app
+ * stores under.
  */
-function keyPinsStorageKey(userId: string): string {
-  return accountStorageKey(userId, KEY_KEY_PINS)
+function keyPinsStorageKey(account: string): string {
+  return accountStorageKey(account, KEY_KEY_PINS)
 }
 
 /** One pinned worker key, as the store holds it. */
@@ -23,15 +24,15 @@ interface StoredKeyPin {
 }
 
 /** One worker's key pin, out of the consolidated key-pins map. */
-async function getKeyPin(page: Page, userId: string, workerId: string): Promise<StoredKeyPin | null> {
-  const row = await readEntry(page, keyPinsStorageKey(userId))
+async function getKeyPin(page: Page, account: string, workerId: string): Promise<StoredKeyPin | null> {
+  const row = await readEntry(page, keyPinsStorageKey(account))
   const pins = row?.v as Record<string, StoredKeyPin> | undefined
   return pins?.[workerId] ?? null
 }
 
 /** Replace one pin, preserving the row's expiration. */
-async function replaceKeyPin(page: Page, userId: string, workerId: string, publicKeyHex: string) {
-  const storedKey = keyPinsStorageKey(userId)
+async function replaceKeyPin(page: Page, account: string, workerId: string, publicKeyHex: string) {
+  const storedKey = keyPinsStorageKey(account)
   const row = await readEntry(page, storedKey)
   if (row === null)
     throw new Error('key-pin storage was not initialized')
@@ -47,13 +48,14 @@ test.describe('Key Pinning', () => {
     leapmuxServer,
   }) => {
     const { adminToken, adminUserId, workerId } = leapmuxServer
+    const account = storageAccountFor(new URL(leapmuxServer.hubUrl).origin, adminUserId)
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspace.workspaceId)
 
     // Verify the key was pinned in this account's consolidated key-pins map.
-    await expect.poll(() => getKeyPin(page, adminUserId, workerId)).not.toBeNull()
-    const pin = await getKeyPin(page, adminUserId, workerId)
+    await expect.poll(() => getKeyPin(page, account, workerId)).not.toBeNull()
+    const pin = await getKeyPin(page, account, workerId)
 
     expect(pin).not.toBeNull()
     expect(pin!.publicKeyHex).toBeTruthy()
@@ -74,10 +76,11 @@ test.describe('Key Pinning', () => {
     leapmuxServer,
   }) => {
     const { adminToken, adminUserId, workerId } = leapmuxServer
+    const account = storageAccountFor(new URL(leapmuxServer.hubUrl).origin, adminUserId)
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspace.workspaceId)
-    await expect.poll(() => getKeyPin(page, adminUserId, workerId)).not.toBeNull()
+    await expect.poll(() => getKeyPin(page, account, workerId)).not.toBeNull()
 
     await expect.poll(() => page.workers().some(worker => worker.url().includes('channelSessionWorker'))).toBe(true)
   })
@@ -88,17 +91,18 @@ test.describe('Key Pinning', () => {
     leapmuxServer,
   }) => {
     const { adminToken, adminUserId, workerId } = leapmuxServer
+    const account = storageAccountFor(new URL(leapmuxServer.hubUrl).origin, adminUserId)
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspace.workspaceId)
 
     // Verify key is pinned.
-    await expect.poll(() => getKeyPin(page, adminUserId, workerId)).not.toBeNull()
-    const pin = await getKeyPin(page, adminUserId, workerId)
+    await expect.poll(() => getKeyPin(page, account, workerId)).not.toBeNull()
+    const pin = await getKeyPin(page, account, workerId)
     expect(pin).not.toBeNull()
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await replaceKeyPin(page, adminUserId, workerId, 'aa'.repeat(32))
+    await replaceKeyPin(page, account, workerId, 'aa'.repeat(32))
 
     // Reload the page to destroy the in-memory ChannelManager and force a new channel open.
     await page.reload()
@@ -138,10 +142,10 @@ test.describe('Key Pinning', () => {
     // time after the dialog dismisses and after the workspace shell renders. A
     // single read here saw the tampered key every time.
     await expect
-      .poll(async () => (await getKeyPin(page, adminUserId, workerId))?.publicKeyHex)
+      .poll(async () => (await getKeyPin(page, account, workerId))?.publicKeyHex)
       .not
       .toBe('aa'.repeat(32))
-    const updatedPin = await getKeyPin(page, adminUserId, workerId)
+    const updatedPin = await getKeyPin(page, account, workerId)
     expect(updatedPin).not.toBeNull()
     // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
     expect(updatedPin!.publicKeyHex.length).toBe(3328)
@@ -153,14 +157,15 @@ test.describe('Key Pinning', () => {
     leapmuxServer,
   }) => {
     const { adminToken, adminUserId, workerId } = leapmuxServer
+    const account = storageAccountFor(new URL(leapmuxServer.hubUrl).origin, adminUserId)
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspace.workspaceId)
 
-    await expect.poll(() => getKeyPin(page, adminUserId, workerId)).not.toBeNull()
+    await expect.poll(() => getKeyPin(page, account, workerId)).not.toBeNull()
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await replaceKeyPin(page, adminUserId, workerId, 'bb'.repeat(32))
+    await replaceKeyPin(page, account, workerId, 'bb'.repeat(32))
 
     // Reload to trigger new channel open.
     await page.reload()
@@ -181,7 +186,7 @@ test.describe('Key Pinning', () => {
     await expect(dialog).not.toBeVisible()
 
     // The pin should NOT be updated (still the fake key).
-    const unchangedPin = await getKeyPin(page, adminUserId, workerId)
+    const unchangedPin = await getKeyPin(page, account, workerId)
     expect(unchangedPin).not.toBeNull()
     expect(unchangedPin!.publicKeyHex).toBe('bb'.repeat(32))
   })

@@ -160,6 +160,9 @@ type apiTokenMint struct {
 	// by the caller. Build it with authscope.ScopeSet.Storable, which refuses
 	// the unscoped grant.
 	GrantedScopes string
+	// Issuance records which ceremony issued this credential. Every mint
+	// states one; the column has no DEFAULT and the CHECK refuses 0.
+	Issuance store.APITokenIssuance
 	// AccessTTL is how long the access token authenticates. Zero means
 	// auth.AccessTokenTTL, the rotating default every consent stage uses.
 	AccessTTL time.Duration
@@ -228,6 +231,7 @@ func mintAPIToken(v *auth.TokenValidator, by mintAuthority, now time.Time, spec 
 		ClientID:         spec.ClientID,
 		InstallationName: spec.InstallationName,
 		GrantedScopes:    spec.GrantedScopes,
+		Issuance:         spec.Issuance,
 		SecretHash:       pair.AccessHash,
 		ExpiresAt:        &pair.AccessExpiresAt,
 	}

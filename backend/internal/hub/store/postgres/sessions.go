@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
@@ -29,6 +30,7 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 		ElevationExpiresAt: s.ElevationExpiresAt.Ptr(),
 		UserAgent:          s.UserAgent,
 		IPAddress:          s.IpAddress,
+		IssuedToClient:     s.IssuedToClient.String,
 	}
 }
 
@@ -49,12 +51,15 @@ func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSessio
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
 	return (&pgStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		return mapErr(tx.(*pgStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-			SecretHash: p.SecretHash,
-			ID:         p.ID,
-			UserID:     p.UserID.String(),
-			ExpiresAt:  pgtime.New(p.ExpiresAt),
-			UserAgent:  p.UserAgent,
-			IpAddress:  p.IPAddress,
+			SecretHash:         p.SecretHash,
+			ID:                 p.ID,
+			UserID:             p.UserID.String(),
+			ExpiresAt:          pgtime.New(p.ExpiresAt),
+			UserAgent:          p.UserAgent,
+			IpAddress:          p.IPAddress,
+			IssuedToClient:     pgtype.Text{String: p.IssuedToClient, Valid: p.IssuedToClient != ""},
+			ElevationProvenAt:  pgtime.NewNull(p.ElevationProvenAt),
+			ElevationExpiresAt: pgtime.NewNull(p.ElevationExpiresAt),
 		}))
 	})
 }

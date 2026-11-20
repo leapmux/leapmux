@@ -355,19 +355,20 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 
 // Login validates credentials and creates a new session token. lifetime is the
 // session's minimum life past the user's last request; see CreateSession.
-// Returns the cookie token, user, session expiry time, and any error.
-func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, password string, lifetime time.Duration) (string, *store.User, time.Time, error) {
-	var zero time.Time
+// Returns the created session, user, and any error. A password sign-in proves
+// a factor, so the session starts with a FreshAuthenticationWindow.
+func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, password string, lifetime time.Duration) (CreatedSession, *store.User, error) {
+	var zero CreatedSession
 	user, err := st.Users().GetByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return "", nil, zero, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
+			return zero, nil, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
 		// connect.NewError takes a string and serializes only that, so the
 		// wrapped cause is attached separately or errors.Is on the store
 		// error would stop matching.
 		cause := fmt.Errorf("query user: %w", err)
-		return "", nil, zero, connect.NewError(connect.CodeInternal, cause.Error()).WithCause(cause)
+		return zero, nil, connect.NewError(connect.CodeInternal, cause.Error()).WithCause(cause)
 	}
 
 	// Mint once, here, from the row we just read. Everything below -- the auth
@@ -376,14 +377,14 @@ func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, p
 	// mid-transaction on the credential path.
 	loginUID, mintOK := userid.New(user.ID)
 	if !mintOK {
-		return "", nil, zero, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
+		return zero, nil, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 	}
 
 	// Passkey-only / OAuth-only accounts store PlaceholderHash. Verify would
 	// return a parse error mapped to CodeInternal and leak that the username
 	// exists without a password. Treat "no password" like a wrong password.
 	if !user.FirstCredentialExempt {
-		return "", nil, zero, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
+		return zero, nil, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 	}
 
 	// Verify the password OUTSIDE the auth transaction. On the default
@@ -442,7 +443,10 @@ func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, p
 		if !sessMintOK {
 			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
-		session, err = CreateSession(ctx, tx, hasher, sessUID, lifetime)
+		session, err = CreateSession(ctx, tx, hasher, sessUID, SessionCreationOptions{
+			Lifetime: lifetime,
+			Proof:    SignInProvedFactor,
+		})
 		if err != nil {
 			return err
 		}
@@ -452,19 +456,26 @@ func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, p
 	if err != nil {
 		var connectErr *connect.Error
 		if errors.As(err, &connectErr) {
-			return "", nil, zero, connectErr
+			return zero, nil, connectErr
 		}
 		if errors.Is(err, store.ErrNotFound) {
-			return "", nil, zero, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
+			return zero, nil, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
-		return "", nil, zero, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return zero, nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return session.Token, user, session.ExpiresAt, nil
+	return session, user, nil
 }
 
-// SessionMeta holds optional metadata for session creation.
-type SessionMeta struct {
+// SessionCreationOptions holds every decision required to create a session.
+// Callers use keyed fields, so adding a decision cannot silently shift an
+// adjacent positional argument.
+type SessionCreationOptions struct {
+	Lifetime  time.Duration
+	Proof     SignInProof
 	UserAgent string
+	// IssuedToClient identifies the built-in app this session is issued to through
+	// the browser handoff. Empty stores NULL.
+	IssuedToClient string
 }
 
 // CreatedSession separates the public identity from the secret cookie token.
@@ -472,6 +483,9 @@ type CreatedSession struct {
 	ID        string
 	Token     string
 	ExpiresAt time.Time
+	// Elevation holds the sign-in window when the proof was a factor. It is
+	// the zero value for SignInProvedNoFactor.
+	Elevation Elevation
 }
 
 // CreateSession creates a public identity and an independent cookie secret.
@@ -480,15 +494,29 @@ type CreatedSession struct {
 // less falls back to DefaultSessionDuration: a caller that has no configured
 // value must still issue a usable session, not one that expired before the
 // response left the Hub.
-func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, lifetime time.Duration, meta ...SessionMeta) (CreatedSession, error) {
+//
+// proof states whether the sign-in proved a factor and which initial window
+// that proof grants. The zero value is refused.
+func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, options SessionCreationOptions) (CreatedSession, error) {
+	return CreateSessionAt(ctx, st, hasher, userID, time.Now().UTC(), options)
+}
+
+// CreateSessionAt creates a session at the supplied Hub clock instant. Callers
+// use it when the surrounding transaction and its response must share one now.
+func CreateSessionAt(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, now time.Time, options SessionCreationOptions) (CreatedSession, error) {
 	// A session for nobody is worse than no session: it would authenticate as a
 	// blank id, which every predicate then has to refuse individually. Refuse to
 	// write the row at all.
 	if userID.IsZero() {
 		return CreatedSession{}, fmt.Errorf("create session: user id is required")
 	}
+	if options.Proof != SignInProvedNoFactor && options.Proof != SignInProvedFactor &&
+		options.Proof != SignInProvedFactorWithFullWindow {
+		return CreatedSession{}, fmt.Errorf("create session: sign-in proof is required")
+	}
 	sessionID, secret := id.Generate(), id.Generate()
-	expiresAt := sessionExpiry(time.Now(), lifetime)
+	now = now.UTC()
+	expiresAt := sessionExpiry(now, options.Lifetime)
 	params := store.CreateSessionParams{
 		ID:         sessionID,
 		SecretHash: hasher.Hash(secret),
@@ -496,13 +524,23 @@ func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, use
 		ExpiresAt:  expiresAt,
 		IPAddress:  peer.ClientIP(ctx),
 	}
-	if len(meta) > 0 {
-		params.UserAgent = meta[0].UserAgent
+	var elevation Elevation
+	if options.Proof == SignInProvedFactor || options.Proof == SignInProvedFactorWithFullWindow {
+		window := FreshAuthenticationWindow
+		if options.Proof == SignInProvedFactorWithFullWindow {
+			window = ElevationWindow
+		}
+		until := now.Add(window)
+		params.ElevationProvenAt = &now
+		params.ElevationExpiresAt = &until
+		elevation = Elevation{ExpiresAt: until}
 	}
+	params.UserAgent = options.UserAgent
+	params.IssuedToClient = options.IssuedToClient
 	if err := st.Sessions().Create(ctx, params); err != nil {
 		return CreatedSession{}, fmt.Errorf("create session: %w", err)
 	}
-	return CreatedSession{ID: sessionID, Token: FormatSessionToken(sessionID, secret), ExpiresAt: expiresAt}, nil
+	return CreatedSession{ID: sessionID, Token: FormatSessionToken(sessionID, secret), ExpiresAt: expiresAt, Elevation: elevation}, nil
 }
 
 // ValidateToken resolves a session token to a UserInfo. Returns an error if

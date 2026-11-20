@@ -15,7 +15,7 @@ import {
   SETTING_TURN_END_SOUND_VOLUME_DEFAULT,
 } from '~/generated/contracts/user-settings'
 import { loadBrowserPrefs } from '~/lib/browserPreferences'
-import { accountStorageKey, deliverStorageChangeForTests, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, localStorageClearForTests, localStorageGet, localStorageRemove, localStorageSet, mirrorEntryForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
+import { accountStorageKey, deliverStorageChangeForTests, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, localStorageClearForTests, localStorageGet, localStorageRemove, localStorageSet, mirrorEntryForTests, resetStorageAccountForTests, setStorageAccountForTests, storageAccountFor, storedKeyFor, TEST_HUB } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
 import { applyTheme, DEFAULT_THEME_VALUE, themeStore } from '~/lib/themeStore'
 import { goldenAccountSchema } from '~/test-support/accountSchema'
@@ -1685,7 +1685,10 @@ describe('PreferencesContext — cross-tab sync', () => {
       theme: { name: 'nord', mode: 'dark' },
     })
     setStorageAccountForTests(TEST_USER_ID)
-    announceWrite(accountStorageKey('someoneelse', KEY_BROWSER_PREFS))
+    // The row lives under the COMPOSED account `setStorageAccountForTests`
+    // wrote, so the announcement identifies that key. The bare spelling would identify
+    // a key no writer produces, and the ignore would hold for the wrong reason.
+    announceWrite(accountStorageKey(storageAccountFor(TEST_HUB, 'someoneelse'), KEY_BROWSER_PREFS))
 
     expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
   })

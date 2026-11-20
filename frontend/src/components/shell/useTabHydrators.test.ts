@@ -1,6 +1,7 @@
 /// <reference types="vitest/globals" />
 import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
+import type { HubUserId } from '~/lib/browserStorage'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,6 +11,7 @@ import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/le
 import { handleActivityChanged, handleAgentStatusChange } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, markTerminalExited } from '~/hooks/terminalEvents'
+import { setStorageAccountForTests } from '~/lib/browserStorage'
 import { setCRDTBridge, setTabWorkerId } from '~/lib/crdt'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -21,7 +23,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { isFileTab, isImageTab } from '~/stores/tab.types'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { settle } from '~/test-support/async'
-import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
+import { installTestBridge, seedWorkspace, TEST_USER_ID } from '~/test-support/crdtBridge'
 import { createCanonicalTabPublisher } from '~/test-support/tabPublication'
 import { createTestTabStores } from '~/test-support/tabStores'
 import { useTabHydrators } from './useTabHydrators'
@@ -226,10 +228,10 @@ function setup(workspaceId = 'ws-test', detachedTerminals?: () => readonly { id:
     mount: (
       onlineWorkerIds?: () => ReadonlySet<string>,
       settingsPendingAxes?: (agentId: string) => ReadonlySet<string>,
-      userId: () => string | undefined = () => 'usertest',
+      hubUserId: () => HubUserId | undefined = () => 'usertest' as HubUserId,
     ) =>
       useTabHydrators({
-        ...{ userId },
+        ...{ hubUserId },
         view: stores.view,
         metadata: stores.metadata,
         repoGitStore,
@@ -272,6 +274,28 @@ describe('useTabHydrators', () => {
       expect(mockListAgents.mock.calls[0]?.[1]).toEqual({
         tabIds: ['a1'],
       })
+      d()
+    })
+
+    it('hydrates when the metadata account is composed around the mount\'s raw Hub user id', async () => {
+      // The metadata store tracks the STORAGE account -- `hub/user` -- while
+      // `UseTabHydratorsOpts.userId` is the raw Hub user id. `isCurrent`
+      // compares the metadata account against it to decide the rows are still
+      // this account's, so it must take the user id the account identifies: the two
+      // values themselves never match, and no tab is ever hydrated.
+      setStorageAccountForTests(TEST_USER_ID)
+      const s = setup()
+      const d = createRoot((dispose) => {
+        s.add(TabType.AGENT, 'a1')
+        // The raw Hub user id the composed account above is built around, so
+        // the mount's identity and the metadata account name one user.
+        s.mount(undefined, undefined, () => TEST_USER_ID)
+        return dispose
+      })
+      await flush()
+      await flush()
+
+      expect(mockListAgents).toHaveBeenCalledTimes(1)
       d()
     })
 
@@ -2060,7 +2084,7 @@ describe('useTabHydrators lifetime', () => {
           ? mockListTerminals
           : mockGetTabPayload
       mock.mockReturnValueOnce(held.promise)
-      const [userId, setUserId] = createSignal<string | undefined>('usertest')
+      const [userId, setUserId] = createSignal<HubUserId | undefined>('usertest' as HubUserId)
       const { s, dispose } = createRoot((dispose) => {
         const s = setup()
         s.add(kind === 'agent'
@@ -2075,7 +2099,7 @@ describe('useTabHydrators lifetime', () => {
         await flush()
         expect(mock).toHaveBeenCalledOnce()
         if (change === 'account')
-          setUserId('other-account')
+          setUserId('other-account' as HubUserId)
         if (change === 'dispose')
           dispose()
         if (change === 'close') {

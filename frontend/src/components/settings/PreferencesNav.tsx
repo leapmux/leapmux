@@ -2,7 +2,7 @@ import type { Component, JSX } from 'solid-js'
 import type { NavGroup } from './navGroups'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, For, Show } from 'solid-js'
-import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
+import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { createKeyedElementRefs } from '~/lib/keyedElementRefs'
 import { nextRovingValue } from '~/lib/rovingFocus'
 import { fieldTriggerChevron, menuSectionHeader } from '~/styles/shared.css'
@@ -28,6 +28,12 @@ export interface PreferencesNavProps {
    * theme, so we use the same DropdownMenu pattern as AgentProviderSelector.
    */
   compact: boolean
+  /**
+   * When set, the ADMINISTRATION section ends with an "Unlock
+   * administration..." entry. The dialog passes it when an administrator
+   * has no current elevation window and no catalogue request is pending.
+   */
+  onUnlockAdmin?: (() => void) | undefined
 }
 
 /** Option label: append the same warning mark the sidebar tabs show. */
@@ -92,9 +98,19 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
         <li class={menuSectionHeader}>PREFERENCES</li>
         {sectionItems(userGroups())}
       </Show>
-      <Show when={adminGroups().length > 0}>
+      <Show when={adminGroups().length > 0 || props.onUnlockAdmin}>
         <li class={menuSectionHeader}>ADMINISTRATION</li>
         {sectionItems(adminGroups())}
+        <Show when={props.onUnlockAdmin}>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="preferences-nav-unlock-admin"
+            onClick={() => props.onUnlockAdmin?.()}
+          >
+            <DropdownMenuItemContent label="Unlock administration..." />
+          </button>
+        </Show>
       </Show>
     </DropdownMenu>
   )
@@ -114,50 +130,70 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
 
   return (
     <Show when={!props.compact} fallback={compactSelect()}>
-      <nav role="tablist" aria-label="Preferences sections" class={styles.nav} onKeyDown={onKeyDown}>
-        <Show when={userGroups().length > 0}>
-          <div class={styles.navDivider} role="separator" aria-label="Preferences">PREFERENCES</div>
-        </Show>
-        <For each={props.groups}>
-          {(group, i) => (
-            <>
-              <Show when={group.admin && !props.groups[i() - 1]?.admin}>
-                {/* The rule divides the two halves, so it needs both of them.
+      <>
+        <nav role="tablist" aria-label="Preferences sections" class={styles.nav} onKeyDown={onKeyDown}>
+          <Show when={userGroups().length > 0}>
+            <div class={styles.navDivider} role="separator" aria-label="Preferences">PREFERENCES</div>
+          </Show>
+          <For each={props.groups}>
+            {(group, i) => (
+              <>
+                <Show when={group.admin && !props.groups[i() - 1]?.admin}>
+                  {/* The rule divides the two halves, so it needs both of them.
                   With no user categories ADMINISTRATION leads the list, and a
                   rule above it would hang under the search box dividing
                   nothing. It is decorative either way: the header below is
                   already the labelled separator, and a bare <hr> would
                   announce a second, unlabelled one inside the tab list. */}
-                <Show when={userGroups().length > 0}>
-                  <hr class={styles.navSeparator} aria-hidden="true" />
+                  <Show when={userGroups().length > 0}>
+                    <hr class={styles.navSeparator} aria-hidden="true" />
+                  </Show>
+                  <div class={styles.navDivider} role="separator" aria-label="Administration">ADMINISTRATION</div>
                 </Show>
-                <div class={styles.navDivider} role="separator" aria-label="Administration">ADMINISTRATION</div>
-              </Show>
-              <button
-                type="button"
-                role="tab"
-                class={styles.navButton}
-                classList={{ [styles.navButtonActive]: props.active.id === group.id }}
-                aria-selected={props.active.id === group.id}
-                aria-controls="preferences-panel"
-                tabIndex={props.active.id === group.id
-                  ? 0
-                  : -1}
-                data-testid={`preferences-nav-${group.id}`}
-                ref={el => tabEls.register(group.id, el)}
-                onClick={() => select(group.id)}
-              >
-                {group.title}
-                <Show when={props.restartGroups().has(group.id)}>
-                  {/* Decorative marker; each row's Requires Restart badge carries the
+                <button
+                  type="button"
+                  role="tab"
+                  class={styles.navButton}
+                  classList={{ [styles.navButtonActive]: props.active.id === group.id }}
+                  aria-selected={props.active.id === group.id}
+                  aria-controls="preferences-panel"
+                  tabIndex={props.active.id === group.id
+                    ? 0
+                    : -1}
+                  data-testid={`preferences-nav-${group.id}`}
+                  ref={el => tabEls.register(group.id, el)}
+                  onClick={() => select(group.id)}
+                >
+                  {group.title}
+                  <Show when={props.restartGroups().has(group.id)}>
+                    {/* Decorative marker; each row's Requires Restart badge carries the
                     accessible statement. */}
-                  <span aria-hidden="true">&#x26A0;</span>
-                </Show>
-              </button>
-            </>
-          )}
-        </For>
-      </nav>
+                    <span aria-hidden="true">&#x26A0;</span>
+                  </Show>
+                </button>
+              </>
+            )}
+          </For>
+        </nav>
+        <Show when={props.onUnlockAdmin}>
+          {/* The entry ends the ADMINISTRATION section. With no admin group
+            above it, the section header (and its rule) renders here instead. */}
+          <Show when={adminGroups().length === 0}>
+            <Show when={userGroups().length > 0}>
+              <hr class={styles.navSeparator} aria-hidden="true" />
+            </Show>
+            <div class={styles.navDivider} role="separator" aria-label="Administration">ADMINISTRATION</div>
+          </Show>
+          <button
+            type="button"
+            class={styles.navButton}
+            data-testid="preferences-nav-unlock-admin"
+            onClick={() => props.onUnlockAdmin?.()}
+          >
+            Unlock administration...
+          </button>
+        </Show>
+      </>
     </Show>
   )
 }

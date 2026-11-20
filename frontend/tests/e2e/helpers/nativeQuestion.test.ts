@@ -242,7 +242,7 @@ describe('restoreQuestionTextDraft', () => {
       page: {
         reload: async () => { browser.events.push('reload') },
       },
-      leapmuxServer: { adminUserId: 'question-user' },
+      leapmuxServer: { adminUserId: 'question-user', hubUrl: 'http://localhost:12345', adminToken: 'test-token' },
     } as unknown as ManagedNativeScenarioContext
   }
 
@@ -534,7 +534,7 @@ describe('chooseQuestionOptionWithNote', () => {
       page: {
         reload: async () => { browser.events.push('reload') },
       },
-      leapmuxServer: { adminUserId: 'question-user' },
+      leapmuxServer: { adminUserId: 'question-user', hubUrl: 'http://localhost:12345', adminToken: 'test-token' },
     } as unknown as ManagedNativeScenarioContext
     await chooseQuestionOptionWithNote(native, 'Green', 'Keep this note')(banner)
     expect(browser.events.filter(event => event === 'reload')).toHaveLength(2)
@@ -570,7 +570,7 @@ describe('restoreQuestionSelection', () => {
       page: {
         reload: async () => { browser.events.push('reload') },
       },
-      leapmuxServer: { adminUserId: 'question-user' },
+      leapmuxServer: { adminUserId: 'question-user', hubUrl: 'http://localhost:12345', adminToken: 'test-token' },
     } as unknown as ManagedNativeScenarioContext
     return { banner, native }
   }

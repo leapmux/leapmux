@@ -28,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
@@ -1365,6 +1366,417 @@ func assertNoCallbackSession(t *testing.T, response *http.Response) {
 	}
 }
 
+// --- A provider sign-in for a consent route asks for a fresh authentication ---
+//
+// The redirect decides two things the account cannot: whether the provider is
+// asked to re-authenticate, and whether that re-authentication counts as the
+// factor the session's window stands on. A consent route needs a fresh
+// authentication so a provider-only account does not make two provider round
+// trips before a consent -- and for that account the re-authentication IS the
+// proof. An account that holds a password proves its factor locally instead,
+// so its provider sign-in opens no window.
+
+// linkedProviderUser creates an account whose identity the stub issuer will
+// assert, and links it. withPassword is the production write that makes the
+// account hold a password; without it the account holds none and the provider
+// is its only credential.
+func linkedProviderUser(t *testing.T, st store.Store, providerID, subject, email string, withPassword bool) string {
+	t.Helper()
+	ctx := t.Context()
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "provideruser" + userID[:6], DisplayName: "Provider User",
+		Email: email, EmailVerified: true,
+		PasswordHash: password.PlaceholderHash,
+	}))
+	if withPassword {
+		hash, err := password.Hash("theirpass")
+		require.NoError(t, err)
+		require.NoError(t, st.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{ID: userID, PasswordHash: hash}))
+	}
+	require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+		UserID: userid.MustNew(userID), ProviderID: providerID, ProviderSubject: subject,
+	}))
+	return userID
+}
+
+// beginLogin starts sign-in and returns the flow's state, its
+// browser binding cookie, and the URL the browser received from the Hub.
+// beginReauth starts reauthentication and returns the same fields.
+func beginLogin(t *testing.T, server *httptest.Server, providerID, redirect string) (string, *http.Cookie, *url.URL) {
+	t.Helper()
+	target := server.URL + "/auth/idp/" + providerID + "/login"
+	if redirect != "" {
+		target += "?redirect=" + url.QueryEscape(redirect)
+	}
+	resp, err := noRedirectClient().Get(target)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	authURL, err := resp.Location()
+	require.NoError(t, err)
+	state := authURL.Query().Get("state")
+	require.NotEmpty(t, state)
+	return state, oauthNonceCookie(t, resp, state), authURL
+}
+
+// callbackSessionRow reads the session the callback's Set-Cookie carries.
+func callbackSessionRow(t *testing.T, st store.Store, response *http.Response) *store.UserSession {
+	t.Helper()
+	var token string
+	for _, c := range response.Cookies() {
+		if (c.Name == auth.CookieName || c.Name == auth.SecureCookieName) && c.Value != "" && c.MaxAge >= 0 {
+			token = c.Value
+		}
+	}
+	require.NotEmpty(t, token, "the callback must sign the user in")
+	row, err := st.Sessions().GetByID(t.Context(), hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
+	require.NoError(t, err)
+	return row
+}
+
+func TestOAuthLogin_ConsentRouteForcesARePromptAndStampsTheWindow(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		redirect string
+		location string
+	}{
+		{"/oauth/authorize?client_id=cli", "/oauth/authorize?client_id=cli"},
+		{"/oauth/%61uthorize?client_id=cli", "/oauth/%61uthorize?client_id=cli"},
+		{"/%6Fauth/devi%63e", "/%6Fauth/devi%63e"},
+		{"/oauth//authorize?client_id=cli", "/oauth/authorize?client_id=cli"},
+		{"/handoff/../oauth/./device#done", "/oauth/device#done"},
+		{"/oauth/other#done/../authorize", "/oauth/authorize"},
+		{"/oauth//%61uthorize", "/oauth/%61uthorize"},
+		{"/oauth/authorize?client_id=cli#done/../token", "/oauth/authorize?client_id=cli#done/../token"},
+	} {
+		t.Run(tc.redirect, func(t *testing.T) {
+			t.Parallel()
+
+			server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+			const email, subject = "consent-route@example.com", "consent-route-subject"
+			providerID := createTestOIDCProviderWithStubClaims(t, st, ks, email, subject)
+			linkedProviderUser(t, st, providerID, subject, email, false)
+
+			state, nonce, authURL := beginLogin(t, server, providerID, tc.redirect)
+			stored, err := st.OAuthStates().Get(t.Context(), state)
+			require.NoError(t, err)
+			assert.Equal(t, store.OAuthStatePurposeConsentLogin, stored.Purpose)
+			// The prompt asks for a fresh authentication. The maximum age
+			// is the additional limit that a conforming provider enforces.
+			assert.Equal(t, "login", authURL.Query().Get("prompt"))
+			assert.Equal(t, strconv.Itoa(int(huboauth.ReauthMaxAge.Seconds())), authURL.Query().Get("max_age"))
+
+			resp := completeCallback(t, server, providerID, state, nonce)
+			require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+			assert.Equal(t, tc.location, resp.Header.Get("Location"))
+			row := callbackSessionRow(t, st, resp)
+			require.NotNil(t, row.ElevationProvenAt)
+			require.NotNil(t, row.ElevationExpiresAt)
+			assert.Equal(t, auth.FreshAuthenticationWindow, row.ElevationExpiresAt.Sub(*row.ElevationProvenAt))
+		})
+	}
+}
+
+func TestOAuthLogin_ConsentRouteForAnAccountThatHoldsAPasswordStampsNoWindow(t *testing.T) {
+	t.Parallel()
+
+	server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	const subject = "password-holder-subject"
+	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "password-holder@example.com", subject)
+	linkedProviderUser(t, st, providerID, subject, "password-holder@example.com", true)
+
+	state, nonce, _ := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+	resp := completeCallback(t, server, providerID, state, nonce)
+	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	row := callbackSessionRow(t, st, resp)
+	assert.Nil(t, row.ElevationProvenAt,
+		"an account that holds a password proves its factor locally, so its provider sign-in opens no window")
+	assert.Nil(t, row.ElevationExpiresAt)
+}
+
+// factorChangeBeforeLoginStore commits a factor change immediately before the
+// callback can take the lock that protects its session insert. The store
+// takes that lock in Sessions.Create for an ordinary sign-in, and the
+// callback can take it earlier to protect its factor reads as well.
+type factorChangeBeforeLoginStore struct {
+	store.Store
+	commitFactorChange func(context.Context) error
+}
+
+func (s factorChangeBeforeLoginStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
+	if err := s.commitFactorChange(ctx); err != nil {
+		return err
+	}
+	return s.Store.RunInUserAuthTransaction(ctx, userID, fn)
+}
+
+func (s factorChangeBeforeLoginStore) Sessions() store.SessionStore {
+	return factorChangeBeforeLoginSessions{SessionStore: s.Store.Sessions(), commitFactorChange: s.commitFactorChange}
+}
+
+type factorChangeBeforeLoginSessions struct {
+	store.SessionStore
+	commitFactorChange func(context.Context) error
+}
+
+func (s factorChangeBeforeLoginSessions) Create(ctx context.Context, p store.CreateSessionParams) error {
+	if err := s.commitFactorChange(ctx); err != nil {
+		return err
+	}
+	return s.SessionStore.Create(ctx, p)
+}
+
+func TestOAuthLogin_ConsentSessionChecksFactorsUnderItsInsertLock(t *testing.T) {
+	t.Parallel()
+
+	for _, factor := range []string{"password", "passkey"} {
+		t.Run(factor, func(t *testing.T) {
+			t.Parallel()
+
+			changeRequested := make(chan struct{})
+			changeResult := make(chan error, 1)
+			server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+				return factorChangeBeforeLoginStore{Store: s, commitFactorChange: func(ctx context.Context) error {
+					close(changeRequested)
+					select {
+					case err := <-changeResult:
+						return err
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}}
+			})
+			const email, subject = "overlap@example.com", "overlap-subject"
+			providerID := createTestOIDCProviderWithStubClaims(t, st, ks, email, subject)
+			userID := linkedProviderUser(t, st, providerID, subject, email, false)
+			uid := userid.MustNew(userID)
+			state, nonce, authURL := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+			require.Equal(t, "login", authURL.Query().Get("prompt"))
+			before, err := st.Users().GetByID(t.Context(), userID)
+			require.NoError(t, err)
+
+			var commitFactorChange func(context.Context) error
+			if factor == "password" {
+				hash, err := password.Hash("new-password")
+				require.NoError(t, err)
+				commitFactorChange = func(ctx context.Context) error {
+					return st.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+						if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{ID: userID, PasswordHash: hash}); err != nil {
+							return err
+						}
+						_, _, err := auth.RevokeAllUserCredentials(ctx, tx, uid)
+						return err
+					})
+				}
+			} else {
+				_, credential, wa := prepareProofPasskey(t, st, ks, userID)
+				commitFactorChange = func(ctx context.Context) error {
+					return st.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+						_, err := wa.StoreCredential(ctx, tx, id.Generate(), userID, credential, "First key")
+						return err
+					})
+				}
+			}
+			go func() {
+				select {
+				case <-changeRequested:
+					changeResult <- commitFactorChange(t.Context())
+				case <-t.Context().Done():
+				}
+			}()
+
+			resp := completeCallback(t, server, providerID, state, nonce)
+			require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+			row := callbackSessionRow(t, st, resp)
+			current, err := st.Users().GetByID(t.Context(), userID)
+			require.NoError(t, err)
+			if factor == "password" {
+				assert.True(t, current.FirstCredentialExempt)
+				assert.Greater(t, current.AuthGeneration, before.AuthGeneration)
+			} else {
+				count, err := st.PasskeyCredentials().CountByUser(t.Context(), userID)
+				require.NoError(t, err)
+				assert.EqualValues(t, 1, count)
+			}
+			assert.Equal(t, current.AuthGeneration, row.AuthGeneration)
+			assert.Nil(t, row.ElevationProvenAt, "a provider sign-in cannot prove a newly registered local factor")
+			assert.Nil(t, row.ElevationExpiresAt)
+		})
+	}
+}
+
+func TestOAuthLogin_ANonConsentRoutePromptsNothingAndStampsNoWindow(t *testing.T) {
+	t.Parallel()
+
+	server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+		return proofReadFailingStore{Store: s, failPasskeyCount: true}
+	})
+	const subject = "plain-login-subject"
+	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "plain-login@example.com", subject)
+	linkedProviderUser(t, st, providerID, subject, "plain-login@example.com", false)
+
+	state, nonce, authURL := beginLogin(t, server, providerID, "/")
+	assert.Empty(t, authURL.Query().Get("prompt"), "an ordinary login must not force a re-prompt")
+	assert.Empty(t, authURL.Query().Get("max_age"),
+		"the maximum authentication age rides the same re-authentication the prompt asks for")
+
+	resp := completeCallback(t, server, providerID, state, nonce)
+	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	row := callbackSessionRow(t, st, resp)
+	assert.Nil(t, row.ElevationProvenAt, "nothing was re-authenticated, so nothing was proven")
+	assert.Nil(t, row.ElevationExpiresAt)
+}
+
+// The consent routes are the exact paths the consent handler serves. A longer
+// path is a different page and /oauth/token is not a consent at all, so
+// neither may ask the provider for a fresh authentication or open a window.
+func TestOAuthLogin_NearMissPathsAreNotConsentRoutes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		redirect string
+		location string
+	}{
+		{"/oauth/authorizeX", "/oauth/authorizeX"},
+		{"/oauth/token", "/oauth/token"},
+		{"/oauth/authorize/../token", "/oauth/token"},
+		{"/oauth/authorize#done/../token", "/oauth/token"},
+		{"/oauth/%2Fauthorize", "/oauth/%2Fauthorize"},
+		{"/oauth/%2561uthorize", "/oauth/%2561uthorize"},
+		{"//example.invalid/oauth/authorize", "/"},
+	} {
+		t.Run(tc.redirect, func(t *testing.T) {
+			t.Parallel()
+			server, _, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+			const subject = "near-miss-subject"
+			providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "near-miss@example.com", subject)
+			linkedProviderUser(t, st, providerID, subject, "near-miss@example.com", false)
+
+			state, nonce, authURL := beginLogin(t, server, providerID, tc.redirect)
+			stored, err := st.OAuthStates().Get(t.Context(), state)
+			require.NoError(t, err)
+			assert.Equal(t, store.OAuthStatePurposeLogin, stored.Purpose)
+			assert.Empty(t, authURL.Query().Get("prompt"), "a near-miss path is not a consent route")
+			assert.Empty(t, authURL.Query().Get("max_age"), "a near-miss path is not a consent route")
+
+			resp := completeCallback(t, server, providerID, state, nonce)
+			require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+			assert.Equal(t, tc.location, resp.Header.Get("Location"))
+			row := callbackSessionRow(t, st, resp)
+			assert.Nil(t, row.ElevationProvenAt, "a near-miss path is not a consent route")
+			assert.Nil(t, row.ElevationExpiresAt)
+		})
+	}
+}
+
+// errProofReadFailed is what the failing proof reads below return. A
+// sentinel, so the one fault a test plants is the one fault the flow meets.
+var errProofReadFailed = errors.New("proof read failed")
+
+// proofReadFailingStore injects a fault inside the user-auth transaction.
+// Lookups before the proof decision still read the real store.
+type proofReadFailingStore struct {
+	store.Store
+	failUserLookup   bool
+	failPasskeyCount bool
+}
+
+func (s proofReadFailingStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
+	return s.Store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		s.Store = tx
+		return fn(proofReadFailingTx{s})
+	})
+}
+
+type proofReadFailingTx struct {
+	proofReadFailingStore
+}
+
+func (s proofReadFailingTx) Users() store.UserStore {
+	if !s.failUserLookup {
+		return s.Store.Users()
+	}
+	return proofReadFailingUsers{UserStore: s.Store.Users()}
+}
+
+type proofReadFailingUsers struct {
+	store.UserStore
+}
+
+func (proofReadFailingUsers) GetByID(context.Context, string) (*store.User, error) {
+	return nil, errProofReadFailed
+}
+
+func (s proofReadFailingTx) PasskeyCredentials() store.PasskeyCredentialStore {
+	if !s.failPasskeyCount {
+		return s.Store.PasskeyCredentials()
+	}
+	return proofReadFailingPasskeys{PasskeyCredentialStore: s.Store.PasskeyCredentials()}
+}
+
+type proofReadFailingPasskeys struct {
+	store.PasskeyCredentialStore
+}
+
+func (proofReadFailingPasskeys) CountByUser(context.Context, string) (int64, error) {
+	return 0, errProofReadFailed
+}
+
+// TestOAuthLogin_AStoreFailureInTheSignInProofRefusesTheSignIn pins the
+// fail-visible shape of the sign-in-proof decision.
+//
+// The decision reads the account twice: the user row, and the passkey count
+// behind accountElevatesOnlyThroughAProvider. A failure in either read is a
+// store failure and never an answer to the proof question. The sign-in must
+// fail visibly rather than record SignInProvedNoFactor, which would read a
+// broken lookup as "nothing was proved" and sign the user in on a silent
+// downgrade.
+func TestOAuthLogin_AStoreFailureInTheSignInProofRefusesTheSignIn(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the account lookup fails", func(t *testing.T) {
+		t.Parallel()
+
+		server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+			return proofReadFailingStore{Store: s, failUserLookup: true}
+		})
+		// The auto-link path finds the account by email. The injected fault
+		// targets the later account lookup for the sign-in proof.
+		const email, subject = "proof-fail-user@example.com", "proof-fail-user-subject"
+		userID := id.Generate()
+		require.NoError(t, st.Users().Create(t.Context(), store.CreateUserParams{
+			ID: userID, Username: "proof-fail-user", PasswordHash: password.PlaceholderHash,
+			Email: email, EmailVerified: true,
+		}))
+		providerID := createCallbackTestProvider(t, st, ks, email, subject, true)
+
+		state, nonce, _ := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+		resp := completeCallback(t, server, providerID, state, nonce)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, readBody(t, resp))
+		assertNoCallbackSession(t, resp)
+		assert.Zero(t, countSessions(t, st, userID), "a store failure must not sign anybody in")
+	})
+
+	t.Run("the passkey count fails", func(t *testing.T) {
+		t.Parallel()
+
+		server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+			return proofReadFailingStore{Store: s, failPasskeyCount: true}
+		})
+		const subject = "proof-fail-count-subject"
+		providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "proof-fail-count@example.com", subject)
+		userID := linkedProviderUser(t, st, providerID, subject, "proof-fail-count@example.com", false)
+
+		state, nonce, _ := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+		resp := completeCallback(t, server, providerID, state, nonce)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, readBody(t, resp))
+		assertNoCallbackSession(t, resp)
+		assert.Zero(t, countSessions(t, st, userID), "a store failure must not sign anybody in")
+	})
+}
+
 func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 	t.Parallel()
 
@@ -1491,7 +1903,7 @@ func TestOAuthReauth_ReadsTheProviderRowOnce(t *testing.T) {
 // purposeRewritingStore gives the handler a state row whose purpose is a
 // value the schema refuses to store, which is the only way to drive the
 // unknown-purpose branch. oauth_states.purpose carries
-// CHECK (purpose BETWEEN 1 AND 2) in all three dialects, so no such row is
+// CHECK (purpose BETWEEN 1 AND 3) in all three dialects, so no such row is
 // STORABLE -- this store fabricates one on the read path instead.
 type purposeRewritingStore struct {
 	store.Store
@@ -1528,9 +1940,9 @@ func TestOAuthCallback_RefusesAnUnknownPurpose(t *testing.T) {
 	t.Parallel()
 
 	// The unset zero, an ordinal above the range, and a negative one: the three
-	// shapes a value that is not LOGIN or REAUTH can take.
+	// shapes a value that is not LOGIN, CONSENT_LOGIN or REAUTH can take.
 	for _, purpose := range []leapmuxv1.OAuthStatePurpose{
-		leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_UNSPECIFIED, 3, -1,
+		leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_UNSPECIFIED, 4, -1,
 	} {
 		t.Run("purpose "+strconv.Itoa(int(purpose)), func(t *testing.T) {
 			t.Parallel()

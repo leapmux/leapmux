@@ -107,6 +107,29 @@ describe('channelRelay', () => {
     await expect(p).rejects.toThrow(/timed out/)
   })
 
+  it('reports a final close that arrives before open', async () => {
+    const sock = new FakeSocket()
+    const onFatalClose = vi.fn()
+    const relay = new ChannelRelay({
+      createWebSocket: () => sock,
+      wsOpenTimeoutMs: 5_000,
+      onFrame: () => {},
+      onCloseDrain: () => {},
+      onFatalClose,
+    })
+    const opening = relay.ensureWebSocket()
+
+    sock.readyState = WebSocket.CLOSED
+    sock.emit('close', { code: 1008, reason: 'too_many_connections' })
+
+    await expect(opening).rejects.toThrow(/too many places/i)
+    expect(onFatalClose).toHaveBeenCalledExactlyOnceWith({
+      code: 1008,
+      reason: 'too_many_connections',
+    })
+    await expect(relay.ensureWebSocket()).rejects.toThrow(/too many places/i)
+  })
+
   it('routes length-prefixed frames to onFrame', async () => {
     const sock = new FakeSocket()
     const onFrame = vi.fn()

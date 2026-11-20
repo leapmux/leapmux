@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
@@ -45,6 +46,7 @@ func fromDBAPIToken(t gendb.ApiToken, c joinedClient) store.APIToken {
 		ClientID:                 t.ClientID,
 		InstallationName:         t.InstallationName,
 		GrantedScopes:            t.GrantedScopes,
+		Issuance:                 store.APITokenIssuance(t.Issuance),
 		SecretHash:               t.SecretHash,
 		RefreshHash:              t.RefreshHash,
 		PreviousRefreshHash:      t.PreviousRefreshHash,
@@ -68,6 +70,7 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 			ClientID:         p.ClientID,
 			InstallationName: p.InstallationName,
 			GrantedScopes:    p.GrantedScopes,
+			Issuance:         leapmuxv1.ApiTokenIssuance(p.Issuance),
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
 			ExpiresAt:        pgtime.NewNull(p.ExpiresAt),

@@ -68,7 +68,8 @@ func (s *Suite) testCredentialRoundTrip(t *testing.T) {
 
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID,
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID,
 			InstallationName: "laptop", GrantedScopes: "workspace:read", SecretHash: []byte("hash"),
 		}))
 
@@ -96,6 +97,7 @@ func (s *Suite) testCredentialRoundTrip(t *testing.T) {
 		expires := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 		refreshExpires := expires.Add(time.Hour)
 		params := store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               id.Generate(),
 			UserID:           userid.MustNew(user.ID),
 			ClientID:         oauthapp.ControlCLIClientID,
@@ -112,6 +114,49 @@ func (s *Suite) testCredentialRoundTrip(t *testing.T) {
 		row, err := st.APITokens().GetByID(ctx, params.ID)
 		require.NoError(t, err)
 		assertSharedFieldsSurvived(t, params, *row)
+	})
+
+	t.Run("api token without issuance fails", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "roundtrip-api-no-issuance")
+
+		params := store.CreateAPITokenParams{
+			ID:               id.Generate(),
+			UserID:           userid.MustNew(user.ID),
+			ClientID:         oauthapp.ControlCLIClientID,
+			InstallationName: "laptop",
+			GrantedScopes:    "workspace:read",
+			SecretHash:       []byte("hash"),
+		}
+		require.Error(t, st.APITokens().Create(ctx, params),
+			"an api_tokens insert with no issuance must fail: the column has no DEFAULT and CHECK (issuance BETWEEN 1 AND 3) refuses 0")
+	})
+
+	t.Run("each issuance ordinal round-trips", func(t *testing.T) {
+		issuances := []store.APITokenIssuance{
+			store.APITokenIssuanceAuthorizationCode,
+			store.APITokenIssuanceDeviceCode,
+			store.APITokenIssuanceAdmin,
+		}
+		for _, issuance := range issuances {
+			st := s.NewStore(t)
+			user := SeedUser(t, st, "roundtrip-api-issuance")
+
+			params := store.CreateAPITokenParams{
+				ID:               id.Generate(),
+				UserID:           userid.MustNew(user.ID),
+				ClientID:         oauthapp.ControlCLIClientID,
+				InstallationName: "laptop",
+				GrantedScopes:    "workspace:read",
+				Issuance:         issuance,
+				SecretHash:       []byte("hash"),
+			}
+			require.NoError(t, st.APITokens().Create(ctx, params))
+
+			row, err := st.APITokens().GetByID(ctx, params.ID)
+			require.NoError(t, err)
+			assert.Equal(t, issuance, row.Issuance, "issuance ordinal %d must round-trip", int32(issuance))
+		}
 	})
 }
 

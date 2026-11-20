@@ -55,11 +55,10 @@ func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) 
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")
-	token, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
-	require.NoError(t, err)
-	sessionID := hubtestutil.SessionIDFromCookie(t, token)
+	sess, _ := hubtestutil.LoginWithoutWindow(t, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
+	sessionID := hubtestutil.SessionIDFromCookie(t, sess.Token)
 
-	_, err = env.client.RevokeSession(authedReq(ctx, &leapmuxv1.RevokeSessionRequest{
+	_, err := env.client.RevokeSession(authedReq(ctx, &leapmuxv1.RevokeSessionRequest{
 		Id: sessionID,
 	}, env.token))
 	require.NoError(t, err)
@@ -196,11 +195,11 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")
-	_, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
-	require.NoError(t, err)
+	hubtestutil.LoginWithoutWindow(t, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
 
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               apiTokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,
@@ -221,18 +220,41 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 	before, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 
-	resp, err := env.client.RevokeUserSessions(authedReq(ctx, &leapmuxv1.RevokeUserSessionsRequest{
-		User: service.SelectUserByID(userID),
-	}, env.token))
-	require.NoError(t, err)
+	lifecycleCall := make(chan userRevocationCall, 1)
+	releaseLifecycle := make(chan struct{})
+	env.revocations.beforeUserRevoked = func(call userRevocationCall) {
+		lifecycleCall <- call
+		<-releaseLifecycle
+	}
+	type revokeResult struct {
+		response *leapmuxv1.RevokeUserSessionsResponse
+		err      error
+	}
+	result := make(chan revokeResult, 1)
+	go func() {
+		response, err := env.client.RevokeUserSessions(authedReq(ctx, &leapmuxv1.RevokeUserSessionsRequest{
+			User: service.SelectUserByID(userID),
+		}, env.token))
+		result <- revokeResult{response: response, err: err}
+	}()
+
+	firstCommitted := <-lifecycleCall
+	rows, secondRevokeErr := env.st.Users().RevokeUserTokens(ctx, userid.MustNew(userID))
+	close(releaseLifecycle)
+	completed := <-result
+	require.NoError(t, secondRevokeErr)
+	require.Equal(t, int64(1), rows)
+	require.NoError(t, completed.err)
+	resp := completed.response
 	assert.Equal(t, int64(1), resp.GetApiTokensRevoked())
 	assert.Equal(t, int64(1), resp.GetDelegationTokensRevoked())
 
 	after, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 	assert.Greater(t, after.AuthGeneration, before.AuthGeneration)
+	require.Greater(t, after.AuthGeneration, firstCommitted.generation)
 
-	require.Equal(t, []userRevocationCall{{userID: userID, generation: after.AuthGeneration}},
+	require.Equal(t, []userRevocationCall{{userID: userID, generation: firstCommitted.generation}},
 		env.revocations.recorded())
 	assert.Empty(t, env.revocations.restampedSessions(),
 		"the administrator surface spares no session")

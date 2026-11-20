@@ -2226,11 +2226,8 @@ export const DESKTOP_RS_ENV_NAMES = {
 }
 
 export const DESKTOP_RS_EVENT_NAMES = {
-  channelMessage: 'EVENT_CHANNEL_MESSAGE',
-  channelClose: 'EVENT_CHANNEL_CLOSE',
-  userEventsMessage: 'EVENT_USER_EVENTS_MESSAGE',
-  userEventsClose: 'EVENT_USER_EVENTS_CLOSE',
   sidecarLog: 'EVENT_SIDECAR_LOG',
+  browserAuthResult: 'EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'EVENT_MENU_SHOW_PREFERENCES',
 }
@@ -2242,13 +2239,26 @@ export const DESKTOP_RS_EVENT_NAMES = {
 export const DESKTOP_RS_MACOS_ONLY_EVENTS = new Set(['menuShowAbout', 'menuShowPreferences'])
 
 export const DESKTOP_TS_EVENT_NAMES = {
-  channelMessage: 'TAURI_EVENT_CHANNEL_MESSAGE',
-  channelClose: 'TAURI_EVENT_CHANNEL_CLOSE',
-  userEventsMessage: 'TAURI_EVENT_USER_EVENTS_MESSAGE',
-  userEventsClose: 'TAURI_EVENT_USER_EVENTS_CLOSE',
   sidecarLog: 'TAURI_EVENT_SIDECAR_LOG',
+  browserAuthResult: 'TAURI_EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'TAURI_EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'TAURI_EVENT_MENU_SHOW_PREFERENCES',
+}
+
+export const DESKTOP_RS_IPC_HEADER_NAMES = {
+  method: 'IPC_HEADER_METHOD',
+  path: 'IPC_HEADER_PATH',
+  headers: 'IPC_HEADER_HEADERS',
+  relayId: 'IPC_HEADER_RELAY_ID',
+  requestId: 'IPC_HEADER_REQUEST_ID',
+}
+
+export const DESKTOP_TS_IPC_HEADER_NAMES = {
+  method: 'TAURI_IPC_HEADER_METHOD',
+  path: 'TAURI_IPC_HEADER_PATH',
+  headers: 'TAURI_IPC_HEADER_HEADERS',
+  relayId: 'TAURI_IPC_HEADER_RELAY_ID',
+  requestId: 'TAURI_IPC_HEADER_REQUEST_ID',
 }
 
 // The Desktop account settings' enum tokens, in the three languages that spell
@@ -2358,6 +2368,17 @@ export function checkDesktop(d) {
     ['DESKTOP_RS_EVENT_NAMES', DESKTOP_RS_EVENT_NAMES],
     ['DESKTOP_TS_EVENT_NAMES', DESKTOP_TS_EVENT_NAMES],
   ])
+  mustBe(
+    d.ipcHeaders && typeof d.ipcHeaders === 'object' && !Array.isArray(d.ipcHeaders),
+    'desktop.json',
+    'ipcHeaders must be an object',
+  )
+  const ipcHeaders = Object.values(d.ipcHeaders)
+  mustBe(new Set(ipcHeaders).size === ipcHeaders.length, 'desktop.json', 'two IPC headers share one name')
+  checkTableCoverage('desktop.json', 'ipcHeaders', Object.keys(d.ipcHeaders), [
+    ['DESKTOP_RS_IPC_HEADER_NAMES', DESKTOP_RS_IPC_HEADER_NAMES],
+    ['DESKTOP_TS_IPC_HEADER_NAMES', DESKTOP_TS_IPC_HEADER_NAMES],
+  ])
   // One rule, applied to each block of tokens that is ONE choice: a setting
   // whose two values are the same string offers no choice at all. Never across
   // `windowBehavior` as a whole, because `tray` is deliberately the token of
@@ -2449,6 +2470,9 @@ export function emitTsDesktop(d) {
   const lines = Object.keys(DESKTOP_TS_EVENT_NAMES)
     .map(k => `export const ${DESKTOP_TS_EVENT_NAMES[k]} = ${jsonString(d.tauriEvents[k])} as const\n`)
     .join('')
+  const ipcHeaders = Object.keys(DESKTOP_TS_IPC_HEADER_NAMES)
+    .map(k => `export const ${DESKTOP_TS_IPC_HEADER_NAMES[k]} = ${jsonString(d.ipcHeaders[k])} as const\n`)
+    .join('')
   const behavior = Object.entries(flattenBehavior(d.windowBehavior))
     .map(([k, v]) => `export const ${DESKTOP_TS_BEHAVIOR_NAMES[k]} = ${jsonString(v)} as const\n`)
     .join('')
@@ -2464,6 +2488,8 @@ export function emitTsDesktop(d) {
 // names from its generated module). The env vars are Rust<->Go only and
 // ride in those outputs.
 ${lines}
+// Header names of raw Tauri invokes. Rust reads these same generated values.
+${ipcHeaders}
 // Enum tokens of the Desktop account settings. \`as const\` is what lets the
 // preference types derive (\`typeof TRAY_ON_CLOSE_TRAY | typeof
 // TRAY_ON_CLOSE_QUIT\`) rather than restate the union, so a token renamed in
@@ -2493,6 +2519,9 @@ export function emitRsDesktop(d) {
       return `${attr}pub const ${DESKTOP_RS_EVENT_NAMES[k]}: &str = ${rustString(d.tauriEvents[k])};`
     })
     .join('\n')
+  const ipcHeaders = Object.keys(DESKTOP_RS_IPC_HEADER_NAMES)
+    .map(k => `pub const ${DESKTOP_RS_IPC_HEADER_NAMES[k]}: &str = ${rustString(d.ipcHeaders[k])};`)
+    .join('\n')
   const behavior = Object.entries(flattenBehavior(d.windowBehavior))
     .map(([k, v]) => `pub const ${DESKTOP_RS_BEHAVIOR_NAMES[k]}: &str = ${rustString(v)};`)
     .join('\n')
@@ -2513,6 +2542,10 @@ ${env}
 
 /// Tauri events this shell emits and the webview subscribes to.
 ${events}
+
+/// Header names of raw Tauri invokes. The TypeScript sender imports the same
+/// values from its generated desktop contract.
+${ipcHeaders}
 
 /// Frame cap the shell enforces on the sidecar IPC wire (the Go twin is
 /// contracts.MaxFrameSizeBytes).

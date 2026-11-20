@@ -759,10 +759,12 @@ type OAuthAuthorizationCodeStore interface {
 	// consumed row names that credential.
 	Get(ctx context.Context, code string) (*OAuthAuthorizationCode, error)
 	GetActive(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
-	Consume(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
-	// MarkMinted records which credential the exchange produced, so a later
-	// replay of the same code can revoke it.
-	MarkMinted(ctx context.Context, code, tokenID string) error
+	Consume(ctx context.Context, code string, now time.Time) error
+	// MarkMinted records which credential the exchange produced -- an app
+	// credential or a session, as the reference states -- so a later replay of
+	// the same code can revoke it. RFC 6749 section 4.1.2 requires exactly
+	// that, and without the stamp there was nothing to name.
+	MarkMinted(ctx context.Context, code string, minted CredentialRef) error
 	// ConsumeActiveForUserClient spends this account's outstanding codes for
 	// an app -- the DISCONNECT path, which must not leave a consent granted
 	// seconds before it redeemable into a fresh credential.
@@ -786,6 +788,10 @@ type OAuthClientStore interface {
 	// credential on a retired app, and the disconnect surface has to identify
 	// what it revoked.
 	Get(ctx context.Context, clientID string) (*OAuthClient, error)
+	// LockForElevation locks the live app registration against policy changes
+	// until the caller's transaction ends. It returns ErrNotFound when the
+	// app is missing, retired, or cannot elevate.
+	LockForElevation(ctx context.Context, clientID string) error
 	// GetIcon reads the icon bytes, their media type, and the facts that gate
 	// serving them, for the /oauth/apps/<id>/icon asset endpoint. It is a
 	// separate read because the full-row queries carry only whether an icon

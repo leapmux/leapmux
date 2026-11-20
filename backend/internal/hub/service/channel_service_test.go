@@ -1442,7 +1442,7 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		FirstCredentialExempt: true,
 		IsAdmin:               false,
 	}))
-	token, _, _, loginErr := auth.Login(ctx, e.store, hubtestutil.TestSecretHasher(), "user2", "testpass2", auth.DefaultSessionDuration)
-	require.NoError(t, loginErr)
+	sess, _ := hubtestutil.LoginWithoutWindow(t, e.store, hubtestutil.TestSecretHasher(), "user2", "testpass2", auth.DefaultSessionDuration)
+	token = sess.Token
 	return
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -41,71 +40,44 @@ type wsRelay struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	emit   func(*desktoppb.Event)
-	// owner is the frontend relay wrapper this relay was last handed to.
-	//
-	// It exists because a close request cannot be trusted to mean "close the relay
-	// that is here now": the frontend dispatches open and close as separate RPCs and
-	// RPCSession runs every request on its own goroutine with no ordering, so a close
-	// sent for wrapper A can execute after a later open handed the relay to wrapper
-	// B. Closing then tears down the relay B just took -- and because shutdown cancels
-	// the relay context before the read loop can emit, no close event ever reaches the
-	// frontend: the channel relay sits at readyState OPEN forever with every send
-	// failing, and the userevents page sits bootstrapped on a dead relay with nothing
-	// reopening it until a reload.
-	//
-	// Comparing the id makes a stale close a no-op regardless of how the goroutines
-	// are scheduled, which is the only way to get ordering here: the JS side's
-	// wrapper-id claim orders the DISPATCH of the two requests but has no say over
-	// when the sidecar runs them.
-	//
-	// It lives on the relay, not on desktopConnection, so ownership is a property of
-	// "a relay has an owner" -- both relays get the same fence (closeIfOwner), and the
-	// id cannot outlive the relay it named.
-	//
-	// owner is read RACE-FREE by the relay read loop's emit closure
-	// (eventSink.forOwner -> EmitRelay(wsRelay.ownerNow)) while that relay is still
-	// running, but re-stamped under lifecycleMu by OpenChannelRelay's adoptLiveRelay
-	// -- the only path that transfers ownership of a LIVE relay.
-	// OpenUserEventsRelay does not re-stamp: its rejectIfSuperseded only LOADS owner
-	// (to refuse a stale open), and a fresh userevents relay is stamped once at
-	// construction and never mutated again, so the atomic load on its read loop is
-	// defense-in-depth rather than a race guard. The writes (wsRelay.stampOwner) all
-	// happen under lifecycleMu; the only lock-free access is the read loop's ownerNow.
-	// A stale read can observe the immediately-prior owner, which only affects which
-	// relay an undeliverable frame can close -- never delivery itself.
-	//
-	// All reads/writes go through ownerNow/stampOwner, the named accessors below; a
-	// future bare `relay.owner` read bypasses the atomic and races. (atomic.Uint64
-	// would make the field self-protecting, but it carries a noCopy that wsRelay's
-	// value-embedding in ChannelRelay/UserEventsRelay cannot stomach; standalone
-	// atomic ops behind accessors are safe on every target LeapMux builds for --
-	// macOS/Linux/Windows, all 64-bit.)
-	owner uint64
+	// owner is the frontend wrapper that owns this relay. The channel relay
+	// can transfer ownership while the read loop is running. ownerMu makes
+	// the health check and that transfer atomic with read-side cancellation.
+	ownerMu sync.Mutex
+	owner   uint64
 }
 
-// ownerNow returns the id of the frontend wrapper this relay was last handed to.
-// It is the ONLY race-free way to read owner: the read loop's emit closure reads
-// it (via eventSink.forOwner) without holding lifecycleMu while an adopt
-// re-stamps it under lifecycleMu (see the owner field doc). Routing every read
-// through this method keeps the atomic load at one site so a future bare
-// `relay.owner` read cannot silently race.
-func (r *wsRelay) ownerNow() uint64 { return atomic.LoadUint64(&r.owner) }
+func (r *wsRelay) ownerNow() uint64 {
+	r.ownerMu.Lock()
+	defer r.ownerMu.Unlock()
+	return r.owner
+}
 
-// stampOwner records id as the frontend wrapper this relay was last handed to.
-// Caller holds lifecycleMu for writing; the Store is atomic only so the read
-// loop's lock-free ownerNow stays race-free against it. Routing every write
-// through this method keeps the atomic store at one site.
-func (r *wsRelay) stampOwner(id uint64) { atomic.StoreUint64(&r.owner, id) }
+func (r *wsRelay) stampOwner(id uint64) {
+	r.ownerMu.Lock()
+	defer r.ownerMu.Unlock()
+	r.owner = id
+}
 
-// newWSRelay constructs the shared wsRelay core both ChannelRelay and
-// UserEventsRelay embed, wiring the per-relay lifetime context + cancel the
-// dial-and-install core obtained and the done channel the read loop closes on
-// exit. Centralising the literal keeps the five-field initialization (and the
-// make(chan struct{}) the done channel needs) at one site, so a sixth field or
-// a changed constructor lands once instead of drifting between the two relays'
-// commit closures.
-func newWSRelay(ws *websocket.Conn, ctx context.Context, cancel context.CancelFunc, emit func(*desktoppb.Event)) wsRelay {
-	return wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), emit: emit}
+// adoptChannelOwner transfers a live channel relay to its next owner. A read
+// failure can cancel the context concurrently. Either the transfer completes
+// first and the close carries the new owner, or the open starts a new relay.
+func (r *wsRelay) adoptChannelOwner(relayID uint64) (bool, error) {
+	r.ownerMu.Lock()
+	defer r.ownerMu.Unlock()
+	if r.ctx.Err() != nil {
+		return false, nil
+	}
+	if r.owner > relayID {
+		return false, fmt.Errorf("channel relay superseded by a newer open")
+	}
+	r.owner = relayID
+	return true, nil
+}
+
+// newWSRelay records the owner and lifetime before either read loop starts.
+func newWSRelay(ws *websocket.Conn, ctx context.Context, cancel context.CancelFunc, relayID uint64) wsRelay {
+	return wsRelay{ws: ws, ctx: ctx, cancel: cancel, done: make(chan struct{}), owner: relayID}
 }
 
 // closeIfOwner runs closeRelay only while relayID still owns relay, returning the
@@ -154,22 +126,13 @@ func drainRelay(done <-chan struct{}) {
 	drain.WaitBounded(done, relayDrainTimeout, "relay read loop did not drain during close")
 }
 
-// emitClose cancels the relay's lifetime, then emits a close event built from
-// the read error's WebSocket close details. It is the shared terminal sequence of
-// BOTH read loops, so the "cancel before emit" invariant the wsRelay core
-// promises for both relays lives once here rather than copy-pasted into each
-// subtype's read loop -- a future third relay, or a fix to the cancel/emit order,
-// cannot land in one loop and silently miss the other.
-//
-// Cancelling BEFORE the emit is load-bearing: a concurrent adopt that gates on
-// ctx.Err()==nil must not adopt a relay whose read loop has already failed, and
-// the emit can block on a full shell pipe (the Rust reader thread not draining),
-// widening that window unless the cancel precedes it. Each read loop's deferred
-// r.cancel() is idempotent, and the emit writes to the shell via EmitEvent,
-// independent of r.ctx. build turns the close details into the relay-specific
-// Event payload -- the ONLY part that differs between the two relays.
+// emitClose cancels the lifetime before the close event. It ends adoption
+// under the same lock that transfers ownership, then releases that lock before
+// writing to the shell pipe.
 func (r *wsRelay) emitClose(err error, build func(code uint32, reason string, wasClean bool) *desktoppb.Event) {
+	r.ownerMu.Lock()
 	r.cancel()
+	r.ownerMu.Unlock()
 	code, reason, wasClean := channelwire.WebSocketCloseDetails(err)
 	r.emit(build(code, reason, wasClean))
 }
@@ -205,8 +168,7 @@ type relayOpenSpec struct {
 	// options, and read limits.
 	dial func(dialCtx context.Context, proxy *HubProxy) (*websocket.Conn, error)
 	// commit builds the relay around the dialed socket, stamps its owner
-	// BEFORE installing (so no close can ever observe it unowned), launches
-	// the read loop, and assigns the connection field.
+	// before installing it in the connection and launching the read loop.
 	commit func(connection *desktopConnection, ws *websocket.Conn, ctx context.Context, cancel context.CancelFunc)
 }
 
@@ -310,10 +272,13 @@ var dialChannelRelay = func(ctx context.Context, proxy *HubProxy) (*websocket.Co
 	if err := proxy.requireWSClient("channel relay"); err != nil {
 		return nil, err
 	}
+	client := *proxy.wsClient
+	if proxy.jar != nil {
+		client.Jar = proxy.jar.requestJar(proxy.base)
+	}
 	opts := &websocket.DialOptions{
 		Subprotocols: []string{contracts.WSSubprotocolChannelRelay},
-		HTTPHeader:   proxy.cookieHeader(),
-		HTTPClient:   proxy.wsClient,
+		HTTPClient:   &client,
 	}
 	ws, _, err := websocket.Dial(ctx, wsURL, opts)
 	if err != nil {
@@ -348,15 +313,10 @@ func (a *App) OpenChannelRelay(requestCtx context.Context, relayID uint64) error
 	// wrapper 2 already committed, and wrapper 1's later Close then tears the
 	// relay down out from under the active wrapper 2.
 	adoptLiveRelay := func(connection *desktopConnection) (handled bool, err error) {
-		current := connection.relay
-		if current == nil || current.ctx.Err() != nil {
+		if connection.relay == nil {
 			return false, nil
 		}
-		if current.ownerNow() > relayID {
-			return false, fmt.Errorf("channel relay superseded by a newer open")
-		}
-		current.stampOwner(relayID)
-		return true, nil
+		return connection.relay.adoptOwner(relayID)
 	}
 	return a.openRelay(requestCtx, relayOpenSpec{
 		policy:     adoptLiveRelay,
@@ -364,26 +324,24 @@ func (a *App) OpenChannelRelay(requestCtx context.Context, relayID uint64) error
 		dial:       dialChannelRelay,
 		commit: func(connection *desktopConnection, ws *websocket.Conn, ctx context.Context, cancel context.CancelFunc) {
 			relay := &ChannelRelay{
-				wsRelay: newWSRelay(ws, ctx, cancel, a.EmitEvent),
+				wsRelay: newWSRelay(ws, ctx, cancel, relayID),
 			}
-			// Every path that tells a caller "you have a relay" records it as the
-			// owner (adoptLiveRelay stamps the adopt paths), so ownership always
-			// names whoever the frontend last handed the relay to -- which is
-			// exactly who a legitimate close can come from. Stamped before the
-			// relay is installed, so no close can ever observe it unowned.
-			relay.stampOwner(relayID)
-			// Route the read loop's emits through the relay-aware sink so an
-			// undeliverable frame carries this relay's owner id forward to the
-			// close path (the closure reads relay.owner at call time; it is
-			// stable once stamped above).
+			// Read the current owner on each emit because another wrapper can
+			// adopt this relay while the reader runs.
 			relay.emit = a.emitForOwner(&relay.wsRelay)
-			go relay.runReadLoop()
 			connection.relay = relay
+			go relay.runReadLoop()
 		},
 	})
 }
 
-func (a *App) SendChannelMessage(requestCtx context.Context, data []byte) error {
+func (r *ChannelRelay) adoptOwner(relayID uint64) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.adoptChannelOwner(relayID)
+}
+
+func (a *App) SendChannelMessage(requestCtx context.Context, relayID uint64, data []byte) error {
 	done, err := a.beginOperation()
 	if err != nil {
 		return err
@@ -415,13 +373,16 @@ func (a *App) SendChannelMessage(requestCtx context.Context, data []byte) error 
 	}
 	relay.mu.Lock()
 	defer relay.mu.Unlock()
+	if relay.ownerNow() != relayID {
+		return fmt.Errorf("channel relay owner changed")
+	}
 	if err := relay.ctx.Err(); err != nil {
 		return fmt.Errorf("channel relay closed: %w", err)
 	}
 	if err := relay.ws.Write(relay.ctx, websocket.MessageBinary, data); err != nil {
 		// A write failure is terminal for a WebSocket, and coder/websocket does NOT
 		// force-close the conn on a data-frame write error. Close the socket so the
-		// parked read loop unblocks into its emit path and delivers channel:close to
+		// parked read loop unblocks into its emit path and delivers channel relay close to
 		// the frontend, which re-resolves. Otherwise a half-open connection (writes
 		// error while the read stays blocked with no inbound frame to fail on) leaves
 		// the relay at readyState OPEN with every later send -- including a fresh
@@ -443,7 +404,7 @@ func (a *App) SendChannelMessage(requestCtx context.Context, data []byte) error 
 // ordering, so this can execute after a later OpenChannelRelay handed the relay to
 // another wrapper. Closing that relay would wedge the successor silently -- the
 // teardown cancels the relay context before the read loop can emit, so no
-// channel:close ever reaches the frontend and the socket stays OPEN forever with
+// channel relay close ever reaches the frontend and the socket stays OPEN forever with
 // every send failing. Ignoring a stale close makes the outcome independent of how
 // the sidecar happens to schedule the two requests.
 func (a *App) CloseChannelRelay(relayID uint64) error {

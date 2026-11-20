@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/filelock"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 // ErrDirectoryInUse reports a data directory another holder locks. The

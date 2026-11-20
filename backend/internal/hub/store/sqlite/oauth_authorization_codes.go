@@ -6,7 +6,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -19,12 +18,15 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 	return store.OAuthAuthorizationCode{
 		Code:             c.Code,
 		UserID:           c.UserID,
+		AuthGeneration:   c.AuthGeneration,
 		ClientID:         c.ClientID,
 		CodeChallenge:    c.CodeChallenge,
 		RedirectURI:      c.RedirectUri,
 		GrantedScopes:    c.GrantedScopes,
 		InstallationName: c.InstallationName,
-		MintedTokenID:    c.MintedTokenID.String,
+		Minted:           store.StoredRedemption(c.RedemptionKind).MintedRef(c.MintedRefID),
+		StepUp:           store.StoredRef(c.StepUpKind, c.StepUpRefID),
+		Redemption:       store.StoredRedemption(c.RedemptionKind),
 		CreatedAt:        c.CreatedAt.Time,
 		ExpiresAt:        c.ExpiresAt.Time,
 		ConsumedAt:       c.ConsumedAt.Ptr(),
@@ -32,15 +34,20 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 }
 
 func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.CreateOAuthAuthorizationCodeParams) error {
+	stepUpKind, stepUpRefID := p.StepUp.NullableKind()
 	return s.conn.queryError(s.conn.q.CreateOAuthAuthorizationCode(ctx, gendb.CreateOAuthAuthorizationCodeParams{
 		Code:             p.Code,
 		UserID:           p.UserID.String(),
+		AuthGeneration:   p.AuthGeneration,
 		ClientID:         p.ClientID,
 		CodeChallenge:    p.CodeChallenge,
 		RedirectUri:      p.RedirectURI,
 		GrantedScopes:    p.GrantedScopes,
 		InstallationName: p.InstallationName,
 		ExpiresAt:        sqltime.NewSQLiteTime(p.ExpiresAt),
+		StepUpKind:       stepUpKind,
+		StepUpRefID:      stepUpRefID,
+		RedemptionKind:   p.Redemption.NullableKind(),
 	}))
 }
 
@@ -56,16 +63,18 @@ func (s *oauthAuthorizationCodeStore) GetActive(ctx context.Context, code string
 	return &out, nil
 }
 
-func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) (*store.OAuthAuthorizationCode, error) {
-	row, err := s.conn.q.ConsumeOAuthAuthorizationCode(ctx, gendb.ConsumeOAuthAuthorizationCodeParams{
+func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) error {
+	rows, err := s.conn.rowsAffected(s.conn.q.ConsumeOAuthAuthorizationCode(ctx, gendb.ConsumeOAuthAuthorizationCodeParams{
 		Code: code,
 		Now:  sqltime.NewSQLiteTime(now),
-	})
+	}))
 	if err != nil {
-		return nil, s.conn.queryError(err)
+		return err
 	}
-	out := fromDBOAuthAuthorizationCode(row)
-	return &out, nil
+	if rows != 1 {
+		return store.ErrNotFound
+	}
+	return nil
 }
 
 // Get returns the row whatever its state. See OAuthAuthorizationCodeStore.Get:
@@ -91,9 +100,21 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 	}))
 }
 
-func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code, tokenID string) error {
-	return s.conn.queryError(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
-		Code:          code,
-		MintedTokenID: sqlutil.NullNonEmpty(tokenID),
+func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
+	redemption, ok := store.RedemptionForCredentialRef(minted)
+	if !ok {
+		return store.ErrInvalidArgument
+	}
+	rows, err := s.conn.rowsAffected(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
+		Code:                   code,
+		MintedRefID:            minted.ID,
+		ExpectedRedemptionKind: redemption.NullableKind(),
 	}))
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return store.ErrNotFound
+	}
+	return nil
 }

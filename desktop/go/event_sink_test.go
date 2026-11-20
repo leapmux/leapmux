@@ -43,44 +43,13 @@ func TestEventSink_EmitRoutesThroughTheInstalledSink(t *testing.T) {
 	}
 }
 
-// EmitRelay routes through the relay-aware sink when one is installed,
-// forwarding the emitting relay's owner id alongside the event.
-func TestEventSink_EmitRelayUsesTheRelaySinkWhenInstalled(t *testing.T) {
-	var s eventSink
-	type captured struct {
-		owner uint64
-	}
-	var got captured
-	s.SetRelay(func(owner uint64, _ *desktoppb.Event) { got = captured{owner: owner} })
-
-	s.EmitRelay(7, &desktoppb.Event{})
-	if got.owner != 7 {
-		t.Fatalf("relay sink received owner %d, want 7", got.owner)
-	}
-}
-
-// When no relay sink is installed, EmitRelay must fall back to the generic
-// sink -- this is the path a relay hits when it emits before the RPCSession
-// has wired its relay sink, and it is why EmitRelay cannot just drop the event.
-func TestEventSink_EmitRelayFallsBackToTheGenericSink(t *testing.T) {
-	var s eventSink
-	var genericCalls atomic.Int32
-	s.Set(func(*desktoppb.Event) { genericCalls.Add(1) })
-	// No SetRelay: EmitRelay must fall back.
-
-	s.EmitRelay(99, &desktoppb.Event{})
-	if genericCalls.Load() != 1 {
-		t.Fatalf("fallback to generic sink called it %d times, want 1", genericCalls.Load())
-	}
-}
-
 // forOwner returns a closure that threads the emitting relay's owner id into
 // EmitRelay, reading relay.owner at CALL time (so a stamp after construction is
 // observed). This pins the deferred-read contract the relay read loops rely on.
 func TestEventSink_ForOwnerReadsOwnerAtCallTime(t *testing.T) {
 	var s eventSink
 	var got atomic.Uint64
-	s.SetRelay(func(owner uint64, _ *desktoppb.Event) { got.Store(owner) })
+	s.Set(func(event *desktoppb.Event) { got.Store(event.GetRelayId()) })
 
 	relay := &wsRelay{} // owner starts at its zero value
 	emit := s.forOwner(relay)
@@ -98,15 +67,11 @@ func TestEventSink_ForOwnerReadsOwnerAtCallTime(t *testing.T) {
 	}
 }
 
-// forOwner's closure reads relay.owner (via wsRelay.ownerNow) while an adopt
-// re-stamps it (via wsRelay.stampOwner) -- the concurrent shape of the relay
-// read loop emitting while OpenChannelRelay's adoptLiveRelay transfers
-// ownership under lifecycleMu. Before owner became atomic, the race detector
-// flagged this exact pattern; this test pins it race-free. Run with -race for
-// the meaningful check.
+// The relay read loop can emit while another wrapper adopts the relay.
+// Run with -race to check that owner reads and writes are synchronized.
 func TestEventSink_ForOwnerReadsOwnerConcurrentlyWithReStamp(t *testing.T) {
 	var s eventSink
-	s.SetRelay(func(owner uint64, _ *desktoppb.Event) {})
+	s.Set(func(*desktoppb.Event) {})
 
 	relay := &wsRelay{}
 	emit := s.forOwner(relay)
@@ -115,14 +80,14 @@ func TestEventSink_ForOwnerReadsOwnerConcurrentlyWithReStamp(t *testing.T) {
 	wg.Add(2)
 
 	const iterations = 200
-	// Reader: the relay read loop's emit, hitting the lock-free owner load.
+	// Reader: the relay read loop emits with the current owner.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			emit(&desktoppb.Event{})
 		}
 	}()
-	// Writer: an adopt re-stamping owner under (simulated) lifecycleMu.
+	// Writer: another wrapper takes ownership.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
@@ -131,7 +96,4 @@ func TestEventSink_ForOwnerReadsOwnerConcurrentlyWithReStamp(t *testing.T) {
 	}()
 
 	wg.Wait()
-	// No assertion on values -- the contract under test is the absence of a
-	// data race (detected by -race), not a specific interleaving. The worst
-	// case the design accepts is one emit observing the immediately-prior owner.
 }

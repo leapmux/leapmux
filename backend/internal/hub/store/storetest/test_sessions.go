@@ -37,6 +37,34 @@ func (s *Suite) testSessions(t *testing.T) {
 		assert.False(t, found.ExpiresAt.IsZero())
 	})
 
+	t.Run("issued_to_client round-trips", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "sess-issued-to")
+
+		sessID := id.Generate()
+		require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+			ID:             sessID,
+			SecretHash:     FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
+			UserID:         userid.MustNew(user.ID),
+			ExpiresAt:      time.Now().Add(time.Hour),
+			IssuedToClient: "leapmux-desktop",
+		}))
+
+		found, err := st.Sessions().GetByID(ctx, sessID, time.Now().UTC())
+		require.NoError(t, err)
+		assert.Equal(t, "leapmux-desktop", found.IssuedToClient)
+	})
+
+	t.Run("empty issued_to_client reads as empty", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "sess-no-issued-to")
+		sess := SeedSession(t, st, user.ID)
+
+		found, err := st.Sessions().GetByID(ctx, sess.ID, time.Now().UTC())
+		require.NoError(t, err)
+		assert.Empty(t, found.IssuedToClient, "a session with no app must read as empty, not as a stored NULL")
+	})
+
 	t.Run("get by id not found", func(t *testing.T) {
 		st := s.NewStore(t)
 		_, err := st.Sessions().GetByID(ctx, "nonexistent", time.Now().UTC())

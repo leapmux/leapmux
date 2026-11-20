@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentInputQueuePauseReason, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
+import { accountStorageKey, PREFIX_CONTROL_STATE, storageAccountFor } from '../../../src/lib/browserStorage'
 import { isObject } from '../../../src/lib/jsonPick'
 import { openAgentViaAPI } from '../helpers/api'
 import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
@@ -85,7 +85,7 @@ export default function (pi) {
       // Require the saved draft before the reload.
       await waitForStoredEntry(
         page,
-        accountStorageKey(leapmuxServer.adminUserId, `${PREFIX_CONTROL_STATE}${agentId}:`),
+        accountStorageKey(storageAccountFor(new URL(leapmuxServer.hubUrl).origin, leapmuxServer.adminUserId), `${PREFIX_CONTROL_STATE}${agentId}:`),
         value => isObject(value) && isObject(value.choices) && value.choices['dialog-text'] === scenario.text,
         'the editor draft must be persisted before the reload',
       )

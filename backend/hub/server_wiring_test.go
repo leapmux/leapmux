@@ -73,10 +73,10 @@ func newWiringIdentity(t *testing.T, srv *Server, serverURL string) *wiringHub {
 		EmailVerified: true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(ctx, srv.store, srv.hasher, wiringAdminName, wiringAdminPassword, auth.DefaultSessionDuration)
+	session, _, err := auth.Login(ctx, srv.store, srv.hasher, wiringAdminName, wiringAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
-	hubtestutil.ElevateSession(t, srv.store, hubtestutil.SessionIDFromCookie(t, session), admin.ID)
-	return &wiringHub{srv: srv, url: serverURL, adminID: admin.ID, session: session}
+	hubtestutil.ElevateSession(t, srv.store, hubtestutil.SessionIDFromCookie(t, session.Token), admin.ID)
+	return &wiringHub{srv: srv, url: serverURL, adminID: admin.ID, session: session.Token}
 }
 
 // storedToken writes an API token and returns its bearer and refresh strings.
@@ -88,6 +88,7 @@ func (h *wiringHub) storedToken(t *testing.T) (bearer, refresh string) {
 	tokenID := id.Generate()
 	secret, refreshSecret := auth.MintAccessSecret(), auth.MintAccessSecret()
 	require.NoError(t, h.srv.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(h.adminID),
 		ClientID:         oauthapp.ControlCLIClientID,

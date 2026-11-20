@@ -19,10 +19,10 @@ LeapMux has three components. The Hub and the Worker are roles of a single Go bi
 
 **Your agent transcripts, terminal output, and file contents live on the Worker, never on the Hub.**
 
-The division protects content while the Hub only observes its database, logs, and relayed traffic. The Hub is trusted for identity and code. A Hub that acts can open its own channel as you or serve modified Frontend code.
+The division protects content while the Hub only observes its database, logs, and relayed traffic. The Hub is trusted for identity, and a browser trusts it for code as well. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser — the desktop app runs its bundled Frontend, so no Hub can serve it code.
 
 {{< callout type="info" >}}
-The native desktop app is a packaged Frontend plus an embedded LeapMux binary. It can run a local Hub+Worker (solo) or connect its WebView to a remote Hub. See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
+The native desktop app is a packaged Frontend plus an embedded LeapMux binary. It can run a local Hub+Worker (solo) or connect to a remote Hub through its local service. See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
 {{< /callout >}}
 
 ## The two deployment shapes
@@ -91,7 +91,7 @@ There is also dev mode (`leapmux dev`) — the same Hub+Worker-in-one-process ru
 | Login | Local socket: none. TCP: set the first `solo` password, then sign in. | Real auth (password, OAuth, sessions) |
 | Workers | One local, in-process | One-or-more, local or remote, NAT-friendly |
 | Multiple user accounts | No | Yes |
-| Trust model | Local-host trust | Hub trusted for identity and code; content end-to-end encrypted |
+| Trust model | Local-host trust | Hub trusted for identity; a browser trusts it for code; content end-to-end encrypted |
 
 The default TCP port everywhere is **4327**. For run modes, ports, data directories, Docker, and reverse-proxy setup, see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/). For the full command surface, see the [CLI Reference](/docs/reference/cli-reference/).
 

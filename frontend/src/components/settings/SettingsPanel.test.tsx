@@ -100,6 +100,7 @@ function fakeStore(descriptors: ProtoSettingDescriptor[] = []): SettingsStore {
     },
     values: () => new Map(),
     load: async () => {},
+    clear: () => {},
     update: async () => {},
     updateSecret: async () => {},
     reset: async () => {},

@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -29,18 +30,20 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
+	"google.golang.org/protobuf/proto"
 )
 
 // adminGateFixture mounts the REAL AdminSettingsService (plus AuthService
-// for logins) behind the real auth interceptor, with an admin and a
-// non-admin user seeded.
+// for logins and AdminUserService for UpdateUser) behind the real auth
+// interceptor, with an admin and a non-admin user seeded.
 type adminGateFixture struct {
-	authClient  leapmuxv1connect.AuthServiceClient
-	adminClient leapmuxv1connect.AdminSettingsServiceClient
-	st          store.Store
-	tv          *auth.TokenValidator
-	adminUserID string
-	plainUserID string
+	authClient      leapmuxv1connect.AuthServiceClient
+	adminClient     leapmuxv1connect.AdminSettingsServiceClient
+	adminUserClient leapmuxv1connect.AdminUserServiceClient
+	st              store.Store
+	tv              *auth.TokenValidator
+	adminUserID     string
+	plainUserID     string
 }
 
 func setupAdminGateServer(t *testing.T) *adminGateFixture {
@@ -63,16 +66,23 @@ func setupAdminGateServer(t *testing.T) *adminGateFixture {
 
 	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{}, st)
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)
+
+	adminUserSvc := service.NewAdminUserService(service.AdminUserServiceDeps{
+		Store:   st,
+		Notices: service.NewCredentialNotices(nil, mail.Renderer{}),
+	})
+	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, adminUserSvc)
 	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	return &adminGateFixture{
-		authClient:  leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
-		adminClient: leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
-		st:          st,
-		tv:          tv,
+		authClient:      leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		adminClient:     leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		adminUserClient: leapmuxv1connect.NewAdminUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		st:              st,
+		tv:              tv,
 		adminUserID: func() string {
 			u, err := st.Users().GetByUsername(context.Background(), "admin")
 			require.NoError(t, err)
@@ -88,7 +98,17 @@ func (f *adminGateFixture) adminCookie(t *testing.T) string {
 		Username: "admin", Password: "admin123",
 	})
 	require.NoError(t, err)
-	return hubtestutil.SessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
+	cookie := hubtestutil.SessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
+	// The RPC sign-in writes a FreshAuthenticationWindow. Drop it so the
+	// fixture yields the unelevated session the gate tests need.
+	owner, ok := userid.New(f.adminUserID)
+	require.True(t, ok)
+	_, dropErr := f.st.Sessions().DropElevation(context.Background(), store.DropSessionElevationParams{
+		SessionID: hubtestutil.SessionIDFromCookie(t, cookie),
+		UserID:    owner,
+	})
+	require.NoError(t, dropErr)
+	return cookie
 }
 
 func (f *adminGateFixture) plainUserCookie(t *testing.T) string {
@@ -97,21 +117,108 @@ func (f *adminGateFixture) plainUserCookie(t *testing.T) string {
 		Username: "plainuser", Password: "plainpass123",
 	})
 	require.NoError(t, err)
-	return hubtestutil.SessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
+	cookie := hubtestutil.SessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
+	owner, ok := userid.New(f.plainUserID)
+	require.True(t, ok)
+	_, dropErr := f.st.Sessions().DropElevation(context.Background(), store.DropSessionElevationParams{
+		SessionID: hubtestutil.SessionIDFromCookie(t, cookie),
+		UserID:    owner,
+	})
+	require.NoError(t, dropErr)
+	return cookie
 }
 
 func TestAdminGate_AdminCookieAllowed(t *testing.T) {
 	f := setupAdminGateServer(t)
-	_, err := f.adminClient.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, f.adminCookie(t)))
+
+	// Without an elevation window the interceptor refuses with the marker.
+	refusedCookie := f.adminCookie(t)
+	refusedCtx, refusedInfo := connect.NewClientContext(context.Background())
+	refusedInfo.RequestHeader().Set("Cookie", auth.CookieName+"="+refusedCookie)
+	_, err := f.adminClient.ListSettings(refusedCtx, &leapmuxv1.ListSettingsRequest{})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", refusedInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"the refusal must be the one a step-up prompt can clear")
+
+	// With a current window the admin cookie passes. A FRESH login, because
+	// the interceptor caches the UserInfo it validated: stamping the row
+	// after a refused request would be invisible until that entry expired.
+	cookie := f.adminCookie(t)
+	hubtestutil.ElevateSession(t, f.st, hubtestutil.SessionIDFromCookie(t, cookie), f.adminUserID)
+	_, err = f.adminClient.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, cookie))
 	require.NoError(t, err)
+}
+
+// TestAdminGate_ExpiredWindowRefused pins that a lapsed pair is not a window:
+// the columns hold a deadline that already passed, and the refusal must be
+// the one an absent window gets.
+func TestAdminGate_ExpiredWindowRefused(t *testing.T) {
+	f := setupAdminGateServer(t)
+	cookie := f.adminCookie(t)
+
+	now := time.Now().UTC()
+	n, err := f.st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
+		SessionID:          hubtestutil.SessionIDFromCookie(t, cookie),
+		UserID:             userid.MustNew(f.adminUserID),
+		ElevationProvenAt:  now.Add(-time.Minute),
+		ElevationExpiresAt: now.Add(-time.Second),
+	}, now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	callCtx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+cookie)
+	_, err = f.adminClient.ListSettings(callCtx, &leapmuxv1.ListSettingsRequest{})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"an expired window can be recovered through verification")
+}
+
+// TestAdminGate_AdminReadLeavesTheWindowUnchanged pins that an admitted read
+// does not slide the step-up window. The pair is stamped as it stood one
+// minute ago, so a slide that extends the deadline by the elapsed time moves
+// it a whole minute and cannot hide in the store's millisecond precision.
+func TestAdminGate_AdminReadLeavesTheWindowUnchanged(t *testing.T) {
+	f := setupAdminGateServer(t)
+	cookie := f.adminCookie(t)
+	sessionID := hubtestutil.SessionIDFromCookie(t, cookie)
+
+	provenAt := time.Now().UTC().Add(-time.Minute)
+	n, err := f.st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
+		SessionID:          sessionID,
+		UserID:             userid.MustNew(f.adminUserID),
+		ElevationProvenAt:  provenAt,
+		ElevationExpiresAt: provenAt.Add(auth.ElevationWindow),
+	}, time.Now())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	ctx := context.Background()
+	before, err := f.st.Sessions().GetByID(ctx, sessionID, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, before.ElevationExpiresAt)
+
+	_, err = f.adminClient.ListSettings(authedReq(ctx, &leapmuxv1.ListSettingsRequest{}, cookie))
+	require.NoError(t, err)
+
+	after, err := f.st.Sessions().GetByID(ctx, sessionID, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, after.ElevationExpiresAt)
+	assert.True(t, before.ElevationExpiresAt.Equal(*after.ElevationExpiresAt),
+		"an admin read must not slide the window: before %s, after %s", before.ElevationExpiresAt, after.ElevationExpiresAt)
 }
 
 func TestAdminGate_NonAdminCookieDenied(t *testing.T) {
 	f := setupAdminGateServer(t)
-	_, err := f.adminClient.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, f.plainUserCookie(t)))
+	callCtx, info := connect.NewClientContext(t.Context())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+f.plainUserCookie(t))
+	_, err := f.adminClient.ListSettings(callCtx, &leapmuxv1.ListSettingsRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "administrator privileges are required")
+	assert.False(t, info.ResponseHeader().Has(service.ElevationRequiredHeader))
 }
 
 func TestAdminGate_Unauthenticated(t *testing.T) {
@@ -138,10 +245,14 @@ func TestAdminGate_AdminBearerNeedsAnAdminScope(t *testing.T) {
 	owner, ownerOK := userid.New(f.adminUserID)
 	require.True(t, ownerOK)
 
+	// Every minted token is elevated, so the scope assertions below are not
+	// masked by the interceptor's elevation check. The scope refusals happen
+	// at the scope rung, which runs before the elevation rung.
 	mint := func(grant string) string {
 		tokenID := id.Generate()
 		secret := auth.MintAccessSecret()
 		require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+			Issuance:         store.APITokenIssuanceAuthorizationCode,
 			ID:               tokenID,
 			UserID:           owner,
 			ClientID:         oauthapp.ControlCLIClientID,
@@ -149,6 +260,7 @@ func TestAdminGate_AdminBearerNeedsAnAdminScope(t *testing.T) {
 			GrantedScopes:    grant,
 			SecretHash:       f.tv.HashSecret(secret),
 		}))
+		hubtestutil.ElevateAPIToken(t, f.st, tokenID, f.adminUserID)
 		return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	}
 	listSettings := func(bearer string) error {
@@ -172,6 +284,128 @@ func TestAdminGate_AdminBearerNeedsAnAdminScope(t *testing.T) {
 	require.NoError(t, listSettings(mint("admin:read")))
 }
 
+// TestAdminGate_AppWithoutElevationAllowedRefused pins the loadBearer rule
+// that zeroes a window when the app's elevation_allowed is off. The row still
+// holds a live pair; the read must refuse it all the same.
+func TestAdminGate_AppWithoutElevationAllowedRefused(t *testing.T) {
+	f := setupAdminGateServer(t)
+	owner, ownerOK := userid.New(f.adminUserID)
+	require.True(t, ownerOK)
+
+	clientID := id.Generate()
+	_, err := f.st.OAuthClients().Create(context.Background(), store.CreateOAuthClientParams{
+		ClientID:           clientID,
+		ClientName:         "elevating-app",
+		RedirectURIs:       "https://app.example.com/callback",
+		Scopes:             "admin:read",
+		GrantTypes:         "authorization_code",
+		ElevationAllowed:   true,
+		RegistrationSource: store.OAuthClientSourceAdmin,
+	})
+	require.NoError(t, err)
+
+	tokenID := id.Generate()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
+		ID:               tokenID,
+		UserID:           owner,
+		ClientID:         clientID,
+		InstallationName: "test",
+		GrantedScopes:    "admin:read",
+		SecretHash:       f.tv.HashSecret(secret),
+	}))
+	// The store admits an elevation write only while the app is allowed, so
+	// the window is stamped first and the owner then withdraws the
+	// permission. That is the row state the read must zero.
+	hubtestutil.ElevateAPIToken(t, f.st, tokenID, f.adminUserID)
+	n, err := f.st.OAuthClients().SetElevationAllowed(context.Background(), store.SetOAuthClientElevationAllowedParams{
+		ClientID: clientID, ElevationAllowed: false,
+		CallerUserID: owner, CallerIsAdmin: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	callCtx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	_, err = f.adminClient.ListSettings(callCtx, &leapmuxv1.ListSettingsRequest{})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"the app owner must enable elevation before a prompt can help")
+	assert.Contains(t, err.Error(), "application owner disabled identity verification")
+
+	n, err = f.st.OAuthClients().SetElevationAllowed(context.Background(), store.SetOAuthClientElevationAllowedParams{
+		ClientID: clientID, ElevationAllowed: true,
+		CallerUserID: owner, CallerIsAdmin: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	retryTokenID := id.Generate()
+	retrySecret := auth.MintAccessSecret()
+	require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
+		ID:               retryTokenID,
+		UserID:           owner,
+		ClientID:         clientID,
+		InstallationName: "retry",
+		GrantedScopes:    "admin:read",
+		SecretHash:       f.tv.HashSecret(retrySecret),
+	}))
+
+	retryCtx, retryInfo := connect.NewClientContext(context.Background())
+	retryInfo.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, retryTokenID, retrySecret))
+	_, err = f.adminClient.ListSettings(retryCtx, &leapmuxv1.ListSettingsRequest{})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", retryInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"re-enabling the app restores the ordinary verification remedy")
+}
+
+// TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused pins the marker on
+// a NON-session-only admin procedure: an app credential without a window is
+// refused WITH the prompt signal, unlike the session-only refusals that can
+// offer no ceremony that would help.
+func TestAdminGate_AppCredentialWithoutWindowUpdateUserRefused(t *testing.T) {
+	f := setupAdminGateServer(t)
+	owner, ownerOK := userid.New(f.adminUserID)
+	require.True(t, ownerOK)
+
+	tokenID := id.Generate()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
+		ID:               tokenID,
+		UserID:           owner,
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    "admin:users",
+		SecretHash:       f.tv.HashSecret(secret),
+	}))
+
+	callCtx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	_, err := f.adminUserClient.UpdateUser(callCtx, &leapmuxv1.UpdateUserRequest{
+		User:        service.SelectUserByID(f.adminUserID),
+		DisplayName: proto.String("Renamed"),
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"the refusal must be the one a step-up prompt can clear")
+
+	emailCtx, emailInfo := connect.NewClientContext(context.Background())
+	emailInfo.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	_, err = f.adminUserClient.UpdateUser(emailCtx, &leapmuxv1.UpdateUserRequest{
+		User:  service.SelectUserByID(f.adminUserID),
+		Email: proto.String("admin@example.com"),
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Empty(t, emailInfo.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"a browser session is required, so a bearer step-up cannot clear this refusal")
+}
+
 // TestAdminGate_NonAdminAdminScopedBearerStillDenied pins the COMPOSITION
 // rule: a scope subtracts from the account's own authority and never adds to
 // it, so an admin scope on a credential whose owner is not an administrator
@@ -188,6 +422,7 @@ func TestAdminGate_NonAdminAdminScopedBearerStillDenied(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, f.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           owner,
 		ClientID:         oauthapp.ControlCLIClientID,

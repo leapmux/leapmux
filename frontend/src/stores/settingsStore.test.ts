@@ -2,6 +2,7 @@ import type { SettingsStorePorts } from './settingsStore'
 import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { deferred } from '~/test-support/async'
 import { createSettingsStore } from './settingsStore'
 
 function value(key: string, effectiveJson: string): SettingValue {
@@ -120,6 +121,133 @@ describe('createSettingsStore load', () => {
     })
   })
 
+  it('discards a late catalogue reply after access is denied', async () => {
+    const pending = deferred<{ descriptors: SettingDescriptor[], values: SettingValue[] }>()
+    let allowed = true
+    await withStore({
+      list: () => pending.promise,
+      enabled: () => allowed,
+    }, async (store) => {
+      const load = store.load()
+      allowed = false
+      await store.load()
+      pending.resolve({
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '1'),
+        ],
+      })
+      await load
+
+      expect(store.state.descriptors).toEqual([])
+      expect(store.values().size).toBe(0)
+      expect(store.state.loading).toBe(false)
+      expect(store.state.loaded).toBe(false)
+    })
+  })
+
+  it('starts a catalogue read while a write is pending and keeps the later commit', async () => {
+    const write = deferred<void>()
+    let serverValue = '1'
+    const list = vi.fn(async () => ({
+      descriptors: [
+        descriptor('smtp'),
+      ],
+      values: [
+        value('smtp', serverValue),
+      ],
+    }))
+    await withStore({
+      list,
+      update: async (key, next) => {
+        await write.promise
+        serverValue = next
+        return value(key, serverValue)
+      },
+    }, async (store) => {
+      const pendingWrite = store.update('smtp', '2')
+      const pendingLoad = store.load()
+      const listedWhileWriting = list.mock.calls.length > 0
+      write.resolve()
+      await Promise.all([pendingWrite, pendingLoad])
+
+      expect(listedWhileWriting).toBe(true)
+      expect(store.state.descriptors).toEqual([
+        descriptor('smtp'),
+      ])
+      expect(store.values().get('smtp')?.effectiveJson).toBe('2')
+    })
+  })
+
+  it.each(['update', 'reset'] as const)('loads after an earlier %s response when a window is renewed', async (operation) => {
+    const catalogue = deferred<{ descriptors: SettingDescriptor[], values: SettingValue[] }>()
+    const write = deferred<SettingValue>()
+    const list = vi.fn(() => catalogue.promise)
+    await withStore({
+      list,
+      update: () => write.promise,
+      reset: () => write.promise,
+    }, async (store) => {
+      const previousWrite = operation === 'update'
+        ? store.update('smtp', '1')
+        : store.reset('smtp')
+      store.clear()
+      const freshLoad = store.load()
+      const listedBeforeWriteFinished = list.mock.calls.length > 0
+
+      write.resolve(operation === 'update'
+        ? value('smtp', '1')
+        : {
+            ...value('smtp', '0'),
+            valueJson: '',
+            customized: false,
+          })
+      await previousWrite
+      catalogue.resolve({
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '2'),
+        ],
+      })
+      await freshLoad
+
+      expect(listedBeforeWriteFinished).toBe(true)
+      expect(list).toHaveBeenCalledOnce()
+      expect(store.values().get('smtp')?.effectiveJson).toBe('2')
+    })
+  })
+
+  it('issues a newer write without waiting for the pending catalogue read', async () => {
+    const catalogue = deferred<{ descriptors: SettingDescriptor[], values: SettingValue[] }>()
+    const update = vi.fn(async () => value('smtp', '2'))
+    await withStore({
+      list: () => catalogue.promise,
+      update,
+    }, async (store) => {
+      const load = store.load()
+      const write = store.update('smtp', '2')
+      await Promise.resolve()
+      const wroteBeforeListFinished = update.mock.calls.length > 0
+      catalogue.resolve({
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '1'),
+        ],
+      })
+      await Promise.all([load, write])
+
+      expect(wroteBeforeListFinished).toBe(true)
+      expect(update).toHaveBeenCalledOnce()
+      expect(store.values().get('smtp')?.effectiveJson).toBe('2')
+    })
+  })
+
   // A session that lost access must not keep serving the previous one's
   // settings.
   it('clears state instead of asking while the guard denies access', async () => {
@@ -169,6 +297,41 @@ describe('createSettingsStore mutations', () => {
       expect(store.state.writeError).toBeNull()
     })
   })
+  it('keeps a committed value when a newer write to the same key fails', async () => {
+    const committed = deferred<SettingValue>()
+    const update = vi.fn<SettingsStorePorts['update']>()
+      .mockReturnValueOnce(committed.promise)
+      .mockRejectedValueOnce(new Error('the second setting is invalid'))
+    await withStore({
+      list: async () => ({
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '1'),
+        ],
+      }),
+      update,
+    }, async (store) => {
+      await store.load()
+      const first = store.update('smtp', '2')
+      const refused = expect(store.update('smtp', '3')).rejects.toThrow('the second setting is invalid')
+
+      committed.resolve(value('smtp', '2'))
+      await first
+      await refused
+
+      expect(update.mock.calls).toEqual([
+        ['smtp', '2'],
+        ['smtp', '3'],
+      ])
+      expect(store.values().get('smtp')?.effectiveJson).toBe('2')
+      expect(store.state.writeError).toEqual({
+        key: 'smtp',
+        message: 'the second setting is invalid',
+      })
+    })
+  })
 
   it('records a failed write against the key that failed', async () => {
     await withStore({
@@ -184,15 +347,10 @@ describe('createSettingsStore mutations', () => {
     })
   })
 
-  // The reply guard is still needed beside the request queue, and what it
-  // decides is the WINDOW between the two replies. The queue holds the
-  // next REQUEST, so the replies now arrive in issue order and the value
-  // left at the end is the newest one either way. But each write takes its
-  // sequence when it is ISSUED, so the older reply lands while the newer
-  // write is still in flight. Applied, it puts the value the user just
-  // replaced back on the control until the newer reply arrives -- two fast
-  // clicks on a toggle, and it snaps back for that whole window.
-  it('ignores a superseded write reply while the newer write is in flight', async () => {
+  // The queue gives replies the same order as Hub commits. Publish the first
+  // commit while the second request is pending, then replace it when the Hub
+  // commits the second. If the second fails, the first remains authoritative.
+  it('publishes queued write replies in commit order', async () => {
     let releaseFirst: (v: SettingValue) => void = () => {}
     let releaseSecond: (v: SettingValue) => void = () => {}
     let call = 0
@@ -212,15 +370,12 @@ describe('createSettingsStore mutations', () => {
       },
     }, async (store) => {
       const first = store.update('flag', 'false')
-      // Issued while the first is still in flight, so it takes sequence 2
-      // and the first reply is stale before it even arrives.
+      // Issued while the first is in flight, so the queue sends it second.
       const second = store.update('flag', 'true')
       releaseFirst(value('flag', 'false'))
       await first
 
-      // The superseded reply carries the value the user replaced. Nothing
-      // has merged for the key yet, and nothing may.
-      expect(store.values().has('flag')).toBe(false)
+      expect(store.values().get('flag')?.effectiveJson).toBe('false')
 
       releaseSecond(value('flag', 'true'))
       await second

@@ -62,7 +62,8 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		tokenID := id.Generate()
 		oldRefreshHash := []byte("old-refresh-hash")
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
-			ID: tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+			Issuance: store.APITokenIssuanceAuthorizationCode,
+			ID:       tokenID, UserID: userid.MustNew(user.ID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
 			SecretHash: []byte("old-access-hash"), RefreshHash: oldRefreshHash,
 		}))
 		expiresAt := time.Now().Add(time.Hour)
@@ -1093,6 +1094,7 @@ func seedAPIToken(t *testing.T, st store.Store, userID string) string {
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		ClientID:         oauthapp.ControlCLIClientID,

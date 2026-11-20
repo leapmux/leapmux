@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
 func TestWorkerRegisterPreservesIncompleteSavedCredentials(t *testing.T) {

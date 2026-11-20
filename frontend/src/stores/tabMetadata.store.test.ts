@@ -1,3 +1,4 @@
+import type { HubUserId } from '~/lib/browserStorage'
 /// <reference types="vitest/globals" />
 import { create } from '@bufbuild/protobuf'
 import { batch, createEffect, createRoot, createSignal } from 'solid-js'
@@ -5,7 +6,8 @@ import { unwrap } from 'solid-js/store'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, setStorageAccountForTests } from '~/lib/browserStorage'
+import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, setStorageAccountForTests, storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { createTabMetadataStore, liveTabIds, useMetadataSweep } from './tabMetadata.store'
 
 /**
@@ -433,7 +435,7 @@ describe('tabMetadata', () => {
    * close path.
    */
   describe('dropTabs', () => {
-    it('drops exactly the rows named, and nothing else', () => {
+    it('drops exactly the specified rows, and nothing else', () => {
       const m = createTabMetadataStore()
       m.patch('alive', { title: 'A' })
       m.patch('dead', { title: 'B' })
@@ -493,7 +495,7 @@ describe('tabMetadata', () => {
 
     /**
      * A tombstone does NOT delete the map key -- `applyTombstoneTab` replaces
-     * the record with a tombstoned one. Counting raw keys therefore named every
+     * the record with a tombstoned one. Counting raw keys therefore listed every
      * tab the account had ever opened, which made the sweep a no-op and let
      * closed terminals' scrollback accumulate for the life of the page.
      */
@@ -594,6 +596,40 @@ describe('tabMetadata', () => {
           title: 'shell',
           screen: new Uint8Array(1024),
         })
+        await flush()
+        expect(m.get('t1')?.title).toBe('shell')
+
+        setState({ tabs: {} })
+        await flush()
+        expect(m.get('t1')).toBeUndefined()
+        expect(retired).toEqual(['t1'])
+
+        dispose()
+      })
+    })
+
+    it('retires rows when the storage account is composed around the state\'s raw Hub user id', async () => {
+      // The store tracks the STORAGE account -- `hub/user`, the namespace its
+      // rows live in -- while `UserCrdtState.userId` keeps the raw Hub user id
+      // `bootstrap` copies off `UserMaterialized`. The memo compares the two to
+      // decide whether the CRDT state is these rows' account, so it must take
+      // the user id the account identifies: the two values themselves never match,
+      // and no row is ever retired.
+      setStorageAccountForTests(TEST_USER_ID)
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        expect(m.state.userId).toBe(storageAccountFor(TEST_HUB, TEST_USER_ID))
+        const [state, setState] = createSignal<SweepState>({
+          tabs: { t1: {} },
+        })
+        const retired: string[] = []
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: TEST_USER_ID, ...value } as never
+            : null
+        }, m, ids => retired.push(...ids))
+        m.patch('t1', { title: 'shell' })
         await flush()
         expect(m.get('t1')?.title).toBe('shell')
 
@@ -977,7 +1013,7 @@ describe('tabMetadata', () => {
     })
 
     /**
-     * The end-to-end behaviour issue #345 names: a reload wipes memory, the new
+     * The end-to-end behaviour issue #345 specifies: a reload wipes memory, the new
      * store reconstructs its MRU ordering from what the previous session wrote.
      * Each half is covered above; this pins that they compose — the second store
      * sees the first's stamps, seeds `mruCounter` above them, and a fresh touch
@@ -1016,11 +1052,19 @@ describe('tabMetadata', () => {
   })
 })
 
+// The RAW Hub user id each account-replacement case runs as. The storage
+// namespace is the composed account around it, which `setStorageAccountForTests`
+// builds; the sweep state uses the raw ID. A test about the mix-up risk passes
+// distinct values in the two domains instead (see the composed-account test of
+// `useMetadataSweep` above).
+const ACCOUNT_A = 'account-a' as HubUserId
+const ACCOUNT_B = 'account-b' as HubUserId
+
 describe('createTabMetadataStore account replacement', () => {
   it('reloads the incoming stamps without carrying private fields or live epochs', () => {
-    setStorageAccountForTests('account-b')
+    setStorageAccountForTests(ACCOUNT_B)
     sessionStorageSet(KEY_TAB_MRU, { shared: 90, b: 80 })
-    setStorageAccountForTests('account-a')
+    setStorageAccountForTests(ACCOUNT_A)
     sessionStorageSet(KEY_TAB_MRU, { shared: 4, a: 3 })
     const { metadata, dispose } = createRoot(dispose => ({
       metadata: createTabMetadataStore(),
@@ -1033,7 +1077,7 @@ describe('createTabMetadataStore account replacement', () => {
         hydrated: true,
         fileViewMode: 'head',
       }, ['status', 'catalog'])
-      setStorageAccountForTests('account-b')
+      setStorageAccountForTests(ACCOUNT_B)
       expect(metadata.get('shared')).toEqual({ mru: 90 })
       expect(metadata.get('a')).toBeUndefined()
       expect(metadata.liveStatusEpoch('shared')).toBe(0)
@@ -1042,7 +1086,7 @@ describe('createTabMetadataStore account replacement', () => {
       metadata.touchMru('b')
       expect(metadata.get('b')?.mru).toBe(91)
       expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 90, b: 91 })
-      setStorageAccountForTests('account-a')
+      setStorageAccountForTests(ACCOUNT_A)
       expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 4, a: 3 })
       expect(metadata.get('shared')).toEqual({ mru: 4 })
     }
@@ -1050,26 +1094,26 @@ describe('createTabMetadataStore account replacement', () => {
   })
 
   it('preserves incoming stamps through an empty bootstrap and sweeps them for that owner', async () => {
-    setStorageAccountForTests('account-b')
+    setStorageAccountForTests(ACCOUNT_B)
     sessionStorageSet(KEY_TAB_MRU, { shared: 20, arriving: 10, stale: 5 })
-    setStorageAccountForTests('account-a')
+    setStorageAccountForTests(ACCOUNT_A)
     await createRoot(async (dispose) => {
       try {
         const metadata = createTabMetadataStore()
         const [state, setState] = createSignal<unknown>({
-          userId: 'account-a',
+          userId: ACCOUNT_A,
           tabs: { shared: {} },
         })
         useMetadataSweep(() => state() as never, metadata)
         await flush()
-        setStorageAccountForTests('account-b')
+        setStorageAccountForTests(ACCOUNT_B)
         setState(null)
         await flush()
-        setState({ userId: 'account-b', tabs: {} })
+        setState({ userId: ACCOUNT_B, tabs: {} })
         await flush()
         expect(metadata.get('arriving')).toEqual({ mru: 10 })
         setState({
-          userId: 'account-b',
+          userId: ACCOUNT_B,
           tabs: { shared: {}, arriving: {} },
         })
         await flush()
@@ -1081,41 +1125,41 @@ describe('createTabMetadataStore account replacement', () => {
   })
 
   it('stops observing storage when its owner is disposed', () => {
-    setStorageAccountForTests('account-a')
+    setStorageAccountForTests(ACCOUNT_A)
     const { metadata, dispose } = createRoot(dispose => ({
       metadata: createTabMetadataStore(),
       dispose,
     }))
     metadata.patch('a', { title: 'retained snapshot' })
     dispose()
-    setStorageAccountForTests('account-b')
+    setStorageAccountForTests(ACCOUNT_B)
     expect(metadata.get('a')?.title).toBe('retained snapshot')
   })
 })
 
 describe('useMetadataSweep account reset generation', () => {
   it('preserves restored stamps through a batched return to the original account', async () => {
-    setStorageAccountForTests('account-a')
+    setStorageAccountForTests(ACCOUNT_A)
     sessionStorageSet(KEY_TAB_MRU, { shared: 20, arriving: 10 })
     await createRoot(async (dispose) => {
       try {
         const metadata = createTabMetadataStore()
         const [state, setState] = createSignal<unknown>({
-          userId: 'account-a',
+          userId: ACCOUNT_A,
           tabs: { shared: {}, arriving: {} },
         })
         useMetadataSweep(() => state() as never, metadata)
         await flush()
         batch(() => {
-          setStorageAccountForTests('account-b')
-          setStorageAccountForTests('account-a')
-          setState({ userId: 'account-a', tabs: {} })
+          setStorageAccountForTests(ACCOUNT_B)
+          setStorageAccountForTests(ACCOUNT_A)
+          setState({ userId: ACCOUNT_A, tabs: {} })
         })
         await flush()
         expect(metadata.get('arriving')).toEqual({ mru: 10 })
         expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 20, arriving: 10 })
         setState({
-          userId: 'account-a',
+          userId: ACCOUNT_A,
           tabs: { shared: {} },
         })
         await flush()

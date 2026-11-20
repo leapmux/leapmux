@@ -19,6 +19,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
   return {
     ...actual,
+    desktopHub: () => null,
     platformBridge: {
       ...actual.platformBridge,
       listExternalApps: (refresh?: boolean) => listAppsMock(refresh ?? false),

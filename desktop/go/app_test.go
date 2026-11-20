@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -17,12 +18,13 @@ import (
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSetWindowSizePersistsMode(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	a := &App{config: &DesktopConfig{WindowWidth: 1280, WindowHeight: 800, WindowMode: WindowModeNormal}}
 
 	// Entering fullscreen: the frontend sends 0 dimensions so the last windowed
@@ -56,7 +58,7 @@ func TestSetWindowSizePersistsMode(t *testing.T) {
 }
 
 func TestShutdownWaitsForAdmittedConfigPersistence(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 
 	app.configMu.Lock()
@@ -89,7 +91,7 @@ func TestShutdownWaitsForAdmittedConfigPersistence(t *testing.T) {
 // (a non-cancellable editor launch or filesystem scan). drainOperations bounds
 // the wait, mirroring the sibling handler/relay drains bounded in this change.
 func TestShutdownBoundsCtxIgnoringOperation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	orig := operationDrainTimeout
 	operationDrainTimeout = 50 * time.Millisecond
@@ -135,7 +137,7 @@ func TestShutdownBoundsCtxIgnoringOperation(t *testing.T) {
 // gate would therefore hang Shutdown, and with it the process exit main defers it
 // from, indefinitely.
 func TestShutdownBoundsWaitForStuckTransition(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	orig := operationDrainTimeout
 	operationDrainTimeout = 50 * time.Millisecond
@@ -178,16 +180,20 @@ func TestShutdownBoundsWaitForStuckTransition(t *testing.T) {
 	assert.Nil(t, app.connection)
 }
 
-func makeConfigUnwritable(t *testing.T) {
+// setTestHome sets HOME and USERPROFILE to one t.TempDir and returns it.
+// os.UserHomeDir reads HOME on Unix and USERPROFILE on Windows; setting both
+// ensures the redirect takes on every GOOS.
+func setTestHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	// os.UserHomeDir reads $HOME on Unix and %USERPROFILE% on Windows; set
-	// both so the redirect takes on either GOOS. Without USERPROFILE on
-	// Windows the temp dir is ignored, SaveConfig writes to the real profile
-	// (where nothing blocks .config), and the save-failure tests pass
-	// spuriously.
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	return home
+}
+
+func makeConfigUnwritable(t *testing.T) {
+	t.Helper()
+	home := setTestHome(t)
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".config"), []byte("not a directory"), 0o600))
 }
 
@@ -205,7 +211,11 @@ func installTestConnection(app *App, proxy *HubProxy, solo soloInstance, hubURL 
 	if solo != nil {
 		connection.solo = &soloRuntime{instance: solo}
 	}
+	// Under the lock: a ceremony goroutine reads app.connection there too, and
+	// an unlocked write here races it.
+	app.lifecycleMu.Lock()
 	app.connection = connection
+	app.lifecycleMu.Unlock()
 	return connection
 }
 
@@ -222,6 +232,94 @@ func TestConnectDistributedRollsBackWhenConfigSaveFails(t *testing.T) {
 	require.Nil(t, app.connection)
 	require.Empty(t, app.config.Mode)
 	require.Empty(t, app.config.HubURL)
+}
+
+func TestConnectDistributedClosesTheEndpointAfterConfigSaveFails(t *testing.T) {
+	makeConfigUnwritable(t)
+	connected := make(chan struct{}, 1)
+	closed := make(chan struct{}, 1)
+	hub := hubtransporttest.NewUnstartedServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	hub.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			select {
+			case connected <- struct{}{}:
+			default:
+			}
+		case http.StateClosed, http.StateHijacked:
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		case http.StateActive, http.StateIdle:
+		}
+	}
+	hub.Start()
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	deadline, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	require.Error(t, app.ConnectDistributed(t.Context(), hub.URL))
+	select {
+	case <-connected:
+	case <-deadline.Done():
+		t.Fatal("the Hub probe did not establish a connection")
+	}
+	select {
+	case <-closed:
+	case <-deadline.Done():
+		t.Fatal("the failed connection did not close its idle endpoint")
+	}
+}
+
+// TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedRequest
+// pins the wiring inside ConnectDistributed: the proxy that commits takes the
+// PERSISTENT jar over sessionsDir(), so a session file left by the previous run
+// reaches the first proxied request. A regression that passes a fresh in-memory
+// jar instead silently drops the persisted session on every restart.
+func TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedRequest(t *testing.T) {
+	setTestHome(t)
+
+	var mu sync.Mutex
+	var proxiedCookie string
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The probe shares the server; only the proxied request is under test.
+		if r.URL.Path == "/first" {
+			mu.Lock()
+			proxiedCookie = r.Header.Get("Cookie")
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(hub.Close)
+
+	// A session file for this Hub's origin, as the run before a restart leaves it.
+	base := mustParse(t, hub.URL)
+	dir := sessionsDir()
+	require.NotEmpty(t, dir)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	data, err := json.Marshal(sessionFile{
+		HubURL:  base.String(),
+		Cookies: []persistedCookie{{Name: testSessionCookieName, Value: "abc123", Path: "/"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, atomicfile.WriteFile(filepath.Join(dir, sessionFileName(base)), data, 0o600))
+
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	require.NoError(t, app.ConnectDistributed(context.Background(), hub.URL))
+
+	resp, _, err := app.ProxyHTTP(context.Background(), http.MethodGet, "/first", nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, testSessionCookieName+"=abc123", proxiedCookie,
+		"the first proxied request must carry the stored session cookie")
 }
 
 type recordingSoloInstance struct {
@@ -290,7 +388,7 @@ func idleTestRelay(t *testing.T, parent context.Context) *ChannelRelay {
 // used to be closed first, which meant the terminal-disconnect notice was
 // written to a transport with no far end.
 func TestShutdownStopsSoloBeforeClosingTheRelay(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 
 	var relayLiveDuringStop atomic.Bool
@@ -316,7 +414,7 @@ func TestShutdownStopsSoloBeforeClosingTheRelay(t *testing.T) {
 }
 
 func TestSwitchModeStopsSoloBeforeClosingTheRelay(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
@@ -349,7 +447,7 @@ func TestSwitchModeStopsSoloBeforeClosingTheRelay(t *testing.T) {
 // The re-entry is driven from inside phase B (where no lock is held), which is
 // precisely the window the real race opens.
 func TestDisconnectClaimsTheConnectionSoOnlyOneTeardownStopsSolo(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 
 	var stops, reentries atomic.Int32
@@ -389,7 +487,7 @@ func (t *idleClosingTransport) CloseIdleConnections() { t.onCloseIdle() }
 // across solo.Stop() and the next ListenPipe fails. Splitting the teardown so
 // relays outlive the Hub must not carry this along with them.
 func TestShutdownClosesIdleProxyConnectionsBeforeStoppingSolo(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 
 	var idleClosed atomic.Bool
@@ -415,7 +513,7 @@ func TestShutdownClosesIdleProxyConnectionsBeforeStoppingSolo(t *testing.T) {
 // a Hub that is going away, so the second phase is not conditional on the first
 // having succeeded.
 func TestShutdownClosesTheRelayWhenStoppingSoloFails(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 
 	wantErr := errors.New("hub serve failed")
@@ -458,7 +556,7 @@ func TestShutdownCancelsDistributedProbe(t *testing.T) {
 		}
 	}))
 	t.Cleanup(hub.Close)
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	connectDone := make(chan error, 1)
 	go func() { connectDone <- app.ConnectDistributed(context.Background(), hub.URL) }()
@@ -480,7 +578,7 @@ func TestShutdownCancelsDistributedProbe(t *testing.T) {
 }
 
 func TestConnectRequiresLauncherState(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	installTestConnection(app, mustNewProxy(t, "https://original.example"), nil, "https://original.example")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
@@ -488,6 +586,22 @@ func TestConnectRequiresLauncherState(t *testing.T) {
 	err := app.ConnectDistributed(context.Background(), "https://replacement.example")
 	require.ErrorContains(t, err, "already connected")
 	require.Equal(t, "https://original.example", app.connection.proxy.baseURL)
+}
+
+func TestConnectDistributedRepeatsTheCurrentCanonicalHub(t *testing.T) {
+	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	setTestHome(t)
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	require.NoError(t, app.ConnectDistributed(t.Context(), server.URL))
+	connection := app.connection
+	require.NoError(t, app.ConnectDistributed(t.Context(), server.URL))
+
+	assert.Same(t, connection, app.connection)
 }
 
 // The window mode crosses the wire as the CONTRACT TOKEN, unchanged. There is
@@ -511,7 +625,7 @@ func TestWindowModeCrossesTheWireVerbatim(t *testing.T) {
 // wedges every frontend reader. The sibling relay/distributed paths release
 // the lock across their blocking I/O for the same reason.
 func TestConnectSoloDoesNotBlockLifecycleReadersDuringStartup(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
@@ -556,7 +670,7 @@ func TestConnectSoloDoesNotBlockLifecycleReadersDuringStartup(t *testing.T) {
 // shutdown), or every SidecarInfo/ProxyHTTP/SendChannelMessage reader wedges
 // behind the write lock for that whole window.
 func TestSwitchModeDoesNotBlockLifecycleReadersDuringSoloStop(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
@@ -603,7 +717,7 @@ func TestSwitchModeDoesNotBlockLifecycleReadersDuringSoloStop(t *testing.T) {
 // previous user can never be reused) WITHOUT dropping the sidecar<->Hub
 // connection, which the next login still needs.
 func TestResetTunnelsBumpsChannelEpochAndKeepsConnection(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
@@ -630,7 +744,7 @@ func TestResetTunnelsBumpsChannelEpochAndKeepsConnection(t *testing.T) {
 // operation gate as every other RPC: once shutdown begins it is refused
 // instead of racing the teardown.
 func TestResetTunnelsRejectedDuringShutdown(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	app := NewApp("")
 	require.NoError(t, app.Shutdown())
 
@@ -650,10 +764,10 @@ func TestResetTunnelsRejectedDuringShutdown(t *testing.T) {
 // that carries RoundTrip alone makes the whole teardown a silent no-op. This
 // builds the real thing and measures the connection.
 func TestShutdownClosesIdleConnectionsOfARealProxy(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 
 	var conns atomic.Int64
-	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hub := hubtransporttest.NewUnstartedServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	hub.Config.ConnState = func(_ net.Conn, state http.ConnState) {
@@ -666,10 +780,11 @@ func TestShutdownClosesIdleConnectionsOfARealProxy(t *testing.T) {
 			// Both are transitions of a connection this already counted.
 		}
 	}
+	hub.Start()
 
 	endpoint, err := hubtransport.New(hub.URL)
 	require.NoError(t, err)
-	proxy := newProxyForEndpoint(endpoint)
+	proxy := newProxyForEndpoint(endpoint, mustNewMemoryJar())
 	require.NotNil(t, proxy.endpoint, "a production proxy holds the endpoint that owns every transport")
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, hub.URL+"/rpc", nil)
@@ -691,7 +806,7 @@ func TestShutdownClosesIdleConnectionsOfARealProxy(t *testing.T) {
 // the webview exists, so a value that does not reach disk means the next login
 // launch decides on the built-in defaults instead of the user's choice.
 func TestSetDesktopBehaviorPersists(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	a := &App{config: &DesktopConfig{WindowWidth: 1280, WindowHeight: 800, WindowMode: WindowModeNormal}}
 
 	err := a.SetDesktopBehavior(DesktopBehavior{
@@ -794,7 +909,7 @@ func TestDesktopBehaviorTokensCrossTheWireVerbatim(t *testing.T) {
 // invisible while the setter took four positional strings; the defined types
 // make it a compile error, and this pins the mapping itself.
 func TestSetDesktopBehaviorMapsEachFieldToItsOwnSetting(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	a := &App{config: &DesktopConfig{}}
 
 	// Deliberately asymmetric: every field takes a value no other field can

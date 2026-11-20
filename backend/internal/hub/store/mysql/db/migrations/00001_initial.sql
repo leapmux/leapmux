@@ -135,6 +135,10 @@ CREATE TABLE user_sessions (
     elevation_expires_at  DATETIME(3),
     user_agent      TEXT NOT NULL,
     ip_address      VARCHAR(255) NOT NULL DEFAULT '',
+    -- The built-in app that this session was issued to through the browser
+    -- handoff. NULL for a session that signed in on the Hub's own page. No
+    -- foreign key: only the token exchange of a built-in app writes it.
+    issued_to_client VARCHAR(255),
     -- Both or neither: the schema requires the pair, and Go also validates it.
     -- Half a pair is not a state the rest of the hub should have to consider:
     -- a deadline with no anchor is one the slide statement cannot clamp,
@@ -488,6 +492,8 @@ CREATE TABLE oauth_clients (
     scopes                TEXT NOT NULL,
     grant_types           VARCHAR(512) NOT NULL DEFAULT 'authorization_code refresh_token',
     elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Whether an authorization for this app mints a Hub session rather than
+    -- an app credential. A constant of the build; see the sqlite twin.
     -- An AppRegistrationSource ordinal: who put this registration in the table.
     registration_source   SMALLINT NOT NULL CHECK (registration_source BETWEEN 1 AND 4),
     -- WHO vouched, and WHEN. The two move together, which the CHECK below
@@ -526,6 +532,11 @@ CREATE TABLE api_tokens (
     installation_name             VARCHAR(255) NOT NULL,
     -- No DEFAULT: an INSERT that omits the grant must fail at the schema.
     granted_scopes                TEXT NOT NULL,
+    -- WHICH CEREMONY issued this credential: an ApiTokenIssuance ordinal
+    -- (proto/leapmux/v1/storage.proto), 1 authorization code, 2 device code,
+    -- 3 administrator. No DEFAULT: every mint states it.
+    -- TestEnumColumnChecksMatchTheirProtoRanges checks the range.
+    issuance                      INT NOT NULL CHECK (issuance BETWEEN 1 AND 3),
     secret_hash                   VARBINARY(64) NOT NULL,
     refresh_hash                  VARBINARY(64),
     previous_refresh_hash         VARBINARY(64),
@@ -653,6 +664,7 @@ CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expir
 CREATE TABLE oauth_authorization_codes (
     code                  VARCHAR(255) PRIMARY KEY,
     user_id               VARCHAR(255) NOT NULL,
+    auth_generation       BIGINT NOT NULL,
     client_id             VARCHAR(255) NOT NULL,
     code_challenge        VARCHAR(255) NOT NULL,
     redirect_uri          VARCHAR(2048) NOT NULL DEFAULT '',
@@ -661,7 +673,22 @@ CREATE TABLE oauth_authorization_codes (
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
-    minted_token_id       VARCHAR(255),
+    -- The credential id the exchange MINTED, stamped at consumption. Its kind
+    -- comes from redemption_kind. See the sqlite twin for the replay remedy.
+    minted_ref_id         VARCHAR(255) NOT NULL DEFAULT '',
+    -- The credential that this code VERIFIES, when it verifies one rather
+    -- than issuing one. One reference carries at most one target. No foreign
+    -- key, for the reason device_authorizations.elevate_token_id gives.
+    step_up_kind          SMALLINT CHECK (step_up_kind BETWEEN 1 AND 2),
+    step_up_ref_id        VARCHAR(255) NOT NULL DEFAULT '',
+    -- What this code redeems into, decided at consent and read at redeem. See
+    -- the sqlite twin. A NULL kind means a step-up code.
+    redemption_kind       SMALLINT CHECK (redemption_kind BETWEEN 1 AND 2),
+    -- The ties make the states structural: a kind has no effect without its
+    -- id, and a code verifies XOR redeems.
+    CHECK ((step_up_kind IS NULL) = (OCTET_LENGTH(step_up_ref_id) = 0)),
+    CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)),
+    CHECK (OCTET_LENGTH(minted_ref_id) = 0 OR (consumed_at IS NOT NULL AND redemption_kind IS NOT NULL)),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;
@@ -729,15 +756,15 @@ CREATE TABLE oauth_states (
     -- DEFAULT: Go's zero value for the column is 0 (UNSPECIFIED), which the
     -- CHECK refuses, so an insert that forgot the purpose FAILS instead of
     -- reaching the DEFAULT. That matters because the callback treats every
-    -- value that is not REAUTH as a LOGIN -- the branch that may create a
-    -- session and link an identity.
-    purpose         SMALLINT NOT NULL DEFAULT 1 CHECK (purpose BETWEEN 1 AND 2),
-    -- The session a REAUTH state elevates on success. Empty for a LOGIN state.
+    -- callback dispatches only the three explicit purposes and refuses every
+    -- other value before it can create a session or link an identity.
+    purpose         SMALLINT NOT NULL DEFAULT 1 CHECK (purpose BETWEEN 1 AND 3),
+    -- The session a REAUTH state elevates on success. Empty for login states.
     session_id      VARCHAR(255) NOT NULL DEFAULT '',
     expires_at      DATETIME(3) NOT NULL,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     -- A REAUTH (2) state carries the session it elevates, and a LOGIN state
-    -- carries none. TestOAuthStatePurposeReauthNumbering pins the literal 2,
+    -- login states carry none. TestOAuthStatePurposeReauthNumbering pins 2,
     -- which a constraint cannot take as a parameter.
     CHECK ((purpose = 2) = (session_id <> '')),
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)

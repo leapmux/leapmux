@@ -80,6 +80,14 @@ func (s *oauthClientStore) Get(ctx context.Context, clientID string) (*store.OAu
 	return &out, nil
 }
 
+func (s *oauthClientStore) LockForElevation(ctx context.Context, clientID string) error {
+	if !s.conn.inTx() {
+		return store.ErrLockingReadOutsideTransaction
+	}
+	_, err := s.conn.q.LockOAuthClientForElevation(ctx, clientID)
+	return s.conn.queryError(err)
+}
+
 func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store.OAuthClientIcon, error) {
 	row, err := s.conn.q.GetOAuthClientIcon(ctx, clientID)
 	if err != nil {
@@ -135,15 +143,14 @@ func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClient
 		return 0, store.ErrInvalidArgument
 	}
 	return s.conn.rowsAffected(s.conn.q.UpdateOAuthClient(ctx, gendb.UpdateOAuthClientParams{
-		BuiltinSource:    store.OAuthClientSourceBuiltin,
-		ClientID:         p.ClientID,
-		ClientName:       p.ClientName,
-		ClientUri:        p.ClientURI,
-		RedirectUris:     p.RedirectURIs,
-		Scopes:           p.Scopes,
-		GrantTypes:       p.GrantTypes,
-		ElevationAllowed: p.ElevationAllowed,
-		CallerIsAdmin:    p.CallerIsAdmin,
+		BuiltinSource: store.OAuthClientSourceBuiltin,
+		ClientID:      p.ClientID,
+		ClientName:    p.ClientName,
+		ClientUri:     p.ClientURI,
+		RedirectUris:  p.RedirectURIs,
+		Scopes:        p.Scopes,
+		GrantTypes:    p.GrantTypes,
+		CallerIsAdmin: p.CallerIsAdmin,
 		// An unminted caller matches no OWNED row, because no users.id is ever
 		// empty -- so the hub-wide arm (which needs CallerIsAdmin) is the only
 		// one such a caller could satisfy, and only if the service really did

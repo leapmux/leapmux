@@ -7,7 +7,7 @@ weight: 10
 
 This chapter is the `leapmux control admin ...` command tree: the online, authenticated face of hub administration. It uses the same transport, authentication, JSON output envelope, and entity-ID flags as the rest of `leapmux control` — see [Control CLI](/docs/using/control-cli/) for those mechanics. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/).
 
-Every group calls the hub's Admin RPCs with your normal control credential. The hub itself checks that the caller is an administrator, and answers `permission_denied` to every other login.
+The CLI uses your normal control credential. The Hub requires administrator privileges and a current step-up window for every procedure on an `Admin*` service, including reads. The `admin app` commands call `AppService`. This service checks ownership and requires the `admin:apps` permission from bearer credentials. Registering, updating, vouching for an app, and changing its elevation setting require a current window. Listing apps, retiring an app, and deleting an empty registration work without one. See [Session elevation](/docs/admin/security/#session-elevation).
 
 ```text
 leapmux control admin settings     list | get KEY | set KEY VALUE | set-secret KEY JSON | reset KEY
@@ -43,9 +43,9 @@ leapmux control admin settings reset smtp
 
 `set` merges a partial JSON document (or a bare scalar) onto the key's current value. The hub validates the merged value and commits it in one transaction. The CLI refuses a value that opens a JSON document but does not parse; that check runs locally, before the CLI contacts the hub.
 
-**Every write here needs an admin-scoped credential that verified recently.** Several of these keys are the hub's own security controls, so `set`, `set-secret` and `reset` each require a proven factor — from a command-line credential exactly as from a browser session.
+**Every command here needs an admin-scoped credential that holds a current window.** Several of these keys are the hub's own security controls, and the rule covers the reads too: `list` and `get` ask for a proof exactly as `set` does, from a command-line credential as from a browser session. A read needs the window and does not slide it.
 
-You do not run a separate command. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for {{< duration elevation-window >}}, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
+You do not run a separate command. The default ceremony opens a browser on the CLI's own machine, and the refused command runs once you prove the factor there. A credential from `leapmux control auth login --device-code`, or one an administrator issued, instead prints an address and a short code to approve in a browser. The window lasts {{< duration elevation-window >}}, and every write slides it forward. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
 
 **When a write takes effect** depends on the key's propagation class. A `hot` key reaches the serving Hub at once, because it replaces its cached settings snapshot after the commit. The runtime lease permits one serving Hub per database. A new Hub loads stored settings when it starts. A `restart` key applies only after a Hub restart.
 
@@ -196,7 +196,7 @@ Today the rule covers four things:
 - `user grant-admin` **and** `user revoke-admin` — one hub procedure carries both directions, so the refusal covers the demotion as well as the promotion. Plan an emergency demotion from a browser; a CI credential cannot run it.
 - `user update --email` and `user update --email-verified` — the address receives the recovery link, so writing one hands over a way in.
 
-Every other admin write that needs verification accepts a **command-line credential that verified recently**: `api-token issue`, `user delete`, `user update --display-name` and `--clear-pending-email`, `settings set` / `set-secret` / `reset` with the `captcha` and `rate-limit` sugar over them, and the `idp` add, remove, enable and disable verbs. Reads need no verification at all.
+The remaining `Admin*` procedures accept a **command-line credential that holds a current window**. These include `api-token issue`, `user delete`, and the `--display-name` and `--clear-pending-email` options of `user update`. The window also covers `settings set`, `set-secret`, and `reset`, including the `captcha` and `rate-limit` commands that use them. It covers `idp add`, `remove`, `enable`, and `disable` as well. Reads such as `settings list` also need the window. A job can run these commands unattended while its credential holds a current window. A person must approve a new window after it expires. Scope the credential to what the job needs. See [Session elevation](/docs/admin/security/#session-elevation).
 
 `api-token issue` is on that second list because a headless service account has to be able to renew. What limits it instead is the credential it mints: **a credential issued by another credential does not renew, and it expires no later than the one that issued it.** So a chain of self-issued credentials gets shorter each time and ends at the browser consent that started it. To issue one that renews, run the verb from a browser-backed session.
 

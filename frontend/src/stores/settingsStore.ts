@@ -19,7 +19,7 @@ export interface SettingsStoreState {
   error: string | null
   /** The most recent failed write, for the row to render inline. */
   writeError: SettingWriteError | null
-  /** Whether a load has ever completed (successfully or not). */
+  /** Whether a load has completed since the catalogue was cleared. */
   loaded: boolean
 }
 
@@ -32,6 +32,8 @@ export interface SettingsStore {
   /** Values by key, the accessor the proto registry reads. */
   values: () => Map<string, SettingValue>
   load: () => Promise<void>
+  /** Discard the catalogue and invalidate pending load responses. */
+  clear: () => void
   /** Server-first partial merge onto one key's public half. */
   update: (key: string, partialJson: string) => Promise<void>
   /** Server-first partial merge onto one key's SECRET half. */
@@ -55,6 +57,17 @@ export interface SettingsStorePorts {
   loadErrorFallback: string
 }
 
+function emptySettingsState(): SettingsStoreState {
+  return {
+    descriptors: [],
+    values: new Map(),
+    loading: false,
+    error: null,
+    writeError: null,
+    loaded: false,
+  }
+}
+
 /**
  * The settings store over the HUB scope's RPC surface.
  *
@@ -71,14 +84,7 @@ export interface SettingsStorePorts {
  * earlier ANSWER win over the later ASK.
  */
 export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
-  const [state, setState] = createStore<SettingsStoreState>({
-    descriptors: [],
-    values: new Map(),
-    loading: false,
-    error: null,
-    writeError: null,
-    loaded: false,
-  })
+  const [state, setState] = createStore(emptySettingsState())
 
   /**
    * The newest LIST request issued.
@@ -87,6 +93,8 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
    * the first outright. The same rule the per-key write guard below holds.
    */
   const loadSeq = createKeyedSeq()
+  const writeSeq = createKeyedSeq()
+  let accessGeneration = 0
 
   const guard = (): Error => new Error(ports.guardMessage)
 
@@ -103,37 +111,63 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
     setState('values', next)
   }
 
+  const clear = () => {
+    accessGeneration++
+    loadSeq.next()
+    setState(emptySettingsState())
+  }
+
   const load = async () => {
     if (!allowed()) {
-      // A session that lost access must not keep serving the previous one's
-      // settings.
-      setState('descriptors', [])
-      setState('values', new Map())
-      setState('error', null)
+      clear()
       return
     }
     const mySeq = loadSeq.next()
     const newest = () => loadSeq.isNewest(undefined, mySeq)
+    const writesAtIssue = writeSeq.snapshot()
     setState('loading', true)
-    try {
-      const resp = await ports.list()
-      if (!newest())
-        return
-      setState('error', null)
-      setState('descriptors', resp.descriptors)
-      setState('values', new Map(resp.values.map(v => [v.key, v])))
-    }
-    catch (err) {
-      if (!newest())
-        return
-      setState('error', formatErrorMessage(err, ports.loadErrorFallback))
-    }
-    finally {
-      if (newest()) {
-        setState('loading', false)
-        setState('loaded', true)
+    const read = async () => {
+      try {
+        if (!newest())
+          return
+        if (!allowed()) {
+          clear()
+          return
+        }
+        const resp = await ports.list()
+        if (!newest())
+          return
+        const responseValues = new Map(resp.values.map(value => [value.key, value]))
+        const values = new Map(state.values)
+        const keys = new Set([
+          ...values.keys(),
+          ...responseValues.keys(),
+        ])
+        for (const key of keys) {
+          if (!writeSeq.isNewest(key, writesAtIssue.get(key) ?? 0))
+            continue
+          const value = responseValues.get(key)
+          if (value)
+            values.set(key, value)
+          else
+            values.delete(key)
+        }
+        setState({
+          error: null,
+          descriptors: resp.descriptors,
+          values,
+        })
+      }
+      catch (err) {
+        if (newest())
+          setState('error', formatErrorMessage(err, ports.loadErrorFallback))
+      }
+      finally {
+        if (newest())
+          setState({ loading: false, loaded: true })
       }
     }
+    await read()
   }
 
   /**
@@ -147,8 +181,6 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
    * loads, and the same one `PreferencesContext` holds over the account
    * tier's writes.
    */
-  const writeSeq = createKeyedSeq()
-
   /**
    * The mutation REQUESTS in flight per key.
    *
@@ -171,20 +203,28 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
     // Taken at ISSUE time, before the request waits its turn, so it still
     // matches the order the user asked in.
     const mySeq = writeSeq.next(key)
-    const newest = () => writeSeq.isNewest(key, mySeq)
-    try {
-      const value = await writeQueue.run(key, call)
-      // A superseded reply is still a SUCCESS — it just no longer describes
-      // what the user last asked for, so it must not clear the error of a
-      // later write nor put its own value back on screen.
-      if (!newest())
+    const generationAtIssue = accessGeneration
+    const currentAccess = () => generationAtIssue === accessGeneration && allowed()
+    const newestIntent = () => currentAccess() && writeSeq.isNewest(key, mySeq)
+    const request = writeQueue.run(key, async () => {
+      if (!currentAccess())
+        throw guard()
+      const value = await call()
+      if (!currentAccess())
         return
-      setState('writeError', null)
+
+      // The queue publishes each commit before the next write to this key.
+      // A later failed write leaves this value in the Hub and in the store.
       mergeValue(value)
+      if (newestIntent())
+        setState('writeError', null)
+    })
+    try {
+      await request
     }
     catch (err) {
       // The store keeps the server's truth and the row shows the failure.
-      if (newest()) {
+      if (newestIntent()) {
         setState('writeError', {
           key,
           message: formatErrorMessage(err, 'Failed to save setting'),
@@ -198,6 +238,7 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
     state,
     values: () => state.values,
     load,
+    clear,
     update: (key, partialJson) => mutate(key, () => ports.update(key, partialJson)),
     updateSecret: (key, partialJson) => mutate(key, () => ports.updateSecret(key, partialJson)),
     reset: key => mutate(key, () => ports.reset(key)),

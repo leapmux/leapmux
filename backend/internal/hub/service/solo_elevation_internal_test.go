@@ -44,7 +44,7 @@ func TestElevationRuleAdmitsSoloMode(t *testing.T) {
 	now := time.Now().UTC()
 	solo := soloUserInfo()
 
-	require.NoError(t, requireElevation(solo, now),
+	require.NoError(t, auth.RequireElevation(solo, now),
 		"solo mode has no factor to prove, so the rule has nothing to decide")
 	require.NoError(t, assertElevatedActor(solo, now),
 		"the mint's backstop must admit it for the same reason")
@@ -69,13 +69,13 @@ func TestElevationRuleStillRefusesAnOrdinaryCallerWithNoCredential(t *testing.T)
 	now := time.Now().UTC()
 	bare := &auth.UserInfo{ID: userid.MustNew("usr-1"), IsAdmin: true}
 
-	err := requireElevation(bare, now)
+	err := auth.RequireElevation(bare, now)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	// The step-up marker rides the response header, keyed on the sentinel
 	// (NewElevationResponseInterceptor). A refusal that wraps no sentinel gets
 	// no marker.
-	assert.False(t, errors.Is(err, errElevationRequired),
+	assert.False(t, errors.Is(err, auth.ErrElevationRequired),
 		"a credential that can never carry a window must not be sent to a prompt")
 
 	ctx := auth.WithUser(context.Background(), bare)

@@ -98,7 +98,12 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 		ID: userID, Username: "elevated", PasswordHash: hash,
 		DisplayName: "Elevated", FirstCredentialExempt: true, IsAdmin: true,
 	}))
-	token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "elevated", "testpass", auth.DefaultSessionDuration)
+	// A session that proved no factor: no window, and no queued event, the
+	// shape the fixture had before A10. SignInProvedNoFactor rather than a
+	// sign-in with the window dropped, because the drop queues a user_info
+	// event and TestElevateSession_GrantTearsNothingDown counts the event
+	// stream.
+	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)
 
 	recorder := &teardownRecorder{}
@@ -108,7 +113,10 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 		auth.NewCredentialLifecycleEffects(contexts, recorder, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
-	connectServer := connect.NewServer(interceptor)
+	// The elevation response interceptor is production wiring: the marker and
+	// the slide deadline ride it, so a refusal can only be read as "prove a
+	// factor" through the chain a real client sees.
+	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewUnstartedServer(mux)
@@ -120,7 +128,7 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 		service:  userSvc,
 		client:   leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		store:    st,
-		token:    token,
+		token:    session.Token,
 		userID:   userID,
 		teardown: recorder,
 	}
@@ -294,7 +302,8 @@ func TestElevateSession_RefusesABearer(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	expires := time.Now().Add(time.Hour)
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "laptop", GrantedScopes: authscope.NonAdminGrant().String(),
+		Issuance: store.APITokenIssuanceAuthorizationCode,
+		ID:       tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "laptop", GrantedScopes: authscope.NonAdminGrant().String(),
 		SecretHash: tv.HashSecret(secret), ExpiresAt: &expires,
 	}))
 
@@ -330,4 +339,94 @@ func TestElevateSession_BearerTransportRefusesScopeNeverEvenAfterElevation(t *te
 		_, err := env.client.ElevateSession(ctx, &leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"})
 		assertOutOfScope(t, info, err)
 	}
+}
+
+// freshSignIn signs in with the fixture's password, so the session carries
+// the FreshAuthenticationWindow the sign-in granted rather than the window
+// this file's other setups stamp by hand. Only the sign-in-window rows call
+// auth.Login directly: every other test drops the window so the assertion
+// measures the behavior behind the gate rather than the window itself.
+func freshSignIn(t *testing.T, env *elevationEnv) auth.CreatedSession {
+	t.Helper()
+	session, _, err := auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(),
+		"elevated", "testpass", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	return session
+}
+
+// The sign-in window is the first row of the sliding elevation rule. A
+// sensitive action inside it passes with no step-up, and that action slides
+// the ordinary ElevationWindow forward -- so one password sign-in admits the
+// work that follows for two hours rather than for five minutes.
+func TestSensitiveActionInsideTheSignInWindowPassesAndSlides(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	env := setupElevationTest(t)
+	session := freshSignIn(t, env)
+
+	row, err := env.store.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, session.Token), time.Now().UTC())
+	require.NoError(t, err)
+	require.NotNil(t, row.ElevationExpiresAt, "the sign-in must write the fresh window")
+	assert.WithinDuration(t, time.Now().Add(auth.FreshAuthenticationWindow), *row.ElevationExpiresAt, time.Minute,
+		"precondition: the window is the sign-in's five minutes")
+
+	_, err = env.client.ChangePassword(authedReq(ctx, &leapmuxv1.ChangePasswordRequest{
+		NewPassword: "newpass123",
+	}, session.Token))
+	require.NoError(t, err, "the fresh window admits a sensitive action with no step-up")
+
+	row, err = env.store.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, session.Token), time.Now().UTC())
+	require.NoError(t, err)
+	require.NotNil(t, row.ElevationExpiresAt)
+	assert.WithinDuration(t, time.Now().Add(auth.ElevationWindow), *row.ElevationExpiresAt, time.Minute,
+		"the action slides the window to the ordinary two hours")
+	assert.True(t, row.ElevationExpiresAt.After(time.Now().Add(auth.FreshAuthenticationWindow)),
+		"the slide must move the deadline past the five-minute window the sign-in wrote")
+}
+
+// The same action after the window: the pair sits six minutes back, so the
+// five minutes the sign-in wrote have closed. The refusal carries the marker
+// a step-up prompt keys on, because the window is the one thing a factor can
+// restore.
+func TestSensitiveActionAfterTheSignInWindowIsRefused(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	env := setupElevationTest(t)
+	session := freshSignIn(t, env)
+	moveElevationPairBack(t, env.store, session.Token, env.userID, 6*time.Minute)
+
+	callCtx, info := connect.NewClientContext(ctx)
+	_, err := env.client.ChangePassword(authedReq(callCtx, &leapmuxv1.ChangePasswordRequest{
+		NewPassword: "newpass123",
+	}, session.Token))
+	require.Error(t, err, "the expired fresh window must not admit a sensitive action")
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"the refusal must carry the marker a step-up prompt can clear")
+}
+
+// "End now" inside the sign-in window closes the window early, and the next
+// sensitive action is refused exactly as an expired one is. Ending the window
+// is the user's own choice, so it must not be recoverable by waiting out the
+// five minutes the sign-in wrote.
+func TestDropElevationInsideTheSignInWindowRefusesTheNextAction(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	env := setupElevationTest(t)
+	session := freshSignIn(t, env)
+
+	_, err := env.client.DropElevation(authedReq(ctx, &leapmuxv1.DropElevationRequest{}, session.Token))
+	require.NoError(t, err, "the sign-in window is a window a user may end")
+
+	callCtx, info := connect.NewClientContext(ctx)
+	_, err = env.client.ChangePassword(authedReq(callCtx, &leapmuxv1.ChangePasswordRequest{
+		NewPassword: "newpass123",
+	}, session.Token))
+	require.Error(t, err, "a window the user ended must not admit the next sensitive action")
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
+		"the refusal must carry the marker a step-up prompt can clear")
 }

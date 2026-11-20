@@ -30,6 +30,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
   return {
     ...actual,
+    desktopHub: () => null,
     observeWindowMode: (onChange: (mode: WindowMode) => void) => {
       modeCb.fn = onChange
       onChange(initialMode.value)

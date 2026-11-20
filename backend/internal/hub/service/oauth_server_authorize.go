@@ -1,13 +1,16 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/pkce"
@@ -31,6 +34,33 @@ type authorizeRequest struct {
 	codeChallenge string
 	scopes        authscope.ScopeSet
 	installation  string
+	stepUp        stepUpTarget
+	issuesSession bool
+}
+
+// stepUpTarget identifies the credential an authorization VERIFIES rather than
+// issues, and carries what the consent page shows for it.
+type stepUpTarget struct {
+	ref       store.CredentialRef
+	formValue string
+	// display identifies the credential from the hub's OWN record, built
+	// while parseStepUpTarget loaded and validated the row. The page shows
+	// exactly what was checked then; nothing re-reads a row that may have
+	// changed hands, and no empty fallback stands in for one that did.
+	display *deviceCredential
+}
+
+// redemptionKind is what the code this authorization issues will redeem into:
+// the decision the consent page shows, bound onto the row at consent. A
+// step-up verifies a credential and mints nothing, so it redeems into neither.
+func (req authorizeRequest) redemptionKind() store.RedemptionKind {
+	if !req.stepUp.ref.IsZero() {
+		return store.RedemptionKindNone
+	}
+	if req.issuesSession {
+		return store.RedemptionKindSession
+	}
+	return store.RedemptionKindToken
 }
 
 // parseAuthorizeRequest validates a request and reports what to answer when it
@@ -61,6 +91,7 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 		return req, oauthErrorBody("server_error", ""), false, false
 	}
 	req.app = app
+	req.issuesSession = h.issuesSession(app.ClientID)
 
 	presented := values.Get("redirect_uri")
 	registered, matched := MatchRedirectURI(ParseRedirectURIs(app.RedirectURIs), presented)
@@ -119,7 +150,111 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 	}
 	req.scopes = scopes
 	req.installation = normalizeInstallationName(values.Get("installation_name"))
+	if values.Has("step_up") {
+		target, stepUpErr := h.parseStepUpTarget(r.Context(), values.Get("step_up"), values.Get("scope"), app, user)
+		if stepUpErr != nil {
+			return req, *stepUpErr, true, false
+		}
+		req.stepUp = target
+		// A step-up asks for nothing: it verifies a credential the account
+		// already holds and widens no grant. The grant therefore stays EMPTY
+		// -- the default grant belongs to an ISSUANCE -- and the requester's
+		// installation label is dropped, because the page identifies the
+		// credential from the hub's own record and shows no requester-chosen
+		// text.
+		req.scopes = authscope.ScopeSet{}
+		req.installation = ""
+	}
 	return req, oauthErrorResponse{}, false, true
+}
+
+const consentCredentialAddedLayout = "2006-01-02 15:04"
+
+// parseStepUpTarget validates a `step_up` parameter and resolves the
+// credential it identifies. Every failure is redirectable with `access_denied`.
+//
+// The row it loads is the one the consent page shows. The display is built
+// HERE, from that row, so the name and the date a person reads are the values
+// this stage validated -- never a later read of a row that may have changed
+// hands.
+func (h *OAuthServerHandler) parseStepUpTarget(
+	ctx context.Context, raw, scope string, app *store.OAuthClient, user *auth.UserInfo,
+) (stepUpTarget, *oauthErrorResponse) {
+	var target stepUpTarget
+	// A step-up asks for nothing. A request that also carries a scope is
+	// refused rather than accepted with a grant riding along on the target.
+	if scope != "" {
+		return target, oauthStepUpBody("step_up must not ask for a scope")
+	}
+	now := h.now().UTC()
+	if strings.HasPrefix(raw, oauthapp.StepUpSessionPrefix) {
+		id := strings.TrimPrefix(raw, oauthapp.StepUpSessionPrefix)
+		if id == "" {
+			return target, oauthStepUpBody("step_up session id is empty")
+		}
+		sess, err := h.store.Sessions().GetByID(ctx, id, now)
+		if err != nil || sess == nil {
+			return target, oauthStepUpBody("step_up session not found")
+		}
+		if body := verifyStepUpSubject("session", sess.UserID, sess.IssuedToClient, user, app); body != nil {
+			return target, body
+		}
+		target.ref = store.CredentialRef{Kind: store.CredentialRefKindSession, ID: id}
+		target.display = &deviceCredential{
+			Name:  sess.UserAgent,
+			Added: sess.CreatedAt.UTC().Format(consentCredentialAddedLayout),
+		}
+	} else if strings.HasPrefix(raw, oauthapp.StepUpTokenPrefix) {
+		id := strings.TrimPrefix(raw, oauthapp.StepUpTokenPrefix)
+		if id == "" {
+			return target, oauthStepUpBody("step_up token id is empty")
+		}
+		tok, err := h.store.APITokens().GetByID(ctx, id)
+		// Liveness is one refusal: a revoked row and a row whose expiry has
+		// passed are both dead, and the elevation write matches neither. The
+		// session branch refuses its dead rows the same way: not found.
+		if err != nil || tok == nil || tok.RevokedAt != nil ||
+			(tok.ExpiresAt != nil && !tok.ExpiresAt.After(now)) {
+			return target, oauthStepUpBody("step_up token not found")
+		}
+		if body := verifyStepUpSubject("token", tok.UserID, tok.ClientID, user, app); body != nil {
+			return target, body
+		}
+		target.ref = store.CredentialRef{Kind: store.CredentialRefKindToken, ID: id}
+		target.display = &deviceCredential{
+			Name:  tokenDisplayName(tok),
+			Added: tok.CreatedAt.UTC().Format(consentCredentialAddedLayout),
+		}
+	} else {
+		return target, oauthStepUpBody("step_up must start with session: or token:")
+	}
+	// The app's permission to elevate covers both target kinds. One guard, so
+	// an owner who turns the flag off withdraws every step-up this app runs
+	// rather than only the token one.
+	if !app.ElevationAllowed {
+		return target, oauthStepUpBody("step_up token's app does not allow elevation")
+	}
+	target.formValue = raw
+	return target, nil
+}
+
+// oauthStepUpBody builds the redirectable `access_denied` body for a step_up
+// failure. The plan requires one fixed description for every step_up refusal.
+func oauthStepUpBody(description string) *oauthErrorResponse {
+	return &oauthErrorResponse{Error: "access_denied", ErrorDescription: description}
+}
+
+// verifyStepUpSubject refuses a step_up target that belongs to another user or
+// was issued to another app. The load and liveness checks that read the row
+// run before it; this is the ownership ladder both target kinds share.
+func verifyStepUpSubject(kind, ownerID, clientID string, user *auth.UserInfo, app *store.OAuthClient) *oauthErrorResponse {
+	if ownerID != user.ID.String() {
+		return oauthStepUpBody("step_up " + kind + " belongs to another user")
+	}
+	if clientID != app.ClientID {
+		return oauthStepUpBody("step_up " + kind + " was not issued to this app")
+	}
+	return nil
 }
 
 // handleAuthorize serves the consent page.
@@ -131,13 +266,18 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 // The page cannot run script: its enforced Content-Security-Policy has no hash
 // and no nonce, which is why a passkey ceremony is impossible HERE and the
 // elevation check bounces to the SPA's /elevate route instead.
+//
+// It renders one of the consent screen's three variants: the sign-in of an app
+// whose authorization mints a Hub session, the step-up that verifies a
+// credential the account already holds (identified from the hub's own record),
+// or the ordinary permission consent.
 func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Request, user *auth.UserInfo) {
 	req, body, redirectable, ok := h.parseAuthorizeRequest(r, user, r.URL.Query())
 	if !ok {
 		h.writeAuthorizationFailure(w, r, req, body, redirectable)
 		return
 	}
-	writePage(w, http.StatusOK, consentPageTmpl, consentPageData{
+	data := consentPageData{
 		App:              appDisplay(req.app),
 		Username:         user.Username,
 		RedirectLabel:    redirectLabel(req.registeredURI, req.redirectURI),
@@ -148,7 +288,14 @@ func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Requ
 		CodeChallenge:    req.codeChallenge,
 		Scope:            req.scopes.String(),
 		InstallationName: req.installation,
-	}, redirectFormActionSource(req.redirectURI))
+		StepUpRaw:        req.stepUp.formValue,
+	}
+	if !req.stepUp.ref.IsZero() {
+		data.StepUp = req.stepUp.display
+	} else {
+		data.SignIn = req.issuesSession
+	}
+	writePage(w, http.StatusOK, consentPageTmpl, data, redirectFormActionSource(req.redirectURI))
 }
 
 // writeAuthorizationFailure answers a rejected authorization.
@@ -254,15 +401,23 @@ func (h *OAuthServerHandler) handleConsent(w http.ResponseWriter, r *http.Reques
 	// the account. /oauth/token reads every one of them back from the row. Read
 	// from the exchange form instead, any holder of an authorization code could
 	// change what the user consented to.
+	//
+	// The redemption kind binds here too. It is what the page SHOWED -- a
+	// session for an app whose authorization mints one, an app credential for
+	// any other -- and the token stage reads it from this row rather than
+	// re-deriving the fork from a registration that may have changed since.
 	if err := h.store.OAuthAuthorizationCodes().Create(r.Context(), store.CreateOAuthAuthorizationCodeParams{
 		Code:             code,
 		UserID:           user.ID,
+		AuthGeneration:   user.UserAuthGeneration,
 		ClientID:         req.app.ClientID,
 		CodeChallenge:    req.codeChallenge,
 		RedirectURI:      req.redirectURI,
 		GrantedScopes:    granted,
 		InstallationName: req.installation,
 		ExpiresAt:        h.now().Add(AuthorizationCodeTTL),
+		StepUp:           req.stepUp.ref,
+		Redemption:       req.redemptionKind(),
 	}); err != nil {
 		writeInternalError(w, "authorization code creation failed", err)
 		return

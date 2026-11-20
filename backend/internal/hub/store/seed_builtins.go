@@ -8,7 +8,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 )
 
-// SeedBuiltIns seeds the two registrations this build ships with, and
+// SeedBuiltIns seeds the three registrations this build ships with, and
 // reconciles them on every later boot.
 //
 // It is the ONE writer of a built-in's constant fields. The values live in
@@ -39,24 +39,16 @@ func SeedBuiltIns(ctx context.Context, st Store, now time.Time) error {
 		p.CreatedAt, p.UpdatedAt = now, now
 		return p
 	}
-	rows := []UpsertBuiltInClientParams{
-		seed(UpsertBuiltInClientParams{
-			ClientID:     oauthapp.ControlCLIClientID,
-			ClientName:   oauthapp.ControlCLIName,
-			ClientURI:    "",
-			RedirectURIs: oauthapp.ControlCLIRedirectURI,
-			Scopes:       oauthapp.ControlCLIScopes,
-			GrantTypes:   oauthapp.ControlCLIGrantTypes,
-		}),
-		seed(UpsertBuiltInClientParams{
-			// No redirect URI and no grant type, so it runs no flow: the row
-			// only names WHO holds an out-of-band administrator-issued
-			// credential.
-			ClientID:   oauthapp.ServiceAccountClientID,
-			ClientName: oauthapp.ServiceAccountName,
-			ClientURI:  "",
-			Scopes:     oauthapp.ServiceAccountScopes,
-		}),
+	rows := make([]UpsertBuiltInClientParams, 0, len(oauthapp.BuiltInRegistrations()))
+	for _, app := range oauthapp.BuiltInRegistrations() {
+		rows = append(rows, seed(UpsertBuiltInClientParams{
+			ClientID:     app.ClientID,
+			ClientName:   app.ClientName,
+			ClientURI:    app.ClientURI,
+			RedirectURIs: app.RedirectURIs,
+			Scopes:       app.Scopes,
+			GrantTypes:   app.GrantTypes,
+		}))
 	}
 	for _, row := range rows {
 		if err := st.OAuthClients().UpsertBuiltIn(ctx, row); err != nil {

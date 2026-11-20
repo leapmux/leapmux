@@ -1,7 +1,28 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setElevationPrompter } from '~/lib/elevationPrompt'
+import { deferred } from '~/test-support/async'
 import * as transportModule from './transport'
+
+// The desktop's sidecar fetch. WRAPPED rather than faked, so the test observes
+// the real selection `getTransportFetch` makes at module load.
+const desktopFetchCalls = vi.hoisted(() => [] as unknown[][])
+vi.mock('~/api/platformBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/platformBridge')>()
+  return {
+    ...actual,
+    desktopFetch: ((input: RequestInfo | URL, init?: RequestInit) => {
+      desktopFetchCalls.push([
+        input,
+        init,
+      ])
+      return Promise.resolve(new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    }) satisfies typeof globalThis.fetch,
+  }
+})
 
 /** An error carrying the hub's credential-rejected marker. */
 function credentialRejected(): ConnectError {
@@ -56,6 +77,36 @@ describe('transport', () => {
 
   it('does not export TOKEN_KEY', () => {
     expect('TOKEN_KEY' in transportModule).toBe(false)
+  })
+})
+
+describe('sessionErrorInterceptor', () => {
+  afterEach(() => {
+    transportModule.setOnAuthError(() => {})
+  })
+
+  it('ignores an unauthenticated reply from a replaced session', async () => {
+    const reply = deferred<never>()
+    const onAuthError = vi.fn()
+    transportModule.setOnAuthError(onAuthError)
+    const request = transportModule.sessionErrorInterceptor(() => reply.promise)({} as never)
+
+    transportModule.advanceAuthSessionEpoch()
+    reply.reject(new ConnectError('old session ended', Code.Unauthenticated))
+
+    await expect(request).rejects.toThrow('old session ended')
+    expect(onAuthError).not.toHaveBeenCalled()
+  })
+
+  it('clears the current session on its unauthenticated reply', async () => {
+    const onAuthError = vi.fn()
+    transportModule.setOnAuthError(onAuthError)
+    const request = transportModule.sessionErrorInterceptor(async () => {
+      throw new ConnectError('current session ended', Code.Unauthenticated)
+    })({} as never)
+
+    await expect(request).rejects.toThrow('current session ended')
+    expect(onAuthError).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -462,5 +513,39 @@ describe('loadTimeouts', () => {
       answer = () => json({ apiTimeoutSeconds: 10 })
       await transportModule.loadTimeouts()
     }
+  })
+})
+
+describe('getTransportFetch', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    desktopFetchCalls.length = 0
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    vi.resetModules()
+  })
+
+  // The selection reads `isTauriApp()` alone, so no runtime mode branches it:
+  // under Tauri, solo and distributed alike carry every request through
+  // `desktopFetch`.
+  it('carries the request through desktopFetch under Tauri, any mode', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const browserFetch = vi.fn(() => {
+      throw new Error('the browser fetch must not carry the request')
+    })
+    vi.stubGlobal('fetch', browserFetch)
+    // The transport binds its fetch ONCE, at module load, so the Tauri flag
+    // must be in place before this import.
+    vi.resetModules()
+    const fresh = await import('./transport')
+
+    await fresh.loadTimeouts()
+
+    expect(browserFetch).not.toHaveBeenCalled()
+    expect(desktopFetchCalls).toHaveLength(1)
+    const [input] = desktopFetchCalls[0]!
+    const url = input instanceof Request
+      ? input.url
+      : String(input)
+    expect(url).toMatch(/\/leapmux\.v1\.SystemService\/GetTimeouts$/)
   })
 })

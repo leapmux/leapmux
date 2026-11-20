@@ -68,8 +68,8 @@ fn frame_len(size: u64) -> io::Result<usize> {
 
 /// Decodes a frame body -- the bytes AFTER the length prefix, exactly
 /// `frame_len` of them.
-fn decode_frame(data: &[u8]) -> io::Result<proto::Frame> {
-    proto::Frame::decode(data)
+fn decode_frame(data: Vec<u8>) -> io::Result<proto::Frame> {
+    proto::Frame::decode(prost::bytes::Bytes::from(data))
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("decode frame: {err}")))
 }
 
@@ -105,7 +105,7 @@ pub(crate) fn read_frame(r: &mut impl Read) -> io::Result<proto::Frame> {
     let len = frame_len(read_varint(r)?)?;
     let mut data = vec![0u8; len];
     r.read_exact(&mut data)?;
-    decode_frame(&data)
+    decode_frame(data)
 }
 
 fn read_varint(r: &mut impl Read) -> io::Result<u64> {
@@ -141,7 +141,7 @@ pub(crate) async fn read_frame_async<R: tokio::io::AsyncRead + Unpin>(
     let len = frame_len(read_varint_async(r).await?)?;
     let mut data = vec![0u8; len];
     r.read_exact(&mut data).await?;
-    decode_frame(&data)
+    decode_frame(data)
 }
 
 #[cfg(any(windows, test))]
@@ -242,6 +242,41 @@ mod tests {
                 other => panic!("unexpected message: {other:?}"),
             }
         });
+    }
+
+    #[test]
+    fn decode_frame_reuses_proxy_response_body_storage() {
+        let payload = vec![0x5a; 1024 * 1024];
+        let frame = proto::Frame {
+            message: Some(proto::frame::Message::Response(proto::Response {
+                id: 9,
+                result: Some(proto::response::Result::ProxyHttp(
+                    proto::ProxyHttpResponse {
+                        status: 200,
+                        headers: Default::default(),
+                        body: prost::bytes::Bytes::from(payload.clone()),
+                    },
+                )),
+                ..Default::default()
+            })),
+        };
+        let encoded = frame.encode_to_vec();
+        let allocation_start = encoded.as_ptr() as usize;
+        let allocation_end = allocation_start + encoded.len();
+
+        let decoded = decode_frame(encoded).expect("decode proxy response frame");
+        let body = match decoded.message {
+            Some(proto::frame::Message::Response(proto::Response {
+                result: Some(proto::response::Result::ProxyHttp(response)),
+                ..
+            })) => response.body,
+            other => panic!("unexpected frame: {other:?}"),
+        };
+
+        assert_eq!(body.as_ref(), payload);
+        let body_start = body.as_ptr() as usize;
+        assert!(body_start >= allocation_start);
+        assert!(body_start + body.len() <= allocation_end);
     }
 
     // frame_len and varint_step are the two decisions the sync and async readers
