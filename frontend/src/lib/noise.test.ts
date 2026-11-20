@@ -270,6 +270,7 @@ describe('CipherState associated data', () => {
     rotated.rekeyWithSecret(new Uint8Array(32).fill(0xA0), null, true)
     const oldCiphertext = oldSender.encrypt(ad, new TextEncoder().encode('old epoch'))
     expect(() => rotated.decrypt(new TextEncoder().encode('other'), oldCiphertext)).toThrow('invalid tag')
+    expect(() => rotated.decrypt(EMPTY, oldCiphertext)).toThrow('invalid tag')
     expect(new TextDecoder().decode(rotated.decrypt(ad, oldCiphertext))).toBe('old epoch')
   })
 })

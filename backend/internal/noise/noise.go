@@ -911,18 +911,14 @@ func runResponderHandshake(rnd entropy, postQuantum bool, compositeKey *Composit
 	ss.mixKey(dhES)
 	zeroBytes(dhES)
 
-	var ephemeralMlkemKey *mlkem.EncapsulationKey1024
+	var ephemeralKeyBytes []byte
 	if postQuantum {
 		encryptedKeyLen := contracts.MlkemPublicKeySize + chacha20poly1305.Overhead
-		ephemeralKeyBytes, err := ss.decryptAndHash(message1[offset : offset+encryptedKeyLen])
+		ephemeralKeyBytes, err = ss.decryptAndHash(message1[offset : offset+encryptedKeyLen])
 		if err != nil {
 			return nil, nil, fmt.Errorf("noise: decrypt message1 ephemeral ML-KEM key: %w", err)
 		}
 		offset += encryptedKeyLen
-		ephemeralMlkemKey, err = mlkem.NewEncapsulationKey1024(ephemeralKeyBytes)
-		if err != nil {
-			return nil, nil, fmt.Errorf("noise: parse message1 ephemeral ML-KEM key: %w", err)
-		}
 	}
 
 	encryptedStaticLen := contracts.MlkemCiphertextSize + chacha20poly1305.Overhead
@@ -939,6 +935,13 @@ func runResponderHandshake(rnd entropy, postQuantum bool, compositeKey *Composit
 	zeroBytes(staticSharedSecret)
 	if _, err := ss.decryptAndHash(message1[offset:]); err != nil {
 		return nil, nil, fmt.Errorf("noise: decrypt message1 payload: %w", err)
+	}
+	var ephemeralMlkemKey *mlkem.EncapsulationKey1024
+	if postQuantum {
+		ephemeralMlkemKey, err = mlkem.NewEncapsulationKey1024(ephemeralKeyBytes)
+		if err != nil {
+			return nil, nil, fmt.Errorf("noise: parse message1 ephemeral ML-KEM key: %w", err)
+		}
 	}
 
 	responderSeed, err := rnd.x25519Seed()

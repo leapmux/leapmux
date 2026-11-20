@@ -1125,10 +1125,26 @@ func TestResponderRefusesAnInvalidEphemeralMlkemKey(t *testing.T) {
 	require.NoError(t, err)
 	message1 := bytes.Join([][]byte{ephemeral, encryptedKey, encryptedCiphertext, payload}, nil)
 
-	_, session, err := ResponderHandshake(worker, testWorkerID, message1)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ephemeral ML-KEM key")
-	assert.Nil(t, session)
+	for _, tc := range []struct {
+		name   string
+		offset int
+		want   string
+	}{
+		{name: "key parse follows all authentication", offset: -1, want: "parse message1 ephemeral ML-KEM key"},
+		{name: "static ciphertext authentication precedes key parse", offset: dhLen + contracts.MlkemPublicKeySize + chacha20poly1305.Overhead, want: "decrypt message1 static ML-KEM ciphertext"},
+		{name: "payload authentication precedes key parse", offset: len(message1) - 1, want: "decrypt message1 payload"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			corrupted := slices.Clone(message1)
+			if tc.offset >= 0 {
+				corrupted[tc.offset] ^= 0xFF
+			}
+			_, session, err := ResponderHandshake(worker, testWorkerID, corrupted)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Nil(t, session)
+		})
+	}
 }
 
 func TestFinishClearsTheStateOnEveryExit(t *testing.T) {
@@ -1278,6 +1294,8 @@ func TestCipherStateAuthenticatesItsAssociatedData(t *testing.T) {
 	ciphertext, err = oldSender.Encrypt(ad, []byte("old epoch"))
 	require.NoError(t, err)
 	_, err = receiver.Decrypt([]byte("other"), ciphertext)
+	require.Error(t, err)
+	_, err = receiver.Decrypt(nil, ciphertext)
 	require.Error(t, err)
 	plaintext, err = receiver.Decrypt(ad, ciphertext)
 	require.NoError(t, err, "a failed attempt must not advance the previous key's nonce")

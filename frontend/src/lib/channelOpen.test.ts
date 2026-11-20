@@ -188,6 +188,7 @@ describe('ChannelOpen openUncached', () => {
 
     await expect(h.open.openUncached('w1')).resolves.toBe('ch-1')
 
+    expect(h.session.beginHandshake).toHaveBeenCalledExactlyOnceWith('w1', EncryptionMode.POST_QUANTUM, keys)
     expect(h.transport.openChannel).toHaveBeenCalledWith('w1', h.handshake.message1)
     expect(h.session.finishHandshake).toHaveBeenCalledExactlyOnceWith(h.handshake, {
       channelId: 'ch-1',

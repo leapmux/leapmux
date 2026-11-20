@@ -51,18 +51,19 @@ function endpointHarness(options: ChannelSessionEndpointOptions = {}) {
   const closeSelf = vi.fn()
   const pair = createTestSession()
   const states: HybridHandshakeState[] = []
+  const handshake1 = vi.fn(() => {
+    const handshakeState = blankHybridHandshakeState()
+    states.push(handshakeState)
+    return {
+      message1: new Uint8Array(3216),
+      handshakeState,
+    }
+  })
   const endpoint = createChannelSessionEndpoint({
     post: (event, transfer) => posted.push({ event, transfer }),
     closeSelf,
   }, {
-    handshake1: () => {
-      const handshakeState = blankHybridHandshakeState()
-      states.push(handshakeState)
-      return {
-        message1: new Uint8Array(3216),
-        handshakeState,
-      }
-    },
+    handshake1,
     handshake2: async () => pair.initiator,
     idleRekeyIntervalMs: 0,
     ...options,
@@ -74,6 +75,7 @@ function endpointHarness(options: ChannelSessionEndpointOptions = {}) {
     closeSelf,
     pair,
     states,
+    handshake1,
   }
 }
 
@@ -231,6 +233,7 @@ describe('createChannelSessionEndpoint handshake', () => {
       keys,
     })
 
+    expect(h.handshake1).toHaveBeenCalledExactlyOnceWith('worker-1', keys)
     expect(h.posted).toHaveLength(1)
     const [{ event, transfer }] = h.posted as [Posted]
     expect(event).toMatchObject({ type: 'handshakeBegun', requestId: 4 })

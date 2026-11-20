@@ -237,7 +237,10 @@ describe('post-quantum rekey exchange', () => {
   it('refuses a malformed ciphertext and a non-empty ciphertext with a null offer', () => {
     const offer = offerRekeyPQWithEntropy(entropy(rekey[0]!.initiatorEntropy), rekeyWorkerPublicKey(rekey[0]!))
     expect(() => acceptRekeyPQ(offer, new Uint8Array(1567))).toThrow('ciphertext')
+    expect(allZero(offer!.staticCipherText)).toBe(true)
+    expect(allZero(offer!.ephemeralPublicKey)).toBe(true)
     expect(allZero(offer!.staticSharedSecret)).toBe(true)
+    expect(allZero(offer!.ephemeralSecretKey)).toBe(true)
     expect(() => acceptRekeyPQ(null, new Uint8Array(1))).toThrow('classic')
     expect(acceptRekeyPQ(null, new Uint8Array(0))).toBeNull()
   })

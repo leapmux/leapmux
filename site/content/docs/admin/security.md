@@ -140,7 +140,7 @@ A Worker can run in one of two modes via `--encryption-mode`:
 | Mode | Handshake |
 |------|-----------|
 | `post-quantum` (default) | Hybrid X25519 + ML-KEM-1024 + SLH-DSA |
-| `classic` | Only the Worker can complete the handshake, using its static ML-KEM key. It lacks the SLH-DSA signature and post-quantum forward secrecy. |
+| `classic` | Only the Worker can complete the handshake, using its static ML-KEM key. Recorded sessions remain secret while the Worker's static keys remain secret. It lacks the SLH-DSA signature and post-quantum forward secrecy. |
 
 The default is `post-quantum`. The Hub reports the Worker's live mode to the Frontend so the browser uses the matching handshake. A false report can only make the open fail; it cannot weaken the session. Choose `classic` only if you have a specific compatibility or performance constraint and understand that it lacks the SLH-DSA signature and post-quantum forward secrecy. For the flag's accepted values, aliases, and fail-safe resolution, see [Configuration](/docs/admin/configuration/).
 
