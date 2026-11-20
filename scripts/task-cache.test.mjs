@@ -714,6 +714,20 @@ describe('task build cache', () => {
       : ['build-backend'])
   })
 
+  it.each(['build-backend', 'build-backend-docker', 'lint-backend'])('invalidates %s when a CLI embed changes', (target) => {
+    const dir = fixture()
+    const guide = 'backend/internal/cli/control/cmd/guide/agent-guide.md'
+    const completion = 'backend/cmd/leapmux/completion_elvish.elv'
+    write(dir, guide, 'original guide')
+    write(dir, completion, '# original completion')
+    expect(run(dir, target)).toContain(target)
+    expect(run(dir, target)).toEqual([])
+    write(dir, guide, 'revised guide')
+    expect(run(dir, target)).toEqual([target])
+    write(dir, completion, '# revised completion')
+    expect(run(dir, target)).toEqual([target])
+  })
+
   it('exports the Docker target and CGO options to the Go compiler', () => {
     const dir = fixture()
     const file = join(dir, 'Taskfile.yaml')

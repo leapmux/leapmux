@@ -54,11 +54,21 @@ leapmux control version --hub https://hub.example.com
 Print the guide for an agent that drives LeapMux.
 
 ```text
-leapmux control guide [flags]
+leapmux control guide [topic] [flags]
 ```
+
+| Argument | Description |
+|---|---|
+| `[topic]` | a topic ID from --topics |
+
+| Flag | Description |
+|---|---|
+| `--topics` | list the available guide topics |
 
 ```sh
 leapmux control guide
+leapmux control guide --topics --json
+leapmux control guide targets
 ```
 
 ## `leapmux control auth`

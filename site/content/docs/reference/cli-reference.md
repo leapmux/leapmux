@@ -53,7 +53,7 @@ release can make a short form ambiguous, so a script uses full names.
 | `control` | Drive a running Hub over RPC (scripts / spawned agents) | [Control CLI](/docs/using/control-cli/) |
 | `version` | Print the build version and exit | [below](#version) |
 | `commands` | Print every command; with `--json`, its arguments, flags, accepted values and examples | [Control CLI](/docs/using/control-cli/) |
-| `completion` | Print the completion script for bash, zsh, fish or powershell | [Control CLI](/docs/using/control-cli/) |
+| `completion` | Print the completion script for Bash, zsh, fish, PowerShell, or Elvish | [Control CLI](/docs/using/control-cli/) |
 
 Notes on dispatch:
 

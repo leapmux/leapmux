@@ -739,6 +739,8 @@ tasks:
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
+      - &control_guide_source backend/internal/cli/control/cmd/guide/*.md
+      - &elvish_completion_source backend/cmd/leapmux/*.elv
       - exclude: backend/**/*_test.go
     vars:
       GO_CONTEXT:
@@ -773,6 +775,8 @@ tasks:
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.{go,s,S,c,cc,cpp,cxx,h,hpp,f,F,f90,syso}
+      - *control_guide_source
+      - *elvish_completion_source
       - exclude: backend/**/*_test.go
     vars:
       GO_CONTEXT:
@@ -1528,6 +1532,8 @@ tasks:
       - backend/go.mod
       - backend/go.sum
       - backend/**/*.go
+      - *control_guide_source
+      - *elvish_completion_source
     vars:
       GO_CONTEXT:
         sh: *go_context_command

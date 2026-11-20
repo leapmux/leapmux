@@ -330,6 +330,7 @@ func TestCompletion_PrintsAScriptForEachShell(t *testing.T) {
 		"zsh":        "#compdef leapmux",
 		"fish":       "complete -c leapmux",
 		"powershell": "Register-ArgumentCompleter",
+		"elvish":     "set edit:completion:arg-completer[leapmux]",
 	}
 	require.Len(t, marks, len(shells), "every supported shell has a mark here")
 	for _, shell := range shells {
@@ -343,7 +344,7 @@ func TestCompletion_PrintsAScriptForEachShell(t *testing.T) {
 	o := runTestCLI(t, "completion", "tcsh")
 	assert.Equal(t, cli.ExitUsage, o.code)
 	assert.Contains(t, o.stderr, `unknown shell "tcsh"`)
-	assert.Contains(t, o.stderr, "bash, zsh, fish, powershell")
+	assert.Contains(t, o.stderr, "bash, zsh, fish, powershell, elvish")
 }
 
 // The completion asks the binary for its candidates, so a prefix completes
@@ -354,6 +355,28 @@ func TestCompletion_CompletesCommandNames(t *testing.T) {
 	assert.Contains(t, o.stdout, "workspace")
 	assert.Contains(t, o.stdout, "worker")
 	assert.NotContains(t, o.stdout, "agent", "a candidate must start with the typed prefix")
+}
+
+func TestCompletionElvishUsesTheLiveResolver(t *testing.T) {
+	generated := runTestCLI(t, "completion", "elvish")
+	require.Equal(t, 0, generated.code, generated.stderr)
+	assert.Contains(t, generated.stdout, "set edit:completion:arg-completer[leapmux]")
+	assert.Contains(t, generated.stdout, "__complete")
+	assert.Contains(t, generated.stdout, "edit:complex-candidate")
+
+	completed := runTestCLI(t, "__complete", "completion", "el")
+	require.Equal(t, 0, completed.code, completed.stderr)
+	assert.Equal(t, "elvish\n:4\n", completed.stdout)
+}
+
+func TestCompletionListsGuideTopicIDsAndTitles(t *testing.T) {
+	completed := runTestCLI(t, "__complete", "control", "guide", "tar")
+	require.Equal(t, cli.ExitOK, completed.code, completed.stderr)
+	assert.Equal(t, "targets\tHow a command finds its object\n:4\n", completed.stdout)
+
+	completed = runTestCLI(t, "__complete", "control", "guide", "--topics", "")
+	require.Equal(t, cli.ExitOK, completed.code, completed.stderr)
+	assert.Equal(t, ":4\n", completed.stdout)
 }
 
 // `leapmux commands --json` lists every command of the tree with its

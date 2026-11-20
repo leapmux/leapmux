@@ -70,9 +70,9 @@ leapmux control agent send 87a19d5f "Run the tests" --json
 - **Flags stand anywhere** after the command name. A value that starts with a dash goes after `--`: `leapmux control agent send 87a19d5f -- "-v is the verbose flag"`.
 - **A command name can be shortened** as far as it stays unambiguous: `leapmux control ag se` runs `agent send`. A later release can add a command that makes a short form ambiguous, so a script spells every name in full.
 - **Every command prints its help** with `--help`: the usage line, what each argument accepts, every flag, and examples.
-- **An agent starts with `leapmux control guide`**, which prints a short guide to driving LeapMux from inside a tab.
+- **An agent starts with `leapmux control guide`**, which prints the guide bundled with the CLI. Use `leapmux control guide --topics --json` to list topics or `leapmux control guide targets` to read just the target selection section.
 - **A program reads the whole grammar** from `leapmux commands --json`: every command with its arguments, its flags, their types and accepted values, and its examples.
-- **Shell completion** completes the command names, the flags, and the ids of your tabs, agents, workspaces and Workers with their titles. Print the script with `leapmux completion bash`, `zsh`, `fish` or `powershell`.
+- **Shell completion** completes commands, flags, and the IDs of your tabs, agents, workspaces, and Workers. Generate the script with `leapmux completion <shell>` for Bash, zsh, fish, PowerShell, or Elvish. In Elvish, run `eval (leapmux completion elvish | slurp)` to load it into the current shell.
 
 ## Targets
 

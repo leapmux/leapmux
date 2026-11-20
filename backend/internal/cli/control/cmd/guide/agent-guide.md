@@ -15,20 +15,21 @@ CLI, so run a command through it then. `leapmux commands` lists the commands
 of the `leapmux` that runs it, so run `"$LEAPMUX_CONTROL_CLI" commands --json`
 to list the Worker's.
 
-## Rules that keep you safe
+## Rules that keep you safe <!-- topic: safety -->
 
 - A command that changes or removes an object needs an explicit target. Use
   `self` to select your own tab.
 - `tab close`, `tile close`, `tile remove-grid` and `workspace delete` refuse
   to remove the tab that runs the command. `--allow-self` overrides that.
-- `tab close` refuses to close a tab whose agent works or whose terminal runs a
-  process. `--allow-busy` overrides that.
+- `tab close` requires `--allow-busy` when work is in progress or the Worker
+  cannot check the tab's activity. The same rule applies when a tile or grid
+  removal closes its tabs.
 - Write a text that starts with `-` after `--`, so that a misspelled flag never
   reaches an agent as text: `leapmux control agent send 87a19d5f -- "-v"`.
 - Use full command names in scripts. A short form such as `leapmux control ag`
   works today, and a later release can make it ambiguous.
 
-## How a command finds its object
+## How a command finds its object <!-- topic: targets -->
 
 An argument such as `<agent>`, `<tab>` or `<workspace>` takes one of these:
 
@@ -44,14 +45,14 @@ A command that only reads defaults to `self`: `leapmux control agent get` shows
 your own agent. A prefix that matches more than one object fails with the code
 `ambiguous_target` and lists the candidates.
 
-## Output
+## Output <!-- topic: output -->
 
 - Text is the default: a table for a list, `key: value` lines for one object.
 - `--json` prints one envelope per line: `{"data": ...}` for a result and
   `{"error": {"code": ..., "message": ..., "hints": [...]}}` for a failure.
 - `-q` prints only ids, one per line: `A=$(leapmux control agent open -q)`.
 
-## Exit codes
+## Exit codes <!-- topic: exit-codes -->
 
 | Code | Meaning |
 |---|---|
@@ -64,7 +65,7 @@ your own agent. A prefix that matches more than one object fails with the code
 | 6 | A wait ended before its condition held |
 | 7 | Unavailable now; a retry can succeed |
 
-## Common tasks
+## Common tasks <!-- topic: tasks -->
 
 Start an agent beside you, give it work, and read what it did:
 
