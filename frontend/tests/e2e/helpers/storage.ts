@@ -233,11 +233,11 @@ async function deleteEntriesFromDatabase(page: Page, dbName: string, storedKeys:
 /** Delete the whole database, so a spec can prove nothing in it holds a session. */
 export async function deleteStorageDatabase(page: Page): Promise<void> {
   for (const database of [DB_NAME, IDB_TRUST_DATABASE_NAME]) {
-    await page.evaluate(dbName => new Promise<void>((resolve) => {
+    await page.evaluate(dbName => new Promise<void>((resolve, reject) => {
       const request = indexedDB.deleteDatabase(dbName)
       request.onsuccess = () => resolve()
-      request.onerror = () => resolve()
-      request.onblocked = () => resolve()
+      request.onerror = () => reject(request.error ?? new Error(`could not delete ${dbName}`))
+      request.onblocked = () => reject(new Error(`deleting ${dbName} is blocked by an open connection`))
     }), database)
   }
 }

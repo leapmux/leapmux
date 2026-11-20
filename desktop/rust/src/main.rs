@@ -3382,7 +3382,8 @@ mod tests {
             "expectedWorkerKeysHex": "010203",
             "expectedUserId": "user-a",
             "channelEpoch": "epoch-a",
-            "hubCookieHeader": "attacker-controlled"
+            "hubCookieHeader": "attacker-controlled",
+            "hubCookieOrigin": "https://attacker.example"
         }))
         .expect("deserialize the webview configuration");
         assert!(config.hub_cookie_header.is_empty());

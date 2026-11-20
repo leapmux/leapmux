@@ -24,7 +24,7 @@ import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSessio
 import { seedKeyPin, testKeyPinHex, testWorkerKeyBundle } from '~/test-support/keyPins'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import * as browserStorage from './browserStorage'
-import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, setStorageAccountForTests, storageAccountId } from './browserStorage'
+import { accountStorageKey, KEY_KEY_PINS, KEY_KEY_PINS_REMOVAL_REVISION, readKeyPinState, setStorageAccountForTests, storageAccountId } from './browserStorage'
 import { readTrustRowForTests, writeTrustRowForTests } from './browserStorageDb'
 import { ChannelError } from './channel'
 import {
@@ -1503,6 +1503,40 @@ describe('ChannelManager openChannelForKeyReview', () => {
       await waitForPendingChannel(h.cm, 'ch-1')
       await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
       await expect(review).rejects.toBeInstanceOf(KeyPinMissingReviewError)
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('reports a changed-key pin removed after acceptance but before commit', async () => {
+    const h = setup()
+    await seedKeyPin('worker', {
+      publicKeyHex: testKeyPinHex('01'),
+      firstSeen: 1,
+    })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    h.confirmKeyPin.mockResolvedValueOnce('accept')
+
+    try {
+      const review = h.cm.openChannelForKeyReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await Promise.all([
+        writeTrustRowForTests({
+          k: accountStorageKey('user-1', KEY_KEY_PINS),
+          v: {},
+          e: Date.now() + 60_000,
+        }),
+        writeTrustRowForTests({
+          k: accountStorageKey('user-1', KEY_KEY_PINS_REMOVAL_REVISION),
+          v: 1,
+          e: Number.POSITIVE_INFINITY,
+        }),
+      ])
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+
+      await expect(review).rejects.toBeInstanceOf(KeyPinMissingReviewError)
+      expect((await readKeyPinState()).pins).toEqual({})
     }
     finally {
       h.cm.closeAll()

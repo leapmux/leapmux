@@ -134,12 +134,11 @@ func Open(opts Options) (*Store, error) {
 
 // withState keeps the sibling lock open from the read through the operation.
 func (s *Store) withState(ctx context.Context, useState func(*onDiskFile) error) (result error) {
-	select {
-	case s.transaction <- struct{}{}:
-		defer func() { <-s.transaction }()
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := s.acquireTransaction(ctx); err != nil {
+		return err
 	}
+	defer func() { <-s.transaction }()
+
 	file, err := filelock.Open(s.opts.Path+".lock", false)
 	if err != nil {
 		return fmt.Errorf("open pin lock: %w", err)
@@ -161,6 +160,23 @@ func (s *Store) withState(ctx context.Context, useState func(*onDiskFile) error)
 		return err
 	}
 	return useState(state)
+}
+
+func (s *Store) acquireTransaction(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case s.transaction <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case s.transaction <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // readState reads the current pin file under an already-held lock.

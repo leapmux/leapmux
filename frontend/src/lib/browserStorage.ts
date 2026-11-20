@@ -1969,8 +1969,11 @@ function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMa
     }
     throw new Error('A different key was already recorded for this worker; the update is refused.')
   }
-  if (change.expectPin !== null && (current === null || !sameKeyPinRecord(current, change.expectPin))) {
-    throw new Error('The stored key pin changed since the decision was taken; the update is refused.')
+  if (change.expectPin !== null) {
+    if (current === null)
+      throw new KeyPinMissingReviewError()
+    if (!sameKeyPinRecord(current, change.expectPin))
+      throw new Error('The stored key pin changed since the decision was taken; the update is refused.')
   }
   return {
     kind: 'write',

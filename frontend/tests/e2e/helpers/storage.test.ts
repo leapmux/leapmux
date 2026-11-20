@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, resetBrowserStorageForTests } from '~/lib/browserStorage'
 import { IDB_NATIVE_SCHEMA_VERSION, IDB_TRUST_DATABASE_NAME } from '~/lib/idb'
 import { testKeyPinHex } from '~/test-support/keyPins'
-import { countRows, databaseStores, deleteEntries, readEntry, storageKeys, waitForStoredEntry, writeEntry } from './storage'
+import { countRows, databaseStores, deleteEntries, deleteStorageDatabase, readEntry, storageKeys, waitForStoredEntry, writeEntry } from './storage'
 
 // Run the real poll with a short unit-test deadline.
 vi.mock('@playwright/test', async (importOriginal) => {
@@ -230,6 +230,32 @@ describe('deleteEntries', () => {
 
   it('rejects when the database does not exist', async () => {
     await expect(deleteEntries(page, ['leapmux:device:theme'])).rejects.toThrow('the database leapmux-kv has no object store entries')
+  })
+})
+
+describe('deleteStorageDatabase', () => {
+  it('deletes both preference and trust databases', async () => {
+    await writeEntry(page, 'leapmux:device:theme', 'nord', NEVER)
+    await writeEntry(page, accountStorageKey('user-1', KEY_KEY_PINS), {}, NEVER)
+
+    await deleteStorageDatabase(page)
+
+    expect(await databaseNames()).toEqual([])
+  })
+
+  it('rejects when an open trust connection blocks deletion', async () => {
+    await writeEntry(page, accountStorageKey('user-1', KEY_KEY_PINS), {}, NEVER)
+    const request = indexedDB.open(IDB_TRUST_DATABASE_NAME)
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => resolve(request.result)
+    })
+    try {
+      await expect(deleteStorageDatabase(page)).rejects.toThrow(`deleting ${IDB_TRUST_DATABASE_NAME} is blocked`)
+    }
+    finally {
+      db.close()
+    }
   })
 })
 

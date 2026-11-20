@@ -1032,15 +1032,24 @@ let pendingTunnelReset: TunnelReset | undefined
 let tunnelResetFailure: unknown | null = null
 const tunnelResetListeners = new Set<(failure: unknown | null) => void>()
 
+function deliverTunnelResetStatus(listener: (failure: unknown | null) => void, failure: unknown | null): void {
+  try {
+    listener(failure)
+  }
+  catch (err) {
+    log.warn('desktop tunnel reset status listener failed', err)
+  }
+}
+
 function publishTunnelResetFailure(failure: unknown | null): void {
   tunnelResetFailure = failure
   for (const listener of tunnelResetListeners)
-    listener(failure)
+    deliverTunnelResetStatus(listener, failure)
 }
 
 function onTunnelResetStatusChange(listener: (failure: unknown | null) => void): () => void {
   tunnelResetListeners.add(listener)
-  listener(tunnelResetFailure)
+  deliverTunnelResetStatus(listener, tunnelResetFailure)
   return () => tunnelResetListeners.delete(listener)
 }
 

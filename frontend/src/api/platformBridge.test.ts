@@ -731,6 +731,10 @@ describe('platformBridge tunnel operations', () => {
     const calls: Array<[string, unknown]> = []
     let resets = 0
     const resetStatuses: Array<unknown | null> = []
+    const stopThrowingStatus = platformBridge.onTunnelResetStatusChange((status) => {
+      if (status === null)
+        throw new Error('observer failed on reset success')
+    })
     const stopResetStatus = platformBridge.onTunnelResetStatusChange(status => resetStatuses.push(status))
     mockIPC((cmd, args) => {
       calls.push([cmd, args])
@@ -798,6 +802,7 @@ describe('platformBridge tunnel operations', () => {
     retryReset.resolve()
     await expect(create).resolves.toEqual({ kind: 'created', info })
     await remove
+    stopThrowingStatus()
     stopResetStatus()
     expect(resetStatuses).toHaveLength(3)
     expect(resetStatuses[0]).toBeNull()
