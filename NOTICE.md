@@ -168,8 +168,8 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [block-buffer 0.12.1 (MIT OR Apache-2.0)](#block-buffer-0121-mit-or-apache-20)
 - [block2 0.6.2 (MIT)](#block2-062-mit)
 - [blocking 1.7.0 (Apache-2.0 OR MIT)](#blocking-170-apache-20-or-mit)
-- [brotli 9.1.1 (BSD-3-Clause AND MIT)](#brotli-911-bsd-3-clause-and-mit)
-- [brotli-decompressor 6.3.1 (BSD-3-Clause/MIT)](#brotli-decompressor-631-bsd-3-clausemit)
+- [brotli 9.1.3 (BSD-3-Clause AND MIT)](#brotli-913-bsd-3-clause-and-mit)
+- [brotli-decompressor 6.3.2 (BSD-3-Clause/MIT)](#brotli-decompressor-632-bsd-3-clausemit)
 - [bs58 0.5.1 (MIT/Apache-2.0)](#bs58-051-mitapache-20)
 - [bumpalo 3.20.4 (MIT OR Apache-2.0)](#bumpalo-3204-mit-or-apache-20)
 - [bytemuck 1.25.2 (Zlib OR Apache-2.0 OR MIT)](#bytemuck-1252-zlib-or-apache-20-or-mit)
@@ -375,7 +375,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [ndk-context 0.1.1 (MIT OR Apache-2.0)](#ndk-context-011-mit-or-apache-20)
 - [ndk-sys 0.6.0+11769913 (MIT OR Apache-2.0)](#ndk-sys-06011769913-mit-or-apache-20)
 - [new_debug_unreachable 1.0.6 (MIT)](#new_debug_unreachable-106-mit)
-- [nix 0.31.3 (MIT)](#nix-0313-mit)
+- [nix 0.31.4 (MIT)](#nix-0314-mit)
 - [nom 8.0.0 (MIT)](#nom-800-mit)
 - [notify-rust 4.19.0 (MIT OR Apache-2.0)](#notify-rust-4190-mit-or-apache-20)
 - [num_enum 0.7.6 (BSD-3-Clause OR MIT OR Apache-2.0)](#num_enum-076-bsd-3-clause-or-mit-or-apache-20)
@@ -427,7 +427,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [pin-project-lite 0.2.17 (Apache-2.0 OR MIT)](#pin-project-lite-0217-apache-20-or-mit)
 - [piper 0.2.5 (MIT OR Apache-2.0)](#piper-025-mit-or-apache-20)
 - [pkg-config 0.3.34 (MIT OR Apache-2.0)](#pkg-config-0334-mit-or-apache-20)
-- [plist 1.10.3 (MIT)](#plist-1103-mit)
+- [plist 1.10.4 (MIT)](#plist-1104-mit)
 - [png 0.18.1 (MIT OR Apache-2.0)](#png-0181-mit-or-apache-20)
 - [polling 3.11.0 (Apache-2.0 OR MIT)](#polling-3110-apache-20-or-mit)
 - [portable-atomic 1.15.0 (Apache-2.0 OR MIT)](#portable-atomic-1150-apache-20-or-mit)
@@ -453,7 +453,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [quote 1.0.47 (MIT OR Apache-2.0)](#quote-1047-mit-or-apache-20)
 - [r-efi 5.3.0 (MIT OR Apache-2.0 OR LGPL-2.1-or-later)](#r-efi-530-mit-or-apache-20-or-lgpl-21-or-later)
 - [r-efi 6.0.0 (MIT OR Apache-2.0 OR LGPL-2.1-or-later)](#r-efi-600-mit-or-apache-20-or-lgpl-21-or-later)
-- [rand 0.10.3 (MIT OR Apache-2.0)](#rand-0103-mit-or-apache-20)
+- [rand 0.10.4 (MIT OR Apache-2.0)](#rand-0104-mit-or-apache-20)
 - [rand_core 0.10.1 (MIT OR Apache-2.0)](#rand_core-0101-mit-or-apache-20)
 - [raw-window-handle 0.6.2 (MIT OR Apache-2.0 OR Zlib)](#raw-window-handle-062-mit-or-apache-20-or-zlib)
 - [redox_syscall 0.5.18 (MIT)](#redox_syscall-0518-mit)
@@ -700,7 +700,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@shikijs/rehype 4.6.0 (MIT)](#shikijsrehype-460-mit)
 - [@simplewebauthn/browser 14.0.0 (MIT)](#simplewebauthnbrowser-1400-mit)
 - [@solidjs/router 1.0.3 (MIT)](#solidjsrouter-103-mit)
-- [@solidjs/start 2.2.2 (MIT)](#solidjsstart-222-mit)
+- [@solidjs/start 2.2.3 (MIT)](#solidjsstart-223-mit)
 - [@tauri-apps/api 2.12.4 (Apache-2.0 OR MIT)](#tauri-appsapi-2124-apache-20-or-mit)
 - [@tauri-apps/plugin-clipboard-manager 2.5.0 (MIT OR Apache-2.0)](#tauri-appsplugin-clipboard-manager-250-mit-or-apache-20)
 - [@tauri-apps/plugin-notification 2.8.1 (MIT OR Apache-2.0)](#tauri-appsplugin-notification-281-mit-or-apache-20)
@@ -18312,7 +18312,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### brotli 9.1.1 (BSD-3-Clause AND MIT)
+### brotli 9.1.3 (BSD-3-Clause AND MIT)
 
 ```
 Copyright (c) 2016 Dropbox, Inc.
@@ -18351,7 +18351,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### brotli-decompressor 6.3.1 (BSD-3-Clause/MIT)
+### brotli-decompressor 6.3.2 (BSD-3-Clause/MIT)
 
 ```
 Copyright (c) 2016 Dropbox, Inc.
@@ -51801,7 +51801,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### nix 0.31.3 (MIT)
+### nix 0.31.4 (MIT)
 
 ```
 The MIT License (MIT)
@@ -59714,7 +59714,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### plist 1.10.3 (MIT)
+### plist 1.10.4 (MIT)
 
 ```
 Copyright (c) 2015 Edward Barnard
@@ -64457,7 +64457,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### rand 0.10.3 (MIT OR Apache-2.0)
+### rand 0.10.4 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -102436,7 +102436,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @solidjs/start 2.2.2 (MIT)
+### @solidjs/start 2.2.3 (MIT)
 
 ```
 MIT License
