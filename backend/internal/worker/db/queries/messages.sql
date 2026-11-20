@@ -3,8 +3,15 @@
 -- NOT MAX(live seq) + 1, so a deleted tail seq is never reused. The agent row is
 -- guaranteed to exist (messages.agent_id REFERENCES agents); the COALESCE is a
 -- defensive fallback. A trigger advances message_seq_hwm after the insert.
+--
+-- The WHERE NOT EXISTS skips a key that a retraction receipt retains: the row
+-- was evicted and a replayed frame must never reinsert it at a fresh sequence.
+-- The check is part of the INSERT statement so the skip and the insert cannot
+-- race a retraction recorded between them. A skipped insert returns no row,
+-- which the callers read as the immutable duplicate path. The receipt lookup is
+-- one row-value equality on its primary key, which spans all three columns.
 INSERT INTO messages (id, agent_id, seq, agent_session_id, source, content, content_compression, supplemental_content, supplemental_content_compression, idempotency_key, depth, span_id, parent_span_id, span_type, span_lines, span_color, mark_type, assembled_kind, completion, transcript_only, created_at)
-VALUES (
+SELECT
   sqlc.arg(id),
   sqlc.arg(agent_id),
   (COALESCE((SELECT a.message_seq_hwm FROM agents a WHERE a.id = sqlc.arg(agent_id)), 0) + 1),
@@ -22,10 +29,15 @@ VALUES (
   sqlc.arg(span_lines),
   sqlc.arg(span_color),
   sqlc.arg(mark_type),
-	sqlc.arg(assembled_kind),
-	sqlc.arg(completion),
+  sqlc.arg(assembled_kind),
+  sqlc.arg(completion),
   sqlc.arg(transcript_only),
   sqlc.arg(created_at)
+WHERE NOT EXISTS (
+  SELECT 1 FROM agent_message_retractions r
+  WHERE (r.agent_id, r.agent_session_id, r.idempotency_key) =
+        (sqlc.arg(agent_id), sqlc.arg(agent_session_id), sqlc.arg(idempotency_key))
+    AND r.idempotency_key <> ''
 )
 ON CONFLICT(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '' DO NOTHING
 RETURNING seq;
@@ -72,6 +84,45 @@ SELECT
 FROM messages AS m
 WHERE m.agent_id = sqlc.arg(source_agent_id)
 ORDER BY m.seq ASC;
+
+-- RecordMessageRetraction claims one native message eviction receipt. A repeat
+-- of an already retained key claims nothing (0 rows), so the first signal owns
+-- the deletion and a duplicate emits no event.
+-- name: RecordMessageRetraction :execrows
+INSERT INTO agent_message_retractions (agent_id, agent_session_id, idempotency_key)
+VALUES (sqlc.arg(agent_id), sqlc.arg(agent_session_id), sqlc.arg(idempotency_key))
+ON CONFLICT (agent_id, agent_session_id, idempotency_key) DO NOTHING;
+
+-- HasMessageRetraction reports a retained eviction receipt for one exact key.
+-- CreateMessage skips a retained key atomically; this lookup serves the early
+-- paths that mutate state before the row insert would run.
+-- name: HasMessageRetraction :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_message_retractions
+  WHERE agent_id = sqlc.arg(agent_id)
+    AND agent_session_id = sqlc.arg(agent_session_id)
+    AND idempotency_key = sqlc.arg(idempotency_key)
+) AS present;
+
+-- DeleteMessageByAgentSessionAndKey removes the exact stored row of one native
+-- message and returns its sequence. The partial index predicate excludes empty
+-- keys so the delete uses idx_messages_idempotency_key. A retained receipt with
+-- no row (a held frame that never landed) deletes nothing.
+-- name: DeleteMessageByAgentSessionAndKey :many
+DELETE FROM messages
+WHERE agent_id = sqlc.arg(agent_id)
+  AND agent_session_id = sqlc.arg(agent_session_id)
+  AND idempotency_key = sqlc.arg(idempotency_key)
+  AND idempotency_key <> ''
+RETURNING seq;
+
+-- CloneAgentMessageRetractionsForResume copies one closed Worker's eviction
+-- receipts into the new agent beside its cloned transcript, so a redelivered
+-- native key stays suppressed after a reopen.
+-- name: CloneAgentMessageRetractionsForResume :exec
+INSERT INTO agent_message_retractions (agent_id, agent_session_id, idempotency_key)
+SELECT sqlc.arg(target_agent_id), source.agent_session_id, source.idempotency_key
+FROM agent_message_retractions AS source WHERE source.agent_id = sqlc.arg(source_agent_id);
 
 -- name: ListMessagesByAgentID :many
 SELECT * FROM messages

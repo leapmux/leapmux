@@ -68,6 +68,11 @@ func (svc *Service) createAgentRecordWithTranscriptUsing(ctx context.Context, qu
 		}); err != nil {
 			return fmt.Errorf("copy the prior native completion receipts: %w", err)
 		}
+		if err := queries.CloneAgentMessageRetractionsForResume(ctx, db.CloneAgentMessageRetractionsForResumeParams{
+			TargetAgentID: params.ID, SourceAgentID: sourceID,
+		}); err != nil {
+			return fmt.Errorf("copy the prior native eviction receipts: %w", err)
+		}
 		if err := cloneArchivedChildTree(ctx, queries, sourceID, params.ID); err != nil {
 			return fmt.Errorf("copy the prior Worker child transcripts: %w", err)
 		}
@@ -112,6 +117,11 @@ func cloneArchivedChildTree(ctx context.Context, queries *db.Queries, sourceRoot
 			TargetAgentID: newChildID, SourceAgentID: child.ID,
 		}); err != nil {
 			return fmt.Errorf("copy archived child %q native completion receipts: %w", child.ID, err)
+		}
+		if err := queries.CloneAgentMessageRetractionsForResume(ctx, db.CloneAgentMessageRetractionsForResumeParams{
+			TargetAgentID: newChildID, SourceAgentID: child.ID,
+		}); err != nil {
+			return fmt.Errorf("copy archived child %q eviction receipts: %w", child.ID, err)
 		}
 		mappedIDs[child.ID] = newChildID
 	}

@@ -832,7 +832,25 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 		return
 	}
 
-	if err := childSink.PersistMessage(source, agent.MessageContent{Original: content}, spanInfo); err != nil {
+	// A forwarded replacement's supersedes names child rows the CLI evicted.
+	// A redelivered retracted frame inserts no row and changes no span.
+	childContent := agent.MessageContent{Original: content}
+	if key := claudeRevocableKey(msgType, env); key != "" {
+		childContent.IdempotencyKey = key
+		captured := childSink.CaptureMessage(childContent, agent.SpanInfo{})
+		retracted, err := childSink.IsMessageRetracted(captured, key)
+		if err != nil {
+			slog.Warn("claude route subagent retraction lookup failed", "child", childID, "error", err)
+		} else if retracted {
+			return
+		}
+		if keys := claudeEvictionKeys(content, msgType, key); len(keys) > 0 {
+			if err := childSink.RetractMessagesByIdempotencyKey(captured, keys); err != nil && !agent.OutputRetained(err) {
+				slog.Warn("claude route subagent retraction failed", "child", childID, "error", err)
+			}
+		}
+	}
+	if err := childSink.PersistMessage(source, childContent, spanInfo); err != nil {
 		slog.Warn("claude route subagent message failed", "child", childID, "error", err)
 	}
 	if spanType != "" {

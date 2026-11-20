@@ -268,6 +268,7 @@ func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
 	// A promotion to FULL sends a fresh snapshot when the tab becomes visible.
 	case *leapmuxv1.AgentEvent_InputQueueChanged,
 		*leapmuxv1.AgentEvent_AgentMessage,
+		*leapmuxv1.AgentEvent_MessagesRetracted,
 		*leapmuxv1.AgentEvent_CatchUpStart,
 		*leapmuxv1.AgentEvent_CatchUpComplete:
 		return classContent

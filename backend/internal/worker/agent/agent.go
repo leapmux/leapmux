@@ -164,6 +164,20 @@ type TranscriptServices interface {
 	// ReadMessageByIdempotencyKey returns one immutable provider record.
 	// The native session is exact, including an empty session. An empty key returns nil.
 	ReadMessageByIdempotencyKey(sessionID, idempotencyKey string) (*StoredMessage, error)
+	// RetractMessagesByIdempotencyKey deletes the exact stored rows of the given
+	// native keys and records one eviction receipt per key, so a replayed frame
+	// never reinserts a retracted message. It takes the immutable publication
+	// captured at native frame admission and takes no new transcript authority:
+	// a revoked capture changes nothing. The scoped delete runs in one store
+	// transaction under the owning root's transcript mutation lock, and the
+	// caller's queue keeps retry ownership on a storage failure. An empty key
+	// list, or keys that name no stored row, records no event.
+	RetractMessagesByIdempotencyKey(captured MessageContent, keys []string) error
+	// IsMessageRetracted reports whether the captured scope already retains an
+	// eviction receipt for one key. It reads durable state through the supplied
+	// captured owner and takes no new transcript authority. The lookup reports
+	// storage failure for retry. An empty key is never retracted.
+	IsMessageRetracted(captured MessageContent, key string) (bool, error)
 	// ReadToolRequest resolves the persisted opener. A missing opener returns nil without an error.
 	ReadToolRequest(spanID string) (*StoredMessage, error)
 	// ReadToolResult resolves the LATEST persisted row of one tool-call span, which is

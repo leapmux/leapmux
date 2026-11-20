@@ -194,6 +194,15 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 
 	slog.Debug("HandleOutput", "agent_id", a.AgentID(), "type", msgType, "len", len(content))
 
+	// Keyed admission runs before every mutable effect: the receipt lookup
+	// rejects a redelivered retracted frame before it can arm a turn, resolve
+	// or replace a hold, or change a tool count or span. This frame's own
+	// eviction signals apply there first, so a later held-output resolve or
+	// flush already sees their receipts.
+	if !a.admitClaudeFrame(content, msgType) {
+		return
+	}
+
 	a.observeTurnFromOutput(content, msgType)
 	a.resolveHeldAPIError(content, msgType)
 	if msgType == claudeMsgTypeAssistant {
@@ -205,8 +214,13 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 					texts = append(texts, block.Text)
 				}
 			}
+			// An accepted frame takes the normal hold with its exact admitted
+			// UUID and captured owner, so a fallback naming that UUID drops the
+			// hold before it can become a row.
+			key := claudeTranscriptKey(env.UUID)
+			captured := a.sink.CaptureMessage(agent.MessageContent{Original: content, IdempotencyKey: key}, agent.SpanInfo{})
 			a.heldAPIErrorMu.Lock()
-			a.heldAPIError = &claudeHeldAPIError{content: bytes.Clone(content), text: strings.Join(texts, "\n")}
+			a.heldAPIError = &claudeHeldAPIError{content: bytes.Clone(content), text: strings.Join(texts, "\n"), key: key, captured: captured}
 			a.heldAPIErrorMu.Unlock()
 			return
 		}
@@ -268,9 +282,155 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 	}
 }
 
+// claudeTranscriptKey normalizes a wire message UUID into the exact transcript
+// key of a persisted envelope. Claude Code's two native eviction signals (a
+// fallback system frame's retracted_message_uuids and a replacement assistant
+// frame's supersedes) name the same wire UUIDs, so both the persisted key and
+// the signal normalize through this function to match exactly. An empty or
+// whitespace-only UUID yields no key, which keeps the write unkeyed.
+func claudeTranscriptKey(uuid string) string {
+	return strings.ToLower(strings.TrimSpace(uuid))
+}
+
+// claudeRevocableKey returns the transcript key of a revocable envelope: an
+// assistant or tool-result frame, the only shapes a native eviction names. Any
+// other envelope keeps no key and follows the ordinary unkeyed write.
+func claudeRevocableKey(msgType string, env *messageEnvelope) string {
+	switch msgType {
+	case claudeMsgTypeAssistant:
+		return claudeTranscriptKey(env.UUID)
+	case claudeMsgTypeUser:
+		if hasToolResultBlock(env) {
+			return claudeTranscriptKey(env.UUID)
+		}
+	}
+	return ""
+}
+
+// claudeEvictionKeys returns the normalized target keys one frame evicts: the
+// fallback system frame's retracted_message_uuids, or a replacement assistant
+// frame's supersedes. The carrying frame's own UUID drops out, because a frame
+// never evicts itself -- its fallback notice and model update must survive.
+// Empty values, repeats and malformed entries drop out as well.
+func claudeEvictionKeys(content []byte, msgType string, self string) []string {
+	var targets []string
+	switch msgType {
+	case claudeMsgTypeSystem:
+		var frame struct {
+			RetractedMessageUUIDs json.RawMessage `json:"retracted_message_uuids"`
+		}
+		if json.Unmarshal(content, &frame) != nil {
+			return nil
+		}
+		// The plural field is a list on the wire. A bare value is malformed
+		// and drops out.
+		var many []json.RawMessage
+		if json.Unmarshal(frame.RetractedMessageUUIDs, &many) != nil {
+			return nil
+		}
+		targets = claudeStringListEntries(many)
+	case claudeMsgTypeAssistant:
+		var frame struct {
+			Supersedes json.RawMessage `json:"supersedes"`
+		}
+		if json.Unmarshal(content, &frame) != nil {
+			return nil
+		}
+		targets = claudeStringList(frame.Supersedes)
+	default:
+		return nil
+	}
+	keys := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, value := range targets {
+		key := claudeTranscriptKey(value)
+		if key == "" || key == self {
+			continue
+		}
+		if _, repeat := seen[key]; repeat {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+// claudeStringList reads one wire value that can be a single string or an array
+// of strings. A malformed value yields no entries, and a malformed entry drops
+// only itself.
+func claudeStringList(raw json.RawMessage) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		return []string{one}
+	}
+	var many []json.RawMessage
+	if json.Unmarshal(raw, &many) != nil {
+		return nil
+	}
+	return claudeStringListEntries(many)
+}
+
+// claudeStringListEntries keeps only the entries that are strings.
+func claudeStringListEntries(many []json.RawMessage) []string {
+	values := make([]string, 0, len(many))
+	for _, entry := range many {
+		var value string
+		if json.Unmarshal(entry, &value) == nil {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// admitClaudeFrame applies keyed admission before any mutable effect of one
+// frame. It rejects a redelivered retracted frame outright and applies the
+// eviction signals the frame carries to the root transcript. It reports whether
+// the frame survives admission. A forwarded frame's targets live in the child's
+// transcript, where routeSubagentMessage applies them.
+func (a *Agent) admitClaudeFrame(content []byte, msgType string) bool {
+	if msgType != claudeMsgTypeAssistant && msgType != claudeMsgTypeUser && msgType != claudeMsgTypeSystem {
+		return true
+	}
+	var env messageEnvelope
+	if json.Unmarshal(content, &env) != nil {
+		return true
+	}
+	self := claudeTranscriptKey(env.UUID)
+	if env.ParentToolUseID == "" {
+		if key := claudeRevocableKey(msgType, &env); key != "" {
+			captured := a.sink.CaptureMessage(agent.MessageContent{Original: content, IdempotencyKey: key}, agent.SpanInfo{})
+			retracted, err := a.sink.IsMessageRetracted(captured, key)
+			if err != nil {
+				slog.Warn("read message retraction", "agent_id", a.AgentID(), "error", err)
+			} else if retracted {
+				// A rejected frame arms no turn and changes no hold, tool
+				// count, control or span.
+				return false
+			}
+		}
+	}
+	keys := claudeEvictionKeys(content, msgType, self)
+	if len(keys) > 0 && env.ParentToolUseID == "" {
+		captured := a.sink.CaptureMessage(agent.MessageContent{Original: content}, agent.SpanInfo{})
+		if err := a.sink.RetractMessagesByIdempotencyKey(captured, keys); err != nil && !agent.OutputRetained(err) {
+			slog.Warn("retract claude messages", "agent_id", a.AgentID(), "error", err)
+		}
+	}
+	return true
+}
+
 type claudeHeldAPIError struct {
 	content []byte
 	text    string
+	// key is the exact normalized wire UUID of the held frame and captured its
+	// admission-time publication. A native eviction naming that exact UUID
+	// drops the hold before it can become a row.
+	key      string
+	captured agent.MessageContent
 }
 
 // resolveHeldAPIError compares a held root error with the next root conversation frame.
@@ -290,6 +450,9 @@ func (a *Agent) resolveHeldAPIError(content []byte, msgType string) {
 	if held == nil {
 		return
 	}
+	if a.heldAPIErrorRetracted(held) {
+		return
+	}
 	if msgType == claudeMsgTypeResult && env.IsError && env.Result == held.text {
 		return
 	}
@@ -302,9 +465,25 @@ func (a *Agent) flushHeldAPIError() {
 	held := a.heldAPIError
 	a.heldAPIError = nil
 	a.heldAPIErrorMu.Unlock()
-	if held != nil {
-		a.handlePersistableMessage(held.content, claudeMsgTypeAssistant)
+	if held == nil || a.heldAPIErrorRetracted(held) {
+		return
 	}
+	a.handlePersistableMessage(held.content, claudeMsgTypeAssistant)
+}
+
+// heldAPIErrorRetracted reports whether the hold's exact admitted UUID was
+// retracted, so the held frame can never become a new row. A failed lookup
+// reports nothing: the keyed insert still skips a retained key atomically.
+func (a *Agent) heldAPIErrorRetracted(held *claudeHeldAPIError) bool {
+	if held == nil || held.key == "" {
+		return false
+	}
+	retracted, err := a.sink.IsMessageRetracted(held.captured, held.key)
+	if err != nil {
+		slog.Warn("read held message retraction", "agent_id", a.AgentID(), "error", err)
+		return false
+	}
+	return retracted
 }
 
 // persistUnknownClaudeFrame keeps an unknown frame only when it identifies the current session.
@@ -836,6 +1015,12 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 		if stopRequested && env.statesAbortedTurn() {
 			messageContent.Completion = agent.MessageCompletionInterrupted
 		}
+	}
+	// Persisted assistant and tool-result envelopes carry the exact normalized
+	// wire UUID as their idempotency key, which is the identity a native
+	// eviction signal names.
+	if key := claudeRevocableKey(msgType, &env); key != "" {
+		messageContent.IdempotencyKey = key
 	}
 
 	// Resolve the span metadata and reserve the tool_use row's color. Shared

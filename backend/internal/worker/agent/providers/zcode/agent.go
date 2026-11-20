@@ -189,6 +189,10 @@ type Agent struct {
 	// the user runs none. A background start never replaces it. Guarded by a.Mu.
 	foregroundTurnID string
 	retryResolution  providerkit.RetryResolution
+	// modelAPIRetryPublished is the JSON encoding of the live model API retry
+	// object this agent last published, empty while the indicator is clear. It
+	// makes the publication change-driven. Guarded by a.Mu.
+	modelAPIRetryPublished string
 	// stopWindow ends a turn whose stop the app-server accepted and then never
 	// reported. Guarded by a.Mu. See stoppedTurnWindow and armStoppedZCodeTurnLocked.
 	stopWindow stoppedTurnWindow

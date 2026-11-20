@@ -1530,6 +1530,208 @@ func TestHandleZCodeOutput_NetworkRetryPersistsAndOtherStatusesDrop(t *testing.T
 	}
 }
 
+// The live model API retry follows the foreground owner's physical requests.
+// An established call carries no indicator, the schedule publishes Waiting 2/5,
+// the handoff to the retry's new request ID publishes Running 2/5, and the
+// completion publishes an explicit null. A side query, a background owner, an
+// archive event and the late completion of the handed-off predecessor interleave
+// without a single extra update. The schedule's own retry notice is the one
+// persisted history row.
+func TestHandleZCodeOutput_PublishesTheLiveModelAPIRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	zcodeSeedTestTurn(t, a, true)
+	a.Mu.Lock()
+	var backgroundID string
+	for id, turn := range a.turns {
+		if turn.background {
+			backgroundID = id
+		}
+	}
+	a.Mu.Unlock()
+	require.NotEmpty(t, backgroundID)
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`))
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry),
+		"an established call carries no active retry")
+
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,`+
+			`"delayMs":4000,"statusCode":529,"message":"Overloaded","modelCall":{"logicalCallId":"L1"},`+
+			`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":1,"maxRetries":4,"retryDelayMs":4000,"errorStatus":529,"error":"overloaded"}}}}`))
+
+	// A side query's retry, a background owner's status and an archive replay
+	// touch no live state.
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"SIDE","attempt":1,"nextAttempt":2,"maxAttempts":5,`+
+			`"querySource":"compact","modelCall":{"logicalCallId":"L2"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, backgroundID, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"BG","attempt":1,"nextAttempt":2,"maxAttempts":5,`+
+			`"modelCall":{"logicalCallId":"L3"}}`))
+	a.dispatchZCodeEventOrdered(zcodeEventEnvelope{
+		SessionID: "sess-1", TurnID: "turn-1", Type: contracts.ZCodeEventSessionUpdated, archive: true,
+		Payload: json.RawMessage(`{"type":"model_request_started","requestId":"ARCH","attempt":1,"modelCall":{"logicalCallId":"L4"}}`),
+	})
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 1,
+		"the noise interleaves no live update")
+
+	// Request B of the same logical call takes ownership; a delayed completion
+	// of A then leaves the indicator on B until B completes.
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"B","attempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 6, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"A","modelCall":{"logicalCallId":"L1"}}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 2,
+		"a delayed completion of the predecessor clears nothing")
+	a.HandleOutput(zcodeTurnEventLine(t, 7, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"B","modelCall":{"logicalCallId":"L1"}}`))
+
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, values, 3)
+	assert.Equal(t, map[string]interface{}{
+		"phase":          contracts.ModelAPIRetryPhaseWaiting,
+		"attempt":        2,
+		"max_attempts":   5,
+		"retry_delay_ms": int64(4000),
+		"error_status":   529,
+		"error":          "Overloaded",
+	}, values[0])
+	assert.Equal(t, map[string]interface{}{
+		"phase":        contracts.ModelAPIRetryPhaseRunning,
+		"attempt":      2,
+		"max_attempts": 5,
+		"error_status": 529,
+		"error":        "Overloaded",
+	}, values[1])
+	assert.Nil(t, values[2], "the completion clears the indicator with an explicit null")
+	assert.Len(t, sink.PersistedNotifications(), 1, "the schedule keeps its one retry history notice")
+}
+
+// A later attempt cannot hand ownership to a request of a different logical
+// call, and a schedule of another call cannot renew the live state.
+func TestHandleZCodeOutput_LiveModelAPIRetryRefusesAnotherLogicalCall(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"B","attempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L2"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"B","attempt":2,"nextAttempt":3,"maxAttempts":5,"modelCall":{"logicalCallId":"L2"}}`))
+
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, values, 1, "a different logical call in the same turn cannot take over")
+	assert.Equal(t, 2, values[0].(map[string]interface{})[contracts.ModelAPIRetryFieldAttempt])
+}
+
+// A terminal failure clears the indicator and retains the failed request ID.
+// An unlinked recovery start is refused; a linked successor of the retained
+// request runs from its typed retry record even with a new logical call and no
+// ordinary schedule. Its predecessor's delayed completion clears nothing, and
+// the successor's own completion clears the indicator.
+func TestHandleZCodeOutput_LiveModelAPIRetryFollowsALinkedStreamRecovery(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,"delayMs":4000,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_failed","requestId":"A","attempt":1,"retryable":false,"statusCode":500,"modelCall":{"logicalCallId":"L1"}}`))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"R1","modelCall":{"logicalCallId":"L9"},`+
+			`"streamRecovery":{"attemptId":"x","retryNumber":1,"maxRetries":4,"recoveredFromRequestId":"OTHER"}}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 2,
+		"an unlinked recovery start is refused")
+
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"B","modelCall":{"logicalCallId":"L2"},`+
+			`"streamRecovery":{"attemptId":"x","retryNumber":2,"maxRetries":4,"recoveredFromRequestId":"A"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 6, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"A","modelCall":{"logicalCallId":"L1"}}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 3,
+		"a delayed completion of the failed predecessor clears nothing")
+	a.HandleOutput(zcodeTurnEventLine(t, 7, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"B","modelCall":{"logicalCallId":"L2"}}`))
+
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, values, 4)
+	assert.Nil(t, values[1], "the terminal failure clears the indicator")
+	assert.Equal(t, map[string]interface{}{
+		"phase":        contracts.ModelAPIRetryPhaseRunning,
+		"attempt":      2,
+		"max_attempts": 5,
+	}, values[2])
+	assert.Nil(t, values[3])
+}
+
+// A retryable failure keeps current ownership, and the next schedule updates
+// the next attempt and delay. A schedule with no outer nextAttempt and
+// maxAttempts derives them from the nested failed attempt plus one and its
+// retry budget plus one; a malformed but present history record keeps its own
+// classification and never corrupts the live facts.
+func TestHandleZCodeOutput_LiveModelAPIRetryRenewsAndDerives(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"},`+
+			`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":1,"maxRetries":4}}}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_failed","requestId":"A","attempt":1,"retryable":true,"modelCall":{"logicalCallId":"L1"}}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 1,
+		"a retryable failure keeps current ownership")
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":3,"maxAttempts":5,"delayMs":500,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":4,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"},`+
+			`"_meta":{"zcode":{"apiRetry":5}}}`))
+
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, values, 3)
+	assert.Equal(t, map[string]interface{}{
+		"phase":          contracts.ModelAPIRetryPhaseWaiting,
+		"attempt":        2,
+		"max_attempts":   5,
+		"retry_delay_ms": int64(0),
+	}, values[0], "the nested failed attempt and retry budget derive 2/5 with a zero delay")
+	assert.Equal(t, map[string]interface{}{
+		"phase":          contracts.ModelAPIRetryPhaseWaiting,
+		"attempt":        3,
+		"max_attempts":   5,
+		"retry_delay_ms": int64(500),
+	}, values[1], "the next schedule updates the next attempt and delay")
+	assert.Equal(t, map[string]interface{}{
+		"phase":          contracts.ModelAPIRetryPhaseWaiting,
+		"attempt":        4,
+		"max_attempts":   5,
+		"retry_delay_ms": int64(0),
+	}, values[2], "malformed history metadata keeps the live facts of the outer fields")
+	assert.Len(t, sink.PersistedNotifications(), 2,
+		"malformed but present history metadata keeps the base classification")
+}
+
 // The registry fallback is the one model selection that states a switch. A
 // selection with no origin is the session's own, and the post-turn session/read
 // refreshes it.

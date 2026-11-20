@@ -1444,21 +1444,28 @@ func (b *Base) Stop() {
 }
 
 // stopSnapshot captures the session state for a PrepareStop hook.
+// It tries the session lock and releases it after taking the snapshot.
+// If a prompt write or session swap still owns the lock, it returns an
+// empty snapshot and normal stop runs without waiting for that lock.
 func (b *Base) stopSnapshot() ACPStopSnapshot {
-	b.sessionMu.RLock()
+	if !b.sessionMu.TryLock() {
+		return ACPStopSnapshot{}
+	}
 	sessionID := b.sessionID
-	b.sessionMu.RUnlock()
+	promptActive := b.promptActive
+	b.sessionMu.Unlock()
 	return ACPStopSnapshot{
-		SessionID: sessionID,
-		Cancel:    func() { b.sendStopCancellation() },
+		SessionID:    sessionID,
+		PromptActive: promptActive,
+		Cancel:       func() { b.sendStopCancellation() },
 	}
 }
 
 // sendStopCancellation sends a single ID-less cancellation notification
-// through the normal JSON-RPC writer.
+// through the normal JSON-RPC writer. It queues a session.cancel notification
+// to make the native agent flush its state before the process stops.
 func (b *Base) sendStopCancellation() {
-	// The cancellation is a session.cancel notification with no ID.
-	// It is serialized through the normal JSON-RPC writer format.
+	_, _ = b.Process.EnqueueNotification("session/cancel", map[string]any{})
 }
 
 // Wait blocks until the agent process exits, then releases host terminals that remain after a crash or natural exit.

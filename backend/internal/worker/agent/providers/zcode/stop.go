@@ -747,6 +747,7 @@ func (a *Agent) Stop() {
 	// The tear-down clears every turn owner: nothing survives the process.
 	a.clearZCodeTurnsLocked()
 	a.Mu.Unlock()
+	a.publishZCodeModelAPIRetry()
 	a.persistIncompleteZCodeTools(completion)
 	if stopWasPending {
 		a.persistZCodeStopRow()
@@ -772,6 +773,7 @@ func (a *Agent) Wait() error {
 	a.compactionSessionID = ""
 	a.clearZCodeTurnsLocked()
 	a.Mu.Unlock()
+	a.publishZCodeModelAPIRetry()
 	a.persistIncompleteZCodeTools(completion)
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.resetZCodeSteers()

@@ -84,6 +84,7 @@ function saveToStorage(agentId: string, info: AgentSessionInfo) {
 interface AgentSessionStoreState {
   infoByAgent: Record<string, AgentSessionInfo>
   progressByAgent: Record<string, LiveGenerationProgress>
+  modelAPIRetryByAgent: Record<string, ModelAPIRetry | undefined>
 }
 
 export interface AgentSessionUpdateOptions {
@@ -109,6 +110,7 @@ export function createAgentSessionStore() {
   const [state, setState] = createStore<AgentSessionStoreState>({
     infoByAgent: {},
     progressByAgent: {},
+    modelAPIRetryByAgent: {},
   })
   const reads = new Map<string, StorageRead>()
   const replays = new Map<string, ReplayReceipt>()
@@ -286,6 +288,27 @@ export function createAgentSessionStore() {
     claimGoalProgressClear(agentId: string, delivery: SessionMetadataDelivery): void {
       for (const field of Object.keys(GOAL_PROGRESS_FIELDS) as (keyof GoalProgress)[])
         claimFieldWrite(agentId, `goalProgress:${field}`, delivery)
+    },
+
+    claimModelAPIRetryWrite(agentId: string, field: keyof ModelAPIRetry, delivery: SessionMetadataDelivery): boolean {
+      return claimFieldWrite(agentId, `modelApiRetry:${field}`, delivery)
+    },
+
+    claimModelAPIRetryClear(agentId: string, delivery: SessionMetadataDelivery): void {
+      for (const field of ['phase', 'attempt', 'maxAttempts', 'retryDelayMs', 'errorStatus', 'error'] as const)
+        claimFieldWrite(agentId, `modelApiRetry:${field}`, delivery)
+    },
+
+    getModelAPIRetry(agentId: string): ModelAPIRetry | undefined {
+      return state.modelAPIRetryByAgent[agentId]
+    },
+
+    setModelAPIRetry(agentId: string, retry: ModelAPIRetry) {
+      setState('modelAPIRetryByAgent', agentId, reconcile(retry))
+    },
+
+    clearModelAPIRetry(agentId: string) {
+      setState('modelAPIRetryByAgent', agentId, undefined)
     },
 
     getInfo(agentId: string): AgentSessionInfo {

@@ -1536,8 +1536,14 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 	var failureMessage string
 	var failure error
 	var sessionChanged bool
+	var liveCleared bool
 	defer func() {
 		mutation.Unlock()
+		if liveCleared {
+			// Transport work drains after the mutation and activity locks are
+			// released, so a slow watcher cannot stall the replacement.
+			s.h.watcher.DrainAgentEvents(s.agentID)
+		}
 		if failure != nil {
 			slog.Error(failureMessage, "agent_id", s.agentID, "error", failure)
 			return
@@ -1566,6 +1572,12 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 	if nativeSessionChanged {
 		delete(s.lastSessionInfo, contracts.SessionInfoKeyContextUsage)
 		delete(s.lastSessionInfo, contracts.SessionInfoKeyTotalCostUsd)
+		// A native session replacement, including a new lifetime of the same
+		// native ID, ends every cached live value: its explicit null is the
+		// authoritative clear for a browser that never saw the provider's own.
+		for _, key := range liveSessionInfoKeys {
+			liveCleared = s.h.invalidateCachedLiveSessionInfoLocked(s, key) || liveCleared
+		}
 	}
 	for key := range s.activePermissionChecks {
 		if newLifetime || key.sessionID != sessionID {
@@ -1717,6 +1729,28 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 // Active permission checks use a separate cache for replay, without suppressing live updates.
 var dedupExemptSessionInfoKeys = map[string]struct{}{
 	contracts.SessionInfoKeyRunningTool: {},
+}
+
+// liveSessionInfoKeys are the cached session-info values that describe live
+// state. A process exit or a native session replacement must replace each one
+// with its explicit null, because absence leaves the reader's value alone.
+var liveSessionInfoKeys = []string{
+	contracts.SessionInfoKeyCompaction,
+	contracts.SessionInfoKeyModelAPIRetry,
+}
+
+// invalidateCachedLiveSessionInfoLocked replaces a cached live value with its
+// explicit null and enqueues the authoritative clear under the same admission,
+// so a browser that missed the live broadcast still learns the state ended.
+// The caller holds sessionInfoMu. It reports whether a live value was active.
+func (h *OutputHandler) invalidateCachedLiveSessionInfoLocked(sink *agentOutputSink, key string) bool {
+	raw, found := sink.lastSessionInfo[key]
+	if !found || string(raw) == "null" {
+		return false
+	}
+	sink.lastSessionInfo[key] = []byte("null")
+	h.watcher.EnqueueAgentEvent(sink.agentID, sessionInfoEvent(sink.agentID, map[string]interface{}{key: nil}))
+	return true
 }
 
 // BroadcastSessionInfo emits an ephemeral agent_session_info update,
@@ -2232,6 +2266,20 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 					return messagePersistenceResult{}, fmt.Errorf("read immutable message key: %w", err)
 				}
 				if stored {
+					cache.Mu.Unlock()
+					return messagePersistenceResult{}, nil
+				}
+				retracted, err := h.queries.HasMessageRetraction(ctx, db.HasMessageRetractionParams{
+					AgentID: agentID, AgentSessionID: content.AgentSessionID, IdempotencyKey: content.IdempotencyKey,
+				})
+				if err != nil {
+					cache.Mu.Unlock()
+					return messagePersistenceResult{}, fmt.Errorf("read message retraction: %w", err)
+				}
+				if retracted {
+					// A retained key follows the immutable duplicate path: this
+					// early retry must mutate no to-do state before the insert
+					// that would be skipped.
 					cache.Mu.Unlock()
 					return messagePersistenceResult{}, nil
 				}

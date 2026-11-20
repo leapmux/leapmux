@@ -3,6 +3,7 @@ package dirac
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +27,44 @@ type diracHistoryRecord struct {
 	TS   int64  `json:"ts"`
 	Task string `json:"task"`
 	CWD  string `json:"cwdOnTaskInitialization"`
+}
+
+// diracRuntimeLink is the decoded `acp-session-runtime-configs/<session>.json`
+// record that links one ACP session to its native root task and runtime mode.
+type diracRuntimeLink struct {
+	TaskID string
+	Mode   string
+}
+
+// decodeDiracRuntimeLink decodes one runtime-link record. The task ID must be a
+// safe path component. The mode is returned as recorded; the caller decides
+// which modes it accepts.
+func decodeDiracRuntimeLink(raw []byte) (diracRuntimeLink, error) {
+	var record struct {
+		TaskID   string `json:"taskId"`
+		Settings struct {
+			Mode string `json:"mode"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(raw, &record); err != nil || !safeDiracComponent(record.TaskID) {
+		return diracRuntimeLink{}, fmt.Errorf("the Dirac session has no valid native root task")
+	}
+	return diracRuntimeLink{TaskID: record.TaskID, Mode: record.Settings.Mode}, nil
+}
+
+// diracHistoryMatch reports whether the history index holds exactly one row for
+// taskID and that row is owned by sessionID. A duplicate task row or a row owned
+// by another session is not a usable link.
+func diracHistoryMatch(records []diracHistoryRecord, taskID, sessionID string) bool {
+	matched := 0
+	var row diracHistoryRecord
+	for _, record := range records {
+		if record.ID == taskID {
+			matched++
+			row = record
+		}
+	}
+	return matched == 1 && row.ULID == sessionID
 }
 
 // diracHome resolves the root that holds `data/`. `DIRAC_DIR` wins, then the

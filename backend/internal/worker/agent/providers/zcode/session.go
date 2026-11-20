@@ -461,6 +461,7 @@ func (a *Agent) retireZCodeSessionState(sessionID string) {
 	a.nextToolOrder = 0
 	upserts := a.workflows.clear(agent.IncompleteTaskStatus(agent.MessageCompletionInterrupted))
 	a.Mu.Unlock()
+	a.publishZCodeModelAPIRetry()
 	a.upsertZCodeWorkflowRows(upserts)
 	a.withdrawPendingControls()
 	a.toolCallPrompts.Clear()

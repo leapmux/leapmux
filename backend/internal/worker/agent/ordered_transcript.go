@@ -547,6 +547,22 @@ func (writer orderedTranscript) PersistWorkerNotification(content MessageContent
 	return writer.persist(capturedWorkerNotification, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, SpanInfo{})
 }
 
+// RetractMessagesByIdempotencyKey queues the retraction ahead of later writes
+// on its destination, so a queued write of a retracted key executes only after
+// the receipt lands and its insert is skipped. A storage failure retains the
+// operation on the queue for the registered retry path.
+func (writer orderedTranscript) RetractMessagesByIdempotencyKey(captured MessageContent, keys []string) error {
+	return writer.submit("retract ordered transcript", func() error {
+		return writer.TranscriptServices.RetractMessagesByIdempotencyKey(captured, keys)
+	})
+}
+
+// IsMessageRetracted is a pure receipt lookup and takes no queue position: it
+// reads the durable receipts that earlier completed writes recorded.
+func (writer orderedTranscript) IsMessageRetracted(captured MessageContent, key string) (bool, error) {
+	return writer.TranscriptServices.IsMessageRetracted(captured, key)
+}
+
 type orderedProviderServices struct {
 	ProviderServices
 	transcript orderedTranscript
@@ -583,6 +599,12 @@ func (services *orderedProviderServices) PersistTurnEnd(content MessageContent, 
 }
 func (services *orderedProviderServices) PersistWorkerNotification(content MessageContent) (bool, error) {
 	return services.transcript.PersistWorkerNotification(content)
+}
+func (services *orderedProviderServices) RetractMessagesByIdempotencyKey(captured MessageContent, keys []string) error {
+	return services.transcript.RetractMessagesByIdempotencyKey(captured, keys)
+}
+func (services *orderedProviderServices) IsMessageRetracted(captured MessageContent, key string) (bool, error) {
+	return services.transcript.IsMessageRetracted(captured, key)
 }
 func (services *orderedProviderServices) PersistLeapMuxNotification(content map[string]interface{}) {
 	raw, err := json.Marshal(content)

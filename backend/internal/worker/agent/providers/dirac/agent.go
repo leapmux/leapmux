@@ -56,6 +56,11 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if err := providerkit.TextOnlySteer("Dirac", attachments); err != nil {
 		return err
 	}
+	// Route the whisper through the same stop admission check as a root prompt:
+	// once Stop closes admission, no new native write may start.
+	if a.IsStopped() {
+		return fmt.Errorf("agent is stopped")
+	}
 	if !a.PromptActive() {
 		return agent.ErrNoActiveTurn
 	}

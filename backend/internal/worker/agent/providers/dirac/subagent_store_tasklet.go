@@ -170,17 +170,21 @@ func diracTaskletCardStates(messages []json.RawMessage) (map[string]bool, error)
 }
 
 func readDiracRuntimeTask(root sessionstore.ArchiveRoot, sessionID string) (string, error) {
-	raw, err := sessionstore.ReadRegularFileWithoutSymlinkAncestors(root, diracTaskHistoryLimit, "data", "acp-session-runtime-configs", sessionID+".json")
+	link, err := readDiracRuntimeLink(root, sessionID)
 	if err != nil {
 		return "", err
 	}
-	var runtime struct {
-		TaskID string `json:"taskId"`
+	return link.TaskID, nil
+}
+
+// readDiracRuntimeLink reads the runtime-link record that binds one ACP session
+// to its native root task and runtime mode.
+func readDiracRuntimeLink(root sessionstore.ArchiveRoot, sessionID string) (diracRuntimeLink, error) {
+	raw, err := sessionstore.ReadRegularFileWithoutSymlinkAncestors(root, diracTaskHistoryLimit, "data", "acp-session-runtime-configs", sessionID+".json")
+	if err != nil {
+		return diracRuntimeLink{}, err
 	}
-	if err := json.Unmarshal(raw, &runtime); err != nil || !safeDiracComponent(runtime.TaskID) {
-		return "", fmt.Errorf("the Dirac session has no valid native root task")
-	}
-	return runtime.TaskID, nil
+	return decodeDiracRuntimeLink(raw)
 }
 
 func readDiracPresentation(root sessionstore.ArchiveRoot) ([]json.RawMessage, error) {

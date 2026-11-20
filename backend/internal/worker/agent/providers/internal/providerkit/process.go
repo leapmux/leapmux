@@ -285,6 +285,21 @@ func (p *Process) WriteStdin(data []byte) error {
 // then wait for the returned result after releasing that lock.
 func (p *Process) EnqueueStdin(data []byte) (<-chan error, error) { return p.enqueueStdinResult(data) }
 
+// EnqueueNotification serializes a JSON-RPC notification (no id) and admits
+// it to the stdin queue without waiting. The method and params are encoded
+// as `{"jsonrpc":"2.0","method":"<method>","params":<params>}`.
+func (p *Process) EnqueueNotification(method string, params any) (<-chan error, error) {
+	frame, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return p.enqueueStdinResult(frame)
+}
+
 // enqueueStdinResult reports delivery without waiting or discarding queue refusals.
 func (p *Process) enqueueStdinResult(data []byte) (<-chan error, error) {
 	p.stdinMu.Lock()

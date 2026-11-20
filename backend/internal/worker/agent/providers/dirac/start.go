@@ -2,9 +2,14 @@ package dirac
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"path/filepath"
+	"strings"
 
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
@@ -76,8 +81,74 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		SessionMetadataHandler: a.observeDiracNotice,
 		ClearProviderState:     a.clearChildState,
 		BeforeWaitCleanup:      a.beforeWaitCleanup,
+		// Decode the effective profile the launch observed before opening a
+		// native session, so the pre-stop checkpoint reads the root Dirac
+		// actually used rather than the Worker's assumed one.
+		InitializeResponse: func(response []byte) {
+			a.applyObservedProfile()
+		},
+		// Confirm a native checkpoint before pipe EOF ends the process.
+		PrepareStop: a.waitForDiracResumeCheckpoint,
 		// Dirac's `respond` tool is the control plane: a question rides
 		// elicitation and a plan defers its approval to the next prompt. The
 		// base answers both, so no provider control reader is needed.
 	}
+}
+
+// applyObservedProfile points the native root at the effective profile the
+// launch observed after the user's shell profile ran. A missing or unusable
+// observation keeps the profile the start resolved.
+func (a *Agent) applyObservedProfile() {
+	snapshot, ok := decodeDiracEnvironmentObservation(a.Process.PreambleMetaValue(diracEnvironmentMetaKey))
+	if !ok {
+		return
+	}
+	if root := diracEffectiveHome(snapshot); root != "" {
+		a.root = root
+	}
+}
+
+// diracEnvironmentMetaKey is the preamble metadata key that carries the launch
+// environment observation record.
+const diracEnvironmentMetaKey = "environment"
+
+// decodeDiracEnvironmentObservation decodes the observation record the launch
+// preamble carries: an unpadded base64url JSON envprobe.Snapshot.
+func decodeDiracEnvironmentObservation(encoded string) (envprobe.Snapshot, bool) {
+	if encoded == "" {
+		return envprobe.Snapshot{}, false
+	}
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		return envprobe.Snapshot{}, false
+	}
+	var snapshot envprobe.Snapshot
+	if json.Unmarshal(raw, &snapshot) != nil {
+		return envprobe.Snapshot{}, false
+	}
+	return snapshot, true
+}
+
+// diracEffectiveHome resolves the effective `data/` root from the observed
+// profile inputs. `DIRAC_DIR` wins, resolved against the launch's native
+// working directory when it is relative; then the platform home's `.dirac`.
+func diracEffectiveHome(snapshot envprobe.Snapshot) string {
+	if dir := strings.TrimSpace(snapshot.Values["DIRAC_DIR"]); dir != "" {
+		if resolved := strings.TrimSpace(snapshot.Paths["DIRAC_DIR"]); resolved != "" {
+			return resolved
+		}
+		if filepath.IsAbs(dir) {
+			return dir
+		}
+		if snapshot.WorkingDir != "" {
+			return filepath.Join(snapshot.WorkingDir, dir)
+		}
+	}
+	if home := strings.TrimSpace(snapshot.Values["HOME"]); home != "" {
+		return filepath.Join(home, ".dirac")
+	}
+	if home := strings.TrimSpace(snapshot.Values["USERPROFILE"]); home != "" {
+		return filepath.Join(home, ".dirac")
+	}
+	return ""
 }

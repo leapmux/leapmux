@@ -240,6 +240,63 @@ func TestProcessExitEndsTheLiveCompaction(t *testing.T) {
 	}
 }
 
+// The live model API retry caches and replays like the other live state, and an
+// explicit null from the provider replays with it. A process exit and a new
+// lifetime of the same native ID each replace the active value with its
+// authoritative null and leave no active replay behind.
+func TestSessionInfoReplay_LiveModelAPIRetryClearsOnExitAndReplacement(t *testing.T) {
+	t.Parallel()
+	svc, sink, _ := newSessionInfoServiceFixture(t)
+	retry := map[string]interface{}{
+		"phase":        "waiting",
+		"attempt":      2,
+		"max_attempts": 5,
+	}
+	// The replayed frame re-decodes JSON numbers as float64.
+	replayedRetry := map[string]interface{}{
+		"phase":        "waiting",
+		"attempt":      float64(2),
+		"max_attempts": float64(5),
+	}
+	sink.UpdateSessionID("A")
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: retry})
+	info := replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+	assert.Equal(t, replayedRetry, info[contracts.SessionInfoKeyModelAPIRetry], "an active retry replays")
+
+	svc.Output.NoteAgentProcessExited("agent-1")
+	svc.Output.WaitActivityRefreshes()
+	info = replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+	assert.Contains(t, info, contracts.SessionInfoKeyModelAPIRetry)
+	assert.Nil(t, info[contracts.SessionInfoKeyModelAPIRetry], "the exit emits the authoritative null")
+
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: retry})
+	sink.AdoptNativeSession("A")
+	info = replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+	assert.Contains(t, info, contracts.SessionInfoKeyModelAPIRetry)
+	assert.Nil(t, info[contracts.SessionInfoKeyModelAPIRetry],
+		"a new lifetime of the same native ID emits the authoritative null")
+
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: retry})
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyModelAPIRetry: nil})
+	info = replayedSessionInfo(t, svc.Output.SessionInfoReplayEvents("agent-1")[0])
+	assert.Contains(t, info, contracts.SessionInfoKeyModelAPIRetry)
+	assert.Nil(t, info[contracts.SessionInfoKeyModelAPIRetry], "an explicit null from the provider also replays")
+}
+
+// A browser that missed the clear during NOTIFY and promotes after a fresh
+// same-ID sink replaced the old one sees an idle replay with no retry key. The
+// stale retry can only be reset, never restored by that replay.
+func TestSessionInfoReplay_ReplacementLeavesNoModelAPIRetryKey(t *testing.T) {
+	t.Parallel()
+	svc, sink, _ := newSessionInfoServiceFixture(t)
+	sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyModelAPIRetry: map[string]interface{}{"phase": "running", "attempt": 2},
+	})
+	newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	assert.Nil(t, svc.Output.SessionInfoReplayEvents("agent-1"),
+		"the fresh same-ID sink replays an idle state with no retry key")
+}
+
 // An inactive agent has no live counters, and an agent whose process reported
 // nothing yet has none either. Both answer nil, so the subscribe path sends no
 // frame rather than an empty one.
