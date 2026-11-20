@@ -64,6 +64,7 @@ const (
 
 var (
 	ErrNotFound              = errors.New("queued agent input not found")
+	ErrInputNotRecorded      = errors.New("no recorded request for this input")
 	ErrConflict              = errors.New("queued agent input conflicts with existing data")
 	ErrEditOwned             = errors.New("queued agent input is edited by another client")
 	ErrEditOwnerMismatch     = errors.New("queued agent input edit owner does not match")
@@ -370,6 +371,9 @@ type NewItem struct {
 	// RequireFutureSchedule refuses a due schedule when inserting an item.
 	// A retry of an existing input keeps the original admission decision.
 	RequireFutureSchedule bool
+	// RequireExisting matches an input that the Worker already recorded.
+	// The store refuses to insert an input when no record matches the ID.
+	RequireExisting bool
 	// SourcePayload is the provider source an automatic retry carries into the
 	// accepted transcript's supplemental content. Empty for ordinary input.
 	SourcePayload []byte

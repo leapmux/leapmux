@@ -9,10 +9,14 @@
  * print the text that the transcript shows.
  */
 
+import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
 import { mintCLITokenForAdmin, runCLI } from '../helpers/cli'
-import { assistantBubbles, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { bashToolCall } from '../helpers/providerToolCalls'
+import { createTestDirectory } from '../helpers/runDirectory'
+import { quotePosixShellArgument } from '../helpers/shellArguments'
+import { assistantBubbles, chooseSettingsOption, tabById, userBubbles, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
 
 const ANSWER = 'The release checklist has three open items.'
 
@@ -56,6 +60,81 @@ claudeTest.describe('control CLI waits for an agent', () => {
       ],
     })
   })
+})
+
+claudeTest('validates a retry key while the accepted input waits for permission', async ({ native, authenticatedWorkspace, leapmuxServer }) => {
+  const { agentId } = authenticatedWorkspace
+  await chooseSettingsOption(native.page, 'permissionMode-default')
+  await waitForSettingsIdle(native.page)
+
+  const probe = join(createTestDirectory('cli-waiting-retry-'), 'approved.txt')
+  const command = `printf approved > ${quotePosixShellArgument(probe)}; cat ${quotePosixShellArgument(probe)}`
+  const step = await native.modelScript.queue({
+    toolCalls: [
+      bashToolCall(native.provider, 'waiting-retry-permission', command),
+    ],
+  }, { text: ANSWER })
+  const question = 'Run the scripted permission probe.'
+  const prompt = native.modelScript.prompt(question)
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const keyedSend = [
+    'agent',
+    'send',
+    agentId,
+    prompt,
+    '--request-id',
+    'permission-probe',
+  ]
+  const sent = await runCLI(cli, keyedSend) as { input_id: string }
+  expect(typeof sent.input_id).toBe('string')
+  await waitForControlBanner(native.page)
+  await runCLI(cli, [
+    'agent',
+    'wait',
+    agentId,
+    '--until',
+    'waiting_for_user',
+  ])
+
+  expect(await runCLI(cli, [...keyedSend, '--wait'])).toMatchObject({
+    input_id: sent.input_id,
+    message: 'delivered',
+    state: 'waiting_for_user',
+  })
+  await expect(runCLI(cli, [
+    'agent',
+    'send',
+    agentId,
+    'Run a different probe.',
+    '--request-id',
+    'permission-probe',
+    '--wait',
+  ])).rejects.toMatchObject({ code: 'conflict' })
+  await expect(runCLI(cli, [
+    'agent',
+    'send',
+    agentId,
+    'Run a different probe.',
+    '--request-id',
+    'fresh-probe',
+    '--wait',
+  ])).rejects.toMatchObject({ code: 'agent_waiting' })
+  expect(await runCLI(cli, ['agent', 'queue', 'list', agentId])).toMatchObject({ items: [] })
+
+  const { requests } = await runCLI(cli, ['agent', 'requests', agentId]) as { requests: Array<{ id: string }> }
+  expect(requests).toHaveLength(1)
+  const [request] = requests
+  if (!request)
+    throw new Error('The Worker returned no permission request.')
+  await runCLI(cli, [
+    'agent',
+    'approve',
+    agentId,
+    request.id,
+  ])
+  await native.modelScript.waitForSteps(step + 2)
+  await expect(userBubbles(native.page).filter({ hasText: question })).toHaveCount(1)
+  await expect(assistantBubbles(native.page).filter({ hasText: ANSWER })).toHaveCount(1)
 })
 
 claudeTest('queues the initial message once across agent open retries', async ({ authenticatedWorkspace, agentWorkingDir, page, modelScript, leapmuxServer }) => {

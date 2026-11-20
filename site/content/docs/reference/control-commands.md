@@ -609,13 +609,13 @@ fails with conflict, even when its message equals the edited one. A retry of
 a scheduled message repeats its RFC 3339 timestamp, even after that time has
 passed. A relative --at changes on each run and cannot use --request-id.
 
-With --wait, the command first refuses to send to an agent that waits for an
-answer to a permission prompt, and exits 5. Otherwise it sends the message,
-waits until the agent settles after it, and prints the agent's last reply as
-the transcript shows it, or every reply with --all. It exits 6 when the agent
-stops at a prompt after the message, or when --timeout passes. The timeout
-counts from the Worker's enqueue acknowledgement. The output reports the
-last confirmed delivery state.
+With --wait, a new message to an agent waiting for permission exits 5.
+An explicit --request-id can still match an input the Worker recorded.
+The command waits until the agent settles and prints the last reply as the
+transcript shows it, or every reply with --all. It exits 6 if the agent
+waits for permission or --timeout passes after the Worker acknowledges
+the input. The output reports the last confirmed delivery state.
+The timeout counts from the Worker's enqueue acknowledgment.
 
 This command changes state.
 

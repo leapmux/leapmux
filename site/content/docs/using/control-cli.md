@@ -158,7 +158,7 @@ The exit status states the class of the failure, so a script can branch without 
 | `2` | `usage` | The command line cannot run: an unknown command or flag, a missing argument, or a value the CLI refuses before it sends anything |
 | `3` | `not_logged_in`, `permission_denied` | No usable credential, or a credential that does not allow the call |
 | `4` | `not_found`, `ambiguous_target` | The target does not exist, or matches more than one object |
-| `5` | `self_target_refused`, `tab_busy_refused`, `agent_waiting` | A safety guard refused the command; see [Safety guards](#safety-guards). `agent_waiting` is `agent send --wait` to an agent that waits for an answer to a permission prompt. |
+| `5` | `self_target_refused`, `tab_busy_refused`, `agent_waiting` | A [safety guard](#safety-guards) refused the command. `agent_waiting` means `agent send --wait` refused to enqueue a new input while the agent waits for permission. |
 | `6` | `timeout` | A wait ended before its condition held; see [Waiting for agents](#waiting-for-agents) |
 | `7` | `worker_offline`, `unavailable` | The Worker or the Hub cannot answer now; a retry can succeed |
 | `130` | | You interrupted the command |
@@ -365,7 +365,7 @@ The [Control Command Reference](/docs/reference/control-commands/) gives the fla
 - **`agent wait <agent>... --until <state>`** ends once each agent was in the state at some moment after the wait began. An agent that is in the state already ends the wait at once. `--until` takes a state that `agent list` prints (`idle`, `working`, `waiting_for_user`), or `settled`, the default: `idle` or `waiting_for_user`, so the agent works no more. `--any` ends the wait with the first agent instead of the last.
   - An agent whose input queue holds a message that it will read is neither `idle` nor `settled` yet. So a wait right after `agent open --message` waits for the turn of that first message, although the starting agent reports `idle`. A message scheduled for later does not hold the wait.
 - **`agent send <agent> [text] --wait`** sends the message, waits until the agent settles after it, and prints the agent's last reply as the transcript shows it. `--all` prints every reply after the message. An agent that runs a background task settles when the task ends too.
-  - It sends nothing to an agent that waits for an answer to a permission prompt, because the message would wait behind the prompt. The command fails with `agent_waiting` (status `5`). Answer the prompt first; see [Answering prompts](#answering-prompts).
+  - A new input behind a pending permission prompt fails with `agent_waiting` (status `5`). An exact `--request-id` retry can still match an input the Worker recorded. If the agent is still waiting, the retry reports delivery state and exits `6`. Use [Answering prompts](#answering-prompts) to resume the agent.
   - A paused input queue keeps the message, and the command says so on stderr and keeps waiting. A planned restart pauses the queue too, and that pause ends by itself.
 - **Both print their result even when the condition did not hold, and exit `6`**: `--timeout` passed, an agent closed, or the agent stopped at a prompt after the message. The result states where things stand. For `agent wait`, `reached` marks each agent that reached the state. For `agent send --wait`, `message` is `queued` or `delivered`, and `state` is the agent's state, such as `waiting_for_user`.
 - **A wait refuses the calling agent** with `usage`, because an agent cannot settle while its own turn runs the wait.

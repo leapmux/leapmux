@@ -401,8 +401,8 @@ func awaitFirstLevel(ctx context.Context, events <-chan activityEvent, agentID s
 //
 //  1. Watch the agent, and read its state once the Worker registered the
 //     watch, so no later change is lost.
-//  2. Refuse to send to an agent that waits for an answer: the message would
-//     wait behind the prompt.
+//  2. Refuse new input to an agent that waits for an answer. An explicit
+//     request ID can still match an input the Worker already recorded.
 //  3. Read the last seq, send the message, and evaluate it after each event
 //     of the agent.
 //
@@ -426,18 +426,23 @@ func sendAndWait(s *session, t tabTarget, message userMessage, inputID string, a
 	if err != nil {
 		return agentReplyResult{}, 0, err
 	}
-	if state == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER {
-		return agentReplyResult{}, 0, cli.Newf(cli.CodeAgentWaiting, "agent %s waits for an answer to a permission prompt, so the message would wait behind it", t.ID).
-			WithHint("list the prompt with \"leapmux control agent requests %s\", answer it, then send the message again", t.ID)
+	waiting := state == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER
+	if waiting && !s.inv.Changed("request-id") {
+		return agentReplyResult{}, 0, newInputWhileWaiting(t.ID)
 	}
 	reader := workerReplyReader(s.c, t.WorkerID, t.ID)
 	baseline, err := reader.latestSeq(ctx)
 	if err != nil {
 		return agentReplyResult{}, 0, err
 	}
-	ack, err := enqueueUserMessage(ctx, s.c, t, inputID, message)
+	request := message.request(t.ID, inputID)
+	request.RequireExisting = waiting
+	ack, err := enqueueAgentInput(ctx, s.c, t, request)
 	if err != nil {
 		return agentReplyResult{}, 0, err
+	}
+	if ack.GetExistingInputMissing() {
+		return agentReplyResult{}, 0, newInputWhileWaiting(t.ID)
 	}
 	if ack.GetAcceptedSeq() <= 0 && !queueHolds(ack.GetSnapshot(), inputID) {
 		return agentReplyResult{}, 0, cli.Newf(cli.CodeNotFound, "someone removed the message %s from the input queue of agent %s before the agent received it, so this retry queued nothing", inputID, t.ID).
@@ -455,10 +460,9 @@ func sendAndWait(s *session, t tabTarget, message userMessage, inputID string, a
 	return awaitReply(ctx, quartz.NewReal(), events, evaluator, state)
 }
 
-// enqueueUserMessage puts message in the input queue of the agent t as the
-// input inputID and returns the Worker acknowledgment.
-func enqueueUserMessage(ctx context.Context, c *control.Client, t tabTarget, inputID string, message userMessage) (*leapmuxv1.EnqueueAgentInputResponse, error) {
-	return enqueueAgentInput(ctx, c, t, message.request(t.ID, inputID))
+func newInputWhileWaiting(agentID string) error {
+	return cli.Newf(cli.CodeAgentWaiting, "agent %s waits for an answer to a permission prompt, so the message would wait behind it", agentID).
+		WithHint("list the prompt with \"leapmux control agent requests %s\", answer it, then send the message again", agentID)
 }
 
 // enqueueAgentInput sends one EnqueueAgentInput request for the agent t,

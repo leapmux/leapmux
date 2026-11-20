@@ -34,7 +34,8 @@ import (
 const inputIdempotencyKeyPrefix = "input:"
 
 // inputIdempotencyKey returns the key of a request that queues input, after
-// its admission. Two requests have one key exactly when they state the same
+// its admission. The policy for adding a new input does not change the key.
+// Two requests have one key exactly when they state the same
 // input:
 //
 //   - The input id and the agent.

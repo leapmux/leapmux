@@ -645,6 +645,8 @@ message EnqueueAgentInputRequest {
   // Require a future scheduled_at when inserting a new input. An exact
   // replay of a recorded request also succeeds once its schedule has passed.
   bool require_future_schedule = 7;
+  // Match a previously recorded request without adding an input.
+  bool require_existing = 8;
 }
 
 message EnqueueAgentInputResponse {
@@ -652,6 +654,9 @@ message EnqueueAgentInputResponse {
   // The transcript sequence when this request matches an accepted input.
   // Zero means that the input has no accepted transcript row.
   int64 accepted_seq = 2;
+  // A require_existing request found no record. Snapshot and accepted_seq
+  // are unset in this case.
+  bool existing_input_missing = 3;
 }
 
 message ListAgentInputQueueRequest { string agent_id = 1; }

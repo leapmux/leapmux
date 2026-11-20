@@ -295,6 +295,9 @@ func enqueuePreparedItem(ctx context.Context, tx *sql.Tx, input NewItem, key str
 		}
 		return EnqueueReceipt{AcceptedSeq: stored.acceptedSeq}, nil
 	}
+	if input.RequireExisting {
+		return EnqueueReceipt{}, ErrInputNotRecorded
+	}
 	if input.RequireFutureSchedule && input.ScheduledAt != nil && !input.ScheduledAt.After(now) {
 		return EnqueueReceipt{}, fmt.Errorf("%w: a new schedule must be in the future", ErrInvalidInput)
 	}

@@ -42,6 +42,11 @@ func (w *retryWorker) DispatchWith(ctx context.Context, caller channel.Caller, r
 		}
 		held := slices.ContainsFunc(w.queue.GetItems(), func(item *leapmuxv1.QueuedAgentInput) bool { return item.GetId() == in.GetInputId() }) ||
 			acceptedSeq > 0
+		if in.GetRequireExisting() && !held {
+			w.mu.Unlock()
+			writeProtoResponse(rw, &leapmuxv1.EnqueueAgentInputResponse{ExistingInputMissing: true})
+			return
+		}
 		if !held {
 			w.queue.Items = append(w.queue.Items, &leapmuxv1.QueuedAgentInput{Id: in.GetInputId(), State: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED})
 		}
@@ -163,6 +168,33 @@ func TestAgentSendWaitOverIPC_ARetryWaitsForTheQueuedMessage(t *testing.T) {
 	assert.Empty(t, w.enqueued, "the retry queued no second message")
 }
 
+func TestAgentSendWaitOverIPC_ARecognizedRetryReportsDeliveryWhileWaiting(t *testing.T) {
+	id := fullTestID("ag-2")
+	inputID := requestScopedID("tests-1", requestScopeAgentSend, id)
+	w := &retryWorker{activityWorker: newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER})}
+	w.queue = &leapmuxv1.AgentInputQueueSnapshot{ActiveTurn: true}
+	w.rows = []*leapmuxv1.AgentChatMessage{userMessageRow(1, inputID)}
+	startAgentWorker(t, id, w)
+
+	out := runControl(t, "agent", "send", id, "Run the tests", "--wait", "--request-id", "tests-1")
+	require.Equal(t, cli.ExitWaitEnded, out.Code, out.Stderr)
+	data := envelopeData(t, []byte(out.Stdout))
+	assert.Equal(t, inputID, data["input_id"])
+	assert.Equal(t, "delivered", data["message"])
+	assert.Equal(t, "waiting_for_user", data["state"])
+	assert.Empty(t, w.enqueued)
+}
+
+func TestAgentSendWaitOverIPC_AFreshKeyDoesNotQueueBehindAPrompt(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := &retryWorker{activityWorker: newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER})}
+	startAgentWorker(t, id, w)
+
+	out := runControl(t, "agent", "send", id, "Run the tests", "--wait", "--request-id", "unused-key")
+	out.requireFailure(t, cli.CodeAgentWaiting)
+	assert.Empty(t, w.enqueued)
+}
+
 // A retry after someone removed the first run's message from the queue queues
 // nothing, so no reply can come. The command says so instead of waiting, and
 // it ends as the first run ends when the removal happens while it waits: with
@@ -183,6 +215,19 @@ func TestAgentSendWaitOverIPC_ARetryOfARemovedMessageFails(t *testing.T) {
 	require.NotEmpty(t, f.Hints)
 	assert.Contains(t, f.Hints[0], "new --request-id")
 	assert.Equal(t, cli.ExitWaitEnded, o.Code, "the wait ended without a reply, so the command exits 6")
+}
+
+func TestAgentSendWaitOverIPC_ARemovedRetryReportsRemovalWhileWaiting(t *testing.T) {
+	id := fullTestID("ag-2")
+	inputID := requestScopedID("tests-1", requestScopeAgentSend, id)
+	w := &retryWorker{activityWorker: newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER})}
+	startAgentWorker(t, id, &removedInputWorker{w})
+
+	out := runControl(t, "agent", "send", id, "Run the tests", "--wait", "--request-id", "tests-1")
+	failure := out.Failure(t)
+	assert.Equal(t, cli.CodeNotFound, failure.Code)
+	assert.Contains(t, failure.Message, "someone removed the message "+inputID)
+	assert.Equal(t, cli.ExitWaitEnded, out.Code)
 }
 
 // removedInputWorker answers an enqueue as the Worker answers a repeat of an

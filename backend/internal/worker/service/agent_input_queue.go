@@ -642,7 +642,12 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 				ReclassifyOnEdit:      r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 				ScheduledAt:           scheduledAt,
 				RequireFutureSchedule: r.GetRequireFutureSchedule(),
+				RequireExisting:       r.GetRequireExisting(),
 			})
+			if errors.Is(err, inputqueue.ErrInputNotRecorded) {
+				sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{ExistingInputMissing: true})
+				return
+			}
 			if sendQueueError(sender, err) {
 				return
 			}
