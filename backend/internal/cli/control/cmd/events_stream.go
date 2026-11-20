@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/semanticevents"
 )
 
 // errStreamDone ends the stream without a failure: --limit printed its last
@@ -826,60 +827,29 @@ func (s *eventStream) onTerminalEvent(fs *feedState, te *leapmuxv1.TerminalEvent
 	if !ok || tab.Type != leapmuxv1.TabType_TAB_TYPE_TERMINAL || tab.WorkerID != fs.feed.workerID {
 		return nil
 	}
+	fact := semanticevents.TerminalFact(te)
 	track := s.terminalTrack(tab.ID)
-	switch e := te.GetEvent().(type) {
-	case *leapmuxv1.TerminalEvent_StatusChange:
-		status := e.StatusChange.GetStatus()
-		if status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED || status == track.status {
+	switch e := fact.GetEvent().(type) {
+	case *leapmuxv1.SemanticTabFact_TerminalStatus:
+		status := e.TerminalStatus.GetStatus()
+		if status == track.status {
 			return nil
 		}
 		track.status = status
-		ev := tabStreamEvent(kindTerminalStatus, tab)
-		ev.Status, ev.Error = enumToken(status), e.StatusChange.GetStartupError()
-		ev.Summary = withError(tokenWords(ev.Status), ev.Error)
-		return s.emit(ev)
-	case *leapmuxv1.TerminalEvent_Closed:
+	case *leapmuxv1.SemanticTabFact_TerminalExit:
 		track.status = leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED
-		ev := tabStreamEvent(kindTerminalExit, tab)
-		if e.Closed.ExitCode == nil {
-			// An unset code is an exit that the Worker holds no record of; a 0
-			// would claim a clean exit that it never saw.
-			ev.Summary = "the shell exited; the Worker holds no record of its exit code"
-			return s.emit(ev)
-		}
-		code := e.Closed.GetExitCode()
-		ev.ExitCode = &code
-		ev.Summary = fmt.Sprintf("the shell exited with code %d", code)
-		return s.emit(ev)
-	case *leapmuxv1.TerminalEvent_Bell:
-		ev := tabStreamEvent(kindTerminalBell, tab)
-		ev.Summary = "bell"
-		return s.emit(ev)
-	case *leapmuxv1.TerminalEvent_Notification:
-		ev := tabStreamEvent(kindTerminalNotification, tab)
-		ev.Title, ev.Body = e.Notification.GetTitle(), e.Notification.GetBody()
-		ev.Summary = ev.Body
-		if ev.Title != "" {
-			ev.Summary = ev.Title + ": " + ev.Body
-		}
-		return s.emit(ev)
-	case *leapmuxv1.TerminalEvent_TitleChanged:
-		title := e.TitleChanged.GetTitle()
+	case *leapmuxv1.SemanticTabFact_TerminalTitle:
+		title := e.TerminalTitle.GetTitle()
 		if track.titled && title == track.title {
 			return nil
 		}
 		track.title, track.titled = title, true
-		ev := tabStreamEvent(kindTerminalTitle, tab)
-		ev.Title, ev.Summary = title, fmt.Sprintf("%q", title)
-		return s.emit(ev)
-	case *leapmuxv1.TerminalEvent_Progress:
-		report := progressReport{State: enumToken(e.Progress.GetState()), Percent: e.Progress.GetPercent()}
-		ev := tabStreamEvent(kindTerminalProgress, tab)
-		ev.Progress, ev.Summary = &report, progressSummary(report)
-		return s.emit(ev)
-	default:
+	}
+	ev, ok := terminalFactEvent(fact, tab)
+	if !ok {
 		return nil
 	}
+	return s.emit(ev)
 }
 
 // onRejection reports a tab that a Worker refused to watch, once for each

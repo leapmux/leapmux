@@ -259,6 +259,7 @@ func Wire(p Params) *Wiring {
 		MaxMessageSize:      p.MaxMessageSize,
 		ShutdownDeadline:    p.ShutdownDeadline,
 	})
+	svc.EnableSemanticEvents()
 	svc.RestoreState()
 
 	// WatchEvents stream teardown owns UnwatchAll via watchSession.OnCancel

@@ -8,7 +8,7 @@
  * The resulting CLI requests use the same credential path as a user login, without repeating the OAuth login flow.
  */
 
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -199,18 +199,9 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
   /** Soft timeout in ms; defaults to 30s. */
   timeoutMs?: number
 }): Promise<unknown> {
-  const { binaryPath } = getGlobalState()
-  const env = scrubLeapMuxEnv({
-    ...process.env,
-    ...options?.env,
-    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
-  })
-  // --hub and --json are flags of `leapmux control` itself, so they stand
-  // before the command path. Placed there, they can never land after a
-  // "--" in args, where they would read as arguments.
-  const cliArgs = ['--hub', cfg.hubURL, '--json', ...args]
+  const { binaryPath, cliArgs, env } = controlProcess(cfg, args, options?.env)
   try {
-    const { stdout } = await execFileAsync(binaryPath, ['control', ...cliArgs], {
+    const { stdout } = await execFileAsync(binaryPath, cliArgs, {
       env,
       timeout: options?.timeoutMs ?? 30_000,
     })
@@ -235,6 +226,30 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
     }
     throw new Error(`leapmux control ${args.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
   }
+}
+
+/** Start a CLI command whose output is a stream of JSON envelopes. */
+export function spawnCLI(cfg: CLIConfigDir, args: string[]) {
+  const { binaryPath, cliArgs, env } = controlProcess(cfg, args)
+  return spawn(binaryPath, cliArgs, { env })
+}
+
+function controlProcess(cfg: CLIConfigDir, args: string[], overrides?: Record<string, string>) {
+  const { binaryPath } = getGlobalState()
+  const env = scrubLeapMuxEnv({
+    ...process.env,
+    ...overrides,
+    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
+  })
+  // The global flags precede the command so they never follow a `--` in args.
+  const cliArgs = [
+    'control',
+    '--hub',
+    cfg.hubURL,
+    '--json',
+    ...args,
+  ]
+  return { binaryPath, cliArgs, env }
 }
 
 /**

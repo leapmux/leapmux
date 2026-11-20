@@ -96,6 +96,15 @@ type streamEvent struct {
 	TabIDs []string `json:"tab_ids,omitempty"`
 	// Scope counts what stream.ready and stream.heartbeat watch.
 	Scope *scopeCounts `json:"scope,omitempty"`
+	// JournalID, TabStreamID and Sequence identify an event in retained history.
+	JournalID   string `json:"journal_id,omitempty"`
+	TabStreamID string `json:"tab_stream_id,omitempty"`
+	Sequence    *int64 `json:"sequence,omitempty"`
+	// Replayed reports whether the Worker had committed the record when the stream opened.
+	Replayed *bool `json:"replayed,omitempty"`
+	// GapReason and AfterSequence describe the interval that a journal gap advances over.
+	GapReason     string `json:"gap_reason,omitempty"`
+	AfterSequence *int64 `json:"after_sequence,omitempty"`
 }
 
 // todoCounts counts the items of a to-do list.
@@ -154,6 +163,12 @@ func (e streamEvent) TextLine() string {
 			continue
 		}
 		fmt.Fprintf(&b, " %s=%s", id.key, cli.ShortID(id.value))
+	}
+	if e.Sequence != nil {
+		fmt.Fprintf(&b, " sequence=%d", *e.Sequence)
+	}
+	if e.Replayed != nil && *e.Replayed {
+		b.WriteString(" replayed")
 	}
 	if e.Summary != "" {
 		b.WriteByte(' ')

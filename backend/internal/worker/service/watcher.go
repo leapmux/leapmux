@@ -371,7 +371,8 @@ type WatcherManager struct {
 	// terminalStatuses orders every status change and closed event of a terminal,
 	// live or replayed. Screen data and the other terminal events stay outside
 	// it: they go through BroadcastTerminalEvent.
-	terminalStatuses publicationQueues[terminalStatusItem]
+	terminalStatuses   publicationQueues[terminalStatusItem]
+	recordTerminalFact func(string, *leapmuxv1.TerminalEvent)
 }
 
 // terminalStatusItem is one entry of a terminal's status queue. A live status has
@@ -520,7 +521,11 @@ func (m *WatcherManager) PublishTerminalStatus(terminalID string, event *leapmux
 // therefore lands behind this status, or derive sees the change.
 func (m *WatcherManager) PublishDerivedTerminalStatus(terminalID string, derive func() *leapmuxv1.TerminalEvent) {
 	m.terminalStatuses.enqueue(terminalID, func() terminalStatusItem {
-		return terminalStatusItem{event: derive()}
+		event := derive()
+		if m.recordTerminalFact != nil {
+			m.recordTerminalFact(terminalID, event)
+		}
+		return terminalStatusItem{event: event}
 	})
 	m.drainTerminalStatuses(terminalID)
 }
@@ -571,6 +576,9 @@ func (m *WatcherManager) drainTerminalStatuses(terminalID string) {
 // terminal. A status change or a closed event goes through PublishTerminalStatus
 // instead, so that it keeps its order against the replay of a new subscriber.
 func (m *WatcherManager) BroadcastTerminalEvent(terminalID string, event *leapmuxv1.TerminalEvent) {
+	if m.recordTerminalFact != nil {
+		m.recordTerminalFact(terminalID, event)
+	}
 	m.terminals.broadcast(terminalID, &leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
 			TerminalEvent: event,

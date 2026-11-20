@@ -3,6 +3,7 @@ package leapmux.v1;
 
 import "leapmux/v1/access.proto";
 import "leapmux/v1/agent.proto";
+import "leapmux/v1/common.proto";
 import "leapmux/v1/terminal.proto";
 
 // WorkerWatchService serves the WatchEvents stream: a channel's per-agent and
@@ -12,6 +13,74 @@ service WorkerWatchService {
   rpc WatchEvents(WatchEventsRequest) returns (stream WatchEventsResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
+  rpc WatchSemanticEvents(WatchSemanticEventsRequest) returns (stream WatchSemanticEventsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+}
+
+// WatchSemanticEvents resumes a tab's journal after a signed cursor. An
+// empty cursor starts at the current committed tail.
+message WatchSemanticEventsRequest {
+  TabIdent tab = 1;
+  bytes after_cursor = 2;
+}
+
+message WatchSemanticEventsResponse {
+  oneof event {
+    SemanticWatchReady ready = 1;
+    SemanticWatchRecord record = 2;
+    SemanticWatchGap gap = 3;
+  }
+}
+
+// Ready confirms the accepted position before any record or gap. The high
+// water separates records retained at admission from subsequent publications.
+message SemanticWatchReady {
+  TabIdent tab = 1;
+  string worker_id = 2;
+  string journal_id = 3;
+  string tab_stream_id = 4;
+  int64 after_sequence = 5;
+  int64 high_water_sequence = 6;
+  bytes cursor = 7;
+}
+
+message SemanticWatchRecord {
+  int64 sequence = 1;
+  int64 observed_unix_millis = 2;
+  SemanticTabFact fact = 3;
+  bytes cursor = 4;
+}
+
+enum SemanticWatchGapReason {
+  SEMANTIC_WATCH_GAP_REASON_UNSPECIFIED = 0;
+  SEMANTIC_WATCH_GAP_REASON_RETENTION = 1;
+  SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP = 2;
+  SEMANTIC_WATCH_GAP_REASON_SOURCE_LIMIT = 3;
+}
+
+// A gap advances over an interval whose complete history is unavailable.
+message SemanticWatchGap {
+  SemanticWatchGapReason reason = 1;
+  int64 after_sequence = 2;
+  int64 resume_after_sequence = 3;
+  bytes cursor = 4;
+}
+
+message SemanticTabFact {
+  oneof event {
+    SemanticTerminalStatus terminal_status = 1;
+    TerminalClosed terminal_exit = 2;
+    TerminalBell terminal_bell = 3;
+    TerminalNotification terminal_notification = 4;
+    TerminalTitleChanged terminal_title = 5;
+    TerminalProgress terminal_progress = 6;
+  }
+}
+
+message SemanticTerminalStatus {
+  TerminalStatus status = 1;
+  string startup_error = 2;
 }
 
 // WatchReplayMode selects which history a WatchEvents subscriber replays before

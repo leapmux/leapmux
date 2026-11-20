@@ -35,6 +35,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	"github.com/leapmux/leapmux/internal/worker/eventjournal"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"google.golang.org/grpc/codes"
@@ -1768,6 +1769,9 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
+	svc.EnableSemanticEvents()
+	require.NotNil(t, svc.semanticEvents.journal.Load())
+	t.Cleanup(svc.Shutdown)
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 	// The trap turns the hang-up into exit 7: without the stamped-set guard,
 	// the exit handler would persist that code over the sweep's sentinel and
@@ -1789,8 +1793,22 @@ func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
 		}},
 	}, wWatch)
 	waitWatchUpdateAck(t, wWatch)
+	_, checkpoint, err := svc.semanticEvents.journal.Load().Open(t.Context(), terminalID, nil)
+	require.NoError(t, err)
 
 	svc.Shutdown()
+
+	journal, err := eventjournal.Start(t.Context(), svc.DB, svc.WorkerID, svc.RegisteredBy(), svc.Clock)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, journal.Stop(t.Context(), true)) }()
+	reader, _, err := journal.Open(t.Context(), terminalID, checkpoint.GetCursor())
+	require.NoError(t, err)
+	frames, _, err := reader.Read(t.Context(), checkpoint.GetAfterSequence())
+	require.NoError(t, err)
+	require.Len(t, frames, 1, "clean shutdown must retain the shell exit")
+	closed := frames[0].GetRecord().GetFact().GetTerminalExit()
+	require.NotNil(t, closed)
+	assert.Nil(t, closed.ExitCode, "a shutdown hang-up does not supply a shell exit code")
 
 	assert.Eventually(t, func() bool {
 		row, err := svc.Queries.GetTerminal(ctx, terminalID)

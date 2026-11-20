@@ -2281,7 +2281,17 @@ the selected workspace is deleted.
 
 The first stream.ready line reports the sources that the stream watches and
 which of them can deliver. Read the state that you need after it, such as
-"leapmux control agent list". A new run starts from the present.
+"leapmux control agent list". A new run without --checkpoint starts from
+the present.
+
+Use --tab with --checkpoint to resume one terminal's status, exit, bell,
+notification, title and progress events. The command saves its position
+after writing output. Reuse the same file and --kind selection on the next
+run. A record can appear again if the process stops after writing its line
+and before saving its cursor. Use journal_id, tab_stream_id and sequence to
+deduplicate. The Worker reports gaps when it cannot supply retained history.
+With --checkpoint, --limit counts only the printed terminal events. This
+mode follows the tab across workspace moves and does not take --workspace.
 
 When the hub or a Worker cannot deliver, the stream prints
 stream.unavailable and retries. When the source delivers again, it prints
@@ -2326,6 +2336,7 @@ leapmux control events [flags]
 | `--kind string` | print only this kind of event, or every kind of this family, such as "agent"; repeat it, or separate the values with commas (default: every kind) (one of: workspace, tab, agent, terminal, stream, workspace.created, workspace.renamed, workspace.deleted, tab.opened, tab.closed, tab.moved, agent.activity, agent.status, agent.turn_end, agent.request, agent.request_ended, agent.todos, agent.background_tasks, terminal.status, terminal.title, terminal.bell, terminal.notification, terminal.progress, terminal.exit, stream.ready, stream.unavailable, stream.gap, stream.heartbeat; repeatable) |
 | `--limit int` | end the stream after this many events; 0 runs without a limit |
 | `--heartbeat duration` | print a stream.heartbeat event at this interval, such as 30s; 0 prints none (default: 0s) |
+| `--checkpoint string` | save and resume the event position for the terminal selected by --tab |
 
 ```sh
 leapmux control events
@@ -2341,6 +2352,9 @@ leapmux control events --kind terminal --heartbeat 30s
 
 # Watch a single terminal as it moves between workspaces.
 leapmux control events --tab 87a19d5f --kind terminal --json
+
+# Resume one terminal's event history across CLI runs.
+leapmux control events --tab 87a19d5f --checkpoint terminal-events.json --json
 ```
 
 ### `leapmux control notify`

@@ -1449,14 +1449,19 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 	return func(tid string, exitCode int) {
 		// A successful shutdown notice stays authoritative only when the
 		// hang-up request preceded the observed exit. Save the latest retained
-		// screen without another notice or a TerminalClosed event. A natural
-		// exit observed before that request keeps its own exit code.
+		// screen without broadcasting another notice. The journal records the
+		// shell exit without a code. A natural exit observed before that
+		// request keeps its own exit code.
 		if notices := svc.shutdownNotifiedTerminals.Load(); notices != nil {
 			if _, notified := (*notices)[tid]; notified && svc.Terminals.HangUpRequested(tid) {
 				if snapshot, ok := svc.captureTerminalExit(tid); ok {
 					svc.saveTerminalExit(tid, exitCodeUnknown, snapshot)
 				}
 				svc.clearTerminalBellCoalesce(tid)
+				svc.recordTerminalFact(tid, &leapmuxv1.TerminalEvent{
+					TerminalId: tid,
+					Event:      &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{}},
+				})
 				return
 			}
 		}

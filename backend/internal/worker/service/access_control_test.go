@@ -387,6 +387,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
 			}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerWatchServiceWatchSemanticEventsProcedure, leapmuxv1connect.WorkerWatchServiceWatchSemanticEventsProcedure, func() proto.Message {
+			return &leapmuxv1.WatchSemanticEventsRequest{Tab: terminalTabIdent("term-1")}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, func() proto.Message {
 			return &leapmuxv1.ListAgentSessionsRequest{
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,

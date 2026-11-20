@@ -30,6 +30,7 @@ func newEventsCommand() *cobra.Command {
 			{Comment: "Wait for the next request of any agent, and print it.", Command: "leapmux control events --kind agent.request --limit 1 --json"},
 			{Comment: "Watch every terminal, with a heartbeat that shows the stream runs.", Command: "leapmux control events --kind terminal --heartbeat 30s"},
 			{Comment: "Watch a single terminal as it moves between workspaces.", Command: "leapmux control events --tab 87a19d5f --kind terminal --json"},
+			{Comment: "Resume one terminal's event history across CLI runs.", Command: "leapmux control events --tab 87a19d5f --checkpoint terminal-events.json --json"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.String("workspace", "", `watch only this workspace: an id, a prefix, "title:<title>" or "self" (default: every workspace)`)
@@ -38,6 +39,7 @@ func newEventsCommand() *cobra.Command {
 			cli.SetEnum(fs, "kind", kindFlagValues()...)
 			fs.Int("limit", 0, "end the stream after this many events; 0 runs without a limit")
 			fs.Duration("heartbeat", 0, "print a stream.heartbeat event at this interval, such as 30s; 0 prints none")
+			fs.String("checkpoint", "", "save and resume the event position for the terminal selected by --tab")
 		},
 		Run: runEvents,
 	})
@@ -63,7 +65,17 @@ the selected workspace is deleted.
 
 The first stream.ready line reports the sources that the stream watches and
 which of them can deliver. Read the state that you need after it, such as
-"leapmux control agent list". A new run starts from the present.
+"leapmux control agent list". A new run without --checkpoint starts from
+the present.
+
+Use --tab with --checkpoint to resume one terminal's status, exit, bell,
+notification, title and progress events. The command saves its position
+after writing output. Reuse the same file and --kind selection on the next
+run. A record can appear again if the process stops after writing its line
+and before saving its cursor. Use journal_id, tab_stream_id and sequence to
+deduplicate. The Worker reports gaps when it cannot supply retained history.
+With --checkpoint, --limit counts only the printed terminal events. This
+mode follows the tab across workspace moves and does not take --workspace.
 
 When the hub or a Worker cannot deliver, the stream prints
 stream.unavailable and retries. When the source delivers again, it prints
@@ -90,7 +102,8 @@ type eventsOptions struct {
 	// workspace is the value of --workspace, or "" for every workspace.
 	workspace string
 	// tab is the value of --tab, or "" for every tab in the workspace scope.
-	tab string
+	tab        string
+	checkpoint string
 }
 
 // eventsOptionsOf reads the flags of `events`, before anything is sent.
@@ -126,7 +139,14 @@ func eventsOptionsOf(inv *cli.Invocation) (eventsOptions, error) {
 			return eventsOptions{}, cli.Usagef("--%s is empty", name)
 		}
 	}
-	return eventsOptions{filter: filter, limit: limit, heartbeat: heartbeat, workspace: stringFlag(inv, "workspace"), tab: stringFlag(inv, "tab")}, nil
+	opts := eventsOptions{filter: filter, limit: limit, heartbeat: heartbeat, workspace: stringFlag(inv, "workspace"), tab: stringFlag(inv, "tab")}
+	if inv.Changed("checkpoint") {
+		opts.checkpoint = inv.Command.Flag("checkpoint").Value.String()
+		if opts.checkpoint == "" || opts.tab == "" || opts.workspace != "" {
+			return eventsOptions{}, cli.Usagef("--checkpoint requires a file and --tab, without --workspace")
+		}
+	}
+	return opts, nil
 }
 
 // runEvents streams the events of the scope until the user stops it.
@@ -140,6 +160,9 @@ func runEvents(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
+	if opts.checkpoint != "" {
+		return nil, s.runCheckpointedEvents(opts)
+	}
 	workspaceID, tabID, err := resolveEventScope(s, opts)
 	if err != nil {
 		return nil, err

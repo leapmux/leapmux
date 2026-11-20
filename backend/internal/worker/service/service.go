@@ -73,6 +73,7 @@ type Service struct {
 
 	creations           *tabCreationCoordinator
 	archiveObservations archiveObservationTracker
+	semanticEvents      semanticEventCapture
 
 	Queries    *db.Queries
 	Watchers   *WatcherManager // Fan-out manager for event broadcasting
@@ -682,6 +683,7 @@ func New(cfg Config) *Service {
 		PrivateEvents:   NewPrivateEventsBus(),
 		lastBellAt:      make(map[string]time.Time),
 	}
+	watchers.recordTerminalFact = svc.recordTerminalFact
 	// The seed is config data, so it is minted here -- the one place the raw
 	// string exists -- rather than inside the setter.
 	if seed, ok := userid.New(cfg.SeedRegisteredBy); ok {
@@ -1214,11 +1216,12 @@ func (svc *Service) shutdown() {
 	svc.AgentStartup.closeClaims()
 	svc.TerminalStartup.closeClaims()
 	logShutdownStragglers("agent startup", svc.AgentStartup.drainForShutdown(svc.ShutdownDeadline))
-	logShutdownStragglers("terminal startup", svc.TerminalStartup.drainForShutdown(svc.ShutdownDeadline))
+	terminalStartups := svc.TerminalStartup.drainForShutdown(svc.ShutdownDeadline)
+	logShutdownStragglers("terminal startup", terminalStartups)
 	// Also drain in-flight close handlers. The frontend fires close RPCs
 	// as fire-and-forget, so a close can still be running on the
 	// dispatcher goroutine while the worker receives a deregister/SIGTERM.
-	svc.ShutdownDeadline.Wait(svc.Cleanup.DoneChan(),
+	closesFinished := svc.ShutdownDeadline.Wait(svc.Cleanup.DoneChan(),
 		"shutdown deadline passed while close handlers still ran; abandoning them")
 
 	// Re-run after the drains: a terminal whose startup was still in flight
@@ -1260,10 +1263,13 @@ func (svc *Service) shutdown() {
 	// It does not cap the join after the escalation: that join is where each
 	// exit handler saves the final screen, a database write, so it keeps its
 	// own few seconds even after the deadline.
+	var terminalExits []string
 	stops.Go(func() {
-		logShutdownStragglers("terminal", svc.Terminals.HangUpAll(svc.ShutdownDeadline.Cap(terminalHangUpGrace)))
+		terminalExits = svc.Terminals.HangUpAll(svc.ShutdownDeadline.Cap(terminalHangUpGrace))
+		logShutdownStragglers("terminal", terminalExits)
 	})
 	stops.Wait()
+	svc.stopSemanticEvents(closesFinished && len(terminalStartups) == 0 && len(terminalExits) == 0)
 
 	// Stop the tunnel idle reaper goroutine. The worker process is exiting, so
 	// correctness does not depend on it, but stopping it keeps the goroutine
@@ -1621,6 +1627,7 @@ func (svc *Service) ApplyWorkerIdentity(identity *leapmuxv1.WorkerIdentity) Iden
 		}
 	}
 	svc.owner.Store(next)
+	svc.bindSemanticEvents()
 	return outcome
 }
 
@@ -1737,6 +1744,7 @@ func registerAllWithGuards(d *channel.Dispatcher, svc *Service) map[string]metho
 	registerTerminalHandlers(ownerOnly, svc)
 	registerAgentHandlers(ownerOnly, svc)
 	registerAgentSessionHandlers(ownerOnly, svc)
+	registerSemanticEventsHandler(ownerOnly, svc)
 	registerCloseTabHandler(ownerOnly, svc)
 	registerWorkerPrivateCommandHandlers(ownerOnly, svc)
 	registerCleanupHandlers(ownerOnly, svc)

@@ -545,7 +545,7 @@ To follow an agent's chat, use `agent messages --follow` instead.
 
 - **`--kind` selects what prints**: a kind such as `agent.request`, or a family such as `agent`. Repeat it, or separate the values with commas. An unknown value fails with `usage` and lists the known ones.
 - **`--workspace` narrows the scope** to one workspace. Without it, the stream watches every workspace. A tab that opens while the stream runs joins it, and a tab that closes leaves it. The stream ends with status `0` when the watched workspace is deleted.
-- **Read the state after `stream.ready`.** Each run starts from the present. The ready event reports which sources can deliver. If a source drops afterward, `stream.gap` reports the possible loss when it reconnects.
+- **Read the state after `stream.ready`.** A run without a checkpoint starts from the present. The ready event reports which sources can deliver. If a source drops afterward, `stream.gap` reports the possible loss when it reconnects.
 - **The stream survives drops.**
   - When the Hub or a Worker cannot deliver, the stream prints `stream.unavailable` and retries. It watches an offline Worker again as soon as the Hub reports that a Worker came online.
   - A Worker that refuses for good, such as for a missing permission, prints `retrying: false`, and the stream goes on without it.
@@ -555,6 +555,29 @@ To follow an agent's chat, use `agent messages --follow` instead.
 - Ctrl-C ends the stream with status `0`.
 
 `layout watch` prints the raw changes of the layout instead, and `agent messages --follow` prints an agent's chat.
+
+#### Resume a terminal event stream
+
+```bash
+leapmux control events --tab "$T" --checkpoint terminal-events.json --kind terminal --json
+```
+
+The first run starts at the latest recorded event. Stop it and run the same
+command again to read the terminal events that the Worker retained in the
+meantime. The checkpoint covers `terminal.status`, `terminal.exit`,
+`terminal.title`, `terminal.bell`, `terminal.notification`, and
+`terminal.progress`. The Worker checks access to the terminal each time
+the CLI opens the stream.
+
+Use the same tab and `--kind` selection when you resume. The checkpoint
+follows the tab across workspace moves. `--limit` counts the terminal
+events that the CLI prints. A `stream.gap` reports the affected sequence
+interval and why the Worker could not replay it.
+
+The CLI saves its position after it writes the event. If the process stops
+between those steps, the next run can print the event again. Deduplicate by
+`journal_id`, `tab_stream_id`, and `sequence`. Records already committed
+when the stream opened carry `replayed: true`.
 
 ### Calling a procedure directly
 

@@ -722,6 +722,26 @@ func TestTabCreationEnumColumnsMatchProto(t *testing.T) {
 	assert.Equal(t, int32(2), lastDeclaredOrdinal(t, leapmuxv1.WorktreeAction_name))
 }
 
+func TestSemanticEventEnumColumnsMatchProto(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(workerMigration)
+	require.NoError(t, err)
+	schema := string(data)
+	table := func(name string) string {
+		_, suffix, found := strings.Cut(schema, "CREATE TABLE "+name+" (")
+		require.True(t, found)
+		declaration, _, found := strings.Cut(suffix, "\n);")
+		require.True(t, found)
+		return declaration
+	}
+	assert.Contains(t, table("semantic_event_tails"), fmt.Sprintf(
+		"CHECK (tab_type = %d)", leapmuxv1.TabType_TAB_TYPE_TERMINAL))
+	assert.Contains(t, table("semantic_event_entries"), fmt.Sprintf(
+		"CHECK (gap_reason BETWEEN %d AND %d)",
+		leapmuxv1.SemanticWatchGapReason_SEMANTIC_WATCH_GAP_REASON_UNCLEAN_STOP,
+		lastDeclaredOrdinal(t, leapmuxv1.SemanticWatchGapReason_name)))
+}
+
 func TestBackgroundTaskCanonicalRolePredicatesMatchProtoOrdinals(t *testing.T) {
 	t.Parallel()
 	var ordinals []int

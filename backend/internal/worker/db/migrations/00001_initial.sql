@@ -883,7 +883,50 @@ CREATE TABLE tab_creations (
 CREATE INDEX idx_tab_creations_pending ON tab_creations(worker_id, state);
 CREATE INDEX idx_tab_creations_tab ON tab_creations(tab_id, tab_type);
 
+-- One journal per Worker database. The append transaction maintains the counters.
+CREATE TABLE semantic_event_journal (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    worker_id TEXT NOT NULL CHECK (worker_id <> ''),
+    owner_user_id TEXT NOT NULL CHECK (owner_user_id <> ''),
+    journal_id TEXT NOT NULL CHECK (journal_id <> ''),
+    cursor_key BLOB NOT NULL CHECK (length(cursor_key) = 32),
+    dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
+    entry_count INTEGER NOT NULL CHECK (entry_count >= 0),
+    payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0)
+);
+
+CREATE TABLE semantic_event_tails (
+    -- TabType ordinal. The journal currently admits terminal tabs.
+    tab_type INTEGER NOT NULL CHECK (typeof(tab_type) = 'integer') CHECK (tab_type = 2),
+    tab_id TEXT NOT NULL CHECK (tab_id <> ''),
+    tab_stream_id TEXT NOT NULL CHECK (tab_stream_id <> ''),
+    high_sequence INTEGER NOT NULL CHECK (high_sequence >= 0),
+    floor_sequence INTEGER NOT NULL CHECK (floor_sequence >= 0 AND floor_sequence <= high_sequence),
+    last_observed_unix_millis INTEGER NOT NULL,
+    PRIMARY KEY (tab_type, tab_id)
+) WITHOUT ROWID;
+CREATE INDEX semantic_event_tail_age_idx ON semantic_event_tails (last_observed_unix_millis, tab_type, tab_id);
+
+CREATE TABLE semantic_event_entries (
+    ingest_order INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- TabType ordinal checked by the parent tail.
+    tab_type INTEGER NOT NULL,
+    tab_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    observed_unix_millis INTEGER NOT NULL,
+    fact BLOB NOT NULL,
+    -- SemanticWatchGapReason ordinal. The reader derives retention from floor_sequence.
+    gap_reason INTEGER CHECK (gap_reason IS NULL OR typeof(gap_reason) = 'integer') CHECK (gap_reason BETWEEN 2 AND 3),
+    CHECK ((gap_reason IS NULL AND length(fact) > 0) OR (gap_reason IS NOT NULL AND length(fact) = 0)),
+    UNIQUE (tab_type, tab_id, sequence),
+    FOREIGN KEY (tab_type, tab_id) REFERENCES semantic_event_tails(tab_type, tab_id) ON DELETE CASCADE
+);
+CREATE INDEX semantic_event_age_idx ON semantic_event_entries (observed_unix_millis, ingest_order);
+
 -- +goose Down
+DROP TABLE IF EXISTS semantic_event_entries;
+DROP TABLE IF EXISTS semantic_event_tails;
+DROP TABLE IF EXISTS semantic_event_journal;
 DROP TABLE IF EXISTS tab_creations;
 DROP VIEW IF EXISTS tab_locations;
 DROP TABLE IF EXISTS agent_background_tasks;
