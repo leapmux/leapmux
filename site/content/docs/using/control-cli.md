@@ -89,6 +89,8 @@ The first argument of most commands selects the object it acts on. A target take
 
 A prefix lists visible objects of its kind. An exact id in that list takes precedence. Title and name searches can also read metadata from the Workers. A form that matches nothing fails with `not_found`. A form that matches more than one object fails with `ambiguous_target` and lists the candidates with their full ids and titles.
 
+A title or name search can return `unavailable` when missing Worker metadata leaves the match uncertain. Use a full id or a unique id prefix to choose the target in that case.
+
 ```text
 $ leapmux control tab get 87
 error: usage: "87" is too short for a tab id prefix; type at least 4 characters

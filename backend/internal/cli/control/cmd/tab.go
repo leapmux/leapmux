@@ -107,6 +107,8 @@ type tabRow struct {
 	ID    string `json:"id" table:"ID,short"`
 	Type  string `json:"type" table:"TYPE"`
 	Title string `json:"title,omitempty" table:"TITLE"`
+	// Provider is present for an agent whose Worker reported its details.
+	Provider string `json:"provider,omitempty" table:"PROVIDER"`
 	// State is the agent's activity state ("idle", "working",
 	// "waiting_for_user") or the terminal's status ("ready", "exited").
 	State string `json:"state,omitempty" table:"STATE"`
@@ -123,6 +125,7 @@ func tabRowOf(t *leapmuxv1.WorkspaceTab, d tabDetail, workerName string) tabRow 
 		ID:          t.GetTab().GetTabId(),
 		Type:        tabTypeName(t.GetTab().GetTabType()),
 		Title:       d.Title,
+		Provider:    enumToken(d.Agent.GetAgentProvider()),
 		State:       d.State,
 		Worker:      workerName,
 		WorkerID:    t.GetWorkerId(),

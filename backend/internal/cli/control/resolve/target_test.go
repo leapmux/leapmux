@@ -291,6 +291,49 @@ func TestCanonical_ATitleSelectsAWorkspace(t *testing.T) {
 	assert.Equal(t, "1aszZZZZWorkspaceTwo", got.ID)
 }
 
+func TestCanonical_RequiresCompleteMetadataBeforeSelectingByTitleOrName(t *testing.T) {
+	t.Run("tab title", func(t *testing.T) {
+		f := sampleListing()
+		listing := f.listing()
+		listing.TabTitles = func(context.Context, []*leapmuxv1.WorkspaceTab) map[string]string {
+			return map[string]string{"87a19d5f-aaaa": "CLI Design"}
+		}
+		got, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "title:CLI Design")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+		assert.Empty(t, got.ID, "another visible agent could have the same title")
+	})
+	t.Run("worker name", func(t *testing.T) {
+		f := sampleListing()
+		delete(f.workerNames, "hQrSxxxxWorkerTwo")
+		got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindWorker, "name:build-box")
+		require.Error(t, err)
+		assert.Equal(t, cli.CodeUnavailable, cli.FromError(err).Code)
+		assert.Empty(t, got.ID, "another visible Worker could have the same name")
+	})
+	t.Run("two known titles prove ambiguity despite missing metadata", func(t *testing.T) {
+		f := sampleListing()
+		f.tabs = append(f.tabs, tab("unread-agent", leapmuxv1.TabType_TAB_TYPE_AGENT))
+		listing := f.listing()
+		listing.TabTitles = func(context.Context, []*leapmuxv1.WorkspaceTab) map[string]string {
+			return f.titles
+		}
+		_, err := resolve.Canonical(t.Context(), listing, resolve.KindAgent, "title:CLI Design")
+		require.Error(t, err)
+		failure := cli.FromError(err)
+		assert.Equal(t, cli.CodeAmbiguousTarget, failure.Code)
+		assert.Len(t, failure.Candidates, 2)
+	})
+}
+
+func TestCanonical_PreservesExactTitleWhitespace(t *testing.T) {
+	f := sampleListing()
+	f.titles["87a19d5f-aaaa"] = "CLI Design "
+	got, err := resolve.Canonical(t.Context(), f.listing(), resolve.KindAgent, "title:CLI Design ")
+	require.NoError(t, err)
+	assert.Equal(t, "87a19d5f-aaaa", got.ID)
+}
+
 func TestCanonical_ATitleDoesNotSelectATileOrAWorker(t *testing.T) {
 	for _, kind := range []resolve.Kind{resolve.KindTile, resolve.KindWorker} {
 		_, err := resolve.Canonical(context.Background(), sampleListing().listing(), kind, "title:x")

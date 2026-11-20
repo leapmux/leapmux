@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -166,8 +167,8 @@ type Target struct {
 type Listing struct {
 	// Tabs lists every tab of every workspace.
 	Tabs func(ctx context.Context) ([]*leapmuxv1.WorkspaceTab, error)
-	// TabTitles returns the title of each tab, keyed by tab id. It asks
-	// each Worker, so a Worker that cannot answer leaves its tabs out.
+	// TabTitles returns known titles keyed by tab id. An absent key means
+	// the caller could not read that title.
 	TabTitles func(ctx context.Context, tabs []*leapmuxv1.WorkspaceTab) map[string]string
 	// Workspaces lists every workspace.
 	Workspaces func(ctx context.Context) ([]*leapmuxv1.Workspace, error)
@@ -176,7 +177,8 @@ type Listing struct {
 	Tiles func(ctx context.Context) (map[string]string, error)
 	// Workers lists every Worker.
 	Workers func(ctx context.Context) ([]*leapmuxv1.Worker, error)
-	// WorkerNames returns the name of each online Worker, keyed by id.
+	// WorkerNames returns known names keyed by id. An absent key means the
+	// caller could not read that name.
 	WorkerNames func(ctx context.Context, workers []*leapmuxv1.Worker) map[string]string
 	// LocateTab finds the hub's row for one tab, for "self" on a tile or a
 	// workspace.
@@ -231,7 +233,8 @@ func (l Listing) SelfTabID(kind Kind) string {
 // matches more than one object fails with ambiguous_target and lists every
 // candidate.
 func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target, error) {
-	input = strings.TrimSpace(input)
+	selector := strings.TrimLeftFunc(input, unicode.IsSpace)
+	input = strings.TrimSpace(selector)
 	switch {
 	case input == "":
 		return Target{}, cli.Usagef("the %s is empty", kind)
@@ -243,10 +246,10 @@ func Canonical(ctx context.Context, l Listing, kind Kind, input string) (Target,
 			return Target{}, cli.Usagef(`"id:" needs an id after the colon`)
 		}
 		return Target{ID: literalID}, nil
-	case strings.HasPrefix(input, titlePrefix):
-		return l.byTitle(ctx, kind, strings.TrimPrefix(input, titlePrefix))
-	case strings.HasPrefix(input, namePrefix):
-		return l.byName(ctx, kind, strings.TrimPrefix(input, namePrefix))
+	case strings.HasPrefix(selector, titlePrefix):
+		return l.byTitle(ctx, kind, strings.TrimPrefix(selector, titlePrefix))
+	case strings.HasPrefix(selector, namePrefix):
+		return l.byName(ctx, kind, strings.TrimPrefix(selector, namePrefix))
 	case isCompleteTargetID(kind, input):
 		return Target{ID: input}, nil
 	case len(input) < MinPrefixLength:
@@ -391,7 +394,7 @@ func (l Listing) byPrefix(ctx context.Context, kind Kind, prefix string) (Target
 }
 
 func (l Listing) byTitle(ctx context.Context, kind Kind, title string) (Target, error) {
-	if title == "" {
+	if strings.TrimSpace(title) == "" {
 		return Target{}, cli.Usagef(`"title:" needs a title after the colon`)
 	}
 	switch {
@@ -402,15 +405,23 @@ func (l Listing) byTitle(ctx context.Context, kind Kind, title string) (Target, 
 		}
 		titles := l.TabTitles(ctx, tabs)
 		var matches []*leapmuxv1.WorkspaceTab
+		unread := 0
 		for _, t := range tabs {
-			if titles[t.GetTab().GetTabId()] == title {
+			actual, known := titles[t.GetTab().GetTabId()]
+			if !known {
+				unread++
+			} else if actual == title {
 				matches = append(matches, t)
 			}
+		}
+		what := fmt.Sprintf("title %q", title)
+		if unread > 0 && len(matches) < 2 {
+			return Target{}, incompleteMetadataError(what, kind, unread)
 		}
 		if len(matches) == 1 {
 			return Target{ID: matches[0].GetTab().GetTabId(), Tab: matches[0]}, nil
 		}
-		return Target{}, tabMatchErrorWithTitles(kind, fmt.Sprintf("title %q", title), matches, titles)
+		return Target{}, tabMatchErrorWithTitles(kind, what, matches, titles)
 	case kind == KindWorkspace:
 		workspaces, err := l.Workspaces(ctx)
 		if err != nil {
@@ -431,7 +442,7 @@ func (l Listing) byName(ctx context.Context, kind Kind, name string) (Target, er
 	if kind != KindWorker {
 		return Target{}, cli.Usagef(`"name:" selects a worker, not a %s`, kind)
 	}
-	if name == "" {
+	if strings.TrimSpace(name) == "" {
 		return Target{}, cli.Usagef(`"name:" needs a name after the colon`)
 	}
 	workers, err := l.Workers(ctx)
@@ -440,12 +451,25 @@ func (l Listing) byName(ctx context.Context, kind Kind, name string) (Target, er
 	}
 	names := l.WorkerNames(ctx, workers)
 	var matches []cli.Candidate
+	unread := 0
 	for _, w := range workers {
-		if names[w.GetId()] == name {
+		actual, known := names[w.GetId()]
+		if !known {
+			unread++
+		} else if actual == name {
 			matches = append(matches, cli.Candidate{ID: w.GetId(), Kind: "worker", Title: name})
 		}
 	}
-	return pick(kind, fmt.Sprintf("name %q", name), matches)
+	what := fmt.Sprintf("name %q", name)
+	if unread > 0 && len(matches) < 2 {
+		return Target{}, incompleteMetadataError(what, kind, unread)
+	}
+	return pick(kind, what, matches)
+}
+
+func incompleteMetadataError(what string, kind Kind, unread int) error {
+	return cli.Newf(cli.CodeUnavailable, "cannot resolve %s because metadata is unavailable for %d of the listed objects", what, unread).
+		WithHint("use a full id or a unique id prefix to select the %s", kind)
 }
 
 // tabsOf lists the tabs that kind accepts.

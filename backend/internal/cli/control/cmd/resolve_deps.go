@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"path"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -138,12 +140,15 @@ type tabDetail struct {
 // detailFanoutLimit caps the Workers that one command asks at once.
 const detailFanoutLimit = 8
 
-// fetchTabDetails asks each Worker about its agent and terminal tabs, all
-// Workers at once. The hub's rows hold only the placement of a tab; its
+// fetchTabDetails asks each Worker about its tabs, with independent Workers
+// served concurrently. The hub's rows hold only the placement of a tab. Its
 // title and its state live on the Worker. A Worker that cannot answer leaves
 // its tabs out, so a list still prints the tabs of the Workers that can.
 func fetchTabDetails(ctx context.Context, c *control.Client, tabs []*leapmuxv1.WorkspaceTab) map[string]tabDetail {
-	type workerTabs struct{ agents, terminals []string }
+	type workerTabs struct {
+		agents, terminals []string
+		viewers           []*leapmuxv1.TabIdent
+	}
 	byWorker := map[string]*workerTabs{}
 	for _, t := range tabs {
 		workerID := t.GetWorkerId()
@@ -160,9 +165,10 @@ func fetchTabDetails(ctx context.Context, c *control.Client, tabs []*leapmuxv1.W
 			wt.agents = append(wt.agents, t.GetTab().GetTabId())
 		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 			wt.terminals = append(wt.terminals, t.GetTab().GetTabId())
-		case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
-			// A file or an image tab is a viewer: its Worker reports no
-			// title and no state for it.
+		case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
+			wt.viewers = append(wt.viewers, t.GetTab())
+		case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
+			// The Worker reports nothing for a tab of an unknown type.
 		}
 	}
 	var mu sync.Mutex
@@ -170,7 +176,7 @@ func fetchTabDetails(ctx context.Context, c *control.Client, tabs []*leapmuxv1.W
 	var g errgroup.Group
 	g.SetLimit(detailFanoutLimit)
 	for workerID, wt := range byWorker {
-		if len(wt.agents) == 0 && len(wt.terminals) == 0 {
+		if len(wt.agents) == 0 && len(wt.terminals) == 0 && len(wt.viewers) == 0 {
 			continue
 		}
 		g.Go(func() error {
@@ -195,6 +201,18 @@ func fetchTabDetails(ctx context.Context, c *control.Client, tabs []*leapmuxv1.W
 						mu.Unlock()
 					}
 				}
+				for _, viewer := range wt.viewers {
+					var resp leapmuxv1.GetTabPayloadResponse
+					id := viewer.GetTabId()
+					if w.Call(ctx, leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure, &leapmuxv1.GetTabPayloadRequest{TabId: id}, &resp) != nil {
+						continue
+					}
+					if title, known := viewerTabTitle(viewer.GetTabType(), resp.GetPayload()); known {
+						mu.Lock()
+						out[id] = tabDetail{Title: title}
+						mu.Unlock()
+					}
+				}
 				return nil
 			})
 			return nil
@@ -202,6 +220,41 @@ func fetchTabDetails(ctx context.Context, c *control.Client, tabs []*leapmuxv1.W
 	}
 	_ = g.Wait()
 	return out
+}
+
+// viewerTabTitle derives labels from the same private payloads the browser
+// uses. A missing or unexpected payload leaves the title unknown.
+func viewerTabTitle(kind leapmuxv1.TabType, payload *leapmuxv1.TabPayload) (string, bool) {
+	if file := payload.GetFile(); kind == leapmuxv1.TabType_TAB_TYPE_FILE && file != nil {
+		if title := fileTabBasename(file.GetFilePath()); title != "" {
+			return title, true
+		}
+		return "File", true
+	}
+	if image := payload.GetImage(); kind == leapmuxv1.TabType_TAB_TYPE_IMAGE && image != nil {
+		if title := image.GetTitle(); title != "" {
+			return title, true
+		}
+		return "Image", true
+	}
+	return "", false
+}
+
+// fileTabBasename splits a path as the Worker would. A backslash in a POSIX
+// filename remains part of its title, even when the CLI runs on Windows.
+func fileTabBasename(name string) string {
+	if name == "" {
+		return ""
+	}
+	driveLetter := (name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z')
+	if strings.HasPrefix(name, "\\") || (driveLetter && len(name) > 1 && name[1] == ':') {
+		name = strings.TrimRight(name, `/\`)
+		return name[strings.LastIndexAny(name, `/\`)+1:]
+	}
+	if base := path.Base(name); base != "/" {
+		return base
+	}
+	return ""
 }
 
 // fetchWorkerNames asks each Worker for its name, all Workers at once. The
