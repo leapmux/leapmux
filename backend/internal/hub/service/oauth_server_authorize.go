@@ -38,10 +38,27 @@ type authorizeRequest struct {
 }
 
 // stepUpTarget names the credential an authorization VERIFIES rather than
-// issues. At most one of sessionID and tokenID is set.
+// issues, and carries what the consent page shows for it.
 type stepUpTarget struct {
-	sessionID string
-	tokenID   string
+	ref store.CredentialRef
+	// display identifies the credential from the hub's OWN record, built
+	// while parseStepUpTarget loaded and validated the row. The page shows
+	// exactly what was checked then; nothing re-reads a row that may have
+	// changed hands, and no empty fallback stands in for one that did.
+	display *deviceCredential
+}
+
+// redemptionKind is what the code this authorization issues will redeem into:
+// the decision the consent page shows, bound onto the row at consent. A
+// step-up verifies a credential and mints nothing, so it redeems into neither.
+func (req authorizeRequest) redemptionKind() store.RedemptionKind {
+	if !req.stepUp.ref.IsZero() {
+		return store.RedemptionKindNone
+	}
+	if req.app.IssuesSessions {
+		return store.RedemptionKindSession
+	}
+	return store.RedemptionKindToken
 }
 
 // parseAuthorizeRequest validates a request and reports what to answer when it
@@ -150,6 +167,11 @@ func (h *OAuthServerHandler) parseAuthorizeRequest(
 
 // parseStepUpTarget validates a `step_up` parameter and resolves the
 // credential it names. Every failure is redirectable with `access_denied`.
+//
+// The row it loads is the one the consent page shows. The display is built
+// HERE, from that row, so the name and the date a person reads are the values
+// this stage validated -- never a later read of a row that may have changed
+// hands.
 func (h *OAuthServerHandler) parseStepUpTarget(
 	ctx context.Context, raw, scope string, app *store.OAuthClient, user *auth.UserInfo,
 ) (stepUpTarget, *oauthErrorResponse) {
@@ -172,7 +194,11 @@ func (h *OAuthServerHandler) parseStepUpTarget(
 		if body := verifyStepUpSubject("session", sess.UserID, sess.IssuedToClient, user, app); body != nil {
 			return target, body
 		}
-		target.sessionID = id
+		target.ref = store.CredentialRef{Kind: store.CredentialRefKindSession, ID: id}
+		target.display = &deviceCredential{
+			Name:  sess.UserAgent,
+			Added: sess.CreatedAt.UTC().Format(credentialAddedLayout),
+		}
 	} else if strings.HasPrefix(raw, oauthapp.StepUpTokenPrefix) {
 		id := strings.TrimPrefix(raw, oauthapp.StepUpTokenPrefix)
 		if id == "" {
@@ -189,7 +215,11 @@ func (h *OAuthServerHandler) parseStepUpTarget(
 		if body := verifyStepUpSubject("token", tok.UserID, tok.ClientID, user, app); body != nil {
 			return target, body
 		}
-		target.tokenID = id
+		target.ref = store.CredentialRef{Kind: store.CredentialRefKindToken, ID: id}
+		target.display = &deviceCredential{
+			Name:  tokenDisplayName(tok),
+			Added: tok.CreatedAt.UTC().Format(credentialAddedLayout),
+		}
 	} else {
 		return target, oauthStepUpBody("step_up must start with session: or token:")
 	}
@@ -254,29 +284,10 @@ func (h *OAuthServerHandler) handleAuthorize(w http.ResponseWriter, r *http.Requ
 		InstallationName: req.installation,
 		StepUpRaw:        r.URL.Query().Get("step_up"),
 	}
-	var stepUp *deviceCredential
-	var stepUpErr error
-	switch {
-	case req.stepUp.sessionID != "":
-		stepUp, stepUpErr = h.sessionCredential(r.Context(), req.stepUp.sessionID)
-	case req.stepUp.tokenID != "":
-		stepUp, stepUpErr = h.grantCredential(r.Context(), req.stepUp.tokenID)
-	}
-	if stepUpErr != nil {
-		writeInternalError(w, "step-up credential lookup failed", stepUpErr)
-		return
-	}
-	if req.stepUp != (stepUpTarget{}) {
-		if stepUp == nil {
-			// The row vanished between the parse and this read. The page stays
-			// the step-up variant -- the request still VERIFIES something -- and
-			// identifies nothing rather than falling back to a page that asks
-			// for an authorization.
-			stepUp = &deviceCredential{}
-		}
-		data.StepUp = stepUp
+	if !req.stepUp.ref.IsZero() {
+		data.StepUp = req.stepUp.display
 	} else {
-		data.SignIn = oauthapp.IssuesSession(req.app.ClientID)
+		data.SignIn = req.app.IssuesSessions
 	}
 	writePage(w, http.StatusOK, consentPageTmpl, data, redirectFormActionSource(req.redirectURI))
 }
@@ -384,6 +395,11 @@ func (h *OAuthServerHandler) handleConsent(w http.ResponseWriter, r *http.Reques
 	// the account. /oauth/token reads every one of them back from the row. Read
 	// from the exchange form instead, any holder of an authorization code could
 	// change what the user consented to.
+	//
+	// The redemption kind binds here too. It is what the page SHOWED -- a
+	// session for an app whose authorization mints one, an app credential for
+	// any other -- and the token stage reads it from this row rather than
+	// re-deriving the fork from a registration that may have changed since.
 	if err := h.store.OAuthAuthorizationCodes().Create(r.Context(), store.CreateOAuthAuthorizationCodeParams{
 		Code:             code,
 		UserID:           user.ID,
@@ -393,8 +409,8 @@ func (h *OAuthServerHandler) handleConsent(w http.ResponseWriter, r *http.Reques
 		GrantedScopes:    granted,
 		InstallationName: req.installation,
 		ExpiresAt:        h.now().Add(AuthorizationCodeTTL),
-		StepUpSessionID:  req.stepUp.sessionID,
-		StepUpTokenID:    req.stepUp.tokenID,
+		StepUp:           req.stepUp.ref,
+		Redemption:       req.redemptionKind(),
 	}); err != nil {
 		writeInternalError(w, "authorization code creation failed", err)
 		return

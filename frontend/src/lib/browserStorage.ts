@@ -681,9 +681,12 @@ export function storageAccountFor(hub: string, hubUserId: string): StorageAccoun
  *
  * `storageAccountFor` composes `encodeURIComponent(hub) + '/' + encodeURIComponent(hubUserId)`,
  * and `encodeURIComponent` emits no `/`, so the last `/` separates the pair and
- * its tail decodes back to the user id. `setStorageAccountForTests` writes a
- * bare Hub user id as the account — the form whose account IS its user id — so
- * an account with no separator identifies itself, undecoded.
+ * its tail decodes back to the user id. An account with NO separator is not a
+ * composed account: the writer composes (`setStorageAccountForTests` under
+ * `TEST_HUB`), so the bare form whose account IS its user id no longer exists,
+ * and a bare string here is a programmer error. It throws rather than guess,
+ * because the old fallback read a slash-bearing bare id as a `(hub, user)` pair
+ * -- an account that identified the wrong user.
  *
  * Use it wherever a value in the CRDT's identity domain (`UserCrdtState.userId`,
  * the raw `user_id` the Hub reports) meets a storage account. The two never
@@ -693,9 +696,9 @@ export function storageAccountUserId(account: StorageAccount | null): HubUserId 
   if (account === null)
     return null
   const separator = account.lastIndexOf('/')
-  return (separator === -1
-    ? account
-    : decodeURIComponent(account.slice(separator + 1))) as HubUserId
+  if (separator === -1)
+    throw new Error(`Invalid storage account id "${account}": a composed account carries a '/' separator.`)
+  return decodeURIComponent(account.slice(separator + 1)) as HubUserId
 }
 
 /** The stored key for a `device`-scoped `name`. */
@@ -792,8 +795,20 @@ export function resetStorageAccountForTests(): void {
 }
 
 /**
- * Move the namespace to `storageAccount` synchronously, without reading a
- * database. FOR TESTS.
+ * The sentinel Hub origin `setStorageAccountForTests` composes its account
+ * under. A fixed origin, so one user id maps to exactly one test account and
+ * the setter keeps its single job: move the namespace to THIS suite's identity.
+ */
+export const TEST_HUB = 'https://hub.example.com'
+
+/**
+ * Move the namespace to the account `hubUserId` composes under `TEST_HUB`,
+ * synchronously, without reading a database. FOR TESTS.
+ *
+ * The parameter is a RAW Hub user id, and the account is composed HERE. Only
+ * the writer composing closes the ambiguity between a slash-bearing user id and
+ * a `(hub, user)` pair: the two then encode to different accounts, and no
+ * caller can hand the setter a composed account by mistake.
  *
  * Production must `await hydrateStorageAccount` first, because it has rows on
  * disk to load and a synchronous reader downstream that would otherwise take
@@ -804,10 +819,14 @@ export function resetStorageAccountForTests(): void {
  * namespace can identify them.
  *
  * A test that seeds a DATABASE and wants it read awaits `hydrateStorageAccount`
- * itself.
+ * itself. A test that needs an account of ANOTHER Hub composes it with
+ * `storageAccountFor` and moves through `hydrateStorageAccount` +
+ * `setStorageAccount`, the production seam.
  */
-export function setStorageAccountForTests(storageAccount: string): void {
-  const account = storageAccount as StorageAccount
+export function setStorageAccountForTests(hubUserId: string): void {
+  if (hubUserId === '')
+    throw new Error('Invalid storage account id: the user id must not be empty.')
+  const account = storageAccountFor(TEST_HUB, hubUserId)
   hydrationToken++
   mirroredAccount = account
   setStorageAccount(account)

@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/loopbackauth"
 )
 
 // The CLI's access token lives for an hour and its refresh token for months,
@@ -374,7 +375,7 @@ func (c *Client) postRefresh(ctx context.Context, refreshToken, clientID string)
 		"client_id":     {clientID},
 		"refresh_token": {refreshToken},
 	}
-	resp, err := PostForm(ctx, c.HTTPClient,
+	resp, err := loopbackauth.PostForm(ctx, c.HTTPClient,
 		locallisten.JoinPath(c.connectURL, "/oauth/token"), form)
 	if err != nil {
 		return refreshBody{}, err
@@ -392,7 +393,7 @@ func (c *Client) postRefresh(ctx context.Context, refreshToken, clientID string)
 		return body, nil
 	}
 
-	oerr := ReadOAuthError(resp)
+	oerr := loopbackauth.ReadOAuthError(resp)
 	if oerr.Error == "invalid_grant" {
 		if oerr.ErrorDescription != "" {
 			return refreshBody{}, fmt.Errorf("%w: %s", ErrCredentialRejected, oerr.ErrorDescription)

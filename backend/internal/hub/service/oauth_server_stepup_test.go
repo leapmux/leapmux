@@ -872,6 +872,66 @@ func TestAuthorizeStepUp_ThePageShowsTheHubsOwnRecord(t *testing.T) {
 	})
 }
 
+// oneShotSessionStore answers the first GetByID of one target row from the
+// real store and reports that row gone for every later read. The consent page
+// must render from the row parseStepUpTarget validated, so a page that
+// re-read the credential would lose it here and identify nothing.
+type oneShotSessionStore struct {
+	store.SessionStore
+	target string
+	reads  *atomic.Int64
+}
+
+func (s oneShotSessionStore) GetByID(ctx context.Context, id string, now time.Time) (*store.UserSession, error) {
+	if id != s.target {
+		return s.SessionStore.GetByID(ctx, id, now)
+	}
+	if s.reads.Add(1) > 1 {
+		return nil, store.ErrNotFound
+	}
+	return s.SessionStore.GetByID(ctx, id, now)
+}
+
+type oneShotStore struct {
+	store.Store
+	target string
+	reads  *atomic.Int64
+}
+
+func (s oneShotStore) Sessions() store.SessionStore {
+	return oneShotSessionStore{SessionStore: s.Store.Sessions(), target: s.target, reads: s.reads}
+}
+
+// The page shows the row parseStepUpTarget validated, and never a later read
+// of it. A credential that goes away after that read cannot blank the page:
+// the display is built at parse, so the name and the date a person reads are
+// the values the validation saw. The row is read exactly once, which is what
+// threading it through means -- the old second read could lose it between the
+// two and then identify nothing.
+func TestAuthorizeStepUp_ThePageShowsTheRowParseValidated(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	sess := desktopIssuedSession(t, env, env.userID, "LeapMux Desktop on alice@laptop")
+
+	var reads atomic.Int64
+	mux := stepUpHandlerOn(t, env, oneShotStore{Store: env.store, target: sess.ID, reads: &reads})
+	cookie := env.elevatedAdminCookie(t)
+	q := startQuery(url.Values{"client_id": {oauthapp.DesktopClientID},
+		"step_up": {oauthapp.StepUpSessionPrefix + sess.ID}})
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	page := rec.Body.String()
+	assert.Equal(t, int64(1), reads.Load(),
+		"the credential is read once, at the parse that validates it")
+	assert.Contains(t, page, "LeapMux Desktop on alice@laptop",
+		"the page must show the row the parse validated, whatever became of it since")
+	assert.NotContains(t, page, "<h1>Sign in to",
+		"a step-up must never fall back to the page that asks for an authorization")
+}
+
 // The form carries `step_up` forward. Without the hidden field the POST drops
 // the target and the code verifies nothing: the exchange then takes the
 // session path and a desktop step-up signs a NEW session in instead.
@@ -897,8 +957,8 @@ func TestConsentForm_CarriesStepUpForward(t *testing.T) {
 	require.NotEmpty(t, code)
 	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
 	require.NoError(t, err)
-	assert.Equal(t, sess.ID, row.StepUpSessionID)
-	assert.Empty(t, row.StepUpTokenID)
+	assert.Equal(t, store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sess.ID}, row.StepUp)
+	assert.Zero(t, row.Redemption, "a step-up redeems into an elevation, so the row records no redemption kind")
 	assert.Empty(t, row.GrantedScopes, "a step-up widens no grant, so the code records none")
 }
 
@@ -1001,7 +1061,7 @@ func TestStepUpCodeExchange_RedeemsWithMatchingSessionCookie(t *testing.T) {
 		GrantedScopes:    "",
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUpSessionID:  sessionID,
+		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID},
 	}))
 
 	// Redeem with the matching session cookie (no bearer).
@@ -1041,7 +1101,7 @@ func TestStepUpCodeExchange_RefusesNoCredential(t *testing.T) {
 		GrantedScopes:    "",
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUpSessionID:  sessionID,
+		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID},
 	}))
 
 	// No cookie and no bearer.
@@ -1082,7 +1142,7 @@ func TestStepUpCodeExchange_NoRowRollsBackConsumption(t *testing.T) {
 		GrantedScopes:    "",
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUpSessionID:  sessionID,
+		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID},
 	}))
 
 	// Present with a DIFFERENT session of the same user so authentication
@@ -1193,7 +1253,7 @@ func TestStepUpCodeExchange_ASessionStampStoreFailureAnswersInternalError(t *tes
 		RedirectURI:      "/",
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUpSessionID:  sessionID,
+		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID},
 	}))
 
 	resp := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, cookie, "")
@@ -1224,7 +1284,7 @@ func TestStepUpCodeExchange_AGrantStampStoreFailureAnswersInternalError(t *testi
 		RedirectURI:      "/",
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUpTokenID:    tokenID,
+		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindToken, ID: tokenID},
 	}))
 
 	resp := redeemStepUpCode(t, env, oauthapp.ControlCLIClientID, code, verifier, nil, bearer)
@@ -1255,7 +1315,7 @@ func TestStepUpCodeExchange_AGrantNoRowAnswersInvalidGrant(t *testing.T) {
 		RedirectURI:      "/",
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUpTokenID:    tokenID,
+		StepUp:           store.CredentialRef{Kind: store.CredentialRefKindToken, ID: tokenID},
 	}))
 
 	resp := redeemStepUpCode(t, env, oauthapp.ControlCLIClientID, code, verifier, nil, bearer)
@@ -1265,7 +1325,7 @@ func TestStepUpCodeExchange_AGrantNoRowAnswersInvalidGrant(t *testing.T) {
 
 // seedStepUpCode writes the authorization-code row a step-up redemption
 // consumes, targeting either a session or a token.
-func seedStepUpCode(t *testing.T, env *apiAuthEnv, clientID, stepUpSessionID, stepUpTokenID string) (code, verifier string) {
+func seedStepUpCode(t *testing.T, env *apiAuthEnv, clientID string, stepUp store.CredentialRef) (code, verifier string) {
 	t.Helper()
 	code = id.Generate()
 	verifier, challenge := pkceVerifierAndChallenge()
@@ -1278,8 +1338,7 @@ func seedStepUpCode(t *testing.T, env *apiAuthEnv, clientID, stepUpSessionID, st
 		GrantedScopes:    "",
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(5 * time.Minute),
-		StepUpSessionID:  stepUpSessionID,
-		StepUpTokenID:    stepUpTokenID,
+		StepUp:           stepUp,
 	}))
 	return code, verifier
 }
@@ -1299,7 +1358,7 @@ func TestStepUpCodeExchange_AnotherSessionOfTheSameUserIsRefused(t *testing.T) {
 	otherID := hubtestutil.SessionIDFromCookie(t, other.Value)
 	require.NotEqual(t, targetID, otherID, "the two sessions must be distinct for the case to mean anything")
 
-	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID, targetID, "")
+	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID, store.CredentialRef{Kind: store.CredentialRefKindSession, ID: targetID})
 	resp := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, other, "")
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	body := decodeJSONBody(t, resp)
@@ -1326,7 +1385,7 @@ func TestStepUpCodeExchange_AnotherTokensBearerIsRefused(t *testing.T) {
 	tokenA, _ := cliCredential(t, env, "credential-A")
 	tokenB, bearerB := cliCredential(t, env, "credential-B")
 
-	code, verifier := seedStepUpCode(t, env, oauthapp.ControlCLIClientID, "", tokenA)
+	code, verifier := seedStepUpCode(t, env, oauthapp.ControlCLIClientID, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: tokenA})
 	resp := redeemStepUpCode(t, env, oauthapp.ControlCLIClientID, code, verifier, nil, bearerB)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	body := decodeJSONBody(t, resp)
@@ -1353,7 +1412,7 @@ func TestStepUpCodeExchange_ASecondPresentationMovesNothing(t *testing.T) {
 
 	cookie := env.adminCookie(t)
 	sessionID := hubtestutil.SessionIDFromCookie(t, cookie.Value)
-	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID, sessionID, "")
+	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID, store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID})
 
 	first := redeemStepUpCode(t, env, oauthapp.DesktopClientID, code, verifier, cookie, "")
 	require.Equal(t, http.StatusOK, first.StatusCode, "the matching cookie redeems the code")

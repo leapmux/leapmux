@@ -16,6 +16,7 @@ import (
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/loopbackauth"
+	"github.com/leapmux/leapmux/machinelabel"
 )
 
 // browserAuthTokenTimeout limits the /oauth/token request of one ceremony.
@@ -90,7 +91,7 @@ func (a *App) StartBrowserAuth(kind desktoppb.BrowserAuthKind) (string, string, 
 	flow, err := loopbackauth.Start(loopbackauth.Request{
 		HubBaseURL:       proxy.baseURL,
 		App:              loopbackauth.Desktop,
-		InstallationName: loopbackauth.InstallationName(),
+		InstallationName: machinelabel.InstallationName(),
 		StepUp:           stepUp,
 		Clock:            a.browserAuthClock,
 	})
@@ -244,16 +245,6 @@ func browserAuthCallbackFailure(err error) string {
 	return strings.TrimPrefix(err.Error(), loopbackAuthCallbackErrorPrefix)
 }
 
-// browserAuthOAuthMessage renders an OAuth error body the way the result
-// event carries it: the code, and the Hub's description after it when it sent
-// one.
-func browserAuthOAuthMessage(code, description string) string {
-	if description == "" {
-		return code
-	}
-	return code + ": " + description
-}
-
 // browserAuthUnconfirmedMessage names the confirmation the Hub did not give.
 // The wording is kind-aware: "signed in" for a sign-in ceremony, "elevated"
 // for a step-up.
@@ -304,27 +295,18 @@ type tokenSettlement struct {
 // pin applies. It requires the confirmation the contract states for the
 // ceremony's kind.
 func (a *App) postBrowserAuthToken(ctx context.Context, c *browserAuthCeremony, code string) (bool, string, error) {
-	form := c.flow.TokenForm(code)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	resp, err := loopbackauth.PostForm(ctx, c.proxy.client,
 		locallisten.JoinPath(c.proxy.baseURL, "/oauth/token"),
-		strings.NewReader(form.Encode()))
-	if err != nil {
-		return false, "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := c.proxy.client.Do(req)
+		c.flow.TokenForm(code))
 	if err != nil {
 		return false, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		var body struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description"`
-		}
-		if json.NewDecoder(resp.Body).Decode(&body) == nil && body.Error != "" {
-			return false, browserAuthOAuthMessage(body.Error, body.ErrorDescription), nil
+		body := loopbackauth.ReadOAuthError(resp)
+		if body.Error != "" {
+			return false, body.Message(), nil
 		}
 		return false, fmt.Sprintf("the Hub answered %d", resp.StatusCode), nil
 	}

@@ -492,6 +492,9 @@ CREATE TABLE oauth_clients (
     scopes                TEXT NOT NULL,
     grant_types           VARCHAR(512) NOT NULL DEFAULT 'authorization_code refresh_token',
     elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Whether an authorization for this app mints a Hub session rather than
+    -- an app credential. A constant of the build; see the sqlite twin.
+    issues_sessions       BOOLEAN NOT NULL DEFAULT FALSE,
     -- An AppRegistrationSource ordinal: who put this registration in the table.
     registration_source   SMALLINT NOT NULL CHECK (registration_source BETWEEN 1 AND 4),
     -- WHO vouched, and WHEN. The two move together, which the CHECK below
@@ -670,16 +673,25 @@ CREATE TABLE oauth_authorization_codes (
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
-    minted_token_id       VARCHAR(255),
-    -- The session that the exchange issued, for an app whose code redeems
-    -- into a session. It serves the replay remedy as minted_token_id does.
-    minted_session_id     VARCHAR(255),
+    -- The credential the exchange MINTED, stamped at consumption: one kind
+    -- and one id, so the reference names exactly one credential or none. See
+    -- the sqlite twin for the replay remedy this serves. A NULL kind means
+    -- nothing was minted, and the column never stores 0.
+    minted_kind           SMALLINT CHECK (minted_kind BETWEEN 1 AND 2),
+    minted_ref_id         VARCHAR(255) NOT NULL DEFAULT '',
     -- The credential that this code VERIFIES, when it verifies one rather
-    -- than issuing one. At most one is set. No foreign key, for the reason
-    -- device_authorizations.elevate_token_id gives.
-    step_up_session_id    VARCHAR(255),
-    step_up_token_id      VARCHAR(255),
-    CHECK (step_up_session_id IS NULL OR step_up_token_id IS NULL),
+    -- than issuing one. One reference, as minted_kind carries. No foreign
+    -- key, for the reason device_authorizations.elevate_token_id gives.
+    step_up_kind          SMALLINT CHECK (step_up_kind BETWEEN 1 AND 2),
+    step_up_ref_id        VARCHAR(255) NOT NULL DEFAULT '',
+    -- What this code redeems into, decided at consent and read at redeem. See
+    -- the sqlite twin. A NULL kind means a step-up code.
+    redemption_kind       SMALLINT CHECK (redemption_kind BETWEEN 1 AND 2),
+    -- The ties make the states structural: a kind names nothing without its
+    -- id, and a code verifies XOR redeems.
+    CHECK ((minted_kind IS NULL) = (minted_ref_id = '')),
+    CHECK ((step_up_kind IS NULL) = (step_up_ref_id = '')),
+    CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id) ON DELETE RESTRICT
 ) COLLATE=utf8mb4_bin;

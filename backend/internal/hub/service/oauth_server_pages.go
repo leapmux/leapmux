@@ -425,7 +425,8 @@ type consentPageData struct {
 	// Hub session rather than an app credential.
 	SignIn bool
 	// StepUp identifies the credential a step-up verifies, from the hub's own
-	// record. Nil when no step-up is asked.
+	// record. It is built at the parse that validated the credential, so the
+	// page shows exactly what was checked. Nil when no step-up is asked.
 	StepUp *deviceCredential
 }
 
@@ -433,14 +434,18 @@ type consentPageData struct {
 // hub's OWN record of it.
 //
 // The grant's requester-supplied label identifies nothing a person can trust on
-// a page which asks them to re-arm a credential. Every field here comes from the
-// api_tokens row instead: the name the account's connected-app list shows, the
-// date the account added it, and whether the account already revoked it.
+// a page which asks them to re-arm a credential. Every field here comes from
+// the credential's own row instead: the api_tokens row of a command-line
+// credential, or the user_sessions row of a session -- the name the account's
+// list shows, the date the account added it, and whether the account already
+// revoked it.
 type deviceCredential struct {
 	Name  string
 	Added string
 	// Revoked reports a credential the approval will refuse. The page says so,
 	// rather than asking a person to verify something that grants nothing.
+	// Only the activation page renders it: the consent page's parse refuses a
+	// dead credential outright, so it never shows one.
 	Revoked bool
 	// Expired reports a credential past its lifetime. The approval refuses it
 	// too (the elevate step matches only a live row), so the page says so for

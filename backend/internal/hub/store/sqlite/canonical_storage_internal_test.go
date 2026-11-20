@@ -181,6 +181,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		UserID:        userid.MustNew(user.ID),
 		CodeChallenge: "challenge",
 		ExpiresAt:     future,
+		Redemption:    store.RedemptionKindToken,
 	}))
 	_, err = st.OAuthAuthorizationCodes().Consume(ctx, "canon-code", time.Now().UTC())
 	require.NoError(t, err)

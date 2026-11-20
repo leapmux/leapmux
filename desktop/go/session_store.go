@@ -64,7 +64,7 @@ type persistentJar struct {
 // under dir. It never fails: any problem leaves the jar empty in memory and
 // logs a warning. dir may be empty, in which case the jar is memory only.
 func openPersistentJar(base *url.URL, dir string) *persistentJar {
-	inner, _ := cookiejar.New(nil)
+	inner := mustNewMemoryJar()
 	j := &persistentJar{
 		inner:  inner,
 		base:   base,

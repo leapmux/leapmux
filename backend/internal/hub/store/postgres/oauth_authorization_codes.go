@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
@@ -24,10 +23,9 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 		RedirectURI:      c.RedirectUri,
 		GrantedScopes:    c.GrantedScopes,
 		InstallationName: c.InstallationName,
-		MintedTokenID:    c.MintedTokenID.String,
-		MintedSessionID:  c.MintedSessionID.String,
-		StepUpSessionID:  c.StepUpSessionID.String,
-		StepUpTokenID:    c.StepUpTokenID.String,
+		Minted:           store.StoredRef(c.MintedKind, c.MintedRefID),
+		StepUp:           store.StoredRef(c.StepUpKind, c.StepUpRefID),
+		Redemption:       store.StoredRedemption(c.RedemptionKind),
 		CreatedAt:        c.CreatedAt.Time,
 		ExpiresAt:        c.ExpiresAt.Time,
 		ConsumedAt:       c.ConsumedAt.Ptr(),
@@ -35,6 +33,7 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 }
 
 func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.CreateOAuthAuthorizationCodeParams) error {
+	stepUpKind, stepUpRefID := p.StepUp.NullableKind()
 	return mapErr(s.conn.q.CreateOAuthAuthorizationCode(ctx, gendb.CreateOAuthAuthorizationCodeParams{
 		Code:             p.Code,
 		UserID:           p.UserID.String(),
@@ -44,8 +43,9 @@ func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.Create
 		GrantedScopes:    p.GrantedScopes,
 		InstallationName: p.InstallationName,
 		ExpiresAt:        pgtime.New(p.ExpiresAt),
-		StepUpSessionID:  pgtype.Text{String: p.StepUpSessionID, Valid: p.StepUpSessionID != ""},
-		StepUpTokenID:    pgtype.Text{String: p.StepUpTokenID, Valid: p.StepUpTokenID != ""},
+		StepUpKind:       stepUpKind,
+		StepUpRefID:      stepUpRefID,
+		RedemptionKind:   p.Redemption.NullableKind(),
 	}))
 }
 
@@ -96,16 +96,11 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 	}))
 }
 
-func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code, tokenID string) error {
+func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
+	mintedKind, mintedRefID := minted.NullableKind()
 	return mapErr(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
-		Code:          code,
-		MintedTokenID: pgtype.Text{String: tokenID, Valid: tokenID != ""},
-	}))
-}
-
-func (s *oauthAuthorizationCodeStore) MarkMintedSession(ctx context.Context, code, sessionID string) error {
-	return mapErr(s.conn.q.MarkOAuthAuthorizationCodeMintedSession(ctx, gendb.MarkOAuthAuthorizationCodeMintedSessionParams{
-		Code:            code,
-		MintedSessionID: pgtype.Text{String: sessionID, Valid: sessionID != ""},
+		Code:        code,
+		MintedKind:  mintedKind,
+		MintedRefID: mintedRefID,
 	}))
 }

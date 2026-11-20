@@ -11,7 +11,7 @@ import { ceremoniesRunInBrowser } from '~/lib/hubSite'
  * Hub's origin — so the `inDesktop` component renders instead.
  */
 export const HubPage: Component<{
-  inDesktop?: () => JSX.Element
+  inDesktop?: (() => JSX.Element) | undefined
   children: JSX.Element
 }> = (props) => {
   return (

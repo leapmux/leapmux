@@ -6,7 +6,7 @@
 -- name: CreateOAuthAuthorizationCode :exec
 INSERT INTO oauth_authorization_codes (
     code, user_id, client_id, code_challenge, redirect_uri, granted_scopes,
-    installation_name, expires_at, step_up_session_id, step_up_token_id
+    installation_name, expires_at, step_up_kind, step_up_ref_id, redemption_kind
 ) VALUES (
     sqlc.arg(code),
     sqlc.arg(user_id),
@@ -16,23 +16,19 @@ INSERT INTO oauth_authorization_codes (
     sqlc.arg(granted_scopes),
     sqlc.arg(installation_name),
     sqlc.arg(expires_at),
-    sqlc.narg(step_up_session_id),
-    sqlc.narg(step_up_token_id)
+    sqlc.narg(step_up_kind),
+    sqlc.arg(step_up_ref_id),
+    sqlc.narg(redemption_kind)
 );
 
 -- name: MarkOAuthAuthorizationCodeMinted :exec
--- Records WHICH credential this code produced, so a replay of the same code
--- can revoke it. RFC 6749 section 4.1.2 requires exactly that, and without the
--- column there was nothing to name the token by.
+-- Records WHICH credential this code produced -- a session or an app
+-- credential, as the reference states -- so a replay of the same code can
+-- revoke it. RFC 6749 section 4.1.2 requires exactly that, and without the
+-- stamp there was nothing to name the credential by.
 UPDATE oauth_authorization_codes
-SET minted_token_id = sqlc.arg(minted_token_id)
-WHERE code = sqlc.arg(code);
-
--- name: MarkOAuthAuthorizationCodeMintedSession :exec
--- Records WHICH session the exchange issued, for an app whose code redeems
--- into a session. It serves the replay remedy as minted_token_id does.
-UPDATE oauth_authorization_codes
-SET minted_session_id = sqlc.arg(minted_session_id)
+SET minted_kind = sqlc.narg(minted_kind),
+    minted_ref_id = sqlc.arg(minted_ref_id)
 WHERE code = sqlc.arg(code);
 
 -- name: GetActiveOAuthAuthorizationCode :one

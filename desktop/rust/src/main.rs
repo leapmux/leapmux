@@ -75,7 +75,8 @@ use serde_json::json;
 
 use crate::file_save::{
     file_save_abort, file_save_commit, file_save_open, file_save_open_dialog, file_save_write,
-    SaveStreamRegistry, SAVE_HANDLE_GC_INTERVAL, SAVE_HANDLE_IDLE_TIMEOUT,
+    read_b64_header, read_header_str, SaveStreamRegistry, SAVE_HANDLE_GC_INTERVAL,
+    SAVE_HANDLE_IDLE_TIMEOUT,
 };
 use crate::frame::{get_sidecar_info_request, read_frame, write_frame};
 use crate::sidecar::bootstrap_sidecar;
@@ -189,6 +190,12 @@ const CACHED_CONFIG_TIMEOUT: Duration = Duration::from_secs(5);
 // Cross-language env-var contract, generated from contracts/desktop.json
 // (the Go sidecar reads the same names from its generated contracts package;
 // the Tauri event names live in the same generated module).
+//
+// `allow(dead_code)`: the generated vocabulary serves every language, and a
+// token this binary does not use must not fail its build. Relay frames ride
+// Tauri channels, so of the relay events the contract lists only the close
+// events that the shell emits over `emit`.
+#[allow(dead_code)]
 mod contracts_generated {
     include!("generated/contracts.rs");
 }
@@ -283,13 +290,6 @@ struct BuildInfoResponse {
     commit_time: String,
     build_time: String,
     branch: String,
-}
-
-#[derive(Serialize)]
-struct ProxyHttpResponsePayload {
-    status: i32,
-    headers: HashMap<String, Vec<String>>,
-    body: String,
 }
 
 #[derive(Serialize)]
@@ -714,8 +714,7 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
 
     match payload {
         proto::event::Payload::ChannelMessage(msg) => {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
-            let _ = app_handle.emit(contracts_generated::EVENT_CHANNEL_MESSAGE, b64);
+            app_handle.state::<RelaySlots>().channel.send_raw(msg.data);
         }
         proto::event::Payload::ChannelClose(close) => {
             let _ = app_handle.emit(
@@ -726,9 +725,12 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
         proto::event::Payload::UserEventsMessage(msg) => {
             // Forward the hub's length-prefixed WatchUserEvent frame
             // verbatim to the webview. The frontend's `useUserEvents`
-            // hook decodes identically to native WS frames.
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&msg.data);
-            let _ = app_handle.emit(contracts_generated::EVENT_USER_EVENTS_MESSAGE, b64);
+            // hook decodes identically to native WS frames. Frames ride
+            // the open's Tauri channel (raw bytes), not a base64 event.
+            app_handle
+                .state::<RelaySlots>()
+                .user_events
+                .send_raw(msg.data);
         }
         proto::event::Payload::UserEventsClose(close) => {
             let _ = app_handle.emit(
@@ -969,47 +971,97 @@ async fn connect_distributed(
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct ProxyHttpPayload {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    #[serde(rename = "bodyBase64")]
-    body_base64: String,
+// --- Unary proxy response envelope ---
+//
+// `proxy_http` returns its response as raw bytes over the Tauri IPC
+// (`InvokeResponseBody::Raw`), the `file_save_write` pattern: for multi-MB
+// payloads the base64 round-trip the JSON payload took was the dominant cost
+// and added ~33% wire bloat. The structured part of an HTTP response -- the
+// status and the headers -- rides in a meta block in front of the body:
+//
+//     [u32 LE meta_len][meta JSON][body]
+//
+// The meta JSON is `{"status": <int>, "headers": {<name>: [<value>, ...]}}`.
+// The 4-byte length prefix matches contracts/wire.json's
+// `framing.lengthPrefixBytes` (this envelope reads it LITTLE-endian, unlike
+// that contract's big-endian WebSocket frame prefix), and the meta block is
+// validated against the same contract's `maxMessageSizeBytes` frame budget.
+// The webview parses the identical envelope in
+// `frontend/src/api/platformBridge.ts` (`decodeProxyResponseEnvelope`); the
+// two spellings must stay in step.
+const PROXY_ENVELOPE_META_PREFIX_LEN: usize = 4;
+/// The meta block budget: contracts/wire.json `maxMessageSizeBytes` (16 MiB).
+/// Hardcoded because that contract generates into Go and TypeScript only --
+/// the Rust module carries contracts/desktop.json's vocabulary alone.
+const PROXY_ENVELOPE_META_MAX_LEN: usize = 16_777_216;
+
+/// Builds `[u32 LE meta_len][meta JSON][body]` for one proxied response.
+fn encode_proxy_response_envelope(
+    status: i32,
+    headers: &HashMap<String, Vec<String>>,
+    body: &[u8],
+) -> Result<Vec<u8>, String> {
+    let meta = serde_json::to_vec(&json!({ "status": status, "headers": headers }))
+        .map_err(|err| format!("serialize proxy response meta: {err}"))?;
+    if meta.len() > PROXY_ENVELOPE_META_MAX_LEN {
+        return Err("proxy response meta exceeds the frame budget".to_string());
+    }
+    // Safe: the budget check above bounds meta.len() far below u32::MAX.
+    let meta_len = meta.len() as u32;
+    let mut out = Vec::with_capacity(PROXY_ENVELOPE_META_PREFIX_LEN + meta.len() + body.len());
+    out.extend_from_slice(&meta_len.to_le_bytes());
+    out.extend_from_slice(&meta);
+    out.extend_from_slice(body);
+    Ok(out)
 }
 
+/// One proxied HTTP round trip. The request body crosses the Tauri IPC as the
+/// raw invoke body (`InvokeBody::Raw`), the `file_save_write` pattern -- the
+/// base64 round-trip was the dominant cost for multi-MB payloads. The method,
+/// the path and the proxied headers ride InvokeOptions headers instead (the
+/// `file_save_open` pattern), because the invoke-args slot holds the raw body.
+/// The response comes back as the raw envelope above.
 #[tauri::command]
 async fn proxy_http(
     shell: State<'_, Arc<DesktopShell>>,
-    payload: ProxyHttpPayload,
-) -> Result<ProxyHttpResponsePayload, String> {
-    let body = if payload.body_base64.is_empty() {
-        Vec::new()
-    } else {
-        decode_b64(&payload.body_base64).map_err(|err| format!("decode request body: {err}"))?
+    request: tauri::ipc::Request<'_>,
+) -> Result<tauri::ipc::Response, String> {
+    let method = read_header_str(&request, "method")?.to_string();
+    let path = read_header_str(&request, "path")?.to_string();
+    // The proxied headers are arbitrary Unicode key/value pairs (the JSON body
+    // used to carry them as-is), and an invoke header value must stay visible
+    // ASCII, so the map rides base64-encoded -- the `filename-b64` pattern.
+    let headers: HashMap<String, String> =
+        serde_json::from_str(&read_b64_header(&request, "headers-b64")?)
+            .map_err(|err| format!("parse proxy headers: {err}"))?;
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        _ => return Err("expected raw bytes body".to_string()),
     };
 
     let resp = check_response(
         shell
             .send_request_async(proto::request::Method::ProxyHttp(proto::ProxyHttpRequest {
-                method: payload.method,
-                path: payload.path,
-                headers: payload.headers,
+                method,
+                path,
+                headers,
                 body,
             }))
             .await?,
     )?;
 
     match resp.result {
-        Some(proto::response::Result::ProxyHttp(r)) => Ok(ProxyHttpResponsePayload {
-            status: r.status,
-            headers: r
+        Some(proto::response::Result::ProxyHttp(r)) => {
+            let headers: HashMap<String, Vec<String>> = r
                 .headers
                 .into_iter()
                 .map(|(name, values)| (name, values.values))
-                .collect(),
-            body: base64::engine::general_purpose::STANDARD.encode(&r.body),
-        }),
+                .collect();
+            let envelope = encode_proxy_response_envelope(r.status, &headers, &r.body)?;
+            Ok(tauri::ipc::Response::new(
+                tauri::ipc::InvokeResponseBody::Raw(envelope),
+            ))
+        }
         _ => Err("unexpected response for proxy_http".to_string()),
     }
 }
@@ -1082,13 +1134,103 @@ async fn cli_install_symlink(
     }
 }
 
+// --- Relay frame delivery ---
+//
+// Each relay kind's frames reach the webview through a Tauri `Channel` its
+// frontend wrapper created and handed to the open command; the webview
+// receives `InvokeResponseBody::Raw` bytes as an ArrayBuffer (the sub-1KiB
+// eval path is the same ArrayBuffer). Closes keep riding the global Tauri
+// events (`channel:close` / `userevents:close`), so every wrapper hears the
+// terminal path of the relay it may own.
+
+/// One relay kind's delivery slot: the channel of the frontend wrapper the
+/// relay was last handed to, plus the relay id naming that wrapper.
+///
+/// The owner discipline mirrors desktop/go/channel_relay.go's `owner` field.
+/// The sidecar runs every relay request on its own goroutine with no ordering,
+/// so a stale open -- an earlier wrapper whose request ran late -- can land
+/// AFTER its successor's. Installing its channel then would route the live
+/// relay's frames to the superseded wrapper: a frame for a superseded relay id
+/// must not deliver. The id comparison makes the outcome independent of the
+/// schedule, the same fence `adoptLiveRelay`/`rejectIfSuperseded` and
+/// `closeIfOwner` apply at the sidecar: an open at or below the installed
+/// owner is refused, and a close clears the slot only while its id still owns
+/// it.
+struct RelaySlot {
+    relay_id: u64,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+}
+
+/// The delivery slot for one relay kind's frames. Locks recover from
+/// poisoning rather than wedging delivery; see the `recover` helper.
+#[derive(Default)]
+struct RelayChannelSlot(Mutex<Option<RelaySlot>>);
+
+impl RelayChannelSlot {
+    /// Installs `channel` as the delivery target owned by `relay_id` and
+    /// reports whether it took. A superseded open -- an id at or below the
+    /// installed owner -- is refused, so its channel never delivers. Called
+    /// only after the sidecar accepted the open, so a refused open cannot
+    /// leave its channel installed either.
+    fn install(
+        &self,
+        relay_id: u64,
+        channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    ) -> bool {
+        let mut slot = recover(&self.0);
+        if slot
+            .as_ref()
+            .is_some_and(|current| current.relay_id > relay_id)
+        {
+            return false;
+        }
+        *slot = Some(RelaySlot { relay_id, channel });
+        true
+    }
+
+    /// Delivers `data` raw to the current owner's channel. A frame with no
+    /// installed channel is dropped: no wrapper is listening for it.
+    fn send_raw(&self, data: Vec<u8>) {
+        let slot = recover(&self.0);
+        if let Some(current) = slot.as_ref() {
+            let _ = current
+                .channel
+                .send(tauri::ipc::InvokeResponseBody::Raw(data));
+        }
+    }
+
+    /// Clears the slot while `relay_id` still owns it and reports whether it
+    /// cleared. A stale close leaves the successor's channel installed, the
+    /// same fence as channel_relay.go's `closeIfOwner`.
+    fn close_if_owner(&self, relay_id: u64) -> bool {
+        let mut slot = recover(&self.0);
+        if slot
+            .as_ref()
+            .is_some_and(|current| current.relay_id == relay_id)
+        {
+            *slot = None;
+            return true;
+        }
+        false
+    }
+}
+
+/// Both relays' delivery slots: the channel relay and the user-events relay.
+#[derive(Default)]
+struct RelaySlots {
+    channel: RelayChannelSlot,
+    user_events: RelayChannelSlot,
+}
+
 // relay_id names which frontend relay wrapper is asking, so the sidecar can ignore
 // a close that a later open has already superseded. See the proto's comment on
 // OpenChannelRelayRequest.
 #[tauri::command]
 async fn open_channel_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    slots: State<'_, RelaySlots>,
     relay_id: u64,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
 ) -> Result<(), String> {
     check_response(
         shell
@@ -1097,15 +1239,27 @@ async fn open_channel_relay(
             ))
             .await?,
     )?;
+    // After the sidecar accepted: an open it refused as superseded must not
+    // install its channel either.
+    if !slots.channel.install(relay_id, channel) {
+        return Err("channel relay superseded by a newer open".to_string());
+    }
     Ok(())
 }
 
 #[tauri::command]
 async fn send_channel_message(
     shell: State<'_, Arc<DesktopShell>>,
-    b64_data: String,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<(), String> {
-    let data = decode_b64(&b64_data).map_err(|err| format!("decode channel message: {err}"))?;
+    // The frame crosses the Tauri IPC as the raw invoke body, the
+    // `file_save_write` pattern -- no base64 round-trip. Relay frames are
+    // Noise ciphertext chunks (contracts/wire.json's
+    // maxCiphertextForChunkBytes), so the one copy below is bounded.
+    let data = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        _ => return Err("expected raw bytes body".to_string()),
+    };
 
     check_response(
         shell
@@ -1120,8 +1274,13 @@ async fn send_channel_message(
 #[tauri::command]
 async fn close_channel_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    slots: State<'_, RelaySlots>,
     relay_id: u64,
 ) -> Result<(), String> {
+    // Drop the delivery target first: the wrapper named by relay_id is done
+    // with the relay whatever the sidecar answers, and the unbounded sidecar
+    // call below must not keep feeding a dead wrapper frames meanwhile.
+    slots.channel.close_if_owner(relay_id);
     check_response(
         shell
             .send_request_async(proto::request::Method::CloseChannelRelay(
@@ -1135,7 +1294,9 @@ async fn close_channel_relay(
 #[tauri::command]
 async fn open_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    slots: State<'_, RelaySlots>,
     relay_id: u64,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
     workspace_ids: Vec<String>,
     resume_hlc: Option<String>,
     resume_epoch: Option<String>,
@@ -1152,14 +1313,22 @@ async fn open_userevents_relay(
             ))
             .await?,
     )?;
+    // The same owner fence as the channel relay: a superseded open must not
+    // steal the delivery target back (the sidecar refused it as superseded
+    // too, but its refusal and this check are what order the two).
+    if !slots.user_events.install(relay_id, channel) {
+        return Err("userevents relay superseded by a newer open".to_string());
+    }
     Ok(())
 }
 
 #[tauri::command]
 async fn close_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
+    slots: State<'_, RelaySlots>,
     relay_id: u64,
 ) -> Result<(), String> {
+    slots.user_events.close_if_owner(relay_id);
     check_response(
         shell
             .send_request_async(proto::request::Method::CloseUserEventsRelay(
@@ -2053,6 +2222,10 @@ fn main() {
             // seconds and delivers forty.
             tray::spawn_startup_safety_net(app.handle().clone(), autostart_launch);
 
+            // The relay delivery slots the sidecar reader thread sends frames
+            // through. Managed BEFORE `DesktopShell::connect`, whose reader
+            // thread starts delivering the moment the sidecar speaks.
+            app.manage(RelaySlots::default());
             let shell = Arc::new(DesktopShell::connect(app.handle().clone())?);
 
             // The handshake and the device cache of the Desktop preferences,
@@ -2272,6 +2445,158 @@ mod tests {
             !claim_exit(&flag),
             "the second claim must read the latched flag"
         );
+    }
+
+    // A channel that records the raw payloads sent through it, so the relay
+    // slot tests can assert what actually delivered (and what did not).
+    fn recording_channel(
+        delivered: &Arc<Mutex<Vec<Vec<u8>>>>,
+    ) -> tauri::ipc::Channel<tauri::ipc::InvokeResponseBody> {
+        let delivered = Arc::clone(delivered);
+        tauri::ipc::Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Raw(bytes) = body {
+                recover(&delivered).push(bytes);
+            }
+            Ok(())
+        })
+    }
+
+    // The envelope framing is the one thing the webview parses by position:
+    // `[u32 LE meta_len][meta JSON][body]`. This pins the layout with a
+    // multi-KB binary body, so a change to the prefix or the endianness
+    // reddens here and not as a corrupt connect-web response.
+    #[test]
+    fn proxy_response_envelope_frames_meta_then_body() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "x-repeated".to_string(),
+            vec!["one".to_string(), "two".to_string()],
+        );
+        let body: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let envelope =
+            encode_proxy_response_envelope(200, &headers, &body).expect("encode the envelope");
+
+        let meta_len = u32::from_le_bytes(
+            envelope[0..PROXY_ENVELOPE_META_PREFIX_LEN]
+                .try_into()
+                .expect("a 4-byte prefix"),
+        ) as usize;
+        assert_eq!(
+            envelope.len(),
+            PROXY_ENVELOPE_META_PREFIX_LEN + meta_len + body.len()
+        );
+        let meta: serde_json::Value =
+            serde_json::from_slice(&envelope[PROXY_ENVELOPE_META_PREFIX_LEN..][..meta_len])
+                .expect("parse the meta JSON");
+        assert_eq!(meta["status"], 200);
+        assert_eq!(meta["headers"]["x-repeated"], json!(["one", "two"]));
+        assert_eq!(
+            &envelope[PROXY_ENVELOPE_META_PREFIX_LEN + meta_len..],
+            body.as_slice(),
+            "the body must follow the meta block byte for byte"
+        );
+    }
+
+    #[test]
+    fn proxy_response_envelope_carries_an_empty_body() {
+        let envelope =
+            encode_proxy_response_envelope(204, &HashMap::new(), b"").expect("encode the envelope");
+        let meta_len = u32::from_le_bytes(
+            envelope[0..PROXY_ENVELOPE_META_PREFIX_LEN]
+                .try_into()
+                .expect("a 4-byte prefix"),
+        ) as usize;
+        assert_eq!(envelope.len(), PROXY_ENVELOPE_META_PREFIX_LEN + meta_len);
+    }
+
+    // `proxy_http` answers with `tauri::ipc::Response`, which the Tauri IPC
+    // delivers to the webview as an ArrayBuffer. This pins the raw
+    // construction: the envelope bytes must survive the response wrapper.
+    #[test]
+    fn proxy_response_wraps_the_envelope_as_raw_ipc_bytes() {
+        use tauri::ipc::IpcResponse;
+
+        let envelope =
+            encode_proxy_response_envelope(204, &HashMap::new(), b"payload").expect("encode");
+        let response =
+            tauri::ipc::Response::new(tauri::ipc::InvokeResponseBody::Raw(envelope.clone()));
+        match response.body().expect("the response body") {
+            tauri::ipc::InvokeResponseBody::Raw(bytes) => assert_eq!(bytes, envelope),
+            tauri::ipc::InvokeResponseBody::Json(_) => panic!("expected a raw response body"),
+        }
+    }
+
+    // The installed channel receives the relay frames raw, in order.
+    #[test]
+    fn relay_slot_delivers_raw_frames_to_the_installed_channel() {
+        let delivered: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let slot = RelayChannelSlot::default();
+        assert!(slot.install(2, recording_channel(&delivered)));
+
+        slot.send_raw(vec![1, 2, 3]);
+        slot.send_raw(vec![4, 5, 6, 7]);
+        assert_eq!(
+            *recover(&delivered),
+            vec![vec![1, 2, 3], vec![4, 5, 6, 7]],
+            "both frames must deliver raw and in order"
+        );
+    }
+
+    // The owner fence of channel_relay.go's `owner` field: an open that ran
+    // late (an earlier relay id) must not steal the delivery target back from
+    // the successor, or the live relay's frames would reach a superseded
+    // wrapper -- a frame for a superseded relay id must not deliver.
+    #[test]
+    fn relay_slot_refuses_to_deliver_for_a_stale_relay_id() {
+        let delivered: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let slot = RelayChannelSlot::default();
+        assert!(slot.install(2, recording_channel(&delivered)));
+
+        let stale_delivered: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        assert!(
+            !slot.install(1, recording_channel(&stale_delivered)),
+            "a stale open must not take the delivery slot"
+        );
+
+        slot.send_raw(vec![9]);
+        assert_eq!(*recover(&delivered), vec![vec![9]]);
+        assert!(
+            recover(&stale_delivered).is_empty(),
+            "a frame for a superseded relay id must not deliver"
+        );
+    }
+
+    // `closeIfOwner`'s fence: a stale close must leave the successor's
+    // channel installed, and the named owner's close leaves the slot
+    // delivering to no one.
+    #[test]
+    fn relay_slot_close_clears_only_the_owner_it_names() {
+        let delivered: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let slot = RelayChannelSlot::default();
+        assert!(slot.install(2, recording_channel(&delivered)));
+
+        assert!(
+            !slot.close_if_owner(1),
+            "a stale close must not clear the successor's slot"
+        );
+        slot.send_raw(vec![1]);
+        assert_eq!(recover(&delivered).len(), 1, "the successor still receives");
+
+        assert!(slot.close_if_owner(2));
+        slot.send_raw(vec![2]);
+        assert_eq!(
+            recover(&delivered).len(),
+            1,
+            "frames after the owner's close deliver to no one"
+        );
+    }
+
+    #[test]
+    fn relay_slot_drops_frames_with_no_installed_channel() {
+        let slot = RelayChannelSlot::default();
+        // Nothing to deliver to: the frame must be dropped, not panic.
+        slot.send_raw(vec![1]);
+        assert!(!slot.close_if_owner(1), "no slot, nothing to clear");
     }
 
     // The sidecar sends its build in the shared leapmux.v1.BuildInfo message;

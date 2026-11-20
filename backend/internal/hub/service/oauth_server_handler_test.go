@@ -486,6 +486,7 @@ func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
 		GrantedScopes: authscope.NonAdminGrant().String(),
 		Code:          code, UserID: userid.MustNew(env.userID), CodeChallenge: challenge, InstallationName: "test", ExpiresAt: time.Now().Add(time.Minute),
 		RedirectURI: "http://127.0.0.1:54321/callback",
+		Redemption:  store.RedemptionKindToken,
 	}))
 	before, err := env.store.OAuthClients().CountTokens(context.Background(), oauthapp.ControlCLIClientID)
 	require.NoError(t, err)
@@ -584,6 +585,7 @@ func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(time.Minute),
 		RedirectURI:      "http://127.0.0.1:54321/callback",
+		Redemption:       store.RedemptionKindToken,
 	}))
 	bad, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeAuthorizationCode},
@@ -1522,6 +1524,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 		InstallationName: "test",
 		ExpiresAt:        time.Now().Add(time.Minute),
 		RedirectURI:      "http://127.0.0.1:54321/callback",
+		Redemption:       store.RedemptionKindToken,
 	}))
 	failing := userLookupFailStore{
 		Store: env.store,
@@ -2780,9 +2783,9 @@ type markMintedSpyCodes struct {
 	contextErrs chan error
 }
 
-func (c markMintedSpyCodes) MarkMinted(ctx context.Context, code, tokenID string) error {
+func (c markMintedSpyCodes) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
 	c.contextErrs <- ctx.Err()
-	return c.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, tokenID)
+	return c.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, minted)
 }
 
 // issueLocalRedirectCode runs the consent that yields a one-shot code for the
@@ -2908,14 +2911,14 @@ type authorizationLinkCodes struct {
 	beforeLink func()
 }
 
-func (s authorizationLinkCodes) MarkMinted(ctx context.Context, code, tokenID string) error {
+func (s authorizationLinkCodes) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
 	if s.beforeLink != nil {
 		s.beforeLink()
 	}
 	if s.linkErr != nil {
 		return s.linkErr
 	}
-	return s.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, tokenID)
+	return s.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, minted)
 }
 
 func codeExchangeServer(t *testing.T, env *apiAuthEnv, st store.Store) *httptest.Server {
@@ -2964,7 +2967,7 @@ func TestAPIAuth_CodeLinkFailureRollsBackIssuance(t *testing.T) {
 	require.NoError(t, json.NewDecoder(retry.Body).Decode(&token))
 	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), code)
 	require.NoError(t, err)
-	assert.Equal(t, token.TokenID, row.MintedTokenID)
+	assert.Equal(t, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: token.TokenID}, row.Minted)
 }
 
 func TestAPIAuth_ConcurrentValidatedReuseRevokesTheWinner(t *testing.T) {
@@ -3020,7 +3023,7 @@ func TestAPIAuth_ConcurrentValidatedReuseRevokesTheWinner(t *testing.T) {
 	require.NoError(t, json.NewDecoder(winner.Body).Decode(&token))
 	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), code)
 	require.NoError(t, err)
-	require.Equal(t, token.TokenID, row.MintedTokenID)
+	require.Equal(t, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: token.TokenID}, row.Minted)
 	releaseOnce()
 	result := <-loser
 	completed = true
@@ -3256,10 +3259,12 @@ func TestSessionCodeExchange_IssuesSession(t *testing.T) {
 	// The row carries a minted session.
 	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
 	require.NoError(t, err)
-	assert.NotEmpty(t, row.MintedSessionID, "the exchange records the minted session")
+	assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind,
+		"the exchange records the minted session")
+	require.NotEmpty(t, row.Minted.ID, "the exchange records the minted session")
 
 	// The session has no elevation pair.
-	sess, err := env.store.Sessions().GetByID(ctx, row.MintedSessionID, time.Now().UTC())
+	sess, err := env.store.Sessions().GetByID(ctx, row.Minted.ID, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Nil(t, sess.ElevationExpiresAt, "a fresh session carries no elevation")
 }
@@ -3277,7 +3282,7 @@ func TestSessionCodeExchange_EmptyInstallationNameLeavesTheAppAlone(t *testing.T
 	assert.Equal(t, true, sessionCodeExchangeBody(t, resp)["signed_in"])
 	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
 	require.NoError(t, err)
-	sess, err := env.store.Sessions().GetByID(ctx, row.MintedSessionID, env.now().UTC())
+	sess, err := env.store.Sessions().GetByID(ctx, row.Minted.ID, env.now().UTC())
 	require.NoError(t, err)
 	assert.Equal(t, oauthapp.DesktopName, sess.UserAgent,
 		"no installation label means the app's name alone, with no trailing 'on '")
@@ -3379,7 +3384,7 @@ func TestSessionCodeExchange_ReplayRevokesTheIssuedSession(t *testing.T) {
 
 	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
 	require.NoError(t, err)
-	require.Equal(t, hubtestutil.SessionIDFromCookie(t, issued.Value), row.MintedSessionID,
+	require.Equal(t, hubtestutil.SessionIDFromCookie(t, issued.Value), row.Minted.ID,
 		"the exchange must record the session it minted")
 
 	require.NoError(t, callRPC(issued.Value),
@@ -3389,7 +3394,7 @@ func TestSessionCodeExchange_ReplayRevokesTheIssuedSession(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, second.StatusCode)
 	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, second)["error"])
 
-	_, err = env.store.Sessions().GetByID(ctx, row.MintedSessionID, time.Now().UTC())
+	_, err = env.store.Sessions().GetByID(ctx, row.Minted.ID, time.Now().UTC())
 	assert.ErrorIs(t, err, store.ErrNotFound,
 		"the replay must revoke the session the code already minted")
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(callRPC(issued.Value)),
@@ -3442,8 +3447,10 @@ func TestSessionCodeExchange_ConcurrentExchangesIssueOneSession(t *testing.T) {
 
 	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
 	require.NoError(t, err)
-	require.NotEmpty(t, row.MintedSessionID, "the winner must have minted a session")
-	_, err = env.store.Sessions().GetByID(ctx, row.MintedSessionID, time.Now().UTC())
+	require.Equal(t, store.CredentialRefKindSession, row.Minted.Kind,
+		"the winner must have minted a session")
+	require.NotEmpty(t, row.Minted.ID, "the winner must have minted a session")
+	_, err = env.store.Sessions().GetByID(ctx, row.Minted.ID, time.Now().UTC())
 	assert.ErrorIs(t, err, store.ErrNotFound,
 		"the losing presentation revokes the session the code already minted")
 }
@@ -3465,7 +3472,82 @@ func TestSessionCodeExchange_WrongVerifierIssuesNoSession(t *testing.T) {
 
 	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
 	require.NoError(t, err)
-	assert.Empty(t, row.MintedSessionID, "a failed proof must mint no session")
+	assert.Zero(t, row.Minted, "a failed proof must mint no session")
+}
+
+// setDesktopIssuesSessions reconciles the desktop's registration to the value
+// given, through the seed's own writer: issues_sessions is a constant of the
+// build and nothing else may turn it.
+func setDesktopIssuesSessions(t *testing.T, env *apiAuthEnv, value bool) {
+	t.Helper()
+	require.NoError(t, env.store.OAuthClients().UpsertBuiltIn(context.Background(), store.UpsertBuiltInClientParams{
+		ClientID:           oauthapp.DesktopClientID,
+		ClientName:         oauthapp.DesktopName,
+		ClientURI:          "",
+		RedirectURIs:       oauthapp.DesktopRedirectURI,
+		Scopes:             oauthapp.DesktopScopes,
+		GrantTypes:         oauthapp.DesktopGrantTypes,
+		ElevationAllowed:   true,
+		IssuesSessions:     value,
+		RegistrationSource: store.OAuthClientSourceBuiltin,
+		CreatedAt:          env.now(),
+		UpdatedAt:          env.now(),
+	}))
+	app, err := env.store.OAuthClients().Get(context.Background(), oauthapp.DesktopClientID)
+	require.NoError(t, err)
+	require.Equal(t, value, app.IssuesSessions, "precondition: the registration carries the new value")
+}
+
+// The redemption kind the consent bound decides the fork at redeem, not a
+// property of the app re-read then. The two must be able to DISAGREE, which is
+// what makes the row the decider: a compare of the app id answers from the app
+// alone and could not.
+func TestSessionCodeExchange_TheConsentDecidesTheForkNotTheRegistration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a consented session still mints a session after the registration stops minting them", func(t *testing.T) {
+		t.Parallel()
+		env := setupAPIAuth(t)
+		ctx := context.Background()
+		code, verifier := desktopSessionCode(t, env, "laptop")
+
+		setDesktopIssuesSessions(t, env, false)
+
+		resp := exchangeSessionCode(t, env, code, verifier)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, true, sessionCodeExchangeBody(t, resp)["signed_in"],
+			"the code must still redeem along the consented path")
+
+		row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+		require.NoError(t, err)
+		assert.Equal(t, store.RedemptionKindSession, row.Redemption)
+		assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind)
+	})
+
+	t.Run("a consented token still mints a token after the registration starts minting sessions", func(t *testing.T) {
+		t.Parallel()
+		env := setupAPIAuth(t)
+		ctx := context.Background()
+		// The registration mints no session at consent, so the page shows the
+		// ordinary permission consent and the code records a token redemption
+		// -- for the very app a compare of the id would have sent down the
+		// session path.
+		setDesktopIssuesSessions(t, env, false)
+		code, verifier := desktopSessionCode(t, env, "laptop")
+
+		setDesktopIssuesSessions(t, env, true)
+
+		resp := exchangeSessionCode(t, env, code, verifier)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		body := sessionCodeExchangeBody(t, resp)
+		assert.NotContains(t, body, "signed_in", "a token redemption signs nobody in")
+		assert.Contains(t, body, "token_id", "the code must mint an app credential")
+
+		row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+		require.NoError(t, err)
+		assert.Equal(t, store.RedemptionKindToken, row.Redemption)
+		assert.Equal(t, store.CredentialRefKindToken, row.Minted.Kind)
+	})
 }
 
 // passwordSignInCookie signs in with the bootstrap password, so the session

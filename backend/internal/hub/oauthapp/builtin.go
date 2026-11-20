@@ -109,10 +109,12 @@ func BuiltInClientIDs() []string {
 	return []string{ControlCLIClientID, ServiceAccountClientID, DesktopClientID}
 }
 
-// IssuesSession reports whether an authorization for this app mints a SESSION
-// on the Hub rather than an app credential: the browser handoff of the
-// desktop's remote-Hub mode. The consent page and the token exchange branch on
-// it, and exactly one built-in answers true.
-func IssuesSession(clientID string) bool {
-	return clientID == DesktopClientID
-}
+// DesktopIssuesSessions records that an authorization for the desktop mints a
+// SESSION on the Hub rather than an app credential: the browser handoff of its
+// remote-Hub mode. It is the seed's source for oauth_clients.issues_sessions,
+// which the consent page reads to pick its variant and the consent POST writes
+// onto the code row. Exactly one built-in answers true.
+//
+// Minting a session hands out the account itself, so this is a constant of the
+// build and not a registration field any caller can turn on.
+const DesktopIssuesSessions = true

@@ -33,7 +33,7 @@ INSERT INTO oauth_clients (
 )
 RETURNING client_id, owner_user_id, secret_hash, client_name,
        icon_blob, client_uri, redirect_uris,
-       scopes, grant_types, elevation_allowed, registration_source,
+       scopes, grant_types, elevation_allowed, issues_sessions, registration_source,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at;
 
 -- name: GetOAuthClient :one
@@ -47,7 +47,7 @@ RETURNING client_id, owner_user_id, secret_hash, client_name,
 -- drag per request. GetOAuthClientIcon serves the one reader that wants bytes.
 SELECT client_id, owner_user_id, secret_hash, client_name,
        COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
-       scopes, grant_types, elevation_allowed, registration_source,
+       scopes, grant_types, elevation_allowed, issues_sessions, registration_source,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at
 FROM oauth_clients WHERE client_id = sqlc.arg(client_id);
 
@@ -77,7 +77,7 @@ FROM oauth_clients WHERE client_id = sqlc.arg(client_id);
 -- reason GetOAuthClient does.
 SELECT client_id, owner_user_id, secret_hash, client_name,
        COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
-       scopes, grant_types, elevation_allowed, registration_source,
+       scopes, grant_types, elevation_allowed, issues_sessions, registration_source,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at
 FROM oauth_clients
 WHERE (revoked_at IS NULL OR sqlc.arg(include_revoked))
@@ -307,7 +307,7 @@ WHERE client_id = sqlc.arg(client_id)
 --     make the registration look brand new on every upgrade.
 INSERT INTO oauth_clients (
     client_id, client_name, client_uri, redirect_uris, scopes, grant_types,
-    elevation_allowed, registration_source, created_at, updated_at
+    elevation_allowed, issues_sessions, registration_source, created_at, updated_at
 ) VALUES (
     sqlc.arg(client_id),
     sqlc.arg(client_name),
@@ -316,6 +316,7 @@ INSERT INTO oauth_clients (
     sqlc.arg(scopes),
     sqlc.arg(grant_types),
     sqlc.arg(elevation_allowed),
+    sqlc.arg(issues_sessions),
     sqlc.arg(registration_source),
     sqlc.arg(created_at),
     sqlc.arg(updated_at)
@@ -326,4 +327,5 @@ ON CONFLICT (client_id) DO UPDATE SET
     redirect_uris = EXCLUDED.redirect_uris,
     scopes = EXCLUDED.scopes,
     grant_types = EXCLUDED.grant_types,
+    issues_sessions = EXCLUDED.issues_sessions,
     registration_source = EXCLUDED.registration_source;

@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { elevationDeadlineInterceptor } from '~/api/transport'
 import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
 import { loadBrowserPrefs } from '~/lib/browserPreferences'
-import { accountStorageKey, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storageAccountFor, storageAccountId, storedKeyFor } from '~/lib/browserStorage'
+import { accountStorageKey, flushStorageWrites, hasStorageAccount, hydrateStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccount, setStorageAccountForTests, storageAccountFor, storageAccountId, storedKeyFor } from '~/lib/browserStorage'
 import { deferred, settle, untilTrue } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
@@ -1884,7 +1884,13 @@ describe('AuthContext storage namespace', () => {
   async function seedStoredPrefs(userId: string, prefs: Record<string, unknown>): Promise<void> {
     vi.stubGlobal('indexedDB', new IDBFactory())
     resetBrowserStorageForTests()
-    setStorageAccountForTests(storageAccountFor(window.location.origin, userId))
+    // These cases run in bundled mode, so the account AuthContext composes is
+    // keyed to `window.location.origin` -- not the `TEST_HUB`
+    // `setStorageAccountForTests` composes under. The seed moves through the
+    // production seam to write under the account the bootstrap will hydrate.
+    const account = storageAccountFor(window.location.origin, userId)
+    await hydrateStorageAccount(account)
+    setStorageAccount(account)
     localStorageSet(KEY_BROWSER_PREFS, prefs)
     await flushStorageWrites()
     resetBrowserStorageForTests()

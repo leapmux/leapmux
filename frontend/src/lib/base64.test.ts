@@ -104,14 +104,12 @@ describe.each([
     expect(decodeError(base64ToUint8Array, 'Zm9v-_')).toMatchObject({ name: invalidCharacterError })
   })
 
-  it('converts between an ArrayBuffer and base64', async () => {
-    const { arrayBufferToBase64, base64ToArrayBuffer } = await loadBase64(native)
-    const buffer = base64ToArrayBuffer('Zm9vYmFy')
-    expect(buffer.byteLength).toBe(6)
-    expect(valuesOf(new Uint8Array(buffer))).toEqual(valuesOf(bytesOf('foobar')))
+  it('encodes an ArrayBuffer, a string, and null through arrayBufferToBase64', async () => {
+    const { arrayBufferToBase64, base64ToUint8Array } = await loadBase64(native)
+    const buffer = bytesOf('foobar').buffer as ArrayBuffer
     expect(arrayBufferToBase64(buffer)).toBe('Zm9vYmFy')
+    expect(valuesOf(base64ToUint8Array(arrayBufferToBase64(buffer)))).toEqual(valuesOf(bytesOf('foobar')))
     expect(arrayBufferToBase64('foobar')).toBe('Zm9vYmFy')
     expect(arrayBufferToBase64(null)).toBe('')
-    expect(base64ToArrayBuffer('').byteLength).toBe(0)
   })
 })

@@ -1,4 +1,4 @@
-import type { HubUserId, StorageAccount } from '~/lib/browserStorage'
+import type { HubUserId } from '~/lib/browserStorage'
 /// <reference types="vitest/globals" />
 import { create } from '@bufbuild/protobuf'
 import { batch, createEffect, createRoot, createSignal } from 'solid-js'
@@ -6,7 +6,7 @@ import { unwrap } from 'solid-js/store'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, setStorageAccountForTests, storageAccountFor } from '~/lib/browserStorage'
+import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, setStorageAccountForTests, storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { createTabMetadataStore, liveTabIds, useMetadataSweep } from './tabMetadata.store'
 
@@ -615,10 +615,10 @@ describe('tabMetadata', () => {
       // decide whether the CRDT state is these rows' account, so it must take
       // the user id the account identifies: the two values themselves never match,
       // and no row is ever retired.
-      setStorageAccountForTests(storageAccountFor('https://hub.example.com', TEST_USER_ID))
+      setStorageAccountForTests(TEST_USER_ID)
       await createRoot(async (dispose) => {
         const m = createTabMetadataStore()
-        expect(m.state.userId).toBe(storageAccountFor('https://hub.example.com', TEST_USER_ID))
+        expect(m.state.userId).toBe(storageAccountFor(TEST_HUB, TEST_USER_ID))
         const [state, setState] = createSignal<SweepState>({
           tabs: { t1: {} },
         })
@@ -1052,13 +1052,13 @@ describe('tabMetadata', () => {
   })
 })
 
-// The BARE spelling of a storage account: each account IS its user id, so one
-// value enters both identity domains in the tests below -- the storage
-// namespace and the raw Hub user id the sweep state identifies. A test about the
-// mix-up risk passes distinct values instead (see the composed-account test of
+// The RAW Hub user id each account-replacement case runs as. The storage
+// namespace is the composed account around it, which `setStorageAccountForTests`
+// builds; the sweep state names the raw id. A test about the mix-up risk passes
+// distinct values in the two domains instead (see the composed-account test of
 // `useMetadataSweep` above).
-const ACCOUNT_A = 'account-a' as StorageAccount & HubUserId
-const ACCOUNT_B = 'account-b' as StorageAccount & HubUserId
+const ACCOUNT_A = 'account-a' as HubUserId
+const ACCOUNT_B = 'account-b' as HubUserId
 
 describe('createTabMetadataStore account replacement', () => {
   it('reloads the incoming stamps without carrying private fields or live epochs', () => {

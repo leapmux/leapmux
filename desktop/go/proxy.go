@@ -69,7 +69,9 @@ func newProxy(hubURL string) (*HubProxy, error) {
 
 // mustNewMemoryJar returns a fresh in-memory cookie jar. cookiejar.New only
 // fails on a bad Options, and nil is valid, so this never panics in practice.
-func mustNewMemoryJar() http.CookieJar {
+// The concrete type is what persistentJar embeds; every caller passes it on
+// as an http.CookieJar.
+func mustNewMemoryJar() *cookiejar.Jar {
 	jar, _ := cookiejar.New(nil)
 	return jar
 }

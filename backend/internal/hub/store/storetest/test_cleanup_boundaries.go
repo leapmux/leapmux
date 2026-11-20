@@ -237,6 +237,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 				UserID:        userid.MustNew(user.ID),
 				CodeChallenge: "challenge",
 				ExpiresAt:     c.expiresAt,
+				Redemption:    store.RedemptionKindToken,
 			}))
 		}
 

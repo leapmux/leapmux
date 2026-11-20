@@ -36,11 +36,9 @@
     "tauriEvents": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["channelMessage", "channelClose", "userEventsMessage", "userEventsClose", "sidecarLog", "browserAuthResult", "menuShowAbout", "menuShowPreferences"],
+      "required": ["channelClose", "userEventsClose", "sidecarLog", "browserAuthResult", "menuShowAbout", "menuShowPreferences"],
       "properties": {
-        "channelMessage": { "$ref": "#/$defs/tauriEvent" },
         "channelClose": { "$ref": "#/$defs/tauriEvent" },
-        "userEventsMessage": { "$ref": "#/$defs/tauriEvent" },
         "userEventsClose": { "$ref": "#/$defs/tauriEvent" },
         "sidecarLog": { "$ref": "#/$defs/tauriEvent" },
         "browserAuthResult": { "$ref": "#/$defs/tauriEvent" },

@@ -81,6 +81,21 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "ApiTokenIssuance"
+          - column: "oauth_authorization_codes.step_up_kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "CredentialRefKind"
+              pointer: true
+          - column: "oauth_authorization_codes.minted_kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "CredentialRefKind"
+              pointer: true
+          - column: "oauth_authorization_codes.redemption_kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "RedemptionKind"
+              pointer: true
           # Force binary token-hash columns to []byte (sqlc would map
           # MySQL VARBINARY to NullString otherwise, which is awkward
           # for HMAC bytes).

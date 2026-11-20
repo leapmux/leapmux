@@ -4,7 +4,7 @@ import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
-import { setStorageAccountForTests, storageAccountFor } from '~/lib/browserStorage'
+import { setStorageAccountForTests } from '~/lib/browserStorage'
 import { getCRDTBridge, setCRDTBridge, setTabWorkerId, tombstoneTab } from '~/lib/crdt'
 import { useMetadataSweep } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
@@ -128,7 +128,7 @@ describe('useWorkerPrivateStreams', () => {
     // metadata account to decide the CRDT state is these rows' account, so it
     // must take the user id the account names: the two values themselves never
     // match, and no stream ever opens.
-    setStorageAccountForTests(storageAccountFor('https://hub.example.com', TEST_USER_ID))
+    setStorageAccountForTests(TEST_USER_ID)
     await createRoot(async (dispose) => {
       const s = mount()
       emitAddTab({

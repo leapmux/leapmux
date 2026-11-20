@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/pkce"
@@ -283,4 +284,98 @@ func TestStepUpForSessionCookieHeader_RefusesAHeaderWithoutASessionToken(t *test
 
 func TestStepUpForToken_PrefixesTheTokenID(t *testing.T) {
 	assert.Equal(t, "token:abc", loopbackauth.StepUpForToken("abc"))
+}
+
+// TestOAuthErrorBody_Message pins the one line the callers report: the
+// error code alone, or the hub's description after it when it sent one.
+func TestOAuthErrorBody_Message(t *testing.T) {
+	assert.Equal(t, "invalid_grant", loopbackauth.OAuthErrorBody{Error: "invalid_grant"}.Message())
+	assert.Equal(t, "invalid_grant: token revoked",
+		loopbackauth.OAuthErrorBody{Error: "invalid_grant", ErrorDescription: "token revoked"}.Message())
+}
+
+// TestOAuthErrorBody_RoundTripsThroughPostForm pins the error-body wire
+// format end to end: PostForm sends the request, a refusal decodes with
+// ReadOAuthError, and Message renders it back to the one line the callers
+// report. RFC 6749 section 5.2 fixes the body's field names, so a rename
+// here changes what every user reads on a refused stage.
+func TestOAuthErrorBody_RoundTripsThroughPostForm(t *testing.T) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"token revoked"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	resp, err := loopbackauth.PostForm(context.Background(), srv.Client(), srv.URL,
+		url.Values{"grant_type": {"refresh_token"}})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	body := loopbackauth.ReadOAuthError(resp)
+	assert.Equal(t, "invalid_grant", body.Error)
+	assert.Equal(t, "token revoked", body.ErrorDescription)
+	assert.Equal(t, "invalid_grant: token revoked", body.Message())
+}
+
+// TestReadOAuthError_ReportsTheZeroValueOnABodyItCannotRead pins the
+// fallback the callers depend on: a proxy's HTML page or a truncated answer
+// decodes to the zero value, so the caller falls back to the HTTP status
+// instead of formatting an empty body as ": ".
+func TestReadOAuthError_ReportsTheZeroValueOnABodyItCannotRead(t *testing.T) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html>502 Bad Gateway</html>"))
+	}))
+	t.Cleanup(srv.Close)
+
+	resp, err := loopbackauth.PostForm(context.Background(), srv.Client(), srv.URL, url.Values{})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, loopbackauth.OAuthErrorBody{}, loopbackauth.ReadOAuthError(resp))
+}
+
+// TestPostForm_SendsAFormBodyAndTheCallersHeaders pins the one request shape
+// every leg of the hub's auth surface uses.
+func TestPostForm_SendsAFormBodyAndTheCallersHeaders(t *testing.T) {
+	type received struct {
+		method      string
+		contentType string
+		authz       string
+		field       string
+	}
+	got := make(chan received, 1)
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		got <- received{
+			method:      r.Method,
+			contentType: r.Header.Get("Content-Type"),
+			authz:       r.Header.Get("Authorization"),
+			field:       r.FormValue("device_code"),
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	resp, err := loopbackauth.PostForm(context.Background(), srv.Client(), srv.URL,
+		url.Values{"device_code": {"dev-1"}},
+		func(h http.Header) { h.Set("Authorization", "Bearer lmx_a_1") })
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	r := <-got
+	assert.Equal(t, http.MethodPost, r.method)
+	assert.Equal(t, "application/x-www-form-urlencoded", r.contentType)
+	assert.Equal(t, "Bearer lmx_a_1", r.authz)
+	assert.Equal(t, "dev-1", r.field)
+}
+
+// TestPostForm_ObeysTheCallersContext keeps a hung hub from outliving the
+// deadline of the call that opened the request.
+func TestPostForm_ObeysTheCallersContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := loopbackauth.PostForm(ctx, http.DefaultClient, "http://127.0.0.1:1/anything", url.Values{})
+	assert.ErrorIs(t, err, context.Canceled)
 }

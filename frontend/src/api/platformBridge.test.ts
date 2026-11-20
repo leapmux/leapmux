@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserAuthKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
-import { desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { decodeProxyResponseEnvelope, desktopFetch, desktopHub, encodeProxyResponseEnvelope, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -34,13 +34,13 @@ describe('desktopFetch', () => {
   it('preserves repeated response header values', async () => {
     mockIPC((cmd) => {
       if (cmd === 'proxy_http') {
-        return {
+        return encodeProxyResponseEnvelope({
           status: 200,
           headers: {
             'x-repeated': ['one', 'two'],
           },
-          body: '',
-        }
+          body: new ArrayBuffer(0),
+        })
       }
       throw new Error(`unmocked Tauri command: ${cmd}`)
     })
@@ -52,7 +52,7 @@ describe('desktopFetch', () => {
   it('rejects with AbortError when the signal aborts while the call is in flight', async () => {
     // The proxied request settles only when the test answers it, so the
     // abort must reject the call without waiting for that answer.
-    let answer!: (resp: { status: number, headers: Record<string, string[]>, body: string }) => void
+    let answer!: (resp: ArrayBuffer) => void
     const inFlight = new Promise((resolve) => {
       answer = resolve
     })
@@ -65,7 +65,11 @@ describe('desktopFetch', () => {
     const controller = new AbortController()
     const call = desktopFetch('https://hub.example/test', { signal: controller.signal })
     controller.abort()
-    answer({ status: 200, headers: {}, body: '' })
+    answer(encodeProxyResponseEnvelope({
+      status: 200,
+      headers: {},
+      body: new ArrayBuffer(0),
+    }))
     await expect(call).rejects.toMatchObject({ name: 'AbortError' })
   })
 
@@ -73,7 +77,11 @@ describe('desktopFetch', () => {
     const invoked: string[] = []
     mockIPC((cmd) => {
       invoked.push(cmd)
-      return { status: 200, headers: {}, body: '' }
+      return encodeProxyResponseEnvelope({
+        status: 200,
+        headers: {},
+        body: new ArrayBuffer(0),
+      })
     })
 
     const controller = new AbortController()
@@ -87,11 +95,11 @@ describe('desktopFetch', () => {
   it('removes the abort listener once the call settles', async () => {
     mockIPC((cmd) => {
       if (cmd === 'proxy_http') {
-        return {
+        return encodeProxyResponseEnvelope({
           status: 200,
           headers: {},
-          body: '',
-        }
+          body: new ArrayBuffer(0),
+        })
       }
       throw new Error(`unmocked Tauri command: ${cmd}`)
     })
@@ -100,6 +108,87 @@ describe('desktopFetch', () => {
     const removed = vi.spyOn(controller.signal, 'removeEventListener')
     await desktopFetch('https://hub.example/test', { signal: controller.signal })
     expect(removed).toHaveBeenCalledWith('abort', expect.any(Function))
+  })
+
+  it('sends the request body raw and the request metadata in invoke headers', async () => {
+    // mockIPC drops the InvokeOptions, and the metadata rides there -- hand-roll
+    // the internals invoke so the headers are observable.
+    const calls: Array<{ cmd: string, args: unknown, options?: { headers?: Record<string, string> } | undefined }> = []
+    ;(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+      invoke: (cmd: string, args?: unknown, options?: { headers?: Record<string, string> }) => {
+        calls.push({ cmd, args, options })
+        return Promise.resolve(encodeProxyResponseEnvelope({
+          status: 200,
+          headers: {},
+          body: new ArrayBuffer(0),
+        }))
+      },
+    }
+
+    const body = new Uint8Array([1, 2, 3])
+    await desktopFetch('https://hub.example/rpc/Method?x=1', {
+      method: 'POST',
+      headers: { 'content-type': 'application/grpc+proto' },
+      body,
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.cmd).toBe('proxy_http')
+    // The body crosses as the raw invoke body: no base64 anywhere.
+    expect(calls[0]!.args).toBe(body)
+    const headers = calls[0]!.options?.headers ?? {}
+    expect(headers.method).toBe('POST')
+    expect(headers.path).toBe('/rpc/Method?x=1')
+    expect(JSON.parse(atob(headers['headers-b64']!))).toEqual({
+      'content-type': 'application/grpc+proto',
+    })
+  })
+})
+
+// The envelope is the one structure the webview parses by position out of the
+// sidecar's raw response bytes; the framing must match the Rust shell's
+// `encode_proxy_response_envelope` exactly.
+describe('proxy response envelope', () => {
+  it('round-trips meta and a multi-KB binary body through encode and decode', () => {
+    const body = new Uint8Array(4096)
+    for (let i = 0; i < body.length; i++)
+      body[i] = (i * 7) % 256
+    const resp = {
+      status: 201,
+      headers: {
+        'x-repeated': ['one', 'two'],
+        'content-type': ['application/grpc+proto'],
+      },
+      body: body.buffer as ArrayBuffer,
+    }
+
+    const decoded = decodeProxyResponseEnvelope(encodeProxyResponseEnvelope(resp))
+
+    expect(decoded.status).toBe(201)
+    expect(decoded.headers).toEqual(resp.headers)
+    // Array.from: jsdom typed arrays of another realm defeat toEqual.
+    expect(Array.from(new Uint8Array(decoded.body))).toEqual(Array.from(body))
+  })
+
+  it('round-trips an empty body', () => {
+    const decoded = decodeProxyResponseEnvelope(encodeProxyResponseEnvelope({
+      status: 204,
+      headers: {},
+      body: new ArrayBuffer(0),
+    }))
+    expect(decoded.status).toBe(204)
+    expect(decoded.headers).toEqual({})
+    expect(decoded.body.byteLength).toBe(0)
+  })
+
+  it('rejects a truncated envelope instead of slicing past the buffer', () => {
+    const encoded = encodeProxyResponseEnvelope({
+      status: 200,
+      headers: {},
+      body: new ArrayBuffer(0),
+    })
+    expect(() => decodeProxyResponseEnvelope(encoded.slice(0, 2))).toThrow(/truncated/)
+    expect(() => decodeProxyResponseEnvelope(encoded.slice(0, 3))).toThrow(/truncated/)
   })
 })
 
@@ -886,20 +975,27 @@ describe('userevents relay bridge', () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
-  it('forwards the relay id with the user events subscription on open', async () => {
+  // The fake channel the relay open must carry to the sidecar beside the id.
+  function fakeChannel(): import('@tauri-apps/api/core').Channel<ArrayBuffer> {
+    return { id: 7 } as unknown as import('@tauri-apps/api/core').Channel<ArrayBuffer>
+  }
+
+  it('forwards the relay id and the channel with the user events subscription on open', async () => {
     const calls: Array<{ cmd: string, args: unknown }> = []
     mockIPC((cmd, args) => {
       calls.push({ cmd, args })
       return null
     })
 
-    await platformBridge.openUserEventsRelay(42, ['ws-1'])
+    const channel = fakeChannel()
+    await platformBridge.openUserEventsRelay(42, channel, ['ws-1'])
 
     expect(calls).toEqual([
       {
         cmd: 'open_userevents_relay',
         args: {
           relayId: 42,
+          channel,
           workspaceIds: ['ws-1'],
           resumeHlc: null,
           resumeEpoch: null,
@@ -921,7 +1017,8 @@ describe('userevents relay bridge', () => {
       return null
     })
 
-    await platformBridge.openUserEventsRelay(7, ['ws-1'], {
+    const channel = fakeChannel()
+    await platformBridge.openUserEventsRelay(7, channel, ['ws-1'], {
       hlc: { physical: 1754100000000n, logical: 3n, clientId: 'c-abc' },
       epoch: 7n,
     })
@@ -931,6 +1028,7 @@ describe('userevents relay bridge', () => {
         cmd: 'open_userevents_relay',
         args: {
           relayId: 7,
+          channel,
           workspaceIds: ['ws-1'],
           resumeHlc: '1754100000000.3.c-abc',
           resumeEpoch: '7',

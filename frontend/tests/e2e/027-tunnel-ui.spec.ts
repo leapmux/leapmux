@@ -45,23 +45,7 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
       channelSocket = undefined
     }
 
-    const bytesToBase64 = (data: ArrayBuffer) => {
-      const bytes = new Uint8Array(data)
-      let binary = ''
-      for (const byte of bytes)
-        binary += String.fromCharCode(byte)
-      return btoa(binary)
-    }
-
-    const base64ToBytes = (data: string) => {
-      const binary = atob(data)
-      const bytes = new Uint8Array(binary.length)
-      for (let i = 0; i < binary.length; i++)
-        bytes[i] = binary.charCodeAt(i)
-      return bytes
-    }
-
-    win.__TAURI_INVOKE__ = (cmd: string, args?: any) => {
+    win.__TAURI_INVOKE__ = (cmd: string, args?: any, options?: any) => {
       switch (cmd) {
         case 'create_tunnel': {
           const config = args.config
@@ -101,28 +85,46 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
               localSolo: false,
             },
           })
+        // The raw-byte contract: the request body rides the invoke body, the
+        // metadata rides InvokeOptions headers, and the reply is the raw
+        // envelope `[u32 LE meta_len][meta JSON][body]` (see
+        // decodeProxyResponseEnvelope in ~/api/platformBridge).
         case 'proxy_http': {
-          const { method, path, headers, bodyBase64 } = args.payload
+          const method = options?.headers?.method ?? 'POST'
+          const path = options?.headers?.path ?? '/'
+          const headers = JSON.parse(atob(options?.headers?.['headers-b64'] ?? '') || '{}')
+          const body: Uint8Array<ArrayBuffer> | null = args instanceof Uint8Array
+            ? args as Uint8Array<ArrayBuffer>
+            : args instanceof ArrayBuffer
+              ? new Uint8Array(args)
+              : null
           return fetch(window.location.origin + path, {
             method,
             headers,
-            body: bodyBase64
-              ? base64ToBytes(bodyBase64)
+            body: body && body.byteLength > 0
+              ? body
               : null,
           }).then(async (response) => {
             const responseHeaders: Record<string, string[]> = {}
             response.headers.forEach((value, name) => {
               (responseHeaders[name] ??= []).push(value)
             })
-            return {
+            const metaBytes = new TextEncoder().encode(JSON.stringify({
               status: response.status,
               headers: responseHeaders,
-              body: bytesToBase64(await response.arrayBuffer()),
-            }
+            }))
+            const bodyBytes = new Uint8Array(await response.arrayBuffer())
+            const out = new Uint8Array(4 + metaBytes.byteLength + bodyBytes.byteLength)
+            new DataView(out.buffer).setUint32(0, metaBytes.byteLength, true)
+            out.set(metaBytes, 4)
+            out.set(bodyBytes, 4 + metaBytes.byteLength)
+            return out.buffer
           })
         }
         case 'open_channel_relay': {
           closeChannelSocket()
+          const channel = args.channel
+          let nextFrameIndex = 0
           const protocol = window.location.protocol === 'https:'
             ? 'wss:'
             : 'ws:'
@@ -133,7 +135,10 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
           channelSocket = socket
           socket.binaryType = 'arraybuffer'
           socket.addEventListener('message', (event) => {
-            win.__TAURI_INTERNALS__.emitEvent('channel:message', bytesToBase64(event.data))
+            win.__TAURI_INTERNALS__.runCallback(channel.id, {
+              index: nextFrameIndex++,
+              message: event.data,
+            })
           })
           socket.addEventListener('close', (event) => {
             if (!intentionallyClosedSockets.has(socket)) {
@@ -150,13 +155,17 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
           })
         }
         case 'send_channel_message':
-          channelSocket?.send(base64ToBytes(args.b64Data))
+          channelSocket?.send(args instanceof Uint8Array
+            ? args
+            : new Uint8Array(args))
           return Promise.resolve()
         case 'close_channel_relay':
           closeChannelSocket()
           return Promise.resolve()
         case 'open_userevents_relay': {
           closeUserEventsSocket()
+          const channel = args.channel
+          let nextFrameIndex = 0
           const params = new URLSearchParams()
           for (const workspaceId of args.workspaceIds ?? [])
             params.append('workspace_ids', workspaceId)
@@ -173,7 +182,10 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
           userEventsSocket = socket
           socket.binaryType = 'arraybuffer'
           socket.addEventListener('message', (event) => {
-            win.__TAURI_INTERNALS__.emitEvent('userevents:message', bytesToBase64(event.data))
+            win.__TAURI_INTERNALS__.runCallback(channel.id, {
+              index: nextFrameIndex++,
+              message: event.data,
+            })
           })
           socket.addEventListener('close', () => {
             if (!intentionallyClosedSockets.has(socket))
@@ -223,7 +235,7 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
       unregisterCallback,
       runCallback: (id: number, payload: any) => callbacks.get(id)?.(payload),
       emitEvent,
-      invoke: (cmd: string, args: any = {}) => {
+      invoke: (cmd: string, args: any = {}, options?: any) => {
         if (cmd === 'plugin:event|listen') {
           const listeners = eventListeners.get(args.event) ?? new Set<number>()
           listeners.add(args.handler)
@@ -242,7 +254,7 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
           return Promise.resolve(false)
         if (cmd.startsWith('plugin:window|'))
           return Promise.resolve()
-        return win.__TAURI_INVOKE__(cmd, args)
+        return win.__TAURI_INVOKE__(cmd, args, options)
       },
     }
     win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener }

@@ -59,6 +59,7 @@ func seedCode(t *testing.T, env *apiAuthEnv, clientID, redirectURI, challenge, s
 			Code: code, UserID: userid.MustNew(env.userID), ClientID: clientID,
 			CodeChallenge: challenge, RedirectURI: redirectURI, GrantedScopes: scopes,
 			InstallationName: "laptop", ExpiresAt: time.Now().Add(time.Minute),
+			Redemption: store.RedemptionKindToken,
 		}))
 	return code
 }

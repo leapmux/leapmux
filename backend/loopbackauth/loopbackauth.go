@@ -5,17 +5,20 @@
 // answers the Hub's redirect on /callback until one request carries the
 // state it issued. The control CLI and the desktop sidecar both import it,
 // so the ceremony -- including its timeout and its callback discipline --
-// has one implementation.
+// has one implementation. The token-surface wire helpers the two clients
+// share -- the form-encoded POST and the RFC 6749 section 5.2 error body --
+// live here for the same reason.
 package loopbackauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,6 +184,65 @@ func (f *Flow) TokenForm(code string) url.Values {
 	}
 }
 
+// PostForm performs one form-encoded POST against the hub's auth surface.
+//
+// Every stage of that surface is this request: an
+// application/x-www-form-urlencoded body, an optional credential header,
+// and a response whose refusals carry an OAuth error body. decorate runs on
+// the request header, so a caller that must present a credential states
+// which one; a caller that presents none passes nothing.
+//
+// The CALLER closes the response body.
+func PostForm(
+	ctx context.Context,
+	hc *http.Client,
+	endpoint string,
+	form url.Values,
+	decorate ...func(http.Header),
+) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, d := range decorate {
+		d(req.Header)
+	}
+	return hc.Do(req)
+}
+
+// OAuthErrorBody is the RFC 6749 section 5.2 error body that every refused
+// stage of the hub's auth surface returns.
+type OAuthErrorBody struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+// Message renders the body as one line: the error code, and the hub's
+// description after it when it sent one.
+func (b OAuthErrorBody) Message() string {
+	if b.ErrorDescription == "" {
+		return b.Error
+	}
+	return b.Error + ": " + b.ErrorDescription
+}
+
+// ReadOAuthError decodes the error body of a refused response.
+//
+// A body it cannot read reports the ZERO value rather than a decode error,
+// because the caller's next step is the same either way: fall back to the
+// HTTP status, which is all that a proxy's HTML page or a truncated answer
+// leaves to report. Every caller must test Error against "" before it
+// formats the fields -- an empty body formatted as "%s: %s" gives the user
+// ": " and hides the transport failure that produced it.
+func ReadOAuthError(resp *http.Response) OAuthErrorBody {
+	var body OAuthErrorBody
+	if json.NewDecoder(resp.Body).Decode(&body) != nil {
+		return OAuthErrorBody{}
+	}
+	return body
+}
+
 // Close releases the listener and the timeout timer. It is idempotent.
 func (f *Flow) Close() {
 	f.closeOnce.Do(func() {
@@ -274,23 +336,6 @@ func registeredRedirectWithPort(registered string, port int) string {
 	}
 	u.Host = fmt.Sprintf("127.0.0.1:%d", port)
 	return u.String()
-}
-
-// InstallationName is the label one machine records on a grant: the account
-// and the host it runs on.
-func InstallationName() string {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "unknown-host"
-	}
-	user := os.Getenv("USER")
-	if user == "" {
-		user = os.Getenv("USERNAME")
-	}
-	if user == "" {
-		return host
-	}
-	return user + "@" + host
 }
 
 // StepUpForToken spells the step_up value that names an app credential.

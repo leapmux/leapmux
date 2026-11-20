@@ -30,7 +30,12 @@ var enumColumnMigrations = []string{
 // does not admit needs a migration, not only a proto edit.
 //
 // The lower limit is 1 in every case, never 0. UNSPECIFIED is what an unset Go
-// field holds, and none of these columns has a state it could mean.
+// field holds, and none of these columns has a state it could mean. Three of
+// them are OPTIONAL and spell absence as SQL NULL instead of an ordinal, as
+// agent_input_queue_state.pause_owner does in the worker: an absent
+// credential reference or a step-up code holds no kind at all, and a tie CHECK
+// keeps its partner column in step. Their range still starts at 1, so a stored
+// ordinal is always one the enum declares.
 func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	t.Parallel()
 
@@ -118,6 +123,38 @@ func enumRangeColumns(t *testing.T) []enumRangeColumn {
 			checks:       []string{"CHECK (issuance BETWEEN 1 AND 3)"},
 		},
 		{
+			// Optional: SQL NULL spells no target, and the tie keeps the id
+			// empty exactly then.
+			column:       "oauth_authorization_codes.step_up_kind",
+			lastOrdinal:  int32(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_TOKEN),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.CredentialRefKind_name),
+			checks: []string{
+				"CHECK (step_up_kind BETWEEN 1 AND 2)",
+				"CHECK ((step_up_kind IS NULL) = (step_up_ref_id = ''))",
+			},
+		},
+		{
+			// Optional: SQL NULL spells nothing minted yet. See step_up_kind.
+			column:       "oauth_authorization_codes.minted_kind",
+			lastOrdinal:  int32(leapmuxv1.CredentialRefKind_CREDENTIAL_REF_KIND_TOKEN),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.CredentialRefKind_name),
+			checks: []string{
+				"CHECK (minted_kind BETWEEN 1 AND 2)",
+				"CHECK ((minted_kind IS NULL) = (minted_ref_id = ''))",
+			},
+		},
+		{
+			// Optional: SQL NULL spells a step-up code, and the tie holds a
+			// code to exactly one of verifying and redeeming.
+			column:       "oauth_authorization_codes.redemption_kind",
+			lastOrdinal:  int32(leapmuxv1.RedemptionKind_REDEMPTION_KIND_TOKEN),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.RedemptionKind_name),
+			checks: []string{
+				"CHECK (redemption_kind BETWEEN 1 AND 2)",
+				"CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL))",
+			},
+		},
+		{
 			column:       "workspace_sections.section_type",
 			lastOrdinal:  int32(leapmuxv1.SectionType_SECTION_TYPE_BACKGROUND_TASKS),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.SectionType_name),
@@ -134,9 +171,13 @@ func enumRangeColumns(t *testing.T) []enumRangeColumn {
 
 // SQLite stores any value in an INTEGER column, so `1.5` passes a range CHECK
 // and then reads back as an ordinal no Go constant has. Each enum column
-// therefore carries `typeof(col) = 'integer'` on its own declaration.
-// enum_storage_internal_test.go in the sqlite package proves the refusal with
-// real writes; this test proves every listed column carries it.
+// therefore carries a `typeof(col) = 'integer'` guard on its own declaration.
+// An OPTIONAL column -- one that spells absence as SQL NULL -- writes the guard
+// as `col IS NULL OR typeof(col) = 'integer'`, because typeof(NULL) is 'null';
+// both forms refuse a fraction, and this test asserts the guard's presence
+// rather than its phrasing. enum_storage_internal_test.go in the sqlite
+// package proves the refusal with real writes; this test proves every listed
+// column carries it.
 func TestSQLiteEnumColumnsStoreIntegersOnly(t *testing.T) {
 	t.Parallel()
 
@@ -157,7 +198,7 @@ func TestSQLiteEnumColumnsStoreIntegersOnly(t *testing.T) {
 				}
 			}
 			require.NotEmpty(t, columnDeclaration, "%s declares no %s column", table, column)
-			assert.Contains(t, columnDeclaration, "CHECK (typeof("+column+") = 'integer')",
+			assert.Contains(t, columnDeclaration, "typeof("+column+") = 'integer'",
 				"%s must refuse a non-integer value on its own declaration", c.column)
 		})
 	}

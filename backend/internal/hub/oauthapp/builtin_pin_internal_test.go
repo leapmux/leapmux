@@ -29,9 +29,10 @@ func TestBuiltInCeilingsMatchTheGrantableVocabulary(t *testing.T) {
 }
 
 // The desktop handoff's constants pin its registration shape: a public
-// loopback client, the authorization_code grant alone, and no scope. The
-// consent page and the token exchange branch on IssuesSession, so exactly one
-// built-in may answer true there.
+// loopback client, the authorization_code grant alone, no scope, and the one
+// built-in whose authorization mints a Hub session. The consent page reads
+// oauth_clients.issues_sessions, which SeedBuiltIns writes from
+// DesktopIssuesSessions, so exactly one built-in may carry it.
 func TestDesktopBuiltInConstants(t *testing.T) {
 	assert.Equal(t, "leapmux-desktop", DesktopClientID)
 	assert.Equal(t, "LeapMux Desktop", DesktopName)
@@ -42,8 +43,6 @@ func TestDesktopBuiltInConstants(t *testing.T) {
 	require.True(t, IsBuiltIn(DesktopClientID))
 	assert.Contains(t, BuiltInClientIDs(), DesktopClientID)
 
-	assert.True(t, IssuesSession(DesktopClientID))
-	assert.False(t, IssuesSession(ControlCLIClientID))
-	assert.False(t, IssuesSession(ServiceAccountClientID))
-	assert.False(t, IssuesSession("some-other-app"))
+	assert.True(t, DesktopIssuesSessions,
+		"the desktop's authorization mints a session, which is the whole point of its handoff")
 }

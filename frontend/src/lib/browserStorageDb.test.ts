@@ -1,4 +1,3 @@
-import type { StorageAccount } from '~/lib/browserStorage'
 import type { StorageBroadcast, StorageChange } from '~/lib/browserStorageDb'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -22,11 +21,12 @@ import {
   resetStorageAccountForTests,
   setStorageAccount,
   setStorageAccountForTests,
-
+  storageAccountFor,
   storedKeyFor,
+  TEST_HUB,
 } from '~/lib/browserStorage'
 import { enqueueKvPut, kvInstanceIdForTests, peekKvPending, readKvRow } from '~/lib/browserStorageDb'
-import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { TEST_ACCOUNT, TEST_USER_ID } from '~/test-support/crdtBridge'
 
 // The IndexedDB half of the storage gateway: what the mirror loads, what the
 // write queue commits, what a refused write reports, and what crosses to
@@ -37,8 +37,9 @@ import { TEST_USER_ID } from '~/test-support/crdtBridge'
 // request callbacks on `setImmediate`, so a frozen clock leaves every read
 // pending -- and these cases are exactly the ones that must reach a database.
 
-const ACCOUNT = TEST_USER_ID
-const OTHER = 'otheraccount' as StorageAccount
+const ACCOUNT = TEST_ACCOUNT
+const OTHER_USER = 'otheraccount'
+const OTHER = storageAccountFor(TEST_HUB, OTHER_USER)
 
 // The worker segment is UNIQUE TO THIS FILE, and that is load-bearing rather
 // than cosmetic. A BroadcastChannel bus is shared by every test file running in
@@ -64,7 +65,7 @@ let sentinelValue = 0
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory())
   resetBrowserStorageForTests()
-  setStorageAccountForTests(ACCOUNT)
+  setStorageAccountForTests(TEST_USER_ID)
 })
 
 afterEach(() => {
@@ -116,7 +117,7 @@ describe('hydrateStorageAccount', () => {
   })
 
   it('leaves another account\'s rows on disk and out of the mirror', async () => {
-    setStorageAccountForTests(OTHER)
+    setStorageAccountForTests(OTHER_USER)
     localStorageSet(SYNC_KEY, true)
     await flushStorageWrites()
 
@@ -129,9 +130,9 @@ describe('hydrateStorageAccount', () => {
   })
 
   it('does not install a hydration a newer one superseded', async () => {
-    setStorageAccountForTests(OTHER)
+    setStorageAccountForTests(OTHER_USER)
     localStorageSet(SYNC_KEY, 'theirs')
-    setStorageAccountForTests(ACCOUNT)
+    setStorageAccountForTests(TEST_USER_ID)
     localStorageSet(SYNC_KEY, 'mine')
     await flushStorageWrites()
     resetBrowserStorageForTests()
@@ -794,7 +795,7 @@ describe('cross-tab changes', () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     const storage = await import('~/lib/browserStorage')
     try {
-      storage.setStorageAccountForTests(ACCOUNT)
+      storage.setStorageAccountForTests(TEST_USER_ID)
       const stop = storage.onStorageChanged(() => {})
       storage.localStorageSet(SYNC_KEY, true)
       await storage.flushStorageWrites()
@@ -871,12 +872,12 @@ describe('localStorageStoreMany', () => {
       { name: first, value: 'old text' },
       { name: second, value: 'old metadata' },
     ])
-    setStorageAccountForTests(OTHER)
+    setStorageAccountForTests(OTHER_USER)
     localStorageStore(first, 'new text')
     await flushStorageWrites()
     expect(await localStorageLoad(first)).toBe('new text')
     expect(await localStorageLoad(second)).toBeUndefined()
-    setStorageAccountForTests(ACCOUNT)
+    setStorageAccountForTests(TEST_USER_ID)
     expect(await localStorageLoad(first)).toBe('old text')
     expect(await localStorageLoad(second)).toBe('old metadata')
   })
@@ -886,7 +887,7 @@ describe('localStorageStoreMany', () => {
     const second = `${PREFIX_EDITOR_DRAFT}${WORKER}-preparation-second` as const
     const value = {
       get changed() {
-        setStorageAccountForTests(OTHER)
+        setStorageAccountForTests(OTHER_USER)
         return true
       },
     }
@@ -896,7 +897,7 @@ describe('localStorageStoreMany', () => {
     ])).toThrow('storage account changes')
     await flushStorageWrites()
     expect(await localStorageLoad(first)).toBeUndefined()
-    setStorageAccountForTests(ACCOUNT)
+    setStorageAccountForTests(TEST_USER_ID)
     expect(await localStorageLoad(first)).toBeUndefined()
     expect(await localStorageLoad(second)).toBeUndefined()
   })

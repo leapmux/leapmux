@@ -1,4 +1,4 @@
-import type { HubUserId, StorageAccount } from '~/lib/browserStorage'
+import type { HubUserId } from '~/lib/browserStorage'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import {
@@ -8,6 +8,7 @@ import {
   NodeRecordSchema,
   WorkspaceContentsRecordSchema,
 } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { HLCClock, PendingOpsManager, setCRDTBridge } from '~/lib/crdt'
 
 /**
@@ -15,16 +16,24 @@ import { HLCClock, PendingOpsManager, setCRDTBridge } from '~/lib/crdt'
  * storage namespace (`vitest.setup.ts` signs in as this, and passes no `userId`
  * to `installTestBridge` so that both halves take this one value).
  *
- * The BARE spelling of a storage account: its account IS its user id, so one
- * value stands in both for the namespace and for the raw Hub user id wherever
- * a test does not distinguish the two domains.
+ * The RAW Hub user id. The stored account is the composed pair around it
+ * (`TEST_ACCOUNT`), because `setStorageAccountForTests` composes at the writer:
+ * one value cannot stand for both domains any more.
  *
  * Alphanumeric on purpose, so that it reads in a stored key exactly as a real
  * hub id does: ids are 48-character nanoids over `[A-Za-z0-9]`
  * (`internal/util/id`), which `accountStorageKey`'s percent-encoding leaves
  * byte-identical.
  */
-export const TEST_USER_ID = 'usertest' as StorageAccount
+export const TEST_USER_ID = 'usertest' as HubUserId
+
+/**
+ * The composed storage account the suite's keys resolve under:
+ * `storageAccountFor(TEST_HUB, TEST_USER_ID)`, what `setStorageAccountForTests`
+ * composes from `TEST_USER_ID`. A test that names the NAMESPACE takes this; a
+ * test that names the raw identity takes `TEST_USER_ID`.
+ */
+export const TEST_ACCOUNT = storageAccountFor(TEST_HUB, TEST_USER_ID)
 
 /**
  * installTestBridge creates a PendingOpsManager + bridge wired into
@@ -47,10 +56,11 @@ export interface TestBridgeHandle {
   clock: HLCClock
   rootTileId: string
   /**
-   * The BARE spelling (see `TEST_USER_ID`): valid as the storage account and
-   * as the raw Hub user id, which the tests use interchangeably for one id.
+   * The RAW Hub user id (see `TEST_USER_ID`): the CRDT tenant. The storage
+   * account around it is `TEST_ACCOUNT`, or `storageAccountFor(TEST_HUB, id)`
+   * for a custom `userId`.
    */
-  userId: StorageAccount & HubUserId
+  userId: HubUserId
   workspaceId: string
   /**
    * One entry per `bridge.flushNow()`, each holding `pendingBatches.length` at
@@ -105,9 +115,10 @@ export function installTestBridge(opts?: {
   workspaceId?: string
   rootTileId?: string
 }): TestBridgeHandle {
-  // A test id is the BARE spelling (see `TEST_USER_ID`): its account IS its
-  // user id, so the same value seeds both identity domains below.
-  const userId = (opts?.userId ?? TEST_USER_ID) as StorageAccount & HubUserId
+  // A test id is the RAW Hub user id (see `TEST_USER_ID`). The storage
+  // namespace around it is composed separately, so the same raw id seeds the
+  // CRDT tenant below without doubling as an account.
+  const userId = (opts?.userId ?? TEST_USER_ID) as HubUserId
   const workspaceId = opts?.workspaceId ?? 'ws-test'
   const rootTileId = opts?.rootTileId ?? 'main-tile'
   const ownClient = 'test-client'

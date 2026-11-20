@@ -708,6 +708,7 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 				Code:          code, UserID: userid.MustNew(env.userID), CodeChallenge: "unused",
 				InstallationName: "alice@laptop", ExpiresAt: time.Now().Add(time.Minute),
 				RedirectURI: "http://127.0.0.1:54321/callback",
+				Redemption:  store.RedemptionKindToken,
 			}))
 			// Consume the grant directly through the device-code-free path:
 			// the PKCE check is not what this test is about, so drive the
@@ -722,6 +723,7 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 				Code:          code + "-real", UserID: userid.MustNew(env.userID), CodeChallenge: challenge,
 				InstallationName: "alice@laptop", ExpiresAt: time.Now().Add(time.Minute),
 				RedirectURI: "http://127.0.0.1:54321/callback",
+				Redemption:  store.RedemptionKindToken,
 			}))
 			resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 				"grant_type":    {service.GrantTypeAuthorizationCode},

@@ -479,7 +479,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			Code: authorizationCode, UserID: owner, ClientID: clientID,
 			CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
 			GrantedScopes: "workspace:read", InstallationName: "laptop",
-			ExpiresAt: time.Now().Add(time.Minute),
+			ExpiresAt:  time.Now().Add(time.Minute),
+			Redemption: store.RedemptionKindToken,
 		}))
 
 		rows, err := st.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
@@ -632,45 +633,104 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		assert.Nil(t, app.RevokedAt)
 	})
 
-	t.Run("a code row with both step-up columns fails", func(t *testing.T) {
-		st := s.NewStore(t)
-		alice := SeedUser(t, st, "stepup-both")
-		owner := userid.MustNew(alice.ID)
-		clientID := seedApp(t, st, "stepup-both-app", alice.ID, store.OAuthClientSourceUser)
+	// One reference carries one kind and one id, so "at most one step-up
+	// target" is structural: the old column pair that a CHECK had to guard
+	// cannot be written at all. What the row CAN still get wrong is a
+	// half-written reference, and the tie CHECK refuses each half.
+	t.Run("a code row with a half-written step-up reference fails", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			step store.CredentialRef
+		}{
+			{name: "a kind with no id", step: store.CredentialRef{Kind: store.CredentialRefKindSession}},
+			{name: "an id with no kind", step: store.CredentialRef{ID: "some-token"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				st := s.NewStore(t)
+				alice := SeedUser(t, st, "stepup-both")
+				owner := userid.MustNew(alice.ID)
+				clientID := seedApp(t, st, "stepup-both-app", alice.ID, store.OAuthClientSourceUser)
 
-		err := st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-			Code:             id.Generate(),
-			UserID:           owner,
-			ClientID:         clientID,
-			CodeChallenge:    "challenge",
-			RedirectURI:      "https://app.example.com/callback",
-			GrantedScopes:    "workspace:read",
-			InstallationName: "laptop",
-			ExpiresAt:        time.Now().Add(time.Minute),
-			StepUpSessionID:  "some-session",
-			StepUpTokenID:    "some-token",
-		})
-		require.Error(t, err, "the CHECK (step_up_session_id IS NULL OR step_up_token_id IS NULL) must refuse both set")
+				err := st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+					Code:             id.Generate(),
+					UserID:           owner,
+					ClientID:         clientID,
+					CodeChallenge:    "challenge",
+					RedirectURI:      "https://app.example.com/callback",
+					GrantedScopes:    "workspace:read",
+					InstallationName: "laptop",
+					ExpiresAt:        time.Now().Add(time.Minute),
+					StepUp:           tc.step,
+					Redemption:       store.RedemptionKindNone,
+				})
+				require.Error(t, err,
+					"CHECK ((step_up_kind IS NULL) = (step_up_ref_id = '')) must refuse a half-written reference")
+			})
+		}
 	})
 
-	t.Run("a code row with one step-up column round-trips", func(t *testing.T) {
+	// The row must state what it does: a code verifies OR redeems, never both
+	// and never neither. Without the tie a forgotten redemption kind would
+	// pass for a token redemption at the exchange.
+	t.Run("a code row that neither verifies nor redeems, or does both, fails", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			step       store.CredentialRef
+			redemption store.RedemptionKind
+		}{
+			{
+				name:       "neither a step-up nor a redemption",
+				redemption: store.RedemptionKindNone,
+			},
+			{
+				name:       "both a step-up and a redemption",
+				step:       store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "sess-stepup-1"},
+				redemption: store.RedemptionKindToken,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				st := s.NewStore(t)
+				alice := SeedUser(t, st, "stepup-xor")
+				owner := userid.MustNew(alice.ID)
+				clientID := seedApp(t, st, "stepup-xor-app", alice.ID, store.OAuthClientSourceUser)
+
+				err := st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+					Code:             id.Generate(),
+					UserID:           owner,
+					ClientID:         clientID,
+					CodeChallenge:    "challenge",
+					RedirectURI:      "https://app.example.com/callback",
+					GrantedScopes:    "workspace:read",
+					InstallationName: "laptop",
+					ExpiresAt:        time.Now().Add(time.Minute),
+					StepUp:           tc.step,
+					Redemption:       tc.redemption,
+				})
+				require.Error(t, err,
+					"CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL)) must hold a code to exactly one of the two")
+			})
+		}
+	})
+
+	t.Run("a code row with one step-up reference round-trips", func(t *testing.T) {
 		for _, tc := range []struct {
 			name     string
 			set      func(p *store.CreateOAuthAuthorizationCodeParams)
-			expected string
-			get      func(row *store.OAuthAuthorizationCode) string
+			expected store.CredentialRef
 		}{
 			{
-				name:     "step_up_session_id",
-				set:      func(p *store.CreateOAuthAuthorizationCodeParams) { p.StepUpSessionID = "sess-stepup-1" },
-				expected: "sess-stepup-1",
-				get:      func(row *store.OAuthAuthorizationCode) string { return row.StepUpSessionID },
+				name: "a session target",
+				set: func(p *store.CreateOAuthAuthorizationCodeParams) {
+					p.StepUp = store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "sess-stepup-1"}
+				},
+				expected: store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "sess-stepup-1"},
 			},
 			{
-				name:     "step_up_token_id",
-				set:      func(p *store.CreateOAuthAuthorizationCodeParams) { p.StepUpTokenID = "token-stepup-1" },
-				expected: "token-stepup-1",
-				get:      func(row *store.OAuthAuthorizationCode) string { return row.StepUpTokenID },
+				name: "a token target",
+				set: func(p *store.CreateOAuthAuthorizationCodeParams) {
+					p.StepUp = store.CredentialRef{Kind: store.CredentialRefKindToken, ID: "token-stepup-1"}
+				},
+				expected: store.CredentialRef{Kind: store.CredentialRefKindToken, ID: "token-stepup-1"},
 			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -689,18 +749,19 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 					GrantedScopes:    "workspace:read",
 					InstallationName: "laptop",
 					ExpiresAt:        time.Now().Add(time.Minute),
+					Redemption:       store.RedemptionKindNone,
 				}
 				tc.set(&params)
 				require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, params))
 
 				row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
 				require.NoError(t, err)
-				assert.Equal(t, tc.expected, tc.get(row), "the step-up column must round-trip")
+				assert.Equal(t, tc.expected, row.StepUp, "the reference must round-trip as exactly one kind and one id")
 			})
 		}
 	})
 
-	t.Run("MarkMintedSession stamps the session on a consumed code", func(t *testing.T) {
+	t.Run("MarkMinted stamps a session on a consumed code", func(t *testing.T) {
 		st := s.NewStore(t)
 		alice := SeedUser(t, st, "mark-minted-sess")
 		owner := userid.MustNew(alice.ID)
@@ -716,16 +777,18 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			GrantedScopes:    "",
 			InstallationName: "desktop",
 			ExpiresAt:        time.Now().Add(time.Minute),
+			Redemption:       store.RedemptionKindSession,
 		}))
 
 		_, err := st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
 		require.NoError(t, err)
 
-		require.NoError(t, st.OAuthAuthorizationCodes().MarkMintedSession(ctx, code, "session-abc"))
+		minted := store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "session-abc"}
+		require.NoError(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted))
 
 		row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
 		require.NoError(t, err)
-		assert.Equal(t, "session-abc", row.MintedSessionID, "the minted session must read back on the consumed code")
+		assert.Equal(t, minted, row.Minted, "the minted reference must read back on the consumed code")
 	})
 }
 
@@ -742,6 +805,8 @@ func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.U
 		CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
 		GrantedScopes: "workspace:read", InstallationName: "laptop",
 		ExpiresAt: time.Now().Add(time.Minute),
+		// No step-up target, so the code redeems into an app credential.
+		Redemption: store.RedemptionKindToken,
 	}))
 	return deviceCode, authorizationCode
 }

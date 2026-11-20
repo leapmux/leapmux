@@ -180,7 +180,7 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 	form := url.Values{"installation_name": {DefaultDeviceName()}}
 	// The credential itself is the right to ASK. What it cannot do is
 	// approve, which needs a browser session that proves a factor.
-	resp, err := PostForm(ctx, c.HTTPClient,
+	resp, err := loopbackauth.PostForm(ctx, c.HTTPClient,
 		locallisten.JoinPath(c.connectURL, "/oauth/step-up"),
 		form, c.ApplyAuth)
 	if err != nil {
@@ -213,7 +213,7 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 	// all. Both are permanent for the device ceremony -- but the first one
 	// has a working alternative, so it is a sentinel rather than a failure.
 	if resp.StatusCode == http.StatusBadRequest {
-		body := ReadOAuthError(resp)
+		body := loopbackauth.ReadOAuthError(resp)
 		if body.Error == oauthapp.BrowserStepUpRequiredCode {
 			return nil, errBrowserStepUpRequired
 		}
@@ -245,7 +245,7 @@ func (c *Client) pollElevation(ctx context.Context, deviceCode, clientID string)
 		"client_id":   {clientID},
 		"device_code": {deviceCode},
 	}
-	resp, err := PostForm(ctx, c.HTTPClient,
+	resp, err := loopbackauth.PostForm(ctx, c.HTTPClient,
 		locallisten.JoinPath(c.connectURL, "/oauth/token"), form)
 	if err != nil {
 		return err
@@ -315,7 +315,7 @@ func (c *Client) redeemStepUpCode(ctx context.Context, flow *loopbackauth.Flow, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		body := ReadOAuthError(resp)
+		body := loopbackauth.ReadOAuthError(resp)
 		if body.Error != "" {
 			return errors.New(body.Message())
 		}
@@ -336,7 +336,7 @@ func (c *Client) redeemStepUpCode(ctx context.Context, flow *loopbackauth.Flow, 
 // postStepUpRedemption performs one redemption attempt, presenting the
 // bearer this client holds.
 func (c *Client) postStepUpRedemption(ctx context.Context, flow *loopbackauth.Flow, code string) (*http.Response, error) {
-	return PostForm(ctx, c.HTTPClient,
+	return loopbackauth.PostForm(ctx, c.HTTPClient,
 		locallisten.JoinPath(c.connectURL, "/oauth/token"),
 		flow.TokenForm(code), c.ApplyAuth)
 }

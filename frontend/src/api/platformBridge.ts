@@ -10,8 +10,9 @@ import {
   WINDOW_MODE_MAXIMIZED,
   WINDOW_MODE_NORMAL,
 } from '~/generated/contracts/desktop'
+import { DEFAULT_MAX_MESSAGE_SIZE } from '~/generated/contracts/wire'
 import { BrowserAuthKind as ProtoBrowserAuthKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
-import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
+import { arrayBufferToBase64 } from '~/lib/base64'
 import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
@@ -176,10 +177,75 @@ export interface BrowserAuthStart {
   authorizeUrl: string
 }
 
+/**
+ * One proxied HTTP round trip, as the desktop sidecar's raw response envelope
+ * decodes it: the status and headers from its meta block, and the body bytes
+ * sliced out of the envelope buffer.
+ */
 export interface ProxyHttpResponse {
   status: number
   headers: Record<string, string[]>
-  body: string
+  body: ArrayBuffer
+}
+
+/**
+ * The unary proxy response envelope, shared with the Rust shell's
+ * `encode_proxy_response_envelope` (desktop/rust/src/main.rs):
+ *
+ *     [u32 LE meta_len][meta JSON][body]
+ *
+ * The meta JSON is `{"status": <int>, "headers": {<name>: [<value>, ...]}}`.
+ * The 4-byte length prefix matches contracts/wire.json's
+ * `framing.lengthPrefixBytes` (this envelope reads it LITTLE-endian, unlike
+ * that contract's big-endian WebSocket frame prefix), and the meta block is
+ * budgeted by the same contract's `maxMessageSizeBytes` frame budget. The
+ * body follows the meta block verbatim -- no base64 anywhere on this path,
+ * which is the whole point: for multi-MB payloads the encode/decode
+ * round-trip was the dominant cost of the desktop transport.
+ */
+export const PROXY_ENVELOPE_META_PREFIX_BYTES = 4
+
+/** Encode one proxied response into `[u32 LE meta_len][meta JSON][body]`. */
+export function encodeProxyResponseEnvelope(resp: ProxyHttpResponse): ArrayBuffer {
+  const meta = new TextEncoder().encode(JSON.stringify({
+    status: resp.status,
+    headers: resp.headers,
+  }))
+  if (meta.byteLength > DEFAULT_MAX_MESSAGE_SIZE)
+    throw new Error('proxy response meta exceeds the frame budget')
+  const out = new Uint8Array(PROXY_ENVELOPE_META_PREFIX_BYTES + meta.byteLength + resp.body.byteLength)
+  new DataView(out.buffer).setUint32(0, meta.byteLength, true)
+  out.set(meta, PROXY_ENVELOPE_META_PREFIX_BYTES)
+  out.set(new Uint8Array(resp.body), PROXY_ENVELOPE_META_PREFIX_BYTES + meta.byteLength)
+  return out.buffer
+}
+
+/**
+ * Decode the raw envelope `proxy_http` resolves with, slicing the body out of
+ * the buffer. The prefix and the meta block are validated before either is
+ * trusted: the length is read little-endian, checked against the frame budget
+ * (contracts/wire.json `maxMessageSizeBytes`) and against the bytes actually
+ * present, so a corrupt prefix cannot make the slice read past the buffer.
+ */
+export function decodeProxyResponseEnvelope(bytes: ArrayBuffer): ProxyHttpResponse {
+  if (bytes.byteLength < PROXY_ENVELOPE_META_PREFIX_BYTES)
+    throw new Error('proxy response envelope is truncated')
+  const metaLen = new DataView(bytes).getUint32(0, true)
+  if (metaLen > DEFAULT_MAX_MESSAGE_SIZE)
+    throw new Error('proxy response meta exceeds the frame budget')
+  const bodyStart = PROXY_ENVELOPE_META_PREFIX_BYTES + metaLen
+  if (bodyStart > bytes.byteLength)
+    throw new Error('proxy response envelope is truncated')
+  const meta: { status?: unknown, headers?: unknown } = JSON.parse(
+    new TextDecoder().decode(new Uint8Array(bytes, PROXY_ENVELOPE_META_PREFIX_BYTES, metaLen)),
+  )
+  return {
+    status: typeof meta.status === 'number'
+      ? meta.status
+      : 200,
+    headers: (meta.headers ?? {}) as Record<string, string[]>,
+    body: bytes.slice(bodyStart),
+  }
 }
 
 export interface TunnelConfig {
@@ -988,13 +1054,29 @@ export const platformBridge = {
   async cancelBrowserAuth(ceremonyId: string): Promise<void> {
     await tauriInvoke('cancel_browser_auth', { ceremonyId })
   },
-  async proxyHttp(method: string, path: string, headers: Record<string, string>, bodyBase64: string): Promise<ProxyHttpResponse> {
-    return tauriInvoke('proxy_http', {
-      payload: {
+  /**
+   * One proxied HTTP round trip through the desktop sidecar. The request body
+   * crosses the Tauri IPC as the raw invoke body (the `fileSaveWrite`
+   * pattern); the method, the path and the proxied headers ride InvokeOptions
+   * headers (the `fileSaveOpen` pattern), because the invoke-args slot holds
+   * the raw body. The proxied headers are arbitrary Unicode pairs and an
+   * invoke header value must stay visible ASCII, so the map rides
+   * base64-encoded JSON -- the `filename-b64` pattern.
+   *
+   * Resolves with the raw response envelope (see
+   * `decodeProxyResponseEnvelope`), never a JSON body.
+   */
+  async proxyHttp(method: string, path: string, headers: Record<string, string>, body: ArrayBuffer | Uint8Array | string | null | undefined): Promise<ArrayBuffer> {
+    const bytes = body === null || body === undefined
+      ? new Uint8Array(0)
+      : typeof body === 'string'
+        ? new TextEncoder().encode(body)
+        : body
+    return tauriInvoke<ArrayBuffer>('proxy_http', bytes, {
+      headers: {
         method,
         path,
-        headers,
-        bodyBase64,
+        'headers-b64': arrayBufferToBase64(JSON.stringify(headers)),
       },
     })
   },
@@ -1015,11 +1097,22 @@ export const platformBridge = {
   // close can be ignored once a later open has superseded it — the two are separate
   // requests and the sidecar runs each on its own goroutine with no ordering, so
   // wire order is not execution order.
-  async openChannelRelay(relayId: number): Promise<void> {
-    await tauriInvoke('open_channel_relay', { relayId })
+  //
+  // The channel is the frame delivery target the Rust shell stores beside that
+  // id (see `RelaySlot` in desktop/rust/src/main.rs): frames reach the webview
+  // as raw ArrayBuffers through it, and a superseded relay id never delivers.
+  // Created through this gateway so every @tauri-apps/api access stays in this
+  // module; the handler must be set before the channel travels (a channel
+  // replays nothing), which `createRelayChannel` guarantees by construction.
+  async createRelayChannel(onmessage: (data: ArrayBuffer) => void): Promise<import('@tauri-apps/api/core').Channel<ArrayBuffer>> {
+    const { Channel } = await loadTauriCore()
+    return new Channel<ArrayBuffer>(onmessage)
   },
-  async sendChannelMessage(b64Data: string): Promise<void> {
-    await tauriInvoke('send_channel_message', { b64Data })
+  async openChannelRelay(relayId: number, channel: import('@tauri-apps/api/core').Channel<ArrayBuffer>): Promise<void> {
+    await tauriInvoke('open_channel_relay', { relayId, channel })
+  },
+  async sendChannelMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
+    await tauriInvoke('send_channel_message', data)
   },
   async closeChannelRelay(relayId: number): Promise<void> {
     await tauriInvoke('close_channel_relay', { relayId })
@@ -1027,8 +1120,8 @@ export const platformBridge = {
   // UserEvents relay (`/ws/userevents`). The webview can't dial the
   // unix-socket hub natively in desktop solo mode, so the Go sidecar
   // opens the WebSocket on our behalf and forwards each binary
-  // frame as a Tauri `userevents:message` event (base64-encoded
-  // length-prefixed WatchUserEvent bytes).
+  // frame through the channel given here (raw length-prefixed
+  // WatchUserEvent bytes, no base64).
   //
   // relayId names the attempt, exactly like the channel relay above. It carries more
   // weight here: this open force-restarts the relay (the hub sends UserMaterialized
@@ -1040,6 +1133,7 @@ export const platformBridge = {
   // bigint), mirroring the resume_after_hlc query-param shape the Go side parses.
   async openUserEventsRelay(
     relayId: number,
+    channel: import('@tauri-apps/api/core').Channel<ArrayBuffer>,
     workspaceIds: string[] = [],
     resume?: { hlc: { physical: bigint, logical: bigint, clientId: string }, epoch: bigint } | null,
   ): Promise<void> {
@@ -1048,6 +1142,7 @@ export const platformBridge = {
       : null
     await tauriInvoke('open_userevents_relay', {
       relayId,
+      channel,
       workspaceIds,
       resumeHlc,
       resumeEpoch: resume
@@ -1180,9 +1275,8 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
     : (input as Request).url
   const method = init?.method ?? 'POST'
   const headers = Object.fromEntries(new Headers(init?.headers).entries())
-  const body = init?.body
-    ? arrayBufferToBase64(init.body as ArrayBuffer | Uint8Array | string)
-    : ''
+  // The body crosses as the raw invoke body, not base64 (see proxyHttp).
+  const body = (init?.body ?? null) as ArrayBuffer | Uint8Array | string | null
   const parsed = new URL(url)
   const path = parsed.pathname + parsed.search
 
@@ -1202,18 +1296,19 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
     })
     proxied = Promise.race([proxied, aborted])
   }
-  let resp: ProxyHttpResponse
+  let envelope: ArrayBuffer
   try {
-    resp = await proxied
+    envelope = await proxied
   }
   finally {
     if (onAbort)
       signal?.removeEventListener('abort', onAbort)
   }
+  const resp = decodeProxyResponseEnvelope(envelope)
   const responseHeaders = Object.entries(resp.headers).flatMap(([name, values]) =>
     values.map(value => [name, value] as [string, string]),
   )
-  return new Response(base64ToArrayBuffer(resp.body), {
+  return new Response(resp.body, {
     status: resp.status,
     headers: responseHeaders,
   })

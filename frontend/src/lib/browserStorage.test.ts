@@ -1,8 +1,9 @@
 import type { AsyncLocalKey, StorageAccount, SyncLocalKey } from '~/lib/browserStorage'
+import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
-import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, parseStoredKey, PREFIX_EDITOR_DRAFT, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storageAccountFor, storageAccountUserId, storedKeyFor } from '~/lib/browserStorage'
-import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, hydrateStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, parseStoredKey, PREFIX_EDITOR_DRAFT, resetBrowserStorageForTests, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccount, setStorageAccountForTests, storageAccountFor, storageAccountId, storageAccountUserId, storedKeyFor, TEST_HUB } from '~/lib/browserStorage'
+import { TEST_ACCOUNT, TEST_USER_ID } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 
 // Restated rather than imported, so an assertion is an INDEPENDENT statement of
@@ -13,9 +14,11 @@ const YEAR_MS = 365 * DAY_MS
 
 // The account `vitest.setup.ts` signs the suite in as. Taken from there rather
 // than spelled again, because it is not an expectation of this file's own -- it
-// is the identity every read and write here resolves under.
-const ACCOUNT = TEST_USER_ID
-const OTHER = 'otheraccount'
+// is the identity every read and write here resolves under. The setter takes
+// the RAW user id and composes this account; assertions name the account.
+const ACCOUNT = TEST_ACCOUNT
+const OTHER_USER = 'otheraccount'
+const OTHER = storageAccountFor(TEST_HUB, OTHER_USER)
 
 /**
  * The expiration the mirror holds for `name`, or undefined when it holds
@@ -38,6 +41,9 @@ describe('browserStorage', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    // The two-hub case stubs its own `indexedDB`; a leak would give every
+    // later test in this file a database it does not expect.
+    vi.unstubAllGlobals()
   })
 
   describe('localStorageSet', () => {
@@ -184,8 +190,8 @@ describe('browserStorage', () => {
   describe('the account namespace', () => {
     it('composes an account-scoped key under the signed-in account', () => {
       localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
-      expect(mirrorEntryForTests(`leapmux:u:${ACCOUNT}:browser-prefs`)).toBeDefined()
-      expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe(`leapmux:u:${ACCOUNT}:browser-prefs`)
+      expect(mirrorEntryForTests(`leapmux:u:${encodeURIComponent(ACCOUNT)}:browser-prefs`)).toBeDefined()
+      expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe(`leapmux:u:${encodeURIComponent(ACCOUNT)}:browser-prefs`)
     })
 
     it('composes a device-scoped key with no account segment', () => {
@@ -200,7 +206,7 @@ describe('browserStorage', () => {
       })
 
       afterEach(() => {
-        setStorageAccountForTests(ACCOUNT)
+        setStorageAccountForTests(TEST_USER_ID)
       })
 
       it('reports that no account is available', () => {
@@ -244,11 +250,11 @@ describe('browserStorage', () => {
       // Even with no account, where a null answer would look plausible.
       resetStorageAccountForTests()
       expect(() => storedKeyFor('not-registered')).toThrow(/Unknown storage key/)
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
     })
 
     it('states one account prefix that a caller can match a whole namespace with', () => {
-      expect(accountStorageKeyPrefix(ACCOUNT)).toBe(`leapmux:u:${ACCOUNT}:`)
+      expect(accountStorageKeyPrefix(ACCOUNT)).toBe(`leapmux:u:${encodeURIComponent(ACCOUNT)}:`)
       expect(accountStorageKey(ACCOUNT, KEY_BROWSER_PREFS).startsWith(accountStorageKeyPrefix(ACCOUNT))).toBe(true)
     })
 
@@ -261,12 +267,12 @@ describe('browserStorage', () => {
     it('gives each account its own sessionStorage namespace', () => {
       sessionStorageSet(KEY_CLIENT_ID, 'client-alpha')
 
-      setStorageAccountForTests(OTHER)
+      setStorageAccountForTests(OTHER_USER)
       expect(sessionStorageGet(KEY_CLIENT_ID)).toBeUndefined()
       expect(sessionStorageHas(KEY_CLIENT_ID)).toBe(false)
       sessionStorageSet(KEY_CLIENT_ID, 'client-beta')
 
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
       expect(sessionStorageGet(KEY_CLIENT_ID)).toBe('client-alpha')
       expect(sessionStorage.getItem(accountStorageKey(OTHER, KEY_CLIENT_ID))).not.toBeNull()
     })
@@ -289,20 +295,20 @@ describe('browserStorage', () => {
         const seen: Array<string | null> = []
         const off = onStorageAccountChange(() => seen.push(storedKeyFor(KEY_BROWSER_PREFS)))
 
-        setStorageAccountForTests(OTHER)
+        setStorageAccountForTests(OTHER_USER)
         expect(seen).toEqual([
           accountStorageKey(OTHER, KEY_BROWSER_PREFS),
         ])
 
         off()
-        setStorageAccountForTests(ACCOUNT)
+        setStorageAccountForTests(TEST_USER_ID)
         expect(seen).toHaveLength(1)
       })
 
       it('stays quiet for an unchanged id', () => {
         const listener = vi.fn()
         const off = onStorageAccountChange(listener)
-        setStorageAccountForTests(ACCOUNT)
+        setStorageAccountForTests(TEST_USER_ID)
         expect(listener).not.toHaveBeenCalled()
         off()
       })
@@ -311,7 +317,7 @@ describe('browserStorage', () => {
         resetStorageAccountForTests()
         const listener = vi.fn()
         onStorageAccountChange(listener)
-        setStorageAccountForTests(ACCOUNT)
+        setStorageAccountForTests(TEST_USER_ID)
         expect(listener).toHaveBeenCalledTimes(1)
       })
     })
@@ -319,11 +325,11 @@ describe('browserStorage', () => {
     it('leaves the previous account untouched when the namespace moves', () => {
       localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
 
-      setStorageAccountForTests(OTHER)
+      setStorageAccountForTests(OTHER_USER)
       expect(localStorageGet(KEY_BROWSER_PREFS)).toBeUndefined()
       localStorageSet(KEY_BROWSER_PREFS, { diffView: 'unified' })
 
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
       expect(localStorageGet(KEY_BROWSER_PREFS)).toEqual({ diffView: 'split' })
       // The other account's value is still there, under its own key, and only
       // its own namespace can identify it.
@@ -334,23 +340,40 @@ describe('browserStorage', () => {
     // Two hubs behind one origin can hold the same user id. The account is the
     // (hub, user) pair, so each hub keeps its own namespace: a value stored for
     // one is absent from the other, and nothing that the first wrote reaches
-    // the second.
-    it('keeps two hubs that hold the same user id in separate namespaces', () => {
+    // the second. `setStorageAccountForTests` composes under the one TEST hub,
+    // so accounts of other hubs move through the production seam -- and its
+    // re-read needs the write queue to have reached a database.
+    it('keeps two hubs that hold the same user id in separate namespaces', async () => {
+      vi.useRealTimers()
+      vi.stubGlobal('indexedDB', new IDBFactory())
+      resetBrowserStorageForTests()
       const hubA = storageAccountFor('https://hub-a.example', 'user-x')
       const hubB = storageAccountFor('https://hub-b.example', 'user-x')
 
-      setStorageAccountForTests(hubA)
+      await hydrateStorageAccount(hubA)
+      setStorageAccount(hubA)
       localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
+      await flushStorageWrites()
 
-      setStorageAccountForTests(hubB)
+      await hydrateStorageAccount(hubB)
+      setStorageAccount(hubB)
       expect(localStorageGet(KEY_BROWSER_PREFS)).toBeUndefined()
 
-      setStorageAccountForTests(hubA)
+      await hydrateStorageAccount(hubA)
+      setStorageAccount(hubA)
       expect(localStorageGet(KEY_BROWSER_PREFS)).toEqual({ diffView: 'split' })
     })
 
     it('refuses an empty id, which specifies no account', () => {
       expect(() => setStorageAccountForTests('')).toThrow(/Invalid storage account id/)
+    })
+
+    // The setter's parameter is a RAW Hub user id, and the account is composed
+    // at this one writer. Only composing at the writer keeps a slash-bearing
+    // user id and a `(hub, user)` pair from ever mapping to one account.
+    it('composes the account under the test hub', () => {
+      setStorageAccountForTests('usertest')
+      expect(storageAccountId()).toBe(storageAccountFor(TEST_HUB, 'usertest'))
     })
 
     // The stored key splits on the first ':' after `u:`, and the id segment is
@@ -380,7 +403,7 @@ describe('browserStorage', () => {
 
     it('is a no-op for an unchanged id', () => {
       localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
-      setStorageAccountForTests(ACCOUNT)
+      setStorageAccountForTests(TEST_USER_ID)
       expect(localStorageGet(KEY_BROWSER_PREFS)).toEqual({ diffView: 'split' })
     })
 
@@ -391,7 +414,7 @@ describe('browserStorage', () => {
       let threw: unknown
       batchBrowserPrefWrites(() => {
         try {
-          setStorageAccountForTests(OTHER)
+          setStorageAccountForTests(OTHER_USER)
         }
         catch (err) {
           threw = err
@@ -399,7 +422,7 @@ describe('browserStorage', () => {
       })
       expect(String(threw)).toMatch(/browser-preference batch is open/)
       // The move was refused, so the namespace is unchanged.
-      expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe(`leapmux:u:${ACCOUNT}:browser-prefs`)
+      expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe(`leapmux:u:${encodeURIComponent(ACCOUNT)}:browser-prefs`)
     })
   })
 
@@ -611,11 +634,11 @@ describe('localStorageDropPrefix', () => {
     const key = `${PREFIX_EDITOR_DRAFT}retired-input`
     localStorageStore(key, 'old account')
     const deletion = localStorageDropPrefix(key)
-    setStorageAccountForTests(OTHER)
+    setStorageAccountForTests(OTHER_USER)
     localStorageStore(key, 'new account')
     await deletion
     expect(await localStorageLoad(key)).toBe('new account')
-    setStorageAccountForTests(ACCOUNT)
+    setStorageAccountForTests(TEST_USER_ID)
     expect(await localStorageLoad(key)).toBeUndefined()
   })
 
@@ -675,11 +698,17 @@ describe('storageAccountUserId', () => {
     }
   })
 
-  // `setStorageAccountForTests` writes a bare Hub user id as the account -- the
-  // form whose account IS its user id. It carries no separator and no encoding,
-  // so it identifies itself.
-  it('returns a bare user id unchanged', () => {
-    expect(storageAccountUserId('usertest' as StorageAccount)).toBe('usertest')
+  // A bare user id is not a composed account. The writer composes
+  // (`setStorageAccountForTests` under `TEST_HUB`), so every account the module
+  // holds carries a separator -- and the old fallback, which returned the whole
+  // string undecoded, made a slash-bearing bare id indistinguishable from a
+  // `(hub, user)` pair. This throws instead of guessing.
+  it('throws for a bare user id that carries no separator', () => {
+    expect(() => storageAccountUserId('usertest' as StorageAccount)).toThrow(/Invalid storage account id/)
+  })
+
+  it('recovers the user id of a composed account', () => {
+    expect(storageAccountUserId(storageAccountFor(TEST_HUB, TEST_USER_ID))).toBe(TEST_USER_ID)
   })
 
   it('identifies no user when there is no account', () => {

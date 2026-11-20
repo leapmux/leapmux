@@ -760,13 +760,11 @@ type OAuthAuthorizationCodeStore interface {
 	Get(ctx context.Context, code string) (*OAuthAuthorizationCode, error)
 	GetActive(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
 	Consume(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
-	// MarkMinted records which credential the exchange produced, so a later
-	// replay of the same code can revoke it.
-	MarkMinted(ctx context.Context, code, tokenID string) error
-	// MarkMintedSession records which session the exchange issued, for an app
-	// whose code redeems into a session. It serves the replay remedy as
-	// MarkMinted does.
-	MarkMintedSession(ctx context.Context, code, sessionID string) error
+	// MarkMinted records which credential the exchange produced -- an app
+	// credential or a session, as the reference states -- so a later replay of
+	// the same code can revoke it. RFC 6749 section 4.1.2 requires exactly
+	// that, and without the stamp there was nothing to name.
+	MarkMinted(ctx context.Context, code string, minted CredentialRef) error
 	// ConsumeActiveForUserClient spends this account's outstanding codes for
 	// an app -- the DISCONNECT path, which must not leave a consent granted
 	// seconds before it redeemable into a fresh credential.

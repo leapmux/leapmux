@@ -564,7 +564,7 @@ describe('emitters', () => {
     const rs = emitRsDesktop(d)
     expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_ABOUT: &str = "menu:show-about"')
     expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_PREFERENCES: &str = "menu:show-preferences"')
-    expect(rs).not.toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_CHANNEL_MESSAGE')
+    expect(rs).not.toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_CHANNEL_CLOSE')
   })
 
   it('emits durations as const expressions, not runtime values', () => {
@@ -3523,9 +3523,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // Supply every event when a fixture must pass the tauriEvents coverage check.
   // Older four-event fixtures fail before they reach that check.
   const events = () => ({
-    channelMessage: 'c:m',
     channelClose: 'c:c',
-    userEventsMessage: 'u:m',
     userEventsClose: 'u:c',
     sidecarLog: 's:l',
     browserAuthResult: 'b:r',
@@ -3636,10 +3634,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: {
-        channelMessage: 'same:event',
         channelClose: 'same:event',
-        userEventsMessage: 'u:m',
-        userEventsClose: 'u:c',
+        userEventsClose: 'same:event',
       },
       windowBehavior: behavior(),
       launchVisibility: launch(),
@@ -3674,9 +3670,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: {
-        channelMessage: 'c:m',
         channelClose: 'c:c',
-        userEventsMessage: 'u:m',
         userEventsClose: 'u:c',
       },
       windowBehavior: behavior(),
@@ -3692,9 +3686,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: {
-        channelMessage: 'c:m',
         channelClose: 'c:c',
-        userEventsMessage: 'u:m',
         userEventsClose: 'u:c',
         extra: 'e:x',
       },
@@ -3734,9 +3726,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         },
         devFrontendUrl: 'http://localhost:4328',
         tauriEvents: {
-          channelMessage: 'c:m',
           channelClose: 'c:c',
-          userEventsMessage: 'u:m',
           userEventsClose: 'u:c',
         },
         windowBehavior: behavior(),
@@ -3882,7 +3872,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     const rs = emitRsDesktop(d)
     expect(rs).toContain('pub const ENV_DEV_ENDPOINT: &str = "LEAPMUX_DESKTOP_DEV_ENDPOINT"')
     expect(rs).toContain('pub const ENV_DEV_FRONTEND: &str = "LEAPMUX_HUB_DEV_FRONTEND"')
-    expect(rs).toContain('pub const EVENT_CHANNEL_MESSAGE: &str = "channel:message"')
+    expect(rs).toContain('pub const EVENT_CHANNEL_CLOSE: &str = "channel:close"')
     expect(rs).not.toContain('//!')
   })
 

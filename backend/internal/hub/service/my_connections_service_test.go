@@ -494,6 +494,7 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 		RedirectURI:   "http://127.0.0.1:54321/callback",
 		GrantedScopes: "workspace:read",
 		ExpiresAt:     time.Now().Add(10 * time.Minute),
+		Redemption:    store.RedemptionKindToken,
 	}))
 
 	deviceCode := id.Generate()

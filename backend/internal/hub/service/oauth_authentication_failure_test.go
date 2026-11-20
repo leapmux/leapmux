@@ -370,7 +370,7 @@ func TestStepUpCodeExchange_AFailingCredentialReadAnswersInternalErrorAndKeepsTh
 	ctx := context.Background()
 	cookie := env.adminCookie(t)
 	sessionID := hubtestutil.SessionIDFromCookie(t, cookie.Value)
-	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID, sessionID, "")
+	code, verifier := seedStepUpCode(t, env, oauthapp.DesktopClientID, store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sessionID})
 
 	faults := &oauthAuthenticationFaults{sessionErr: errors.New("sensitive credential read failure")}
 	failing := oauthAuthenticationServer(t, env, faults)
@@ -399,7 +399,7 @@ func TestStepUpCodeExchange_ATokenCodeRedeemsWithItsBearer(t *testing.T) {
 	env := setupAPIAuth(t)
 	ctx := context.Background()
 	tokenID, bearer := cliCredential(t, env, "operator-laptop")
-	code, verifier := seedStepUpCode(t, env, oauthapp.ControlCLIClientID, "", tokenID)
+	code, verifier := seedStepUpCode(t, env, oauthapp.ControlCLIClientID, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: tokenID})
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		env.server.URL+"/oauth/token",

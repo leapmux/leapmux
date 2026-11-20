@@ -61,12 +61,13 @@ func SeedBuiltIns(ctx context.Context, st Store, now time.Time) error {
 			// The desktop's remote-Hub sign-in: a browser handoff that mints a
 			// SESSION, not an app credential. No scopes to ask for (the session
 			// is the account itself), and the authorization_code grant alone.
-			ClientID:     oauthapp.DesktopClientID,
-			ClientName:   oauthapp.DesktopName,
-			ClientURI:    "",
-			RedirectURIs: oauthapp.DesktopRedirectURI,
-			Scopes:       oauthapp.DesktopScopes,
-			GrantTypes:   oauthapp.DesktopGrantTypes,
+			ClientID:       oauthapp.DesktopClientID,
+			ClientName:     oauthapp.DesktopName,
+			ClientURI:      "",
+			RedirectURIs:   oauthapp.DesktopRedirectURI,
+			Scopes:         oauthapp.DesktopScopes,
+			GrantTypes:     oauthapp.DesktopGrantTypes,
+			IssuesSessions: oauthapp.DesktopIssuesSessions,
 		}),
 	}
 	for _, row := range rows {

@@ -187,6 +187,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			UserID:        userid.MustNew(user.ID),
 			CodeChallenge: "challenge",
 			ExpiresAt:     expiresAt,
+			Redemption:    store.RedemptionKindToken,
 		}))
 
 		code, err := st.OAuthAuthorizationCodes().GetActive(ctx, "floor-code", time.Now().UTC())

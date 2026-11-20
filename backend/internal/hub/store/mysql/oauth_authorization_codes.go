@@ -6,7 +6,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -24,10 +23,9 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 		RedirectURI:      c.RedirectUri,
 		GrantedScopes:    c.GrantedScopes,
 		InstallationName: c.InstallationName,
-		MintedTokenID:    c.MintedTokenID.String,
-		MintedSessionID:  c.MintedSessionID.String,
-		StepUpSessionID:  c.StepUpSessionID.String,
-		StepUpTokenID:    c.StepUpTokenID.String,
+		Minted:           store.StoredRef(c.MintedKind, c.MintedRefID),
+		StepUp:           store.StoredRef(c.StepUpKind, c.StepUpRefID),
+		Redemption:       store.StoredRedemption(c.RedemptionKind),
 		CreatedAt:        c.CreatedAt.Time,
 		ExpiresAt:        c.ExpiresAt.Time,
 		ConsumedAt:       c.ConsumedAt.Ptr(),
@@ -35,6 +33,7 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 }
 
 func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.CreateOAuthAuthorizationCodeParams) error {
+	stepUpKind, stepUpRefID := p.StepUp.NullableKind()
 	return s.conn.queryError(s.conn.q.CreateOAuthAuthorizationCode(ctx, gendb.CreateOAuthAuthorizationCodeParams{
 		Code:             p.Code,
 		UserID:           p.UserID.String(),
@@ -44,8 +43,9 @@ func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.Create
 		GrantedScopes:    p.GrantedScopes,
 		InstallationName: p.InstallationName,
 		ExpiresAt:        sqltime.NewMySQLTime(p.ExpiresAt),
-		StepUpSessionID:  sqlutil.NullNonEmpty(p.StepUpSessionID),
-		StepUpTokenID:    sqlutil.NullNonEmpty(p.StepUpTokenID),
+		StepUpKind:       stepUpKind,
+		StepUpRefID:      stepUpRefID,
+		RedemptionKind:   p.Redemption.NullableKind(),
 	}))
 }
 
@@ -107,16 +107,11 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 	}))
 }
 
-func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code, tokenID string) error {
+func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
+	mintedKind, mintedRefID := minted.NullableKind()
 	return s.conn.queryError(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
-		Code:          code,
-		MintedTokenID: sqlutil.NullNonEmpty(tokenID),
-	}))
-}
-
-func (s *oauthAuthorizationCodeStore) MarkMintedSession(ctx context.Context, code, sessionID string) error {
-	return s.conn.queryError(s.conn.q.MarkOAuthAuthorizationCodeMintedSession(ctx, gendb.MarkOAuthAuthorizationCodeMintedSessionParams{
-		Code:            code,
-		MintedSessionID: sqlutil.NullNonEmpty(sessionID),
+		Code:        code,
+		MintedKind:  mintedKind,
+		MintedRefID: mintedRefID,
 	}))
 }

@@ -285,7 +285,7 @@ func runDeviceCodeLogin(ctx context.Context, hubURL, deviceName, scope string) e
 		"installation_name": {deviceName},
 		"scope":             {scope},
 	}
-	resp, err := control.PostForm(ctx, hc,
+	resp, err := loopbackauth.PostForm(ctx, hc,
 		locallisten.JoinPath(baseURL, "/oauth/device-authorization"), form)
 	if err != nil {
 		return control.EmitErrorWith("device_authorization_failed", err)
@@ -336,7 +336,7 @@ func tryExchangeDeviceCode(ctx context.Context, hc *http.Client, baseURL, hubURL
 		"client_id":   {control.ControlCLIClientID},
 		"device_code": {deviceCode},
 	}
-	resp, err := control.PostForm(ctx, hc, locallisten.JoinPath(baseURL, "/oauth/token"), form)
+	resp, err := loopbackauth.PostForm(ctx, hc, locallisten.JoinPath(baseURL, "/oauth/token"), form)
 	if err != nil {
 		return err
 	}
@@ -357,7 +357,7 @@ func exchangeAuthorizationCode(ctx context.Context, hubURL string, form url.Valu
 	if err != nil {
 		return control.EmitErrorWith("invalid_hub_url", err)
 	}
-	resp, err := control.PostForm(ctx, hc, locallisten.JoinPath(baseURL, "/oauth/token"), form)
+	resp, err := loopbackauth.PostForm(ctx, hc, locallisten.JoinPath(baseURL, "/oauth/token"), form)
 	if err != nil {
 		return control.EmitErrorWith("token_exchange_failed", err)
 	}
@@ -792,7 +792,7 @@ func revokeBearer(hubURL, bearer, clientID string) error {
 		"token":     {bearer},
 		"client_id": {clientID},
 	}
-	resp, err := control.PostForm(context.Background(), hc,
+	resp, err := loopbackauth.PostForm(context.Background(), hc,
 		locallisten.JoinPath(baseURL, "/oauth/revoke"), form,
 		func(h http.Header) { h.Set("Authorization", "Bearer "+bearer) })
 	if err != nil {

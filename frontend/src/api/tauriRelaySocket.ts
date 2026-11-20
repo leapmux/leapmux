@@ -1,6 +1,10 @@
 /**
  * TauriRelayWebSocket provides a WebSocket-like interface that bridges through
- * Tauri IPC and events. Binary data is base64-encoded at the boundary.
+ * Tauri IPC. Binary frames travel raw: the wrapper hands each relay open a
+ * Tauri `Channel`, the Rust shell stores it beside the relay id, and frames
+ * reach the handler as ArrayBuffers with no encode or decode at the boundary.
+ * Close events keep riding the global Tauri events, so every wrapper hears the
+ * terminal path of the relay it may own.
  *
  * It satisfies ChannelManager's structural `ChannelSocket` surface (see
  * ~/lib/channel) so the channel layer drives a native browser WebSocket and
@@ -10,8 +14,7 @@
  */
 
 import { parseRelayClosePayload, platformBridge } from '~/api/platformBridge'
-import { TAURI_EVENT_CHANNEL_CLOSE, TAURI_EVENT_CHANNEL_MESSAGE } from '~/generated/contracts/desktop'
-import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
+import { TAURI_EVENT_CHANNEL_CLOSE } from '~/generated/contracts/desktop'
 import { createLogger } from '~/lib/logger'
 import { relayClaim } from '~/lib/relayClaim'
 
@@ -35,8 +38,7 @@ export class TauriRelayWebSocket {
   // matching native WebSocket semantics; without this a send that races
   // openChannelRelay() is dispatched to a not-yet-open relay and silently
   // dropped, which would lose a Noise handshake message.
-  private pendingSends: string[] = []
-  private unlistenMessage: (() => void) | null = null
+  private pendingSends: (ArrayBuffer | Uint8Array)[] = []
   private unlistenClose: (() => void) | null = null
   // Claims the singleton relay synchronously, at construction and so before any
   // await, so a predecessor's in-flight teardown can see it has been superseded
@@ -56,38 +58,12 @@ export class TauriRelayWebSocket {
   private relayReleased = false
 
   constructor() {
-    Promise.all([
-      platformBridge.onEvent(TAURI_EVENT_CHANNEL_MESSAGE, (payload: unknown) => {
-        // Decode inside a guard: this callback runs straight off the raw Tauri
-        // event (no promise chain to catch for it), and atob throws on a
-        // malformed payload -- an unguarded throw would escape uncaught AND
-        // skip dispatch(), silently orphaning the frame with no log to find it
-        // by. A frame that cannot be decoded is dropped loudly instead.
-        let ev: MessageEvent
-        try {
-          ev = {
-            data: base64ToArrayBuffer(payload as string),
-          } as MessageEvent
-        }
-        catch (err) {
-          log.error('channel relay message payload was undecodable; dropping frame', {
-            error: String(err),
-          })
-          return
-        }
-        this.invokeHandler('onmessage', this.onmessage, ev)
-        this.dispatch('message', ev)
-      }),
-      platformBridge.onEvent(TAURI_EVENT_CHANNEL_CLOSE, (payload: unknown) => {
-        this.handleClose(parseRelayClosePayload(payload) as CloseEvent)
-      }),
-    ]).then(async ([unlistenMessage, unlistenClose]) => {
-      this.unlistenMessage = unlistenMessage
+    platformBridge.onEvent(TAURI_EVENT_CHANNEL_CLOSE, (payload: unknown) => {
+      this.handleClose(parseRelayClosePayload(payload) as CloseEvent)
+    }).then(async (unlistenClose) => {
       this.unlistenClose = unlistenClose
       if (this.readyState === WebSocket.CLOSED) {
-        this.unlistenMessage()
         this.unlistenClose()
-        this.unlistenMessage = null
         this.unlistenClose = null
         // This open never landed either (handleClose ran before openChannelRelay
         // was even attempted -- e.g. a predecessor relay's channel:close event
@@ -97,12 +73,28 @@ export class TauriRelayWebSocket {
         this.abandonRelayClaim()
         return
       }
-      await platformBridge.openChannelRelay(this.wrapperId)
+      // The channel is this wrapper's frame delivery target: the Rust shell
+      // stores it beside the relay id (see `RelaySlot` in
+      // desktop/rust/src/main.rs) and sends each frame through it raw. Created
+      // in the open chain with the handler attached at construction -- a
+      // channel replays nothing to a handler set late.
+      const channel = await platformBridge.createRelayChannel((data) => {
+        // A frame can reach this handler after close() released this
+        // wrapper's relay id: the sidecar's slot clears asynchronously and an
+        // in-flight frame still names this channel. A frame for a stale relay
+        // id must not deliver.
+        if (this.readyState === WebSocket.CLOSED)
+          return
+        const ev = { data } as MessageEvent
+        this.invokeHandler('onmessage', this.onmessage, ev)
+        this.dispatch('message', ev)
+      })
+      await platformBridge.openChannelRelay(this.wrapperId, channel)
       this.relayInstalled = true
       if (this.readyState === WebSocket.CLOSED) {
         // close() raced the open: the Go sidecar installed a live relay whose
         // owning wrapper is now gone (handleClose already unlistened). Tear it
-        // down so it does not linger, emitting channel:message frames no
+        // down so it does not linger, emitting frames no
         // listener will consume until the next OpenChannelRelay reuses it --
         // unless a successor wrapper has already adopted it, in which case it is
         // the successor's to close.
@@ -132,9 +124,7 @@ export class TauriRelayWebSocket {
         this.abandonRelayClaim() // never got one; let someone else own it
       if (this.readyState === WebSocket.CLOSED)
         return
-      this.unlistenMessage?.()
       this.unlistenClose?.()
-      this.unlistenMessage = null
       this.unlistenClose = null
       this.readyState = WebSocket.CLOSED
       const ev = new ErrorEvent('error', {
@@ -207,9 +197,9 @@ export class TauriRelayWebSocket {
     if (!list)
       return
     // Iterate a copy since once-listeners mutate the array. Isolate each handler:
-    // dispatch runs from the raw Tauri `channel:message` event callback (not inside
-    // a promise chain), so a throw -- e.g. a malformed-frame decode in the message
-    // handler -- would escape as an uncaught error, abort the remaining handlers of
+    // dispatch runs from the raw frame-channel callback (not inside
+    // a promise chain), so a throw in a consumer handler
+    // would escape as an uncaught error, abort the remaining handlers of
     // this event type, and skip the once-cleanup for the throwing entry. This mirrors
     // the per-listener isolation channel.ts applies everywhere via safeCall.
     for (const entry of [...list]) {
@@ -236,21 +226,22 @@ export class TauriRelayWebSocket {
       log.warn('channel relay send after close, dropping frame')
       return
     }
-    const b64 = arrayBufferToBase64(data)
+    // The frame passes through unchanged -- raw bytes over the Tauri IPC, no
+    // base64 (see platformBridge.sendChannelMessage).
     if (this.readyState !== WebSocket.OPEN) {
-      this.pendingSends.push(b64)
+      this.pendingSends.push(data)
       return
     }
-    this.dispatchSend(b64)
+    this.dispatchSend(data)
   }
 
-  // dispatchSend serializes a single encoded frame through the promise chain
+  // dispatchSend serializes a single frame through the promise chain
   // so frames reach the Hub in order (Tauri command dispatch is async; without
   // serialization messages can overtake each other and break the Noise
   // protocol's sequential nonce counter).
-  private dispatchSend(b64: string): void {
+  private dispatchSend(data: ArrayBuffer | Uint8Array): void {
     this.sendQueue = this.sendQueue.then(
-      () => platformBridge.sendChannelMessage(b64),
+      () => platformBridge.sendChannelMessage(data),
     ).catch((err) => {
       log.warn('channel relay send failed', {
         error: String(err),
@@ -261,8 +252,8 @@ export class TauriRelayWebSocket {
   private flushPendingSends(): void {
     const pending = this.pendingSends
     this.pendingSends = []
-    for (const b64 of pending)
-      this.dispatchSend(b64)
+    for (const data of pending)
+      this.dispatchSend(data)
   }
 
   // Mirrors WebSocket.close(code?, reason?): forward the caller's code/reason
@@ -357,9 +348,7 @@ export class TauriRelayWebSocket {
       return false
     this.readyState = WebSocket.CLOSED
     this.pendingSends = []
-    this.unlistenMessage?.()
     this.unlistenClose?.()
-    this.unlistenMessage = null
     this.unlistenClose = null
     return true
   }

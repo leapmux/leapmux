@@ -50,7 +50,9 @@ use crate::{decode_b64, recover};
 // LeapMux saves of the same basename and provides the file the bytes
 // stream into.
 
-fn read_header_str<'a>(
+/// Reads one visible-ASCII invoke header off a raw-body request. Shared with
+/// `proxy_http`, which rides its method/path metadata the same way.
+pub(crate) fn read_header_str<'a>(
     request: &'a tauri::ipc::Request<'_>,
     name: &str,
 ) -> Result<&'a str, String> {
@@ -62,7 +64,12 @@ fn read_header_str<'a>(
         .map_err(|err| format!("invalid {name} header: {err}"))
 }
 
-fn read_b64_header(request: &tauri::ipc::Request<'_>, name: &str) -> Result<String, String> {
+/// Reads one base64-encoded invoke header and decodes it to a UTF-8 string,
+/// for metadata an ASCII header value cannot carry. Shared with `proxy_http`.
+pub(crate) fn read_b64_header(
+    request: &tauri::ipc::Request<'_>,
+    name: &str,
+) -> Result<String, String> {
     let bytes = decode_b64(read_header_str(request, name)?)?;
     String::from_utf8(bytes).map_err(|err| format!("invalid {name} utf-8: {err}"))
 }

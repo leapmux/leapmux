@@ -6,10 +6,9 @@ import type { FatalCloseInfo } from '~/lib/wsCloseCodes'
 import { fromBinary } from '@bufbuild/protobuf'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { isTauriApp, parseRelayClosePayload, platformBridge } from '~/api/platformBridge'
-import { TAURI_EVENT_USER_EVENTS_CLOSE, TAURI_EVENT_USER_EVENTS_MESSAGE } from '~/generated/contracts/desktop'
+import { TAURI_EVENT_USER_EVENTS_CLOSE } from '~/generated/contracts/desktop'
 import { WS_PARAM_RESUME_AFTER_HLC, WS_PARAM_RESUME_EPOCH, WS_PARAM_WORKSPACE_IDS, WS_SUBPROTOCOL_USER_EVENTS_RELAY, WS_USER_EVENTS_ROUTE } from '~/generated/contracts/wire'
 import { WatchUserEventSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { base64ToUint8Array } from '~/lib/base64'
 import { KEY_USER_EVENTS_RELAY_SEQ } from '~/lib/browserStorage'
 import { unframeBytes } from '~/lib/channelFraming'
 import { formatHlcWire, parseHlcWire } from '~/lib/crdt/hlc'
@@ -425,11 +424,11 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     // that vocabulary to be honoured differently.
     //
     // tearDown() is what makes it terminal, and each transport needs it for its
-    // own reason. On the bridge, the platformBridge onEvent listeners and the
-    // Go-side relay persist until explicitly torn down (unlike a native
-    // WebSocket's listeners, which go with the dropped socket ref), so without
-    // it a stale userevents:message listener survives and a later re-subscribe
-    // double-dispatches frames. On the native path, a preceding `error` on this
+    // own reason. On the bridge, the platformBridge close listener and the
+    // Go-side relay (with its frame channel) persist until explicitly torn
+    // down (unlike a native WebSocket's listeners, which go with the dropped
+    // socket ref), so without it a stale handler survives and a later
+    // re-subscribe double-dispatches frames. On the native path, a preceding `error` on this
     // same socket already armed scheduleReconnect -- it has no way to know a
     // terminal-coded close is coming -- so without the generation bump and the
     // reconnectPending clear that tearDown does, that timer fires ~one backoff
@@ -452,14 +451,13 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
 
     // Desktop sidecar path: the webview can't open a native WS to
     // the unix-socket hub in solo mode, so the Go sidecar dials
-    // `/ws/userevents` for us and forwards each frame as a Tauri
-    // event. Skip this branch when a `buildWsUrl` override is
+    // `/ws/userevents` for us and forwards each frame through a
+    // Tauri channel. Skip this branch when a `buildWsUrl` override is
     // supplied (tests intentionally drive a real WebSocket).
     if (isTauriApp() && !opts.buildWsUrl) {
       // One id per attempt, shared by this attempt's open and its close, so the
       // sidecar can tell the two apart from a successor's.
       const relayId = nextUserEventsRelayId()
-      let unsubMessage: (() => void) | undefined
       let unsubClose: (() => void) | undefined
       // Per-attempt cancellation flag for this async bridge setup, distinct
       // from the hook-level `disposed` above; named apart so an edit here
@@ -467,25 +465,28 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
       let attemptDisposed = false
       // The bridge handlers need the same stale-connection guard the native WS
       // handlers carry (`socket !== ws || generation !== connectionGeneration`), and
-      // they cannot rely on being unsubscribed instead: unsubMessage/unsubClose are
-      // only assigned once the onEvent promises resolve, so between Rust registering
+      // they cannot rely on being unsubscribed instead: unsubClose is
+      // only assigned once the onEvent promise resolves, so between Rust registering
       // a listener and that microtask, bridgeCleanup marks the attempt disposed but
       // unsubscribes NOTHING. A close delivered in that window would otherwise reach
       // this superseded attempt's handler and tear down the generation that replaced
       // it -- firing AppShell's "Live updates disconnected" on a freshly-reconnected session.
+      // The frame channel carries the same guard: the sidecar's delivery slot
+      // clears asynchronously, so a frame for a superseded attempt can still
+      // reach its handler and must not dispatch.
       const isStaleAttempt = () => attemptDisposed || generation !== connectionGeneration
-      // Open the relay, then attach event listeners. Order matters
-      // less than for native WS — the sidecar buffers a few frames
-      // on its own pending channel — but listening before open is
-      // still safer because the initial UserMaterialized fires
-      // immediately after Subscribe.
+      // Frames ride a Tauri channel created here and handed to the open: the
+      // Rust shell stores it beside the relay id and sends each frame raw
+      // (length-prefixed WatchUserEvent bytes, no base64). The handler is
+      // attached at construction because a channel replays nothing to a
+      // handler set late -- the same "listen before open" rule the native
+      // path follows, since the initial UserMaterialized fires immediately
+      // after Subscribe.
       Promise.all([
-        platformBridge.onEvent(TAURI_EVENT_USER_EVENTS_MESSAGE, (b64) => {
+        platformBridge.createRelayChannel((data) => {
           if (isStaleAttempt())
             return
-          if (typeof b64 !== 'string')
-            return
-          handleFrame(base64ToUint8Array(b64))
+          handleFrame(new Uint8Array(data))
         }),
         platformBridge.onEvent(TAURI_EVENT_USER_EVENTS_CLOSE, (payload: unknown) => {
           if (isStaleAttempt())
@@ -494,22 +495,19 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
           handleClose(close.code, close.reason)
         }),
       ])
-        .then(([m, c]) => {
-          unsubMessage = m as () => void
-          unsubClose = c as () => void
+        .then(([channel, c]) => {
+          unsubClose = c
           if (attemptDisposed) {
-            unsubMessage?.()
             unsubClose?.()
             return
           }
-          return platformBridge.openUserEventsRelay(relayId, workspaceIds, resume)
+          return platformBridge.openUserEventsRelay(relayId, channel, workspaceIds, resume)
         })
         .catch(() => {
           scheduleReconnect(userId, generation)
         })
       bridgeCleanup = () => {
         attemptDisposed = true
-        unsubMessage?.()
         unsubClose?.()
         // Names the relay THIS attempt opened: the close and the successor's open are
         // separate RPCs the sidecar runs on unordered goroutines, so without the id a

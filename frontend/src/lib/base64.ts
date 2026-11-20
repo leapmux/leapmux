@@ -86,11 +86,3 @@ export function arrayBufferToBase64(buf: ArrayBuffer | Uint8Array | string | nul
     : new Uint8Array(buf)
   return uint8ArrayToBase64(bytes)
 }
-
-/** Decode a base64 string to an ArrayBuffer. */
-export function base64ToArrayBuffer(b64: string): ArrayBuffer {
-  if (!b64)
-    return new ArrayBuffer(0)
-  const bytes = base64ToUint8Array(b64)
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-}

@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useControlResponseHandling } from '~/components/chat/controlResponseHandling'
 import { createControlAnswerState } from '~/components/chat/controls/types'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { accountStorageKey, flushStorageWrites, localStorageLoad, PREFIX_CONTROL_STATE, resetBrowserStorageForTests, setStorageAccountForTests, storageAccountFor } from '~/lib/browserStorage'
+import { accountStorageKey, flushStorageWrites, hydrateStorageAccount, localStorageLoad, PREFIX_CONTROL_STATE, resetBrowserStorageForTests, setStorageAccount, storageAccountFor } from '~/lib/browserStorage'
 import { afterLineIndent } from '~/lib/regexp'
 import { requestInstanceId } from '~/stores/control.store'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
@@ -46,11 +46,14 @@ vi.mock('./providerToolCalls', () => ({
 // in-memory mirror, so the round trips below need a database.
 useTestStorage()
 
-// The shared helper points the namespace at the bare user id. This file models
-// the app, which stores under the (hub, user) account, so the hook below
-// replaces it. Registered after the helper's, so it runs after.
-beforeEach(() => {
-  setStorageAccountForTests(TEST_ACCOUNT)
+// `useTestStorage` points the namespace at the TEST hub account. This file
+// models the app on `HUB_URL`, which stores under the (hub, user) account, so
+// the hook below replaces it through the production seam --
+// `setStorageAccountForTests` composes only under the one TEST hub. Registered
+// after the helper's, so it runs after.
+beforeEach(async () => {
+  await hydrateStorageAccount(TEST_ACCOUNT)
+  setStorageAccount(TEST_ACCOUNT)
 })
 
 /**
@@ -307,7 +310,8 @@ describe('the saved answers of the probe form', () => {
     // No await since the click: the write waits in the queue, as it does when
     // the reload starts a few milliseconds after the click.
     resetBrowserStorageForTests()
-    setStorageAccountForTests(TEST_ACCOUNT)
+    await hydrateStorageAccount(TEST_ACCOUNT)
+    setStorageAccount(TEST_ACCOUNT)
     first.unmount()
 
     await mountForm()

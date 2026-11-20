@@ -202,6 +202,22 @@ func (h *OAuthServerHandler) credentialElevationIsCurrent(ctx context.Context, t
 	return auth.NewElevation(row.ElevationProvenAt, row.ElevationExpiresAt).IsCurrent(h.now()), nil
 }
 
+// tokenDisplayName names a command-line credential from the hub's OWN record
+// of it: the app's registered name and the INSTALLATION label, in that order.
+// The app is what the hub registered, and the installation is what the
+// requester called itself. Both the activation page and the consent page's
+// step-up variant read through here, so one label rule covers them.
+func tokenDisplayName(row *store.APIToken) string {
+	name := row.ClientName
+	if row.InstallationName != "" {
+		name = row.ClientName + " on " + row.InstallationName
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "an unnamed credential"
+	}
+	return name
+}
+
 // grantCredential identifies, for the activation page, the credential a
 // step-up grant elevates.
 //
@@ -215,7 +231,12 @@ func (h *OAuthServerHandler) credentialElevationIsCurrent(ctx context.Context, t
 //
 // A credential that is already gone returns nil, and the page then identifies
 // nothing rather than falling back to the requester's text. The approval
-// refuses that grant anyway; see errElevationGrantUnavailable.
+// refuses that grant anyway; see errElevationGrantUnavailable. This freshness
+// is DELIBERATE here: the activation page renders on a poll, long after the
+// grant row named the credential, so the row may have been revoked or may have
+// expired in between. The consent page has no such gap -- parseStepUpTarget
+// loads and validates the row it displays -- so it builds its own display and
+// does not read through here.
 func (h *OAuthServerHandler) grantCredential(ctx context.Context, tokenID string) (*deviceCredential, error) {
 	row, err := h.store.APITokens().GetByID(ctx, tokenID)
 	if err != nil {
@@ -224,41 +245,13 @@ func (h *OAuthServerHandler) grantCredential(ctx context.Context, tokenID string
 		}
 		return nil, err
 	}
-	// The APP's registered name and the INSTALLATION label, in that order:
-	// the app is what the hub registered, and the installation is what the
-	// requester called itself.
-	name := row.ClientName
-	if row.InstallationName != "" {
-		name = row.ClientName + " on " + row.InstallationName
-	}
-	if strings.TrimSpace(name) == "" {
-		name = "an unnamed credential"
-	}
 	return &deviceCredential{
-		Name:  name,
+		Name:  tokenDisplayName(row),
 		Added: row.CreatedAt.UTC().Format(credentialAddedLayout),
 		// A revoked credential cannot be elevated, so the page says so
 		// rather than asking a person to verify something the approval
 		// refuses. An expired one is refused the same way.
 		Revoked: row.RevokedAt != nil,
 		Expired: row.ExpiresAt != nil && !row.ExpiresAt.After(h.now()),
-	}, nil
-}
-
-// sessionCredential identifies, for the consent page, the session a `step_up`
-// names. It reads the user_sessions row -- the hub's OWN record: the label the
-// browser handoff stored and the moment the row was created. A session that is
-// already gone returns nil; see grantCredential.
-func (h *OAuthServerHandler) sessionCredential(ctx context.Context, sessionID string) (*deviceCredential, error) {
-	sess, err := h.store.Sessions().GetByID(ctx, sessionID, h.now().UTC())
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &deviceCredential{
-		Name:  sess.UserAgent,
-		Added: sess.CreatedAt.UTC().Format(credentialAddedLayout),
 	}, nil
 }

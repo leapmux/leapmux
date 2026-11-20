@@ -13,7 +13,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/pkce"
@@ -270,12 +269,16 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 	// issuance notice while the consent page showed something else.
 
 	// Three paths: a step-up code verifies a credential, a session code issues
-	// a session, and any other code mints an app credential.
-	if row.StepUpSessionID != "" || row.StepUpTokenID != "" {
+	// a session, and any other code mints an app credential. The fork is the
+	// ROW's: the step-up reference and the redemption kind the consent bound,
+	// never a property of the app re-read at redeem time -- a registration
+	// that changed hands since the consent must not move the code off the path
+	// the page showed.
+	if !row.StepUp.IsZero() {
 		h.handleStepUpCodeExchange(w, r, row)
 		return
 	}
-	if oauthapp.IssuesSession(app.ClientID) {
+	if row.Redemption.IssuesSession() {
 		h.handleSessionCodeExchange(w, r, row, app, grantUID)
 		return
 	}
@@ -292,7 +295,8 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 			return consumeAuthorizationCode(r.Context(), tx, code, h.now().UTC())
 		},
 		recordMint: func(tx store.Store, tokenID string) error {
-			if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), code, tokenID); err != nil {
+			minted := store.CredentialRef{Kind: store.CredentialRefKindToken, ID: tokenID}
+			if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), code, minted); err != nil {
 				return fmt.Errorf("record authorization code credential: %w", err)
 			}
 			return nil
@@ -337,8 +341,19 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential cannot be elevated")
 		return
 	}
-	if (row.StepUpSessionID != "" && targetSessionID != row.StepUpSessionID) ||
-		(row.StepUpTokenID != "" && targetTokenID != row.StepUpTokenID) {
+	var matches bool
+	switch row.StepUp.Kind {
+	case store.CredentialRefKindSession:
+		matches = targetSessionID == row.StepUp.ID
+	case store.CredentialRefKindToken:
+		matches = targetTokenID == row.StepUp.ID
+	case store.CredentialRefKindNone:
+		// Unreachable: this exchange runs only for a row that names a target.
+		// A reference that names nothing verifies nothing, so it matches
+		// nothing.
+		matches = false
+	}
+	if !matches {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential does not match the step-up target")
 		return
 	}
@@ -355,18 +370,23 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		if err := consumeAuthorizationCode(r.Context(), tx, row.Code, h.now().UTC()); err != nil {
 			return err
 		}
-		if row.StepUpSessionID != "" {
-			_, live, err := elevateSessionRow(r.Context(), tx, row.StepUpSessionID, uid, h.now().UTC())
+		switch row.StepUp.Kind {
+		case store.CredentialRefKindSession:
+			_, live, err := elevateSessionRow(r.Context(), tx, row.StepUp.ID, uid, h.now().UTC())
 			if err != nil {
 				return err
 			}
 			if !live {
 				return errElevationSessionEnded
 			}
-		} else {
-			if err := h.elevateGrantedToken(r.Context(), tx, row.StepUpTokenID, uid); err != nil {
+		case store.CredentialRefKindToken:
+			if err := h.elevateGrantedToken(r.Context(), tx, row.StepUp.ID, uid); err != nil {
 				return err
 			}
+		case store.CredentialRefKindNone:
+			// Unreachable: see the match above. A reference that names nothing
+			// names no credential to stamp.
+			return errElevationGrantUnavailable
 		}
 		return nil
 	})
@@ -417,7 +437,8 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 			return fmt.Errorf("create session: %w", err)
 		}
 		created = &sess
-		if err := tx.OAuthAuthorizationCodes().MarkMintedSession(r.Context(), row.Code, sess.ID); err != nil {
+		minted := store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sess.ID}
+		if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), row.Code, minted); err != nil {
 			return fmt.Errorf("record authorization code session: %w", err)
 		}
 		return nil
@@ -451,31 +472,31 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 // must not let a different app's caller revoke it.
 func (h *OAuthServerHandler) revokeReplayedCode(ctx context.Context, code string, app *store.OAuthClient) {
 	row, err := h.store.OAuthAuthorizationCodes().Get(ctx, code)
-	if err != nil || (row.MintedTokenID == "" && row.MintedSessionID == "") {
+	if err != nil || row.Minted.IsZero() {
 		return
 	}
 	if row.ClientID != app.ClientID {
 		return
 	}
-	if row.MintedSessionID != "" {
-		if _, err := h.store.Sessions().Revoke(ctx, row.MintedSessionID); err != nil {
+	if row.Minted.Kind.IsSession() {
+		if _, err := h.store.Sessions().Revoke(ctx, row.Minted.ID); err != nil {
 			slog.ErrorContext(ctx, "could not revoke the session a replayed authorization code minted",
-				"session_id", row.MintedSessionID, "err", err)
+				"session_id", row.Minted.ID, "err", err)
 			return
 		}
-		h.lifecycle.SessionRevoked(row.MintedSessionID)
+		h.lifecycle.SessionRevoked(row.Minted.ID)
 		slog.WarnContext(ctx, "an authorization code was presented twice; the session it minted is revoked",
-			"session_id", row.MintedSessionID)
+			"session_id", row.Minted.ID)
 		return
 	}
-	if _, err := h.store.APITokens().Revoke(ctx, row.MintedTokenID); err != nil {
+	if _, err := h.store.APITokens().Revoke(ctx, row.Minted.ID); err != nil {
 		slog.ErrorContext(ctx, "could not revoke the credential a replayed authorization code minted",
-			"token_id", row.MintedTokenID, "err", err)
+			"token_id", row.Minted.ID, "err", err)
 		return
 	}
-	h.lifecycle.BearerRevoked(auth.BearerKindAPI, row.MintedTokenID)
+	h.lifecycle.BearerRevoked(auth.BearerKindAPI, row.Minted.ID)
 	slog.WarnContext(ctx, "an authorization code was presented twice; the credential it minted is revoked",
-		"token_id", row.MintedTokenID)
+		"token_id", row.Minted.ID)
 }
 
 // consentedGrant is what a validated OAuth grant hands the mint: who consented,

@@ -11,7 +11,7 @@ import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/le
 import { handleActivityChanged, handleAgentStatusChange } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, markTerminalExited } from '~/hooks/terminalEvents'
-import { setStorageAccountForTests, storageAccountFor } from '~/lib/browserStorage'
+import { setStorageAccountForTests } from '~/lib/browserStorage'
 import { setCRDTBridge, setTabWorkerId } from '~/lib/crdt'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -283,13 +283,13 @@ describe('useTabHydrators', () => {
       // compares the metadata account against it to decide the rows are still
       // this account's, so it must take the user id the account identifies: the two
       // values themselves never match, and no tab is ever hydrated.
-      setStorageAccountForTests(storageAccountFor('https://hub.example.com', TEST_USER_ID))
+      setStorageAccountForTests(TEST_USER_ID)
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.AGENT, 'a1')
-        // The bare spelling: `TEST_USER_ID`'s account IS its user id, so the
-        // same value serves as the mount's raw Hub user id here.
-        s.mount(undefined, undefined, () => TEST_USER_ID as unknown as HubUserId)
+        // The raw Hub user id the composed account above is built around, so
+        // the mount's identity and the metadata account name one user.
+        s.mount(undefined, undefined, () => TEST_USER_ID)
         return dispose
       })
       await flush()

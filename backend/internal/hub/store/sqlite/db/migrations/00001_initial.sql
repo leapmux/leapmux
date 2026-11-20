@@ -520,6 +520,15 @@ CREATE TABLE oauth_clients (
     -- loadBearer re-reads it, so turning it off closes every live window on
     -- the next request rather than at the next write.
     elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Whether an authorization for this app mints a Hub session rather than
+    -- an app credential: the desktop's browser handoff. A CONSTANT OF THE
+    -- BUILD, like client_name and grant_types -- only SeedBuiltIns writes it,
+    -- and every boot reconciles it -- because minting a session hands out the
+    -- account itself and a registration surface that could turn this on would
+    -- let any app ask for a full session instead of a scoped credential. The
+    -- consent page reads it, and the consent POST writes the fork it decided
+    -- onto the code row (oauth_authorization_codes.redemption_kind).
+    issues_sessions       BOOLEAN NOT NULL DEFAULT FALSE,
     -- An AppRegistrationSource ordinal: who put this registration in the table.
     registration_source   INTEGER NOT NULL CHECK (typeof(registration_source) = 'integer') CHECK (registration_source BETWEEN 1 AND 4),
     -- An administrator vouched. NULL is the unverified marker the consent page
@@ -758,22 +767,33 @@ CREATE TABLE oauth_authorization_codes (
     created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     expires_at            DATETIME NOT NULL,
     consumed_at           DATETIME,
-    -- The credential the exchange minted, stamped at consumption.
+    -- The credential the exchange MINTED, stamped at consumption: one kind
+    -- and one id, so the reference names exactly one credential or none.
     --
     -- It is what makes a code REPLAY destructive rather than merely refused:
-    -- RFC 6749 section 4.1.2 requires the server to revoke the token a
-    -- replayed code already produced, and without this column there was
-    -- nothing to name it.
-    minted_token_id       TEXT,
-    -- The session that the exchange issued, for an app whose code redeems
-    -- into a session. It serves the replay remedy as minted_token_id does.
-    minted_session_id     TEXT,
+    -- RFC 6749 section 4.1.2 requires the server to revoke the credential a
+    -- replayed code already produced, and without the stamp there was nothing
+    -- to name it. A NULL kind means nothing was minted -- a code nobody
+    -- redeemed, or a step-up -- and the column never stores 0.
+    minted_kind           INTEGER CHECK (minted_kind IS NULL OR typeof(minted_kind) = 'integer') CHECK (minted_kind BETWEEN 1 AND 2),
+    minted_ref_id         TEXT NOT NULL DEFAULT '',
     -- The credential that this code VERIFIES, when it verifies one rather
-    -- than issuing one. At most one is set. No foreign key, for the reason
-    -- device_authorizations.elevate_token_id gives.
-    step_up_session_id    TEXT,
-    step_up_token_id      TEXT,
-    CHECK (step_up_session_id IS NULL OR step_up_token_id IS NULL)
+    -- than issuing one. One reference, as minted_kind carries: at most one
+    -- target is structural, since a reference holds one kind and one id. No
+    -- foreign key, for the reason device_authorizations.elevate_token_id
+    -- gives.
+    step_up_kind          INTEGER CHECK (step_up_kind IS NULL OR typeof(step_up_kind) = 'integer') CHECK (step_up_kind BETWEEN 1 AND 2),
+    step_up_ref_id        TEXT NOT NULL DEFAULT '',
+    -- What this code redeems into, decided at consent and read at redeem. The
+    -- fork the page showed binds HERE, so the token stage cannot re-derive it
+    -- from a registration that changed hands since. A NULL kind means a
+    -- step-up code, which redeems into an elevation and mints nothing.
+    redemption_kind       INTEGER CHECK (redemption_kind IS NULL OR typeof(redemption_kind) = 'integer') CHECK (redemption_kind BETWEEN 1 AND 2),
+    -- The ties make the states structural: a kind names nothing without its
+    -- id, and a code verifies XOR redeems.
+    CHECK ((minted_kind IS NULL) = (minted_ref_id = '')),
+    CHECK ((step_up_kind IS NULL) = (step_up_ref_id = '')),
+    CHECK ((redemption_kind IS NULL) = (step_up_kind IS NOT NULL))
 );
 CREATE INDEX idx_oauth_authorization_codes_expires_at ON oauth_authorization_codes(expires_at);
 
