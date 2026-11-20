@@ -35,7 +35,7 @@ describe('hubUrlFromStateJson', () => {
     expect(() => hubUrlFromStateJson(JSON.stringify({
       listen: [address],
     })))
-      .toThrow(/names no usable port/)
+      .toThrow(/has no usable port/)
   })
 
   it('rejects an unreadable listen set', () => {
@@ -82,7 +82,39 @@ describe('resolvedHubListenAddresses', () => {
     expect(() => resolvedHubListenAddresses(JSON.stringify({
       listen: ['127.0.0.1:44321', '127.0.0.1:0'],
     })))
-      .toThrow(/names no usable port/)
+      .toThrow(/has no usable port/)
+  })
+
+  it.each(['unix:', 'npipe:'])('rejects an empty local IPC target for %s', (address) => {
+    const state = JSON.stringify({
+      listen: ['127.0.0.1:44321', address],
+    })
+    expect(() => resolvedHubListenAddresses(state)).toThrow(/local IPC address .* has no target/)
+  })
+
+  it.each([
+    '::1:44322',
+    '[::1:44322',
+    '[localhost]:44322',
+    '[fe80::1%]:44322',
+  ])('rejects an invalid TCP host in %s', (address) => {
+    const state = JSON.stringify({
+      listen: ['127.0.0.1:44321', address],
+    })
+    expect(() => resolvedHubListenAddresses(state)).toThrow(/invalid TCP address/)
+  })
+
+  it('keeps wildcard and bracketed IPv6 TCP addresses in order', () => {
+    const tcp = [
+      ':44321',
+      '*:44322',
+      '[::1]:44323',
+      '[fe80::1%en0]:44324',
+      'localhost:44325',
+    ]
+    const state = JSON.stringify({ listen: tcp })
+    expect(resolvedHubListenAddresses(state)).toEqual({ tcp, local: [] })
+    expect(hubUrlFromStateJson(state)).toBe('http://localhost:44321')
   })
 })
 

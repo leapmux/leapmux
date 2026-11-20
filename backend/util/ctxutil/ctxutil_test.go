@@ -46,6 +46,52 @@ func TestWithLinkedCancelEagerlyCancelsForAlreadyDoneOther(t *testing.T) {
 	assert.Error(t, ctx.Err(), "an already-cancelled other must cancel the derived context immediately")
 }
 
+// withheldAfterFuncContext lets the test end a context without delivering its
+// registered cancellation callback. WithoutCancel hides the internal cancel
+// value so context.AfterFunc uses this context's AfterFunc method.
+type withheldAfterFuncContext struct {
+	context.Context
+	deliver func()
+}
+
+func (c *withheldAfterFuncContext) Value(key any) any {
+	return context.WithoutCancel(c.Context).Value(key)
+}
+
+func (c *withheldAfterFuncContext) AfterFunc(callback func()) func() bool {
+	c.deliver = callback
+	return func() bool {
+		c.deliver = nil
+		return true
+	}
+}
+
+func TestWithLinkedCancelErrObservesSourceBeforeCallbackDelivery(t *testing.T) {
+	source, cancelSource := context.WithCancel(context.Background())
+	defer cancelSource()
+	other := &withheldAfterFuncContext{Context: source}
+	ctx, cancel := WithLinkedCancel(context.Background(), other)
+	defer cancel()
+
+	require.NotNil(t, other.deliver)
+	require.NoError(t, ctx.Err())
+	cancelSource()
+	require.ErrorIs(t, other.Err(), context.Canceled)
+	done := ctx.Done()
+	select {
+	case <-done:
+		t.Fatal("the callback has not run and the derived context should still be live")
+	default:
+	}
+
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	select {
+	case <-done:
+	default:
+		t.Fatal("Err reported cancellation without closing Done")
+	}
+}
+
 func TestWithLinkedCancelNilOtherIsPlainCancel(t *testing.T) {
 	ctx, cancel := WithLinkedCancel(context.Background(), nil)
 	require.NoError(t, ctx.Err())

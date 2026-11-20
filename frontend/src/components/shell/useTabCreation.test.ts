@@ -131,7 +131,7 @@ function sentAgent(index = 0): OpenAgentRequest {
   return mockOpenAgent.mock.calls[index]![1] as OpenAgentRequest
 }
 
-const ID_FORMAT = /^[A-Za-z0-9]{48}$/
+const ID_FORMAT = /^[A-Z0-9]{48}$/i
 
 function holdAgentRetry(failure: 'transport' | 'definitive') {
   const held = deferred<unknown>()

@@ -31,15 +31,18 @@ import (
 	"github.com/leapmux/leapmux/util/atomicfile"
 )
 
-// Entry is one pinned worker's static keys plus telemetry. Fields are
-// base64-StdEncoded for stable JSON.
-type Entry struct {
-	X25519PublicKey string    `json:"x25519_public_key"`
-	MlkemPublicKey  string    `json:"mlkem_public_key"`
-	SlhdsaPublicKey string    `json:"slhdsa_public_key"`
-	FirstSeenAt     time.Time `json:"first_seen_at"`
-	LastUsedAt      time.Time `json:"last_used_at"`
+// pinFields gives the persisted entry and its raw decoder the same JSON fields.
+type pinFields[Key, Timestamp any] struct {
+	X25519PublicKey Key       `json:"x25519_public_key"`
+	MlkemPublicKey  Key       `json:"mlkem_public_key"`
+	SlhdsaPublicKey Key       `json:"slhdsa_public_key"`
+	FirstSeenAt     Timestamp `json:"first_seen_at"`
+	LastUsedAt      Timestamp `json:"last_used_at"`
 }
+
+// Entry holds one pinned Worker's static keys and timestamps. The keys use
+// standard Base64.
+type Entry pinFields[string, time.Time]
 
 // defaultLastUsedPersistMinGap throttles `LastUsedAt` rewrites. The
 // field is telemetry-only (surfaced by `pins list`); 10-minute
@@ -76,10 +79,25 @@ type Options struct {
 	Now func() time.Time
 }
 
+// removalRevision requires an unsigned integer when the field is present.
+type removalRevision uint64
+
+func (r *removalRevision) UnmarshalJSON(data []byte) error {
+	var value *uint64
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("invalid removal_revision: %w", err)
+	}
+	if value == nil {
+		return errors.New("removal_revision must be an unsigned integer")
+	}
+	*r = removalRevision(*value)
+	return nil
+}
+
 // onDiskFile is the JSON wrapper format.
 type onDiskFile struct {
-	Pins            map[string]Entry `json:"pins"`
-	RemovalRevision uint64           `json:"removal_revision,omitempty"`
+	Pins            pinMap          `json:"pins"`
+	RemovalRevision removalRevision `json:"removal_revision,omitempty"`
 }
 
 // Store is a transactional pin-file handle. It holds no in-memory
@@ -107,24 +125,29 @@ func Open(opts Options) (*Store, error) {
 	return &Store{opts: opts}, nil
 }
 
-// lockPath returns the sibling lock-file path.
-func (s *Store) lockPath() string {
-	return s.opts.Path + ".lock"
-}
-
-// acquireLock opens the lock file and takes the exclusive lock,
-// honoring ctx. The caller must close the returned file (which
-// releases the lock).
-func (s *Store) acquireLock(ctx context.Context) (*os.File, error) {
-	f, err := filelock.Open(s.lockPath(), false)
+// withState keeps the sibling lock open from the read through the operation.
+func (s *Store) withState(ctx context.Context, useState func(*onDiskFile) error) (result error) {
+	file, err := filelock.Open(s.opts.Path+".lock", false)
 	if err != nil {
-		return nil, fmt.Errorf("open lock: %w", err)
+		return fmt.Errorf("open pin lock: %w", err)
 	}
-	if err := filelock.Lock(ctx, f); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("acquire lock: %w", err)
+	defer func() {
+		if err := file.Close(); err != nil {
+			result = errors.Join(result, fmt.Errorf("close pin lock: %w", err))
+		}
+	}()
+
+	if err := filelock.Lock(ctx, file); err != nil {
+		return fmt.Errorf("acquire pin lock: %w", err)
 	}
-	return f, nil
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	state, err := s.readState()
+	if err != nil {
+		return err
+	}
+	return useState(state)
 }
 
 // readState reads the current pin file under an already-held lock.
@@ -132,25 +155,32 @@ func (s *Store) acquireLock(ctx context.Context) (*os.File, error) {
 func (s *Store) readState() (*onDiskFile, error) {
 	data, err := os.ReadFile(s.opts.Path)
 	if errors.Is(err, os.ErrNotExist) {
-		return &onDiskFile{Pins: map[string]Entry{}}, nil
+		return &onDiskFile{Pins: pinMap{}}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read pins: %w", err)
 	}
 	var f onDiskFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parse pins: %w", err)
+		return nil, fmt.Errorf("parse pins in %s: %w", s.opts.Path, err)
 	}
 	if f.Pins == nil {
-		return nil, errors.New("parse pins: missing or null \"pins\" object")
+		return nil, fmt.Errorf("parse pins in %s: missing or null \"pins\" object", s.opts.Path)
 	}
 	return &f, nil
 }
 
+func (f *onDiskFile) marshal() ([]byte, error) {
+	return json.MarshalIndent(f, "", "  ")
+}
+
 // writeState atomically replaces the pin file.
-func (s *Store) writeState(f *onDiskFile) error {
-	data, err := json.MarshalIndent(f, "", "  ")
+func (s *Store) writeState(ctx context.Context, encode func() ([]byte, error)) error {
+	data, err := encode()
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return atomicfile.WriteFile(s.opts.Path, data, s.opts.FileMode)
@@ -174,196 +204,138 @@ func (s *Store) Resolve(ctx context.Context, workerID string, publicKey, mlkemPu
 	if workerID == "" {
 		return nil, errors.New("worker_id required")
 	}
-	x := base64.StdEncoding.EncodeToString(publicKey)
-	m := base64.StdEncoding.EncodeToString(mlkemPublicKey)
-	sl := base64.StdEncoding.EncodeToString(slhdsaPublicKey)
-
-	lockFile, err := s.acquireLock(ctx)
-	if err != nil {
-		return nil, err
+	presented := Entry{
+		X25519PublicKey: base64.StdEncoding.EncodeToString(publicKey),
+		MlkemPublicKey:  base64.StdEncoding.EncodeToString(mlkemPublicKey),
+		SlhdsaPublicKey: base64.StdEncoding.EncodeToString(slhdsaPublicKey),
 	}
-	defer lockFile.Close()
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	state, err := s.readState()
-	if err != nil {
-		return nil, err
-	}
-
-	existing, hasExisting := state.Pins[workerID]
-	if hasExisting {
-		if existing.X25519PublicKey != x || existing.MlkemPublicKey != m || existing.SlhdsaPublicKey != sl {
-			pinnedFingerprint := "pinned <unreadable>"
-			pinnedX, xErr := base64.StdEncoding.DecodeString(existing.X25519PublicKey)
-			pinnedM, mErr := base64.StdEncoding.DecodeString(existing.MlkemPublicKey)
-			pinnedS, sErr := base64.StdEncoding.DecodeString(existing.SlhdsaPublicKey)
-			if xErr == nil && mErr == nil && sErr == nil {
-				pinnedFingerprint = "pinned " + noise.CompositeKeyFingerprint(pinnedX, pinnedM, pinnedS)
-			}
-			return nil, fmt.Errorf("worker %s key mismatch: %s, presented %s — %s",
-				workerID, pinnedFingerprint, noise.CompositeKeyFingerprint(publicKey, mlkemPublicKey, slhdsaPublicKey),
-				fmt.Sprintf(s.opts.MismatchHintTmpl, workerID))
+	var commit func(context.Context) error
+	err := s.withState(ctx, func(state *onDiskFile) error {
+		existing := state.Pins[workerID]
+		if existing != nil && !existing.matchesKeys(presented) {
+			return s.keyMismatchError(workerID, "", existing.fingerprint(), presented)
 		}
-	}
 
-	// Capture state for the commit function.
-	capturedRevision := state.RemovalRevision
-	capturedExisting, capturedHas := state.Pins[workerID]
-	capturedEntry := Entry{
-		X25519PublicKey: x,
-		MlkemPublicKey:  m,
-		SlhdsaPublicKey: sl,
-	}
-
-	commit := func(commitCtx context.Context) error {
-		return s.commit(commitCtx, workerID, capturedEntry, capturedRevision, capturedHas, capturedExisting)
+		revision := state.RemovalRevision
+		commit = func(commitCtx context.Context) error {
+			return s.commit(commitCtx, workerID, presented, revision, existing)
+		}
+		return nil
+	})
+	if err != nil {
+		var unreadable *unreadablePinError
+		if errors.As(err, &unreadable) && unreadable.workerID == workerID {
+			return nil, fmt.Errorf("%w. Repair the pin file before retrying. %v", err,
+				s.keyMismatchError(workerID, "", "<unreadable>", presented))
+		}
+		return nil, err
 	}
 	return commit, nil
 }
 
-// commit publishes the pin decision. It re-reads the file under lock
-// and validates that the state observed at resolve time is still
-// current.
-func (s *Store) commit(ctx context.Context, workerID string, presented Entry, capturedRevision uint64, capturedHas bool, capturedExisting Entry) error {
-	lockFile, err := s.acquireLock(ctx)
-	if err != nil {
-		return err
+func (s *Store) keyMismatchError(workerID, detail, pinnedFingerprint string, presented Entry) error {
+	message := fmt.Sprintf("worker %s key mismatch (pinned %s, presented %s)", workerID, pinnedFingerprint, presented.fingerprint())
+	if detail != "" {
+		message += ". " + detail
 	}
-	defer lockFile.Close()
-
-	if err := ctx.Err(); err != nil {
-		return err
+	if s.opts.MismatchHintTmpl != "" {
+		message += " — " + fmt.Sprintf(s.opts.MismatchHintTmpl, workerID)
 	}
-
-	state, err := s.readState()
-	if err != nil {
-		return err
-	}
-
-	// Validate: revision must not have changed.
-	if state.RemovalRevision != capturedRevision {
-		return fmt.Errorf("pin removal revision changed during open (was %d, now %d)", capturedRevision, state.RemovalRevision)
-	}
-
-	now := s.opts.Now().UTC()
-	current, hasCurrent := state.Pins[workerID]
-
-	if capturedHas {
-		// A matching pin was observed at resolve time.
-		if !hasCurrent {
-			return fmt.Errorf("pin for worker %s disappeared during open", workerID)
-		}
-		if current.X25519PublicKey != presented.X25519PublicKey ||
-			current.MlkemPublicKey != presented.MlkemPublicKey ||
-			current.SlhdsaPublicKey != presented.SlhdsaPublicKey {
-			return fmt.Errorf("pin for worker %s changed during open", workerID)
-		}
-		// Match: bump LastUsedAt subject to throttle.
-		shouldWrite := s.opts.LastUsedPersistMinGap < 0 ||
-			now.Sub(current.LastUsedAt) >= s.opts.LastUsedPersistMinGap
-		current.LastUsedAt = now
-		state.Pins[workerID] = current
-		if !shouldWrite {
-			return nil
-		}
-	} else {
-		// First contact.
-		if hasCurrent {
-			// Another process installed a pin during the open.
-			if current.X25519PublicKey == presented.X25519PublicKey &&
-				current.MlkemPublicKey == presented.MlkemPublicKey &&
-				current.SlhdsaPublicKey == presented.SlhdsaPublicKey {
-				// Same keys: preserve its first_seen_at, bump last_used_at.
-				current.LastUsedAt = now
-				state.Pins[workerID] = current
-				// Fall through to write.
-			} else {
-				return fmt.Errorf("pin for worker %s was installed with different keys during open", workerID)
-			}
-		} else {
-			// Clean first contact.
-			presented.FirstSeenAt = now
-			presented.LastUsedAt = now
-			state.Pins[workerID] = presented
-		}
-	}
-
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return s.writeState(state)
+	return errors.New(message)
 }
 
-// Remove clears the pin for workerID so the next Resolve records a
+func (e *Entry) fingerprint() string {
+	x25519, xErr := decodeBase64Key(e.X25519PublicKey)
+	mlkem, mErr := decodeBase64Key(e.MlkemPublicKey)
+	slhdsa, sErr := decodeBase64Key(e.SlhdsaPublicKey)
+	if xErr != nil || mErr != nil || sErr != nil {
+		return "<unreadable>"
+	}
+	return noise.CompositeKeyFingerprint(x25519, mlkem, slhdsa)
+}
+
+func (e *Entry) matchesKeys(other Entry) bool {
+	return e.X25519PublicKey == other.X25519PublicKey &&
+		e.MlkemPublicKey == other.MlkemPublicKey &&
+		e.SlhdsaPublicKey == other.SlhdsaPublicKey
+}
+
+// commit validates the decision against the current state and publishes any
+// pin or timestamp update.
+func (s *Store) commit(ctx context.Context, workerID string, presented Entry, revision removalRevision, existing *Entry) error {
+	return s.withState(ctx, func(state *onDiskFile) error {
+		if state.RemovalRevision != revision {
+			return fmt.Errorf("pin removal revision changed during open (was %d, now %d)", revision, state.RemovalRevision)
+		}
+		current := state.Pins[workerID]
+		switch {
+		case existing != nil && current == nil:
+			return fmt.Errorf("pin for worker %s disappeared during open", workerID)
+		case existing != nil && !current.matchesKeys(*existing):
+			return s.keyMismatchError(workerID, "The pin changed during open", current.fingerprint(), presented)
+		case current != nil && !current.matchesKeys(presented):
+			return s.keyMismatchError(workerID, "The pin was installed with different keys during open", current.fingerprint(), presented)
+		}
+
+		now := s.opts.Now().UTC()
+		if current == nil {
+			presented.FirstSeenAt = now
+			current = &presented
+			state.Pins[workerID] = current
+		} else if s.opts.LastUsedPersistMinGap >= 0 &&
+			now.Sub(current.LastUsedAt) < s.opts.LastUsedPersistMinGap {
+			return nil
+		}
+		current.LastUsedAt = now
+		return s.writeState(ctx, state.marshal)
+	})
+}
+
+// Remove clears the pin for workerID so the next verified open records a
 // fresh TOFU entry. Advances the removal revision when a pin was
 // present. Idempotent on a missing entry.
 func (s *Store) Remove(ctx context.Context, workerID string) error {
 	if workerID == "" {
 		return errors.New("worker_id required")
 	}
-	lockFile, err := s.acquireLock(ctx)
-	if err != nil {
-		return err
-	}
-	defer lockFile.Close()
-
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	state, err := s.readState()
-	if err != nil {
-		return err
-	}
-
-	if _, ok := state.Pins[workerID]; !ok {
-		return nil
-	}
-	delete(state.Pins, workerID)
-	if state.RemovalRevision == math.MaxUint64 {
-		return errors.New("removal revision overflow")
-	}
-	state.RemovalRevision++
-
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return s.writeState(state)
+	return s.withState(ctx, func(state *onDiskFile) error {
+		if _, ok := state.Pins[workerID]; !ok {
+			return nil
+		}
+		if state.RemovalRevision == math.MaxUint64 {
+			return errors.New("removal revision overflow")
+		}
+		delete(state.Pins, workerID)
+		state.RemovalRevision++
+		return s.writeState(ctx, state.marshal)
+	})
 }
 
 // Snapshot returns a copy of the current pin map.
 func (s *Store) Snapshot(ctx context.Context) (map[string]Entry, error) {
-	lockFile, err := s.acquireLock(ctx)
+	var out map[string]Entry
+	err := s.withState(ctx, func(state *onDiskFile) error {
+		out = make(map[string]Entry, len(state.Pins))
+		for workerID, entry := range state.Pins {
+			out[workerID] = *entry
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer lockFile.Close()
-
-	state, err := s.readState()
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]Entry, len(state.Pins))
-	for k, v := range state.Pins {
-		out[k] = v
 	}
 	return out, nil
 }
 
 // RemovalRevision returns the current removal revision.
 func (s *Store) RemovalRevision(ctx context.Context) (uint64, error) {
-	lockFile, err := s.acquireLock(ctx)
+	var revision uint64
+	err := s.withState(ctx, func(state *onDiskFile) error {
+		revision = uint64(state.RemovalRevision)
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-	defer lockFile.Close()
-
-	state, err := s.readState()
-	if err != nil {
-		return 0, err
-	}
-	return state.RemovalRevision, nil
+	return revision, nil
 }

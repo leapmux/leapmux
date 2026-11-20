@@ -196,8 +196,8 @@ func RunWorkerPinsShow(rawCtx any, args []string) error {
 	return control.EmitError("not_found", "no pin recorded for worker_id="+workerID)
 }
 
-// RunWorkerPinsRemove drops a pin so the next connection to that
-// worker triggers a fresh TOFU prompt.
+// RunWorkerPinsRemove drops a pin so the next verified channel to that
+// worker records a fresh TOFU pin.
 func RunWorkerPinsRemove(rawCtx any, args []string) error {
 	var workerID string
 	hub, err := parseHubOnly(rawCtx, args, func(fs *flag.FlagSet) {

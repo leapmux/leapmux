@@ -1,8 +1,15 @@
 /// <reference types="vitest/globals" />
+import type { AddTunnelTarget } from './AddTunnelDialog'
+import type { TunnelKeyApproval } from '~/api/workerRpc'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { TunnelStore } from '~/stores/tunnel.store'
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { TunnelKeyApprovalExpiredError } from '~/api/workerRpc'
 import { TunnelProvider } from '~/context/TunnelContext'
+import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
+import { deferred, settle } from '~/test-support/async'
 import { AddTunnelDialog } from './AddTunnelDialog'
 
 beforeAll(() => {
@@ -14,52 +21,41 @@ beforeAll(() => {
   })
 })
 
-// The identity scope the form captures and the retirement it reacts to. The
-// signal lives in the mock so the dialog's retirement effect tracks it.
 const authState = vi.hoisted(() => ({
   setUserId: undefined as undefined | ((id: string | undefined) => void),
+  scope: undefined as undefined | (() => WorkerTrustScope),
 }))
 vi.mock('~/context/AuthContext', async () => {
   const { createSignal } = await import('solid-js')
-  const [user, setUser] = createSignal<{ id: string } | null>({ id: 'user-1' })
-  authState.setUserId = id => setUser(id === undefined
-    ? null
-    : { id })
+  let controller = new AbortController()
+  const [scope, setScope] = createSignal<WorkerTrustScope>({ userId: 'user-1', generation: 1, signal: controller.signal })
+  authState.scope = scope
+  authState.setUserId = (id) => {
+    controller.abort()
+    controller = new AbortController()
+    setScope(previous => ({ userId: id ?? null, generation: previous.generation + 1, signal: controller.signal }))
+  }
   return {
-    useAuth: () => ({ user }),
+    useAuth: () => ({ workerTrustScope: scope }),
   }
 })
 
-// The shared TOFU pin the create admits against. A full stand-in: the real
-// module reaches account-scoped storage, which this dialog's tests do not
-// exercise. `pin: null` is a CONFIRMED first contact; a rejection is a failed
-// read, which the dialog must not read as one.
-const pinState = vi.hoisted(() => ({
-  readWorkerKeyPin: vi.fn<() => Promise<{ pin: { publicKeyHex: string, firstSeen: number } | null, removalRevision: number }>>(),
-  notifyKeyPinsChanged: undefined as undefined | (() => void),
-}))
-vi.mock('~/lib/keyPinStore', () => ({
-  readWorkerKeyPin: () => pinState.readWorkerKeyPin(),
-  onKeyPinsChanged: (listener: () => void) => {
-    pinState.notifyKeyPinsChanged = listener
-    return () => {}
-  },
-  clearKeyPin: vi.fn(),
-  clearAllKeyPins: vi.fn(),
-  KeyPinRejectedError: class KeyPinRejectedError extends Error {},
-  KeyPinStore: class KeyPinStore {},
-}))
+const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope) => Promise<TunnelKeyApproval>>())
+vi.mock('./verifyWorkerKey', () => ({ verifyWorkerKey }))
 
-const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string) => Promise<void>>())
-vi.mock('./verifyWorkerKey', () => ({
-  verifyWorkerKey: (workerId: string) => verifyWorkerKey(workerId),
-}))
+function approve(scope: WorkerTrustScope): TunnelKeyApproval {
+  return {
+    workerId: 'w1',
+    expectedUserId: scope.userId!,
+    identityGeneration: scope.generation,
+    publicKeyHex: 'verified',
+  }
+}
 
 function createMockTunnelStore(overrides?: Partial<TunnelStore>): TunnelStore {
   return {
     tunnels: () => [],
     tunnelsForWorker: () => [],
-    channelEpoch: () => 'epoch-1',
     refresh: vi.fn().mockResolvedValue(undefined),
     add: vi.fn().mockResolvedValue({
       kind: 'created',
@@ -83,22 +79,36 @@ function renderDialog(overrides?: {
   store?: Partial<TunnelStore>
   onClose?: () => void
   onCreated?: (t: unknown) => void
+  replacement?: AddTunnelTarget['replacement']
 }) {
   const store = createMockTunnelStore(overrides?.store)
   const onClose = overrides?.onClose ?? vi.fn()
   const onCreated = overrides?.onCreated ?? vi.fn()
+  const target = {
+    worker: create(WorkerSchema, { id: 'w1' }),
+    scope: authState.scope!(),
+    ...(overrides?.replacement
+      ? { replacement: overrides.replacement }
+      : {}),
+  }
 
-  render(() => (
+  const { unmount } = render(() => (
     <TunnelProvider store={store}>
       <AddTunnelDialog
-        workerId="w1"
+        target={target}
         onClose={onClose}
         onCreated={onCreated}
       />
     </TunnelProvider>
   ))
 
-  return { store, onClose, onCreated }
+  return {
+    store,
+    onClose,
+    onCreated,
+    target,
+    unmount,
+  }
 }
 
 function fillPortForward() {
@@ -111,26 +121,23 @@ function submit() {
   fireEvent.submit(screen.getByTestId('tunnel-create').closest('form')!)
 }
 
-/**
- * The trust state is loaded, not read in the render — the pin store may answer
- * through a strict transaction. Wait for it before asserting on the Create
- * button, which is disabled while the expectation is unknown.
- */
-async function awaitTrustState() {
-  await screen.findByTestId('tunnel-trusted-key')
-}
-
 beforeEach(() => {
   authState.setUserId?.('user-1')
-  pinState.readWorkerKeyPin.mockResolvedValue({
-    pin: { publicKeyHex: 'aabb', firstSeen: 1000 },
-    removalRevision: 0,
-  })
   verifyWorkerKey.mockReset()
-  verifyWorkerKey.mockResolvedValue(undefined)
+  verifyWorkerKey.mockImplementation(async (_worker, scope) => approve(scope))
 })
 
+afterEach(() => vi.useRealTimers())
+
 describe('AddTunnelDialog', () => {
+  it('retires an open form when a new lifetime adopts the same user', () => {
+    const { onClose } = renderDialog()
+
+    authState.setUserId?.('user-1')
+
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it('renders with port forwarding selected by default', () => {
     renderDialog()
     const portFwdRadio = screen.getByDisplayValue('port_forward') as HTMLInputElement
@@ -281,9 +288,8 @@ describe('AddTunnelDialog', () => {
     expect(createBtn).toBeDisabled()
   })
 
-  it('create button enabled when all fields filled', async () => {
+  it('enables Create when all fields are filled', () => {
     renderDialog()
-    await awaitTrustState()
     fillPortForward()
     const createBtn = screen.getByTestId('tunnel-create')
     expect(createBtn).not.toBeDisabled()
@@ -291,7 +297,6 @@ describe('AddTunnelDialog', () => {
 
   it('submit calls tunnelStore.add with correct config', async () => {
     const { store } = renderDialog()
-    await awaitTrustState()
     fillPortForward()
     submit()
 
@@ -302,40 +307,26 @@ describe('AddTunnelDialog', () => {
         targetAddr: '127.0.0.1',
         targetPort: 3000,
         bindAddr: '127.0.0.1',
-      }))
+      }), authState.scope!(), undefined)
     })
   })
 
-  it('submit error keeps dialog open', async () => {
-    const store = createMockTunnelStore({
-      add: vi.fn().mockRejectedValue(new Error('Port already in use')),
+  it('keeps the dialog open when submission fails', async () => {
+    const { onCreated } = renderDialog({
+      store: {
+        add: vi.fn().mockRejectedValue(new Error('Port already in use')),
+      },
     })
-    const onCreated = vi.fn()
-
-    render(() => (
-      <TunnelProvider store={store}>
-        <AddTunnelDialog
-          workerId="w1"
-          onClose={() => {}}
-          onCreated={onCreated}
-        />
-      </TunnelProvider>
-    ))
-
-    await awaitTrustState()
     fillPortForward()
     submit()
 
-    await vi.waitFor(() => {
-      expect(screen.getByText('Port already in use')).toBeInTheDocument()
-    })
+    expect(await screen.findByText('Port already in use')).toBeInTheDocument()
     expect(onCreated).not.toHaveBeenCalled()
   })
 
   it('submit success closes dialog', async () => {
     const onCreated = vi.fn()
     renderDialog({ onCreated })
-    await awaitTrustState()
     fillPortForward()
     submit()
 
@@ -346,27 +337,25 @@ describe('AddTunnelDialog', () => {
 
   it('bind port defaults to target port for port forwarding', async () => {
     const { store } = renderDialog()
-    await awaitTrustState()
     fillPortForward()
     submit()
 
     await vi.waitFor(() => {
       expect(store.add).toHaveBeenCalledWith(expect.objectContaining({
         bindPort: 3000,
-      }))
+      }), authState.scope!(), undefined)
     })
   })
 
   it('bind port defaults to 1080 for SOCKS5', async () => {
     const { store } = renderDialog()
-    await awaitTrustState()
     fireEvent.click(screen.getByDisplayValue('socks5'))
     submit()
 
     await vi.waitFor(() => {
       expect(store.add).toHaveBeenCalledWith(expect.objectContaining({
         bindPort: 1080,
-      }))
+      }), authState.scope!(), undefined)
     })
   })
 
@@ -429,200 +418,130 @@ describe('AddTunnelDialog bind address validation', () => {
     })
     expect(screen.queryByText(/loopback/i)).not.toBeInTheDocument()
 
-    await awaitTrustState()
     fireEvent.input(screen.getByTestId('target-port'), {
       target: { value: '3000' },
     })
     submit()
 
     await vi.waitFor(() => {
-      expect(store.add).toHaveBeenCalledWith(expect.objectContaining({ bindAddr: '::1' }))
+      expect(store.add).toHaveBeenCalledWith(expect.objectContaining({ bindAddr: '::1' }), authState.scope!(), undefined)
     })
   })
 })
 
 describe('AddTunnelDialog key trust', () => {
-  // The three admission fields a create carries: the exact Worker key set, the
-  // user that expectation belongs to, and the channel epoch the form was
-  // opened on. The sidecar refuses a create that omits any of them, so each is
-  // asserted here rather than inferred from a passing create.
-  it('submits the pinned Worker key, the captured identity, and the channel epoch', async () => {
-    const { store } = renderDialog()
-    await awaitTrustState()
+  const mismatch = {
+    kind: 'workerKeyMismatch',
+    keyMismatch: {
+      expectedFingerprint: 'deep-idea-obey-tack',
+      presentedFingerprint: 'calm-lion-fern-arch',
+    },
+  } as const
+
+  it('keeps the original fields and requires an explicit Create after fresh verification', async () => {
+    vi.useFakeTimers()
+    const add = vi.fn().mockResolvedValue(mismatch)
+    const { onCreated, target } = renderDialog({
+      store: { add },
+    })
     fillPortForward()
     submit()
 
-    await vi.waitFor(() => {
-      expect(store.add).toHaveBeenCalledWith(expect.objectContaining({
-        expectedWorkerKeysHex: 'aabb',
-        expectedUserId: 'user-1',
-        channelEpoch: 'epoch-1',
-      }))
-    })
-  })
-
-  it('refuses to create with no trusted Worker key and points at the verify button', async () => {
-    pinState.readWorkerKeyPin.mockResolvedValue({ pin: null, removalRevision: 0 })
-    const { store } = renderDialog()
-    fillPortForward()
-
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-no-trusted-key')).toBeInTheDocument()
-    })
-    expect(screen.getByTestId('tunnel-create')).toBeDisabled()
-    submit()
-    expect(store.add).not.toHaveBeenCalled()
-  })
-
-  // A failed read is not a first contact. Reporting it as "no trusted key"
-  // would point the user at the verify button and turn a storage failure into
-  // a silent trust decision.
-  it('reports a failed key read as a failure, not as an unpinned Worker', async () => {
-    pinState.readWorkerKeyPin.mockRejectedValue(new Error('storage is unavailable'))
-    const { store } = renderDialog()
-    fillPortForward()
-
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-key-read-error')).toHaveTextContent('storage is unavailable')
-    })
-    expect(screen.queryByTestId('tunnel-no-trusted-key')).not.toBeInTheDocument()
-    expect(screen.getByTestId('tunnel-create')).toBeDisabled()
-    submit()
-    expect(store.add).not.toHaveBeenCalled()
-  })
-
-  // The trust state is a view over durable pin state. A change another tab
-  // committed moves it too, not only this form's own verification.
-  it('follows a pin change another tab committed', async () => {
-    pinState.readWorkerKeyPin.mockResolvedValue({ pin: null, removalRevision: 0 })
-    const { store } = renderDialog()
-    fillPortForward()
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-no-trusted-key')).toBeInTheDocument()
-    })
-
-    pinState.readWorkerKeyPin.mockResolvedValue({
-      pin: { publicKeyHex: 'eeff', firstSeen: 3000 },
-      removalRevision: 1,
-    })
-    pinState.notifyKeyPinsChanged?.()
-
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-create')).not.toBeDisabled()
-    })
-    submit()
-    await vi.waitFor(() => {
-      expect(store.add).toHaveBeenCalledWith(expect.objectContaining({
-        expectedWorkerKeysHex: 'eeff',
-      }))
-    })
-  })
-
-  it('offers to verify the Worker key through the browser channel path', async () => {
-    renderDialog()
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-verify-key')).toBeInTheDocument()
-    })
-    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
-
-    await vi.waitFor(() => {
-      expect(verifyWorkerKey).toHaveBeenCalledWith('w1')
-    })
-  })
-
-  // The verify path is what records a key in the shared pin store, so the
-  // create after it must admit against the key it left behind rather than the
-  // one the form opened with.
-  it('re-reads the pinned key after a verification', async () => {
-    const { store } = renderDialog()
-    pinState.readWorkerKeyPin.mockResolvedValue({ pin: null, removalRevision: 0 })
-    fillPortForward()
-
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-no-trusted-key')).toBeInTheDocument()
-    })
-    pinState.readWorkerKeyPin.mockResolvedValue({
-      pin: { publicKeyHex: 'ccdd', firstSeen: 2000 },
-      removalRevision: 1,
-    })
-    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
-
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-create')).not.toBeDisabled()
-    })
-    submit()
-
-    await vi.waitFor(() => {
-      expect(store.add).toHaveBeenCalledWith(expect.objectContaining({
-        expectedWorkerKeysHex: 'ccdd',
-      }))
-    })
-  })
-
-  it('shows the expected and presented fingerprints when the create is refused with a key mismatch', async () => {
-    const { store, onCreated } = renderDialog({
-      store: {
-        add: vi.fn().mockResolvedValue({
-          kind: 'workerKeyMismatch',
-          keyMismatch: {
-            expectedFingerprint: 'deep-idea-obey-tack',
-            presentedFingerprint: 'calm-lion-fern-arch',
-          },
-        }),
-      },
-    })
-    await awaitTrustState()
-    fillPortForward()
-    submit()
-
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-key-mismatch')).toBeInTheDocument()
-    })
+    await vi.runOnlyPendingTimersAsync()
+    expect(screen.getByTestId('tunnel-key-mismatch')).toHaveTextContent('The Hub reported a different Worker key.')
     expect(screen.getByTestId('tunnel-expected-fingerprint')).toHaveTextContent('deep-idea-obey-tack')
     expect(screen.getByTestId('tunnel-presented-fingerprint')).toHaveTextContent('calm-lion-fern-arch')
     expect(onCreated).not.toHaveBeenCalled()
-    expect(store.add).toHaveBeenCalledTimes(1)
-  })
-
-  it('offers the verify button beside a refused key mismatch', async () => {
-    renderDialog({
-      store: {
-        add: vi.fn().mockResolvedValue({
-          kind: 'workerKeyMismatch',
-          keyMismatch: {
-            expectedFingerprint: 'deep-idea-obey-tack',
-            presentedFingerprint: 'calm-lion-fern-arch',
-          },
-        }),
-      },
-    })
-    await awaitTrustState()
-    fillPortForward()
-    submit()
-
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-key-mismatch')).toBeInTheDocument()
-    })
+    expect(screen.getByTestId('tunnel-create')).toBeDisabled()
     fireEvent.click(screen.getByTestId('tunnel-verify-key'))
-    await vi.waitFor(() => {
-      expect(verifyWorkerKey).toHaveBeenCalledWith('w1')
-    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(screen.getByTestId('tunnel-create')).toBeEnabled()
+    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', target.scope)
+    expect(add).toHaveBeenCalledOnce()
+    submit()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(add).toHaveBeenCalledTimes(2)
+    expect(add).toHaveBeenLastCalledWith(expect.objectContaining({ targetPort: 3000 }), target.scope, approve(target.scope))
   })
 
-  it('shows an actionable error inline, announced as an alert, when the create fails', async () => {
+  it('prefills the replacement and never submits an expired approval as first contact', async () => {
+    const scope = authState.scope!()
+    const replacement = {
+      config: {
+        workerId: 'w1',
+        type: 'port_forward' as const,
+        targetAddr: 'internal.example',
+        targetPort: 8443,
+        bindAddr: '::1',
+        bindPort: 9443,
+      },
+      approval: approve(scope),
+    }
+    const add = vi.fn().mockRejectedValue(new TunnelKeyApprovalExpiredError())
     renderDialog({
-      store: {
-        add: vi.fn().mockRejectedValue(new Error('127.0.0.1:3000: address already in use')),
+      replacement,
+      store: { add },
+    })
+
+    expect(screen.getByTestId('target-addr')).toHaveValue('internal.example')
+    expect(screen.getByTestId('target-port')).toHaveValue('8443')
+    expect(screen.getByTestId('bind-addr')).toHaveValue('::1')
+    expect(screen.getByTestId('bind-port')).toHaveValue('9443')
+    expect(add).not.toHaveBeenCalled()
+
+    submit()
+    expect(await screen.findByTestId('tunnel-create-error')).toHaveTextContent('Verify the Worker key again.')
+    expect(add).toHaveBeenCalledExactlyOnceWith(replacement.config, scope, replacement.approval)
+    expect(screen.getByTestId('tunnel-create')).toBeDisabled()
+    submit()
+    expect(add).toHaveBeenCalledOnce()
+  })
+
+  it('discards the values of a retired replacement before a new form opens', () => {
+    const scope = authState.scope!()
+    const previous = renderDialog({
+      replacement: {
+        config: {
+          workerId: 'w1',
+          type: 'socks5',
+          targetAddr: '',
+          targetPort: 0,
+          bindAddr: '::1',
+          bindPort: 9876,
+        },
+        approval: approve(scope),
       },
     })
-    await awaitTrustState()
+    expect(screen.getByTestId('bind-port')).toHaveValue('9876')
+
+    authState.setUserId?.('user-1')
+    expect(previous.onClose).toHaveBeenCalledOnce()
+    previous.unmount()
+    renderDialog()
+    expect(screen.getByDisplayValue('port_forward')).toBeChecked()
+    expect(screen.getByTestId('bind-addr')).toHaveValue('127.0.0.1')
+    expect(screen.getByTestId('bind-port')).toHaveValue('')
+  })
+
+  it('discards a late verification after the account changes', async () => {
+    const verification = deferred<TunnelKeyApproval>()
+    verifyWorkerKey.mockReturnValueOnce(verification.promise)
+    const add = vi.fn().mockResolvedValue(mismatch)
+    const { onClose, target } = renderDialog({
+      store: { add },
+    })
     fillPortForward()
     submit()
 
-    await vi.waitFor(() => {
-      expect(screen.getByTestId('tunnel-create-error')).toHaveTextContent('address already in use')
-    })
-    expect(screen.getByTestId('tunnel-create-error')).toHaveAttribute('role', 'alert')
+    fireEvent.click(await screen.findByTestId('tunnel-verify-key'))
+    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', target.scope)
+    authState.setUserId?.('user-2')
+    verification.resolve(approve(target.scope))
+    await settle()
+
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(add).toHaveBeenCalledOnce()
+    expect(screen.getByTestId('tunnel-create')).toBeDisabled()
   })
 })
 
@@ -674,7 +593,6 @@ describe('AddTunnelDialog identity scope', () => {
     const { onCreated, onClose } = renderDialog({
       store: { add },
     })
-    await awaitTrustState()
     fillPortForward()
     submit()
 

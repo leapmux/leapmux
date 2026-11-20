@@ -1,12 +1,14 @@
 import type { Component } from 'solid-js'
+import type { AddTunnelTarget } from './AddTunnelDialog'
 import type { TunnelInfo } from '~/api/platformBridge'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import ArrowBigRightDash from 'lucide-solid/icons/arrow-big-right-dash'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ChevronsLeftRightEllipsis from 'lucide-solid/icons/chevrons-left-right-ellipsis'
-import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
@@ -28,7 +30,7 @@ export interface WorkerSectionContentProps {
   workers: Worker[]
   workerInfo: (id: string) => WorkerInfo | null
   channelStatus: (id: string) => ChannelStatus
-  onAddTunnel: (worker: Worker) => void
+  onAddTunnel: (target: AddTunnelTarget) => void
   onDeregister: (worker: Worker) => void
 }
 
@@ -43,45 +45,57 @@ const statusLabel: Record<ChannelStatus, string> = {
   disconnected: 'Disconnected',
 }
 
+type DeleteSelection = { kind: 'one', tunnel: TunnelInfo } | { kind: 'all', workerId: string }
+type DeleteTarget = DeleteSelection & { scope: WorkerTrustScope }
+interface TunnelReview {
+  id: string
+  scope: WorkerTrustScope
+}
+
 export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props) => {
   const auth = useAuth()
   const tunnel = useTunnel()
   const [collapsedIds, setCollapsedIds] = createSignal<Set<string>>(new Set())
-  // Each delete confirmation captures the identity scope it was opened for.
-  // A plain snapshot taken when the confirmation opens, never a reactive read,
-  // so a later identity cannot rewrite what the confirmation admits.
-  const [deleteTunnelTarget, setDeleteTunnelTarget] = createSignal<{ tunnel: TunnelInfo, identityScope: string } | null>(null)
-  const [deleteAllTunnelsTarget, setDeleteAllTunnelsTarget] = createSignal<{ workerId: string, identityScope: string } | null>(null)
-  // The delete confirmation stays mounted across the removal, so it owns the
-  // removal's error and busy state rather than closing on the click and
-  // swallowing the outcome.
+  const [deleteTarget, setDeleteTarget] = createSignal<DeleteTarget | null>(null)
   const [deleteError, setDeleteError] = createSignal<string | null>(null)
   const [deleting, setDeleting] = createSignal(false)
-  // Per-tunnel verification state for stopped rows: one busy flag, and one
-  // error attributed to the row that asked — two stopped rows may show their
-  // own blocks at once, and one failure must not appear in both.
-  const [verifyingTunnelId, setVerifyingTunnelId] = createSignal<string | null>(null)
-  const [verifyError, setVerifyError] = createSignal<{ id: string, message: string } | null>(null)
+  const [review, setReview] = createSignal<TunnelReview | null>(null)
+  const [verifyError, setVerifyError] = createSignal<(TunnelReview & { message: string }) | null>(null)
+  let disposed = false
+  onCleanup(() => {
+    disposed = true
+  })
 
-  function identityIsLive(scope: string): boolean {
-    return (auth.user()?.id ?? '') === scope
+  function identityIsLive(scope: WorkerTrustScope): boolean {
+    return !disposed && auth.workerTrustScope() === scope && !scope.signal.aborted
   }
 
-  // Identity retirement ends any open confirmation: a sign-out, or a sign-in
-  // as someone else, leaves the submission belonging to an identity that is
-  // gone.
+  function closeDelete(target: DeleteTarget): void {
+    if (deleteTarget() !== target)
+      return
+    setDeleteTarget(null)
+    setDeleteError(null)
+    setDeleting(false)
+  }
+
+  function openDelete(selection: DeleteSelection): void {
+    const scope = auth.workerTrustScope()
+    if (!scope.userId || !identityIsLive(scope) || deleting())
+      return
+    setDeleteError(null)
+    setDeleteTarget({ ...selection, scope })
+  }
+
   createEffect(() => {
-    auth.user() // track
-    const single = deleteTunnelTarget()
-    if (single && !identityIsLive(single.identityScope)) {
-      setDeleteTunnelTarget(null)
-      setDeleteError(null)
-    }
-    const all = deleteAllTunnelsTarget()
-    if (all && !identityIsLive(all.identityScope)) {
-      setDeleteAllTunnelsTarget(null)
-      setDeleteError(null)
-    }
+    const target = deleteTarget()
+    if (target && !identityIsLive(target.scope))
+      closeDelete(target)
+    const activeReview = review()
+    if (activeReview && !identityIsLive(activeReview.scope))
+      setReview(null)
+    const failure = verifyError()
+    if (failure && !identityIsLive(failure.scope))
+      setVerifyError(null)
   })
 
   function isExpanded(id: string): boolean {
@@ -105,74 +119,70 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
       : `${t.bindAddr}:${t.bindPort} \u2192 ${t.targetAddr}:${t.targetPort}`
   }
 
-  async function confirmDeleteTunnel() {
-    const target = deleteTunnelTarget()
-    if (!target || deleting())
+  async function confirmDelete(target: DeleteTarget): Promise<void> {
+    if (deleteTarget() !== target || !identityIsLive(target.scope) || deleting() || !tunnel)
       return
-    // Reject a stale submission before dispatching: the confirmation belongs
-    // to an identity this document no longer holds.
-    if (!identityIsLive(target.identityScope)) {
-      setDeleteTunnelTarget(null)
-      setDeleteError(null)
-      return
-    }
+    const isCurrent = () => identityIsLive(target.scope) && deleteTarget() === target
     setDeleting(true)
     setDeleteError(null)
     try {
-      await tunnel!.remove(target.tunnel.id)
-      setDeleteTunnelTarget(null)
+      if (target.kind === 'one')
+        await tunnel.remove(target.tunnel.id, target.scope)
+      else
+        await tunnel.removeAllForWorker(target.workerId, target.scope)
+      if (isCurrent())
+        closeDelete(target)
     }
     catch (err) {
-      setDeleteError(formatErrorMessage(err, 'Could not delete the tunnel. Try again.'))
+      if (isCurrent())
+        setDeleteError(formatErrorMessage(err, 'Could not delete the desktop tunnels. Try again.'))
     }
     finally {
-      setDeleting(false)
+      if (isCurrent())
+        setDeleting(false)
     }
   }
 
-  async function confirmDeleteAllTunnels() {
-    const target = deleteAllTunnelsTarget()
-    if (!target || deleting())
+  async function verify(worker: Worker, stopped: TunnelInfo): Promise<void> {
+    const scope = auth.workerTrustScope()
+    if (!scope.userId || !identityIsLive(scope) || review())
       return
-    // Reject a stale submission before dispatching: the confirmation belongs
-    // to an identity this document no longer holds.
-    if (!identityIsLive(target.identityScope)) {
-      setDeleteAllTunnelsTarget(null)
-      setDeleteError(null)
-      return
-    }
-    setDeleting(true)
-    setDeleteError(null)
-    try {
-      await tunnel!.removeAllForWorker(target.workerId)
-      setDeleteAllTunnelsTarget(null)
-    }
-    catch (err) {
-      setDeleteError(formatErrorMessage(err, 'Could not delete the tunnels. Try again.'))
-    }
-    finally {
-      setDeleting(false)
-    }
-  }
-
-  // The verification is the browser channel path: it prompts for a changed
-  // key and records the accepted one, which is what a recreation admits
-  // against. The outcome is shown beside the row that asked for it.
-  function verify(t: TunnelInfo) {
-    if (verifyingTunnelId())
-      return
-    setVerifyingTunnelId(t.id)
+    const verification = { id: stopped.id, scope }
+    setReview(verification)
     setVerifyError(null)
-    void verifyWorkerKey(t.workerId)
-      .catch((err: unknown) => {
+    try {
+      const approval = await verifyWorkerKey(worker.id, scope)
+      if (!identityIsLive(scope))
+        return
+      const { type, targetAddr, targetPort, bindAddr, bindPort } = stopped
+      props.onAddTunnel({
+        worker,
+        scope,
+        replacement: {
+          config: {
+            workerId: worker.id,
+            type,
+            targetAddr,
+            targetPort,
+            bindAddr,
+            bindPort,
+          },
+          approval,
+        },
+      })
+    }
+    catch (err) {
+      if (identityIsLive(scope)) {
         setVerifyError({
-          id: t.id,
+          ...verification,
           message: formatErrorMessage(err, 'Could not verify the Worker key.'),
         })
-      })
-      .finally(() => {
-        setVerifyingTunnelId(null)
-      })
+      }
+    }
+    finally {
+      if (!disposed && review() === verification)
+        setReview(null)
+    }
   }
 
   return (
@@ -226,11 +236,12 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                         autoRegistered={worker.autoRegistered}
                         online={worker.online}
                         hasTunnels={workerTunnels().length > 0}
-                        onAddTunnel={() => props.onAddTunnel(worker)}
-                        onDeleteAllTunnels={() => {
-                          setDeleteError(null)
-                          setDeleteAllTunnelsTarget({ workerId: worker.id, identityScope: auth.user()?.id ?? '' })
+                        onAddTunnel={() => {
+                          const scope = auth.workerTrustScope()
+                          if (scope.userId && identityIsLive(scope))
+                            props.onAddTunnel({ worker, scope })
                         }}
+                        onDeleteAllTunnels={() => openDelete({ kind: 'all', workerId: worker.id })}
                         onDeregister={() => props.onDeregister(worker)}
                       />
                     </div>
@@ -256,10 +267,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                                 <div class={sidebarActions}>
                                   <TunnelContextMenu
                                     contextMenuFor={tunnelRowEl}
-                                    onDelete={() => {
-                                      setDeleteError(null)
-                                      setDeleteTunnelTarget({ tunnel: t, identityScope: auth.user()?.id ?? '' })
-                                    }}
+                                    onDelete={() => openDelete({ kind: 'one', tunnel: t })}
                                   />
                                 </div>
                               </div>
@@ -270,47 +278,42 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                                 {mismatch => (
                                   <div class={styles.tunnelStopped} data-testid="tunnel-stopped">
                                     <div class={styles.tunnelStoppedReason} data-testid="tunnel-stopped-reason">
-                                      Stopped: the Worker keys the Hub announced do not match the key this tunnel admits against.
+                                      Stopped. The Hub reported a different Worker key.
                                     </div>
                                     <div class={styles.tunnelFingerprints}>
                                       <div>
-                                        <strong>Expected:</strong>
+                                        <strong>Expected</strong>
                                         {' '}
                                         <code data-testid="tunnel-expected-fingerprint">{mismatch().expectedFingerprint}</code>
                                       </div>
                                       <div>
-                                        <strong>Presented:</strong>
+                                        <strong>Presented</strong>
                                         {' '}
                                         <code data-testid="tunnel-presented-fingerprint">{mismatch().presentedFingerprint}</code>
                                       </div>
                                     </div>
-                                    <Show when={verifyError()?.id === t.id
-                                      ? verifyError()!.message
-                                      : null}
-                                    >
+                                    <Show when={verifyError()?.id === t.id && verifyError()?.message}>
                                       {message => (
                                         <div class={errorText} role="alert" data-testid="tunnel-verify-error">{message()}</div>
                                       )}
                                     </Show>
+                                    <div>Compare the presented fingerprint with the one the Worker logs when it starts.</div>
                                     <div class={styles.tunnelStoppedActions}>
                                       <button
                                         type="button"
                                         class="outline"
-                                        disabled={verifyingTunnelId() !== null}
-                                        onClick={() => verify(t)}
+                                        disabled={review() !== null}
+                                        onClick={() => void verify(worker, t)}
                                         data-testid="tunnel-verify-key"
                                       >
-                                        <Show when={verifyingTunnelId() === t.id}><Spinner /></Show>
+                                        <Show when={review()?.id === t.id}><Spinner /></Show>
                                         Verify Worker key
                                       </button>
                                       <button
                                         type="button"
                                         class="outline"
                                         data-variant="danger"
-                                        onClick={() => {
-                                          setDeleteError(null)
-                                          setDeleteTunnelTarget({ tunnel: t, identityScope: auth.user()?.id ?? '' })
-                                        }}
+                                        onClick={() => openDelete({ kind: 'one', tunnel: t })}
                                         data-testid="tunnel-remove"
                                       >
                                         Remove
@@ -332,49 +335,32 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
         </For>
       </Show>
 
-      <Show when={deleteTunnelTarget()}>
+      <Show when={deleteTarget()} keyed>
         {target => (
           <ConfirmDialog
-            title="Delete tunnel"
+            title={target.kind === 'one'
+              ? 'Delete tunnel'
+              : 'Delete all tunnels'}
             danger
             busy={deleting()}
-            confirmLabel="Delete"
-            confirmTestId="confirm-delete-tunnel"
-            onConfirm={confirmDeleteTunnel}
-            onCancel={() => {
-              setDeleteTunnelTarget(null)
-              setDeleteError(null)
-            }}
+            confirmLabel={target.kind === 'one'
+              ? 'Delete'
+              : 'Delete all'}
+            confirmTestId={target.kind === 'one'
+              ? 'confirm-delete-tunnel'
+              : 'confirm-delete-all-tunnels'}
+            onConfirm={() => void confirmDelete(target)}
+            onCancel={() => closeDelete(target)}
           >
             <p>
-              {'Delete tunnel '}
-              <strong>{tunnelLabel(target().tunnel)}</strong>
-              ?
-            </p>
-            <Show when={deleteError()}>
-              <p class={errorText} role="alert" data-testid="tunnel-delete-error">{deleteError()}</p>
-            </Show>
-          </ConfirmDialog>
-        )}
-      </Show>
-
-      <Show when={deleteAllTunnelsTarget()}>
-        {target => (
-          <ConfirmDialog
-            title="Delete all tunnels"
-            danger
-            busy={deleting()}
-            confirmLabel="Delete all"
-            confirmTestId="confirm-delete-all-tunnels"
-            onConfirm={confirmDeleteAllTunnels}
-            onCancel={() => {
-              setDeleteAllTunnelsTarget(null)
-              setDeleteError(null)
-            }}
-          >
-            <p>
-              {'Delete all tunnels for worker '}
-              <strong>{props.workerInfo(target().workerId)?.name ?? target().workerId}</strong>
+              {target.kind === 'one'
+                ? 'Delete tunnel '
+                : 'Delete all tunnels for Worker '}
+              <strong>
+                {target.kind === 'one'
+                  ? tunnelLabel(target.tunnel)
+                  : props.workerInfo(target.workerId)?.name ?? target.workerId}
+              </strong>
               ?
             </p>
             <Show when={deleteError()}>

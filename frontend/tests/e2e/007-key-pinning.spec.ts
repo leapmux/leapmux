@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { MLKEM_PUBLIC_KEY_SIZE, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '../../src/generated/contracts/wire'
 import { accountStorageKey, KEY_KEY_PINS, storageAccountFor } from '../../src/lib/browserStorage'
 import { test } from './fixtures'
 import { readEntry, writeEntry } from './helpers/storage'
@@ -30,15 +31,23 @@ async function getKeyPin(page: Page, account: string, workerId: string): Promise
   return pins?.[workerId] ?? null
 }
 
-/** Replace one pin, preserving the row's expiration. */
-async function replaceKeyPin(page: Page, account: string, workerId: string, publicKeyHex: string) {
+/** Change one hex digit of the verified key, preserving its width and the row's expiration. */
+async function tamperKeyPin(page: Page, account: string, workerId: string): Promise<string> {
   const storedKey = keyPinsStorageKey(account)
   const row = await readEntry(page, storedKey)
   if (row === null)
     throw new Error('key-pin storage was not initialized')
-  const pins = { ...row.v as Record<string, unknown> }
-  pins[workerId] = { publicKeyHex, firstSeen: Date.now() - 86400000 }
+  const pins = { ...row.v as Record<string, StoredKeyPin> }
+  const existing = pins[workerId]
+  if (existing === undefined)
+    throw new Error('the Worker has no stored pin to tamper with')
+  const firstDigit = existing.publicKeyHex[0] === 'a'
+    ? 'b'
+    : 'a'
+  const publicKeyHex = firstDigit + existing.publicKeyHex.slice(1)
+  pins[workerId] = { ...existing, publicKeyHex }
   await writeEntry(page, storedKey, pins, row.e)
+  return publicKeyHex
 }
 
 test.describe('Key Pinning', () => {
@@ -60,8 +69,7 @@ test.describe('Key Pinning', () => {
     expect(pin).not.toBeNull()
     expect(pin!.publicKeyHex).toBeTruthy()
     expect(typeof pin!.publicKeyHex).toBe('string')
-    // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
-    expect(pin!.publicKeyHex.length).toBe(3328)
+    expect(pin!.publicKeyHex).toHaveLength(2 * (X25519_PUBLIC_KEY_SIZE + MLKEM_PUBLIC_KEY_SIZE + SLHDSA_PUBLIC_KEY_SIZE))
     expect(pin!.firstSeen).toBeGreaterThan(0)
   })
 
@@ -96,13 +104,13 @@ test.describe('Key Pinning', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspace.workspaceId)
 
-    // Verify key is pinned.
+    // Capture the key from the initial verified channel before changing the pin.
     await expect.poll(() => getKeyPin(page, account, workerId)).not.toBeNull()
-    const pin = await getKeyPin(page, account, workerId)
-    expect(pin).not.toBeNull()
+    const verifiedKeyHex = (await getKeyPin(page, account, workerId))?.publicKeyHex
+    expect(verifiedKeyHex).toBeDefined()
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await replaceKeyPin(page, account, workerId, 'aa'.repeat(32))
+    await tamperKeyPin(page, account, workerId)
 
     // Reload the page to destroy the in-memory ChannelManager and force a new channel open.
     await page.reload()
@@ -134,21 +142,8 @@ test.describe('Key Pinning', () => {
     // Workspace should load normally.
     await waitForWorkspaceReady(page)
 
-    // Verify the pin was updated to the real key (not the fake 'aa' key).
-    //
-    // Polled, not read once: accepting the dialog only RESOLVES the decision.
-    // The store hands the caller a `commit` closure that runs when the channel
-    // handshake it was blocking actually completes, so the new pin lands some
-    // time after the dialog dismisses and after the workspace shell renders. A
-    // single read here saw the tampered key every time.
-    await expect
-      .poll(async () => (await getKeyPin(page, account, workerId))?.publicKeyHex)
-      .not
-      .toBe('aa'.repeat(32))
-    const updatedPin = await getKeyPin(page, account, workerId)
-    expect(updatedPin).not.toBeNull()
-    // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
-    expect(updatedPin!.publicKeyHex.length).toBe(3328)
+    // The pin commits after verification, which can complete after the dialog closes.
+    await expect.poll(async () => (await getKeyPin(page, account, workerId))?.publicKeyHex).toBe(verifiedKeyHex)
   })
 
   test('reject: key mismatch dialog appears, user rejects, channel not opened', async ({
@@ -165,7 +160,7 @@ test.describe('Key Pinning', () => {
     await expect.poll(() => getKeyPin(page, account, workerId)).not.toBeNull()
 
     // Tamper with the pinned key to trigger a mismatch on next channel open.
-    await replaceKeyPin(page, account, workerId, 'bb'.repeat(32))
+    const tamperedKeyHex = await tamperKeyPin(page, account, workerId)
 
     // Reload to trigger new channel open.
     await page.reload()
@@ -188,6 +183,6 @@ test.describe('Key Pinning', () => {
     // The pin should NOT be updated (still the fake key).
     const unchangedPin = await getKeyPin(page, account, workerId)
     expect(unchangedPin).not.toBeNull()
-    expect(unchangedPin!.publicKeyHex).toBe('bb'.repeat(32))
+    expect(unchangedPin!.publicKeyHex).toBe(tamperedKeyHex)
   })
 })

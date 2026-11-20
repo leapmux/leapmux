@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -35,6 +36,8 @@ type channelHandle interface {
 	Closed() bool
 	// Close tears the channel down. It is idempotent.
 	Close()
+	// CloseDone closes after the transport has been released.
+	CloseDone() <-chan struct{}
 	// Context is the channel's lifetime. Its Done channel fires when the channel
 	// dies, which is what evicts it from the cache.
 	Context() context.Context
@@ -54,6 +57,11 @@ type managedChannel struct {
 func (m *managedChannel) closed() bool          { return m.handle.Closed() }
 func (m *managedChannel) close()                { m.handle.Close() }
 func (m *managedChannel) done() <-chan struct{} { return m.handle.Context().Done() }
+
+func (m *managedChannel) closeAndWait() {
+	m.close()
+	<-m.handle.CloseDone()
+}
 
 func wrapChannel(ch *tunnelpkg.Channel) *managedChannel {
 	if ch == nil {
@@ -79,8 +87,8 @@ type channelKey struct {
 type channelExpectation struct {
 	userID string
 	// keysHex is the composite encoding NewExpectedWorkerKeyPin decodes. It is
-	// both the cache identity of the key set and the input the per-open pin is
-	// derived from, so the two can never disagree. Empty means no expectation:
+	// the input for the per-open pin and, once normalized to lowercase, for
+	// the cache identity. Empty means no expectation:
 	// the pool is internal and a production create never admits one (see
 	// TunnelConfig.validateAndNormalize).
 	keysHex string
@@ -101,24 +109,24 @@ type channelOpen struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	key     channelKey
+	waiters int // guarded by channelPool.mu
 	channel *managedChannel
 	err     error
 }
 
-// channelEpoch is the single invalidation epoch for cached E2EE channels: the
-// opaque id, the channel lifetime context derived channels/opens bind to, and
-// its cancel all move together. reset replaces the whole value so the three can
-// never drift (e.g. rotating the id without rotating the lifetime context,
-// which would let a tunnel reuse a torn-down transport).
+// channelEpoch owns the ID, lifetime, and unreleased resources of one epoch.
+// Reset replaces it as a unit so a tunnel cannot reuse a retired transport.
 type channelEpoch struct {
-	// id is a nonempty opaque identifier, regenerated at construction and at
-	// every reset (so it is unique across sidecar process replacement). It is
-	// the single invalidation authority: the cache revision, the channel_epoch
-	// ListTunnels reports, and the admitted epoch a tunnel retains and
-	// re-compares in live.
+	// The opaque ID is unique across resets and sidecar processes. ListTunnels
+	// reports it, the reuse cache includes it, and each tunnel retains it.
 	id     string
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// An evicted channel and an open whose last waiter left still own
+	// resources. Only the current epoch can add or remove owned channels.
+	channels map[*managedChannel]struct{}
+	opening  sync.WaitGroup
 }
 
 // channelPool caches and revalidates E2EE channels keyed by (hubURL, workerID,
@@ -130,7 +138,7 @@ type channelPool struct {
 	channels map[channelKey]*managedChannel
 	inflight map[channelKey]*channelOpen
 	chanOpts *tunnelpkg.OpenChannelOptions
-	epoch    channelEpoch
+	epoch    *channelEpoch
 	openCh   openChannelFunc
 }
 
@@ -143,48 +151,55 @@ func newChannelPool(openCh openChannelFunc) *channelPool {
 	}
 }
 
-func newChannelEpoch() channelEpoch {
+func newChannelEpoch() *channelEpoch {
 	ctx, cancel := context.WithCancel(context.Background())
-	return channelEpoch{id: uuid.New().String(), ctx: ctx, cancel: cancel}
+	return &channelEpoch{
+		id:       uuid.New().String(),
+		ctx:      ctx,
+		cancel:   cancel,
+		channels: make(map[*managedChannel]struct{}),
+	}
 }
 
-// setOptions sets transport options for opening E2EE channels and resets the
-// pool: an options change is a connection-identity change.
-func (p *channelPool) setOptions(opts *tunnelpkg.OpenChannelOptions) {
+// close waits for the retired epoch's transports and any unfinished opens,
+// including their rollback. The caller holds neither pool nor manager lock.
+func (epoch *channelEpoch) close() {
+	var closing sync.WaitGroup
+	for ch := range epoch.channels {
+		closing.Go(ch.closeAndWait)
+	}
+	epoch.opening.Wait()
+	closing.Wait()
+}
+
+// setOptions changes the transport and returns the detached resources for
+// cleanup after releasing the manager lock.
+func (p *channelPool) setOptions(opts *tunnelpkg.OpenChannelOptions) *channelEpoch {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if opts == nil {
 		p.chanOpts = nil
 	} else {
 		copied := *opts
 		p.chanOpts = &copied
 	}
-	p.mu.Unlock()
-	p.reset()
+	return p.rotateLocked()
 }
 
-// reset is the single invalidation epoch for cached E2EE channels: it rotates
-// the epoch (a fresh opaque id, a fresh channel lifetime context), and drops
-// the cached maps. Both a transport change (setOptions) and a full reset
-// (CloseAll) route through here so one epoch comparison fences every caller.
-func (p *channelPool) reset() {
+func (p *channelPool) rotate() *channelEpoch {
 	p.mu.Lock()
-	// Rotate the whole epoch atomically: cancel the old lifetime (so every
-	// channel/open derived from it unwinds), then replace id+ctx+cancel
-	// together.
-	p.epoch.cancel()
-	p.epoch = newChannelEpoch()
-	channels := p.channels
-	p.channels = make(map[channelKey]*managedChannel)
-	inflight := p.inflight
-	p.inflight = make(map[channelKey]*channelOpen)
-	p.mu.Unlock()
+	defer p.mu.Unlock()
+	return p.rotateLocked()
+}
 
-	for _, open := range inflight {
-		open.cancel()
-	}
-	for _, ch := range channels {
-		ch.close()
-	}
+func (p *channelPool) rotateLocked() *channelEpoch {
+	// Cancel the retiring lifetime and detach every resource it still owns.
+	retired := p.epoch
+	retired.cancel()
+	p.epoch = newChannelEpoch()
+	p.channels = make(map[channelKey]*managedChannel)
+	p.inflight = make(map[channelKey]*channelOpen)
+	return retired
 }
 
 // currentEpoch returns the pool's current invalidation epoch id. Tests and
@@ -216,7 +231,12 @@ func (p *channelPool) getOrOpen(
 		return nil, err
 	}
 	p.mu.Lock()
-	if epoch != p.epoch.id {
+	if err := operationCtx.Err(); err != nil {
+		p.mu.Unlock()
+		return nil, err
+	}
+	activeEpoch := p.epoch
+	if epoch != activeEpoch.id {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("tunnel manager reset while opening channel")
 	}
@@ -224,8 +244,8 @@ func (p *channelPool) getOrOpen(
 		hubURL:         hubURL,
 		workerID:       workerID,
 		expectedUserID: expect.userID,
-		expectedKeys:   expect.keysHex,
-		epoch:          p.epoch.id,
+		expectedKeys:   strings.ToLower(expect.keysHex),
+		epoch:          activeEpoch.id,
 	}
 	if ch := p.channels[key]; ch != nil {
 		if !ch.closed() {
@@ -236,7 +256,7 @@ func (p *channelPool) getOrOpen(
 	}
 	open := p.inflight[key]
 	if open == nil {
-		openCtx, cancelOpen := context.WithCancel(p.epoch.ctx)
+		openCtx, cancelOpen := context.WithCancel(activeEpoch.ctx)
 		open = &channelOpen{
 			ctx:    openCtx,
 			cancel: cancelOpen,
@@ -244,11 +264,12 @@ func (p *channelPool) getOrOpen(
 			key:    key,
 		}
 		p.inflight[key] = open
-		opts := tunnelpkg.OpenChannelOptions{LifetimeContext: p.epoch.ctx}
+		activeEpoch.opening.Add(1)
+		opts := tunnelpkg.OpenChannelOptions{}
 		if p.chanOpts != nil {
 			opts = *p.chanOpts
-			opts.LifetimeContext = p.epoch.ctx
 		}
+		opts.LifetimeContext = activeEpoch.ctx
 		// Per-open identity: the channel must authenticate as the expected
 		// user and the Hub must announce exactly the expected Worker keys
 		// (https://github.com/leapmux/leapmux/issues/660). An empty
@@ -256,12 +277,22 @@ func (p *channelPool) getOrOpen(
 		// pre-expectation behaviour.
 		opts.ExpectedUserID = expect.userID
 		opts.KeyPin = pin
-		go p.runChannelOpen(open, hubURL, workerID, opts)
+		go p.runChannelOpen(open, activeEpoch, hubURL, workerID, opts)
 	}
+	open.waiters++
 	p.mu.Unlock()
 
 	select {
 	case <-operationCtx.Done():
+		p.mu.Lock()
+		open.waiters--
+		if open.waiters == 0 && p.inflight[key] == open {
+			// A later caller can start again, while reset keeps owning
+			// this open until the transport and rollback finish.
+			delete(p.inflight, key)
+			open.cancel()
+		}
+		p.mu.Unlock()
 		return nil, operationCtx.Err()
 	case <-open.done:
 		if err := operationCtx.Err(); err != nil {
@@ -281,52 +312,66 @@ func (p *channelPool) getOrOpen(
 
 func (p *channelPool) runChannelOpen(
 	open *channelOpen,
+	epoch *channelEpoch,
 	hubURL, workerID string,
 	opts tunnelpkg.OpenChannelOptions,
 ) {
-	// Bound the handshake/dial so a stalled hub cannot wedge the open forever.
-	// opts.LifetimeContext (the epoch context) still owns the opened channel, so
-	// this deadline only fences the open itself, not the channel's lifetime.
+	// The timeout limits the handshake and dial. The epoch context in opts
+	// still owns the lifetime of a published channel.
 	openCtx, cancelOpen := context.WithTimeout(open.ctx, channelOpenTimeout)
 	ch, err := p.openCh(openCtx, hubURL, workerID, &opts)
-	cancelOpen()
-	open.cancel()
 	if err == nil && ch == nil {
 		err = fmt.Errorf("open channel returned no channel")
 	}
 
 	p.mu.Lock()
-	if err == nil && open.key.epoch != p.epoch.id {
-		err = fmt.Errorf("tunnel manager reset while opening channel")
+	if err == nil {
+		switch {
+		case epoch != p.epoch:
+			err = fmt.Errorf("tunnel manager reset while opening channel")
+		case p.inflight[open.key] != open:
+			err = context.Canceled
+		default:
+			err = openCtx.Err()
+		}
 	}
-	if current := p.inflight[open.key]; current == open {
+	if p.inflight[open.key] == open {
 		delete(p.inflight, open.key)
 	}
 	if err == nil {
 		p.channels[open.key] = ch
+		epoch.channels[ch] = struct{}{}
 		open.channel = ch
+	}
+	p.mu.Unlock()
+	cancelOpen()
+	open.cancel()
+
+	if err != nil && ch != nil {
+		ch.closeAndWait()
 	}
 	open.err = err
 	close(open.done)
-	p.mu.Unlock()
-
-	if err != nil {
-		if ch != nil {
-			ch.close()
-		}
-		return
+	// A successful open transfers ownership to channels under the lock.
+	// A failed open holds its reservation until close and rollback finish.
+	epoch.opening.Done()
+	if err == nil {
+		p.watchChannelClose(epoch, open.key, ch)
 	}
-	// Evict the channel from the cache when its lifetime ends. Unconditional: done()
-	// is derived from the handle, so unlike the func-field copy it replaced there is
-	// no nil channel here to receive from forever.
-	go p.removeClosedChannel(open.key, ch)
 }
 
-func (p *channelPool) removeClosedChannel(key channelKey, ch *managedChannel) {
+func (p *channelPool) watchChannelClose(epoch *channelEpoch, key channelKey, ch *managedChannel) {
 	<-ch.done()
 	p.mu.Lock()
 	if p.channels[key] == ch {
 		delete(p.channels, key)
+	}
+	p.mu.Unlock()
+
+	<-ch.handle.CloseDone()
+	p.mu.Lock()
+	if epoch == p.epoch {
+		delete(epoch.channels, ch)
 	}
 	p.mu.Unlock()
 }
@@ -335,10 +380,8 @@ func (p *channelPool) removeClosedChannel(key channelKey, ch *managedChannel) {
 // captured channel unchanged while it is still alive, and re-resolves (opening a
 // fresh one via getOrOpen) when that channel has died -- so a tunnel survives a
 // worker/hub reconnect instead of becoming a zombie that rejects every connection
-// after its captured channel closed (removeClosedChannel only evicts the cache for
-// future opens; it never notified the running tunnel). A nil ch (test injection /
-// no captured channel) is returned as-is so injected dial seams that ignore the
-// channel keep working.
+// after its captured channel closed. Cache eviction does not notify the tunnel.
+// The test dial seam can supply a nil channel, which live returns unchanged.
 //
 // The admitted epoch is compared even on a cache hit, and is what gets passed
 // into getOrOpen: a tunnel is admitted under one epoch and never rebased onto a

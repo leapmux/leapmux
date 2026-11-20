@@ -170,7 +170,9 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
     'run',
     '-listen',
     requestedListen,
-    ...(opts.extraListen ? ['-listen', opts.extraListen] : []),
+    ...(opts.extraListen
+      ? ['-listen', opts.extraListen]
+      : []),
     '-data-dir',
     dataDir,
   ], {

@@ -3,6 +3,7 @@ import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { SectionActions } from './sectionUtils'
 import type { WorkspaceOperations } from './useWorkspaceOperations'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
+import type { AddTunnelTarget } from '~/components/workers/AddTunnelDialog'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
@@ -141,7 +142,7 @@ export interface SectionDefContext {
   /** See `WorkspaceTabTreeProps.isWorkerStreamOnline`. */
   isWorkerStreamOnline: (workerId: string) => boolean
   channelStatusFn: (id: string) => ChannelStatus
-  onAddTunnel: (worker: Worker) => void
+  onAddTunnel: (target: AddTunnelTarget) => void
   onDeregisterWorker: (worker: Worker) => void
   onRegisterWorker: () => void
 }

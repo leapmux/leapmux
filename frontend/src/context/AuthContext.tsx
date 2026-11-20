@@ -7,7 +7,7 @@ import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack, useContext } from 'solid-js'
+import { createMemo, createSignal, onCleanup, onMount, untrack, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { platformBridge } from '~/api/platformBridge'
 import { advanceAuthSessionEpoch, loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
@@ -407,6 +407,7 @@ export const AuthProvider: ParentComponent = (props) => {
     signal: trustController.signal,
   }
   const [trustScope, setTrustScopeSignal] = createSignal<WorkerTrustScope>(initialTrustScope)
+  onCleanup(platformBridge.setTunnelTrustScope(() => untrack(trustScope)))
 
   /** Abort the live scope's signal. Its decisions are now cancellations. */
   const retireWorkerTrustScope = () => {
@@ -495,9 +496,22 @@ export const AuthProvider: ParentComponent = (props) => {
       if (!prepared.commit())
         return false
     }
-    // Retire the old trust lifetime before the namespace or identity moves.
-    if (advanceScope)
+    // The scope retires BEFORE the namespace moves or the identity publishes,
+    // so a decision captured under it sees the cancellation rather than the
+    // successor's namespace.
+    if (advanceScope) {
+      const outgoing = trustScope()
+      if (outgoing.userId) {
+        // Install the native reset barrier before any successor can list or
+        // mutate tunnels. Auth can still finish if the sidecar refuses reset.
+        void platformBridge.resetTunnels(outgoing).catch((err: unknown) => {
+          log.warn('Failed to reset desktop tunnels on identity change', err)
+        })
+      }
       retireWorkerTrustScope()
+      if (outgoing.userId)
+        channelManager.closeAll()
+    }
     if (next && account)
       setStorageAccount(account)
     if (!next && outgoingAccount) {
@@ -517,49 +531,6 @@ export const AuthProvider: ParentComponent = (props) => {
       : null)
     return true
   }
-
-  /**
-   * Drop every pooled E2EE channel on an identity change.
-   *
-   * Channels are pooled per worker for up to an hour and carry the identity the Hub
-   * authenticated them as at OPEN time, and `channelManager` is a module-level
-   * singleton that outlives this provider. So without this, logging out and back in as
-   * someone else keeps serving the previous user's channels: every worker RPC the new
-   * user's page issues runs on the worker AS THE OLD USER, for the rest of the
-   * channels' hour. getOrOpenChannel also re-checks the identity before reusing a
-   * pooled channel; that is the fallback check, this is the eager release -- it also
-   * frees the shared WebSocket, which the logged-out user must not hold open.
-   *
-   * On the desktop this also resets the SIDECAR's tunnels. In distributed mode the Go
-   * sidecar pools its own E2EE channels and runs tunnel listeners bound to the
-   * connection (not the browser session), and it authenticates to the Hub purely by
-   * the proxy's cookie jar -- it has no user identity to key an eager close on. So
-   * without resetTunnels, a user switch would leave the previous user's tunnels
-   * relaying (and their cached channels reusable) under the old identity until the Hub
-   * revokes the session. resetTunnels is a no-op off the desktop and best-effort: a
-   * failure must not break the logout flow, but it must not pass silently either.
-   */
-  const closePooledChannels = () => {
-    channelManager.closeAll()
-    platformBridge.resetTunnels().catch((err) => {
-      log.warn('failed to reset sidecar tunnels on identity change', {
-        error: String(err),
-      })
-    })
-  }
-
-  // Drive the eager release off the `user` signal itself, so EVERY identity
-  // transition -- logout, an auth error, a login over a live session, and any future
-  // setUser path (setAuth, refreshUser, an impersonation seed) -- releases by
-  // construction rather than each transition site remembering to call it. Fires only
-  // when a PREVIOUS authenticated user changes to a different id or to logout: the
-  // initial null -> first-user restore (prev falsy) and a same-user refresh
-  // (prev.id === next id) must not close and reopen the pool, and must not fire a
-  // spurious resetTunnels.
-  createEffect(on(user, (u, prev) => {
-    if (prev && prev.id !== (u?.id ?? ''))
-      closePooledChannels()
-  }, { defer: true }))
 
   const clearAuthUser = () => {
     advanceAuthSessionEpoch()

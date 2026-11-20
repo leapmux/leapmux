@@ -1,49 +1,41 @@
+import type { TunnelKeyApproval } from '~/api/workerRpc'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import { describe, expect, it, vi } from 'vitest'
 import { verifyWorkerKey } from './verifyWorkerKey'
 
-const channelState = vi.hoisted(() => ({
-  getOrOpenChannel: vi.fn<(workerId: string) => Promise<string>>(),
-}))
-vi.mock('~/api/workerRpc', () => ({
-  channelManager: {
-    getOrOpenChannel: (workerId: string) => channelState.getOrOpenChannel(workerId),
-  },
-}))
+const review = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope) => Promise<TunnelKeyApproval>>())
+vi.mock('~/api/workerRpc', () => ({ refreshWorkerTrustForTunnel: review }))
 
-// Declared hoisted: the mock factories run before the module body, so a class
-// declared alongside the tests is not initialized when one of them reads it.
 const KeyPinRejectedError = vi.hoisted(() => class KeyPinRejectedError extends Error {})
-vi.mock('~/lib/keyPinStore', () => ({
-  KeyPinRejectedError,
-}))
+vi.mock('~/lib/keyPinStore', () => ({ KeyPinRejectedError }))
+
+const scope: WorkerTrustScope = { userId: 'user', generation: 1, signal: new AbortController().signal }
 
 describe('verifyWorkerKey', () => {
-  it('opens the browser channel to the worker', async () => {
-    channelState.getOrOpenChannel.mockResolvedValueOnce('ch-1')
-    await verifyWorkerKey('w1')
-    expect(channelState.getOrOpenChannel).toHaveBeenCalledWith('w1')
+  it('returns the approval from the fresh browser review', async () => {
+    const approval = {
+      workerId: 'w1',
+      expectedUserId: 'user',
+      identityGeneration: 1,
+      publicKeyHex: 'approved',
+    }
+    review.mockResolvedValueOnce(approval)
+    await expect(verifyWorkerKey('w1', scope)).resolves.toBe(approval)
+    expect(review).toHaveBeenCalledExactlyOnceWith('w1', scope)
   })
 
-  // A rejection is the user's own decision in the key-changed dialog. The
-  // message must say so, or the caller reads it as a transport failure and
-  // offers to retry the same thing.
-  it('reports a rejected key change as a decision to confirm, not a failure', async () => {
-    channelState.getOrOpenChannel.mockRejectedValue(new KeyPinRejectedError())
-
-    await expect(verifyWorkerKey('w1')).rejects.toThrow(/was rejected/)
-    await expect(verifyWorkerKey('w1')).rejects.toThrow(/fingerprint/)
-    channelState.getOrOpenChannel.mockReset()
+  it('explains how to confirm the fingerprint after a rejection', async () => {
+    review.mockRejectedValueOnce(new KeyPinRejectedError())
+    await expect(verifyWorkerKey('w1', scope)).rejects.toThrow(/was rejected.*fingerprint/)
   })
 
-  it('reports any other failure with its reason', async () => {
-    channelState.getOrOpenChannel.mockRejectedValueOnce(new Error('hub unreachable'))
-
-    await expect(verifyWorkerKey('w1')).rejects.toThrow('Could not verify the Worker key: hub unreachable')
+  it('reports another verification failure with its reason', async () => {
+    review.mockRejectedValueOnce(new Error('Hub unreachable'))
+    await expect(verifyWorkerKey('w1', scope)).rejects.toThrow('Could not verify the Worker key. Hub unreachable')
   })
 
-  it('falls back to its own wording for a rejection that is not an Error', async () => {
-    channelState.getOrOpenChannel.mockRejectedValueOnce('nope')
-
-    await expect(verifyWorkerKey('w1')).rejects.toThrow('Could not verify the Worker key: the channel did not open')
+  it('explains a rejection without an error message', async () => {
+    review.mockRejectedValueOnce('nope')
+    await expect(verifyWorkerKey('w1', scope)).rejects.toThrow('Could not verify the Worker key. The channel did not open.')
   })
 })

@@ -2244,7 +2244,7 @@ export const DESKTOP_TS_EVENT_NAMES = {
   browserAuthResult: 'TAURI_EVENT_BROWSER_AUTH_RESULT',
   menuShowAbout: 'TAURI_EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'TAURI_EVENT_MENU_SHOW_PREFERENCES',
-  tunnelsChanged: 'TAURI_EVENT_TUNNELS_CHANGED',
+  tunnelsChanged: 'EVENT_TUNNELS_CHANGED',
 }
 
 export const DESKTOP_RS_IPC_HEADER_NAMES = {

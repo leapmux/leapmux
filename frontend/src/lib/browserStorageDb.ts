@@ -10,9 +10,9 @@
  * THREE THINGS LIVE HERE.
  *
  * The DATABASE: one table keyed by the whole composed storage key, with an index
- * on the expiration so the sweep can select what to delete without reading a
- * single value. `updateKvTransaction` runs a caller's read-modify-write as ONE
- * transaction, for the rows that cannot tolerate the write-behind queue.
+ * on expiration so the sweep can select candidates by key. `updateKvTransaction`
+ * runs a caller's read-modify-write in one transaction when the rows require
+ * an immediate commit.
  *
  * The WRITE-BEHIND QUEUE. The gateway's synchronous accessors cannot await a
  * commit, so a write updates the caller's view immediately and lands here to be
@@ -66,7 +66,8 @@ const STORES = {
   [TABLE]: `k, ${EXPIRES_INDEX}`,
 }
 
-const connection = createIdbConnection<KvDb>(DB_NAME, STORES)
+// This database holds authoritative pin rows alongside cached preferences.
+const connection = createIdbConnection<KvDb>(DB_NAME, STORES, { onSchemaMismatch: 'reject' })
 
 /**
  * Whether the environment reported that it has no IndexedDB at all, or an open
@@ -77,10 +78,10 @@ let loggedUnavailable = false
 
 /** The database, or null when persistence cannot work here. Never rejects. */
 async function openKv(): Promise<KvDb | null> {
-  if (!isIndexedDbAvailable())
-    return null
   try {
-    return await connection.open()
+    return isIndexedDbAvailable()
+      ? await connection.open()
+      : null
   }
   catch (err) {
     reportUnavailable(err)
@@ -103,8 +104,8 @@ function reportUnavailable(err: unknown): void {
  * A read that answers EMPTY rather than rejecting.
  *
  * Every read here is a cache lookup whose miss is already a defined outcome, and
- * the failures it can meet are not the caller's to handle: a peer tab's schema
- * repair closes the connection mid-read, and a quota or a corrupt profile fails
+ * the failures it can meet are not the caller's to handle: a version change
+ * closes the connection mid-read, and a quota or a corrupt profile fails
  * the open. Rejecting would push a rejection into `loadDraft` and its
  * neighbours, none of which can do anything but treat it as a miss anyway.
  */
@@ -152,9 +153,9 @@ export async function readKvRow(key: string): Promise<KvRow | undefined> {
 
 /** Row access inside one strict transaction. */
 export interface KvRowTransaction {
-  get(key: string): Promise<KvRow | undefined>
-  put(row: KvRow): Promise<void>
-  delete(key: string): Promise<void>
+  get: (key: string) => Promise<KvRow | undefined>
+  put: (row: KvRow) => Promise<void>
+  delete: (key: string) => Promise<void>
 }
 
 /**
@@ -175,18 +176,53 @@ export interface KvRowTransaction {
  * survives, which is what makes a compare-and-swap check inside `body` a real
  * check rather than a hopeful one.
  */
-export async function updateKvTransaction<T>(body: (tx: KvRowTransaction) => Promise<T>): Promise<T> {
-  const db = await openKv()
-  if (db === null)
-    throw new Error('browser storage is unavailable; nothing can be persisted here')
-  return db.transaction('rw', db[TABLE], async () => {
-    const tx: KvRowTransaction = {
-      get: key => db[TABLE].get(key),
-      put: row => db[TABLE].put(row).then(() => undefined),
-      delete: key => db[TABLE].delete(key).then(() => undefined),
-    }
-    return await body(tx)
-  })
+export async function updateKvTransaction<T>(body: (tx: KvRowTransaction) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted()
+  let abort: (() => void) | undefined
+  try {
+    if (!isIndexedDbAvailable())
+      throw new Error('Browser storage is unavailable.')
+    const db = await connection.open()
+    signal?.throwIfAborted()
+    return await db.transaction('rw', db[TABLE], async (transaction) => {
+      signal?.throwIfAborted()
+      const nativeTransaction = transaction.idbtrans
+      abort = () => {
+        try {
+          nativeTransaction.abort()
+        }
+        catch (err) {
+          // IndexedDB may enter commit before Dexie receives its completion
+          // event. Let the native outcome settle Dexie's transaction.
+          if (!(err instanceof DOMException) || err.name !== 'InvalidStateError')
+            throw err
+        }
+      }
+      signal?.addEventListener('abort', abort, { once: true })
+      const tx: KvRowTransaction = {
+        get: key => db[TABLE].get(key),
+        async put(row) {
+          signal?.throwIfAborted()
+          await db[TABLE].put(row)
+        },
+        async delete(key) {
+          signal?.throwIfAborted()
+          await db[TABLE].delete(key)
+        },
+      }
+      const result = await body(tx)
+      signal?.throwIfAborted()
+      return result
+    })
+  }
+  catch (err) {
+    signal?.throwIfAborted()
+    throw err
+  }
+  finally {
+    if (abort)
+      signal?.removeEventListener('abort', abort)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -201,9 +237,8 @@ export async function updateKvTransaction<T>(body: (tx: KvRowTransaction) => Pro
  * The one caller that acts on it (`persistedSeq`, whose mark wedges a relay if
  * it does not survive the reload) reaches through `.durable`.
  *
- * `durable` NEVER REJECTS. A refused write is not something a caller can act on
- * -- a draft, a layout snapshot or a key pin has nowhere else to go -- so it
- * resolves false and is reported here.
+ * `durable` never rejects. A refused write resolves false and the queue reports
+ * the failure.
  */
 export interface StorageWrite {
   readonly durable: Promise<boolean>
@@ -507,8 +542,8 @@ export async function flushKvWrites(): Promise<void> {
  * `isRegistered` rejects. Resolves the keys that were deleted, so the gateway
  * can drop them from its mirror and tell the other tabs.
  *
- * Expiry comes straight off the index and reads NO value: the walk that judged a
- * 40 KB row-height blob used to have to fetch it first.
+ * The expiration index lists candidates by key. The sweep reads a row's value
+ * only when its policy requires validation before deletion.
  *
  * THE REGISTRATION PASS IS NOT ON THE HOURLY CADENCE, because it cannot be
  * bounded the way expiry can. Its predicate is a property of the KEY, and a
@@ -525,13 +560,18 @@ export async function flushKvWrites(): Promise<void> {
  * its expiration has passed. The gateway keeps exactly one such row -- the key
  * pin removal revision, which is nonexpiring by policy -- so a corrupted or
  * foreign expiration on it cannot reset a revision that pending pin commits
- * validate against. Nothing else is exempt: the pin map itself expires on its
- * registered policy like every other row.
+ * validate against. `expiryValidatorForKey` selects rows whose value must pass
+ * validation before expiry can delete it. Other expiry candidates require only
+ * their primary keys.
  */
 export async function sweepKv(
   now: number,
   isRegistered: (key: string) => boolean,
-  opts: { checkRegistrations: boolean, isExemptFromExpiry?: (key: string) => boolean },
+  opts: {
+    checkRegistrations: boolean
+    isExemptFromExpiry?: (key: string) => boolean
+    expiryValidatorForKey?: (key: string) => ((row: KvRow) => boolean) | undefined
+  },
 ): Promise<string[]> {
   const db = await openKv()
   if (!db)
@@ -539,22 +579,25 @@ export async function sweepKv(
   const deleted: string[] = []
   try {
     await db.transaction('rw', db[TABLE], async () => {
-      const expired = (await db[TABLE].where(EXPIRES_INDEX).below(now).primaryKeys())
-        .filter(key => opts.isExemptFromExpiry?.(key) !== true)
-      const unregistered = opts.checkRegistrations
-        ? (await db[TABLE].toCollection().primaryKeys()).filter(key => !isRegistered(key))
-        : []
-      // A key can be in both lists; the set is what makes the delete and the
-      // reported result idempotent.
-      const victims = [
-        ...new Set([
-          ...expired,
-          ...unregistered,
-        ]),
-      ]
-      if (victims.length === 0)
+      const table = db[TABLE]
+      const expired = await table.where(EXPIRES_INDEX).below(now).primaryKeys()
+      const victims = new Set(opts.checkRegistrations
+        ? (await table.toCollection().primaryKeys()).filter(key => !isRegistered(key))
+        : [])
+      for (const key of expired) {
+        if (opts.isExemptFromExpiry?.(key))
+          continue
+        const validate = opts.expiryValidatorForKey?.(key)
+        if (validate !== undefined) {
+          const row = await table.get(key)
+          if (row === undefined || !validate(row))
+            continue
+        }
+        victims.add(key)
+      }
+      if (victims.size === 0)
         return
-      await db[TABLE].bulkDelete(victims)
+      await table.bulkDelete([...victims])
       deleted.push(...victims)
     })
   }
@@ -578,7 +621,7 @@ const CHANNEL_NAME = 'leapmux:browser-storage'
  * For the pin rows, whose values never travel on the channel: a hint names the
  * stored key and carries no pin bytes. See `publishKvInvalidations`.
  */
-export type KeyInvalidationChange = { readonly k: string, readonly invalidate: true }
+export interface KeyInvalidationChange { readonly k: string, readonly invalidate: true }
 
 /** One committed change, as another tab receives it. */
 export type StorageChange

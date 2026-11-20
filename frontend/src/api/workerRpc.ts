@@ -7,9 +7,11 @@
  */
 
 import type { DescMessage, DescMethod, DescMethodUnary, DescService, Message, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import type { WatchEventsRequestSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
-import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
+import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from '~/lib/channel'
+import type { KeyPinConfirmFn } from '~/lib/keyPinStore'
 import { Code, createClient } from '@connectrpc/connect'
 import { isTauriApp } from '~/api/platformBridge'
 import { bufferStreamHandle } from '~/api/streamBuffer'
@@ -29,6 +31,7 @@ import { ChannelManager, KeyPinStore } from '~/lib/channel'
 import { ChannelError } from '~/lib/channelError'
 import { spawnChannelSessionWorker } from '~/lib/channelSessionClient'
 import { emitDevEvent } from '~/lib/devInstrument'
+import { readWorkerKeyPin } from '~/lib/keyPinStore'
 import { procedureOf } from '~/lib/rpcProcedure'
 import { sleep } from '~/lib/sleep'
 import { workerKeyBundleFromWire } from '~/lib/workerKeyBundle'
@@ -44,25 +47,24 @@ const keyPinStore = new KeyPinStore({
 })
 
 /** Register the key-pin confirmation callback (called by AppShell). */
-export function setConfirmKeyPin(fn: (workerId: string, expectedFingerprint: string, actualFingerprint: string) => Promise<KeyPinDecision>): () => void {
+export function setConfirmKeyPin(fn: KeyPinConfirmFn): () => void {
   return keyPinStore.setConfirmKeyPin(fn)
 }
 
-// The identity this page believes it is authenticated as. Set by AppShell, which
-// owns the auth context; the singleton below is constructed at import time, long
-// before that context exists, so it cannot read the store itself.
-let expectedUserIdFn: (() => string | undefined) | null = null
+let expectedUserScope: (() => WorkerTrustScope) | undefined
 
-/**
- * Register the expected-identity provider (called by AppShell).
- *
- * This is a CROSS-CHECK against the Hub's answer, never a source of identity: the
- * Hub authenticates every channel open and names the user, and that answer is
- * always authoritative. What this catches is the page and the Hub disagreeing —
- * see `expectedUserId` in `~/lib/channel`.
- */
-export function setExpectedUserId(fn: () => string | undefined): void {
-  expectedUserIdFn = fn
+/** Register the AppShell accessor for the page's adopted identity. */
+export function setExpectedUserId(getScope: () => WorkerTrustScope): () => void {
+  const read = () => getScope()
+  expectedUserScope = read
+  return () => {
+    if (expectedUserScope === read)
+      expectedUserScope = undefined
+  }
+}
+
+export function getCurrentWorkerTrustScope(): WorkerTrustScope | undefined {
+  return expectedUserScope?.()
 }
 
 class BrowserChannelTransport implements ChannelTransport {
@@ -109,9 +111,73 @@ export const channelManager = new ChannelManager(new BrowserChannelTransport(), 
   // The manager spawns the worker lazily, at the first open, never at import.
   spawnSessionWorker: spawnChannelSessionWorker,
   rpcTimeoutFn: apiLoadingTimeoutMs,
-  expectedUserId: () => expectedUserIdFn?.(),
+  workerTrustScope: getCurrentWorkerTrustScope,
   keyPins: keyPinStore,
 })
+
+/** Proof of the exact key accepted by an explicit review in one identity lifetime. */
+export interface TunnelKeyApproval {
+  workerId: string
+  expectedUserId: string
+  identityGeneration: number
+  publicKeyHex: string
+}
+
+export class TunnelKeyApprovalExpiredError extends Error {
+  constructor() {
+    super('The approved Worker key changed or was removed. Verify the Worker key again.')
+  }
+}
+
+function requireTunnelTrustAccount(scope: WorkerTrustScope): string {
+  scope.signal.throwIfAborted()
+  if (!scope.userId || getCurrentWorkerTrustScope() !== scope)
+    throw new Error('The account changed. Open the tunnel action again.')
+  return scope.userId
+}
+
+export async function resolveTunnelTrust(workerId: string, scope: WorkerTrustScope, approval?: TunnelKeyApproval): Promise<string> {
+  const expectedUserId = requireTunnelTrustAccount(scope)
+  if (approval && (approval.workerId !== workerId
+    || approval.expectedUserId !== expectedUserId
+    || approval.identityGeneration !== scope.generation)) {
+    throw new TunnelKeyApprovalExpiredError()
+  }
+
+  const storageScope = { accountId: expectedUserId, signal: scope.signal }
+  const { pin } = await readWorkerKeyPin(workerId, storageScope)
+  requireTunnelTrustAccount(scope)
+  if (approval) {
+    if (pin?.publicKeyHex !== approval.publicKeyHex)
+      throw new TunnelKeyApprovalExpiredError()
+    return approval.publicKeyHex
+  }
+  if (pin?.publicKeyHex)
+    return pin.publicKeyHex
+
+  // A pooled channel cannot prove and commit a pin that has been removed.
+  await channelManager.openChannel(workerId)
+  requireTunnelTrustAccount(scope)
+  const verified = await readWorkerKeyPin(workerId, storageScope)
+  requireTunnelTrustAccount(scope)
+  if (!verified.pin?.publicKeyHex)
+    throw new Error('Could not read a verified Worker key. Try again.')
+  return verified.pin.publicKeyHex
+}
+
+export async function refreshWorkerTrustForTunnel(workerId: string, scope: WorkerTrustScope): Promise<TunnelKeyApproval> {
+  const expectedUserId = requireTunnelTrustAccount(scope)
+  const review = await channelManager.openChannelForKeyReview(workerId)
+  requireTunnelTrustAccount(scope)
+  if (review.scope !== scope)
+    throw new TunnelKeyApprovalExpiredError()
+  return {
+    workerId,
+    expectedUserId,
+    identityGeneration: scope.generation,
+    publicKeyHex: review.publicKeyHex,
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Generic helper
@@ -170,13 +236,19 @@ async function callWorker<I extends DescMessage, O extends DescMessage>(
   opts?: WorkerCallOptions,
 ): Promise<MessageShape<O>> {
   const procedure = procedureOf(method)
+  const scope = channelManager.captureOpenScope()
+  const retrySignal = opts?.signal === undefined
+    ? scope.signal
+    : AbortSignal.any([opts.signal, scope.signal])
   for (let attempt = 0; ; attempt++) {
+    scope.assertCurrent()
     emitDevEvent('leapmux:rpc-send', () => ({
       method: procedure,
       at: performance.now(),
     }))
     try {
-      const resp = await channelManager.callWorker(workerId, method, req, opts)
+      const resp = await channelManager.callWorker(workerId, method, req, opts, scope)
+      scope.assertCurrent()
       emitDevEvent('leapmux:rpc-recv', () => ({
         method: procedure,
         at: performance.now(),
@@ -192,7 +264,7 @@ async function callWorker<I extends DescMessage, O extends DescMessage>(
       }))
       if (attempt >= UNAVAILABLE_MAX_RETRIES || !isWorkerUnavailable(err) || opts?.signal?.aborted)
         throw err
-      await sleep(UNAVAILABLE_RETRY_BASE_MS * (2 ** attempt), opts?.signal)
+      await sleep(UNAVAILABLE_RETRY_BASE_MS * (2 ** attempt), retrySignal)
     }
   }
 }

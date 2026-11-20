@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -189,6 +190,61 @@ func TestHandleResetTunnelsAcksOK(t *testing.T) {
 		"a replay must not rotate the successor epoch")
 }
 
+func TestHandleOldCreateTunnelCannotReachChannelOrBindAfterReset(t *testing.T) {
+	app := &App{ctx: t.Context(), tunnels: NewTunnelManager()}
+	connection := installTestConnection(app, mustNewProxy(t, "http://localhost"), nil, "")
+	t.Cleanup(connection.stop)
+	epoch := app.tunnels.currentEpoch()
+	app.tunnels.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+		t.Error("a stale RPC create opened a channel")
+		return nil, errors.New("unexpected channel open")
+	}
+	app.tunnels.listen = func(_, _ string) (net.Listener, error) {
+		t.Error("a stale RPC create bound a listener")
+		return nil, errors.New("unexpected listener bind")
+	}
+
+	var output bytes.Buffer
+	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+	received, dispatch := make(chan struct{}), make(chan struct{})
+	request := &desktoppb.Request{
+		Id: 1,
+		Method: &desktoppb.Request_CreateTunnel{
+			CreateTunnel: &desktoppb.CreateTunnelRequest{Config: &desktoppb.TunnelConfig{
+				WorkerId: "worker", Type: tunnelTypeSocks5, BindPort: 18082,
+				ExpectedUserId: testTunnelOwner, ExpectedWorkerKeysHex: testExpectedWorkerKeysHex,
+				ChannelEpoch: epoch,
+			}},
+		},
+	}
+	created := make(chan struct{})
+	go func() {
+		defer close(created)
+		close(received)
+		<-dispatch
+		session.handleRequest(t.Context(), request, nil)
+	}()
+	<-received
+	session.handleRequest(t.Context(), &desktoppb.Request{
+		Id: 2,
+		Method: &desktoppb.Request_ResetTunnels{
+			ResetTunnels: &desktoppb.ResetTunnelsRequest{ChannelEpoch: epoch},
+		},
+	}, nil)
+	close(dispatch)
+	<-created
+
+	reset, err := ReadFrame(&output)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, reset.GetResponse().GetId())
+	require.True(t, reset.GetResponse().GetBoolValue().GetValue())
+	create, err := ReadFrame(&output)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, create.GetResponse().GetId())
+	assert.Contains(t, create.GetResponse().GetError(), "stale channel epoch")
+	assert.Empty(t, listTunnelRows(t, app.tunnels, testTunnelOwner))
+}
+
 // The ListTunnels dispatch arm must map the manager's listing through
 // tunnelInfosToProto -- every field the shell renders rides this mapping, and
 // the arm was previously uncovered (only App.ListTunnels itself was tested).
@@ -249,8 +305,8 @@ func TestHandleListTunnelsReportsStoppedKeyMismatchRows(t *testing.T) {
 				PresentedFingerprint: "fern-golf-harp-iris",
 			},
 		},
-		expect:   channelExpectation{userID: testTunnelOwner},
-		stopping: true,
+		expect: channelExpectation{userID: testTunnelOwner},
+		state:  tunnelStoppingForMismatch,
 	}
 	app.tunnels.tunnels["t-other-owner"] = &tunnel{
 		info:   TunnelInfo{ID: "t-other-owner", WorkerID: "w2", Type: "port_forward"},

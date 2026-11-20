@@ -3,6 +3,7 @@ import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import type { SectionActions } from './sectionUtils'
 import type { TabContext } from './tabContext'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { AddTunnelTarget } from '~/components/workers/AddTunnelDialog'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
@@ -82,7 +83,7 @@ export interface SidebarElementsOpts {
   /** See `WorkspaceTabTreeProps.isWorkerStreamOnline`. */
   isWorkerStreamOnline: (workerId: string) => boolean
   channelStatusFn: (id: string) => ChannelStatus
-  onAddTunnel: (worker: Worker) => void
+  onAddTunnel: (target: AddTunnelTarget) => void
   onDeregisterWorker: (worker: Worker) => void
   onRegisterWorker: () => void
   onTabClick: (type: number, id: string) => void

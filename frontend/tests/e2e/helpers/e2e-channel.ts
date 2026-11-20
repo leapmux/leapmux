@@ -14,6 +14,7 @@ import { GetWorkerHandshakeParamsResponseSchema } from '../../../src/generated/p
 import { hydrateStorageAccount, setStorageAccount, storageAccountFor } from '../../../src/lib/browserStorage'
 import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
 import { createInProcessSessionHost } from '../../../src/lib/channelSessionInProcess'
+import { isIndexedDbAvailable } from '../../../src/lib/idb'
 import { authedHeaders, getUserId } from './api'
 import { fetchHub, hubTransportUrl } from './hubTransport'
 
@@ -104,6 +105,17 @@ class FetchChannelTransport implements ChannelTransport {
 /** Create a ChannelManager with a fetch-based transport for e2e tests. */
 export async function createTestChannelManager(hubUrl: string, cookie: string): Promise<ChannelManager> {
   const userId = await getUserId(hubUrl, cookie)
+  // The Node test process needs IndexedDB to run the same strict pin
+  // transactions as the browser.
+  if (!isIndexedDbAvailable()) {
+    const { IDBFactory, IDBKeyRange } = await import('fake-indexeddb')
+    if (!isIndexedDbAvailable()) {
+      Object.assign(globalThis, {
+        indexedDB: new IDBFactory(),
+        IDBKeyRange,
+      })
+    }
+  }
   // This harness drives the app's own channel + key-pin code in NODE, where no
   // AuthProvider ever runs. Every `leapmux:` key is scoped to an account and an
   // access with none set throws, so the harness makes the same statement the
@@ -125,12 +137,14 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
   // the manager's identity cross-check (open-time reject + pooled identity-drift
   // eviction) short-circuits to "no expectation" and the whole feature runs
   // unexercised in e2e.
+  const identity = { userId, generation: 1, signal: new AbortController().signal }
   return new ChannelManager(new FetchChannelTransport(hubUrl, cookie), {
     // Node has no Worker, so the channel sessions run in process, behind a
     // MessageChannel pair. closeAll shuts the host down, which closes its ports.
     spawnSessionWorker: createInProcessSessionHost().spawn,
+    // OpenAgent can spend 30 seconds starting a subprocess before replying.
     rpcTimeoutFn: () => 60_000,
-    expectedUserId: () => userId,
+    workerTrustScope: () => identity,
     // Auto-accept key changes in e2e tests (fresh server instances each time).
     keyPins: new KeyPinStore({
       confirmKeyPin: async () => 'accept',

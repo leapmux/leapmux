@@ -3,9 +3,9 @@ import { create, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { WorkerPrivateEventSchema } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { channelInternals, ChannelManagerTestHarness } from './channel.test-support'
 import { STREAM_HEALTHY_AFTER_MS } from './retry'
-import { useTestStorage } from '~/test-support/persistentStorage'
 
 // These tests run the subscriber on a real ChannelManager, because the decision
 // that they pin spans both: the manager decodes each frame, and the subscriber

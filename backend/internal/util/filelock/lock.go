@@ -2,6 +2,7 @@ package filelock
 
 import (
 	"context"
+	"errors"
 	"os"
 	"time"
 )
@@ -11,18 +12,24 @@ import (
 // ownership stays with the caller, who must call Unlock or Close.
 //
 // Native errors from TryLock retain their cause. A canceled context
-// returns ctx.Err() without holding the lock.
+// returns ctx.Err() and releases any lock it acquired. If release fails,
+// the error includes both causes and the caller still owns the file.
 func Lock(ctx context.Context, file *os.File) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		ok, err := TryLock(file)
 		if err != nil {
 			return err
 		}
 		if ok {
 			// Check for cancellation that raced acquisition.
-			if ctx.Err() != nil {
-				_ = Unlock(file)
-				return ctx.Err()
+			if err := ctx.Err(); err != nil {
+				if unlockErr := Unlock(file); unlockErr != nil {
+					return errors.Join(err, unlockErr)
+				}
+				return err
 			}
 			return nil
 		}

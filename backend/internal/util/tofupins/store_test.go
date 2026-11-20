@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -22,7 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/noise"
-	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/internal/util/tofupins"
 )
 
@@ -170,12 +168,12 @@ func TestStore_ResolveMismatchReturnsHintWithWorkerID(t *testing.T) {
 		"the error still starts with the worker and the fact: %v", err)
 }
 
-// A pin file that a hand-edit or a corrupt write left undecodable still produces
-// the mismatch error, with the posted fingerprint and no invented pinned one.
+// A malformed pin file fails to load. The error still includes the presented
+// fingerprint and the configured command without inventing a pinned fingerprint.
 func TestStore_ResolveMismatchReportsAnUnreadablePinnedKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pins.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{
+	document := []byte(`{
   "pins": {
     "w-B": {
       "x25519_public_key": "not!base64",
@@ -185,15 +183,22 @@ func TestStore_ResolveMismatchReportsAnUnreadablePinnedKey(t *testing.T) {
       "last_used_at": "2024-01-01T00:00:00Z"
     }
   }
-}`), 0o600))
+}`)
+	require.NoError(t, os.WriteFile(path, document, 0o600))
 	s := openStore(t, path)
 
 	err := resolveCommit(t.Context(), s, "w-B", []byte("x"), []byte("m"), []byte("sl"))
-	require.Error(t, err)
+	require.ErrorContains(t, err, "parse pins")
+	assert.ErrorContains(t, err, "x25519_public_key")
+	assert.ErrorContains(t, err, "Repair the pin file before retrying")
+	var cause base64.CorruptInputError
+	assert.ErrorAs(t, err, &cause)
 	assert.Contains(t, err.Error(), "pinned <unreadable>")
 	assert.Contains(t, err.Error(), "presented "+noise.CompositeKeyFingerprint([]byte("x"), []byte("m"), []byte("sl")))
-	assert.Contains(t, err.Error(), "test-cli pins remove --worker-id=w-B",
-		"the hint still carries the remedy")
+	assert.Contains(t, err.Error(), "test-cli pins remove --worker-id=w-B")
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, document, after)
 }
 
 func TestStore_ResolveMismatchOnSecondaryKeyTriggersError(t *testing.T) {
@@ -543,10 +548,9 @@ func TestStore_TwoHandlesDetectARemovalInsteadOfRestoringThePin(t *testing.T) {
 	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("x-NEW")), snapshot(t, first)["w"].X25519PublicKey)
 }
 
-func TestStore_SecondFirstContactCommitWithTheSameKeysPreservesFirstSeenAt(t *testing.T) {
-	// Two resolves both observe first contact. The second commit must
-	// accept the identical keys and preserve the first install's
-	// first_seen_at.
+func TestStore_SecondFirstContactCommitWithTheSameKeysUsesThePersistedThrottle(t *testing.T) {
+	// Concurrent first contacts with identical keys use the same persisted
+	// throttle as a match observed during Resolve.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pins.json")
 	start := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
@@ -559,13 +563,22 @@ func TestStore_SecondFirstContactCommitWithTheSameKeysPreservesFirstSeenAt(t *te
 	commit2, err := second.Resolve(t.Context(), "w", []byte("x"), []byte("m"), []byte("sl"))
 	require.NoError(t, err)
 
+	commitAtInterval, err := second.Resolve(t.Context(), "w", []byte("x"), []byte("m"), []byte("sl"))
+	require.NoError(t, err)
+
 	require.NoError(t, commit1(t.Context()))
 	clock = start.Add(3 * time.Minute)
 	require.NoError(t, commit2(t.Context()))
 
 	entry := snapshot(t, first)["w"]
-	assertTime(t, start, entry.FirstSeenAt, "the second same-key commit preserves the first install's first_seen_at")
-	assertTime(t, start.Add(3*time.Minute), entry.LastUsedAt, "the second same-key commit bumps last_used_at")
+	assertTime(t, start, entry.FirstSeenAt, "the same-key commit preserves the first install's first_seen_at")
+	assertTime(t, start, entry.LastUsedAt, "the persisted timestamp does not change within the throttle interval")
+
+	clock = start.Add(10 * time.Minute)
+	require.NoError(t, commitAtInterval(t.Context()))
+	entry = snapshot(t, first)["w"]
+	assertTime(t, start, entry.FirstSeenAt, "a timestamp update preserves the first install's first_seen_at")
+	assertTime(t, clock, entry.LastUsedAt, "the persisted timestamp changes at the throttle interval")
 }
 
 func TestStore_SecondFirstContactCommitWithDifferentKeysIsRefused(t *testing.T) {
@@ -581,13 +594,18 @@ func TestStore_SecondFirstContactCommitWithDifferentKeysIsRefused(t *testing.T) 
 
 	// A competing first contact installs different keys in between.
 	require.NoError(t, resolveCommit(t.Context(), second, "w", []byte("x-2"), []byte("m-2"), []byte("sl-2")))
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
 
 	err = commit1(t.Context())
 	require.Error(t, err, "a different-key install during the held open must refuse the commit")
 	assert.Contains(t, err.Error(), "installed with different keys")
-	entry := snapshot(t, first)["w"]
-	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("x-2")), entry.X25519PublicKey,
-		"the installed keys survive the refused commit")
+	assert.Contains(t, err.Error(), "pinned "+noise.CompositeKeyFingerprint([]byte("x-2"), []byte("m-2"), []byte("sl-2")))
+	assert.Contains(t, err.Error(), "presented "+noise.CompositeKeyFingerprint([]byte("x-1"), []byte("m-1"), []byte("sl-1")))
+	assert.Contains(t, err.Error(), "test-cli pins remove --worker-id=w")
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "the installed pin survives the refused commit")
 }
 
 func TestStore_CommitDetectsAPinThatDisappearedDuringTheHeldOpen(t *testing.T) {
@@ -618,7 +636,7 @@ func TestStore_CommitDetectsAPinThatChangedDuringTheHeldOpen(t *testing.T) {
 	commit, err := s.Resolve(t.Context(), "w", []byte("x"), []byte("m"), []byte("sl"))
 	require.NoError(t, err)
 
-	require.NoError(t, os.WriteFile(path, []byte(`{
+	document := []byte(`{
   "pins": {
     "w": {
       "x25519_public_key": "eC1ORVc=",
@@ -628,13 +646,18 @@ func TestStore_CommitDetectsAPinThatChangedDuringTheHeldOpen(t *testing.T) {
       "last_used_at": "2026-11-20T00:00:00Z"
     }
   }
-}`), 0o644))
+}`)
+	require.NoError(t, os.WriteFile(path, document, 0o644))
 
 	err = commit(t.Context())
 	require.Error(t, err, "the commit must detect that the observed pin changed")
 	assert.Contains(t, err.Error(), "changed during open")
-	entry := snapshot(t, s)["w"]
-	assert.Equal(t, "eC1ORVc=", entry.X25519PublicKey, "the replaced keys survive the refused commit")
+	assert.Contains(t, err.Error(), "pinned "+noise.CompositeKeyFingerprint([]byte("x-NEW"), []byte("m-NEW"), []byte("sl-NEW")))
+	assert.Contains(t, err.Error(), "presented "+noise.CompositeKeyFingerprint([]byte("x"), []byte("m"), []byte("sl")))
+	assert.Contains(t, err.Error(), "test-cli pins remove --worker-id=w")
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, document, after, "the replacement pin survives the refused commit")
 }
 
 func TestStore_OperationsFailOnAMalformedDocumentUntilItIsRepaired(t *testing.T) {
@@ -681,6 +704,126 @@ func TestStore_OperationsFailOnANullOrAbsentPinsObject(t *testing.T) {
 		require.Error(t, err, "document %s", document)
 		require.Error(t, s.Remove(t.Context(), "w"), "document %s", document)
 	}
+}
+
+func TestStore_OperationsRejectNullRevisionAndEntries(t *testing.T) {
+	for _, test := range []struct {
+		name, document, invalidField string
+	}{
+		{"revision", `{"pins":{},"removal_revision":null}`, "removal_revision"},
+		{"entry", `{"pins":{"worker-a":null},"removal_revision":0}`, "worker-a"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pins.json")
+			store := openStore(t, path)
+			commit, err := store.Resolve(t.Context(), "worker-b", []byte("x"), []byte("m"), []byte("sl"))
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, []byte(test.document), 0o644))
+
+			_, err = store.Resolve(t.Context(), "worker-b", []byte("x"), []byte("m"), []byte("sl"))
+			assert.ErrorContains(t, err, test.invalidField)
+			_, err = store.Snapshot(t.Context())
+			assert.ErrorContains(t, err, test.invalidField)
+			assert.ErrorContains(t, store.Remove(t.Context(), "worker-a"), test.invalidField)
+			assert.ErrorContains(t, commit(t.Context()), test.invalidField)
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, test.document, string(after))
+		})
+	}
+}
+
+func TestStore_OperationsRejectMalformedFieldsInAnUnrelatedPin(t *testing.T) {
+	for _, test := range []struct {
+		desc  string
+		field string
+		value json.RawMessage
+	}{
+		{desc: "missing x25519 key", field: "x25519_public_key"},
+		{desc: "missing ML-KEM key", field: "mlkem_public_key"},
+		{desc: "missing SLH-DSA key", field: "slhdsa_public_key"},
+		{desc: "null x25519 key", field: "x25519_public_key", value: json.RawMessage(`null`)},
+		{desc: "null ML-KEM key", field: "mlkem_public_key", value: json.RawMessage(`null`)},
+		{desc: "null SLH-DSA key", field: "slhdsa_public_key", value: json.RawMessage(`null`)},
+		{desc: "undecodable key", field: "mlkem_public_key", value: json.RawMessage(`"not!base64"`)},
+		{desc: "key with nonzero padding bits", field: "slhdsa_public_key", value: json.RawMessage(`"Ax=="`)},
+		{desc: "key with a line break", field: "x25519_public_key", value: json.RawMessage(`"eA==\n"`)},
+		{desc: "numeric key", field: "mlkem_public_key", value: json.RawMessage(`3`)},
+		{desc: "missing first-seen timestamp", field: "first_seen_at"},
+		{desc: "missing last-used timestamp", field: "last_used_at"},
+		{desc: "null first-seen timestamp", field: "first_seen_at", value: json.RawMessage(`null`)},
+		{desc: "null last-used timestamp", field: "last_used_at", value: json.RawMessage(`null`)},
+		{desc: "invalid timestamp", field: "first_seen_at", value: json.RawMessage(`"2026-11-20"`)},
+		{desc: "numeric timestamp", field: "last_used_at", value: json.RawMessage(`3`)},
+		{desc: "single-digit timestamp hour", field: "first_seen_at", value: json.RawMessage(`"2026-11-20T1:00:00Z"`)},
+		{desc: "comma before fractional seconds", field: "last_used_at", value: json.RawMessage(`"2026-11-20T01:00:00,1Z"`)},
+		{desc: "timezone hour out of range", field: "last_used_at", value: json.RawMessage(`"2026-11-20T01:00:00+24:00"`)},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pins.json")
+			store := openStore(t, path)
+			require.NoError(t, resolveCommit(t.Context(), store, "worker-a", []byte("x"), []byte("m"), []byte("sl")))
+			commit, err := store.Resolve(t.Context(), "worker-new", []byte("x-new"), []byte("m-new"), []byte("sl-new"))
+			require.NoError(t, err)
+
+			pins, err := store.Snapshot(t.Context())
+			require.NoError(t, err)
+			otherPin, err := json.Marshal(pins["worker-a"])
+			require.NoError(t, err)
+			var malformed map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(otherPin, &malformed))
+			if test.value == nil {
+				delete(malformed, test.field)
+			} else {
+				malformed[test.field] = test.value
+			}
+			invalidPin, err := json.Marshal(malformed)
+			require.NoError(t, err)
+			document := fmt.Appendf(nil, `{"pins":{"worker-a":%s,"worker-invalid":%s}}`, otherPin, invalidPin)
+			require.NoError(t, os.WriteFile(path, document, 0o644))
+
+			_, resolveErr := store.Resolve(t.Context(), "worker-a", []byte("x"), []byte("m"), []byte("sl"))
+			_, snapshotErr := store.Snapshot(t.Context())
+			removeErr := store.Remove(t.Context(), "worker-a")
+			commitErr := commit(t.Context())
+			for _, operation := range []struct {
+				name string
+				err  error
+			}{
+				{"resolve", resolveErr},
+				{"snapshot", snapshotErr},
+				{"remove", removeErr},
+				{"commit", commitErr},
+			} {
+				assert.ErrorContains(t, operation.err, "parse pins", operation.name)
+				assert.ErrorContains(t, operation.err, "worker-invalid", operation.name)
+				assert.ErrorContains(t, operation.err, test.field, operation.name)
+			}
+
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, document, after)
+		})
+	}
+}
+
+func TestStore_SnapshotReadsRequiredRFC3339Timestamps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pins.json")
+	document := []byte(`{"pins":{"w":{
+		"x25519_public_key":"eA==",
+		"mlkem_public_key":"bQ==",
+		"slhdsa_public_key":"c2w=",
+		"first_seen_at":"0001-01-01t00:00:00z",
+		"last_used_at":"2026-11-20T01:02:03.456789+09:00"
+	}}}`)
+	require.NoError(t, os.WriteFile(path, document, 0o644))
+	pins := snapshot(t, openStore(t, path))
+	require.Contains(t, pins, "w")
+	entry := pins["w"]
+
+	assert.True(t, entry.FirstSeenAt.IsZero())
+	assertTime(t, time.Date(2026, 11, 19, 16, 2, 3, 456789000, time.UTC), entry.LastUsedAt,
+		"timestamp preserves fractional seconds and applies the timezone offset")
 }
 
 func TestStore_RemoveRejectsARevisionOverflowBeforeChangingTheFile(t *testing.T) {
@@ -832,25 +975,40 @@ const (
 	helperPinEnv    = "LEAPMUX_TOFUPINS_HELPER_PIN_ID"
 )
 
-// TestHelperProcessTofupinsStore is the helper process; it does
-// nothing in the test process itself. The mode comes from the
-// environment:
-//
-//	hold            — resolve, report, wait for "commit", commit, report.
-//	remove-and-pin  — remove one worker, then resolve and commit another.
-//	canceled-waiter — run Remove under a context the parent cancels
-//	                  while the operation waits for the lock.
+// transactionWaitContext reports when the store blocks on the native lock.
+type transactionWaitContext struct {
+	context.Context
+	once sync.Once
+}
+
+func (c *transactionWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { fmt.Println("waiting") })
+	return c.Context.Done()
+}
+
+// TestHelperProcessTofupinsStore exercises the store in a separate process.
+// The parent drives the holder and canceled waiter through standard input.
 func TestHelperProcessTofupinsStore(t *testing.T) {
 	mode := os.Getenv(helperModeEnv)
 	if mode == "" {
 		return
 	}
-	store, err := tofupins.Open(tofupins.Options{
+	options := tofupins.Options{
 		Path:             os.Getenv(helperPathEnv),
 		DirMode:          0o755,
 		FileMode:         0o644,
 		MismatchHintTmpl: "noop %s",
-	})
+	}
+	if mode == "hold" {
+		options.Now = func() time.Time {
+			fmt.Println("read")
+			scanner := bufio.NewScanner(os.Stdin)
+			require.True(t, scanner.Scan(), "the parent releases the transaction")
+			require.Equal(t, "release", scanner.Text())
+			return time.Now()
+		}
+	}
+	store, err := tofupins.Open(options)
 	require.NoError(t, err)
 	x := []byte(os.Getenv(helperXEnv))
 	m := []byte(os.Getenv(helperMEnv))
@@ -858,53 +1016,28 @@ func TestHelperProcessTofupinsStore(t *testing.T) {
 
 	switch mode {
 	case "hold":
-		commit, err := store.Resolve(context.Background(), os.Getenv(helperWorkerEnv), x, m, sl)
-		if err != nil {
-			fmt.Printf("resolved fail: %v\n", err)
-			return
-		}
-		fmt.Println("resolved ok")
-		waitForLine(os.Stdin, "commit")
-		if err := commit(context.Background()); err != nil {
-			fmt.Printf("commit fail: %v\n", err)
-			return
-		}
-		fmt.Println("commit ok")
+		require.NoError(t, resolveCommit(t.Context(), store, os.Getenv(helperWorkerEnv), x, m, sl))
+		fmt.Println("committed")
 	case "remove-and-pin":
-		if err := store.Remove(context.Background(), os.Getenv(helperRemoveEnv)); err != nil {
-			fmt.Printf("done fail: %v\n", err)
-			return
-		}
-		if err := resolveCommit(context.Background(), store, os.Getenv(helperPinEnv), x, m, sl); err != nil {
-			fmt.Printf("done fail: %v\n", err)
-			return
-		}
-		fmt.Println("done ok")
+		ctx := &transactionWaitContext{Context: t.Context()}
+		require.NoError(t, store.Remove(ctx, os.Getenv(helperRemoveEnv)))
+		require.NoError(t, resolveCommit(t.Context(), store, os.Getenv(helperPinEnv), x, m, sl))
+		fmt.Println("committed")
 	case "canceled-waiter":
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		done := make(chan error, 1)
-		go func() { done <- store.Remove(ctx, os.Getenv(helperWorkerEnv)) }()
-		fmt.Println("started")
-		waitForLine(os.Stdin, "cancel")
+		go func() {
+			done <- store.Remove(&transactionWaitContext{Context: ctx}, os.Getenv(helperWorkerEnv))
+		}()
+		scanner := bufio.NewScanner(os.Stdin)
+		require.True(t, scanner.Scan(), "the parent cancels the waiter")
+		require.Equal(t, "cancel", scanner.Text())
 		cancel()
-		if err := <-done; errors.Is(err, context.Canceled) {
-			fmt.Println("result ok")
-		} else {
-			fmt.Printf("result fail: %v\n", err)
-		}
+		require.ErrorIs(t, <-done, context.Canceled)
+		fmt.Println("canceled")
 	default:
 		t.Fatalf("unknown helper mode %q", mode)
-	}
-}
-
-// waitForLine blocks until the reader yields the wanted line.
-func waitForLine(r io.Reader, want string) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		if scanner.Text() == want {
-			return
-		}
 	}
 }
 
@@ -938,80 +1071,61 @@ func writeLine(w io.Writer, line string) error {
 }
 
 func TestStore_HeldTransactionAcrossProcesses(t *testing.T) {
-	// One process holds its transaction open between the read and the
-	// replacement while a second process changes the same file. The
-	// first is released under test control, and a fresh read must
-	// observe both of the second process's changes and preserve the
-	// removal. A canceled waiter proves a canceled operation makes no
-	// change.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "pins.json")
-
-	// The durable pin the held transaction resolves against.
+	path := filepath.Join(t.TempDir(), "pins.json")
 	store := openStore(t, path)
-	require.NoError(t, resolveCommit(t.Context(), store, "w-hold", []byte("x"), []byte("m"), []byte("sl")))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// The first process resolves now and commits only on release.
-	stdinA, readA, waitA := startStoreHelper(t, ctx,
-		helperModeEnv+"=hold",
-		helperPathEnv+"="+path,
-		helperWorkerEnv+"=w-hold",
-		helperXEnv+"=x", helperMEnv+"=m", helperSLEnv+"=sl",
-	)
-	require.Equal(t, "resolved ok", readLine(t, readA),
-		"the held transaction resolves against the durable pin")
-
-	// The second process, against the same path, makes both changes:
-	// the removal and a replacement pin.
-	_, readB, waitB := startStoreHelper(t, ctx,
-		helperModeEnv+"=remove-and-pin",
-		helperPathEnv+"="+path,
-		helperRemoveEnv+"=w-hold",
-		helperPinEnv+"=w-new",
-		helperXEnv+"=xn", helperMEnv+"=mn", helperSLEnv+"=sln",
-	)
-	require.Equal(t, "done ok", readLine(t, readB))
-	require.NoError(t, waitB())
-
+	require.NoError(t, resolveCommit(t.Context(), store, "worker-to-remove", []byte("x"), []byte("m"), []byte("sl")))
+	require.NoError(t, resolveCommit(t.Context(), store, "worker-to-keep", []byte("xk"), []byte("mk"), []byte("slk")))
+	keptPin := snapshot(t, store)["worker-to-keep"]
 	before, err := os.ReadFile(path)
 	require.NoError(t, err)
 
-	// The canceled waiter blocks inside its operation on the store's
-	// normal lock file, which this test holds until the cancellation
-	// is delivered.
-	lockFile, err := filelock.Open(path+".lock", false)
-	require.NoError(t, err)
-	defer func() { _ = lockFile.Close() }()
-	require.NoError(t, filelock.Lock(t.Context(), lockFile))
-	stdinC, readC, waitC := startStoreHelper(t, ctx,
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	holderInput, holderOutput, waitHolder := startStoreHelper(t, ctx,
+		helperModeEnv+"=hold",
+		helperPathEnv+"="+path,
+		helperWorkerEnv+"=worker-first",
+		helperXEnv+"=xf", helperMEnv+"=mf", helperSLEnv+"=slf",
+	)
+	require.Equal(t, "read", readLine(t, holderOutput), "the holder has read the file under the lock")
+
+	_, writerOutput, waitWriter := startStoreHelper(t, ctx,
+		helperModeEnv+"=remove-and-pin",
+		helperPathEnv+"="+path,
+		helperRemoveEnv+"=worker-to-remove",
+		helperPinEnv+"=worker-second",
+		helperXEnv+"=xs", helperMEnv+"=ms", helperSLEnv+"=sls",
+	)
+	require.Equal(t, "waiting", readLine(t, writerOutput), "the second writer contends with the holder")
+
+	waiterInput, waiterOutput, waitWaiter := startStoreHelper(t, ctx,
 		helperModeEnv+"=canceled-waiter",
 		helperPathEnv+"="+path,
-		helperWorkerEnv+"=w-new",
+		helperWorkerEnv+"=worker-to-keep",
 	)
-	require.Equal(t, "started", readLine(t, readC))
-	require.NoError(t, writeLine(stdinC, "cancel"))
-	require.Equal(t, "result ok", readLine(t, readC),
-		"the waiter must end on its own cancellation")
-	require.NoError(t, waitC())
-	require.NoError(t, filelock.Unlock(lockFile))
+	require.Equal(t, "waiting", readLine(t, waiterOutput), "the canceled writer also contends with the holder")
+	require.NoError(t, writeLine(waiterInput, "cancel"))
+	require.Equal(t, "canceled", readLine(t, waiterOutput))
+	require.NoError(t, waitWaiter())
 
-	after, err := os.ReadFile(path)
+	afterCancellation, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, before, after, "a canceled waiter must make no change")
+	assert.Equal(t, before, afterCancellation, "the canceled waiter cannot modify the file")
 
-	// Release the first under test control. Its commit must detect the
-	// removal instead of restoring the pin.
-	require.NoError(t, writeLine(stdinA, "commit"))
-	line := readLine(t, readA)
-	require.True(t, strings.HasPrefix(line, "commit fail"), "the stale commit must refuse: %q", line)
-	assert.Contains(t, line, "removal revision changed")
-	require.NoError(t, waitA())
+	require.NoError(t, writeLine(holderInput, "release"))
+	require.Equal(t, "committed", readLine(t, holderOutput))
+	require.NoError(t, waitHolder())
+	require.Equal(t, "committed", readLine(t, writerOutput))
+	require.NoError(t, waitWriter())
 
-	snap := snapshot(t, store)
-	assert.NotContains(t, snap, "w-hold", "the fresh read preserves the removal")
-	require.Contains(t, snap, "w-new", "the fresh read observes the second process's pin")
-	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("xn")), snap["w-new"].X25519PublicKey)
+	pins := snapshot(t, openStore(t, path))
+	assert.Len(t, pins, 3)
+	assert.Equal(t, keptPin, pins["worker-to-keep"])
+	assert.NotContains(t, pins, "worker-to-remove")
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("xf")), pins["worker-first"].X25519PublicKey)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("xs")), pins["worker-second"].X25519PublicKey)
+	revision, err := store.RemovalRevision(t.Context())
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, revision)
 }

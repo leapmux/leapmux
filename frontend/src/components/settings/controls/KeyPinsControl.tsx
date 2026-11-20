@@ -1,10 +1,10 @@
 import type { Component } from 'solid-js'
 import type { KeyPinEntry } from '~/lib/keyPinStore'
-import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
+import { batch, createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
-import { onStorageAccountChange, storageAccountId } from '~/lib/browserStorage'
+import { onStorageAccountChange } from '~/lib/browserStorage'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 import { formatErrorMessage } from '~/lib/errors'
 import { clearAllKeyPins, clearKeyPin, listKeyPins, onKeyPinsChanged } from '~/lib/keyPinStore'
@@ -35,97 +35,78 @@ import * as styles from './KeyPinsControl.css'
  */
 export const KeyPinsControl: Component = () => {
   const [revision, setRevision] = createSignal(0)
-  /**
-   * The last list that read cleanly, and the storage account it was read
-   * under. Held rather than re-derived, because a failure must not blank a
-   * view whose data is still correct.
-   */
-  const [known, setKnown] = createSignal<{ pins: KeyPinEntry[], account: string | null } | null>(null)
+  const [known, setKnown] = createSignal<KeyPinEntry[] | null>(null)
   const [readError, setReadError] = createSignal<string | null>(null)
   const [removeError, setRemoveError] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)
 
-  // A failure keeps the list only while the account it was read under is
-  // still the live one. A same-account failure left the pins where they were;
-  // an account change makes the list data of an account this document no
-  // longer holds.
-  function keepKnownAfterFailure(): void {
-    setKnown(prev => (prev !== null && prev.account !== null && storageAccountId() === prev.account
-      ? prev
-      : null))
+  let accountGeneration = 0
+  let latestReadId = 0
+
+  function refreshPins(): void {
+    setRevision(value => value + 1)
   }
 
-  function readPins(): void {
-    // The account is captured BEFORE the read leaves. A read answered for an
-    // account this document no longer holds is disregarded — publishing it
-    // would show one account's pins as another's.
-    const account = storageAccountId()
-    void (async () => {
-      try {
-        const pins = await listKeyPins()
-        if (account !== storageAccountId())
-          return
-        setKnown({ pins, account })
+  async function readPins(): Promise<void> {
+    const readId = ++latestReadId
+    try {
+      const pins = await listKeyPins()
+      if (readId !== latestReadId)
+        return
+      batch(() => {
+        setKnown(pins)
         setReadError(null)
-      }
-      catch (err) {
-        if (account !== storageAccountId())
-          return
+      })
+    }
+    catch (err) {
+      if (readId === latestReadId)
         setReadError(formatErrorMessage(err, 'Could not read the trusted worker keys.'))
-        keepKnownAfterFailure()
-      }
-    })()
+    }
   }
 
   createEffect(() => {
     void revision()
-    readPins()
+    void readPins()
   })
 
-  // Durable pin state moves underneath this view: a committed update or
-  // removal in any tab, a noticed expiry, and a move of the account namespace
-  // all mean "what is on screen may be stale". Re-read on each.
-  onCleanup(onKeyPinsChanged(() => setRevision(r => r + 1)))
-  // Show previously read rows only for the account they were read under: an
-  // account change drops the list at once rather than presenting it to its
-  // successor.
-  onCleanup(onStorageAccountChange(() => setKnown(null)))
+  // Retire reads and removals before the account-change notification refreshes
+  // the list. A switch away and back still starts a new lifetime.
+  const stopAccount = onStorageAccountChange(() => {
+    accountGeneration++
+    latestReadId++
+    batch(() => {
+      setKnown(null)
+      setReadError(null)
+      setRemoveError(null)
+      setBusy(false)
+    })
+  })
+  const stopChanges = onKeyPinsChanged(refreshPins)
+  onCleanup(() => {
+    stopAccount()
+    stopChanges()
+    accountGeneration++
+    latestReadId++
+  })
 
-  async function removeOne(workerId: string): Promise<void> {
+  async function removePins(remove: () => Promise<void>, failureMessage: string): Promise<void> {
     if (busy())
       return
+    const removalGeneration = accountGeneration
     setBusy(true)
     setRemoveError(null)
     try {
-      await clearKeyPin(workerId)
-      setRevision(r => r + 1)
+      // A committed removal publishes its own invalidation, which refreshes
+      // the list when this account is still active.
+      await remove()
     }
     catch (err) {
-      setRemoveError(formatErrorMessage(err, 'Could not remove the trusted worker key. Try again.'))
-      // The removal failed, so the pin is still pinned: the last known list
-      // stays on screen beside the reason rather than losing its row.
-      keepKnownAfterFailure()
+      if (removalGeneration === accountGeneration)
+        setRemoveError(formatErrorMessage(err, failureMessage))
     }
     finally {
-      setBusy(false)
-    }
-  }
-
-  async function removeAll(): Promise<void> {
-    if (busy())
-      return
-    setBusy(true)
-    setRemoveError(null)
-    try {
-      await clearAllKeyPins()
-      setRevision(r => r + 1)
-    }
-    catch (err) {
-      setRemoveError(formatErrorMessage(err, 'Could not remove the trusted worker keys. Try again.'))
-      keepKnownAfterFailure()
-    }
-    finally {
-      setBusy(false)
+      if (removalGeneration === accountGeneration)
+        setBusy(false)
     }
   }
 
@@ -135,7 +116,7 @@ export const KeyPinsControl: Component = () => {
         <div class={errorText} role="alert" data-testid="key-pins-read-error">
           {readError()}
           {' '}
-          <button type="button" class="outline" onClick={() => setRevision(r => r + 1)} data-testid="key-pins-retry">
+          <button type="button" class="outline" onClick={refreshPins} data-testid="key-pins-retry">
             Retry
           </button>
         </div>
@@ -145,11 +126,11 @@ export const KeyPinsControl: Component = () => {
           {removeError()}
         </div>
       </Show>
-      <Show
-        when={(known()?.pins.length ?? 0) > 0}
-        fallback={<div class={styles.empty}>No worker keys pinned on this device.</div>}
-      >
-        <For each={known()?.pins ?? []}>
+      <Show when={known()?.length === 0 && readError() === null}>
+        <div class={styles.empty}>No worker keys pinned on this device.</div>
+      </Show>
+      <Show when={(known()?.length ?? 0) > 0}>
+        <For each={known()}>
           {pin => (
             <div class={styles.pinRow} data-worker={pin.workerId}>
               <ClippedText text={pin.workerId} class={styles.pinWorker} testId={`key-pin-id-${pin.workerId}`} />
@@ -167,7 +148,10 @@ export const KeyPinsControl: Component = () => {
                   class="small outline"
                   disabled={busy()}
                   data-testid={`key-pin-remove-${pin.workerId}`}
-                  onClick={() => void removeOne(pin.workerId)}
+                  onClick={() => void removePins(
+                    () => clearKeyPin(pin.workerId),
+                    'Could not remove the trusted worker key. Try again.',
+                  )}
                 >
                   Remove
                 </ConfirmButton>
@@ -176,7 +160,12 @@ export const KeyPinsControl: Component = () => {
           )}
         </For>
         <div class={actionsFooter}>
-          <ConfirmButton data-variant="danger" disabled={busy()} onClick={() => void removeAll()} data-testid="key-pins-remove-all">
+          <ConfirmButton
+            data-variant="danger"
+            disabled={busy()}
+            onClick={() => void removePins(clearAllKeyPins, 'Could not remove the trusted worker keys. Try again.')}
+            data-testid="key-pins-remove-all"
+          >
             Remove all
           </ConfirmButton>
         </div>

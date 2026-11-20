@@ -258,16 +258,16 @@ Both follow the same rule: first contact auto-pins, any later mismatch aborts th
 
 ### Tunnel key trust
 
-A tunnel does not keep a pin of its own. Each create submits the Worker key expectation it admits against, and that expectation is the browser's pin for the Worker — the same record a channel uses, and the one **Preferences → Advanced → Trusted worker keys** lists and removes. A tunnel also names the user the expectation belongs to, so a form that outlived its account cannot create a tunnel for the wrong one.
+A tunnel takes its expected Worker key from the account’s browser pin when it starts. **Preferences → Advanced → Trusted worker keys** lists and removes the same pin that browser channels use. Each tunnel create request specifies the account that owns the expectation. The webview refuses a form whose account session has ended.
 
 Four stages describe what a tunnel does with that trust.
 
-- **First contact.** The first channel a client opens to a Worker records the Worker's composite public key once the session proves. A tunnel created afterwards carries that exact key. Creating a tunnel to a Worker with no trusted key yet asks you to verify the Worker key first, which opens that first channel and records what it proves.
-- **Shared trust.** The expectation is the stored pin, never a key the create reply reports. One record governs both surfaces, so a key you accepted for a browser channel is the key a tunnel admits, and a pin you remove stops the next create until you verify again.
-- **Mismatch on reconnect.** When the keys the Hub announces differ from the expectation, the tunnel stops instead of carrying traffic. Its row keeps its place and records the reason and both fingerprints, so a hint delivered early or lost is recoverable from the list.
-- **Exact-key confirmation before recreation.** A recreation admits the key the pin holds at that moment. Confirm a change before you recreate: **Verify Worker key** opens the browser channel, whose *Worker public key changed* dialog shows the two fingerprints for Accept or Reject. Only an accepted key becomes the expectation a recreation carries.
+- **First contact.** If the account has no pin, **Create** opens a browser channel using the key the Hub presents. The browser verifies that the peer holds the corresponding private keys and that the session responds. It then records that key and reads the stored pin for the tunnel request. First use therefore trusts the initial announcement once the peer proves possession. A trusted copy of the Worker fingerprint lets you verify the announcement independently.
+- **Shared trust.** Browser channels and new tunnels use the same stored pin. Removing the pin makes the next standard creation verify a new browser session before it can dispatch. A running tunnel keeps its original key expectation.
+- **Mismatch on reconnect.** When the Hub reports a key that differs from the tunnel’s original expectation, the tunnel stops before dialing a target. The native list retains the stopped row with both fingerprints.
+- **Exact-key confirmation before recreation.** **Verify Worker key** opens a fresh browser channel and asks you to approve a changed key. A successful review applies to that exact key, Worker, and account session. Select **Create** to submit the prefilled form. The webview checks the stored pin again immediately before native creation. A removed or changed pin requires another review.
 
-A Hub that substitutes a Worker key therefore stops a tunnel rather than read it. What pinning still cannot stop is a Hub opening its own channel as you, or serving modified Frontend code.
+Once a tunnel has an expected key, it rejects a substituted key on reconnect. A Hub can still open its own channel as you or serve modified Frontend code.
 
 ## Solo mode: a reduced threat model
 

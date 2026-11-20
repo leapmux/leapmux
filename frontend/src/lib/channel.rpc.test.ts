@@ -1140,7 +1140,8 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener()
+    h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1179,7 +1180,8 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener()
+    h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1234,7 +1236,8 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener()
+    h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1256,7 +1259,8 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener()
+    h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1288,7 +1292,8 @@ describe('ChannelManager chunking', () => {
 
     const openPromise = smallMgr.openChannel('w1')
     await h.settle()
-    await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
+    await h.mockWs.waitForOpenListener()
+    h.mockWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept()
 
@@ -1341,7 +1346,8 @@ describe('ChannelManager chunking', () => {
     const openPromise = cm.openChannel(workerId)
     await h.settle()
     if (h.mockWs.readyState !== MockWebSocket.OPEN) {
-      await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
+      await h.mockWs.waitForOpenListener()
+      h.mockWs.simulateOpen()
       await h.settle()
     }
     await h.simulatePingAccept()
@@ -1489,7 +1495,8 @@ describe('ChannelManager reassembly lifetime', () => {
     const openPromise = cm.openChannel('w1')
     await h.settle()
     if (h.mockWs.readyState !== MockWebSocket.OPEN) {
-      await h.mockWs.waitForOpenListener(); h.mockWs.simulateOpen()
+      await h.mockWs.waitForOpenListener()
+      h.mockWs.simulateOpen()
       await h.settle()
     }
     await h.simulatePingAccept()

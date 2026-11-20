@@ -2,17 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,13 +133,21 @@ func TestTunnelManager_CreatePortForward_Validation(t *testing.T) {
 	})
 
 	t.Run("unusable expected keys", func(t *testing.T) {
-		_, err := m.CreateTunnel(ctx, ctx, TunnelConfig{
-			WorkerID: "w1", Type: tunnelTypeSocks5, BindAddr: "127.0.0.1",
-			ExpectedUserID:        testTunnelOwner,
-			ExpectedWorkerKeysHex: "deadbeef",
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "the expected worker keys")
+		cfg := withTestExpectation(TunnelConfig{WorkerID: "w1", Type: tunnelTypeSocks5})
+		cfg.ChannelEpoch = m.currentEpoch()
+		cfg.ExpectedWorkerKeysHex = strings.Repeat("00", contracts.X25519PublicKeySize) +
+			testExpectedWorkerKeysHex[2*contracts.X25519PublicKeySize:]
+		m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			t.Error("an unusable expectation reached the channel factory")
+			return nil, errors.New("unexpected channel open")
+		}
+		m.listen = func(_, _ string) (net.Listener, error) {
+			t.Error("an unusable expectation reached the listener")
+			return nil, errors.New("unexpected listener bind")
+		}
+
+		_, err := m.CreateTunnel(ctx, ctx, cfg)
+		require.ErrorContains(t, err, "the expected worker keys are unusable")
 	})
 }
 
@@ -164,9 +177,9 @@ func TestTunnelManager_ListAndDelete(t *testing.T) {
 			TargetAddr: "10.0.0.1",
 			TargetPort: 8080,
 		},
-		expect:      channelExpectation{userID: testTunnelOwner},
-		listener:    ln,
-		cancel:      cancel,
+		expect:   channelExpectation{userID: testTunnelOwner},
+		listener: ln,
+		cancel:   cancel,
 	}
 	m.mu.Unlock()
 
@@ -286,16 +299,22 @@ func installTestTunnel(t *testing.T, m *TunnelManager, id string, ln net.Listene
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	tn := &tunnel{
-		info:        TunnelInfo{ID: id, WorkerID: "w1", Type: tunnelTypePortForward},
-		expect:      channelExpectation{userID: testTunnelOwner},
-		listener:    ln,
-		cancel:      cancel,
-		connections: make(map[net.Conn]struct{}),
+		info:     TunnelInfo{ID: id, WorkerID: "w1", Type: tunnelTypePortForward},
+		expect:   channelExpectation{userID: testTunnelOwner},
+		listener: ln,
+		cancel:   cancel,
 	}
 	m.mu.Lock()
 	m.tunnels[id] = tn
 	m.mu.Unlock()
 	return tn, ctx
+}
+
+func requireOwnedTunnelConn(t *testing.T, tun *tunnel, conn net.Conn) *ownedTunnelConn {
+	t.Helper()
+	owned, ok := tun.ownConnection(conn)
+	require.True(t, ok)
+	return owned
 }
 
 // A TRANSIENT accept failure must not kill the tunnel. EMFILE is fd exhaustion --
@@ -463,43 +482,82 @@ func TestTunnelManager_CloseAll(t *testing.T) {
 }
 
 func TestTunnelManager_CloseAllFencesInflightTunnelCreation(t *testing.T) {
-	m := NewTunnelManager()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	channel, channelClosed := newTestManagedChannel()
-	m.pool.openCh = func(
-		_ context.Context,
-		_, _ string,
-		_ *tunnelpkg.OpenChannelOptions,
-	) (*managedChannel, error) {
-		close(started)
-		<-release
-		return channel, nil
-	}
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		started := make(chan struct{})
+		release := make(chan struct{})
+		channel, channelClosed := newTestManagedChannel()
+		m.pool.openCh = func(
+			_ context.Context,
+			_, _ string,
+			_ *tunnelpkg.OpenChannelOptions,
+		) (*managedChannel, error) {
+			close(started)
+			<-release
+			return channel, nil
+		}
 
-	result := make(chan error, 1)
-	cfg := withTestExpectation(TunnelConfig{
-		HubURL: "http://hub", WorkerID: "worker",
-		Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
-		BindAddr: "127.0.0.1", BindPort: 18080,
+		result := make(chan error, 1)
+		cfg := withTestExpectation(TunnelConfig{
+			HubURL: "http://hub", WorkerID: "worker",
+			Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
+			BindAddr: "127.0.0.1", BindPort: 18080,
+		})
+		cfg.ChannelEpoch = m.currentEpoch()
+		go func() {
+			_, err := m.CreateTunnel(context.Background(), context.Background(), cfg)
+			result <- err
+		}()
+		<-started
+		reset := make(chan struct{})
+		go func() {
+			defer close(reset)
+			m.CloseAll()
+		}()
+		assertTunnelCleanupPending(t, reset, "CloseAll must wait for an old open to release its resources")
+		close(release)
+		<-reset
+
+		require.Error(t, <-result)
+		assert.True(t, channelClosed.Load(), "stale channel was not closed")
+		m.mu.Lock()
+		assert.Empty(t, m.tunnels)
+		m.mu.Unlock()
+		m.pool.mu.Lock()
+		assert.Empty(t, m.pool.channels)
+		m.pool.mu.Unlock()
 	})
-	cfg.ChannelEpoch = m.currentEpoch()
-	go func() {
-		_, err := m.CreateTunnel(context.Background(), context.Background(), cfg)
-		result <- err
-	}()
-	<-started
-	m.CloseAll()
-	close(release)
+}
 
-	require.Error(t, <-result)
-	assert.True(t, channelClosed.Load(), "stale channel was not closed")
-	m.mu.Lock()
-	assert.Empty(t, m.tunnels)
-	m.mu.Unlock()
-	m.pool.mu.Lock()
-	assert.Empty(t, m.pool.channels)
-	m.pool.mu.Unlock()
+func TestTunnelManager_DefaultDialNormalizesNilConnectionOnFailure(t *testing.T) {
+	m := NewTunnelManager()
+	tun := &tunnel{admittedEpoch: m.currentEpoch()}
+	channel, _ := newTestManagedChannel()
+	var target net.Conn
+	var err error
+	require.NotPanics(t, func() {
+		// The default adapter calls the real backend API. Its nil result
+		// must survive conversion from *Conn to net.Conn.
+		target, err = m.dialTunnelTarget(t.Context(), tun, channel, "target", 80)
+	})
+	require.ErrorContains(t, err, "channel is required")
+	assert.Nil(t, target)
+}
+
+func TestTunnelManager_ClosesReturnedConnectionOnDialFailure(t *testing.T) {
+	m := NewTunnelManager()
+	target, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	defer func() { _ = target.Close() }()
+	dialErr := errors.New("failed after connecting")
+	m.dial = func(context.Context, *managedChannel, string, uint32) (net.Conn, error) {
+		return target, dialErr
+	}
+	tun := &tunnel{}
+	got, err := m.dialTunnelTarget(t.Context(), tun, nil, "target", 80)
+	require.ErrorIs(t, err, dialErr)
+	assert.Nil(t, got)
+	assertConnectionClosed(t, peer, "a connection returned together with an error must close")
 }
 
 func TestTunnelManager_TeardownClosesPortForwardConnections(t *testing.T) {
@@ -536,7 +594,7 @@ func TestTunnelManager_TeardownClosesPortForwardConnections(t *testing.T) {
 				cancel:   cancel,
 				// Match CreateTunnel: handlePortForward tracks each owned conn in
 				// this map (addConnection), so a live tunnel must have it non-nil.
-				connections: make(map[net.Conn]struct{}),
+
 			}
 			m.tunnels[tun.info.ID] = tun
 			target, targetPeer := net.Pipe()
@@ -573,8 +631,7 @@ func TestTunnelManager_DeleteCancelsInFlightPortForwardDial(t *testing.T) {
 			ID: "in-flight", WorkerID: "worker", Type: tunnelTypePortForward,
 			TargetAddr: "target", TargetPort: 80,
 		},
-		cancel:      cancel,
-		connections: map[net.Conn]struct{}{client: {}},
+		cancel: cancel,
 	}
 	m.tunnels[tun.info.ID] = tun
 	dialStarted := make(chan struct{})
@@ -584,8 +641,9 @@ func TestTunnelManager_DeleteCancelsInFlightPortForwardDial(t *testing.T) {
 		return nil, ctx.Err()
 	}
 	handlerDone := make(chan struct{})
+	ownedClient := requireOwnedTunnelConn(t, tun, client)
 	go func() {
-		m.handlePortForward(ctx, client, tun, nil)
+		m.handlePortForward(ctx, ownedClient, tun, nil)
 		close(handlerDone)
 	}()
 	<-dialStarted
@@ -617,9 +675,6 @@ func TestTunnelManager_DeleteClosesSocks5Connections(t *testing.T) {
 		info:     TunnelInfo{ID: "socks", WorkerID: "worker", Type: tunnelTypeSocks5},
 		listener: listener,
 		cancel:   cancel,
-		// Match CreateTunnel: serveSocks5 owns the accepted client and dialed
-		// target via addConnection, which writes this map -- it must be non-nil.
-		connections: make(map[net.Conn]struct{}),
 	}
 	m.tunnels[tun.info.ID] = tun
 	target, targetPeer := net.Pipe()
@@ -705,7 +760,7 @@ func TestOwnedTunnelConnForwardsCloseWriteForSocks5(t *testing.T) {
 	tcpConn := server.(*net.TCPConn)
 	defer func() { _ = tcpConn.Close() }()
 
-	owned := &ownedTunnelConn{Conn: tcpConn, tunnel: &tunnel{connections: make(map[net.Conn]struct{})}}
+	owned := requireOwnedTunnelConn(t, &tunnel{}, tcpConn)
 
 	// Compile-time: satisfies go-socks5's closeWriter interface.
 	var closeWriter interface{ CloseWrite() error } = owned
@@ -730,9 +785,10 @@ func TestOwnedTunnelConnForwardsCloseWriteForSocks5(t *testing.T) {
 // and Closed reports both an explicit close and a lifetime cancelled from elsewhere,
 // exactly as tunnel.Channel does.
 type fakeChannel struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	closed atomic.Bool
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closed    atomic.Bool
+	closeDone chan struct{}
 }
 
 func (f *fakeChannel) Closed() bool { return f.closed.Load() || f.ctx.Err() != nil }
@@ -740,8 +796,11 @@ func (f *fakeChannel) Closed() bool { return f.closed.Load() || f.ctx.Err() != n
 func (f *fakeChannel) Close() {
 	if f.closed.CompareAndSwap(false, true) {
 		f.cancel()
+		close(f.closeDone)
 	}
 }
+
+func (f *fakeChannel) CloseDone() <-chan struct{} { return f.closeDone }
 
 func (f *fakeChannel) Context() context.Context { return f.ctx }
 
@@ -750,7 +809,7 @@ func (f *fakeChannel) Context() context.Context { return f.ctx }
 // overrides TunnelManager.dial, which is the only thing that reads it.
 func newTestManagedChannel() (*managedChannel, *atomic.Bool) {
 	ctx, cancel := context.WithCancel(context.Background())
-	fake := &fakeChannel{ctx: ctx, cancel: cancel}
+	fake := &fakeChannel{ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
 	return &managedChannel{handle: fake}, &fake.closed
 }
 
@@ -904,10 +963,9 @@ func TestPortForwardDeliversResponseAfterClientHalfClose(t *testing.T) {
 			TargetAddr: "target", TargetPort: 80,
 			BindAddr: "127.0.0.1", BindPort: listener.Addr().(*net.TCPAddr).Port,
 		},
-		hubURL:      "http://hub",
-		listener:    listener,
-		cancel:      cancel,
-		connections: make(map[net.Conn]struct{}),
+		hubURL:   "http://hub",
+		listener: listener,
+		cancel:   cancel,
 	}
 	m.mu.Lock()
 	m.tunnels[tun.info.ID] = tun
@@ -971,10 +1029,9 @@ func TestPortForwardReleasesConnWhenClientAborts(t *testing.T) {
 			TargetAddr: "target", TargetPort: 80,
 			BindAddr: "127.0.0.1", BindPort: listener.Addr().(*net.TCPAddr).Port,
 		},
-		hubURL:      "http://hub",
-		listener:    listener,
-		cancel:      cancel,
-		connections: make(map[net.Conn]struct{}),
+		hubURL:   "http://hub",
+		listener: listener,
+		cancel:   cancel,
 	}
 	m.mu.Lock()
 	m.tunnels[tun.info.ID] = tun
@@ -1003,10 +1060,11 @@ func TestPortForwardReleasesConnWhenClientAborts(t *testing.T) {
 	local, err := listener.Accept()
 	require.NoError(t, err)
 
+	ownedLocal := requireOwnedTunnelConn(t, tun, local)
 	handled := make(chan struct{})
 	go func() {
 		defer close(handled)
-		m.handlePortForward(ctx, local, tun, nil)
+		m.handlePortForward(ctx, ownedLocal, tun, nil)
 	}()
 
 	var targetConn net.Conn
@@ -1059,10 +1117,9 @@ func TestPortForwardReleasesConnsOnLifetimeCancel(t *testing.T) {
 			TargetAddr: "target", TargetPort: 80,
 			BindAddr: "127.0.0.1", BindPort: listener.Addr().(*net.TCPAddr).Port,
 		},
-		hubURL:      "http://hub",
-		listener:    listener,
-		cancel:      cancel,
-		connections: make(map[net.Conn]struct{}),
+		hubURL:   "http://hub",
+		listener: listener,
+		cancel:   cancel,
 	}
 	m.mu.Lock()
 	m.tunnels[tun.info.ID] = tun
@@ -1085,10 +1142,11 @@ func TestPortForwardReleasesConnsOnLifetimeCancel(t *testing.T) {
 	local, err := listener.Accept()
 	require.NoError(t, err)
 
+	ownedLocal := requireOwnedTunnelConn(t, tun, local)
 	handled := make(chan struct{})
 	go func() {
 		defer close(handled)
-		m.handlePortForward(ctx, local, tun, nil)
+		m.handlePortForward(ctx, ownedLocal, tun, nil)
 	}()
 
 	select {
@@ -1115,126 +1173,52 @@ func TestPortForwardReleasesConnsOnLifetimeCancel(t *testing.T) {
 	assert.Zero(t, remaining, "both ends must be released back to the tunnel")
 }
 
-// gatedTunnelListener lets a test place an accepted conn into the serve loop at a
-// chosen instant: the first Accept parks until the gate opens (or the serve ctx
-// dies), later ones park until the serve ctx dies. Only the Serve goroutine calls
-// Accept, so handedOff needs no lock.
-type gatedTunnelListener struct {
-	net.Listener
-	gate      <-chan struct{}
-	conn      net.Conn
-	done      <-chan struct{}
-	handedOff bool
-}
-
-func (l *gatedTunnelListener) Accept() (net.Conn, error) {
-	if !l.handedOff {
-		l.handedOff = true
-		select {
-		case <-l.gate:
-			return l.conn, nil
-		case <-l.done:
-			return nil, net.ErrClosed
+func TestTunnelCloseStopsAdmissionBeforeCancel(t *testing.T) {
+	tun := &tunnel{}
+	tun.cancel = func() {
+		admitted := tun.beginHandoff()
+		if admitted {
+			tun.handoffs.Done()
 		}
+		assert.False(t, admitted, "close admitted a new handoff after starting cleanup")
 	}
-	<-l.done
-	return nil, net.ErrClosed
-}
-
-// t.close() must cancel the tunnel context BEFORE it marks the tunnel closed.
-// The two orders are indistinguishable to close()'s own callers, but not to the
-// serve loops: `closed` is what makes ownConnection reject an accepted conn, and
-// ctx.Err() is what tells serveSocks5 that rejection was a teardown rather than a
-// dead listener. Cancelling last leaves a window where the first is true and the
-// second is not.
-func TestTunnelCloseCancelsBeforeMarkingClosed(t *testing.T) {
-	_, cancel := context.WithCancel(context.Background())
-	tun := &tunnel{connections: make(map[net.Conn]struct{})}
-	closedAtCancel := true
-	tun.cancel = func() {
-		tun.mu.Lock()
-		closedAtCancel = tun.closed
-		tun.mu.Unlock()
-		cancel()
-	}
-
 	tun.close()
-	assert.False(t, closedAtCancel,
-		"close() flipped closed before cancelling: the serve loop can see a rejected conn while ctx.Err() is still nil")
 }
 
-// The consequence of that ordering, end to end: an ordinary user-initiated
-// DeleteTunnel must not be reported as a listener failure. In the old order a conn
-// accepted in the window failed ownConnection, go-socks5's Serve returned
-// net.ErrClosed, and serveSocks5 -- reading a ctx that was not cancelled yet --
-// logged ERROR "tunnel listener failed; removing the tunnel", sending operators
-// hunting a failure that never happened.
+// A socket delivered during cancellation must close without reporting an
+// ordinary tunnel retirement as a listener failure.
 func TestServeSocks5DoesNotFailTunnelOnClose(t *testing.T) {
-	m := NewTunnelManager()
-	t.Cleanup(m.CloseAll)
-	ctx, cancelServe := context.WithCancel(context.Background())
-	t.Cleanup(cancelServe)
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = listener.Close() })
-	client, err := net.Dial("tcp", listener.Addr().String())
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
-	accepted, err := listener.Accept()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = accepted.Close() })
-
-	gate := make(chan struct{})
-	gated := &gatedTunnelListener{Listener: listener, gate: gate, conn: accepted, done: ctx.Done()}
-	tun := &tunnel{
-		info:        TunnelInfo{ID: "socks-close", WorkerID: "w", Type: tunnelTypeSocks5},
-		listener:    gated,
-		connections: make(map[net.Conn]struct{}),
-	}
-	// Hold close() inside cancel so the accepted conn lands in the exact window the
-	// ordering governs: whatever close() has already done by the time it calls
-	// cancel is what the serve loop observes.
-	//
-	// Guarded by a Once because close() cancels on every call, including the
-	// repeat from the cleanup CloseAll -- harmless for a real context.CancelFunc,
-	// which is idempotent, but not for this instrumented stand-in.
-	cancelEntered := make(chan struct{})
-	releaseCancel := make(chan struct{})
-	var cancelOnce sync.Once
-	tun.cancel = func() {
-		cancelOnce.Do(func() {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		conn, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		listener := &heldTunnelAccept{
+			Listener: newScriptedListener(), entered: make(chan struct{}), release: make(chan struct{}), conn: conn,
+		}
+		tun, ctx := installTestTunnel(t, m, "socks-close", listener)
+		cancel := tun.cancel
+		cancelEntered := make(chan struct{})
+		releaseCancel := make(chan struct{})
+		tun.cancel = func() {
 			close(cancelEntered)
 			<-releaseCancel
-			cancelServe()
-		})
-	}
-	m.mu.Lock()
-	m.tunnels[tun.info.ID] = tun
-	m.mu.Unlock()
+			cancel()
+		}
+		go m.serveSocks5(ctx, tun, nil)
+		<-listener.entered
 
-	go m.serveSocks5(ctx, tun, nil)
-
-	closed := make(chan struct{})
-	go func() {
-		defer close(closed)
-		tun.close()
-	}()
-	<-cancelEntered
-	close(gate) // deliver the accepted conn into the window
-
-	// failTunnel evicts the tunnel from the manager, so a tunnel still registered
-	// is proof no spurious failure was reported.
-	require.Never(t, func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		_, ok := m.tunnels[tun.info.ID]
-		return !ok
-	}, 300*time.Millisecond, 5*time.Millisecond,
-		"an ordinary tunnel close was reported as a listener failure")
-
-	close(releaseCancel)
-	<-closed
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			tun.close()
+		}()
+		<-cancelEntered
+		close(listener.release)
+		synctest.Wait()
+		assert.Len(t, listTunnelRows(t, m, testTunnelOwner), 1, "ordinary close reported a listener failure")
+		close(releaseCancel)
+		<-closed
+	})
 }
 
 // bindAddrConformanceFixture is the shared cross-language fixture described in
@@ -1384,180 +1368,154 @@ func TestBackoffAfterTemporaryAccept(t *testing.T) {
 	})
 }
 
-// A create and a reconnect both succeed when the Hub announces the expected
-// Worker keys: a matching announcement is accepted and never stops a tunnel.
-// This is the happy-path control for the mismatch scenarios below. It drives
-// the channel layer (the open and the live re-resolve), which is where the key
-// is checked, so no listener bind is involved.
-func TestTunnelManager_CreateAndReconnectSucceedOnExpectedKey(t *testing.T) {
-	m := NewTunnelManager()
-	t.Cleanup(m.CloseAll)
-
-	openCalls := 0
-	var opened []*managedChannel
-	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
-		openCalls++
-		ch, _ := newTestManagedChannel()
-		opened = append(opened, ch)
-		return ch, nil
+// checkAnnouncedWorkerKeys takes the place of the Hub's announcement at the
+// channel factory seam. It runs the key policy that a real open receives.
+func checkAnnouncedWorkerKeys(ctx context.Context, workerID string, opts *tunnelpkg.OpenChannelOptions, keysHex string) error {
+	if opts.ExpectedUserID != testTunnelOwner || opts.KeyPin == nil {
+		return errors.New("open is missing the expected user or Worker key pin")
 	}
-
-	expect := channelExpectation{userID: testTunnelOwner, keysHex: testExpectedWorkerKeysHex}
-	ctx := context.Background()
-
-	created, err := m.pool.getOrOpen(ctx, m.pool.currentEpoch(), "http://hub", "worker", expect)
-	require.NoError(t, err, "creation must succeed on the expected key")
-	require.Same(t, opened[0], created)
-
-	// The captured channel dies; a reconnect re-opens on the same expected key
-	// and succeeds instead of surfacing a mismatch.
-	opened[0].close()
-	require.Eventually(t, func() bool {
-		m.pool.mu.Lock()
-		defer m.pool.mu.Unlock()
-		return len(m.pool.channels) == 0
-	}, time.Second, time.Millisecond, "the dead channel must leave the cache")
-
-	reconnected, err := m.pool.live(ctx, opened[0], m.pool.currentEpoch(), "http://hub", "worker", expect)
-	require.NoError(t, err, "reconnect must succeed on the expected key")
-	require.Same(t, opened[1], reconnected)
-	assert.False(t, reconnected.closed())
-	assert.Equal(t, 2, openCalls, "the reconnect re-opens exactly one channel")
+	if _, err := tunnelpkg.NewExpectedWorkerKeyPin(keysHex); err != nil {
+		return fmt.Errorf("invalid Worker fixture: %w", err)
+	}
+	keys, err := hex.DecodeString(keysHex)
+	if err != nil {
+		return err
+	}
+	const mlkemEnd = contracts.X25519PublicKeySize + contracts.MlkemPublicKeySize
+	commit, err := opts.KeyPin.Resolve(ctx, workerID, keys[:contracts.X25519PublicKeySize],
+		keys[contracts.X25519PublicKeySize:mlkemEnd], keys[mlkemEnd:])
+	if err != nil {
+		return err
+	}
+	if commit != nil {
+		return errors.New("the immutable Worker pin unexpectedly returned a commit")
+	}
+	return nil
 }
 
-// A Worker key mismatch on a reconnect stops a port-forward tunnel BEFORE the
-// target dial: the channel is resolved first, so a mismatch can never be
-// discovered mid-connection.
-func TestTunnelManager_MismatchStopsPortForwardBeforeTargetDial(t *testing.T) {
-	m := NewTunnelManager()
-	t.Cleanup(m.CloseAll)
-
-	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
-		return nil, &tunnelpkg.WorkerKeyMismatchError{
-			ExpectedFingerprint:  "expected-fp",
-			PresentedFingerprint: "presented-fp",
-		}
-	}
-	dialed := false
-	m.dial = func(_ context.Context, _ *managedChannel, _ string, _ uint32) (net.Conn, error) {
-		dialed = true
-		return nil, errors.New("must not dial after a key mismatch")
-	}
-
-	// A closed captured channel forces a re-resolve, which hits the mismatch.
-	closedCh, _ := newTestManagedChannel()
-	closedCh.close()
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	tun := &tunnel{
-		info: TunnelInfo{
-			ID: "t-mismatch-pf", WorkerID: "w", Type: tunnelTypePortForward,
-			TargetAddr: "target", TargetPort: 80,
-		},
-		hubURL:        "http://hub",
-		listener:      ln,
-		cancel:        cancel,
-		connections:   make(map[net.Conn]struct{}),
-		expect:        channelExpectation{userID: testTunnelOwner, keysHex: testExpectedWorkerKeysHex},
-		admittedEpoch: m.pool.currentEpoch(),
-	}
-	m.mu.Lock()
-	m.tunnels[tun.info.ID] = tun
-	m.mu.Unlock()
-
-	client, err := net.Dial("tcp", ln.Addr().String())
+func dialTunnelClient(t *testing.T, info *TunnelInfo) net.Conn {
+	t.Helper()
+	client, err := net.Dial("tcp", net.JoinHostPort(info.BindAddr, strconv.Itoa(info.BindPort)))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
-	local, err := ln.Accept()
-	require.NoError(t, err)
-
-	done := make(chan struct{})
-	go func() { defer close(done); m.handlePortForward(ctx, local, tun, closedCh) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handlePortForward did not finish after the key mismatch")
+	require.NoError(t, client.SetDeadline(time.Now().Add(30*time.Second)))
+	if info.Type == tunnelTypeSocks5 {
+		_, err = client.Write([]byte{5, 1, 0})
+		require.NoError(t, err)
+		greeting := make([]byte, 2)
+		_, err = io.ReadFull(client, greeting)
+		require.NoError(t, err)
+		require.Equal(t, []byte{5, 0}, greeting)
+		_, err = client.Write([]byte{5, 1, 0, 1, 127, 0, 0, 1, 0, 80})
+		require.NoError(t, err)
 	}
-
-	assert.False(t, dialed, "a key mismatch must stop the tunnel before the target dial")
-	rows := listTunnelRows(t, m, testTunnelOwner)
-	require.Len(t, rows, 1)
-	require.NotNil(t, rows[0].KeyMismatch, "the mismatch must be recorded on the stopped row")
-	assert.Equal(t, "expected-fp", rows[0].KeyMismatch.ExpectedFingerprint)
-	assert.Equal(t, "presented-fp", rows[0].KeyMismatch.PresentedFingerprint)
+	return client
 }
 
-// A Worker key mismatch on a reconnect stops a SOCKS5 tunnel BEFORE the target
-// dial too: the dial handler resolves the channel first, so the mismatch stops
-// the tunnel instead of being found mid-connection.
-func TestTunnelManager_MismatchStopsSocks5BeforeTargetDial(t *testing.T) {
-	m := NewTunnelManager()
-	t.Cleanup(m.CloseAll)
+func TestTunnelManager_UsesFixedPinOnCreateAndReconnect(t *testing.T) {
+	for _, tunnelType := range []string{tunnelTypePortForward, tunnelTypeSocks5} {
+		t.Run(tunnelType, func(t *testing.T) {
+			m := NewTunnelManager()
+			t.Cleanup(m.CloseAll)
 
-	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
-		return nil, &tunnelpkg.WorkerKeyMismatchError{
-			ExpectedFingerprint:  "expected-fp",
-			PresentedFingerprint: "presented-fp",
-		}
+			announcements := make(chan string, 1)
+			opened := make(chan *managedChannel, 1)
+			m.pool.openCh = func(ctx context.Context, _, workerID string, opts *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+				select {
+				case keys := <-announcements:
+					if err := checkAnnouncedWorkerKeys(ctx, workerID, opts, keys); err != nil {
+						return nil, err
+					}
+				default:
+					return nil, errors.New("unexpected channel open")
+				}
+				ch, _ := newTestManagedChannel()
+				opened <- ch
+				return ch, nil
+			}
+
+			var binds atomic.Int32
+			m.listen = func(network, addr string) (net.Listener, error) {
+				binds.Add(1)
+				return net.Listen(network, addr)
+			}
+			portReservation, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			cfg := withTestExpectation(TunnelConfig{
+				HubURL: "http://hub", WorkerID: "worker", Type: tunnelType,
+				TargetAddr: "127.0.0.1", TargetPort: 80,
+				BindPort: portReservation.Addr().(*net.TCPAddr).Port,
+			})
+			require.NoError(t, portReservation.Close())
+			cfg.ChannelEpoch = m.currentEpoch()
+
+			dialed := make(chan *managedChannel, 2)
+			target, peer := net.Pipe()
+			t.Cleanup(func() { _ = peer.Close() })
+			m.dial = func(_ context.Context, ch *managedChannel, _ string, _ uint32) (net.Conn, error) {
+				dialed <- ch
+				return testAddrConn{
+					Conn: target, localAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345},
+				}, nil
+			}
+			changed := make(chan struct{}, 1)
+			m.onChanged = func() { changed <- struct{}{} }
+
+			announcements <- testOtherWorkerKeysHex
+			refused, err := m.CreateTunnel(t.Context(), t.Context(), cfg)
+			require.Error(t, err)
+			require.Nil(t, refused)
+			initialMismatch := keyMismatchOf(err)
+			require.NotNil(t, initialMismatch)
+			assert.NotEmpty(t, initialMismatch.ExpectedFingerprint)
+			assert.NotEmpty(t, initialMismatch.PresentedFingerprint)
+			assert.NotEqual(t, initialMismatch.ExpectedFingerprint, initialMismatch.PresentedFingerprint)
+			assert.Zero(t, binds.Load(), "a refused create must never bind")
+			assert.Empty(t, listTunnelRows(t, m, testTunnelOwner))
+
+			announcements <- testExpectedWorkerKeysHex
+			info, err := m.CreateTunnel(t.Context(), t.Context(), cfg)
+			require.NoError(t, err)
+			initialChannel := <-opened
+			initialChannel.close()
+
+			announcements <- testExpectedWorkerKeysHex
+			client := dialTunnelClient(t, info)
+			select {
+			case ch := <-dialed:
+				assert.Same(t, <-opened, ch, "the target dial must use the verified replacement channel")
+				ch.close()
+			case <-time.After(30 * time.Second):
+				t.Fatal("the verified reconnect did not dial the target")
+			}
+			if tunnelType == tunnelTypeSocks5 {
+				reply := make([]byte, 10)
+				_, err := io.ReadFull(client, reply)
+				require.NoError(t, err)
+				require.Zero(t, reply[1], "SOCKS5 CONNECT failed after a verified reconnect")
+			}
+			require.NoError(t, client.Close())
+
+			announcements <- testOtherWorkerKeysHex
+			mismatchedClient := dialTunnelClient(t, info)
+			select {
+			case <-changed:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the rejected reconnect did not publish a tunnel change")
+			}
+			assertConnectionClosed(t, mismatchedClient, "the mismatched client remained connected")
+			assert.Empty(t, dialed, "a refused reconnect must not dial the target")
+			rows := listTunnelRows(t, m, testTunnelOwner)
+			require.Len(t, rows, 1)
+			assert.Equal(t, info.ID, rows[0].ID)
+			assert.Equal(t, initialMismatch, rows[0].KeyMismatch)
+			assert.Empty(t, listTunnelRows(t, m, "other-user"))
+			assert.EqualValues(t, 1, binds.Load())
+			listener, err := net.Listen("tcp", net.JoinHostPort(info.BindAddr, strconv.Itoa(info.BindPort)))
+			require.NoError(t, err, "the stopped tunnel must have released the listener before its hint")
+			require.NoError(t, listener.Close())
+		})
 	}
-	dialed := false
-	m.dial = func(_ context.Context, _ *managedChannel, _ string, _ uint32) (net.Conn, error) {
-		dialed = true
-		return nil, errors.New("must not dial after a key mismatch")
-	}
-
-	closedCh, _ := newTestManagedChannel()
-	closedCh.close()
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	tun := &tunnel{
-		info:          TunnelInfo{ID: "t-mismatch-socks", WorkerID: "w", Type: tunnelTypeSocks5},
-		hubURL:        "http://hub",
-		listener:      ln,
-		cancel:        cancel,
-		connections:   make(map[net.Conn]struct{}),
-		expect:        channelExpectation{userID: testTunnelOwner, keysHex: testExpectedWorkerKeysHex},
-		admittedEpoch: m.pool.currentEpoch(),
-	}
-	m.mu.Lock()
-	m.tunnels[tun.info.ID] = tun
-	m.mu.Unlock()
-
-	go m.serveSocks5(ctx, tun, closedCh)
-
-	// Drive a SOCKS5 CONNECT so the dial handler runs, resolves the channel,
-	// hits the mismatch, and stops the tunnel before the target dial.
-	client, err := net.Dial("tcp", ln.Addr().String())
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = client.Close() })
-	require.NoError(t, client.SetDeadline(time.Now().Add(2*time.Second)))
-	_, err = client.Write([]byte{5, 1, 0}) // greeting: no-auth
-	require.NoError(t, err)
-	greeting := make([]byte, 2)
-	_, err = io.ReadFull(client, greeting)
-	require.NoError(t, err)
-	_, err = client.Write([]byte{5, 1, 0, 1, 127, 0, 0, 1, 0, 80}) // CONNECT 127.0.0.1:80
-	require.NoError(t, err)
-
-	require.Eventually(t, func() bool {
-		rows := listTunnelRows(t, m, testTunnelOwner)
-		return len(rows) == 1 && rows[0].KeyMismatch != nil
-	}, 2*time.Second, 10*time.Millisecond, "the key mismatch must stop the SOCKS5 tunnel")
-
-	assert.False(t, dialed, "a key mismatch must stop the SOCKS5 tunnel before the target dial")
-	rows := listTunnelRows(t, m, testTunnelOwner)
-	require.Len(t, rows, 1)
-	require.NotNil(t, rows[0].KeyMismatch)
-	assert.Equal(t, "expected-fp", rows[0].KeyMismatch.ExpectedFingerprint)
-	assert.Equal(t, "presented-fp", rows[0].KeyMismatch.PresentedFingerprint)
 }
 
 // A Worker key mismatch transition happens exactly once: a second, stale
@@ -1591,7 +1549,7 @@ func TestTunnelManager_StopWithKeyMismatch_IsExactOnce(t *testing.T) {
 		"the first mismatch detail must be preserved, not overwritten by a stale one")
 	assert.Equal(t, "pres-1", rows[0].KeyMismatch.PresentedFingerprint)
 	assert.Equal(t, 1, changed, "the transition must fire the change hint exactly once")
-	assert.True(t, tun.stopping)
+	assert.Equal(t, tunnelStoppingForMismatch, tun.state)
 
 	// A late accept failure after the transition must not evict the record.
 	m.failTunnel(tun, errors.New("late accept failure"))
@@ -1622,50 +1580,56 @@ func TestTunnelManager_StopWithKeyMismatch_AfterDeleteIsNoOp(t *testing.T) {
 	assert.Zero(t, changed, "a stale mismatch must not fire the change hint")
 }
 
-// A create held before native admission, then raced by an identity reset, must
-// be fenced: released after the reset it opens no cached channel and registers
-// no listener. The reset is an identity change (a transport-option rotation),
-// not a teardown, so this exercises the epoch fence on its own.
-func TestTunnelManager_HeldCreateBeforeAdmissionIsFencedByReset(t *testing.T) {
-	m := NewTunnelManager()
-	t.Cleanup(m.CloseAll)
+// A transport change retires the old epoch while create is opening a channel.
+// The retiring open must close its transport without binding a listener.
+func TestTunnelManager_HeldCreateCannotBindAfterTransportRotation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		defer m.CloseAll()
 
-	started := make(chan struct{})
-	release := make(chan struct{})
-	stale, staleClosed := newTestManagedChannel()
-	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
-		close(started)
-		<-release
-		return stale, nil
-	}
+		started := make(chan struct{})
+		release := make(chan struct{})
+		stale, staleClosed := newTestManagedChannel()
+		m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			close(started)
+			<-release
+			return stale, nil
+		}
 
-	result := make(chan error, 1)
-	cfg := withTestExpectation(TunnelConfig{
-		HubURL: "http://hub", WorkerID: "worker",
-		Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
-		BindAddr: "127.0.0.1", BindPort: 18082,
+		result := make(chan error, 1)
+		cfg := withTestExpectation(TunnelConfig{
+			HubURL: "http://hub", WorkerID: "worker",
+			Type: tunnelTypePortForward, TargetAddr: "target", TargetPort: 80,
+			BindAddr: "127.0.0.1", BindPort: 18082,
+		})
+		cfg.ChannelEpoch = m.currentEpoch()
+		go func() {
+			_, err := m.CreateTunnel(context.Background(), context.Background(), cfg)
+			result <- err
+		}()
+		<-started
+
+		// An identity change rotates the epoch while the create is held.
+		rotate := make(chan struct{})
+		go func() {
+			defer close(rotate)
+			m.SetChannelOptions(&tunnelpkg.OpenChannelOptions{BearerToken: "rotated"})
+		}()
+		assertTunnelCleanupPending(t, rotate, "transport rotation must wait for the old open")
+		close(release)
+		<-rotate
+
+		err := <-result
+		require.Error(t, err, "a create from the retired epoch must fail")
+		assert.Contains(t, err.Error(), "reset", "the fence must report the reset, not a random failure")
+		assert.True(t, staleClosed.Load(), "the stale channel must be closed, not left open")
+		m.mu.Lock()
+		assert.Empty(t, m.tunnels, "the fenced create must register no tunnel (no listener admitted)")
+		m.mu.Unlock()
+		m.pool.mu.Lock()
+		assert.Empty(t, m.pool.channels, "the fenced create must leave no cached channel")
+		m.pool.mu.Unlock()
 	})
-	cfg.ChannelEpoch = m.currentEpoch()
-	go func() {
-		_, err := m.CreateTunnel(context.Background(), context.Background(), cfg)
-		result <- err
-	}()
-	<-started // held at the channel open, before native admission
-
-	// An identity change rotates the epoch while the create is held.
-	m.SetChannelOptions(&tunnelpkg.OpenChannelOptions{BearerToken: "rotated"})
-	close(release)
-
-	err := <-result
-	require.Error(t, err, "a create held before admission must be fenced by the reset")
-	assert.Contains(t, err.Error(), "reset", "the fence must report the reset, not a random failure")
-	assert.True(t, staleClosed.Load(), "the stale channel must be closed, not left open")
-	m.mu.Lock()
-	assert.Empty(t, m.tunnels, "the fenced create must register no tunnel (no listener admitted)")
-	m.mu.Unlock()
-	m.pool.mu.Lock()
-	assert.Empty(t, m.pool.channels, "the fenced create must leave no cached channel")
-	m.pool.mu.Unlock()
 }
 
 // A create that carries a channel epoch a reset has already retired is refused
@@ -1698,4 +1662,545 @@ func TestTunnelManager_StaleCreateOpensNoChannelOrListener(t *testing.T) {
 	m.mu.Lock()
 	assert.Empty(t, m.tunnels, "a stale create must register no tunnel (no listener admitted)")
 	m.mu.Unlock()
+}
+
+type heldTunnelListenerClose struct {
+	net.Listener
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newHeldTunnelListenerClose(listener net.Listener) *heldTunnelListenerClose {
+	return &heldTunnelListenerClose{Listener: listener, entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (l *heldTunnelListenerClose) Close() error {
+	l.once.Do(func() {
+		close(l.entered)
+		<-l.release
+		_ = l.Listener.Close()
+	})
+	return nil
+}
+
+type heldTunnelConnClose struct {
+	net.Conn
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newHeldTunnelConnClose(conn net.Conn) *heldTunnelConnClose {
+	return &heldTunnelConnClose{Conn: conn, entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (c *heldTunnelConnClose) Close() error {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.release
+		_ = c.Conn.Close()
+	})
+	return nil
+}
+
+func assertTunnelCleanupPending(t *testing.T, done <-chan struct{}, reason string) {
+	t.Helper()
+	synctest.Wait()
+	select {
+	case <-done:
+		assert.Fail(t, reason)
+	default:
+	}
+}
+
+func TestTunnelManager_ResetJoinsRetiringTunnel(t *testing.T) {
+	for _, retire := range []struct {
+		name  string
+		start func(*testing.T, *TunnelManager, *tunnel, string)
+	}{
+		{"delete", func(t *testing.T, m *TunnelManager, tun *tunnel, epoch string) {
+			assert.NoError(t, m.DeleteTunnel(tun.info.ID, epoch))
+		}},
+		{"listener failure", func(_ *testing.T, m *TunnelManager, tun *tunnel, _ string) {
+			m.failTunnel(tun, errors.New("accept failed"))
+		}},
+		{"worker key mismatch", func(_ *testing.T, m *TunnelManager, tun *tunnel, _ string) {
+			m.stopWithKeyMismatch(tun, &TunnelKeyMismatch{ExpectedFingerprint: "expected", PresentedFingerprint: "presented"})
+		}},
+	} {
+		t.Run(retire.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewTunnelManager()
+				listener := newHeldTunnelListenerClose(newScriptedListener())
+				tun, _ := installTestTunnel(t, m, "retiring", listener)
+				epoch := m.currentEpoch()
+				retired := make(chan struct{})
+				go func() {
+					defer close(retired)
+					retire.start(t, m, tun, epoch)
+				}()
+				<-listener.entered
+
+				reset := make(chan struct{})
+				go func() {
+					defer close(reset)
+					m.ResetTunnels(epoch)
+				}()
+				assertTunnelCleanupPending(t, reset, "reset returned before a retiring listener was closed")
+				close(listener.release)
+				<-reset
+				<-retired
+				assert.Empty(t, listTunnelRows(t, m, testTunnelOwner))
+			})
+		})
+	}
+}
+
+func TestTunnelManager_DeleteJoinsMismatchAndSuppressesItsHint(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		listener := newHeldTunnelListenerClose(newScriptedListener())
+		tun, _ := installTestTunnel(t, m, "stopping", listener)
+		epoch := m.currentEpoch()
+		changed := make(chan struct{}, 1)
+		m.onChanged = func() { changed <- struct{}{} }
+
+		mismatched := make(chan struct{})
+		go func() {
+			defer close(mismatched)
+			m.stopWithKeyMismatch(tun, &TunnelKeyMismatch{ExpectedFingerprint: "expected", PresentedFingerprint: "presented"})
+		}()
+		<-listener.entered
+		m.failTunnel(tun, errors.New("late accept failure"))
+
+		deleted := make(chan struct{})
+		go func() {
+			defer close(deleted)
+			assert.NoError(t, m.DeleteTunnel(tun.info.ID, epoch))
+		}()
+		assertTunnelCleanupPending(t, deleted, "delete returned before mismatch cleanup closed the listener")
+		close(listener.release)
+		<-deleted
+		<-mismatched
+		assert.Empty(t, changed, "a deleted row must not publish a mismatch hint")
+		assert.Empty(t, listTunnelRows(t, m, testTunnelOwner))
+	})
+}
+
+func TestTunnelManager_ResetReplayAndSuccessorWaitForListener(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		outgoing, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port := outgoing.Addr().(*net.TCPAddr).Port
+		listener := newHeldTunnelListenerClose(outgoing)
+		installTestTunnel(t, m, "outgoing", listener)
+		epoch := m.currentEpoch()
+		opens := make(chan struct{}, 1)
+		m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			opens <- struct{}{}
+			ch, _ := newTestManagedChannel()
+			return ch, nil
+		}
+
+		reset := make(chan struct{})
+		go func() {
+			defer close(reset)
+			m.ResetTunnels(epoch)
+		}()
+		<-listener.entered
+		successor := m.currentEpoch()
+		require.NotEqual(t, epoch, successor)
+
+		replay := make(chan struct{})
+		go func() {
+			defer close(replay)
+			m.ResetTunnels(epoch)
+		}()
+		assertTunnelCleanupPending(t, replay, "reset replay returned before its epoch closed")
+
+		cfg := withTestExpectation(TunnelConfig{WorkerID: "worker", Type: tunnelTypeSocks5, BindPort: port})
+		cfg.ChannelEpoch = successor
+		created := make(chan error, 1)
+		go func() {
+			_, err := m.CreateTunnel(t.Context(), t.Context(), cfg)
+			created <- err
+		}()
+		synctest.Wait()
+		assert.Empty(t, opens, "successor channel opened before the previous listener closed")
+		close(listener.release)
+		<-reset
+		<-replay
+		assert.NoError(t, <-created, "successor must bind after the previous listener closes")
+		m.ResetTunnels(epoch)
+		assert.Len(t, listTunnelRows(t, m, testTunnelOwner), 1, "completed reset replay must preserve the successor")
+		m.CloseAll()
+	})
+}
+
+func TestTunnelManager_DeleteWaitsForOwnedConnClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		tun, _ := installTestTunnel(t, m, "closing-connection", newScriptedListener())
+		conn, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		raw := newHeldTunnelConnClose(conn)
+		owned, ok := tun.ownConnection(raw)
+		require.True(t, ok)
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			assert.NoError(t, owned.Close())
+		}()
+		<-raw.entered
+
+		deleted := make(chan struct{})
+		go func() {
+			defer close(deleted)
+			assert.NoError(t, m.DeleteTunnel(tun.info.ID, m.currentEpoch()))
+		}()
+		assertTunnelCleanupPending(t, deleted, "delete returned while the owned connection was still closing")
+		close(raw.release)
+		<-closed
+		<-deleted
+	})
+}
+
+type heldTunnelAccept struct {
+	net.Listener
+	entered chan struct{}
+	release chan struct{}
+	conn    net.Conn
+}
+
+func (l *heldTunnelAccept) Accept() (net.Conn, error) {
+	select {
+	case <-l.entered:
+		return l.Listener.Accept()
+	default:
+		close(l.entered)
+		<-l.release
+		return l.conn, nil
+	}
+}
+
+func TestTunnelManager_ResetWaitsForAcceptHandoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		conn, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		raw := newHeldTunnelConnClose(conn)
+		listener := &heldTunnelAccept{
+			Listener: newScriptedListener(), entered: make(chan struct{}), release: make(chan struct{}), conn: raw,
+		}
+		tun, ctx := installTestTunnel(t, m, "accept-handoff", listener)
+		go m.acceptPortForward(ctx, tun, nil)
+		<-listener.entered
+
+		reset := make(chan struct{})
+		go func() {
+			defer close(reset)
+			m.ResetTunnels(m.currentEpoch())
+		}()
+		assertTunnelCleanupPending(t, reset, "reset returned while accept still owned a socket")
+		close(listener.release)
+		<-raw.entered
+		assertTunnelCleanupPending(t, reset, "reset returned before closing the late accepted socket")
+		close(raw.release)
+		<-reset
+	})
+}
+
+func TestTunnelManager_DeleteWaitsForDialHandoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		local, localPeer := net.Pipe()
+		defer func() { _ = localPeer.Close() }()
+		remote, remotePeer := net.Pipe()
+		defer func() { _ = remotePeer.Close() }()
+		raw := newHeldTunnelConnClose(remote)
+		tun, ctx := installTestTunnel(t, m, "dial-handoff", newScriptedListener())
+		started, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		m.dial = func(ctx context.Context, _ *managedChannel, _ string, _ uint32) (net.Conn, error) {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			<-release
+			return raw, nil
+		}
+		ownedLocal := requireOwnedTunnelConn(t, tun, local)
+		go m.handlePortForward(ctx, ownedLocal, tun, nil)
+		<-started
+
+		deleted := make(chan struct{})
+		go func() {
+			defer close(deleted)
+			assert.NoError(t, m.DeleteTunnel(tun.info.ID, m.currentEpoch()))
+		}()
+		<-canceled
+		assertTunnelCleanupPending(t, deleted, "delete returned while the target dial could still return a connection")
+		close(release)
+		<-raw.entered
+		assertTunnelCleanupPending(t, deleted, "delete returned before closing the late dialed socket")
+		close(raw.release)
+		<-deleted
+	})
+}
+
+type heldChannelReadyCheck struct {
+	channelHandle
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *heldChannelReadyCheck) Closed() bool {
+	closed := c.channelHandle.Closed()
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.release
+	})
+	return closed
+}
+
+func TestTunnelManager_ResetBetweenChannelOpenAndBind(t *testing.T) {
+	m := NewTunnelManager()
+	t.Cleanup(m.CloseAll)
+
+	opened, _ := newTestManagedChannel()
+	ready := &heldChannelReadyCheck{channelHandle: opened.handle, entered: make(chan struct{}), release: make(chan struct{})}
+	var opens atomic.Int32
+	m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+		if opens.Add(1) == 1 {
+			return &managedChannel{handle: ready}, nil
+		}
+		fresh, _ := newTestManagedChannel()
+		return fresh, nil
+	}
+	var binds atomic.Int32
+	m.listen = func(network, address string) (net.Listener, error) {
+		binds.Add(1)
+		return net.Listen(network, address)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+	cfg := withTestExpectation(TunnelConfig{WorkerID: "worker", Type: tunnelTypeSocks5, BindPort: port})
+	cfg.ChannelEpoch = m.currentEpoch()
+	old := make(chan error, 1)
+	go func() {
+		_, err := m.CreateTunnel(t.Context(), t.Context(), cfg)
+		old <- err
+	}()
+	<-ready.entered
+
+	m.ResetTunnels(cfg.ChannelEpoch)
+	close(ready.release)
+	require.ErrorContains(t, <-old, "reset")
+	assert.Zero(t, binds.Load(), "a reset must prevent the old create from binding")
+	cfg.ChannelEpoch = m.currentEpoch()
+	created, err := m.CreateTunnel(t.Context(), t.Context(), cfg)
+	require.NoError(t, err)
+	assert.Equal(t, port, created.BindPort)
+}
+
+func TestTunnelManager_HeldReconnectCannotPopulateSuccessorEpoch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		ctx := t.Context()
+		epoch := m.currentEpoch()
+		old, _ := newTestManagedChannel()
+		old.close()
+		late, _ := newTestManagedChannel()
+		fresh, _ := newTestManagedChannel()
+		started, release := make(chan struct{}), make(chan struct{})
+		opens := 0
+		m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			opens++
+			if opens == 1 {
+				close(started)
+				<-release
+				return late, nil
+			}
+			return fresh, nil
+		}
+
+		tun, tunCtx := installTestTunnel(t, m, "outgoing", newScriptedListener())
+		tun.admittedEpoch = epoch
+		tun.hubURL = "http://hub"
+		tun.expect.keysHex = testExpectedWorkerKeysHex
+		m.dial = func(_ context.Context, _ *managedChannel, _ string, _ uint32) (net.Conn, error) {
+			t.Error("the retiring reconnect reached the target dial")
+			return nil, errors.New("unexpected target dial")
+		}
+		conn, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		owned := requireOwnedTunnelConn(t, tun, conn)
+		handled := make(chan struct{})
+		go func() {
+			defer close(handled)
+			m.handlePortForward(tunCtx, owned, tun, old)
+		}()
+		<-started
+
+		reset := make(chan struct{})
+		go func() {
+			defer close(reset)
+			m.ResetTunnels(epoch)
+		}()
+		synctest.Wait()
+		<-handled
+		assertConnectionClosed(t, peer, "reset must close the accepted client while an old reconnect is held")
+		assertTunnelCleanupPending(t, reset, "reset acknowledged while an old open still held resources")
+		replay := make(chan struct{})
+		go func() {
+			defer close(replay)
+			m.ResetTunnels(epoch)
+		}()
+		assertTunnelCleanupPending(t, replay, "replayed reset acknowledged while an old open still held resources")
+
+		m.listen = func(_, _ string) (net.Listener, error) { return newScriptedListener(), nil }
+		successor := m.currentEpoch()
+		cfg := withTestExpectation(TunnelConfig{
+			HubURL: tun.hubURL, WorkerID: tun.info.WorkerID, Type: tunnelTypeSocks5,
+		})
+		cfg.ChannelEpoch = successor
+		createDone := make(chan struct{})
+		var createErr error
+		go func() {
+			defer close(createDone)
+			_, createErr = m.CreateTunnel(ctx, ctx, cfg)
+		}()
+		assertTunnelCleanupPending(t, createDone, "successor admission finished while an old open still held resources")
+		assert.Equal(t, 1, opens, "successor admission must wait before starting its open")
+		close(release)
+		<-reset
+		<-replay
+		<-createDone
+		require.NoError(t, createErr)
+		assert.True(t, late.closed(), "a channel returned after its epoch retired must close before reset acknowledges")
+		expect := channelExpectation{userID: cfg.ExpectedUserID, keysHex: cfg.ExpectedWorkerKeysHex}
+		reused, err := m.pool.getOrOpen(ctx, successor, cfg.HubURL, cfg.WorkerID, expect)
+		assert.NoError(t, err)
+		assert.Same(t, fresh, reused, "a held reconnect must never replace the successor cache")
+		assert.Equal(t, 2, opens)
+		m.CloseAll()
+	})
+}
+
+type heldChannelClose struct {
+	channelHandle
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *heldChannelClose) Close() {
+	close(c.entered)
+	<-c.release
+	c.channelHandle.Close()
+}
+
+func TestTunnelManager_ResetReleasesManagerLockWhileClosingChannel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		ch, _ := newTestManagedChannel()
+		held := &heldChannelClose{channelHandle: ch.handle, entered: make(chan struct{}), release: make(chan struct{})}
+		m.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			return &managedChannel{handle: held}, nil
+		}
+		oldEpoch := m.currentEpoch()
+		_, err := m.pool.getOrOpen(t.Context(), oldEpoch, "http://hub", "worker", channelExpectation{})
+		require.NoError(t, err)
+
+		reset := make(chan struct{})
+		go func() {
+			defer close(reset)
+			m.ResetTunnels(oldEpoch)
+		}()
+		<-held.entered
+
+		if assert.True(t, m.mu.TryLock(), "reset kept the manager lock while closing a pooled channel") {
+			m.mu.Unlock()
+			successor, _, err := m.ListTunnels(testTunnelOwner)
+			assert.NoError(t, err)
+			assert.NotEqual(t, oldEpoch, successor)
+		}
+		assertTunnelCleanupPending(t, reset, "reset returned before its pooled channel closed")
+		close(held.release)
+		<-reset
+	})
+}
+
+// independentlyClosingChannel models a transport whose first close retires
+// usability immediately but releases the connection only on the test signal.
+type independentlyClosingChannel struct {
+	channelHandle
+	closing atomic.Bool
+	started chan struct{}
+	release chan struct{}
+	done    chan struct{}
+}
+
+func (c *independentlyClosingChannel) Close() {
+	if !c.closing.CompareAndSwap(false, true) {
+		return
+	}
+	c.channelHandle.Close()
+	close(c.started)
+	<-c.release
+	close(c.done)
+}
+
+func (c *independentlyClosingChannel) CloseDone() <-chan struct{} {
+	return c.done
+}
+
+func TestTunnelManager_ResetWaitsForAnEvictedChannelClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := NewTunnelManager()
+		ch, _ := newTestManagedChannel()
+		held := &independentlyClosingChannel{
+			channelHandle: ch.handle,
+			started:       make(chan struct{}),
+			release:       make(chan struct{}),
+			done:          make(chan struct{}),
+		}
+		opened := &managedChannel{handle: held}
+		fresh, _ := newTestManagedChannel()
+		m.pool.openCh = func(context.Context, string, string, *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			return opened, nil
+		}
+		ctx := t.Context()
+		epoch := m.currentEpoch()
+		expect := channelExpectation{}
+		_, err := m.pool.getOrOpen(ctx, epoch, "http://hub", "worker", expect)
+		require.NoError(t, err)
+
+		go held.Close()
+		<-held.started
+		m.pool.openCh = func(context.Context, string, string, *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			return fresh, nil
+		}
+		reopened, err := m.pool.getOrOpen(ctx, epoch, "http://hub", "worker", expect)
+		assert.NoError(t, err)
+		assert.Same(t, fresh, reopened, "closing channels must leave the reuse cache")
+
+		reset := make(chan struct{})
+		go func() {
+			defer close(reset)
+			m.ResetTunnels(epoch)
+		}()
+		assertTunnelCleanupPending(t, reset, "reset returned while an evicted channel still owned its transport")
+		if assert.True(t, m.pool.mu.TryLock(), "reset must release the pool lock while joining transport close") {
+			m.pool.mu.Unlock()
+		}
+		if assert.True(t, m.mu.TryLock(), "reset must release the manager lock while joining transport close") {
+			m.mu.Unlock()
+		}
+		close(held.release)
+		<-reset
+		<-held.CloseDone()
+	})
 }

@@ -146,6 +146,9 @@ func TestTabCreation_ReplaysASharedRequestOnceAndRejectsAnAlteredRequest(t *test
 	require.Empty(t, second.rejections())
 	require.Len(t, second.responsesSnapshot(), 1, "the repeated dispatch replays the same result")
 	assert.Equal(t, int32(1), publishCount.Load(), "the repeated dispatch publishes no second tab")
+	storedAgentIDs, err := svc.Queries.ListAllAgentIDs(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{generated}, storedAgentIDs, "the repeated dispatch stores no second agent")
 	altered := &leapmuxv1.OpenAgentRequest{Creation: creationIntent(generated), WorkingDir: t.TempDir()}
 	alteredWriter := newTestWriter()
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, altered, alteredWriter)

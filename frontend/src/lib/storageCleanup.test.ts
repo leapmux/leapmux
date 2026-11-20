@@ -25,6 +25,7 @@ import {
 } from '~/lib/browserStorage'
 import { enqueueKvPut, readKvRow } from '~/lib/browserStorageDb'
 import { TEST_ACCOUNT, TEST_USER_ID } from '~/test-support/crdtBridge'
+import { testKeyPinHex } from '~/test-support/keyPins'
 import { useTestStorage } from '~/test-support/persistentStorage'
 
 // The sweep works over IndexedDB now, so it needs a database to sweep.
@@ -337,7 +338,12 @@ describe('storageCleanup', () => {
     it('expires a pin map and keeps the removal revision beside it', async () => {
       const mapKey = accountStorageKey(ACCOUNT, 'key-pins')
       const revisionKey = accountStorageKey(ACCOUNT, 'key-pins-removal-revision')
-      await seedRow(mapKey, { w1: { publicKeyHex: 'aa', firstSeen: 1 } }, -DAY_MS)
+      await seedRow(mapKey, {
+        w1: {
+          publicKeyHex: testKeyPinHex('aa'),
+          firstSeen: 1,
+        },
+      }, -DAY_MS)
       await seedRow(revisionKey, 7, -DAY_MS)
 
       await runCleanup()

@@ -191,6 +191,38 @@ func startLockHolder(t *testing.T, path string) (release func()) {
 	}
 }
 
+// contentionContext reports when Lock waits after a failed acquisition.
+type contentionContext struct {
+	context.Context
+	once    sync.Once
+	waiting chan struct{}
+}
+
+func (c *contentionContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func (c *contentionContext) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-c.waiting:
+	case <-c.Context.Done():
+		t.Fatal("Lock did not observe contention")
+	}
+}
+
+func TestLockChecksAnAlreadyCanceledContextBeforeTryingTheHandle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.lock")
+	file, err := Open(path, true)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.ErrorIs(t, Lock(ctx, file), context.Canceled)
+}
+
 func TestLockHonorsCancellationWhileHeld(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.lock")
 	release := startLockHolder(t, path)
@@ -206,7 +238,9 @@ func TestLockHonorsCancellationWhileHeld(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	errCh := make(chan error, 1)
-	go func() { errCh <- Lock(ctx, second) }()
+	waiting := &contentionContext{Context: ctx, waiting: make(chan struct{})}
+	go func() { errCh <- Lock(waiting, second) }()
+	waiting.wait(t)
 	cancel()
 	assert.ErrorIs(t, <-errCh, context.Canceled)
 
@@ -229,7 +263,9 @@ func TestLockAcquiresAfterTheHolderReleases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	errCh := make(chan error, 1)
-	go func() { errCh <- Lock(ctx, second) }()
+	waiting := &contentionContext{Context: ctx, waiting: make(chan struct{})}
+	go func() { errCh <- Lock(waiting, second) }()
+	waiting.wait(t)
 	release()
 	require.NoError(t, <-errCh)
 

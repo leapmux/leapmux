@@ -18,13 +18,14 @@
  * Extracted from ChannelManager so the policy is unit-testable without a
  * WebSocket / Noise harness. See https://github.com/leapmux/leapmux/issues/283.
  */
-import type { KeyPinStateChange, WorkerKeyPinRecord } from './browserStorage'
+import type { KeyPinStateChange, KeyPinStorageScope, WorkerKeyPinRecord } from './browserStorage'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import {
   onKeyPinsInvalidated,
   onStorageAccountChange,
   readKeyPinState,
+  storageAccountId,
   updateKeyPinState,
 } from './browserStorage'
 import { concatBytes } from './bytes'
@@ -36,6 +37,7 @@ export type KeyPinConfirmFn = (
   workerId: string,
   expectedFingerprint: string,
   actualFingerprint: string,
+  signal: AbortSignal,
 ) => Promise<KeyPinDecision>
 
 /** The public-key material resolve compares against the stored pin. */
@@ -76,9 +78,14 @@ export class KeyPinRejectedError extends Error {
  * and "storage could not answer" are different trust decisions, and collapsing
  * them is how a failed read becomes a silent first contact.
  */
-export async function readWorkerKeyPin(workerId: string): Promise<WorkerKeyPinSnapshot> {
-  const { pins, removalRevision } = await readKeyPinState()
-  return { pin: pins[workerId] ?? null, removalRevision }
+export async function readWorkerKeyPin(workerId: string, scope?: KeyPinStorageScope): Promise<WorkerKeyPinSnapshot> {
+  const { pins, removalRevision } = await readKeyPinState(scope)
+  return {
+    pin: Object.hasOwn(pins, workerId)
+      ? (pins[workerId] ?? null)
+      : null,
+    removalRevision,
+  }
 }
 
 /** List every pinned worker key, oldest first. Rejects on a failed read. */
@@ -90,14 +97,14 @@ export async function listKeyPins(): Promise<KeyPinEntry[]> {
 }
 
 /**
- * Remove a pinned key for a worker. Idempotent: removing an absent pin
- * succeeds and changes nothing. Rejects on a failed write.
+ * Remove a pinned key for a worker. A success invalidates pending decisions,
+ * even when the worker has no pin. Rejects on a failed write.
  */
 export async function clearKeyPin(workerId: string): Promise<void> {
   await updateKeyPinState({ kind: 'remove', workerId })
 }
 
-/** Remove all pinned keys. Idempotent. Rejects on a failed write. */
+/** Remove all pins and invalidate pending decisions. Rejects on a failed write. */
 export async function clearAllKeyPins(): Promise<void> {
   await updateKeyPinState({ kind: 'removeAll' })
 }
@@ -123,147 +130,176 @@ export interface KeyPinStoreOpts {
   confirmKeyPin: KeyPinConfirmFn
 }
 
-/**
- * Session-scoped TOFU pin store. Persistence is shared across tabs via the
- * `key-pins` row, which `browserStorage` scopes to the signed-in account, so
- * two accounts on one browser pin independently. The rejected-worker set is
- * per-instance.
- */
+interface KeyPinResolveOpts extends KeyPinStorageScope {
+  identitySignal?: AbortSignal
+  review?: boolean
+  assertCurrent?: () => void
+}
+
+export interface ResolvedKeyPin {
+  publicKeyHex: string
+  commit: () => Promise<void>
+}
+
+function createConfirmation(confirm: KeyPinConfirmFn) {
+  return {
+    confirm,
+    lifetime: new AbortController(),
+    rejectedWorkers: new WeakMap<AbortSignal, Set<string>>(),
+    rejectedWorkersByAccount: new Map<string | null, Set<string>>(),
+  }
+}
+
+/** Observe cancellation even when a callback holds a promise indefinitely. */
+function waitForConfirmation<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    void pending.then(
+      (value) => {
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', abort)
+        reject(err)
+      },
+    )
+    if (signal.aborted) {
+      signal.removeEventListener('abort', abort)
+      abort()
+    }
+  })
+}
+
+/** The browser's durable TOFU policy and its in-memory mismatch prompt queue. */
 export class KeyPinStore {
-  private confirmKeyPin: KeyPinConfirmFn
-  private rejectedWorkers = new Set<string>()
-  /** Serializes mismatch prompts so concurrent opens cannot overwrite the dialog. */
+  private confirmation: ReturnType<typeof createConfirmation>
   private confirmChain: Promise<void> = Promise.resolve()
-  /**
-   * Bumped when the mismatch prompt is replaced. A reject that started under an
-   * older prompt (fail-closed stub) must not poison rejectedWorkers after the
-   * real UI registers — clearing the set alone loses the race with an in-flight
-   * await that still resolves to 'reject'.
-   */
-  private confirmEpoch = 0
-  /** The fail-closed prompt this store was built with, restored on unregister. */
   private readonly defaultConfirmKeyPin: KeyPinConfirmFn
 
   constructor(opts: KeyPinStoreOpts) {
-    this.confirmKeyPin = opts.confirmKeyPin
     this.defaultConfirmKeyPin = opts.confirmKeyPin
+    this.confirmation = createConfirmation(opts.confirmKeyPin)
   }
 
   /**
-   * Replace the mismatch prompt. Used by AppShell, which registers the UI
-   * dialog after the singleton ChannelManager (and this store) is constructed.
-   * Clears the session reject set: rejects that happened under the fail-closed
-   * default stub must not poison the real UI for the rest of the tab.
-   *
-   * Returns a disposer restoring the fail-closed default, and the caller MUST
-   * run it with its owner. This store is a module-level singleton; the UI mount
-   * is not, and AppShell genuinely remounts inside one page lifetime (logout ->
-   * /login -> login -> /). A prompt closed over an UNMOUNTED dialog never
-   * settles -- nothing renders it, so its `resolve` is never called -- and
-   * `resolve` awaits it with no timeout. Worse, `enqueueConfirm` chains every
-   * prompt on `confirmChain`, which only advances when the previous one
-   * settles: one mismatch in that window would deadlock TOFU confirmation for
-   * the life of the page, including for the mount that came after. Restoring
-   * the default makes that window fail closed instead of hang.
+   * Replace the prompt and retire the previous registration. Disposing a UI
+   * owner retires its displayed and queued prompts and restores the default.
    */
   setConfirmKeyPin(fn: KeyPinConfirmFn): () => void {
-    this.confirmKeyPin = fn
-    this.rejectedWorkers.clear()
-    this.confirmEpoch++
+    const registration = createConfirmation(fn)
+    const previous = this.confirmation
+    this.confirmation = registration
+    previous.lifetime.abort()
     return () => {
-      // A newer registration already won: restoring now would clobber the LIVE
-      // mount's prompt with the fail-closed stub.
-      if (this.confirmKeyPin !== fn)
+      if (this.confirmation !== registration)
         return
-      this.confirmKeyPin = this.defaultConfirmKeyPin
-      this.confirmEpoch++
+      this.confirmation = createConfirmation(this.defaultConfirmKeyPin)
+      registration.lifetime.abort()
     }
   }
 
   /**
-   * Resolve the TOFU key pin for a worker, prompting the user on a mismatch.
-   *
-   * Returns the `commit` the caller awaits once the channel is proven, which
-   * records this worker's key. Splitting the decision from the write is what
-   * keeps the write correct: the open awaits the prompt, the handshake, and
-   * the WebSocket between the two. The commit therefore revalidates, inside
-   * one storage transaction, both the removal revision and the pin this
-   * decision observed -- so a removal or a replacement that landed meanwhile
-   * (in this tab or another) refuses the commit instead of being overwritten
-   * by it. A refused commit writes nothing and leaves the stored trust as it
-   * is; the open that carried it fails and rolls back.
-   *
-   * Concurrent first contacts for the SAME key converge on one record: the
-   * later commit observes the identical pin and keeps the first `firstSeen`.
-   * A first contact that finds a DIFFERENT key installed fails the commit.
-   *
-   * A matching decision gets a commit too -- one that validates and writes
-   * nothing -- so even "the key we already trust" fails to publish over a pin
-   * that changed since the decision was taken.
-   *
-   * Throws KeyPinRejectedError when the user rejects the new key.
+   * Resolve a candidate key against durable trust. The caller commits only
+   * after proving the session. The commit revalidates the observed pin and
+   * removal revision in one transaction, including when the bytes match.
    */
-  async resolve(workerId: string, keyBundle: KeyPinKeyBundle): Promise<() => Promise<void>> {
+  async resolve(
+    workerId: string,
+    keyBundle: KeyPinKeyBundle,
+    { accountId = storageAccountId(), signal, identitySignal, review, assertCurrent }: KeyPinResolveOpts = {},
+  ): Promise<ResolvedKeyPin> {
+    const registration = this.confirmation
+    const storageScope = signal === undefined
+      ? { accountId }
+      : { accountId, signal }
+    assertCurrent?.()
     const compositeKeyBytes = concatBytes(keyBundle.x25519PublicKey, keyBundle.mlkemPublicKey, keyBundle.slhdsaPublicKey)
     const publicKeyHex = bytesToHex(compositeKeyBytes)
-    const { pin: pinned, removalRevision } = await readWorkerKeyPin(workerId)
+    const { pin, removalRevision } = await readWorkerKeyPin(workerId, storageScope)
+    assertCurrent?.()
 
-    const commit = async () => {
-      await updateKeyPinState({
-        kind: 'record',
-        workerId,
-        pin: { publicKeyHex, firstSeen: Date.now() },
-        expectRevision: removalRevision,
-        expectPin: pinned,
-      } satisfies KeyPinStateChange)
+    const result = {
+      publicKeyHex,
+      commit: async () => {
+        assertCurrent?.()
+        const change: KeyPinStateChange = pin?.publicKeyHex === publicKeyHex
+          ? {
+              kind: 'revalidate',
+              workerId,
+              expectRevision: removalRevision,
+              expectPin: pin,
+            }
+          : {
+              kind: 'record',
+              workerId,
+              pin: {
+                publicKeyHex,
+                firstSeen: Date.now(),
+              },
+              expectRevision: removalRevision,
+              expectPin: pin,
+            }
+        await updateKeyPinState(change, storageScope)
+      },
     }
 
-    if (!pinned) {
-      // First use: trust and record it.
-      return commit
+    if (pin === null) {
+      if (review)
+        throw new Error('The Worker has no stored key to review.')
+      return result
     }
 
-    if (pinned.publicKeyHex === publicKeyHex) {
-      // The key we already trust. Nothing to write -- but the commit still
-      // validates, so a pin removed or replaced since this decision cannot be
-      // published over by a channel that merely proved itself.
-      return async () => {
-        await updateKeyPinState({
-          kind: 'revalidate',
-          workerId,
-          expectRevision: removalRevision,
-          expectPin: { publicKeyHex: pinned.publicKeyHex, firstSeen: pinned.firstSeen },
-        } satisfies KeyPinStateChange)
+    if (pin.publicKeyHex === publicKeyHex)
+      return result
+
+    const promptSignal = signal === undefined
+      ? registration.lifetime.signal
+      : AbortSignal.any([signal, registration.lifetime.signal])
+    promptSignal.throwIfAborted()
+    let refused = identitySignal === undefined
+      ? registration.rejectedWorkersByAccount.get(accountId)
+      : registration.rejectedWorkers.get(identitySignal)
+    if (refused === undefined) {
+      refused = new Set<string>()
+      if (identitySignal === undefined)
+        registration.rejectedWorkersByAccount.set(accountId, refused)
+      else
+        registration.rejectedWorkers.set(identitySignal, refused)
+    }
+    const rejectedWorkers = refused
+    if (!review && rejectedWorkers.has(workerId))
+      throw new KeyPinRejectedError()
+
+    const { keyFingerprintHex } = await waitForConfirmation(import('./fingerprint'), promptSignal)
+    await this.enqueueConfirm(promptSignal, async () => {
+      assertCurrent?.()
+      if (!review && rejectedWorkers.has(workerId))
+        throw new KeyPinRejectedError()
+      const decision = await waitForConfirmation(
+        registration.confirm(workerId, keyFingerprintHex(pin.publicKeyHex), keyFingerprintHex(publicKeyHex), promptSignal),
+        promptSignal,
+      )
+      promptSignal.throwIfAborted()
+      assertCurrent?.()
+      if (decision === 'reject') {
+        rejectedWorkers.add(workerId)
+        throw new KeyPinRejectedError()
       }
-    }
-
-    // Auto-reject if the user already rejected this worker in this session.
-    if (this.rejectedWorkers.has(workerId)) {
-      throw new KeyPinRejectedError()
-    }
-
-    // Key mismatch — ask user. Serialize prompts so concurrent mismatches
-    // cannot overwrite each other's dialog Promise (FOOTGUNS-5).
-    const { keyFingerprintHex } = await import('./fingerprint')
-    const epoch = this.confirmEpoch
-    const decision = await this.enqueueConfirm(() => this.confirmKeyPin(
-      workerId,
-      keyFingerprintHex(pinned.publicKeyHex),
-      keyFingerprintHex(publicKeyHex),
-    ))
-    if (decision === 'reject') {
-      // Only remember rejects that still belong to the current prompt wiring.
-      if (epoch === this.confirmEpoch)
-        this.rejectedWorkers.add(workerId)
-      throw new KeyPinRejectedError()
-    }
-    // User accepted the new key.
-    return commit
+    })
+    promptSignal.throwIfAborted()
+    assertCurrent?.()
+    return result
   }
 
-  private enqueueConfirm(fn: () => Promise<KeyPinDecision>): Promise<KeyPinDecision> {
-    const run = this.confirmChain.then(fn, fn)
+  private enqueueConfirm(signal: AbortSignal, confirm: () => Promise<void>): Promise<void> {
+    const run = this.confirmChain.then(() => {
+      signal.throwIfAborted()
+      return confirm()
+    })
     this.confirmChain = run.then(() => undefined, () => undefined)
-    return run
+    // Settle this caller even while an earlier prompt still owns the queue.
+    return waitForConfirmation(run, signal)
   }
 }

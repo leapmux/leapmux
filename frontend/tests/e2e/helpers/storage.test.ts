@@ -1,7 +1,9 @@
 import type { Page } from '@playwright/test'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { countRows, deleteEntries, storageKeys, waitForStoredEntry, writeEntry } from './storage'
+import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, resetBrowserStorageForTests } from '~/lib/browserStorage'
+import { testKeyPinHex } from '~/test-support/keyPins'
+import { countRows, databaseStores, deleteEntries, readEntry, storageKeys, waitForStoredEntry, writeEntry } from './storage'
 
 // Run the real poll with a short unit-test deadline.
 vi.mock('@playwright/test', async (importOriginal) => {
@@ -24,6 +26,7 @@ beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory())
 })
 afterEach(() => {
+  resetBrowserStorageForTests()
   vi.unstubAllGlobals()
 })
 
@@ -53,6 +56,49 @@ function createDatabase(name: string, store: string, rows: number): Promise<void
 async function databaseNames(): Promise<string[]> {
   return (await indexedDB.databases()).map(database => database.name ?? '').sort()
 }
+
+describe('pin storage fixture', () => {
+  const accountId = 'user-1'
+  const key = accountStorageKey(accountId, KEY_KEY_PINS)
+
+  it('reads confirmed absence without leaving a database that blocks the first pin open', async () => {
+    await expect(readEntry(page, key)).resolves.toBeNull()
+    await expect(readKeyPinState({ accountId })).resolves.toEqual({ pins: {}, removalRevision: 0 })
+  })
+
+  it('lists no keys without leaving a database that blocks the first pin open', async () => {
+    await expect(storageKeys(page)).resolves.toEqual([])
+    await expect(readKeyPinState({ accountId })).resolves.toEqual({ pins: {}, removalRevision: 0 })
+  })
+
+  it('inspects an absent database without creating it or relying on a later delete', async () => {
+    const deleteDatabase = vi.spyOn(indexedDB, 'deleteDatabase')
+    try {
+      await expect(databaseStores(page, 'leapmux-kv')).resolves.toBeNull()
+      expect(deleteDatabase).not.toHaveBeenCalled()
+    }
+    finally {
+      deleteDatabase.mockRestore()
+    }
+    await expect(readKeyPinState({ accountId })).resolves.toEqual({ pins: {}, removalRevision: 0 })
+  })
+
+  it('refuses cleanup of an absent database without blocking the first pin open', async () => {
+    await expect(deleteEntries(page, [key])).rejects.toThrow('the database leapmux-kv has no object store entries')
+    await expect(readKeyPinState({ accountId })).resolves.toEqual({ pins: {}, removalRevision: 0 })
+  })
+
+  it('seeds an unopened database with a record the strict pin gateway can read', async () => {
+    const pins = {
+      worker: {
+        publicKeyHex: testKeyPinHex('aa'),
+        firstSeen: 1,
+      },
+    }
+    await writeEntry(page, key, pins, NEVER)
+    await expect(readKeyPinState({ accountId })).resolves.toEqual({ pins, removalRevision: 0 })
+  })
+})
 
 describe('countRows', () => {
   it('counts the rows of an existing store', async () => {
@@ -139,8 +185,6 @@ describe('waitForStoredEntry', () => {
   })
 
   it('waits for a row that lands after the poll starts', async () => {
-    // The first write creates the store. A later write needs it, because a versionless reader creates no store.
-    await writeEntry(page, 'leapmux:device:theme', 'dark', NEVER)
     const waiting = waitForStoredEntry(page, prefix, hasHello, 'the late draft is stored')
     await writeEntry(page, `${prefix}agent-late`, { content: 'hello' }, NEVER)
     await expect(waiting).resolves.toBeUndefined()

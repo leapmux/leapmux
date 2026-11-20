@@ -10,6 +10,8 @@
 export interface InflightCache<K, V> {
   /** Returns the in-flight promise for `key`, invoking `factory` only if none exists. */
   run: (key: K, factory: () => Promise<V>) => Promise<V>
+  /** Get the current flight without starting one. */
+  get: (key: K) => Promise<V> | undefined
   /** Is there currently an in-flight operation for `key`? */
   has: (key: K) => boolean
   /** Drop every tracked entry. Does NOT cancel in-flight work; pending factories keep running. */
@@ -51,6 +53,9 @@ export function createInflightCache<K, V>(): InflightCache<K, V> {
         }
       })()
       return promise
+    },
+    get(key) {
+      return pending.get(key)
     },
     has(key) {
       return pending.has(key)

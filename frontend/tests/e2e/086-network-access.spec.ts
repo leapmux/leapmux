@@ -169,15 +169,16 @@ test.describe('Network access', () => {
   // Two -listen requests: the primary `127.0.0.1:0` and the empty-port spelling
   // `127.0.0.1:`, which net.Listen reads as port zero. The two resolve to
   // distinct ports, so the state file carries two TCP addresses and the panel
-  // shows a fold for the secondary one.
+  // previews the merge for the secondary address.
   test.describe('with a secondary -listen bind', () => {
     test.use({ soloExtraListen: '127.0.0.1:' })
 
-    test('states the secondary fold and keeps the local URL visible after Apply', async ({ page, soloServer: solo }) => {
+    test('merges the secondary listener into a wildcard and keeps the local URL visible', async ({ page, soloServer: solo }) => {
       expect(solo.tcp.length, 'the startup state file carries two TCP addresses').toBe(2)
       const secondaryTcp = solo.tcp[1]!
       const secondaryPort = secondaryTcp.slice(secondaryTcp.lastIndexOf(':') + 1)
       expect(secondaryPort, 'the secondary bind resolved to a port').toMatch(/^\d+$/)
+      const wildcardTcp = `*:${secondaryPort}`
       const localUrl = solo.local[0]
       expect(localUrl, 'the startup state file carries a local IPC endpoint').toBeTruthy()
 
@@ -188,26 +189,26 @@ test.describe('Network access', () => {
       await expect(row).toBeVisible()
 
       // Both base addresses are listed read-only.
-      await expect(row.getByText(solo.tcp[0]!)).toBeVisible()
-      await expect(row.getByText(secondaryTcp)).toBeVisible()
+      await expect(row.getByText(solo.tcp[0]!, { exact: true })).toBeVisible()
+      await expect(row.getByText(secondaryTcp, { exact: true })).toBeVisible()
 
-      // The Local access section names the local endpoint the startup opened.
-      await expect(dialog.getByText('Local access')).toBeVisible()
-      await expect(dialog.getByText(localUrl!)).toBeVisible()
-
-      // Add a wildcard row on the secondary port. The browser's merge rule
-      // folds the secondary base into it and states that fold beside the rows.
       await row.getByRole('button', { name: '+ Add address' }).click()
       await row.getByLabel('Port').fill(secondaryPort)
-      await expect(row.getByText(`${secondaryTcp} merges into *:${secondaryPort}.`)).toBeVisible()
+      await expect(row.getByText(`${secondaryTcp} merges into ${wildcardTcp}.`)).toBeVisible()
+
+      await expect(row.getByText('Local access')).toBeVisible()
+      await expect(row.getByText(localUrl!, { exact: true })).toBeVisible()
 
       await row.getByRole('button', { name: 'Apply' }).click()
       await expect(row.getByText('Network access updated.')).toBeVisible()
 
-      // The local URL stays visible after Apply: local endpoints bind on their
-      // own path and take no part in the TCP merge the editor performs.
-      await expect(dialog.getByText('Local access')).toBeVisible()
-      await expect(dialog.getByText(localUrl!)).toBeVisible()
+      const wildcardListener = row.getByRole('listitem').filter({
+        has: page.getByText(wildcardTcp, { exact: true }),
+      })
+      await expect(wildcardListener.getByText('from -listen, merged', { exact: true })).toBeVisible()
+      await expect(row.getByText(secondaryTcp, { exact: true })).toHaveCount(0)
+      expect(await accepts(Number(secondaryPort))).toBe(true)
+      await expect(row.getByText(localUrl!, { exact: true })).toBeVisible()
     })
   })
 })

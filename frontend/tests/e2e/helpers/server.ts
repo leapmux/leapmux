@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process'
 import type { AddressInfo } from 'node:net'
 import type { E2EGlobalState } from '../global-setup'
 import { readFileSync } from 'node:fs'
-import { createServer } from 'node:net'
+import { createServer, isIPv6 } from 'node:net'
 import { join } from 'node:path'
 import process from 'node:process'
 import { E2E_BROWSER_HOST, fetchHub } from './hubTransport'
@@ -159,7 +159,10 @@ export function resolvedHubListenAddresses(raw: string): ResolvedListenAddresses
   const tcp: string[] = []
   const local: string[] = []
   for (const entry of listen) {
-    if (entry.startsWith('unix:') || entry.startsWith('npipe:')) {
+    const localPrefix = /^(?:unix|npipe):/.exec(entry)?.[0]
+    if (localPrefix !== undefined) {
+      if (entry.length === localPrefix.length)
+        throw new Error(`local IPC address ${entry} has no target`)
       local.push(entry)
       continue
     }
@@ -167,7 +170,14 @@ export function resolvedHubListenAddresses(raw: string): ResolvedListenAddresses
     const portText = entry.slice(separator + 1)
     const port = Number(portText)
     if (separator < 0 || !/^\d+$/.test(portText) || !Number.isInteger(port) || port < 1 || port > 65535)
-      throw new Error(`the TCP address ${entry} names no usable port`)
+      throw new Error(`the TCP address ${entry} has no usable port`)
+    const host = entry.slice(0, separator)
+    const bracketedIPv6 = /^\[([^%[\]]+)(?:%[^[\]]+)?\]$/.exec(host)?.[1]
+    const validHost = bracketedIPv6 === undefined
+      ? !/[:[\]\s]/.test(host)
+      : isIPv6(bracketedIPv6)
+    if (!validHost)
+      throw new Error(`invalid TCP address ${entry} in the hub state file`)
     tcp.push(entry)
   }
   return { tcp, local }

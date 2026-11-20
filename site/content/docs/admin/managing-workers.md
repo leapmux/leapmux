@@ -279,12 +279,12 @@ In both cases you can override `bindAddr`/`bindPort` if the default port is take
 
 ### Tunnel key trust
 
-A tunnel keeps no pin of its own. Each one names the user it belongs to and the exact Worker key set it admits, and that key set is the pin your browser holds for the Worker — the same record a channel uses, listed under **Preferences → Advanced → Trusted worker keys**. The trust story has four stages.
+A tunnel uses the account’s browser pin for the Worker. Browser channels use the same record, listed under **Preferences → Advanced → Trusted worker keys**.
 
-- **First contact.** The first channel to a Worker records its composite public key once the session proves. A tunnel created afterwards carries that key. With no trusted key yet, the **Add tunnel** dialog asks you to verify the Worker key first, which opens that first channel.
-- **Shared trust.** One record governs tunnels and browser channels, so a key you accepted for a channel is the key a tunnel admits. Removing the pin stops the next create until you verify again.
-- **Mismatch on reconnect.** When the keys the Hub announces differ from the expectation, the tunnel stops. Its row keeps its place and states the reason and both fingerprints.
-- **Exact-key confirmation before recreation.** A recreation admits the key the pin holds at that moment. Confirm a change first: **Verify Worker key** on the stopped row, or in the **Add tunnel** dialog, opens the browser channel and its *Worker public key changed* dialog, where you accept or reject the two fingerprints. Only an accepted key becomes the expectation.
+- **First contact.** If the account has no pin, **Create** opens a browser channel using the key the Hub presents. The browser verifies that the peer holds the corresponding private keys and that the session responds before recording the composite public key. This first verified session establishes which key the account trusts. Compare the fingerprint with the Worker log over a trusted channel on first use if you can.
+- **Shared trust.** Each new tunnel uses the stored browser pin. If you removed the pin, the next standard creation must verify a new browser session. An existing tunnel keeps the key it started with.
+- **Mismatch on reconnect.** When the Hub reports a key that differs from the one the tunnel started with, the tunnel stops. Its row shows the expected and presented fingerprints.
+- **Exact-key confirmation before recreation.** Select **Verify Worker key** on the stopped row or in the **Add tunnel** dialog. When the browser shows *Worker public key changed*, compare the presented fingerprint with the one in the Worker log before accepting. The stopped row opens a prefilled form after verification. Select **Create** to submit it. If the pin changes or disappears before creation, verify the key again.
 
 {{< callout type="warning" >}}
 Every key mismatch is a serious signal. Do not accept a changed key to make it work. Reject it, and confirm the fingerprint with whoever runs the Worker. See [Security & Threat Model](/docs/admin/security/#tunnel-key-trust) for the reasoning.
@@ -292,7 +292,7 @@ Every key mismatch is a serious signal. Do not accept a changed key to make it w
 
 ## TOFU key pinning
 
-LeapMux end-to-end encrypts Frontend↔Worker traffic. A Hub that only relays it cannot read the content. The Hub is still trusted for identity and Frontend code. **TOFU (trust on first use) static-key pinning** detects a Hub substituting a Worker key in a channel your browser opens. Pinning does not stop a Hub opening its own channel or serving modified Frontend code.
+LeapMux end-to-end encrypts Frontend↔Worker traffic. A Hub that only relays it cannot read the content. The Hub is still trusted for identity and Frontend code. **TOFU (trust on first use) static-key pinning** detects a Hub substituting a different Worker key after the browser records a pin. Pinning does not stop a Hub opening its own channel or serving modified Frontend code.
 
 [Security & Threat Model](/docs/admin/security/) covers that protection's scope, the composite keypair, and the fingerprint scheme. This section explains the three pin stores and how to reset a pin in each.
 

@@ -147,6 +147,7 @@ export const AppShell: Component = () => {
   const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
   const workerSection = useWorkerSection({
     getUserId: () => userId(),
+    workerTrustScope: auth.workerTrustScope,
     keyPinConfirmDialog,
   })
 
@@ -324,7 +325,7 @@ export const AppShell: Component = () => {
   // session with this page's UI. Read lazily: it must reflect the CURRENT user, not
   // whoever was signed in when the shell mounted — which is the whole divergence
   // this catches.
-  setExpectedUserId(() => auth.user()?.id)
+  onCleanup(setExpectedUserId(auth.workerTrustScope))
 
   // Every untrusted anchor the app renders, wherever it lands. `document.body`
   // rather than a chat container, because a dialog and a tooltip portal out of

@@ -3528,6 +3528,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     browserAuthResult: 'b:r',
     menuShowAbout: 'm:a',
     menuShowPreferences: 'm:p',
+    tunnelsChanged: 't:c',
   })
 
   const ipcHeaders = () => ({
@@ -3941,6 +3942,12 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expect(d.devFrontendUrl).toBe('http://localhost:4328')
     expect(emitGoDesktop(d)).toContain('DevFrontendURL = "http://localhost:4328"')
     expect(emitRsDesktop(d)).toContain('pub const DEV_FRONTEND_URL: &str = "http://localhost:4328";')
+  })
+
+  it('emits the tunnel change event to Rust and TypeScript', () => {
+    const d = readContract('desktop')
+    expect(emitTsDesktop(d)).toContain('export const EVENT_TUNNELS_CHANGED = "tunnel:changed" as const')
+    expect(emitRsDesktop(d)).toContain('pub const EVENT_TUNNELS_CHANGED: &str = "tunnel:changed"')
   })
 
   it('emits the window-behaviour tokens to all three languages from one contract value', () => {

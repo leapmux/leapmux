@@ -2,6 +2,15 @@ import type { WorkerPublicKeys } from '~/generated/proto/leapmux/v1/channel_pb'
 import { MLKEM_PUBLIC_KEY_SIZE, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import { ChannelError } from './channelError'
 
+const COMPOSITE_WORKER_KEY_HEX_LENGTH = 2 * (X25519_PUBLIC_KEY_SIZE + MLKEM_PUBLIC_KEY_SIZE + SLHDSA_PUBLIC_KEY_SIZE)
+
+/** Whether the pin contains the canonical hex encoding of all three public keys. */
+export function isCompositeWorkerKeyHex(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length === COMPOSITE_WORKER_KEY_HEX_LENGTH
+    && !/[^0-9a-f]/.test(value)
+}
+
 /**
  * Worker Noise public-key material shared by transport open, TOFU pin resolve,
  * and ChannelSession handshake. One type so the three seams cannot drift.

@@ -7,11 +7,11 @@
  * Extracted from ChannelManager so inbound dispatch and open/verify ordering
  * can evolve independently. See https://github.com/leapmux/leapmux/issues/292.
  */
-import type { ChannelPool } from './channelPool'
+import type { ChannelOpenMode, ChannelOpenScope, ChannelPool, PooledChannel } from './channelPool'
 import type { ChannelRelay } from './channelRelay'
 import type { RpcChannel } from './channelRpc'
 import type { FinishHandshakeParams, SessionHandshake } from './channelSessionClient'
-import type { KeyPinStore } from './keyPinStore'
+import type { KeyPinStore, ResolvedKeyPin } from './keyPinStore'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contracts/wire'
@@ -47,16 +47,10 @@ export interface ChannelOpenSession {
  * holds through `'verified'` until `'closed'`: the RPC slice, its lifecycle,
  * and what the open negotiated. The Noise session lives in the session worker.
  */
-export interface OpeningChannel extends RpcChannel {
-  /**
-   * The identity the Hub authenticated this channel's open as. Recorded because
-   * channels are POOLED across in-band rekeys: the open-time cross-check only
-   * proves who the page was when the channel was created, so getOrOpenChannel
-   * re-compares this before handing a pooled channel out (see its identity check).
-   * Age rotation uses rekey; past SESSION_KEY_HARD_CEILING_MS the pool closes and
-   * re-handshakes instead of serving under the over-age key.
-   */
-  userId: string
+export interface OpeningChannel extends RpcChannel, PooledChannel {
+  publicKeyHex: string
+  retirement: AbortController
+  closeOnHub: () => Promise<void>
   /**
    * Negotiated application payload budget from OpenChannelResponse.max_message_size.
    * Clients never configure this; open refuses a missing/out-of-bounds value
@@ -65,21 +59,6 @@ export interface OpeningChannel extends RpcChannel {
   maxMessageSize: number
   /** The send ceiling of the channel: maxReassembledMessageSize(maxMessageSize), or the test-only testReassembledCeiling. */
   maxReassembledMessageSize: number
-  /**
-   * Lifecycle state, gating pool handout -- a single field rather than separate
-   * `verified`/`closed` booleans, whose fourth combination (verified AND closed)
-   * no gate ever distinguished:
-   *   - 'opening': present in the pool so the open-time Ping's reply can route
-   *     (handleMessage looks the channel up by id), but NOT open for business.
-   *     hasOpenChannel and getOrOpenChannel skip it, so a racing caller waits on
-   *     the open (openingChannels dedups it onto the same one) instead of being
-   *     handed a session that may yet prove dead.
-   *   - 'verified': the Ping round-tripped, so the channel may be served.
-   *   - 'closed': torn down. Every path that sets this also deletes the channel
-   *     from the pool, so a channel is only ever observed 'closed' transiently
-   *     by a caller mid-teardown.
-   */
-  state: 'opening' | 'verified' | 'closed'
 }
 
 export interface ChannelOpenDeps<T extends OpeningChannel> {
@@ -88,11 +67,10 @@ export interface ChannelOpenDeps<T extends OpeningChannel> {
   session: ChannelOpenSession
   relay: Pick<ChannelRelay, 'ensureWebSocket'>
   pool: ChannelPool<T>
-  expectedUserId: () => string | undefined
   testPayloadBudget?: number
   testReassembledCeiling?: number
   verifySession: (channel: T) => Promise<void>
-  evictGhost: (channelId: string, reason: ChannelError) => void
+  evictGhost: (channel: T, reason: ChannelError) => void
   notifyStateChange: () => void
 }
 
@@ -103,23 +81,34 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
    * Open path without pool reuse / single-flight — only called as the factory
    * inside ChannelPool.getOrOpenChannel / dedupeOpen (which already own the lock).
    */
-  async openUncached(workerId: string): Promise<string> {
-    // Captured before the first await; see closeGeneration.
-    const openedGeneration = this.deps.pool.closeGeneration
+  async openUncached(workerId: string, scope: ChannelOpenScope, mode: ChannelOpenMode): Promise<string> {
+    scope.assertCurrent()
+    const retirement = new AbortController()
+    const signal = AbortSignal.any([scope.signal, retirement.signal])
     // Load the session worker while the Hub round trips below run.
     this.deps.session.prepare()
     // 1. Get Worker's handshake params (keys + live encryption mode) in one RPC.
-    const { keys: keyBundle, encryptionMode: mode } = await this.deps.transport.getWorkerHandshakeParams(workerId)
+    const { keys: keyBundle, encryptionMode } = await this.deps.transport.getWorkerHandshakeParams(workerId)
+    scope.assertCurrent()
 
     // 2. Key pinning (TOFU model) — resolve the pin now, record it once the channel
-    //    is proven (see commitPin below).
-    let commitPin: () => Promise<void>
+    //    is proven.
+    let pin: ResolvedKeyPin
     try {
-      commitPin = await this.deps.keyPins.resolve(workerId, keyBundle)
+      pin = await this.deps.keyPins.resolve(workerId, keyBundle, {
+        accountId: scope.accountId,
+        signal,
+        ...(scope.identity === undefined
+          ? {}
+          : { identitySignal: scope.identity.signal }),
+        review: mode === 'review',
+        assertCurrent: scope.assertCurrent,
+      })
     }
     catch (err) {
-      if (err instanceof KeyPinRejectedError)
-        throw new ChannelError('client', err.message)
+      signal.throwIfAborted()
+      if (mode === 'review' && err instanceof KeyPinRejectedError)
+        throw err
       throw err instanceof ChannelError
         ? err
         : new ChannelError('client', err instanceof Error
@@ -132,7 +121,8 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
     //    the Hub has registered the channel, so a malformed or forged handshake-2
     //    — wrong length, bad AEAD tag, invalid SLH-DSA signature — must roll that
     //    registration back like every later failure.
-    const handshake = await this.deps.session.beginHandshake(workerId, mode, keyBundle)
+    scope.assertCurrent()
+    const handshake = await this.deps.session.beginHandshake(workerId, encryptionMode, keyBundle)
     // Every exit from here either hands the handshake to finishHandshake, which
     // spends it, or abandons it, so that its state never outlives the open.
     let handshakeHeld = true
@@ -143,6 +133,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       this.deps.session.abandonHandshake(handshake)
     }
     try {
+      scope.assertCurrent()
       const result = await this.deps.transport.openChannel(workerId, handshake.message1)
 
       // From here on the Hub has REGISTERED a channel and the Worker holds a live Noise
@@ -153,22 +144,19 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       // process restarts. The Go client of this protocol rolls back at exactly this
       // boundary (backend/tunnel/channel.go's `rollback` flag +
       // rollbackRegisteredChannel).
-      let registered = true
-      const rollback = async () => {
-        if (!registered)
-          return
-        registered = false
-        try {
-          await this.deps.transport.closeChannel(result.channelId)
-        }
-        catch {
-          // Best effort: the open is already failing and the Hub expires channels with
-          // the credential that opened them, so a failed rollback must not mask the
-          // real error.
-        }
+      let closing: Promise<void> | undefined
+      const closeOnHub = () => {
+        closing ??= Promise.resolve()
+          .then(() => this.deps.transport.closeChannel(result.channelId))
+          .catch(() => {
+            // The Hub also expires channels with the credential that opened them.
+          })
+        return closing
       }
 
+      let channel: T | undefined
       try {
+        scope.assertCurrent()
         // Adopt negotiated limits before handshake-2 crypto, matching the Go
         // tunnel client (backend/tunnel/channel.go validates max_message_size
         // before HandshakeState.Finish). Missing/out-of-bounds fails closed without
@@ -190,7 +178,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         // rendered as A whose cookie jar is now B opens a channel the Hub
         // authenticates as B and silently drives B's session with A's UI. The Hub
         // still wins; the open just fails instead of proceeding on a disagreement.
-        const expectedUserId = this.deps.expectedUserId()
+        const expectedUserId = scope.identity?.userId ?? undefined
         if (this.deps.pool.identityMismatch(expectedUserId, result.userId)) {
           throw new ChannelError(
             'transport',
@@ -213,21 +201,19 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
           maxReassembledMessageSize: limits.reassembled,
         })
 
-        // 4. Ensure shared WebSocket is connected.
+        // 4. Ensure the shared WebSocket is connected.
+        scope.assertCurrent()
         await this.deps.relay.ensureWebSocket()
+        scope.assertCurrent()
 
-        // A closeAll that ran while this open was parked on an await has already
-        // snapshotted the pool; registering now would slip past it (see
-        // closeGeneration). Thrown inside the try so the catch below rolls the
-        // Hub-registered channel back.
-        if (this.deps.pool.closeGeneration !== openedGeneration) {
-          throw new ChannelError('transport', 'open channel: superseded by a concurrent closeAll')
-        }
-
-        const channel = ({
+        channel = ({
           channelId: result.channelId,
           workerId,
           userId: result.userId,
+          scope,
+          retirement,
+          closeOnHub,
+          publicKeyHex: pin.publicKeyHex,
           maxMessageSize: limits.payload,
           maxReassembledMessageSize: limits.reassembled,
           pendingRequests: new Map(),
@@ -238,38 +224,38 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
 
         this.deps.pool.set(result.channelId, channel)
 
-        // 5. Prove the session decrypts both ways before publishing as verified.
-        await this.deps.verifySession(channel)
+        const opening = channel
+        const assertOpening = () => {
+          scope.assertCurrent()
+          signal.throwIfAborted()
+          if (opening.state !== 'opening' || this.deps.pool.get(opening.channelId) !== opening)
+            throw new ChannelError('transport', 'open channel: opening record retired')
+        }
 
-        // Pin only after the session is proven — never pin an unproven key. The
-        // commit is awaited and can fail (a pin decision overtaken by a removal
-        // or a replacement, or a refused write); the catch below then rolls the
-        // channel back rather than handing out a channel whose pin never landed.
-        await commitPin()
+        // 5. Prove the session and commit its pin before offering it to callers.
+        await this.deps.verifySession(opening)
+        assertOpening()
+        await pin.commit()
+        assertOpening()
+        opening.state = 'verified'
       }
       catch (err) {
         abandonHandshake()
-        // A failure AFTER verifySession marked the channel verified (say a future
-        // commitPin that can fail) would otherwise leave a verified ghost that
-        // getOrOpenChannel serves until its session ends while every RPC on it
-        // times out against the Hub registration the rollback below drops. evictGhost
-        // is a no-op when verifySession already removed the channel.
-        this.deps.evictGhost(
-          result.channelId,
-          err instanceof ChannelError
-            ? err
-            : new ChannelError('transport', `open channel: ${formatErrorMessage(err)}`),
-        )
-        // The session worker may hold the channel's session even though the pool
-        // never did: a failure after finishHandshake and before pool.set. A close
-        // of a session that does not exist does nothing.
-        this.deps.session.close(result.channelId)
-        await rollback()
+        if (channel === undefined) {
+          // Handshake completion can register a session before it enters the pool.
+          this.deps.session.close(result.channelId)
+        }
+        else if (this.deps.pool.get(result.channelId) === channel) {
+          this.deps.evictGhost(
+            channel,
+            err instanceof ChannelError
+              ? err
+              : new ChannelError('transport', `open channel: ${formatErrorMessage(err)}`),
+          )
+        }
+        await closeOnHub()
         throw err
       }
-
-      // The channel is the caller's now; closeChannel owns the Hub-side teardown.
-      registered = false
 
       this.deps.notifyStateChange()
       return result.channelId

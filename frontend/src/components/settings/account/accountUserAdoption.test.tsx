@@ -62,6 +62,7 @@ vi.mock('~/api/platformBridge', () => ({
   }),
   isTauriApp: () => false,
   platformBridge: {
+    setTunnelTrustScope: () => () => {},
     resetTunnels: vi.fn().mockResolvedValue(undefined),
   },
 }))

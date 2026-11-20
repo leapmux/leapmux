@@ -975,12 +975,10 @@ func (a *App) ListTunnels(expectedUserID string) (string, []TunnelInfo, error) {
 // the previous user's tunnels relaying (and their cached channels reusable)
 // under the old identity until the Hub revokes the session.
 //
-// channelEpoch is the epoch the caller's teardown retires (read from its tunnel
-// listing). A request naming an already-retired epoch is a replay and succeeds
-// without touching the successor state; see TunnelManager.ResetTunnels. The
-// reset is idempotent -- a no-op when there are no tunnels (e.g. solo mode,
-// where logout never happens) -- so this needs no connection guard beyond the
-// shutdown gate.
+// channelEpoch is the epoch the caller read from its tunnel listing. A replay
+// waits for that epoch's cleanup and leaves the successor unchanged. Reset
+// finishes the cleanup even if the caller has disconnected, so a replay can
+// recover from an uncertain acknowledgment.
 func (a *App) ResetTunnels(channelEpoch string) error {
 	done, err := a.beginOperation()
 	if err != nil {

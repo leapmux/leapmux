@@ -33,10 +33,25 @@ func WithLinkedCancel(parent, other context.Context) (context.Context, context.C
 	if other.Err() != nil {
 		cancel()
 	}
-	return ctx, func() {
+	return linkedCancelContext{Context: ctx, other: other, cancel: cancel}, func() {
 		stop()
 		cancel()
 	}
+}
+
+type linkedCancelContext struct {
+	context.Context
+	other  context.Context
+	cancel context.CancelFunc
+}
+
+// Err observes source cancellation even before AfterFunc delivers it. Calling
+// cancel synchronously closes Done before Err reports a cancellation.
+func (c linkedCancelContext) Err() error {
+	if c.other.Err() != nil {
+		c.cancel()
+	}
+	return c.Context.Err()
 }
 
 // Mutex is a mutual-exclusion lock whose acquire can be bounded by a context.

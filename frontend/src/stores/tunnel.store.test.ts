@@ -1,43 +1,25 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { CreateTunnelResult, ListTunnelsResult, TunnelConfig, TunnelInfo } from '~/api/platformBridge'
+import type { WorkerTrustScope } from '~/context/AuthContext'
+import { createEffect, createRoot } from 'solid-js'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { platformBridge } from '~/api/platformBridge'
+import { deferred, settle } from '~/test-support/async'
 import { createTunnelStore } from './tunnel.store'
 
-const mockTunnel1 = {
-  id: 't1',
+const config: TunnelConfig = {
   workerId: 'w1',
-  type: 'port_forward' as const,
+  type: 'port_forward',
   bindAddr: '127.0.0.1',
   bindPort: 3000,
   targetAddr: '127.0.0.1',
   targetPort: 3000,
 }
-const mockTunnel2 = {
-  id: 't2',
-  workerId: 'w2',
-  type: 'socks5' as const,
-  bindAddr: '127.0.0.1',
-  bindPort: 1080,
-  targetAddr: '',
-  targetPort: 0,
-}
 
-/** The three admission fields every create carries; see TunnelConfig. */
-const admission = {
-  expectedWorkerKeysHex: 'aa',
-  expectedUserId: 'user-1',
-  channelEpoch: 'epoch-1',
-} as const
-
-function tunnelConfig(overrides?: Partial<import('~/api/platformBridge').TunnelConfig>) {
-  return {
-    workerId: 'w1',
-    type: 'port_forward' as const,
-    targetAddr: '127.0.0.1',
-    targetPort: 3000,
-    bindAddr: '127.0.0.1',
-    bindPort: 3000,
-    ...admission,
-    ...overrides,
-  }
+const active: TunnelInfo = { ...config, id: 'active' }
+const stopped: TunnelInfo = {
+  ...config,
+  id: 'stopped',
+  keyMismatch: { expectedFingerprint: 'expected', presentedFingerprint: 'presented' },
 }
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
@@ -49,137 +31,188 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
       ...actual.platformBridge,
       createTunnel: vi.fn(),
       deleteTunnel: vi.fn(),
+      deleteTunnels: vi.fn(),
       listTunnels: vi.fn(),
     },
   }
 })
 
-describe('tunnel store', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
+function listing(...tunnels: TunnelInfo[]): ListTunnelsResult {
+  return { tunnels, channelEpoch: 'epoch' }
+}
+
+describe('createTunnelStore', () => {
+  let scope: WorkerTrustScope
+  let controller: AbortController
+  let store: ReturnType<typeof createTunnelStore>
+
+  function adopt(userId = 'user'): WorkerTrustScope {
+    controller.abort()
+    controller = new AbortController()
+    scope = { userId, generation: scope.generation + 1, signal: controller.signal }
+    return scope
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+    controller = new AbortController()
+    scope = { userId: 'user', generation: 1, signal: controller.signal }
+    store = createTunnelStore(() => scope)
   })
 
-  it('filters correctly in tunnelsForWorker', async () => {
-    const { platformBridge } = await import('~/api/platformBridge')
-    const store = createTunnelStore()
+  it('takes the created rows from the scoped native snapshot', async () => {
+    const normalized = { ...active, bindPort: 3500 }
+    vi.mocked(platformBridge.createTunnel).mockResolvedValue({ kind: 'created', info: active })
+    vi.mocked(platformBridge.listTunnels).mockResolvedValue(listing(normalized))
 
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel1 })
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel2 })
-
-    await store.add(tunnelConfig())
-    await store.add(tunnelConfig({
-      workerId: 'w2',
-      type: 'socks5',
-      targetAddr: '',
-      targetPort: 0,
-      bindPort: 1080,
-    }))
-
-    expect(store.tunnelsForWorker('w1')).toEqual([mockTunnel1])
-    expect(store.tunnelsForWorker('w2')).toEqual([mockTunnel2])
-    expect(store.tunnelsForWorker('w3')).toEqual([])
+    await expect(store.add(config, scope)).resolves.toEqual({ kind: 'created', info: active })
+    expect(platformBridge.listTunnels).toHaveBeenCalledExactlyOnceWith(scope)
+    expect(store.tunnelsForWorker('w1')).toEqual([normalized])
+    expect(store.tunnelsForWorker('missing')).toEqual([])
   })
 
-  it('add appends to tunnel list', async () => {
-    const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel1 })
+  it('returns a mismatch without synthesizing a stopped row', async () => {
+    const result = {
+      kind: 'workerKeyMismatch',
+      keyMismatch: { expectedFingerprint: 'expected', presentedFingerprint: 'presented' },
+    } as const
+    vi.mocked(platformBridge.createTunnel).mockResolvedValue(result)
+    vi.mocked(platformBridge.listTunnels).mockResolvedValue(listing())
 
-    const store = createTunnelStore()
-    const result = await store.add(tunnelConfig())
-
-    expect(result).toEqual({ kind: 'created', info: mockTunnel1 })
-    expect(store.tunnels()).toEqual([mockTunnel1])
+    await expect(store.add(config, scope)).resolves.toEqual(result)
+    expect(store.tunnels()).toEqual([])
   })
 
-  // A mismatch refused the create: it is a result the caller acts on, not a
-  // row, so the list must stay empty and the fingerprints must survive.
-  it('add keeps the list empty and returns the mismatch', async () => {
-    const { platformBridge } = await import('~/api/platformBridge')
-    const mismatch = {
-      expectedFingerprint: 'deep-idea-obey-tack',
-      presentedFingerprint: 'calm-lion-fern-arch',
+  it('reconciles the native rows after one deletion fails', async () => {
+    vi.mocked(platformBridge.listTunnels)
+      .mockResolvedValueOnce(listing(active, stopped))
+      .mockResolvedValueOnce(listing(stopped))
+    vi.mocked(platformBridge.deleteTunnels).mockResolvedValueOnce([
+      { status: 'fulfilled', value: undefined },
+      {
+        status: 'rejected',
+        reason: new Error('delete failed'),
+      },
+    ])
+
+    await store.refresh(scope)
+    await expect(store.removeAllForWorker('w1', scope)).rejects.toThrow('One tunnel could not be deleted')
+    expect(platformBridge.deleteTunnels).toHaveBeenCalledExactlyOnceWith(['active', 'stopped'], scope)
+    expect(store.tunnels()).toEqual([stopped])
+  })
+
+  it('reconciles a single deletion and preserves the failure for the confirmation', async () => {
+    vi.mocked(platformBridge.listTunnels).mockResolvedValue(listing(stopped))
+    vi.mocked(platformBridge.deleteTunnel).mockRejectedValue(new Error('desktop reset blocked'))
+    await expect(store.remove('stopped', scope)).rejects.toThrow('desktop reset blocked')
+    expect(store.tunnels()).toEqual([stopped])
+  })
+
+  it('keeps current rows on refresh failure', async () => {
+    vi.mocked(platformBridge.listTunnels)
+      .mockResolvedValueOnce(listing(active))
+      .mockRejectedValueOnce(new Error('not connected'))
+
+    await store.refresh(scope)
+    await expect(store.refresh(scope)).rejects.toThrow('not connected')
+    expect(store.tunnels()).toEqual([active])
+  })
+
+  it('hides active and stopped rows immediately even if the successor list fails', async () => {
+    const successor = deferred<ListTunnelsResult>()
+    vi.mocked(platformBridge.listTunnels)
+      .mockResolvedValueOnce(listing(active, stopped))
+      .mockReturnValueOnce(successor.promise)
+    await store.refresh(scope)
+
+    const outgoing = scope
+    const refresh = store.refresh(adopt())
+    expect(store.tunnels()).toEqual([])
+    const failure = expect(refresh).rejects.toThrow('reset blocked')
+    successor.reject(new Error('reset blocked'))
+    await failure
+    await expect(store.removeAllForWorker('w1', outgoing)).rejects.toThrow('account changed')
+    expect(platformBridge.deleteTunnels).not.toHaveBeenCalled()
+    expect(store.tunnels()).toEqual([])
+  })
+
+  it('discards out-of-order list and create replies from a retired scope', async () => {
+    const oldList = deferred<ListTunnelsResult>()
+    const oldCreate = deferred<CreateTunnelResult>()
+    const oldCalled = deferred<void>()
+    const oldScope = scope
+    vi.mocked(platformBridge.listTunnels)
+      .mockImplementationOnce(() => {
+        oldCalled.resolve()
+        return oldList.promise
+      })
+      .mockResolvedValueOnce(listing(stopped))
+    vi.mocked(platformBridge.createTunnel).mockReturnValueOnce(oldCreate.promise)
+    const oldRead = expect(store.refresh(oldScope)).rejects.toThrow('account changed')
+    const oldWrite = expect(store.add(config, oldScope)).rejects.toThrow('account changed')
+    await oldCalled.promise
+
+    await store.refresh(adopt())
+    oldList.resolve(listing(active))
+    oldCreate.resolve({ kind: 'created', info: active })
+
+    await Promise.all([oldRead, oldWrite])
+    expect(store.tunnels()).toEqual([stopped])
+    expect(platformBridge.listTunnels).toHaveBeenCalledTimes(2)
+  })
+
+  it('starts a new read when an observer invalidates the just-published snapshot', async () => {
+    vi.mocked(platformBridge.listTunnels)
+      .mockResolvedValueOnce(listing(active))
+      .mockResolvedValueOnce(listing(stopped))
+    let invalidated: Promise<void> | undefined
+    const dispose = createRoot((dispose) => {
+      createEffect(() => {
+        if (store.tunnels().includes(active))
+          invalidated = store.refresh(scope, 'invalidate')
+      })
+      return dispose
+    })
+
+    try {
+      await store.refresh(scope)
+      expect(invalidated).toBeDefined()
+      await invalidated
+      expect(platformBridge.listTunnels).toHaveBeenCalledTimes(2)
+      expect(store.tunnels()).toEqual([stopped])
     }
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'workerKeyMismatch', keyMismatch: mismatch })
+    finally {
+      dispose()
+    }
+  })
 
-    const store = createTunnelStore()
-    const result = await store.add(tunnelConfig())
-
-    expect(result).toEqual({ kind: 'workerKeyMismatch', keyMismatch: mismatch })
+  it('coalesces refresh and retains a single trailing read after invalidation', async () => {
+    const first = deferred<ListTunnelsResult>()
+    const trailing = deferred<ListTunnelsResult>()
+    const firstCalled = deferred<void>()
+    const trailingCalled = deferred<void>()
+    vi.mocked(platformBridge.listTunnels)
+      .mockImplementationOnce(() => {
+        firstCalled.resolve()
+        return first.promise
+      })
+      .mockImplementationOnce(() => {
+        trailingCalled.resolve()
+        return trailing.promise
+      })
+    const initial = store.refresh(scope)
+    await firstCalled.promise
+    const plain = store.refresh(scope)
+    const hint = store.refresh(scope, 'invalidate')
+    const change = store.refresh(scope, 'invalidate')
+    first.resolve(listing(active))
+    await trailingCalled.promise
     expect(store.tunnels()).toEqual([])
-  })
 
-  it('remove filters from tunnel list', async () => {
-    const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel1 })
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel2 })
-    vi.mocked(platformBridge.deleteTunnel).mockResolvedValueOnce(undefined)
-
-    const store = createTunnelStore()
-    await store.add(tunnelConfig())
-    await store.add(tunnelConfig({
-      workerId: 'w2',
-      type: 'socks5',
-      targetAddr: '',
-      targetPort: 0,
-      bindPort: 1080,
-    }))
-
-    await store.remove('t1')
-    expect(store.tunnels()).toEqual([mockTunnel2])
-  })
-
-  it('add propagates API errors', async () => {
-    const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.createTunnel).mockRejectedValueOnce(new Error('bind failed'))
-
-    const store = createTunnelStore()
-    await expect(store.add(tunnelConfig()))
-      .rejects
-      .toThrow('bind failed')
-    expect(store.tunnels()).toEqual([])
-  })
-
-  it('remove propagates API errors', async () => {
-    const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.createTunnel).mockResolvedValueOnce({ kind: 'created', info: mockTunnel1 })
-    vi.mocked(platformBridge.deleteTunnel).mockRejectedValueOnce(new Error('not found'))
-
-    const store = createTunnelStore()
-    await store.add(tunnelConfig())
-
-    await expect(store.remove('t1')).rejects.toThrow('not found')
-    expect(store.tunnels()).toEqual([mockTunnel1])
-  })
-
-  it('refresh names the identity scope and records the channel epoch', async () => {
-    const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.listTunnels).mockResolvedValueOnce({
-      tunnels: [mockTunnel1],
-      channelEpoch: 'epoch-9',
-    })
-
-    const store = createTunnelStore()
-    expect(store.channelEpoch()).toBe('')
-    await store.refresh('user-1')
-
-    expect(platformBridge.listTunnels).toHaveBeenCalledWith('user-1')
-    expect(store.tunnels()).toEqual([mockTunnel1])
-    expect(store.channelEpoch()).toBe('epoch-9')
-  })
-
-  it('refresh propagates API errors and keeps the previous rows', async () => {
-    const { platformBridge } = await import('~/api/platformBridge')
-    vi.mocked(platformBridge.listTunnels).mockResolvedValueOnce({
-      tunnels: [mockTunnel1],
-      channelEpoch: 'epoch-9',
-    })
-    vi.mocked(platformBridge.listTunnels).mockRejectedValueOnce(new Error('not connected'))
-
-    const store = createTunnelStore()
-    await store.refresh('user-1')
-    await expect(store.refresh('user-1')).rejects.toThrow('not connected')
-
-    expect(store.tunnels()).toEqual([mockTunnel1])
-    expect(store.channelEpoch()).toBe('epoch-9')
+    trailing.resolve(listing(stopped))
+    await Promise.all([initial, plain, hint, change])
+    await settle()
+    expect(platformBridge.listTunnels).toHaveBeenCalledTimes(2)
+    expect(store.tunnels()).toEqual([stopped])
   })
 })

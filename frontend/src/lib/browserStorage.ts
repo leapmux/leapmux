@@ -90,6 +90,7 @@ import {
 } from './browserStorageDb'
 import { cancelIdle, requestIdle } from './idleCallback'
 import { createLogger } from './logger'
+import { isCompositeWorkerKeyHex } from './workerKeyBundle'
 
 const log = createLogger('browserStorage')
 
@@ -889,12 +890,12 @@ export function setStorageAccountForTests(hubUserId: string): void {
  * The one statement of the layout decision, so `storedKeyFor` and `resolveKey`
  * cannot answer it differently. They differ only in what they do with the null.
  */
-function composeKey(name: string, spec: KeySpec): string | null {
+function composeKey(name: string, spec: KeySpec, accountId = storageAccount): string | null {
   if (spec.scope === 'device')
     return deviceStorageKey(name)
-  return storageAccount === null
+  return accountId === null
     ? null
-    : accountStorageKey(storageAccount, name)
+    : accountStorageKey(accountId, name)
 }
 
 /**
@@ -928,14 +929,18 @@ export function storedKeyFor(name: string): string | null {
  * the first would write a key the sweep deletes on the next load, and the second
  * would write one account's value where no account can own it.
  */
-function resolveKey<S extends KeySpec>(name: string, index: SpecIndex<S>): { key: string, ttl: number, spec: S } {
+function resolveKey<S extends KeySpec>(
+  name: string,
+  index: SpecIndex<S>,
+  accountId = storageAccount,
+): { key: string, ttl: number, spec: S } {
   const spec = specFor(name, index)
   if (spec === null) {
     throw new Error(
       `Unknown ${index.store} key: "${name}". Register it in browserStorage.ts (${index.table}).`,
     )
   }
-  const key = composeKey(name, spec)
+  const key = composeKey(name, spec, accountId)
   if (key === null) {
     throw new Error(
       `No storage account is set for account-scoped key "${name}". Call setStorageAccount() `
@@ -1077,8 +1082,8 @@ export function isWrappedValue(raw: unknown): raw is { v: unknown, e: number } {
  * Returns true if the expiration was last refreshed more than 3 hours ago
  * (i.e. the remaining lifetime is shorter than TTL minus 3 hours).
  */
-export function shouldRefreshExpiration(e: number, ttlMs: number): boolean {
-  return e < Date.now() + ttlMs - REFRESH_THRESHOLD_MS
+export function shouldRefreshExpiration(e: number, ttlMs: number, now = Date.now()): boolean {
+  return e < now + ttlMs - REFRESH_THRESHOLD_MS
 }
 
 // ---------------------------------------------------------------------------
@@ -1649,6 +1654,11 @@ export interface KeyPinState {
   removalRevision: number
 }
 
+export interface KeyPinStorageScope {
+  accountId?: string | null
+  signal?: AbortSignal
+}
+
 /**
  * One pin-state mutation for `updateKeyPinState`.
  *
@@ -1660,56 +1670,59 @@ export interface KeyPinState {
  */
 export type KeyPinStateChange
   = | {
-      /**
-       * Record `pin` for `workerId`. A first contact passes `expectPin: null`
-       * and commits when the worker is still unpinned; if a concurrent first
-       * contact installed the SAME keys meanwhile, the commit keeps that
-       * record's `firstSeen` and changes nothing. A different key already
-       * installed fails the commit.
-       */
-      kind: 'record'
-      workerId: string
-      pin: WorkerKeyPinRecord
-      expectRevision: number
-      expectPin: WorkerKeyPinRecord | null
-    }
-    | {
-      /** Revalidate a decision whose key already matches; writes nothing. */
-      kind: 'revalidate'
-      workerId: string
-      expectRevision: number
-      expectPin: WorkerKeyPinRecord
-    }
-    | { kind: 'remove', workerId: string }
-    | { kind: 'removeAll' }
-
-/** The stored keys of the two pin rows under the current account. */
-function resolvePinKeys(): { pins: string, revision: string, pinsTtl: number } {
-  return {
-    pins: resolveKey(KEY_KEY_PINS, LOCAL_INDEX).key,
-    revision: resolveKey(KEY_KEY_PINS_REMOVAL_REVISION, LOCAL_INDEX).key,
-    pinsTtl: resolveKey(KEY_KEY_PINS, LOCAL_INDEX).ttl,
+    /**
+     * Record `pin` for `workerId`. A first contact passes `expectPin: null`
+     * and commits when the worker is still unpinned; if a concurrent first
+     * contact installed the SAME keys meanwhile, the commit keeps that
+     * record's `firstSeen` and changes nothing. A different key already
+     * installed fails the commit.
+     */
+    kind: 'record'
+    workerId: string
+    pin: WorkerKeyPinRecord
+    expectRevision: number
+    expectPin: WorkerKeyPinRecord | null
   }
+  | {
+    /** Revalidate a decision whose key already matches; writes nothing. */
+    kind: 'revalidate'
+    workerId: string
+    expectRevision: number
+    expectPin: WorkerKeyPinRecord
+  }
+  | { kind: 'remove', workerId: string }
+  | { kind: 'removeAll' }
+
+/** The stored keys of the two pin rows under the captured account. */
+function resolvePinKeys(accountId: string | null): { pins: string, revision: string, pinsTtl: number } {
+  const pins = resolveKey(KEY_KEY_PINS, LOCAL_INDEX, accountId)
+  return {
+    pins: pins.key,
+    revision: resolveKey(KEY_KEY_PINS_REMOVAL_REVISION, LOCAL_INDEX, accountId).key,
+    pinsTtl: pins.ttl,
+  }
+}
+
+function isPinObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object'
+    && value !== null
+    && Object.prototype.toString.call(value) === '[object Object]'
 }
 
 function isWorkerKeyPinRecord(value: unknown): value is WorkerKeyPinRecord {
-  if (typeof value !== 'object' || value === null || Array.isArray(value))
-    return false
-  const rec = value as Record<string, unknown>
-  return typeof rec.publicKeyHex === 'string'
-    && typeof rec.firstSeen === 'number'
-    && Number.isFinite(rec.firstSeen)
+  return isPinObject(value)
+    && Object.hasOwn(value, 'publicKeyHex')
+    && isCompositeWorkerKeyHex(value.publicKeyHex)
+    && Object.hasOwn(value, 'firstSeen')
+    && typeof value.firstSeen === 'number'
+    && Number.isInteger(value.firstSeen)
+    && Number.isFinite(new Date(value.firstSeen).getTime())
 }
 
-function parseKeyPinMap(raw: unknown): WorkerKeyPinMap {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    throw new Error('Stored key pin map is corrupt; it must be a map of worker id to pin records.')
-  }
-  for (const value of Object.values(raw)) {
-    if (!isWorkerKeyPinRecord(value))
-      throw new Error('Stored key pin map is corrupt; it must be a map of worker id to pin records.')
-  }
-  return raw as WorkerKeyPinMap
+function isValidPinMapRow(row: KvRow): row is KvRow & { v: WorkerKeyPinMap } {
+  return Number.isFinite(row.e)
+    && isPinObject(row.v)
+    && Object.values(row.v).every(isWorkerKeyPinRecord)
 }
 
 function parseRemovalRevision(raw: unknown): number {
@@ -1726,36 +1739,47 @@ function sameKeyPinRecord(a: WorkerKeyPinRecord, b: WorkerKeyPinRecord): boolean
 /**
  * Read both pin rows in the open transaction, applying the expiry policy.
  *
- * An expired map row is CONFIRMED ABSENCE, and the transaction deletes it --
- * `expiredPins` tells the caller to publish the hint that the pins went away.
+ * A valid, expired map row is confirmed absence. The transaction deletes it
+ * and sets `expiredPins` so the caller can publish the invalidation.
  * The revision row's expiration is deliberately not consulted (nonexpiring).
  */
 async function loadKeyPinState(
   tx: KvRowTransaction,
   keys: { pins: string, revision: string },
-  now: number,
-): Promise<{ state: KeyPinState, expiredPins: boolean, freshMapRow: KvRow | undefined }> {
+  signal?: AbortSignal,
+): Promise<{ state: KeyPinState, expiredPins: boolean, freshMapRow: KvRow | undefined, now: number }> {
   const [mapRow, revisionRow] = await Promise.all([
     tx.get(keys.pins),
     tx.get(keys.revision),
   ])
+  signal?.throwIfAborted()
+  const now = Date.now()
   let expiredPins = false
   let pins: WorkerKeyPinMap = {}
   let freshMapRow: KvRow | undefined
   if (mapRow !== undefined) {
+    if (!isValidPinMapRow(mapRow))
+      throw new Error('The stored key pin map is corrupt. It requires valid pin records and a finite expiration time.')
     if (mapRow.e <= now) {
       await tx.delete(keys.pins)
       expiredPins = true
     }
     else {
-      pins = parseKeyPinMap(mapRow.v)
+      pins = mapRow.v
       freshMapRow = mapRow
     }
   }
   // A missing revision row is confirmed zero; a present one is validated, and
   // its stored expiration means nothing (see the policy note above).
-  const removalRevision = revisionRow === undefined ? 0 : parseRemovalRevision(revisionRow.v)
-  return { state: { pins, removalRevision }, expiredPins, freshMapRow }
+  const removalRevision = revisionRow === undefined
+    ? 0
+    : parseRemovalRevision(revisionRow.v)
+  return {
+    state: { pins, removalRevision },
+    expiredPins,
+    freshMapRow,
+    now,
+  }
 }
 
 /**
@@ -1773,18 +1797,19 @@ async function loadKeyPinState(
  * read rather than quietly dropping the extension; the stored rows survive
  * untouched either way.
  */
-export async function readKeyPinState(): Promise<KeyPinState> {
-  const keys = resolvePinKeys()
-  const now = Date.now()
+export async function readKeyPinState({ accountId = storageAccount, signal }: KeyPinStorageScope = {}): Promise<KeyPinState> {
+  const keys = resolvePinKeys(accountId)
   const { state, hint } = await updateKvTransaction(async (tx) => {
-    const loaded = await loadKeyPinState(tx, keys, now)
-    if (loaded.freshMapRow !== undefined && shouldRefreshExpiration(loaded.freshMapRow.e, keys.pinsTtl))
-      await tx.put({ ...loaded.freshMapRow, e: now + keys.pinsTtl })
+    const loaded = await loadKeyPinState(tx, keys, signal)
+    if (loaded.freshMapRow !== undefined && shouldRefreshExpiration(loaded.freshMapRow.e, keys.pinsTtl, loaded.now))
+      await tx.put({ ...loaded.freshMapRow, e: loaded.now + keys.pinsTtl })
     return {
       state: loaded.state,
-      hint: loaded.expiredPins ? { k: keys.pins, invalidate: true as const } : undefined,
+      hint: loaded.expiredPins
+        ? { k: keys.pins, invalidate: true as const }
+        : undefined,
     }
-  })
+  }, signal)
   if (hint !== undefined)
     commitPinInvalidations([hint])
   return state
@@ -1800,18 +1825,19 @@ export async function readKeyPinState(): Promise<KeyPinState> {
  * revision would overflow. A failure writes NOTHING, so the previous trust
  * decision stands and a repaired document serves a later attempt.
  *
- * The removal revision advances only when a removal actually removes a pin,
- * and that advance is what invalidates any pending first-contact decision that
- * observed the older revision -- for the removed worker or any other. Removing
- * an absent pin is idempotent: it succeeds and changes nothing.
+ * Every successful removal advances the revision, even if the map stays the
+ * same. That advance invalidates decisions that observed the older revision.
  */
-export async function updateKeyPinState(change: KeyPinStateChange): Promise<void> {
-  const keys = resolvePinKeys()
-  const now = Date.now()
+export async function updateKeyPinState(
+  change: KeyPinStateChange,
+  { accountId = storageAccount, signal }: KeyPinStorageScope = {},
+): Promise<void> {
+  const keys = resolvePinKeys(accountId)
   const hint = await updateKvTransaction(async (tx) => {
-    const { state, expiredPins } = await loadKeyPinState(tx, keys, now)
+    const { state, expiredPins, now } = await loadKeyPinState(tx, keys, signal)
+    const removalRevision = nextRemovalRevision(state.removalRevision, change)
     const map = applyKeyPinMap(state.pins, change)
-    const bumpRevision = changeRemovalRevision(state, change, map)
+    const bumpRevision = removalRevision !== state.removalRevision
     if (map.kind === 'write')
       await tx.put({ k: keys.pins, v: map.pins, e: now + keys.pinsTtl })
     else if (map.kind === 'delete')
@@ -1819,13 +1845,15 @@ export async function updateKeyPinState(change: KeyPinStateChange): Promise<void
     if (bumpRevision) {
       await tx.put({
         k: keys.revision,
-        v: state.removalRevision + 1,
+        v: removalRevision,
         e: Number.POSITIVE_INFINITY,
       })
     }
     const changed = map.kind !== 'unchanged' || bumpRevision || expiredPins
-    return changed ? { k: keys.pins, invalidate: true as const } : undefined
-  })
+    return changed
+      ? { k: keys.pins, invalidate: true as const }
+      : undefined
+  }, signal)
   if (hint !== undefined)
     commitPinInvalidations([hint])
 }
@@ -1833,8 +1861,8 @@ export async function updateKeyPinState(change: KeyPinStateChange): Promise<void
 /** What the transaction does to the pin map row. */
 type PinMapAction
   = | { kind: 'unchanged' }
-  | { kind: 'write', pins: WorkerKeyPinMap }
-  | { kind: 'delete' }
+    | { kind: 'write', pins: WorkerKeyPinMap }
+    | { kind: 'delete' }
 
 /**
  * The map row action one committed change takes. Throws on every refused case,
@@ -1842,7 +1870,7 @@ type PinMapAction
  */
 function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMapAction {
   if (change.kind === 'remove') {
-    if (!(change.workerId in pins))
+    if (!Object.hasOwn(pins, change.workerId))
       return { kind: 'unchanged' }
     const { [change.workerId]: _removed, ...rest } = pins
     return Object.keys(rest).length === 0
@@ -1854,17 +1882,24 @@ function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMa
       ? { kind: 'unchanged' }
       : { kind: 'delete' }
   }
-  const current = pins[change.workerId] ?? null
+  const current = Object.hasOwn(pins, change.workerId)
+    ? pins[change.workerId] ?? null
+    : null
   if (change.kind === 'revalidate') {
     if (current === null || !sameKeyPinRecord(current, change.expectPin)) {
       throw new Error('The stored key pin changed since the decision was taken; the update is refused.')
     }
     return { kind: 'unchanged' }
   }
-  // `record`
+  if (!isWorkerKeyPinRecord(change.pin))
+    throw new Error('Cannot store an invalid pin record.')
   if (change.expectPin === null) {
-    if (current === null)
-      return { kind: 'write', pins: { ...pins, [change.workerId]: change.pin } }
+    if (current === null) {
+      return {
+        kind: 'write',
+        pins: { ...pins, [change.workerId]: change.pin },
+      }
+    }
     if (current.publicKeyHex === change.pin.publicKeyHex) {
       // A concurrent first contact installed the same keys. Its `firstSeen`
       // stands, and this commit is the idempotent one.
@@ -1875,27 +1910,22 @@ function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMa
   if (current === null || !sameKeyPinRecord(current, change.expectPin)) {
     throw new Error('The stored key pin changed since the decision was taken; the update is refused.')
   }
-  return { kind: 'write', pins: { ...pins, [change.workerId]: change.pin } }
+  return {
+    kind: 'write',
+    pins: { ...pins, [change.workerId]: change.pin },
+  }
 }
 
-/**
- * Whether the removal revision advances for this change: only a removal that
- * actually removed a pin advances it. Validates the captured expectation for
- * the write kinds first, and refuses overflow before anything is written.
- */
-function changeRemovalRevision(state: KeyPinState, change: KeyPinStateChange, map: PinMapAction): boolean {
+/** Advance a removal or validate the revision that a pin decision observed. */
+function nextRemovalRevision(revision: number, change: KeyPinStateChange): number {
   if (change.kind === 'remove' || change.kind === 'removeAll') {
-    if (map.kind === 'unchanged')
-      return false
-    if (state.removalRevision >= Number.MAX_SAFE_INTEGER) {
-      throw new Error('The key pin removal revision cannot advance past its maximum; the update is refused.')
-    }
-    return true
+    if (revision >= Number.MAX_SAFE_INTEGER)
+      throw new Error('The key pin removal revision cannot advance past its maximum. The removal failed.')
+    return revision + 1
   }
-  if (state.removalRevision !== change.expectRevision) {
-    throw new Error('The key pin removal revision changed since the decision was taken; the update is refused.')
-  }
-  return false
+  if (revision !== change.expectRevision)
+    throw new Error('The key pin removal revision changed since the decision. Verify the worker key again.')
+  return revision
 }
 
 /**
@@ -2091,6 +2121,10 @@ export async function runCleanup(opts: { checkRegistrations: boolean } = { check
     // The one nonexpiring row: expiry may not take the removal revision, or a
     // stale pin commit would re-validate against a revision that restarted.
     isExemptFromExpiry: isPinRemovalRevisionStoredKey,
+    // A corrupt pin row must remain visible to the strict read as a failure.
+    expiryValidatorForKey: key => isPinStoredKey(key)
+      ? isValidPinMapRow
+      : undefined,
   })
   if (deleted.length === 0)
     return
@@ -2205,8 +2239,14 @@ onKvBroadcast((changes) => {
     // announce, so only the active account's two keys are hinted.
     if (storageAccount !== null) {
       deliverPinInvalidations([
-        { k: accountStorageKey(storageAccount, KEY_KEY_PINS), invalidate: true },
-        { k: accountStorageKey(storageAccount, KEY_KEY_PINS_REMOVAL_REVISION), invalidate: true },
+        {
+          k: accountStorageKey(storageAccount, KEY_KEY_PINS),
+          invalidate: true,
+        },
+        {
+          k: accountStorageKey(storageAccount, KEY_KEY_PINS_REMOVAL_REVISION),
+          invalidate: true,
+        },
       ])
     }
     return

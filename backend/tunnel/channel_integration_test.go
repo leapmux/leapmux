@@ -1,13 +1,18 @@
 package tunnel_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,9 +24,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 	"github.com/leapmux/leapmux/solo"
 	"github.com/leapmux/leapmux/tunnel"
@@ -170,13 +177,21 @@ func TestChannelOpenAndCallRPC(t *testing.T) {
 	ctx := context.Background()
 
 	// Open an E2EE channel.
-	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
-		LifetimeContext:     ctx,
-		HTTPClient:          httpClient,
-		WebSocketHTTPClient: httpClient,
-	})
-	require.NoError(t, err)
-	t.Cleanup(ch.Close)
+	pins, path := openChannelPinStore(t)
+	relay := observeChannelRegistration(httpClient)
+	ping := newHeldPingReply()
+	ctxOpen := channelOpenContext(t)
+	results := openChannelWithPin(ctxOpen, ctx, hubURL, workerID, relay.client, ping.client(ctxOpen, httpClient), pins)
+	awaitPinSignal(t, ctxOpen, ping.received)
+	assert.NoFileExists(t, path, "the encrypted Ping reply has not reached the client")
+	ping.release()
+
+	result := awaitPinOpen(t, ctxOpen, results)
+	require.NoError(t, result.err)
+	ch := result.channel
+	require.NotNil(t, ch)
+	assertPublishedWorkerKeys(t, hubURL, httpClient, workerID, pins)
+	assert.Zero(t, relay.closeCalls.Load(), "a channel that was handed out needs no rollback")
 
 	// Call GetWorkerSystemInfo to verify the channel works.
 	payload, err := proto.Marshal(&leapmuxv1.GetWorkerSystemInfoRequest{})
@@ -193,6 +208,391 @@ func TestChannelOpenAndCallRPC(t *testing.T) {
 	// empty, because an unstamped binary reports "dev".
 	require.NotNil(t, sysInfo.GetBuild())
 	assert.NotEmpty(t, sysInfo.GetBuild().GetVersion())
+}
+
+// pinTestTransport lets these tests observe or hold real relay traffic.
+type pinTestTransport func(*http.Request) (*http.Response, error)
+
+func (transport pinTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
+func withPinTestTransport(client *http.Client, transport pinTestTransport) *http.Client {
+	copy := *client
+	copy.Transport = transport
+	return &copy
+}
+
+type channelRegistrationObserver struct {
+	client     *http.Client
+	registered chan string
+	closeCalls atomic.Int32
+}
+
+func observeChannelRegistration(client *http.Client) *channelRegistrationObserver {
+	result := &channelRegistrationObserver{registered: make(chan string, 1)}
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	result.client = withPinTestTransport(client, func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case leapmuxv1connect.ChannelServiceCloseChannelProcedure:
+			result.closeCalls.Add(1)
+		case leapmuxv1connect.ChannelServiceOpenChannelProcedure:
+			request = request.Clone(request.Context())
+			request.Header.Set("Accept-Encoding", "identity")
+		}
+
+		response, err := transport.RoundTrip(request)
+		if err != nil || request.URL.Path != leapmuxv1connect.ChannelServiceOpenChannelProcedure || response.StatusCode != http.StatusOK {
+			return response, err
+		}
+		// Connect sends the unary OpenChannelResponse as a protobuf body.
+		wire, readErr := io.ReadAll(response.Body)
+		if err := errors.Join(readErr, response.Body.Close()); err != nil {
+			return nil, err
+		}
+		var opened leapmuxv1.OpenChannelResponse
+		if err := proto.Unmarshal(wire, &opened); err != nil {
+			return nil, fmt.Errorf("read test channel registration: %w", err)
+		}
+		result.registered <- opened.GetChannelId()
+		response.Body = io.NopCloser(bytes.NewReader(wire))
+		return response, nil
+	})
+	return result
+}
+
+func (observer *channelRegistrationObserver) channelID(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	select {
+	case id := <-observer.registered:
+		require.NotEmpty(t, id)
+		return id
+	case <-ctx.Done():
+		t.Fatal("the Hub did not register a channel")
+		return ""
+	}
+}
+
+type heldPingReply struct {
+	received chan struct{}
+	resume   chan struct{}
+	failure  error
+}
+
+func newHeldPingReply() *heldPingReply {
+	return &heldPingReply{received: make(chan struct{}), resume: make(chan struct{})}
+}
+
+func (ping *heldPingReply) release() { close(ping.resume) }
+
+func (ping *heldPingReply) client(ctx context.Context, client *http.Client) *http.Client {
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	return withPinTestTransport(client, func(request *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(request)
+		if err != nil || request.URL.Path != contracts.WSRouteChannel || response.StatusCode != http.StatusSwitchingProtocols {
+			return response, err
+		}
+		body, ok := response.Body.(io.ReadWriteCloser)
+		if !ok {
+			return nil, errors.Join(errors.New("test relay response is not a WebSocket"), response.Body.Close())
+		}
+		response.Body = &heldPingReplyBody{ReadWriteCloser: body, buffered: bufio.NewReader(body), ctx: ctx, ping: ping}
+		return response, nil
+	})
+}
+
+type heldPingReplyBody struct {
+	io.ReadWriteCloser
+	buffered          *bufio.Reader
+	ctx               context.Context
+	ping              *heldPingReply
+	controlBytesLeft  int
+	releasedPingReply bool
+	pingReadErr       error
+}
+
+func (body *heldPingReplyBody) Read(dst []byte) (int, error) {
+	if body.pingReadErr != nil {
+		return 0, body.pingReadErr
+	}
+	if body.releasedPingReply || len(dst) == 0 {
+		return body.buffered.Read(dst)
+	}
+	if body.controlBytesLeft == 0 {
+		header, err := body.buffered.Peek(2)
+		if err != nil {
+			return 0, err
+		}
+		const binaryOpcode, firstControlOpcode, opcodeMask = 2, 8, 0x0f
+		opcode := header[0] & opcodeMask
+		if opcode == binaryOpcode {
+			// Before handout the only application reply is the encrypted Ping.
+			close(body.ping.received)
+			select {
+			case <-body.ping.resume:
+				body.pingReadErr = body.ping.failure
+			case <-body.ctx.Done():
+				body.pingReadErr = body.ctx.Err()
+			}
+			if body.pingReadErr != nil {
+				return 0, body.pingReadErr
+			}
+			body.releasedPingReply = true
+			return body.buffered.Read(dst)
+		}
+		// Pass through server keepalives and other control frames. They
+		// have an unmasked payload of at most 125 bytes.
+		if opcode < firstControlOpcode || header[1] > 125 {
+			return 0, fmt.Errorf("unexpected WebSocket frame before the Ping reply: %x", header)
+		}
+		body.controlBytesLeft = len(header) + int(header[1])
+	}
+	n, err := body.buffered.Read(dst[:min(len(dst), body.controlBytesLeft)])
+	body.controlBytesLeft -= n
+	return n, err
+}
+
+type pinCommitDecorator struct {
+	store  *tofupins.Store
+	commit func(context.Context, func(context.Context) error) error
+}
+
+func (policy pinCommitDecorator) Resolve(ctx context.Context, workerID string, x, m, sl []byte) (func(context.Context) error, error) {
+	commit, err := policy.store.Resolve(ctx, workerID, x, m, sl)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context) error { return policy.commit(ctx, commit) }, nil
+}
+
+type pinOpenResult struct {
+	channel *tunnel.Channel
+	err     error
+}
+
+func openChannelWithPin(ctx, lifetime context.Context, hubURL, workerID string, httpClient, wsClient *http.Client, pins tunnel.KeyPinStore) <-chan pinOpenResult {
+	result := make(chan pinOpenResult, 1)
+	go func() {
+		channel, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+			LifetimeContext:     lifetime,
+			HTTPClient:          httpClient,
+			WebSocketHTTPClient: wsClient,
+			KeyPin:              pins,
+		})
+		result <- pinOpenResult{channel, err}
+	}()
+	return result
+}
+
+func awaitPinOpen(t *testing.T, waitCtx context.Context, results <-chan pinOpenResult) pinOpenResult {
+	t.Helper()
+	select {
+	case result := <-results:
+		if result.channel != nil {
+			t.Cleanup(result.channel.Close)
+		}
+		return result
+	case <-waitCtx.Done():
+		t.Fatal("the channel open did not finish")
+		return pinOpenResult{}
+	}
+}
+
+func awaitPinSignal(t *testing.T, waitCtx context.Context, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-waitCtx.Done():
+		t.Fatal("the channel open did not reach the synchronization point")
+	}
+}
+
+func openChannelPinStore(t *testing.T) (*tofupins.Store, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pins.json")
+	pins, err := tofupins.Open(tofupins.Options{Path: path, DirMode: 0o700, FileMode: 0o600})
+	require.NoError(t, err)
+	return pins, path
+}
+
+func assertPublishedWorkerKeys(t *testing.T, hubURL string, httpClient *http.Client, workerID string, pins *tofupins.Store) {
+	t.Helper()
+	client := leapmuxv1connect.NewChannelServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, hubURL, connecthttp.WithReadMaxBytes(0))))
+	params, err := client.GetWorkerHandshakeParams(t.Context(), &leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID})
+	require.NoError(t, err)
+	snapshot, err := pins.Snapshot(t.Context())
+	require.NoError(t, err)
+	require.Len(t, snapshot, 1)
+	require.Contains(t, snapshot, workerID)
+	entry := snapshot[workerID]
+	assert.Equal(t, base64.StdEncoding.EncodeToString(params.GetKeys().GetX25519()), entry.X25519PublicKey)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(params.GetKeys().GetMlkem()), entry.MlkemPublicKey)
+	assert.Equal(t, base64.StdEncoding.EncodeToString(params.GetKeys().GetSlhdsa()), entry.SlhdsaPublicKey)
+}
+
+func assertPinOpenRolledBack(t *testing.T, ctx context.Context, relay *channelRegistrationObserver, service leapmuxv1connect.ChannelServiceClient, channelID string) {
+	t.Helper()
+	assert.EqualValues(t, 1, relay.closeCalls.Load())
+	_, err := service.CloseChannel(ctx, &leapmuxv1.CloseChannelRequest{ChannelId: channelID})
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "the Hub no longer has the channel")
+}
+
+func TestChannelPinCommitRollbackOnTheSoloRelay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
+	service := leapmuxv1connect.NewChannelServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, hubURL, connecthttp.WithReadMaxBytes(0))))
+
+	t.Run("failed verification records no pin", func(t *testing.T) {
+		ctx := channelOpenContext(t)
+		pins, path := openChannelPinStore(t)
+		relay := observeChannelRegistration(httpClient)
+		ping := newHeldPingReply()
+		ping.failure = errors.New("could not receive the verification reply")
+		results := openChannelWithPin(ctx, t.Context(), hubURL, workerID, relay.client, ping.client(ctx, httpClient), pins)
+
+		id := relay.channelID(t, ctx)
+		awaitPinSignal(t, ctx, ping.received)
+		assert.NoFileExists(t, path)
+		ping.release()
+
+		result := awaitPinOpen(t, ctx, results)
+		require.ErrorContains(t, result.err, "verify channel session")
+		assert.Nil(t, result.channel)
+		assert.NoFileExists(t, path)
+		assertPinOpenRolledBack(t, ctx, relay, service, id)
+	})
+
+	t.Run("commit file error refuses handout", func(t *testing.T) {
+		ctx := channelOpenContext(t)
+		pins, path := openChannelPinStore(t)
+		relay := observeChannelRegistration(httpClient)
+		committing := make(chan struct{})
+		proceed := make(chan struct{})
+		policy := pinCommitDecorator{store: pins, commit: func(ctx context.Context, commit func(context.Context) error) error {
+			close(committing)
+			select {
+			case <-proceed:
+				return commit(ctx)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}}
+		results := openChannelWithPin(ctx, t.Context(), hubURL, workerID, relay.client, httpClient, policy)
+		id := relay.channelID(t, ctx)
+		awaitPinSignal(t, ctx, committing)
+		assert.NoFileExists(t, path)
+		before := []byte("{invalid")
+		require.NoError(t, os.WriteFile(path, before, 0o600))
+		close(proceed)
+
+		result := awaitPinOpen(t, ctx, results)
+		require.ErrorContains(t, result.err, "commit worker key pin: parse pins")
+		assert.Nil(t, result.channel)
+		after, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, before, after)
+		assertPinOpenRolledBack(t, ctx, relay, service, id)
+	})
+
+	for _, test := range []struct {
+		name                       string
+		cancelOpen, cancelLifetime bool
+	}{
+		{name: "operation canceled before commit", cancelOpen: true},
+		{name: "lifetime canceled before commit", cancelLifetime: true},
+		{name: "both contexts canceled before commit", cancelOpen: true, cancelLifetime: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			waitCtx := channelOpenContext(t)
+			ctx, cancelOpen := context.WithCancel(waitCtx)
+			defer cancelOpen()
+			lifetime, cancelLifetime := context.WithCancel(t.Context())
+			defer cancelLifetime()
+			pins, path := openChannelPinStore(t)
+			relay := observeChannelRegistration(httpClient)
+			committing := make(chan struct{})
+			policy := pinCommitDecorator{store: pins, commit: func(ctx context.Context, commit func(context.Context) error) error {
+				close(committing)
+				<-ctx.Done()
+				return commit(ctx)
+			}}
+			results := openChannelWithPin(ctx, lifetime, hubURL, workerID, relay.client, httpClient, policy)
+			id := relay.channelID(t, waitCtx)
+			awaitPinSignal(t, waitCtx, committing)
+			assert.NoFileExists(t, path)
+			if test.cancelOpen {
+				cancelOpen()
+			}
+			if test.cancelLifetime {
+				cancelLifetime()
+			}
+
+			result := awaitPinOpen(t, waitCtx, results)
+			require.ErrorIs(t, result.err, context.Canceled)
+			assert.Nil(t, result.channel)
+			assert.NoFileExists(t, path)
+			assertPinOpenRolledBack(t, waitCtx, relay, service, id)
+		})
+	}
+
+	for _, peerClose := range []bool{false, true} {
+		name := "operation cancellation preserves the published pin"
+		if peerClose {
+			name = "peer closure preserves the published pin"
+		}
+		t.Run(name, func(t *testing.T) {
+			waitCtx := channelOpenContext(t)
+			openCtx, cancelOpen := context.WithCancel(waitCtx)
+			defer cancelOpen()
+			lifetimeCtx := t.Context()
+			pins, path := openChannelPinStore(t)
+			relay := observeChannelRegistration(httpClient)
+			published := make(chan struct{})
+			policy := pinCommitDecorator{store: pins, commit: func(ctx context.Context, commit func(context.Context) error) error {
+				if err := commit(ctx); err != nil {
+					return err
+				}
+				close(published)
+				<-ctx.Done()
+				return nil
+			}}
+			results := openChannelWithPin(openCtx, lifetimeCtx, hubURL, workerID, relay.client, httpClient, policy)
+			id := relay.channelID(t, waitCtx)
+			awaitPinSignal(t, waitCtx, published)
+			before, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			if peerClose {
+				_, err := service.CloseChannel(waitCtx, &leapmuxv1.CloseChannelRequest{ChannelId: id})
+				require.NoError(t, err)
+			} else {
+				cancelOpen()
+			}
+
+			result := awaitPinOpen(t, waitCtx, results)
+			assert.Nil(t, result.channel)
+			if peerClose {
+				require.ErrorContains(t, result.err, "channel closed before handout")
+				assert.NoError(t, openCtx.Err())
+				assert.NoError(t, lifetimeCtx.Err())
+			} else {
+				require.ErrorIs(t, result.err, context.Canceled)
+			}
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+			assertPublishedWorkerKeys(t, hubURL, httpClient, workerID, pins)
+			assertPinOpenRolledBack(t, waitCtx, relay, service, id)
+		})
+	}
 }
 
 func TestChannelLifetimeCanOutliveHandshakeContext(t *testing.T) {

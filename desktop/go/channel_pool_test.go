@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
@@ -14,53 +17,55 @@ import (
 )
 
 func TestChannelPool_CanceledLeaderDoesNotCancelChannelForFollower(t *testing.T) {
-	p := newChannelPool(nil)
-	defer p.reset()
-	channel, _ := newTestManagedChannel()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	openLifetime := make(chan context.Context, 1)
-	var startOnce sync.Once
-	p.openCh = func(
-		ctx context.Context,
-		_, _ string,
-		opts *tunnelpkg.OpenChannelOptions,
-	) (*managedChannel, error) {
-		startOnce.Do(func() { close(started) })
-		openLifetime <- opts.LifetimeContext
-		select {
-		case <-release:
-			return channel, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		p := newChannelPool(nil)
+		defer func() { p.rotate().close() }()
+		channel, _ := newTestManagedChannel()
+		started := make(chan struct{})
+		release := make(chan struct{})
+		openLifetime := make(chan context.Context, 1)
+		var startOnce sync.Once
+		p.openCh = func(
+			ctx context.Context,
+			_, _ string,
+			opts *tunnelpkg.OpenChannelOptions,
+		) (*managedChannel, error) {
+			startOnce.Do(func() { close(started) })
+			openLifetime <- opts.LifetimeContext
+			select {
+			case <-release:
+				return channel, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
-	}
 
-	const hubURL, workerID = "http://hub", "worker"
-	leaderCtx, cancelLeader := context.WithCancel(context.Background())
-	leaderResult := make(chan error, 1)
-	go func() {
-		_, err := p.getOrOpen(leaderCtx, p.currentEpoch(), hubURL, workerID, channelExpectation{})
-		leaderResult <- err
-	}()
-	<-started
-	lifetimeCtx := <-openLifetime
+		const hubURL, workerID = "http://hub", "worker"
+		leaderCtx, cancelLeader := context.WithCancel(context.Background())
+		leaderResult := make(chan error, 1)
+		go func() {
+			_, err := p.getOrOpen(leaderCtx, p.currentEpoch(), hubURL, workerID, channelExpectation{})
+			leaderResult <- err
+		}()
+		<-started
+		lifetimeCtx := <-openLifetime
 
-	followerResult := make(chan error, 1)
-	go func() {
-		got, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, channelExpectation{})
-		if err == nil {
-			assert.Same(t, channel, got)
-		}
-		followerResult <- err
-	}()
-	time.Sleep(20 * time.Millisecond)
-	cancelLeader()
+		followerResult := make(chan error, 1)
+		go func() {
+			got, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, channelExpectation{})
+			if err == nil {
+				assert.Same(t, channel, got)
+			}
+			followerResult <- err
+		}()
+		synctest.Wait()
+		cancelLeader()
 
-	require.ErrorIs(t, <-leaderResult, context.Canceled)
-	assert.NoError(t, lifetimeCtx.Err(), "cached channel lifetime inherited the canceled leader")
-	close(release)
-	require.NoError(t, <-followerResult)
+		require.ErrorIs(t, <-leaderResult, context.Canceled)
+		assert.NoError(t, lifetimeCtx.Err(), "cached channel lifetime inherited the canceled leader")
+		close(release)
+		require.NoError(t, <-followerResult)
+	})
 }
 
 func TestChannelPool_ChannelOpenTimesOutOnStalledHub(t *testing.T) {
@@ -74,7 +79,7 @@ func TestChannelPool_ChannelOpenTimesOutOnStalledHub(t *testing.T) {
 	defer func() { channelOpenTimeout = prev }()
 
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 
 	openReleased := make(chan struct{}, 1)
 	p.openCh = func(
@@ -102,7 +107,7 @@ func TestChannelPool_ChannelOpenTimesOutOnStalledHub(t *testing.T) {
 
 func TestChannelPool_DoesNotShareChannelsAcrossConnectionIdentity(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	firstChannel, _ := newTestManagedChannel()
 	secondChannel, _ := newTestManagedChannel()
 	thirdChannel, _ := newTestManagedChannel()
@@ -126,7 +131,7 @@ func TestChannelPool_DoesNotShareChannelsAcrossConnectionIdentity(t *testing.T) 
 	assert.Same(t, channels[0], first)
 	assert.Same(t, channels[1], second)
 
-	p.setOptions(&tunnelpkg.OpenChannelOptions{BearerToken: "new-options"})
+	p.setOptions(&tunnelpkg.OpenChannelOptions{BearerToken: "new-options"}).close()
 	third, err := p.getOrOpen(context.Background(), p.currentEpoch(), "http://second-hub", "worker", channelExpectation{})
 	require.NoError(t, err)
 	assert.Same(t, channels[2], third)
@@ -135,7 +140,7 @@ func TestChannelPool_DoesNotShareChannelsAcrossConnectionIdentity(t *testing.T) 
 
 func TestChannelPool_RemovesClosedCachedChannel(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	first, _ := newTestManagedChannel()
 	second, _ := newTestManagedChannel()
 	channels := []*managedChannel{first, second}
@@ -170,10 +175,10 @@ func TestChannelPool_RemovesClosedCachedChannel(t *testing.T) {
 // the pool must treat it as such.
 func TestChannelPool_LiveReResolvesWhenLifetimeCancelled(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
-	dying := &managedChannel{handle: &fakeChannel{ctx: lifetimeCtx, cancel: cancelLifetime}}
+	dying := &managedChannel{handle: &fakeChannel{ctx: lifetimeCtx, cancel: cancelLifetime, closeDone: make(chan struct{})}}
 	fresh, _ := newTestManagedChannel()
 	channels := []*managedChannel{dying, fresh}
 	openCalls := 0
@@ -207,7 +212,7 @@ func TestChannelPool_LiveReResolvesWhenLifetimeCancelled(t *testing.T) {
 // channel instead of rejecting every connection against the dead one.
 func TestChannelPool_LiveReResolvesWhenClosed(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	first, _ := newTestManagedChannel()
 	second, _ := newTestManagedChannel()
 	channels := []*managedChannel{first, second}
@@ -253,9 +258,9 @@ func TestChannelPool_LiveReResolvesWhenClosed(t *testing.T) {
 // open into the new epoch (or race an open started under a torn-down lifetime).
 func TestChannelPool_StaleEpochRejected(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	stale := p.currentEpoch()
-	p.reset()
+	p.rotate().close()
 	_, err := p.getOrOpen(context.Background(), stale, "http://hub", "worker", channelExpectation{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reset while opening channel")
@@ -266,7 +271,7 @@ func TestChannelPool_StaleEpochRejected(t *testing.T) {
 // in-flight opens so they cannot register into the new maps.
 func TestChannelPool_ResetCancelsInflightAndInvalidatesLifetime(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 
 	started := make(chan struct{})
 	openLifetime := make(chan context.Context, 1)
@@ -292,7 +297,7 @@ func TestChannelPool_ResetCancelsInflightAndInvalidatesLifetime(t *testing.T) {
 	lifetimeCtx := <-openLifetime
 	oldRev := p.currentEpoch()
 
-	p.reset()
+	p.rotate().close()
 
 	require.Error(t, <-result)
 	assert.Error(t, lifetimeCtx.Err(), "reset must cancel the old channel lifetime context")
@@ -310,7 +315,7 @@ func TestChannelPool_ResetCancelsInflightAndInvalidatesLifetime(t *testing.T) {
 
 func TestChannelPool_ResetClosesCachedChannels(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	cached, closed := newTestManagedChannel()
 	var lifetime context.Context
 	p.openCh = func(_ context.Context, _, _ string, opts *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
@@ -322,7 +327,7 @@ func TestChannelPool_ResetClosesCachedChannels(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, lifetime.Err())
 
-	p.reset()
+	p.rotate().close()
 
 	assert.True(t, closed.Load(), "reset must close every cached channel")
 	assert.Error(t, lifetime.Err(), "reset must cancel the lifetime the channel was opened under")
@@ -342,7 +347,7 @@ func TestWrapChannel_NilReturnsNil(t *testing.T) {
 // rather than cache a nil managedChannel that panics on Closed/Context.
 func TestChannelPool_NilOpenChannelIsError(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	p.openCh = func(
 		_ context.Context,
 		_, _ string,
@@ -359,88 +364,98 @@ func TestChannelPool_NilOpenChannelIsError(t *testing.T) {
 // An open that completes successfully after reset must not publish into the new
 // epoch: the revision fence after dial is distinct from cancelling the open ctx.
 func TestChannelPool_SuccessfulOpenAfterResetIsRejected(t *testing.T) {
-	p := newChannelPool(nil)
-	defer p.reset()
-	channel, closed := newTestManagedChannel()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	p.openCh = func(
-		_ context.Context,
-		_, _ string,
-		_ *tunnelpkg.OpenChannelOptions,
-	) (*managedChannel, error) {
-		close(started)
-		<-release
-		// Ignore cancelled open ctx — late success after reset.
-		return channel, nil
-	}
+	synctest.Test(t, func(t *testing.T) {
+		p := newChannelPool(nil)
+		defer func() { p.rotate().close() }()
+		channel, closed := newTestManagedChannel()
+		started := make(chan struct{})
+		release := make(chan struct{})
+		p.openCh = func(
+			_ context.Context,
+			_, _ string,
+			_ *tunnelpkg.OpenChannelOptions,
+		) (*managedChannel, error) {
+			close(started)
+			<-release
+			// Ignore cancelled open ctx — late success after reset.
+			return channel, nil
+		}
 
-	result := make(chan error, 1)
-	go func() {
-		_, err := p.getOrOpen(context.Background(), p.currentEpoch(), "http://hub", "worker", channelExpectation{})
-		result <- err
-	}()
-	<-started
-	p.reset()
-	close(release)
+		result := make(chan error, 1)
+		go func() {
+			_, err := p.getOrOpen(context.Background(), p.currentEpoch(), "http://hub", "worker", channelExpectation{})
+			result <- err
+		}()
+		<-started
+		reset := make(chan struct{})
+		go func() {
+			defer close(reset)
+			p.rotate().close()
+		}()
+		assertTunnelCleanupPending(t, reset, "reset must join the old open")
+		close(release)
+		<-reset
 
-	err := <-result
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reset while opening channel")
-	assert.True(t, closed.Load(), "late channel must be closed, not cached under the new epoch")
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	assert.Empty(t, p.channels)
+		err := <-result
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reset while opening channel")
+		assert.True(t, closed.Load(), "late channel must be closed, not cached under the new epoch")
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		assert.Empty(t, p.channels)
+	})
 }
 
 func TestChannelPool_WaiterRejectsChannelClosedBeforeWake(t *testing.T) {
-	p := newChannelPool(nil)
-	defer p.reset()
-	channel, closedFlag := newTestManagedChannel()
-	started := make(chan struct{})
-	release := make(chan struct{})
-	p.openCh = func(
-		ctx context.Context,
-		_, _ string,
-		_ *tunnelpkg.OpenChannelOptions,
-	) (*managedChannel, error) {
-		close(started)
-		<-release
-		return channel, nil
-	}
+	synctest.Test(t, func(t *testing.T) {
+		p := newChannelPool(nil)
+		defer func() { p.rotate().close() }()
+		channel, closedFlag := newTestManagedChannel()
+		started := make(chan struct{})
+		release := make(chan struct{})
+		p.openCh = func(
+			ctx context.Context,
+			_, _ string,
+			_ *tunnelpkg.OpenChannelOptions,
+		) (*managedChannel, error) {
+			close(started)
+			<-release
+			return channel, nil
+		}
 
-	const hubURL, workerID = "http://hub", "worker"
-	followerErr := make(chan error, 2)
-	go func() {
-		_, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, channelExpectation{})
-		followerErr <- err
-	}()
-	<-started
-	// Second waiter joins the same inflight open.
-	go func() {
-		_, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, channelExpectation{})
-		followerErr <- err
-	}()
-	time.Sleep(20 * time.Millisecond)
+		const hubURL, workerID = "http://hub", "worker"
+		followerErr := make(chan error, 2)
+		go func() {
+			_, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, channelExpectation{})
+			followerErr <- err
+		}()
+		<-started
+		// Second waiter joins the same inflight open.
+		go func() {
+			_, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, channelExpectation{})
+			followerErr <- err
+		}()
+		synctest.Wait()
 
-	// Close the channel before the leader publishes so waiters wake to a dead handle.
-	channel.close()
-	assert.True(t, closedFlag.Load())
-	close(release)
+		// Close the channel before the leader publishes so waiters wake to a dead handle.
+		channel.close()
+		assert.True(t, closedFlag.Load())
+		close(release)
 
-	err1 := <-followerErr
-	err2 := <-followerErr
-	require.Error(t, err1)
-	require.Error(t, err2)
-	assert.Contains(t, err1.Error(), "channel closed while opening")
-	assert.Contains(t, err2.Error(), "channel closed while opening")
+		err1 := <-followerErr
+		err2 := <-followerErr
+		require.Error(t, err1)
+		require.Error(t, err2)
+		assert.Contains(t, err1.Error(), "channel closed while opening")
+		assert.Contains(t, err2.Error(), "channel closed while opening")
+	})
 }
 
 // Two opens share a cached channel only when their expectations are equal: a
 // channel admitted for one (user, key set) pair must never serve another.
 func TestChannelPool_KeyedByExpectation(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	openCalls := 0
 	p.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
 		openCalls++
@@ -453,9 +468,10 @@ func TestChannelPool_KeyedByExpectation(t *testing.T) {
 
 	first, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, expectA)
 	require.NoError(t, err)
-	shared, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, expectA)
+	shared, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID,
+		channelExpectation{userID: "user-a", keysHex: strings.ToUpper(testExpectedWorkerKeysHex)})
 	require.NoError(t, err)
-	assert.Same(t, first, shared, "identical expectations share one channel")
+	assert.Same(t, first, shared, "identical key bytes with different hex case share one channel")
 	assert.Equal(t, 1, openCalls)
 
 	otherUser, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID,
@@ -471,12 +487,41 @@ func TestChannelPool_KeyedByExpectation(t *testing.T) {
 	assert.Equal(t, 3, openCalls)
 }
 
+func TestChannelPool_SharesOpeningAcrossHexCase(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newChannelPool(nil)
+		defer func() { p.rotate().close() }()
+		release := make(chan struct{})
+		var opens atomic.Int32
+		p.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			opens.Add(1)
+			<-release
+			ch, _ := newTestManagedChannel()
+			return ch, nil
+		}
+		get := func(keysHex string, result chan<- *managedChannel) {
+			ch, err := p.getOrOpen(context.Background(), p.currentEpoch(), "http://hub", "worker",
+				channelExpectation{userID: "user-a", keysHex: keysHex})
+			assert.NoError(t, err)
+			result <- ch
+		}
+		first, second := make(chan *managedChannel, 1), make(chan *managedChannel, 1)
+		go get(testExpectedWorkerKeysHex, first)
+		synctest.Wait()
+		go get(strings.ToUpper(testExpectedWorkerKeysHex), second)
+		synctest.Wait()
+		assert.EqualValues(t, 1, opens.Load(), "identical key bytes must join the same open")
+		close(release)
+		assert.Same(t, <-first, <-second)
+	})
+}
+
 // The per-open identity rides on the open options: ExpectedUserID and the
 // pin derived from the expectation, so OpenChannel cross-checks the user and
 // verifies the announced keys against exactly the expected set.
 func TestChannelPool_PassesExpectationOnEveryOpen(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	var got *tunnelpkg.OpenChannelOptions
 	p.openCh = func(_ context.Context, _, _ string, opts *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
 		got = opts
@@ -503,7 +548,7 @@ func TestChannelPool_PassesExpectationOnEveryOpen(t *testing.T) {
 // A malformed expectation fails the open outright, before any channel work.
 func TestChannelPool_RefusesInvalidExpectation(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	p.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
 		t.Fatal("an invalid expectation must fail before the open starts")
 		return nil, nil
@@ -520,7 +565,7 @@ func TestChannelPool_RefusesInvalidExpectation(t *testing.T) {
 // change) retires its re-resolves instead of handing it a fresh channel.
 func TestChannelPool_LiveRefusesRebaseOntoNewEpoch(t *testing.T) {
 	p := newChannelPool(nil)
-	defer p.reset()
+	defer func() { p.rotate().close() }()
 	channel, _ := newTestManagedChannel()
 	p.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
 		ch, _ := newTestManagedChannel()
@@ -533,7 +578,7 @@ func TestChannelPool_LiveRefusesRebaseOntoNewEpoch(t *testing.T) {
 	require.NoError(t, err)
 	admitted := p.currentEpoch()
 
-	p.reset()
+	p.rotate().close()
 
 	// The captured channel is still open from the test's point of view (reset
 	// closed the cache's handle, so mirror a still-open capture with a fresh
@@ -548,4 +593,63 @@ func TestChannelPool_LiveRefusesRebaseOntoNewEpoch(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, live)
 	assert.Contains(t, err.Error(), "reset")
+}
+
+func TestChannelPool_ResetJoinsAnOpenAfterItsLastWaiterLeaves(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newChannelPool(nil)
+		late, _ := newTestManagedChannel()
+		fresh, _ := newTestManagedChannel()
+		started := make(chan context.Context, 1)
+		release := make(chan struct{})
+		opens := 0
+		p.openCh = func(ctx context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+			opens++
+			if opens == 1 {
+				started <- ctx
+				<-release
+				return late, nil
+			}
+			return fresh, nil
+		}
+		epoch := p.currentEpoch()
+		expect := channelExpectation{}
+		firstCtx, cancelFirst := context.WithCancel(t.Context())
+		firstResult := make(chan error, 1)
+		go func() {
+			_, err := p.getOrOpen(firstCtx, epoch, "http://hub", "worker", expect)
+			firstResult <- err
+		}()
+		openCtx := <-started
+		cancelFirst()
+		require.ErrorIs(t, <-firstResult, context.Canceled)
+		assert.ErrorIs(t, openCtx.Err(), context.Canceled, "the last waiter must cancel its open")
+
+		replacement := make(chan struct{})
+		var opened *managedChannel
+		var openErr error
+		go func() {
+			defer close(replacement)
+			opened, openErr = p.getOrOpen(t.Context(), epoch, "http://hub", "worker", expect)
+		}()
+		synctest.Wait()
+		select {
+		case <-replacement:
+			assert.NoError(t, openErr)
+			assert.Same(t, fresh, opened)
+		default:
+			t.Error("a new waiter joined an abandoned open")
+		}
+
+		reset := make(chan struct{})
+		go func() {
+			defer close(reset)
+			p.rotate().close()
+		}()
+		assertTunnelCleanupPending(t, reset, "reset lost ownership of an abandoned open")
+		close(release)
+		<-reset
+		<-replacement
+		assert.True(t, late.closed(), "reset must wait for the late transport to close")
+	})
 }

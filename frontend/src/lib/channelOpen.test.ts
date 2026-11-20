@@ -1,9 +1,11 @@
 import type { OpeningChannel } from './channelOpen'
+import type { ChannelOpenScope } from './channelPool'
 import type { SessionHandshake } from './channelSessionClient'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE, MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contracts/wire'
 import { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { useTestStorage } from '~/test-support/persistentStorage'
+import { storageAccountId } from './browserStorage'
 import { ChannelError } from './channelError'
 import { ChannelOpen } from './channelOpen'
 import { ChannelPool } from './channelPool'
@@ -83,8 +85,8 @@ function openHarness(overrides?: {
     }),
   }
   const pool = new ChannelPool<OpeningChannel>()
-  const evictGhost = vi.fn((channelId: string) => {
-    pool.delete(channelId)
+  const evictGhost = vi.fn((channel: OpeningChannel) => {
+    pool.delete(channel.channelId)
   })
   const open = new ChannelOpen<OpeningChannel>({
     transport,
@@ -94,7 +96,6 @@ function openHarness(overrides?: {
     session,
     relay,
     pool,
-    expectedUserId: () => undefined,
     // Optional knobs: omit rather than pass an explicit undefined.
     ...(overrides?.testPayloadBudget === undefined
       ? {}
@@ -102,15 +103,22 @@ function openHarness(overrides?: {
     ...(overrides?.testReassembledCeiling === undefined
       ? {}
       : { testReassembledCeiling: overrides.testReassembledCeiling }),
-    verifySession: async (channel) => {
+    verifySession: async () => {
       steps.push('verifySession')
-      channel.state = 'verified'
     },
     evictGhost,
     notifyStateChange: () => {},
   })
+  const scope: ChannelOpenScope = {
+    identity: undefined,
+    accountId: storageAccountId(),
+    signal: pool.closeSignal,
+    poolGeneration: pool.closeGeneration,
+    assertCurrent: () => pool.closeSignal.throwIfAborted(),
+  }
   return {
     open,
+    scope,
     steps,
     handshake,
     session,
@@ -182,7 +190,7 @@ describe('ChannelOpen openUncached', () => {
   it('prepares the session worker before the first Hub request', async () => {
     const h = openHarness()
 
-    await h.open.openUncached('w1')
+    await h.open.openUncached('w1', h.scope, 'ordinary')
 
     expect(h.steps.indexOf('prepare')).toBe(0)
     expect(h.steps.indexOf('prepare')).toBeLessThan(h.steps.indexOf('getWorkerHandshakeParams'))
@@ -191,7 +199,7 @@ describe('ChannelOpen openUncached', () => {
   it('hands the handshake to finishHandshake, and does not abandon it on success', async () => {
     const h = openHarness()
 
-    await expect(h.open.openUncached('w1')).resolves.toBe('ch-1')
+    await expect(h.open.openUncached('w1', h.scope, 'ordinary')).resolves.toBe('ch-1')
 
     expect(h.session.beginHandshake).toHaveBeenCalledExactlyOnceWith('w1', EncryptionMode.POST_QUANTUM, keys)
     expect(h.transport.openChannel).toHaveBeenCalledWith('w1', h.handshake.message1)
@@ -212,7 +220,7 @@ describe('ChannelOpen openUncached', () => {
     const h = openHarness()
     h.session.beginHandshake.mockRejectedValueOnce(new ChannelError('transport', 'channel session worker could not start: blocked by CSP'))
 
-    await expect(h.open.openUncached('w1')).rejects.toThrow('channel session worker could not start: blocked by CSP')
+    await expect(h.open.openUncached('w1', h.scope, 'ordinary')).rejects.toThrow('channel session worker could not start: blocked by CSP')
 
     expect(h.transport.openChannel).not.toHaveBeenCalled()
     expect(h.transport.closeChannel).not.toHaveBeenCalled()
@@ -228,7 +236,7 @@ describe('ChannelOpen openUncached', () => {
       },
     })
 
-    await expect(h.open.openUncached('w1')).rejects.toThrow('worker offline')
+    await expect(h.open.openUncached('w1', h.scope, 'ordinary')).rejects.toThrow('worker offline')
 
     expect(h.session.abandonHandshake).toHaveBeenCalledExactlyOnceWith(h.handshake)
     expect(h.session.finishHandshake).not.toHaveBeenCalled()
@@ -244,7 +252,7 @@ describe('ChannelOpen openUncached', () => {
       }),
     })
 
-    await expect(h.open.openUncached('w1')).rejects.toThrow(/no max_message_size/)
+    await expect(h.open.openUncached('w1', h.scope, 'ordinary')).rejects.toThrow(/no max_message_size/)
 
     expect(h.steps.indexOf('abandonHandshake')).toBeLessThan(h.steps.indexOf('hub close ch-1'))
     expect(h.session.abandonHandshake).toHaveBeenCalledExactlyOnceWith(h.handshake)
@@ -262,7 +270,7 @@ describe('ChannelOpen openUncached', () => {
       }),
     })
 
-    await expect(h.open.openUncached('w1')).rejects.toThrow(/empty authenticated user id/)
+    await expect(h.open.openUncached('w1', h.scope, 'ordinary')).rejects.toThrow(/empty authenticated user id/)
 
     expect(h.session.abandonHandshake).toHaveBeenCalledExactlyOnceWith(h.handshake)
     expect(h.transport.closeChannel).toHaveBeenCalledExactlyOnceWith('ch-1')
@@ -275,7 +283,7 @@ describe('ChannelOpen openUncached', () => {
       },
     })
 
-    await expect(h.open.openUncached('w1')).rejects.toThrow(/SLH-DSA signature verification failed/)
+    await expect(h.open.openUncached('w1', h.scope, 'ordinary')).rejects.toThrow(/SLH-DSA signature verification failed/)
 
     // The finish spent the handshake: the session worker zeroed it.
     expect(h.session.abandonHandshake).not.toHaveBeenCalled()
@@ -290,11 +298,11 @@ describe('ChannelOpen openUncached', () => {
       },
     })
 
-    await expect(h.open.openUncached('w1')).rejects.toThrow('WebSocket open timed out')
+    await expect(h.open.openUncached('w1', h.scope, 'ordinary')).rejects.toThrow('WebSocket open timed out')
 
     expect(h.session.close).toHaveBeenCalledExactlyOnceWith('ch-1')
     expect(h.transport.closeChannel).toHaveBeenCalledExactlyOnceWith('ch-1')
     expect(h.session.abandonHandshake).not.toHaveBeenCalled()
-    expect(h.evictGhost).toHaveBeenCalledOnce()
+    expect(h.evictGhost).not.toHaveBeenCalled()
   })
 })

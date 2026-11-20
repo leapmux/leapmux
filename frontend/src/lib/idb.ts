@@ -7,15 +7,13 @@
 // forget the cached connection after the IDBFactory is swapped. This module
 // owns that skeleton so each store only declares its own schema.
 //
-// SCHEMA CHANGES RECREATE THE DATABASE. THERE ARE NO MIGRATIONS.
+// SCHEMA MISMATCH HANDLING
 //
-// This is the permanent policy, not a pre-release shortcut. Every database
-// behind this scaffold is a CACHE over state the hub owns and re-syncs, so the
-// worst a recreate can cost is one cold start -- and buying data-preserving
-// migrations with that would mean writing, testing and forever maintaining an
-// upgrade path per revision to protect data that is already safe elsewhere.
+// Cache databases can be rebuilt because the authoritative state is elsewhere.
+// A database that holds authoritative rows rejects a schema mismatch and leaves
+// the existing database intact. Neither policy migrates an existing schema.
 //
-// DEXIE DOES NOT IMPLEMENT THAT POLICY, SO THE CHECK BELOW STILL DOES.
+// DEXIE CAN PATCH OR UPGRADE A SCHEMA DURING OPEN.
 //
 // Dexie's own `verifyInstalledSchema` tests only whether parts are MISSING
 // (`diff.add`, `change.add`, `change.change`). Three drifts therefore pass it
@@ -30,12 +28,9 @@
 // MIGRATING: it reopens at native version + 1 and adds the missing parts. That
 // is exactly the upgrade path this module exists to not have.
 //
-// So a store declares its shape ONCE, as a Dexie `.stores()` spec, and this
-// module derives both halves from it:
-//
-//   - the build, which Dexie performs, and
-//   - the check, which asserts an opened database still matches and otherwise
-//     deletes and rebuilds it.
+// Each store declares its shape once as a Dexie `.stores()` spec. Dexie builds
+// from that declaration and this module checks every opened database against
+// it. A mismatch rebuilds a cache or rejects an open of an authoritative store.
 //
 // The check compares two fingerprints. The EXPECTED one is read from Dexie's
 // own parse of the declaration, and the ACTUAL one from the raw IDBDatabase.
@@ -136,7 +131,7 @@ const DECLARED_VERSION = 1
  */
 const NATIVE_VERSION_FACTOR = 10
 
-const EXPECTED_NATIVE_VERSION = DECLARED_VERSION * NATIVE_VERSION_FACTOR
+export const IDB_NATIVE_SCHEMA_VERSION = DECLARED_VERSION * NATIVE_VERSION_FACTOR
 
 /**
  * The open failures that mean "the stored database is unusable", and so are
@@ -313,13 +308,39 @@ function deleteDatabaseByName(name: string): Promise<void> {
 }
 
 /**
+ * Abort an existing database's upgrade before Dexie can patch its schema.
+ * Upgrades with an old version of zero are first opens and may create stores.
+ */
+function preserveExistingSchema(factory: IDBFactory): IDBFactory {
+  return new Proxy(factory, {
+    get(target, property) {
+      if (property === 'open') {
+        return (name: string, version?: number) => {
+          const request = target.open(name, version)
+          request.addEventListener('upgradeneeded', (event) => {
+            if (event.oldVersion === 0)
+              return
+            event.stopImmediatePropagation()
+            request.transaction?.abort()
+          }, { once: true })
+          return request
+        }
+      }
+      const value: unknown = Reflect.get(target, property, target)
+      return typeof value === 'function'
+        ? value.bind(target)
+        : value
+    },
+  })
+}
+
+/**
  * Create a cached connection to `name`, built from `stores`.
  *
  * `stores` is the single declaration of the database's shape: Dexie builds from
- * it AND it is checked against every handle handed out, so a database that does
- * not match is deleted and rebuilt. Change the declaration and existing
- * databases repair themselves on next open. See the module header for why that
- * is the permanent policy here.
+ * it and every open is checked against it. A schema mismatch recreates a cache
+ * by default. Use `onSchemaMismatch: 'reject'` for authoritative rows. That
+ * policy also blocks upgrades of existing databases.
  *
  * A rejected open drops the cached promise, so the next call retries rather
  * than latching the failure for the page's lifetime.
@@ -327,6 +348,7 @@ function deleteDatabaseByName(name: string): Promise<void> {
 export function createIdbConnection<T extends Dexie = Dexie>(
   name: string,
   stores: IdbStores,
+  { onSchemaMismatch = 'recreate' }: { onSchemaMismatch?: 'recreate' | 'reject' } = {},
 ): IdbConnection<T> {
   let dbPromise: Promise<Dexie> | null = null
 
@@ -346,16 +368,10 @@ export function createIdbConnection<T extends Dexie = Dexie>(
     //     on that: it swallows the VersionError and RETRIES VERSIONLESS, so it
     //     attaches happily and this is the only place that notices.
     //
-    // ONE CASE THIS CANNOT REACH, deliberately. The hand-rolled scaffold this
-    // replaced wrote native version 1, and Dexie upgrades such a database to 10
-    // DURING `open()` -- before anything here can look -- so a legacy database
-    // whose shape already matches the declaration is carried forward with its
-    // rows. Catching it would need a second raw open before every Dexie open,
-    // on every cold start, forever; what that buys is deleting a cache whose
-    // shape IS the declaration and whose rows this build reads identically. A
-    // legacy database whose shape has since MOVED is still rebuilt, by the
-    // fingerprint below.
-    if (idb.version !== EXPECTED_NATIVE_VERSION)
+    // A cache opened from a matching pre-Dexie schema may already be at version
+    // 10 by this point because Dexie upgraded it during open. The reject policy
+    // prevents that upgrade before Dexie can touch an existing database.
+    if (idb.version !== IDB_NATIVE_SCHEMA_VERSION)
       return false
     // And the SHAPE, because the version alone cannot see the three drifts
     // Dexie's own verify passes silently -- a removed store, a removed index,
@@ -381,7 +397,9 @@ export function createIdbConnection<T extends Dexie = Dexie>(
     // constructor that runs per attempt, is what lets a test swap the
     // IDBFactory after import and still get a connection into the new universe.
     const db = new Dexie(name, {
-      indexedDB,
+      indexedDB: onSchemaMismatch === 'reject'
+        ? preserveExistingSchema(indexedDB)
+        : indexedDB,
       IDBKeyRange,
       // Load-bearing: nothing may run against a database that has not passed
       // shapeMatches. It also disables Dexie's `idbdb.onclose` auto-reopen,
@@ -478,13 +496,17 @@ export function createIdbConnection<T extends Dexie = Dexie>(
       }
       attempt = openOnce()
         .catch(async (err: unknown) => {
-          if (!RECREATE_ON_OPEN_ERROR.has(errorName(err)))
+          if (onSchemaMismatch === 'reject' || !RECREATE_ON_OPEN_ERROR.has(errorName(err)))
             throw err
           return { ok: false } as const
         })
-        .then(async result => (result.ok
-          ? result.db
-          : await recreate()))
+        .then(async (result) => {
+          if (result.ok)
+            return result.db
+          if (onSchemaMismatch === 'reject')
+            throw new Error(`IndexedDB schema does not match the declaration for ${name}.`)
+          return await recreate()
+        })
         .then((db) => {
           // Registered only now, AFTER the repair path above, so the deliberate
           // closes in it cannot invalidate a cache entry they do not own.

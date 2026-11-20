@@ -75,6 +75,11 @@ type Channel struct {
 	reassembly map[uint64]*channelwire.ChunkBuffer
 	closed     atomic.Bool
 
+	// The first Close caller signals closeFinished. The receiver also has
+	// to return, since a WebSocket read can initiate transport close itself.
+	closeFinished chan struct{}
+	closeDone     chan struct{}
+
 	// rekey holds the in-band-rekey state machine (fresh key-agreement material,
 	// multi-waiter broadcast, policy fields, watchdog disarm signal). See
 	// rekeyController for the two-lock invariant that governs its fields.
@@ -524,7 +529,8 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	}
 	wsConn.SetReadLimit(channelwire.WSReadLimit)
 
-	if err := checkOpenCanceled(ctx, lifetimeCtx, func() { _ = wsConn.CloseNow() }); err != nil {
+	if err := checkOpenCanceled(ctx, lifetimeCtx); err != nil {
+		_ = wsConn.CloseNow()
 		return nil, err
 	}
 	chCtx, chCancel := context.WithCancel(lifetimeCtx)
@@ -539,6 +545,8 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
+		closeFinished:  make(chan struct{}),
+		closeDone:      make(chan struct{}),
 		rekey: rekeyController{
 			lastRekeyAt: time.Now(),
 			// Retain the worker's static ML-KEM key so a later in-band rekey can
@@ -555,8 +563,18 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// ChannelOpenRequest.user_id), so there is no identity to claim over the channel --
 	// and with no claim there is no reserved correlation id and no pre-recvLoop
 	// pending[0] registration.
-	go ch.recvLoop()
+	go func() {
+		ch.recvLoop()
+		<-ch.closeFinished
+		close(ch.closeDone)
+	}()
 	sessionNeedsZero = false
+	defer func() {
+		if rollback {
+			ch.Close()
+			<-ch.CloseDone()
+		}
+	}()
 	go ch.rekeyIdleLoop()
 
 	// 7. Prove the session works end to end before handing the channel out.
@@ -579,7 +597,6 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	pingCtx, cancelPing := context.WithTimeout(ctx, sessionVerifyTimeout)
 	defer cancelPing()
 	if _, err := ch.CallRPC(pingCtx, leapmuxv1connect.WorkerSystemServicePingProcedure, nil); err != nil {
-		ch.Close()
 		return nil, fmt.Errorf("verify channel session: %w", err)
 	}
 
@@ -587,7 +604,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// session. A handshake or Ping failure records no pin.
 	// https://github.com/leapmux/leapmux/issues/661
 	if pinCommit != nil {
-		if err := checkOpenCanceled(ctx, lifetimeCtx, ch.Close); err != nil {
+		if err := checkOpenCanceled(ctx, lifetimeCtx); err != nil {
 			return nil, err
 		}
 		if ch.Closed() {
@@ -602,12 +619,11 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		// cancellation that prevents channel handout.
 		// https://github.com/leapmux/leapmux/issues/661
 		if commitErr != nil {
-			ch.Close()
 			return nil, fmt.Errorf("commit worker key pin: %w", commitErr)
 		}
 	}
 
-	if err := checkOpenCanceled(ctx, lifetimeCtx, ch.Close); err != nil {
+	if err := checkOpenCanceled(ctx, lifetimeCtx); err != nil {
 		return nil, err
 	}
 	if ch.Closed() {
@@ -619,22 +635,12 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	return ch, nil
 }
 
-// checkOpenCanceled aborts an in-flight OpenChannel when either the caller's
-// open context or the channel's lifetime context has been canceled, running
-// cleanup (tear down whatever the open has built so far) before reporting the
-// cancellation. OpenChannel runs it after each blocking step; one helper keeps
-// the pair of contexts -- and the order they are consulted in -- from drifting
-// between the exits.
-func checkOpenCanceled(ctx, lifetimeCtx context.Context, cleanup func()) error {
+// checkOpenCanceled checks the operation and lifetime contexts in order.
+func checkOpenCanceled(ctx, lifetimeCtx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		cleanup()
 		return err
 	}
-	if err := lifetimeCtx.Err(); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
+	return lifetimeCtx.Err()
 }
 
 func rollbackRegisteredChannel(client leapmuxv1connect.ChannelServiceClient, opts *OpenChannelOptions, channelID string) {
@@ -669,9 +675,13 @@ func (ch *Channel) Closed() bool {
 // The contract that follows, and that EVERY waiter must honour: a pending response
 // channel is never closed and never receives nil, so a bare `<-respCh` after Close
 // blocks forever. Every wait MUST also select on ch.Context().Done(), which Close
-// cancels. That is the only wake-up Close provides.
+// cancels. That is the only wake-up Close provides to pending calls. Duplicate
+// calls return immediately. Use CloseDone to wait for transport release.
 func (ch *Channel) Close() {
 	if ch.closed.CompareAndSwap(false, true) {
+		if ch.closeFinished != nil {
+			defer close(ch.closeFinished)
+		}
 		ch.cancel()
 		_ = ch.ws.CloseNow()
 
@@ -688,6 +698,12 @@ func (ch *Channel) Close() {
 			stream.stop()
 		}
 	}
+}
+
+// CloseDone returns a channel that closes after the relay is released and
+// close cleanup finishes. Context().Done() signals loss of usability earlier.
+func (ch *Channel) CloseDone() <-chan struct{} {
+	return ch.closeDone
 }
 
 // CallRPC sends a unary inner RPC and waits for the response. An error that

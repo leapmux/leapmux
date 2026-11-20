@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -135,6 +136,7 @@ func TestAdminNetworkService_ALocalOnlyHubReportsNoTCPBases(t *testing.T) {
 	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, resp.GetBaseTcpAddresses())
+	assert.Empty(t, resp.GetBound())
 	assert.Equal(t, []string{"npipe:leapmux-hub"}, resp.GetLocalIpcAddresses())
 }
 
@@ -210,17 +212,42 @@ func TestAdminNetworkService_ToleratesNoListenerSet(t *testing.T) {
 // the merge input: the explicit list in bind order, the launcher's default
 // when the set names none, and nothing at all for a local-only set.
 func TestAdminNetworkService_TheFallbackSplitsTheConfiguredBindSet(t *testing.T) {
+	t.Setenv("LEAPMUX_HUB_LISTEN", "")
+	launcherConfig, _, err := config.LoadWithOptions(nil, config.LoadOptions{
+		DefaultConfigFile: filepath.Join(t.TempDir(), "hub.yaml"),
+		DefaultListen:     "127.0.0.1:44321",
+		SoloMode:          true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, launcherConfig.Listen, "the launcher default applies to an empty configured bind set")
+
 	for _, tc := range []struct {
-		name   string
-		listen []string
-		want   []string
+		name string
+		cfg  *config.Config
+		want []string
 	}{
-		{name: "an explicit list keeps its order", listen: []string{":8080", "unix:/x", ":9090"}, want: []string{":8080", ":9090"}},
-		{name: "an empty list takes the launcher's TCP default", want: []string{":4327"}},
-		{name: "a local-only list names no TCP address", listen: []string{"unix:/x"}},
+		{
+			name: "an explicit list keeps its order",
+			cfg:  &config.Config{SoloMode: true, Listen: []string{":8080", "unix:/x", ":9090"}},
+			want: []string{":8080", ":9090"},
+		},
+		{
+			name: "an empty list takes the built-in TCP default",
+			cfg:  &config.Config{SoloMode: true},
+			want: []string{":4327"},
+		},
+		{
+			name: "an empty list takes the launcher's TCP default",
+			cfg:  launcherConfig,
+			want: []string{"127.0.0.1:44321"},
+		},
+		{
+			name: "a local-only list reports no TCP address",
+			cfg:  &config.Config{SoloMode: true, Listen: []string{"unix:/x"}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true, Listen: tc.listen}, nil)
+			svc, _, _ := newNetworkService(t, tc.cfg, nil)
 
 			resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 			require.NoError(t, err)

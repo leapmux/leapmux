@@ -87,12 +87,19 @@ func TestServer_StateFileKeepsARepeatEphemeralRequestApart(t *testing.T) {
 	assert.NotEqual(t, first, second, "each occurrence keeps its own assigned port")
 	assert.Equal(t, srv.PrimaryListenAddr(), first,
 		"the first assigned TCP port is the browser-facing primary")
-	for _, addr := range []string{first, second} {
+	assert.Equal(t, first, srv.cfg.PrimaryTCPListen(), "browser services use the first assigned address")
+	var ports [2]string
+	for i, addr := range got.Listen[:2] {
 		host, port, err := net.SplitHostPort(addr)
 		require.NoError(t, err)
 		assert.Equal(t, "127.0.0.1", host)
 		assert.NotEqual(t, "0", port, "the chosen port must replace the request for one")
+		ports[i] = port
 	}
+	rp, err := webauthn.RPConfigFromSettings(srv.settings.Snapshot(t.Context()), srv.cfg.PrimaryTCPListen())
+	require.NoError(t, err)
+	assert.True(t, rp.AllowsOrigin("http://localhost:"+ports[0]))
+	assert.False(t, rp.AllowsOrigin("http://localhost:"+ports[1]))
 	assert.Equal(t, srv.localListenURLs[0], got.Listen[2], "a local entry stays its URL")
 }
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
@@ -409,19 +411,20 @@ func TestOpenChannelVerifiesEachWorkerKeyAgainstThePin(t *testing.T) {
 	t.Run("a handshake failure resolves eagerly but never commits", func(t *testing.T) {
 		service := &rollbackChannelService{keys: keys}
 		server := channelServiceServer(t, service)
-		pin := &recordingKeyPin{}
+		path := filepath.Join(t.TempDir(), "pins.json")
+		pins, err := tofupins.Open(tofupins.Options{Path: path, DirMode: 0o700, FileMode: 0o600})
+		require.NoError(t, err)
 
-		_, err := OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
-			LifetimeContext: context.Background(),
-			KeyPin:          pin,
+		ch, err := OpenChannel(t.Context(), server.URL, "worker-1", &OpenChannelOptions{
+			LifetimeContext: t.Context(),
+			KeyPin:          pins,
 		})
 		require.ErrorContains(t, err, "handshake2")
-		workerID, _, _, _ := pin.resolved()
-		assert.Equal(t, "worker-1", workerID,
-			"Resolve runs eagerly, before the handshake")
-		assert.False(t, pin.wasCommitted(),
-			"the commit is deferred past the handshake: a handshake failure records no pin")
-		assert.False(t, pin.wasPublished())
+		assert.Nil(t, ch)
+		assert.NoFileExists(t, path)
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		assert.Equal(t, "registered-channel", service.closedChannel)
 	})
 
 	t.Run("a Ping failure records no pin", func(t *testing.T) {
@@ -713,8 +716,8 @@ func awaitSignal(t *testing.T, reached <-chan struct{}, what string) {
 }
 
 // Pin publication is an independent outcome of the open. The commit runs only
-// after a passed Ping, its failure does not hold the channel back, and
-// cancellation that prevents the handout never rolls a published pin back.
+// after a passed Ping. A failed commit refuses the open. Cancellation that
+// prevents handout preserves an already published pin.
 func TestOpenChannelPinPublicationIsIndependentOfHandout(t *testing.T) {
 	t.Run("a commit failure refuses the channel", func(t *testing.T) {
 		hub, hubURL := startPinFlowHub(t)
@@ -800,6 +803,122 @@ func TestOpenChannelPinPublicationIsIndependentOfHandout(t *testing.T) {
 		assert.Equal(t, pinHubChannelID, hub.closedChannelID(),
 			"the aborted open rolls the registration back")
 	})
+}
+
+func TestOpenChannelRejectsPinPublicationWhenThePeerClosesBeforeTheWrite(t *testing.T) {
+	hub, hubURL := startPinFlowHub(t)
+	pin := &recordingKeyPin{
+		commitStarted: make(chan struct{}),
+		beforeWrite:   make(chan struct{}),
+	}
+	ctx := testutil.DeadlineContext(t)
+	results := startOpenChannel(ctx, ctx, hubURL, pin)
+
+	hub.awaitRelay(t)
+	correlationID, request := hub.readRequest(t)
+	require.Equal(t, leapmuxv1connect.WorkerSystemServicePingProcedure, request.GetMethod())
+	hub.answerPing(t, correlationID)
+	awaitSignal(t, pin.commitStarted, "the pin commit")
+	hub.closePeer(t)
+
+	got := awaitOpen(t, results)
+	require.ErrorIs(t, got.err, context.Canceled)
+	assert.ErrorContains(t, got.err, "commit worker key pin")
+	assert.Nil(t, got.ch)
+	assert.False(t, pin.wasPublished())
+	assert.NoError(t, ctx.Err(), "only the relay should have closed")
+	assert.Equal(t, pinHubChannelID, hub.closedChannelID())
+}
+
+type heldRelayClose struct {
+	io.ReadWriteCloser
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func (h *heldRelayClose) Close() error {
+	close(h.started)
+	<-h.release
+	defer close(h.finished)
+	return h.ReadWriteCloser.Close()
+}
+
+type heldRelayCloseTransport struct {
+	started, release, finished chan struct{}
+}
+
+func (h heldRelayCloseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := http.DefaultTransport.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	socket, ok := response.Body.(io.ReadWriteCloser)
+	if !ok {
+		_ = response.Body.Close()
+		return nil, errors.New("WebSocket upgrade did not return a duplex transport")
+	}
+	response.Body = &heldRelayClose{ReadWriteCloser: socket, started: h.started, release: h.release, finished: h.finished}
+	return response, nil
+}
+
+func TestChannelCloseDoneWaitsForTheRelayTransport(t *testing.T) {
+	hub, hubURL := startPinFlowHub(t)
+	ctx := testutil.DeadlineContext(t)
+	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseClose := sync.OnceFunc(func() { close(release) })
+	defer releaseClose()
+	client := &http.Client{Transport: heldRelayCloseTransport{started: started, release: release, finished: finished}}
+	results := make(chan openResult, 1)
+	go func() {
+		channel, err := OpenChannel(ctx, hubURL, pinHubWorkerID, &OpenChannelOptions{
+			LifetimeContext:     ctx,
+			WebSocketHTTPClient: client,
+		})
+		results <- openResult{ch: channel, err: err}
+	}()
+	hub.awaitRelay(t)
+	correlationID, _ := hub.readRequest(t)
+	hub.answerPing(t, correlationID)
+	got := awaitOpen(t, results)
+	require.NoError(t, got.err)
+	require.NotNil(t, got.ch)
+
+	// A graceful close from the peer makes the WebSocket reader start
+	// releasing the transport before the Channel's first Close call.
+	hub.mu.Lock()
+	peer := hub.peerWS
+	hub.mu.Unlock()
+	peerDone := make(chan struct{})
+	go func() {
+		defer close(peerDone)
+		_ = peer.Close(websocket.StatusNormalClosure, "")
+	}()
+	awaitSignal(t, started, "the relay transport close")
+
+	closeReturned := make(chan struct{})
+	go func() {
+		defer close(closeReturned)
+		got.ch.Close()
+		got.ch.Close()
+	}()
+	awaitSignal(t, closeReturned, "the Channel.Close calls")
+	assert.True(t, got.ch.Closed())
+	awaitSignal(t, got.ch.Context().Done(), "channel cancellation")
+	select {
+	case <-got.ch.CloseDone():
+		t.Error("CloseDone signaled before the WebSocket transport closed")
+	default:
+	}
+
+	releaseClose()
+	awaitSignal(t, got.ch.CloseDone(), "channel close completion")
+	select {
+	case <-finished:
+	default:
+		t.Error("channel close completion preceded release of the WebSocket transport")
+	}
+	awaitSignal(t, peerDone, "the peer close")
 }
 
 // A pin the commit already published stands even when the channel dies before

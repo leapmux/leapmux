@@ -153,7 +153,7 @@ agent_startup_timeout: 5m
 
 ## Listen addresses
 
-LeapMux uses two kinds of listen addresses: TCP addresses for browsers and remote callers, and **local IPC** endpoints (a Unix socket or a Windows named pipe) for same-machine clients such as the CLI. The Network access panel reports the two separately: the editable TCP list under **TCP listeners**, and the endpoints startup opened under the read-only **Local access** list.
+LeapMux uses TCP addresses for browsers and remote callers, and local interprocess communication (IPC) endpoints for clients on the same machine. The CLI can use a Unix socket or a Windows named pipe. In the Network access panel, **TCP listeners** reports the live TCP bind results and **Local access** lists the local endpoints the Hub opened at startup. Both lists are read-only and appear above the **Additional addresses** editor.
 
 ### TCP listen (`listen`)
 
@@ -178,7 +178,7 @@ Before the `solo` account has a password, a TCP caller can only set the first pa
 
 ### Network access
 
-Solo mode serves additional addresses beside the addresses `-listen` gives it. Open **Preferences → Administration → Network access**, pick an interface and a port for each address you want, and apply. The Hub binds them straight away and binds them again on every later start; they are stored in the Hub's database as the `extra_listen_addresses` setting, so `leapmux control admin settings` reaches them too. The editor covers TCP addresses only: the **Local access** list below it is a read-only inventory of the local endpoints startup opened, which local CLI tools discover and no settings row can change.
+Solo mode serves additional addresses beside the addresses `-listen` gives it. Open **Preferences → Administration → Network access**. Under **Additional addresses**, pick an interface and a port for each TCP address you want, then select **Apply**. The Hub binds the addresses immediately and on every later start. The Hub stores them as the `extra_listen_addresses` setting, which you can also edit with `leapmux control admin settings`.
 
 Two things follow from adding one:
 

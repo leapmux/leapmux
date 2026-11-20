@@ -1,10 +1,11 @@
-import type { AuthState } from './AuthContext'
+import type { AuthState, WorkerTrustScope } from './AuthContext'
 /// <reference types="vitest/globals" />
 import type { EmailVerificationStatus, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { StorageAccount } from '~/lib/browserStorage'
 import { timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { render, screen } from '@solidjs/testing-library'
+import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { IDBFactory } from 'fake-indexeddb'
 import { createEffect, createRoot, Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -66,9 +67,8 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-// A default resolution: closePooledChannels chains .catch onto the result, and
-// a test that never states a tunnel outcome must not crash the auth effect.
-const mockResetTunnels = vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
+const mockSetTunnelTrustScope = vi.fn<(read: () => WorkerTrustScope) => () => void>(() => () => {})
+const mockResetTunnels = vi.fn<(outgoing: WorkerTrustScope) => Promise<void>>().mockResolvedValue(undefined)
 // The connected Hub's identity, which `hubOrigin` derives the storage account
 // from. Null is the browser (and solo) case; a remote-Hub-mode test replaces it.
 const mockDesktopHub = vi.hoisted(() => vi.fn<() => { kind: 'solo' } | { kind: 'remote', url: string } | null>(() => null))
@@ -88,7 +88,8 @@ vi.mock('~/api/platformBridge', () => ({
   }),
   isTauriApp: () => false,
   platformBridge: {
-    resetTunnels: () => mockResetTunnels(),
+    setTunnelTrustScope: (read: () => WorkerTrustScope) => mockSetTunnelTrustScope(read),
+    resetTunnels: (outgoing: WorkerTrustScope) => mockResetTunnels(outgoing),
   },
 }))
 
@@ -218,6 +219,7 @@ function renderWithAuthCapture(): { auth: () => AuthState } {
 describe('AuthContext', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockResetTunnels.mockReset().mockResolvedValue(undefined)
     mockLoadSystemInfo.mockResolvedValue(undefined)
     mockPasswordSetupGate.mockReturnValue(false)
   })
@@ -468,28 +470,26 @@ describe('AuthContext', () => {
     expect(screen.getByTestId('username')).toHaveTextContent('bob')
   })
 
-  it('does not drop pooled channels when re-authenticating as the same user', async () => {
-    // Re-login as the SAME identity (a session refresh) is not a transition, so
-    // the pooled channels -- already correct for this user -- must be kept.
+  it('retires pooled channels and native tunnels on a new sign-in as the same user', async () => {
+    const account = { id: 'u1', username: 'alice', isAdmin: false }
     mockGetCurrentUser.mockResolvedValue({
-      sessionReport: {
-        user: { id: 'u1', username: 'alice', isAdmin: false },
-      },
+      sessionReport: { user: account },
     })
     const { auth } = renderWithAuthCapture()
-    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+    await untilTrue(() => !auth().loading())
+    const outgoing = auth().workerTrustScope()
     mockCloseAll.mockClear()
     mockResetTunnels.mockClear()
 
     mockLogin.mockResolvedValue({
-      sessionReport: {
-        user: { id: 'u1', username: 'alice', isAdmin: false },
-      },
+      sessionReport: { user: account },
     })
     await auth().login('alice', 'pw')
 
-    expect(mockCloseAll).not.toHaveBeenCalled()
-    expect(mockResetTunnels).not.toHaveBeenCalled()
+    expect(mockCloseAll).toHaveBeenCalledOnce()
+    expect(mockResetTunnels).toHaveBeenCalledExactlyOnceWith(outgoing)
+    expect(outgoing.signal.aborted).toBe(true)
+    expect(auth().workerTrustScope().generation).toBeGreaterThan(outgoing.generation)
   })
 
   it('drops pooled channels and resets sidecar tunnels on logout', async () => {
@@ -1063,6 +1063,95 @@ describe('AuthContext', () => {
     expect(mockResetTunnels).not.toHaveBeenCalled()
   })
 
+  it('installs the reset for the outgoing scope before publishing another identity', async () => {
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+    const { auth } = renderWithAuthCapture()
+    await untilTrue(() => !auth().loading())
+    const outgoing = auth().workerTrustScope()
+    const reset = deferred<void>()
+    mockResetTunnels.mockImplementationOnce((scope) => {
+      expect(scope).toBe(outgoing)
+      expect(auth().workerTrustScope()).toBe(outgoing)
+      expect(auth().user()?.id).toBe('u1')
+      return reset.promise
+    })
+
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
+    })
+    await auth().refreshUser()
+    expect(mockResetTunnels).toHaveBeenCalledExactlyOnceWith(outgoing)
+    expect(auth().workerTrustScope().userId).toBe('u2')
+    expect(outgoing.signal.aborted).toBe(true)
+    reset.resolve()
+  })
+
+  it('keeps a held tunnel create valid through same-user refresh and elevation changes', async () => {
+    const { platformBridge } = await vi.importActual<typeof import('~/api/platformBridge')>('~/api/platformBridge')
+    mockSetTunnelTrustScope.mockImplementationOnce(platformBridge.setTunnelTrustScope)
+    const config = {
+      workerId: 'worker',
+      type: 'port_forward' as const,
+      targetAddr: '127.0.0.1',
+      targetPort: 3000,
+      bindAddr: '127.0.0.1',
+      bindPort: 3010,
+    }
+    const info = { id: 'tunnel', ...config }
+    const listing = deferred<{ tunnels: [], channelEpoch: string }>()
+    const lookupStarted = deferred<void>()
+    const calls: string[] = []
+    ;(window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    try {
+      mockIPC((cmd) => {
+        calls.push(cmd)
+        if (cmd === 'list_tunnels') {
+          lookupStarted.resolve()
+          return listing.promise
+        }
+        if (cmd === 'create_tunnel')
+          return { kind: 'created', info }
+        throw new Error(`unmocked: ${cmd}`)
+      })
+      const user = { id: 'u1', username: 'alice', isAdmin: false }
+      mockGetCurrentUser.mockResolvedValue({
+        sessionReport: { user },
+      })
+      const { auth } = renderWithAuthCapture()
+      await untilTrue(() => !auth().loading())
+      const scope = auth().workerTrustScope()
+      const create = platformBridge.createTunnel(config, scope, async () => 'verified')
+      await lookupStarted.promise
+
+      mockGetCurrentUser.mockResolvedValue({
+        sessionReport: {
+          user: { ...user, emailVerified: true },
+          elevationExpiresAt: timestampFromDate(new Date(Date.now() + 60_000)),
+        },
+      })
+      await auth().refreshUser()
+      expect(auth().user()?.emailVerified).toBe(true)
+      expect(auth().elevationExpiresAt()).toBeDefined()
+      expect(auth().workerTrustScope()).toBe(scope)
+      expect(mockResetTunnels).not.toHaveBeenCalled()
+      expect(calls).toEqual(['list_tunnels'])
+
+      listing.resolve({ tunnels: [], channelEpoch: 'current-epoch' })
+      await expect(create).resolves.toEqual({ kind: 'created', info })
+      expect(calls).toEqual(['list_tunnels', 'create_tunnel'])
+    }
+    finally {
+      clearMocks()
+      delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    }
+  })
+
   it('logout survives a sidecar tunnel-reset failure', async () => {
     // resetTunnels is best-effort: a rejected sidecar RPC (e.g. the sidecar
     // restarts) must be logged, not break the logout flow or surface as an
@@ -1074,11 +1163,10 @@ describe('AuthContext', () => {
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
-    mockResetTunnels.mockRejectedValueOnce(new Error('sidecar gone'))
+    mockResetTunnels.mockReset().mockRejectedValueOnce(new Error('sidecar gone')).mockResolvedValue(undefined)
 
     await auth().logout()
-    // Let the rejected resetTunnels promise settle through its .catch.
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await settle()
 
     expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
   })
@@ -1095,7 +1183,9 @@ describe('AuthContext', () => {
       return {
         auth,
         releaseRestore: (user) => {
-          session.resolve({ sessionReport: { user: user ?? undefined } })
+          session.resolve({
+            sessionReport: { user: user ?? undefined },
+          })
         },
       }
     }
