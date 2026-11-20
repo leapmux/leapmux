@@ -2368,6 +2368,11 @@ export function checkDesktop(d) {
     ['DESKTOP_RS_EVENT_NAMES', DESKTOP_RS_EVENT_NAMES],
     ['DESKTOP_TS_EVENT_NAMES', DESKTOP_TS_EVENT_NAMES],
   ])
+  mustBe(
+    d.ipcHeaders && typeof d.ipcHeaders === 'object' && !Array.isArray(d.ipcHeaders),
+    'desktop.json',
+    'ipcHeaders must be an object',
+  )
   const ipcHeaders = Object.values(d.ipcHeaders)
   mustBe(new Set(ipcHeaders).size === ipcHeaders.length, 'desktop.json', 'two IPC headers share one name')
   checkTableCoverage('desktop.json', 'ipcHeaders', Object.keys(d.ipcHeaders), [

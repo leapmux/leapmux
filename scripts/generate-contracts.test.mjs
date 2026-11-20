@@ -3530,6 +3530,30 @@ describe('checkWorkerVocab / checkDesktop', () => {
     menuShowPreferences: 'm:p',
   })
 
+  const ipcHeaders = () => ({
+    method: 'x-method',
+    path: 'x-path',
+    headers: 'x-headers',
+    relayId: 'x-relay-id',
+    requestId: 'x-request-id',
+  })
+
+  it('rejects a missing IPC header table with a contract error', () => {
+    expectContractError(() => checkDesktop({
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
+      devFrontendUrl: 'http://localhost:4328',
+      tauriEvents: events(),
+      windowBehavior: behavior(),
+      launchVisibility: launch(),
+      windowMode: windowMode(),
+    }), 'ipcHeaders must be an object')
+  })
+
   it('rejects a missing or empty DEV frontend URL', () => {
     expectContractError(() => checkDesktop({
       envVars: {
@@ -3539,6 +3563,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         agentHelper: 'E_V',
       },
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3552,6 +3577,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: '',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3637,6 +3663,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         sidecarLog: 'same:event',
         browserAuthResult: 'same:event',
       },
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3653,6 +3680,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3670,6 +3698,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3686,6 +3715,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         ...events(),
         extra: 'e:x',
       },
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -3699,6 +3729,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: {
         ...behavior(),
         extra: { one: 'x', two: 'y' },
@@ -3722,6 +3753,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
         },
         devFrontendUrl: 'http://localhost:4328',
         tauriEvents: events(),
+        ipcHeaders: ipcHeaders(),
         windowBehavior: behavior(),
       }), 'missing from DESKTOP_RS_EVENT_NAMES')
     }
@@ -3741,6 +3773,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: {
         ...behavior(),
         trayOnClose: { tray: 'tray', quit: 'tray' },
@@ -3763,6 +3796,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: {
         ...behavior(),
         closeToDock: { dock: 'dock', tray: 'dock' },
@@ -3794,6 +3828,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: {
         ...launch(),
@@ -3813,6 +3848,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: {
         ...launch(),
@@ -3835,6 +3871,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
+      ipcHeaders: ipcHeaders(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: {
