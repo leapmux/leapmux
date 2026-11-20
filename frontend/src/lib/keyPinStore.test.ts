@@ -7,6 +7,7 @@ import { readKeyPinState } from './browserStorage'
 import {
   clearAllKeyPins,
   clearKeyPin,
+  KeyPinMissingReviewError,
   KeyPinRejectedError,
   KeyPinStore,
   listKeyPins,
@@ -61,7 +62,7 @@ describe('keyPinStore', () => {
     const commit = await store.resolve('w1', bundle(1))
     // Another tab removes the pin while the channel proves itself.
     await clearKeyPin('w1')
-    await expect(commit.commit()).rejects.toThrow(/changed since the decision/)
+    await expect(commit.commit()).rejects.toBeInstanceOf(KeyPinMissingReviewError)
     expect((await readKeyPinState()).pins).toEqual({})
   })
 

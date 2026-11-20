@@ -105,9 +105,10 @@ type onDiskFile struct {
 // under a cross-process lock. A decoded snapshot is reused only when those
 // exact bytes still match, so another process remains authoritative.
 type Store struct {
-	opts       Options
-	cacheData  []byte
-	cacheState *onDiskFile
+	opts        Options
+	transaction chan struct{}
+	cacheData   []byte
+	cacheState  *onDiskFile
 }
 
 // Open prepares the pin-file path and its parent directory. It does
@@ -125,11 +126,20 @@ func Open(opts Options) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(opts.Path), opts.DirMode); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
-	return &Store{opts: opts}, nil
+	return &Store{
+		opts:        opts,
+		transaction: make(chan struct{}, 1),
+	}, nil
 }
 
 // withState keeps the sibling lock open from the read through the operation.
 func (s *Store) withState(ctx context.Context, useState func(*onDiskFile) error) (result error) {
+	select {
+	case s.transaction <- struct{}{}:
+		defer func() { <-s.transaction }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	file, err := filelock.Open(s.opts.Path+".lock", false)
 	if err != nil {
 		return fmt.Errorf("open pin lock: %w", err)
