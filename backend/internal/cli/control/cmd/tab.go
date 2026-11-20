@@ -10,6 +10,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
 // The `tab` group holds the commands that work on a tab of any type. Each
@@ -125,7 +126,7 @@ func tabRowOf(t *leapmuxv1.WorkspaceTab, d tabDetail, workerName string) tabRow 
 		ID:          t.GetTab().GetTabId(),
 		Type:        tabTypeName(t.GetTab().GetTabType()),
 		Title:       d.Title,
-		Provider:    enumToken(d.Agent.GetAgentProvider()),
+		Provider:    agentlabels.CLIAlias(d.Agent.GetAgentProvider()),
 		State:       d.State,
 		Worker:      workerName,
 		WorkerID:    t.GetWorkerId(),

@@ -141,7 +141,7 @@ func TestAgentRowOf_RendersEnumsAsTokens(t *testing.T) {
 	got := agentRowOf(in, false)
 	assert.Equal(t, "active", got.Status)
 	assert.Equal(t, "waiting_for_user", got.State)
-	assert.Equal(t, "Claude Code", got.Provider)
+	assert.Equal(t, "claude-code", got.Provider)
 	assert.Equal(t, "ag-1", got.ID)
 	assert.Equal(t, "demo", got.Title)
 	assert.Equal(t, "claude-sonnet-4", got.Model)

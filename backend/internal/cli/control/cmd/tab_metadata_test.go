@@ -92,7 +92,7 @@ func TestRunTabList_UsesBatchedAgentDetailsAndWorkerViewerTitles(t *testing.T) {
 		rows[row["id"].(string)] = row
 	}
 	assert.Equal(t, "codex", rows["agent-alpha"]["provider"])
-	assert.Equal(t, "claude_code", rows["agent-beta"]["provider"])
+	assert.Equal(t, "claude-code", rows["agent-beta"]["provider"])
 	assert.Equal(t, "working", rows["agent-beta"]["state"])
 	assert.Equal(t, "build-box", rows["agent-alpha"]["worker"])
 	assert.Equal(t, "readme.md", rows["file-win"]["title"])

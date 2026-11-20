@@ -21,8 +21,8 @@ import (
 //   - A TabType prints the token of contracts/tab-types.json, which the
 //     frontend shares. TestEnumTokenMatchesTheTabTypeContract keeps the two
 //     rules in agreement.
-//   - An AgentProvider prints its display name from agentlabels, the name
-//     that --provider accepts and the frontend's picker shows.
+//   - An AgentProvider prints its canonical CLI alias from agentlabels,
+//     which --provider accepts.
 //
 // The zero value of every enum prints "", so `omitempty` drops an unset
 // field.
@@ -193,7 +193,7 @@ func agentRowOf(a *leapmuxv1.AgentInfo, withOptions bool) agentRow {
 	row := agentRow{
 		ID:              a.GetId(),
 		Title:           a.GetTitle(),
-		Provider:        agentProviderName(a.GetAgentProvider()),
+		Provider:        agentlabels.CLIAlias(a.GetAgentProvider()),
 		State:           enumToken(a.GetActivityState()),
 		Status:          enumToken(a.GetStatus()),
 		Model:           optionids.CurrentValue(groups, optionids.Model),

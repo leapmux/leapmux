@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
@@ -234,7 +236,7 @@ type agentMessage struct {
 
 // TextLine prints the message as "#<seq> <source>: <content>", with the
 // content compacted to one line. A message from another agent states its
-// sender after the source: "#12 user from agent 87a19d5f (Claude Code): ...".
+// sender after the source: "#12 user from agent 87a19d5f (claude-code): ...".
 func (m agentMessage) TextLine() string {
 	if m.Sender != nil {
 		return fmt.Sprintf("#%d %s from %s: %s", m.Seq, m.Source, m.Sender.TextValue(), contentSummary(m.Content))
@@ -291,7 +293,7 @@ func renderAgentMessage(m *leapmuxv1.AgentChatMessage) agentMessage {
 		Seq:          m.GetSeq(),
 		CreatedAt:    m.GetCreatedAt(),
 		Source:       enumToken(m.GetSource()),
-		Provider:     agentProviderName(m.GetAgentProvider()),
+		Provider:     agentlabels.CLIAlias(m.GetAgentProvider()),
 		Sender:       messageSenderOfRow(m),
 		PreviousSeq:  m.GetPreviousSeq(),
 		Depth:        m.GetDepth(),
@@ -327,12 +329,16 @@ func renderAgentMessage(m *leapmuxv1.AgentChatMessage) agentMessage {
 	return out
 }
 
-// decodeJSON returns the parsed JSON value when data is well-formed
-// JSON, otherwise (nil, false). Centralised so the renderer's two
-// JSON-ish fields (content, span_lines) share fallback semantics.
+// decodeJSON parses one JSON value and preserves the original number tokens.
+// Content and span_lines fall back to the original text on a parse failure.
 func decodeJSON(data []byte) (any, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
+	if err := decoder.Decode(&v); err != nil {
+		return nil, false
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return nil, false
 	}
 	return v, true

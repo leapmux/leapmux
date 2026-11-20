@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -53,20 +54,20 @@ func senderJSON(t *testing.T) string {
 }
 
 func TestMessageSenderTextValue(t *testing.T) {
-	assert.Equal(t, "agent ag-sende (Claude Code)", messageSender{TabID: senderTabID, Provider: "Claude Code"}.TextValue())
+	assert.Equal(t, "agent ag-sende (claude-code)", messageSender{TabID: senderTabID, Provider: "claude-code"}.TextValue())
 	assert.Equal(t, "agent ag-sende", messageSender{TabID: senderTabID}.TextValue(), "an unknown provider prints no parentheses")
 }
 
 func TestMessageSenderOf(t *testing.T) {
 	assert.Nil(t, messageSenderOf(nil), "an input that no agent sent has no sender")
 	assert.Nil(t, messageSenderOf(&leapmuxv1.AgentMessageSender{}), "a sender with no tab is no sender")
-	assert.Equal(t, &messageSender{TabID: senderTabID, Provider: "Claude Code"},
+	assert.Equal(t, &messageSender{TabID: senderTabID, Provider: "claude-code"},
 		messageSenderOf(&leapmuxv1.AgentMessageSender{TabId: senderTabID, Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
 }
 
 func TestMessageSenderOfRow(t *testing.T) {
 	compressed, compression := msgcodec.Compress(agentMessageSupplement(t, senderJSON(t)))
-	want := &messageSender{TabID: senderTabID, Provider: "Claude Code"}
+	want := &messageSender{TabID: senderTabID, Provider: "claude-code"}
 	none := leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
 	for _, test := range []struct {
 		name        string
@@ -97,7 +98,7 @@ func TestAgentMessage_TextLineStatesTheSender(t *testing.T) {
 		Content: []byte(`{"content":"Run the tests"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContent: agentMessageSupplement(t, senderJSON(t)), SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 	})
-	assert.Equal(t, `#12 user from agent ag-sende (Claude Code): {"content":"Run the tests"}`, m.TextLine())
+	assert.Equal(t, `#12 user from agent ag-sende (claude-code): {"content":"Run the tests"}`, m.TextLine())
 }
 
 // agentMessageInput is a queued agent message from the sender of these tests.
@@ -117,14 +118,14 @@ func TestAgentQueueListOverIPC_PrintsTheSenderOfAnAgentMessage(t *testing.T) {
 	require.Len(t, items, 2)
 	assert.Equal(t, map[string]any{
 		"id": inputAlpha, "kind": "agent_message", "state": "queued", "text": "Run the tests", "reorder_segment": float64(1),
-		"sender": map[string]any{"tab_id": senderTabID, "provider": "Claude Code"},
+		"sender": map[string]any{"tab_id": senderTabID, "provider": "claude-code"},
 	}, items[0], "JSON states the sender's full tab id and its provider")
 	assert.NotContains(t, items[1], "sender", "a user message states no sender")
 
 	o := runControlText(t, "agent", "queue", "list", id)
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
 	assert.Contains(t, o.Stdout, "KIND           FROM")
-	assert.Equal(t, []string{cli.ShortID(inputAlpha), "agent_message", "agent", cli.ShortID(senderTabID), "(Claude", "Code)", "queued", "-", "Run", "the", "tests"},
+	assert.Equal(t, []string{cli.ShortID(inputAlpha), "agent_message", "agent", cli.ShortID(senderTabID), "(claude-code)", "queued", "-", "Run", "the", "tests"},
 		strings.Fields(queueTextLine(t, o.Stdout, cli.ShortID(inputAlpha))))
 	assert.Equal(t, []string{cli.ShortID(inputBeta), "user_message", "-", "queued", "-", "Fix", "it"},
 		strings.Fields(queueTextLine(t, o.Stdout, cli.ShortID(inputBeta))))
@@ -170,11 +171,11 @@ func TestAgentMessagesOverIPC_PrintsTheSenderOfAnAgentMessage(t *testing.T) {
 	messages := runControl(t, "agent", "messages", id).Data(t)["messages"].([]any)
 	require.Len(t, messages, 2)
 	assert.NotContains(t, messages[0], "sender", "the user's own message states no sender")
-	assert.Equal(t, map[string]any{"tab_id": senderTabID, "provider": "Claude Code"}, messages[1].(map[string]any)["sender"])
+	assert.Equal(t, map[string]any{"tab_id": senderTabID, "provider": "claude-code"}, messages[1].(map[string]any)["sender"])
 
 	o := runControlText(t, "agent", "messages", id)
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-	assert.Equal(t, "#1 user: {\"content\":\"Hello\"}\n#2 user from agent "+cli.ShortID(senderTabID)+" (Claude Code): {\"content\":\"Run the tests\"}\n", o.Stdout)
+	assert.Equal(t, "#1 user: {\"content\":\"Hello\"}\n#2 user from agent "+cli.ShortID(senderTabID)+" (claude-code): {\"content\":\"Run the tests\"}\n", o.Stdout)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -184,6 +185,56 @@ func TestAgentMessagesOverIPC_PrintsTheSenderOfAnAgentMessage(t *testing.T) {
 			AgentId: id, Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST, Limit: contracts.MessagePageLimit,
 		}, request), "request: %v", request)
 	}
+}
+
+func TestAgentMessagesOverIPC_PreservesProviderAndSpanJSON(t *testing.T) {
+	const content = `{"messageId":9007199254740993}`
+	const spans = `[{"offset":-9007199254740993}]`
+	const malformedContent, malformedSpans = "1\n2", "[1] remainder"
+	id := fullTestID("agent-transcript")
+	worker := &messagesWorker{rows: []*leapmuxv1.AgentChatMessage{
+		{
+			Id: "m-1", Seq: 1, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			Content: []byte(content), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+			SpanLines: spans,
+		},
+		{
+			Id: "m-2", Seq: 2, Content: []byte(malformedContent),
+			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, SpanLines: malformedSpans,
+		},
+		{
+			Id: "m-3", Seq: 3, Content: []byte(`"readable note"`),
+			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		},
+	}}
+	startAgentWorker(t, id, worker)
+
+	var envelope struct {
+		Data struct {
+			Messages []struct {
+				Provider  string          `json:"provider"`
+				Content   json.RawMessage `json:"content"`
+				SpanLines json.RawMessage `json:"span_lines"`
+			} `json:"messages"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(runControl(t, "agent", "messages", id).ok(t), &envelope))
+	require.Len(t, envelope.Data.Messages, 3)
+	first, second := envelope.Data.Messages[0], envelope.Data.Messages[1]
+	assert.Equal(t, "claude-code", first.Provider)
+	assert.Equal(t, content, string(first.Content))
+	assert.Equal(t, spans, string(first.SpanLines))
+	var fallbackContent, fallbackSpans string
+	require.NoError(t, json.Unmarshal(second.Content, &fallbackContent))
+	require.NoError(t, json.Unmarshal(second.SpanLines, &fallbackSpans))
+	assert.Equal(t, malformedContent, fallbackContent)
+	assert.Equal(t, malformedSpans, fallbackSpans)
+
+	text := runControlText(t, "agent", "messages", id)
+	require.Equal(t, cli.ExitOK, text.Code, text.Stderr)
+	assert.Contains(t, text.Stdout, content)
+	assert.Contains(t, text.Stdout, "readable note\n")
+	assert.NotContains(t, text.Stdout, `"readable note"`)
 }
 
 func TestAgentSendHelpStatesThatAnAgentSendsAsItself(t *testing.T) {

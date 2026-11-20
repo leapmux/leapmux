@@ -9,6 +9,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
 
@@ -17,11 +18,11 @@ import (
 // token of the sending agent's tab, so it states which agent wrote the text.
 type messageSender struct {
 	TabID string `json:"tab_id"`
-	// Provider is the display name of the sending agent's provider.
+	// Provider is the canonical CLI alias of the sending agent's provider.
 	Provider string `json:"provider,omitempty"`
 }
 
-// TextValue prints the sender in one cell: "agent 87a19d5f (Claude Code)".
+// TextValue prints the sender in one cell: "agent 87a19d5f (claude-code)".
 func (s messageSender) TextValue() string {
 	if s.Provider == "" {
 		return "agent " + cli.ShortID(s.TabID)
@@ -35,7 +36,7 @@ func messageSenderOf(sender *leapmuxv1.AgentMessageSender) *messageSender {
 	if sender.GetTabId() == "" {
 		return nil
 	}
-	return &messageSender{TabID: sender.GetTabId(), Provider: agentProviderName(sender.GetProvider())}
+	return &messageSender{TabID: sender.GetTabId(), Provider: agentlabels.CLIAlias(sender.GetProvider())}
 }
 
 // messageSenderOfRow reads the sender of a transcript row from the row's
