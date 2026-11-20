@@ -118,8 +118,10 @@ func TestEventMapping_EveryAgentEventHasADecision(t *testing.T) {
 		event *leapmuxv1.AgentEvent
 		kind  string
 	}{
-		// Content class: a notify watch never receives it.
+		// A notify watch receives no transcript content. The message follower
+		// reports retractions to its own consumers.
 		"agent_message":       {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: 1}}}, ""},
+		"messages_retracted":  {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_MessagesRetracted{MessagesRetracted: &leapmuxv1.AgentMessagesRetracted{Seqs: []int64{1}}}}, ""},
 		"catch_up_complete":   {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_CatchUpComplete{CatchUpComplete: &leapmuxv1.CatchUpComplete{}}}, ""},
 		"catch_up_start":      {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_CatchUpStart{CatchUpStart: &leapmuxv1.CatchUpStart{}}}, ""},
 		"input_queue_changed": {&leapmuxv1.AgentEvent{Event: &leapmuxv1.AgentEvent_InputQueueChanged{InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{}}}, ""},

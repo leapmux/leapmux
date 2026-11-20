@@ -532,7 +532,10 @@ func TestDiracStopDisposesAReadThatOutlivesTheDeadline(t *testing.T) {
 
 	finished := startDiracTestStop(t, a, 2)
 	awaitDiracTestStop(t, entered)
-	assert.Error(t, a.SteerInput("whisper after stop admission closes", nil))
+	assert.Error(t, a.SteerInput(agent.SteerRequest{
+		InputID: "late-whisper",
+		Content: "whisper after stop admission closes",
+	}))
 	assert.Empty(t, diracStartupEvents(t, logPath, diracSteerMethod))
 	assert.Empty(t, diracStartupEvents(t, logPath, "test/eof"))
 	clock.Advance(diracStopBudget).MustWait(ctx)

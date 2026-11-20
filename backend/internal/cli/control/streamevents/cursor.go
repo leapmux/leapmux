@@ -92,7 +92,7 @@ func (c *Cursor[Entry]) advanceFrom(id string, value int64) (int64, bool) {
 	return c.advanceLocked(id, value)
 }
 
-func (c *Cursor[Entry]) advanceLocked(id string, value int64) bool {
+func (c *Cursor[Entry]) advanceLocked(id string, value int64) (int64, bool) {
 	cur, ok := c.values[id]
 	if !ok || value > cur {
 		c.values[id] = value
@@ -207,7 +207,10 @@ func (c *AgentCursor) Advance(id string, value int64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	fence := c.retracted[id]
-	if _, deleted := fence[value]; deleted || !c.advanceLocked(id, value) {
+	if _, deleted := fence[value]; deleted {
+		return false
+	}
+	if _, advanced := c.advanceLocked(id, value); !advanced {
 		return false
 	}
 	for sequence := range fence {

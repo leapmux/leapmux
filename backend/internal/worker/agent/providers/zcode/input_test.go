@@ -227,6 +227,39 @@ func TestZCodeInputBindingKeepsTheOriginalTurn(t *testing.T) {
 	assert.Empty(t, sink.retirements)
 }
 
+func TestZCodeWaitRetiresInputWithTheProcessExitOutcome(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		intentional bool
+		outcome     leapmuxv1.AgentInputTurnOutcome
+	}{
+		{"intentional stop", true, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED},
+		{"unexpected exit", false, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &zcodeReceiptSink{retirements: make(chan zcodeInputRetirement, 4)}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "native-turn", contracts.ZCodeEventTurnStarted,
+				`{"turnNumber":1,"inputId":"owned-input"}`))
+			if tc.intentional {
+				a.NoteIntentionalStop()
+			}
+			a.SimulateExitForTest()
+
+			require.NoError(t, a.Wait())
+			require.Len(t, sink.retirements, 1)
+			retired := <-sink.retirements
+			assert.Equal(t, agent.NativeInputReceipt{SessionID: "sess-1", InputID: "owned-input"}, retired.receipt)
+			assert.Equal(t, tc.outcome, retired.outcome)
+
+			a.Stop()
+			assert.Empty(t, sink.retirements)
+		})
+	}
+}
+
 func TestZCodeSendInput_NewAdmissionDoesNotInheritThePreviousToolCount(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
