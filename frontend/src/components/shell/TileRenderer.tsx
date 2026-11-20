@@ -1110,7 +1110,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
               if (tab)
                 mruEditorDeps.activate(tab)
             }
+            let releaseViewportReader: (() => void) | undefined
             onCleanup(() => {
+              releaseViewportReader?.()
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
               chatHandlers.delete(agentId)
@@ -1132,16 +1134,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     pagination={{
                       hasOlderMessages: chatStore.hasOlderMessages(agentId),
                       fetchingOlder: chatStore.isFetchingOlder(agentId),
-                      onLoadOlderMessages: () => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId),
+                      onLoadOlderMessages: purpose => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId, purpose),
                       onTrimOldMessages: minKeep => chatStore.trimOldestToViewport(agentId, minKeep),
                       hasNewerMessages: chatStore.hasNewerMessages(agentId),
                       fetchingNewer: chatStore.isFetchingNewer(agentId),
+                      onSetLandingRefillPages: pages => chatStore.landingRefillPages.set(agentId, pages),
                       atWindowCeiling: chatStore.atWindowCeiling(agentId),
-                      onLoadNewerMessages: () => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId),
+                      onLoadNewerMessages: purpose => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId, purpose),
                       onJumpToLatest: signal => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId, signal),
                       onJumpToOldest: signal => chatStore.jumpToOldestMessages(agent()?.workerId ?? '', agentId, signal),
                       onJumpToSeq: (seq, signal) => chatStore.jumpToMessagesAroundSeq(agent()?.workerId ?? '', agentId, seq, signal),
                     }}
+                    landingRefillPages={chatStore.landingRefillPages.get(agentId)}
                     rail={railProps()}
                     {...optionalProp('savedViewportScroll', chatStore.viewportScroll.get(agentId))}
                     onClearSavedViewportScroll={() => chatStore.viewportScroll.clear(agentId)}
@@ -1152,7 +1156,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     // entry back for a dead agent, while a workspace switch-away (which
                     // only scopes the tab out) still saves. See saveViewportScrollForRemount.
                     onSaveViewportScroll={state => chatStore.saveViewportScrollForRemount(agentId, state)}
+                    onViewportChange={(height, followRequested) => chatStore.reportViewport(agentId, height, followRequested)}
                     onScrollApiReady={(api) => {
+                      releaseViewportReader?.()
+                      releaseViewportReader = chatStore.registerViewportReader(agentId, api.readHistoryIntent)
                       agentScrollStates.set(agentId, api.getScrollState)
                       agentScrollToBottoms.set(agentId, api.forceScrollToBottom)
                       chatHandlers.set(agentId, { pageScroll: api.pageScroll })

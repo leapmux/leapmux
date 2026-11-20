@@ -1016,11 +1016,26 @@ func (svc *Service) replayAgentCatchUp(
 	// each genuine settle that raced
 	// the replay.
 	replayStartTail := svc.maxSeqOrNil(agentID, "failed to read max seq for catch-up start")
+	pageLimit := int64(contracts.MessagePageLimit)
+	gapLimit := int64(contracts.CatchUpGapLimit)
+	var effectivePageLimit *uint32
+	if requestedLimit := agentEntry.GetReplayPageLimit(); requestedLimit > 0 {
+		pageLimit = min(int64(requestedLimit), pageLimit)
+		gapLimit = min(gapLimit, 2*pageLimit)
+		effectivePageLimit = proto.Uint32(uint32(pageLimit))
+	}
+	skipGapBase := agentEntry.GetCursorSeq()
+	if agentEntry.WindowTailSeq != nil {
+		skipGapBase = agentEntry.GetWindowTailSeq()
+	}
+	skipMessages := shouldSkipCatchUpReplay(agentEntry.GetReplay(), agentEntry.GetCursorSeq(), skipGapBase, replayStartTail, gapLimit)
 	broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_CatchUpStart{
 			CatchUpStart: &leapmuxv1.CatchUpStart{
-				LatestSeq: replayStartTail,
+				LatestSeq:            replayStartTail,
+				MessageReplaySkipped: skipMessages,
+				ReplayPageLimit:      effectivePageLimit,
 				// Under this agent's OWN id, not the root's: a child tab's answer is
 				// its own registry row, which differs from its root's.
 				//
@@ -1049,20 +1064,16 @@ func (svc *Service) replayAgentCatchUp(
 		return
 	}
 
-	// Replay up to contracts.MessagePageLimit messages. AFTER_CURSOR and
+	// Replay one transcript page. AFTER_CURSOR and
 	// AFTER_CURSOR_OR_NONE use the forward page after cursor_seq. LATEST and
 	// UNSPECIFIED use the newest page. The capped mode skips the page when the
 	// browser will re-anchor instead. The skip measures the gap from the
 	// DECLARED window tail when the client sends one: the browser re-anchors on
 	// the gap from its loaded tail, and the resume cursor can lead that tail
 	// (frames observed but dropped while scrolled away).
-	skipGapBase := agentEntry.GetCursorSeq()
-	if agentEntry.WindowTailSeq != nil {
-		skipGapBase = agentEntry.GetWindowTailSeq()
-	}
-	if !shouldSkipCatchUpReplay(agentEntry.GetReplay(), agentEntry.GetCursorSeq(), skipGapBase, replayStartTail) {
+	if !skipMessages {
 		replayAnchor := replayPageAnchor(agentEntry.GetReplay(), agentEntry.GetCursorSeq())
-		replayPlan := resolveMessagePage(replayAnchor, agentEntry.GetCursorSeq(), contracts.MessagePageLimit)
+		replayPlan := resolveMessagePage(replayAnchor, agentEntry.GetCursorSeq(), pageLimit)
 		replayMessages, replayErr := svc.fetchMessagePageRows(bgCtx(), agentID, replayPlan.mode, replayPlan.bound, replayPlan.limit)
 		// A LATEST plan returns newest-first. Reverse it so all replay modes send
 		// messages in ascending sequence order.
@@ -4029,9 +4040,9 @@ func replayPageAnchor(replay leapmuxv1.WatchReplayMode, cursorSeq int64) leapmux
 // from: its declared window tail, or the resume cursor when it declares none.
 // An absent tail keeps the replay because the client cannot calculate the gap
 // or know that it must re-anchor.
-func shouldSkipCatchUpReplay(replay leapmuxv1.WatchReplayMode, cursorSeq, skipGapBase int64, latestSeq *int64) bool {
+func shouldSkipCatchUpReplay(replay leapmuxv1.WatchReplayMode, cursorSeq, skipGapBase int64, latestSeq *int64, gapLimit int64) bool {
 	return replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE &&
-		cursorSeq > 0 && latestSeq != nil && *latestSeq-skipGapBase > contracts.CatchUpGapLimit
+		cursorSeq > 0 && latestSeq != nil && *latestSeq-max(0, skipGapBase) > gapLimit
 }
 
 // maxSeqOrNil reads the agent's live-tail seq on a background context, returning nil

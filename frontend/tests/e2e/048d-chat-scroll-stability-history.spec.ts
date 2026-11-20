@@ -3,10 +3,15 @@ import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { ROW_ALIGN_OFFSET_PX } from '~/components/chat/chatLayoutShift'
 import { MESSAGE_PAGE_LIMIT } from '../../src/generated/contracts/chat-history'
+import { WorkerAgentService } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { procedureOf } from '../../src/lib/rpcProcedure'
 import { test } from './fixtures'
 import { RAIL, RAIL_DOT } from './helpers/chatScrollRail'
-import { clearStoredChatHeightsAndRenders, expectNoVisibleHeightChange, expectRowMoved, expectStoredRowHeight, markedParagraphs, pointAtChat, readRowBox, readRowSeqWithText, recordRowHeightChanges, requireTopRow, sendLongTurn, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
+import { clearStoredChatHeightsAndRenders, expectNoVisibleHeightChange, expectRowMoved, expectStoredRowHeight, markedParagraphs, pointAtChat, readRowBox, readRowSeqWithText, recordPremeasureCommits, recordRowHeightChanges, requireTopRow, sendLongTurn, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
+import { sentRpcMethods } from './helpers/notificationCopy'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
+import { installRpcListeners } from './helpers/timingFixture'
+import { touchSwipe } from './helpers/touch'
 import { assistantBubbles, chatScrollContainer, chatScrollTop, userBubbles, waitForAgentStarted } from './helpers/ui'
 
 /**
@@ -61,13 +66,26 @@ function newestMountedSeq(page: Page): Promise<number> {
  * for it. Resolves the number of the last turn.
  */
 async function sendTurnsUntilPastOnePage(page: Page, modelScript: ModelScript, seq: number, sent: number): Promise<number> {
+  const result = await sendShortTurnsPastSeq(page, modelScript, seq + MESSAGE_PAGE_LIMIT + 1, sent, () => newestMountedSeq(page))
+  return result.turn
+}
+
+async function sendShortTurnsPastSeq(
+  page: Page,
+  modelScript: ModelScript,
+  target: number,
+  sent: number,
+  readSeq: (turn: number) => Promise<number>,
+): Promise<{ turn: number, seq: number }> {
   let turns = sent
-  while (await newestMountedSeq(page) - seq <= MESSAGE_PAGE_LIMIT + 1) {
+  let seq = await readSeq(turns)
+  while (seq <= target) {
     turns++
     expect(turns, 'the history grows past one page within the expected number of turns').toBeLessThanOrEqual(MAX_SEED_TURNS)
     await sendScriptedTurn(page, modelScript, shortTurn(turns))
+    seq = await readSeq(turns)
   }
-  return turns
+  return { turn: turns, seq }
 }
 
 /**
@@ -132,7 +150,14 @@ test.describe('chat scroll stability while the history above the reader changes'
     // The target of the seek is the second prompt, so its page holds the rows of the first turn above it.
     const targetSeq = await readRowSeqWithText(page, 'Turn 2:')
     expect(targetSeq, 'the row of the second prompt is mounted').not.toBeNull()
-    const turns = await sendTurnsUntilPastOnePage(page, modelScript, Number(targetSeq), 2)
+    // Pick a newer prompt past the amount a 600px pane fetches for a seek.
+    const distant = await sendShortTurnsPastSeq(page, modelScript, Number(targetSeq) + 16, 2, async (turn) => {
+      const seq = await readRowSeqWithText(page, `Turn ${turn}:`)
+      expect(seq, 'the candidate prompt is mounted').not.toBeNull()
+      return Number(seq)
+    })
+    const skippedSeq = String(distant.seq)
+    const turns = await sendTurnsUntilPastOnePage(page, modelScript, distant.seq, distant.turn)
 
     // Open the chat again as a browser does that never showed it. No row has a stored height then, so the rows of the
     // page of the seek measure for the first time.
@@ -144,6 +169,7 @@ test.describe('chat scroll stability while the history above the reader changes'
     await expect(userBubbles(page).filter({ hasText: 'Turn 2:' }), 'the second prompt is not loaded').toHaveCount(0)
 
     const mark = page.locator(`${RAIL_DOT}[data-seq="${targetSeq}"]`)
+    const premeasure = await recordPremeasureCommits(page)
     // Hover first: the pointer on the strip keeps the rail lit for the click.
     await mark.hover()
     await expect(page.locator(RAIL)).toHaveCSS('opacity', '1')
@@ -163,6 +189,26 @@ test.describe('chat scroll stability while the history above the reader changes'
     await expect(userBubbles(page).filter({ hasText: 'Turn 1:' }), 'the first turn joins the list above the prompt').toHaveCount(1)
     await waitForScrollRest(page)
     expect(await distanceFromPlace(), 'the prompt stays where it landed').toBeLessThanOrEqual(1)
+    expect(await premeasure.commitOf(skippedSeq), 'the browser leaves the distant prompt for normal scrolling').toBeNull()
+
+    await installRpcListeners(page)
+    const distantMark = page.locator(`${RAIL_DOT}[data-seq="${skippedSeq}"]`)
+    await distantMark.hover()
+    await distantMark.click()
+    await expect(userBubbles(page).filter({ hasText: `Turn ${distant.turn}:` })).toBeVisible()
+    expect(await sentRpcMethods(page)).toContain(procedureOf(WorkerAgentService.method.listAgentMessages))
+
+    await page.setViewportSize({ width: 1024, height: 5000 })
+    const chat = chatScrollContainer(page)
+    await expect.poll(() => chat.evaluate(element => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(4)
+    await installRpcListeners(page)
+    const box = await chat.boundingBox()
+    expect(box).not.toBeNull()
+    await touchSwipe(page, {
+      from: { x: box!.x + box!.width / 2, y: box!.y + 220 },
+      to: { x: box!.x + box!.width / 2, y: box!.y + 100 },
+    })
+    await expect.poll(() => sentRpcMethods(page)).toContain(procedureOf(WorkerAgentService.method.listAgentMessages))
   })
 
   test('keeps every row in view mounted while an older page with stored heights arrives', async ({ page, authenticatedWorkspace, modelScript }) => {

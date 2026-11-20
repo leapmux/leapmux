@@ -9,6 +9,14 @@
  * components layer (which a type defined in the virtualizer would force).
  */
 
+/** The pages a new landing can still fetch before the reader scrolls. */
+export type LandingRefillPages = 0 | 1
+
+export type HistoryPagePurpose = 'reader' | 'landing-refill'
+
+/** The mounted pane's current request for history placement. */
+export type ViewportHistoryIntent = 'tail' | 'history' | 'jumping'
+
 /**
  * A scroll anchor: the message (by row id) at the viewport top, plus the pixel
  * offset from that row's top to the viewport top. The virtualizer produces it

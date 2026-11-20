@@ -30,11 +30,12 @@ type registration struct {
 
 // agentReplayTuple fixes the replay request for one registered FULL lifetime.
 type agentReplayTuple struct {
-	replayID      uint64
-	replayMode    leapmuxv1.WatchReplayMode
-	cursorSeq     int64
-	windowTailSeq int64
-	windowTailSet bool
+	replayID        uint64
+	replayMode      leapmuxv1.WatchReplayMode
+	cursorSeq       int64
+	windowTailSeq   int64
+	windowTailSet   bool
+	replayPageLimit uint32
 }
 
 // watchEntry states one entity's mode and its fixed replay request.

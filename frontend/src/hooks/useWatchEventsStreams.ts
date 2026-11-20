@@ -7,7 +7,7 @@ import type {
 } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { TabView } from '~/stores/tabView'
 import { create } from '@bufbuild/protobuf'
-import { createEffect, onCleanup } from 'solid-js'
+import { batch, createEffect, onCleanup } from 'solid-js'
 import { isDisconnectError } from '~/api/workerErrors'
 import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
@@ -77,6 +77,8 @@ export interface UseWatchEventsStreamsOpts {
   onWorkerOnline: (workerId: string, online: boolean) => void
   /** Report accepted FULL promotions to the caller that loads or refreshes messages. */
   onPromoted: (workerId: string, agentIds: string[]) => void
+  /** Read the transcript cursors and pane size for a new FULL receipt. */
+  readAgentReplay?: (agentId: string) => WatchAgentEntry
   onReplayRequested?: (workerId: string, replayId: bigint, entries: readonly WatchAgentEntry[], identities: ReadonlyMap<string, string>) => void
   onReplayRetired?: (workerId: string, replayId: bigint, agentIds: readonly string[], reason: 'removed' | 'demoted' | 'rejected' | 'closed' | 'replaced') => void
 }
@@ -196,7 +198,10 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         retireReplays(workerId, s, [entry.agentId], 'replaced', existing.entry.replayId)
       else if (existing)
         retireReplays(workerId, s, [entry.agentId], existing.completed ? 'replaced' : 'rejected', existing.entry.replayId)
-      const fixed = Object.freeze(create(WatchAgentEntrySchema, { ...entry, replayId: requestId }))
+      const fixed = Object.freeze(create(WatchAgentEntrySchema, {
+        ...(opts.readAgentReplay?.(entry.agentId) ?? entry),
+        replayId: requestId,
+      }))
       s.replayRequests.set(entry.agentId, {
         entry: fixed,
         completed: false,
@@ -384,7 +389,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     try {
       s.inflightUpdateId = nextId
       s.inflightKey = watchPlanKey(plan)
-      const transmitted = requestReplays(workerId, s, plan, nextId)
+      const transmitted = batch(() => requestReplays(workerId, s, plan, nextId))
       s.inflightPlan = transmitted
       const handle = await watchEventsViaChannel(workerId, {
         agents: transmitted.agents,
@@ -480,7 +485,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       return
     s.inflightUpdateId = nextId
     s.inflightKey = watchPlanKey(plan)
-    const transmitted = requestReplays(workerId, s, plan, nextId)
+    const transmitted = batch(() => requestReplays(workerId, s, plan, nextId))
     s.inflightPlan = transmitted
     try {
       s.handle!.update({

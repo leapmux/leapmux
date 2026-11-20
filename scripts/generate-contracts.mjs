@@ -554,6 +554,7 @@ export function checkChatHistory(v) {
   // is not a valid TypeScript literal.
   mustBe(Number.isSafeInteger(v.messagePageLimit) && v.messagePageLimit > 0, 'chat-history.json', 'messagePageLimit must be a positive safe integer')
   mustBe(Number.isSafeInteger(v.catchUpGapLimit) && v.catchUpGapLimit >= v.messagePageLimit, 'chat-history.json', 'catchUpGapLimit must be a safe integer >= messagePageLimit')
+  mustBe(v.catchUpGapLimit <= 2 * v.messagePageLimit, 'chat-history.json', 'catchUpGapLimit must fit in two message pages')
   return {}
 }
 

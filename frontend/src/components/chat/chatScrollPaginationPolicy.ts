@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { ScrollAnchor } from '~/stores/chatTypes'
+import type { HistoryPagePurpose, ScrollAnchor } from '~/stores/chatTypes'
 import { createMemo, untrack } from 'solid-js'
 import { cannotScroll } from './chatScrollGeometry'
 
@@ -12,8 +12,8 @@ export interface ChatPaginationPolicyDeps {
   geomVersion: Accessor<unknown>
   isAtTopEdge: () => boolean
   isAtBottomEdge: () => boolean
-  onLoadOlder: () => void
-  onLoadNewer: () => void
+  onLoadOlder: (purpose?: HistoryPagePurpose) => void
+  onLoadNewer: (purpose?: HistoryPagePurpose) => void
   isAtBottom: () => boolean
   /**
    * Follow mode (see ScrollContext.isFollowing). Reactive: the hook passes the accessor
@@ -56,22 +56,22 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
       : 0
   }
 
-  const loadOlderMessages = (): boolean => {
+  const loadOlderMessages = (purpose?: HistoryPagePurpose): boolean => {
     if (deps.getEl() === undefined || !deps.hasOlder() || deps.fetchingOlder() || deps.stagedOlder())
       return false
     // A prepend changes geometry above the viewport. The layout shift keeps the view in
     // place across it, so nothing needs to be held for it here.
-    deps.onLoadOlder()
+    deps.onLoadOlder(purpose)
     return true
   }
 
   const tryLoadOlderOnExplicitTopIntent = (): boolean =>
     deps.isAtTopEdge() && loadOlderMessages()
 
-  const loadNewerMessages = (): boolean => {
+  const loadNewerMessages = (purpose?: HistoryPagePurpose): boolean => {
     if (deps.getEl() === undefined || !deps.hasNewer() || deps.fetchingNewer() || deps.stagedNewer())
       return false
-    deps.onLoadNewer()
+    deps.onLoadNewer(purpose)
     return true
   }
 

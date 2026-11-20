@@ -2,7 +2,7 @@ import type { ChatStoreState } from './chat.store'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
+import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
 
 // listAgentMessages is the only external dependency; hoist the mock so the factory
 // can reference it (vi.mock is hoisted above imports).
@@ -15,12 +15,12 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-const { createHistoryFetchRunner, createHistoryPaginator, linkWatchSignal } = await import('./chatHistoryPaginator')
+const { createHistoryFetchRunner, createHistoryPaginator, landingPageLimit, linkWatchSignal } = await import('./chatHistoryPaginator')
 const { MessagePageAnchor, MessageSource } = await import('~/generated/proto/leapmux/v1/agent_pb')
 
 // The harness's cap/ceiling, distinct so an assertion can prove WHICH was used. The
 // production wiring passes MAX_LOADED_CHAT_MESSAGES / MAX_LOADED_CHAT_MESSAGES_CEILING.
-const BASE = Number(CATCH_UP_GAP_LIMIT)
+const BASE = 150
 const CEILING = 1200
 
 function makeMsg(seq: bigint, id?: string): AgentChatMessage {
@@ -41,6 +41,7 @@ function harness(init: {
   hasMoreNewer?: boolean
   caughtUp?: () => boolean
   liveGet?: () => bigint
+  viewportHeight?: number
 }) {
   const [state, setState] = createStore<ChatStoreState>({
     messagesByAgent: { a: init.messages },
@@ -92,6 +93,7 @@ function harness(init: {
   const caughtUpToLiveTail = init.caughtUp
     ?? ((agentId: string) => (lastServer(agentId) ?? 0n) >= recordedLiveTail)
   const applyMessages = vi.fn()
+  const setLandingRefillPages = vi.fn()
   const replaceTodos = vi.fn()
   const replaceBackgroundTasks = vi.fn()
   const markBackgroundTasksLoadFailed = vi.fn()
@@ -108,6 +110,7 @@ function harness(init: {
     runHistoryFetch: historyFetches.runHistoryFetch,
     mergeFetchedMessages,
     applyMessages,
+    setLandingRefillPages,
     liveTail: {
       get: init.liveGet ?? (() => recordedLiveTail),
       bump: bumpLiveTail,
@@ -122,7 +125,11 @@ function harness(init: {
     getFirstMessageSeq: firstServer,
     getLastMessageSeq: lastServer,
     caughtUpToLiveTail,
-    addMessage,
+    getViewportHeight: () => init.viewportHeight,
+    addMessagePage: (agentId, messages) => {
+      for (const message of messages)
+        addMessage(agentId, message)
+    },
     trimOldestEnd,
     trimNewestEnd,
     replaceTodos,
@@ -141,6 +148,7 @@ function harness(init: {
     trimOldestEnd,
     addMessage,
     applyMessages,
+    setLandingRefillPages,
     settleToWindow,
     resetToEmptyIfStale,
     bumpLiveTail,
@@ -156,6 +164,26 @@ function harness(init: {
 describe('chatHistoryPaginator', () => {
   beforeEach(() => {
     listAgentMessages.mockReset()
+  })
+
+  describe('landingPageLimit', () => {
+    it.each([
+      [undefined, 16],
+      [0, 16],
+      [-1, 16],
+      [Number.POSITIVE_INFINITY, 16],
+      [320, 8],
+      [1152, 24],
+      [5000, 50],
+    ])('uses %s pixels to select %s rows', (height, limit) => {
+      expect(landingPageLimit(height)).toBe(limit)
+    })
+
+    it.each([1, 12])('applies a contract page cap of %s to every estimate', (limit) => {
+      expect(landingPageLimit(undefined, limit)).toBe(limit)
+      expect(landingPageLimit(-1, limit)).toBe(limit)
+      expect(landingPageLimit(5000, limit)).toBe(limit)
+    })
   })
 
   describe('catchUpToTail is viewport-aware', () => {
@@ -259,13 +287,14 @@ describe('chatHistoryPaginator', () => {
       // recorded from resp.latestSeq, and the stale-tail clamp skipped so the
       // scheduler still sees the gap it must re-anchor.
       expect(listAgentMessages).toHaveBeenCalledTimes(1)
+      expect(h.addMessage).not.toHaveBeenCalled()
       expect(h.bumpLiveTail).toHaveBeenCalledWith('a', latestSeq)
       expect(h.settleToWindow).not.toHaveBeenCalled()
       expect(h.resetToEmptyIfStale).not.toHaveBeenCalled()
     })
 
     it('drains a gap at the inclusive limit and finishes at the recorded tail', async () => {
-      const latestSeq = 2n + CATCH_UP_GAP_LIMIT
+      const latestSeq = 1n + CATCH_UP_GAP_LIMIT
       const h = harness({
         messages: [
           makeMsg(1n),
@@ -311,6 +340,31 @@ describe('chatHistoryPaginator', () => {
       expect(h.bumpLiveTail).not.toHaveBeenCalled()
     })
 
+    it('leaves evidence of more history after two pages with no reported tail', async () => {
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+      })
+      listAgentMessages
+        .mockResolvedValueOnce(page([
+          makeMsg(2n),
+        ], true))
+        .mockResolvedValueOnce(page([
+          makeMsg(3n),
+        ], true))
+        .mockResolvedValueOnce(page([
+          makeMsg(4n),
+        ], false))
+
+      await h.paginator.catchUpToTail('w', 'a', 1n)
+
+      expect(listAgentMessages).toHaveBeenCalledTimes(2)
+      expect(h.state.messagesByAgent.a?.at(-1)?.seq).toBe(3n)
+      expect(h.state.hasMoreNewer.a).toBe(true)
+      expect(h.state.tailFillDeferred.a).toBe(true)
+    })
+
     it('does not lower a live tail that a broadcast raised above the page tail', async () => {
       const h = harness({
         messages: [
@@ -328,6 +382,28 @@ describe('chatHistoryPaginator', () => {
       expect(h.bumpLiveTail).toHaveBeenLastCalledWith('a', 200n)
       expect(h.getRecordedLiveTail()).toBe(300n)
     })
+  })
+
+  it.each([
+    { anchor: MessagePageAnchor.LATEST, jump: 'jumpToLatestMessages' },
+    { anchor: MessagePageAnchor.OLDEST, jump: 'jumpToOldestMessages' },
+  ] as const)('loads at most 16 rows for $jump', async ({ anchor, jump }) => {
+    const row = makeMsg(1n)
+    const h = harness({
+      messages: [row],
+    })
+    listAgentMessages.mockResolvedValue(page([row], true))
+
+    await expect(h.paginator[jump]('w', 'a')).resolves.toBe(true)
+
+    expect(h.setLandingRefillPages).toHaveBeenCalledExactlyOnceWith('a', 1)
+    expect(listAgentMessages).toHaveBeenCalledExactlyOnceWith(
+      'w',
+      { agentId: 'a', anchor, limit: 16 },
+      {
+        signal: expect.any(AbortSignal),
+      },
+    )
   })
 
   describe('jumpToLatestMessages ties its re-anchor fetch to the watch signal', () => {
@@ -410,6 +486,53 @@ describe('chatHistoryPaginator', () => {
           : after)
     }
 
+    it('keeps the newer copy of an id that moved across the seek cursor', async () => {
+      const h = harness({
+        messages: [],
+        caughtUp: () => true,
+      })
+      const previous = makeMsg(4n, 'notification')
+      const current = makeMsg(7n, 'notification')
+      routeByAnchor(page([previous], true), page([current], false))
+
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)).resolves.toBe(true)
+
+      expect(h.applyMessages).toHaveBeenCalledExactlyOnceWith('a', [current], true)
+    })
+
+    it('releases the sibling seek request when its other page fails', async () => {
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+      })
+      const failure = new Error('Could not read the older seek page.')
+      let newerSignal: AbortSignal | undefined
+      listAgentMessages.mockImplementation((_worker, request, options) => {
+        if (request.anchor === MessagePageAnchor.BEFORE)
+          return Promise.reject(failure)
+        newerSignal = options.signal
+        return new Promise(() => {})
+      })
+
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 8n)).rejects.toBe(failure)
+      expect(newerSignal?.aborted).toBe(true)
+      expect(h.applyMessages).not.toHaveBeenCalled()
+    })
+
+    it('uses the taller viewport while keeping the seek to two requests', async () => {
+      const h = harness({ messages: [], viewportHeight: 5000 })
+      routeByAnchor(page([], false), page([], false))
+
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 10n)).resolves.toBe(true)
+
+      expect(listAgentMessages.mock.calls.map(([, request]) => [request.anchor, request.limit])).toEqual([
+        [MessagePageAnchor.BEFORE, 25],
+        [MessagePageAnchor.AFTER, 50],
+      ])
+      expect(h.setLandingRefillPages).toHaveBeenCalledExactlyOnceWith('a', 0)
+    })
+
     it('fetches BEFORE seq+1 and AFTER seq, applies the concatenated window, and sets flags', async () => {
       const h = harness({
         messages: [
@@ -432,8 +555,8 @@ describe('chatHistoryPaginator', () => {
       await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)).resolves.toBe(true)
 
       // Cursor values: BEFORE is exclusive at seq+1 (includes the target), AFTER at seq.
-      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.BEFORE, cursorSeq: 6n }), expect.anything())
-      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.AFTER, cursorSeq: 5n }), expect.anything())
+      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.BEFORE, cursorSeq: 6n, limit: 8 }), expect.anything())
+      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.AFTER, cursorSeq: 5n, limit: 16 }), expect.anything())
       // One window swap with the disjoint, ascending concatenation; hasMoreOlder from before.
       expect(h.applyMessages).toHaveBeenCalledWith('a', [
         makeMsg(4n),
@@ -462,14 +585,9 @@ describe('chatHistoryPaginator', () => {
 
       await h.paginator.jumpToMessagesAroundSeq('w', 'a', maxInt64Seq)
 
-      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({
+      expect(listAgentMessages).toHaveBeenCalledExactlyOnceWith('w', expect.objectContaining({
         anchor: MessagePageAnchor.LATEST,
-        limit: MESSAGE_PAGE_LIMIT,
-      }), expect.anything())
-      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({
-        anchor: MessagePageAnchor.AFTER,
-        cursorSeq: maxInt64Seq,
-        limit: MESSAGE_PAGE_LIMIT,
+        limit: 16,
       }), expect.anything())
       expect(listAgentMessages).not.toHaveBeenCalledWith('w', expect.objectContaining({
         cursorSeq: maxInt64Seq + 1n,

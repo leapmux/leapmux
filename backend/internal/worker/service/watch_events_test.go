@@ -509,6 +509,8 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 		cursorFromEnd    int
 		windowTailIdx    int
 		wantReplayFrames int
+		replayPageLimit  *uint32
+		wantPageLimit    uint32
 	}{
 		{
 			name:             "gap over limit skips message replay",
@@ -521,6 +523,30 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 			messageCount:     3,
 			cursorFromEnd:    2,
 			wantReplayFrames: 2,
+		},
+		{
+			name:             "small pane skips a gap beyond two of its pages",
+			messageCount:     10,
+			cursorFromEnd:    9,
+			replayPageLimit:  proto.Uint32(4),
+			wantPageLimit:    4,
+			wantReplayFrames: 0,
+		},
+		{
+			name:             "small pane replays one page at the inclusive gap limit",
+			messageCount:     9,
+			cursorFromEnd:    8,
+			replayPageLimit:  proto.Uint32(4),
+			wantPageLimit:    4,
+			wantReplayFrames: 4,
+		},
+		{
+			name:             "oversized pane limit uses the shared maximum",
+			messageCount:     contracts.MessagePageLimit + 2,
+			cursorFromEnd:    contracts.MessagePageLimit + 1,
+			replayPageLimit:  proto.Uint32(999),
+			wantPageLimit:    contracts.MessagePageLimit,
+			wantReplayFrames: contracts.MessagePageLimit,
 		},
 		{
 			// The cursor LEADS the declared window tail: the cursor gap fits
@@ -576,9 +602,10 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 				Agents: []*leapmuxv1.WatchAgentEntry{{
 					AgentId: "agent-1",
 					Mode:    leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1,
-					Replay:        leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE,
-					CursorSeq:     seqs[len(seqs)-1-tc.cursorFromEnd],
-					WindowTailSeq: windowTail,
+					Replay:          leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE,
+					CursorSeq:       seqs[len(seqs)-1-tc.cursorFromEnd],
+					WindowTailSeq:   windowTail,
+					ReplayPageLimit: tc.replayPageLimit,
 				}},
 			})
 			require.NoError(t, err)
@@ -608,6 +635,8 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 			require.NotNil(t, start.LatestSeq)
 			assert.Equal(t, seqs[len(seqs)-1], start.GetLatestSeq())
 			assert.Equal(t, tc.wantReplayFrames, replayed)
+			assert.Equal(t, tc.wantReplayFrames == 0, start.GetMessageReplaySkipped())
+			assert.Equal(t, tc.wantPageLimit, start.GetReplayPageLimit())
 			assert.NotEqual(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED,
 				start.GetActivityState(), "the replay decision must not skip the activity level")
 			assert.True(t, sawTodos, "the replay decision must not skip the to-do snapshot")
