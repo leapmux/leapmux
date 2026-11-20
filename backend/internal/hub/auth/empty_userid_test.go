@@ -43,6 +43,7 @@ var zeroUserIDDenyFuncs = []string{
 	"RevokeUserCredentialsExceptAPIToken",
 	"RequireElevation",
 	"RequireElevatableCredential",
+	"RequireElevatableSession",
 }
 
 // TestZeroUserIDDenies exercises the deny-closed contract for every entry in
@@ -275,6 +276,16 @@ func TestZeroUserIDDenies(t *testing.T) {
 				sessionUser := &auth.UserInfo{Credential: auth.SessionCredential("s1")}
 				require.NoError(t, auth.RequireElevatableCredential(sessionUser),
 					"control: a session credential is elevatable")
+			case "RequireElevatableSession":
+				// A nil UserInfo has no session to return. The control is a
+				// session credential, whose id the rule returns.
+				_, err := auth.RequireElevatableSession(nil)
+				require.Error(t, err, "a nil UserInfo has no session")
+
+				sessionUser := &auth.UserInfo{Credential: auth.SessionCredential("s1")}
+				sessionID, err := auth.RequireElevatableSession(sessionUser)
+				require.NoError(t, err, "control: a session credential yields its session id")
+				assert.Equal(t, "s1", sessionID)
 			default:
 				t.Fatalf("zeroUserIDDenyFuncs lists %q but TestZeroUserIDDenies has no case for it", name)
 			}

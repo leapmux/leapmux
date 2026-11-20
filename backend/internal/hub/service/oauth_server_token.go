@@ -272,11 +272,11 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 	// Three paths: a step-up code verifies a credential, a session code issues
 	// a session, and any other code mints an app credential.
 	if row.StepUpSessionID != "" || row.StepUpTokenID != "" {
-		h.handleStepUpCodeExchange(w, r, row, app)
+		h.handleStepUpCodeExchange(w, r, row)
 		return
 	}
 	if oauthapp.IssuesSession(app.ClientID) {
-		h.handleSessionCodeExchange(w, r, row, app, grantUID, scopes)
+		h.handleSessionCodeExchange(w, r, row, app, grantUID)
 		return
 	}
 	h.issueTokenResponse(w, r, consentedGrant{
@@ -289,13 +289,7 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 		invalidGrantMsg:  "code expired or already consumed",
 		internalMsg:      "authorization code token issuance failed",
 		consume: func(tx store.Store) error {
-			if _, err := tx.OAuthAuthorizationCodes().Consume(r.Context(), code, h.now().UTC()); err != nil {
-				if errors.Is(err, store.ErrNotFound) {
-					return errAuthorizationCodeUnavailable
-				}
-				return fmt.Errorf("consume authorization code: %w", err)
-			}
-			return nil
+			return consumeAuthorizationCode(r.Context(), tx, code, h.now().UTC())
 		},
 		recordMint: func(tx store.Store, tokenID string) error {
 			if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), code, tokenID); err != nil {
@@ -306,10 +300,22 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 	})
 }
 
+// consumeAuthorizationCode consumes the authorization code in the
+// transaction, mapping store.ErrNotFound to errAuthorizationCodeUnavailable.
+func consumeAuthorizationCode(ctx context.Context, tx store.Store, code string, now time.Time) error {
+	if _, err := tx.OAuthAuthorizationCodes().Consume(ctx, code, now); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errAuthorizationCodeUnavailable
+		}
+		return fmt.Errorf("consume authorization code: %w", err)
+	}
+	return nil
+}
+
 // handleStepUpCodeExchange redeems a step-up code: it stamps the step-up
 // window on the credential the code identifies, and issues nothing.
 func (h *OAuthServerHandler) handleStepUpCodeExchange(
-	w http.ResponseWriter, r *http.Request, row *store.OAuthAuthorizationCode, app *store.OAuthClient,
+	w http.ResponseWriter, r *http.Request, row *store.OAuthAuthorizationCode,
 ) {
 	userInfo, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
 		Store:         h.store,
@@ -331,11 +337,8 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential cannot be elevated")
 		return
 	}
-	if row.StepUpSessionID != "" && targetSessionID != row.StepUpSessionID {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential does not match the step-up target")
-		return
-	}
-	if row.StepUpTokenID != "" && targetTokenID != row.StepUpTokenID {
+	if (row.StepUpSessionID != "" && targetSessionID != row.StepUpSessionID) ||
+		(row.StepUpTokenID != "" && targetTokenID != row.StepUpTokenID) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "credential does not match the step-up target")
 		return
 	}
@@ -348,27 +351,20 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "step-up target belongs to another user")
 		return
 	}
-	var stampErr error
 	txErr := h.store.RunInUserAuthTransaction(r.Context(), uid, func(tx store.Store) error {
-		if _, err := tx.OAuthAuthorizationCodes().Consume(r.Context(), row.Code, h.now().UTC()); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return errAuthorizationCodeUnavailable
-			}
-			return fmt.Errorf("consume authorization code: %w", err)
+		if err := consumeAuthorizationCode(r.Context(), tx, row.Code, h.now().UTC()); err != nil {
+			return err
 		}
 		if row.StepUpSessionID != "" {
 			_, live, err := elevateSessionRow(r.Context(), tx, row.StepUpSessionID, uid, h.now().UTC())
 			if err != nil {
-				stampErr = err
 				return err
 			}
 			if !live {
-				stampErr = errElevationSessionEnded
 				return errElevationSessionEnded
 			}
 		} else {
 			if err := h.elevateGrantedToken(r.Context(), tx, row.StepUpTokenID, uid); err != nil {
-				stampErr = err
 				return err
 			}
 		}
@@ -382,7 +378,7 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		// Only the two no-row refusals answer invalid_grant. Every other
 		// stamp error is a credential the Hub cannot read, which section 6.5
 		// answers 500 for.
-		if errors.Is(stampErr, errElevationSessionEnded) || errors.Is(stampErr, errElevationGrantUnavailable) {
+		if errors.Is(txErr, errElevationSessionEnded) || errors.Is(txErr, errElevationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "that credential is no longer available")
 			return
 		}
@@ -397,20 +393,24 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 // the user and sets the session cookie. Used by the desktop handoff.
 func (h *OAuthServerHandler) handleSessionCodeExchange(
 	w http.ResponseWriter, r *http.Request, row *store.OAuthAuthorizationCode,
-	app *store.OAuthClient, grantUID userid.UserID, scopes authscope.ScopeSet,
+	app *store.OAuthClient, grantUID userid.UserID,
 ) {
 	var created *auth.CreatedSession
 	txErr := h.store.RunInUserAuthTransaction(r.Context(), grantUID, func(tx store.Store) error {
-		if _, err := tx.OAuthAuthorizationCodes().Consume(r.Context(), row.Code, h.now().UTC()); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return errAuthorizationCodeUnavailable
-			}
-			return fmt.Errorf("consume authorization code: %w", err)
+		if err := consumeAuthorizationCode(r.Context(), tx, row.Code, h.now().UTC()); err != nil {
+			return err
+		}
+		// The label is what the requester called itself. With no label the
+		// user agent is the app's name alone: "LeapMux Desktop on " is not a
+		// name, and the session list shows it.
+		userAgent := app.ClientName
+		if row.InstallationName != "" {
+			userAgent = app.ClientName + " on " + row.InstallationName
 		}
 		sess, err := auth.CreateSession(r.Context(), tx, h.sessionHasher, grantUID,
 			settings.SessionDuration(h.snapshot(r.Context())), auth.SignInProvedNoFactor,
 			auth.SessionMeta{
-				UserAgent:      app.ClientName + " on " + row.InstallationName,
+				UserAgent:      userAgent,
 				IssuedToClient: app.ClientID,
 			})
 		if err != nil {

@@ -90,6 +90,51 @@ describe('runBrowserAuth', () => {
     await expect(flow.result).resolves.toEqual({ ok: true, failure: '' })
   })
 
+  // A stale result of a superseded ceremony may land before this call's
+  // start resolves. Adopting it settles the new ceremony: a stale failure
+  // cancels the sign-in silently. Promise resolution is first-wins, so the
+  // final value proves the stale result settled nothing.
+  it('drops a stale failure of a previous ceremony that arrives before the start returns', async () => {
+    const start = deferred<{ ceremonyId: string, authorizeUrl: string }>()
+    bridgeMocks.startBrowserAuth.mockReturnValue(start.promise)
+    const flowPromise = runBrowserAuth('sign-in')
+    // The listener is up; the start command has not answered yet.
+    await settle()
+
+    bridgeMocks.emit({ ceremonyId: 'stale', ok: false, failure: 'expired' })
+
+    start.resolve(START)
+    const flow = await flowPromise
+
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: true, failure: '' })
+
+    await expect(flow.result).resolves.toEqual({ ok: true, failure: '' })
+  })
+
+  // A stale ok would run the success path before the sidecar holds the new
+  // session, so it must not settle the result either.
+  it('drops a stale ok of a previous ceremony that arrives before the start returns', async () => {
+    const start = deferred<{ ceremonyId: string, authorizeUrl: string }>()
+    bridgeMocks.startBrowserAuth.mockReturnValue(start.promise)
+    const flowPromise = runBrowserAuth('sign-in')
+    await settle()
+
+    bridgeMocks.emit({ ceremonyId: 'stale', ok: true, failure: '' })
+
+    start.resolve(START)
+    const flow = await flowPromise
+
+    let settled = false
+    void flow.result.then(() => {
+      settled = true
+    })
+    await settle()
+    expect(settled).toBe(false)
+
+    bridgeMocks.emit({ ceremonyId: 'c-1', ok: false, failure: 'wrong code' })
+    await expect(flow.result).resolves.toEqual({ ok: false, failure: 'wrong code' })
+  })
+
   // `cancel` only asks the sidecar to cancel; the sidecar's one event decides
   // the outcome, so a cancel that raced a Hub-accepted code still settles ok.
   it('settles only when the event arrives after cancel, then removes the listener', async () => {
@@ -156,6 +201,24 @@ describe('runBrowserAuth', () => {
     await flowPromise
 
     expect(bridgeMocks.openExternalUrl).not.toHaveBeenCalled()
+    expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
+  })
+
+  // The abort listener must be up before the URL opens: an abort during the
+  // open would otherwise be lost, and the ceremony would continue with the
+  // authorize page open.
+  it('cancels when the signal aborts while the URL is opening', async () => {
+    const open = deferred<void>()
+    bridgeMocks.openExternalUrl.mockReturnValue(open.promise)
+    const controller = new AbortController()
+    const flowPromise = runBrowserAuth('sign-in', controller.signal)
+    await settle()
+
+    controller.abort()
+    open.resolve()
+    await flowPromise
+
+    expect(bridgeMocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith(START.authorizeUrl)
     expect(bridgeMocks.cancelBrowserAuth).toHaveBeenCalledExactlyOnceWith('c-1')
   })
 

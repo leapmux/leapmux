@@ -1,3 +1,4 @@
+import type { HubUserId, StorageAccount } from '~/lib/browserStorage'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import {
@@ -14,12 +15,16 @@ import { HLCClock, PendingOpsManager, setCRDTBridge } from '~/lib/crdt'
  * storage namespace (`vitest.setup.ts` signs in as this, and passes no `userId`
  * to `installTestBridge` so that both halves take this one value).
  *
+ * The BARE spelling of a storage account: its account IS its user id, so one
+ * value stands in both for the namespace and for the raw Hub user id wherever
+ * a test does not distinguish the two domains.
+ *
  * Alphanumeric on purpose, so that it reads in a stored key exactly as a real
  * hub id does: ids are 48-character nanoids over `[A-Za-z0-9]`
  * (`internal/util/id`), which `accountStorageKey`'s percent-encoding leaves
  * byte-identical.
  */
-export const TEST_USER_ID = 'usertest'
+export const TEST_USER_ID = 'usertest' as StorageAccount
 
 /**
  * installTestBridge creates a PendingOpsManager + bridge wired into
@@ -41,7 +46,11 @@ export interface TestBridgeHandle {
   pending: PendingOpsManager
   clock: HLCClock
   rootTileId: string
-  userId: string
+  /**
+   * The BARE spelling (see `TEST_USER_ID`): valid as the storage account and
+   * as the raw Hub user id, which the tests use interchangeably for one id.
+   */
+  userId: StorageAccount & HubUserId
   workspaceId: string
   /**
    * One entry per `bridge.flushNow()`, each holding `pendingBatches.length` at
@@ -96,7 +105,9 @@ export function installTestBridge(opts?: {
   workspaceId?: string
   rootTileId?: string
 }): TestBridgeHandle {
-  const userId = opts?.userId ?? TEST_USER_ID
+  // A test id is the BARE spelling (see `TEST_USER_ID`): its account IS its
+  // user id, so the same value seeds both identity domains below.
+  const userId = (opts?.userId ?? TEST_USER_ID) as StorageAccount & HubUserId
   const workspaceId = opts?.workspaceId ?? 'ws-test'
   const rootTileId = opts?.rootTileId ?? 'main-tile'
   const ownClient = 'test-client'

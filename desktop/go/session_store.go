@@ -204,6 +204,16 @@ func (j *persistentJar) persistLocked() {
 	if j.path == "" {
 		return
 	}
+	// The inner jar drops a clock-expired cookie at read time, but the
+	// record only removes one when a Set-Cookie deletes it. Prune the rows
+	// whose expiry has passed, so the file never holds a credential the jar
+	// would not return.
+	now := time.Now()
+	for k, pc := range j.record {
+		if pc.Expires != nil && pc.Expires.Before(now) {
+			delete(j.record, k)
+		}
+	}
 	if len(j.record) == 0 {
 		if err := os.Remove(j.path); err != nil && !os.IsNotExist(err) {
 			slog.Warn("session store: remove session file", "path", j.path, "err", err)
@@ -211,6 +221,10 @@ func (j *persistentJar) persistLocked() {
 		if err := atomicfile.RemoveTempFiles(j.path); err != nil {
 			slog.Warn("session store: remove temp files", "path", j.path, "err", err)
 		}
+		// The removal leaves no file behind, so drop the memo of the
+		// last write: a later change that marshals to those same bytes
+		// must still write.
+		j.lastJSON = ""
 		return
 	}
 	cookies := make([]persistedCookie, 0, len(j.record))

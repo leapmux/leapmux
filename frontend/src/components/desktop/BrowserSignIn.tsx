@@ -1,13 +1,15 @@
 import type { Component } from 'solid-js'
-import type { BrowserAuthFlow } from '~/lib/browserAuth'
 import { useNavigate, useSearchParams } from '@solidjs/router'
-import { createSignal, onCleanup, Show } from 'solid-js'
+import { Show } from 'solid-js'
+import { openExternalUrl, platformBridge } from '~/api/platformBridge'
 import { useAuth } from '~/context/AuthContext'
-import { runBrowserAuth } from '~/lib/browserAuth'
-import { formatErrorMessage } from '~/lib/errors'
+import { copyTextToClipboard } from '~/lib/clipboard'
+import { hubOrigin } from '~/lib/hubSite'
 import { followDestination, postSignInDestination } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
 import * as styles from './BrowserSignIn.css'
+import * as ceremonyPage from './ceremonyPage.css'
+import { useBrowserCeremony } from './useBrowserCeremony'
 
 /**
  * Desktop sign-in view for remote-Hub mode. Runs a browser ceremony with
@@ -19,74 +21,40 @@ export const BrowserSignIn: Component = () => {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const auth = useAuth()
-  const [phase, setPhase] = createSignal<'idle' | 'waiting'>('idle')
-  const [failure, setFailure] = createSignal('')
-  const [flow, setFlow] = createSignal<BrowserAuthFlow | null>(null)
 
-  const controller = new AbortController()
-  onCleanup(() => controller.abort())
-
-  const handleSignIn = async (): Promise<void> => {
-    setFailure('')
-    setPhase('waiting')
-    try {
-      const f = await runBrowserAuth('sign-in', controller.signal)
-      setFlow(f)
-
-      const result = await f.result
-      if (!result.ok) {
-        setPhase('idle')
-        setFlow(null)
-        if (result.failure)
-          setFailure(result.failure)
-        return
-      }
-
-      // Adopt the session the sidecar's jar already holds. The redirect rides
-      // the sign-in, because a sign-in that recovers hands the navigation to
-      // SignInRecoveryGate, which reads the redirect from there.
-      const redirect = stringParam(searchParams.redirect)
-      const result2 = await auth.adoptBrowserSignIn({ redirect })
-      if (result2.outcome === 'adopted') {
-        followDestination(navigate, postSignInDestination(result2.verificationRequired, redirect))
-      }
-      // Every other outcome: sign-in recovery or a newer operation owns the state.
+  const { phase, failure, flow, start, cancel } = useBrowserCeremony('sign-in', async () => {
+    // Adopt the session the sidecar's jar already holds. The redirect rides
+    // the sign-in, because a sign-in that recovers hands the navigation to
+    // SignInRecoveryGate, which reads the redirect from there.
+    const redirect = stringParam(searchParams.redirect)
+    const result = await auth.adoptBrowserSignIn({ redirect })
+    if (result.outcome === 'adopted') {
+      followDestination(navigate, postSignInDestination(result.verificationRequired, redirect))
     }
-    catch (err) {
-      setPhase('idle')
-      setFlow(null)
-      setFailure(formatErrorMessage(err))
-    }
-  }
-
-  const handleCancel = async (): Promise<void> => {
-    const f = flow()
-    if (f) {
-      await f.cancel()
-    }
-    // The result event will settle and reset the phase.
-  }
+    // Every other outcome: sign-in recovery or a newer operation owns the state.
+  })
 
   return (
-    <div class={styles.container}>
-      <h1 class={styles.title}>Sign in to LeapMux</h1>
+    <div class={ceremonyPage.container}>
+      <h1 class={ceremonyPage.title}>Sign in to LeapMux</h1>
+      <p class={ceremonyPage.description}>{`Hub: ${hubOrigin()}`}</p>
       <Show when={phase() === 'idle'}>
-        <p class={styles.description}>
+        <p class={ceremonyPage.description}>
           LeapMux signs you in through your browser.
         </p>
-        <button type="button" class={styles.primaryButton} onClick={() => void handleSignIn()}>
+        <button type="button" class={styles.primaryButton} onClick={() => void start()}>
           Sign in with your browser
         </button>
       </Show>
       <Show when={phase() === 'waiting'}>
-        <p class={styles.description}>Waiting for your browser...</p>
-        <div class={styles.waitingActions}>
+        <p class={ceremonyPage.description}>Waiting for your browser...</p>
+        <div class={ceremonyPage.waitingActions}>
           <button
             type="button"
             onClick={() => {
               const f = flow()
               if (f) {
-                void import('~/api/platformBridge').then(({ openExternalUrl }) => openExternalUrl(f.url))
+                void openExternalUrl(f.url)
               }
             }}
           >
@@ -97,26 +65,24 @@ export const BrowserSignIn: Component = () => {
             onClick={() => {
               const f = flow()
               if (f) {
-                void navigator.clipboard.writeText(f.url)
+                void copyTextToClipboard(f.url)
               }
             }}
           >
             Copy link
           </button>
-          <button type="button" onClick={() => void handleCancel()}>
+          <button type="button" onClick={() => void cancel()}>
             Cancel
           </button>
         </div>
       </Show>
       <Show when={failure()}>
-        <p class={styles.error}>{failure()}</p>
+        <p class={ceremonyPage.error}>{failure()}</p>
       </Show>
       <button
         type="button"
         class={styles.switchMode}
-        onClick={() => {
-          void import('~/api/platformBridge').then(({ platformBridge }) => platformBridge.switchMode())
-        }}
+        onClick={() => void platformBridge.switchMode()}
       >
         Switch mode...
       </button>

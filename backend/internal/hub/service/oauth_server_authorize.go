@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -160,52 +159,66 @@ func (h *OAuthServerHandler) parseStepUpTarget(
 	if scope != "" {
 		return target, oauthStepUpBody("step_up must not ask for a scope")
 	}
+	now := h.now().UTC()
 	if strings.HasPrefix(raw, oauthapp.StepUpSessionPrefix) {
 		id := strings.TrimPrefix(raw, oauthapp.StepUpSessionPrefix)
 		if id == "" {
 			return target, oauthStepUpBody("step_up session id is empty")
 		}
-		sess, err := h.store.Sessions().GetByID(ctx, id, time.Now().UTC())
+		sess, err := h.store.Sessions().GetByID(ctx, id, now)
 		if err != nil || sess == nil {
 			return target, oauthStepUpBody("step_up session not found")
 		}
-		if sess.UserID != user.ID.String() {
-			return target, oauthStepUpBody("step_up session belongs to another user")
-		}
-		if sess.IssuedToClient != app.ClientID {
-			return target, oauthStepUpBody("step_up session was not issued to this app")
+		if body := verifyStepUpSubject("session", sess.UserID, sess.IssuedToClient, user, app); body != nil {
+			return target, body
 		}
 		target.sessionID = id
-		return target, nil
-	}
-	if strings.HasPrefix(raw, oauthapp.StepUpTokenPrefix) {
+	} else if strings.HasPrefix(raw, oauthapp.StepUpTokenPrefix) {
 		id := strings.TrimPrefix(raw, oauthapp.StepUpTokenPrefix)
 		if id == "" {
 			return target, oauthStepUpBody("step_up token id is empty")
 		}
 		tok, err := h.store.APITokens().GetByID(ctx, id)
-		if err != nil || tok == nil || tok.RevokedAt != nil {
+		// Liveness is one refusal: a revoked row and a row whose expiry has
+		// passed are both dead, and the elevation write matches neither. The
+		// session branch refuses its dead rows the same way: not found.
+		if err != nil || tok == nil || tok.RevokedAt != nil ||
+			(tok.ExpiresAt != nil && !tok.ExpiresAt.After(now)) {
 			return target, oauthStepUpBody("step_up token not found")
 		}
-		if tok.UserID != user.ID.String() {
-			return target, oauthStepUpBody("step_up token belongs to another user")
-		}
-		if tok.ClientID != app.ClientID {
-			return target, oauthStepUpBody("step_up token was not issued to this app")
-		}
-		if !app.ElevationAllowed {
-			return target, oauthStepUpBody("step_up token's app does not allow elevation")
+		if body := verifyStepUpSubject("token", tok.UserID, tok.ClientID, user, app); body != nil {
+			return target, body
 		}
 		target.tokenID = id
-		return target, nil
+	} else {
+		return target, oauthStepUpBody("step_up must start with session: or token:")
 	}
-	return target, oauthStepUpBody("step_up must start with session: or token:")
+	// The app's permission to elevate covers both target kinds. One guard, so
+	// an owner who turns the flag off withdraws every step-up this app runs
+	// rather than only the token one.
+	if !app.ElevationAllowed {
+		return target, oauthStepUpBody("step_up token's app does not allow elevation")
+	}
+	return target, nil
 }
 
 // oauthStepUpBody builds the redirectable `access_denied` body for a step_up
 // failure. The plan requires one fixed description for every step_up refusal.
 func oauthStepUpBody(description string) *oauthErrorResponse {
 	return &oauthErrorResponse{Error: "access_denied", ErrorDescription: description}
+}
+
+// verifyStepUpSubject refuses a step_up target that belongs to another user or
+// was issued to another app. The load and liveness checks that read the row
+// run before it; this is the ownership ladder both target kinds share.
+func verifyStepUpSubject(kind, ownerID, clientID string, user *auth.UserInfo, app *store.OAuthClient) *oauthErrorResponse {
+	if ownerID != user.ID.String() {
+		return oauthStepUpBody("step_up " + kind + " belongs to another user")
+	}
+	if clientID != app.ClientID {
+		return oauthStepUpBody("step_up " + kind + " was not issued to this app")
+	}
+	return nil
 }
 
 // handleAuthorize serves the consent page.

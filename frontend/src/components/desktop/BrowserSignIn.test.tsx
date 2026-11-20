@@ -51,6 +51,11 @@ const [signInRecovery, setSignInRecovery] = createSignal<boolean>(false)
 // tests read it, never a render.
 let authLoadingHeld = false
 
+const copyTextToClipboard = vi.hoisted(() => vi.fn<(text: string) => Promise<boolean>>())
+vi.mock('~/lib/clipboard', () => ({
+  copyTextToClipboard: (text: string) => copyTextToClipboard(text),
+}))
+
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => currentUser(),
@@ -132,6 +137,8 @@ describe('BrowserSignIn', () => {
     bridgeMocks.cancelBrowserAuth.mockReset()
     bridgeMocks.cancelBrowserAuth.mockResolvedValue(undefined)
     bridgeMocks.handlers.length = 0
+    copyTextToClipboard.mockReset()
+    copyTextToClipboard.mockResolvedValue(true)
     setCurrentUser(null)
     authLoadingHeld = false
     setSignInRecovery(false)
@@ -191,8 +198,9 @@ describe('BrowserSignIn', () => {
     bridgeMocks.emit({ ceremonyId: 'c-1', ok: false, failure: '' })
 
     expect(await screen.findByRole('button', { name: 'Sign in with your browser' })).toBeInTheDocument()
-    // The idle description alone: no failure reason renders beside it.
-    expect(screen.getAllByRole('paragraph')).toHaveLength(1)
+    // The Hub line and the idle description only: no failure reason renders
+    // beside them.
+    expect(screen.getAllByRole('paragraph')).toHaveLength(2)
     expect(authLoadingHeld).toBe(false)
     expect(mockAdopt).not.toHaveBeenCalled()
   })
@@ -288,5 +296,28 @@ describe('BrowserSignIn', () => {
     await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalledTimes(2))
     expect(bridgeMocks.openExternalUrl).toHaveBeenNthCalledWith(2, 'https://hub.example/authorize')
     expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the Hub line with the connected origin', async () => {
+    renderSignIn()
+
+    expect(await screen.findByText('Hub: https://hub.example')).toBeInTheDocument()
+  })
+
+  it('copies the ceremony link through the clipboard gateway', async () => {
+    // A direct `navigator.clipboard` write would reach this spy instead of
+    // the gateway, which alone adds the fallback and the failure toast.
+    const directWrite = vi.fn()
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: directWrite },
+      configurable: true,
+    })
+    renderSignIn()
+    await startCeremony()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy link' }))
+
+    await vi.waitFor(() => expect(copyTextToClipboard).toHaveBeenCalledExactlyOnceWith('https://hub.example/authorize'))
+    expect(directWrite).not.toHaveBeenCalled()
   })
 })

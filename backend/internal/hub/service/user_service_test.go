@@ -2323,7 +2323,7 @@ func assertOutOfScope(t *testing.T, info *connect.CallInfo, err error) {
 // move from the marker alone.
 //
 // The account shape below matters: it holds a password, so the account has a
-// factor to prove and requireElevation is the rule that applies where the
+// factor to prove and auth.RequireElevation is the rule that applies where the
 // scope rung lets the request through.
 // TestGuardedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith covers
 // the other shape, where the answer is different for a stated reason.
@@ -3558,7 +3558,7 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	assert.NotNil(t, elevated.GetElevationExpiresAt(), "a real session on a solo hub elevates")
 
 	// The caller the SOLO RUNG admitted is the one with no row to stamp, and
-	// it is still refused. It needs no elevation either: requireElevation
+	// it is still refused. It needs no elevation either: auth.RequireElevation
 	// exempts it outright.
 	soloOnly := &auth.UserInfo{ID: userid.MustNew(userID), Username: "solouser", IsAdmin: true, Solo: true}
 	_, err = userSvc.ElevateSession(auth.WithUser(context.Background(), soloOnly),

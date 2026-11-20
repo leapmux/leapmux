@@ -69,6 +69,71 @@ func TestSessionStoreMaxAgeZeroRemoves(t *testing.T) {
 	assert.NoFileExists(t, path, "the file must be gone after the Hub clears the cookie")
 }
 
+// A cleared record removes the session file. A later re-add must write the
+// file again even when its bytes match the last write, because the removal
+// left no file behind.
+func TestSessionStoreReAddAfterRemovalWritesTheFile(t *testing.T) {
+	dir := privateDir(t)
+	base := mustParse(t, "https://hub.example")
+	j := openPersistentJar(base, dir)
+	path := filepath.Join(dir, sessionFileName(base))
+
+	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc123")})
+	require.FileExists(t, path)
+
+	// Sign-out clears the cookie: the record empties and the file goes.
+	j.SetCookies(base, []*http.Cookie{{Name: "sid", Value: "", Path: "/", MaxAge: -1}})
+	require.NoFileExists(t, path)
+
+	// The Hub re-issues the identical cookie. Its bytes match the last
+	// write, and the re-add must still write the file.
+	j.SetCookies(base, []*http.Cookie{cookieFor("sid", "abc123")})
+	require.FileExists(t, path, "the re-add must write the file again")
+
+	j2 := openPersistentJar(base, dir)
+	cookies := j2.Cookies(base)
+	require.Len(t, cookies, 1)
+	assert.Equal(t, "abc123", cookies[0].Value, "a restart finds the re-added session")
+}
+
+// The record keeps a clock-expired cookie until a Set-Cookie touches it, while
+// the inner jar drops it at read time. Before every persist the record must
+// prune what the jar would not return, so the file never holds a credential
+// that is already dead.
+func TestSessionStoreClockExpiredCookiePrunedBeforePersist(t *testing.T) {
+	dir := privateDir(t)
+	base := mustParse(t, "https://hub.example")
+	j := openPersistentJar(base, dir)
+	path := filepath.Join(dir, sessionFileName(base))
+
+	future := time.Now().Add(time.Hour).UTC()
+	j.SetCookies(base, []*http.Cookie{{Name: "doomed", Value: "x", Path: "/", Expires: future}})
+	j.SetCookies(base, []*http.Cookie{cookieFor("live", "y")})
+	require.FileExists(t, path)
+
+	// Simulate the clock passing the cookie expiry: the record keeps the row
+	// with an expiry now in the past, exactly as a clock-passed cookie leaves it.
+	k := cookieKey(&http.Cookie{Name: "doomed", Path: "/"})
+	pc := j.record[k]
+	past := time.Now().Add(-time.Hour).UTC()
+	pc.Expires = &past
+	j.record[k] = pc
+
+	j.SetCookies(base, []*http.Cookie{cookieFor("third", "z")})
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var sf sessionFile
+	require.NoError(t, json.Unmarshal(data, &sf))
+	names := map[string]bool{}
+	for _, c := range sf.Cookies {
+		names[c.Name] = true
+	}
+	assert.False(t, names["doomed"], "clock-expired cookie must not be persisted")
+	assert.True(t, names["live"])
+	assert.True(t, names["third"])
+}
+
 func TestSessionStoreExpiredCookieIgnored(t *testing.T) {
 	dir := privateDir(t)
 	base := mustParse(t, "https://hub.example")

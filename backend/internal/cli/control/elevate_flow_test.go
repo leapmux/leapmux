@@ -33,7 +33,7 @@ type elevationHub struct {
 	grant       map[string]any
 	// startStatus, when non-zero, is the answer instead of the grant.
 	startStatus int
-	// startBody is the body of that refusal, for a refusal that names an
+	// startBody is the body of that refusal, for a refusal that identifies an
 	// OAuth error code.
 	startBody string
 	// pollAnswer answers one poll. nil means "granted".
@@ -248,7 +248,7 @@ func (s *browserStub) authorizeURL() string {
 }
 
 // elevatableBrowserClient is elevatableClient for a credential whose token id
-// lets a loopback step-up name its target: the shape a login through the
+// lets a loopback step-up specify its target: the shape a login through the
 // browser leaves on disk.
 func elevatableBrowserClient(t *testing.T, hubURL string, expiresAt time.Time) *Client {
 	t.Helper()
@@ -633,7 +633,7 @@ func TestElevate_FallsBackToTheLoopbackCeremonyWhenTheHubDemandsABrowser(t *test
 	require.NoError(t, err)
 	require.Equal(t, "/oauth/authorize", u.Path)
 	assert.Equal(t, "token:tok-1", u.Query().Get("step_up"),
-		"the ceremony names the credential it verifies")
+		"the ceremony identifies the credential it verifies")
 
 	n, bearer, form := hub.redemption()
 	assert.Equal(t, 1, n, "one redemption for one approval")
@@ -689,7 +689,7 @@ func TestElevate_WithoutATokenIDTellsTheUserToSignInAgain(t *testing.T) {
 
 // TestElevate_RefreshesTheBearerAfterAWaitThatExpiresTheToken covers the
 // wait itself: the step-up blocks on a person while the access token runs
-// out, and the redemption must present the credential the code names, not
+// out, and the redemption must present the credential the code identifies, not
 // the corpse of the one that asked.
 func TestElevate_RefreshesTheBearerAfterAWaitThatExpiresTheToken(t *testing.T) {
 	hub := newRepairHub(t, 3600)

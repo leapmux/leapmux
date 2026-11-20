@@ -610,7 +610,7 @@ describe('useUserEvents (websocket dispatch)', () => {
   // the socket it arrived on -- decide whose workspaces, tiles and tabs the
   // shell renders. The per-socket generation guards answer "is this frame
   // stale?", never "is this frame mine?", so nothing else here would notice.
-  it('refuses a materialized payload naming another tenant', async () => {
+  it('refuses a materialized payload identifying another tenant', async () => {
     await createRoot(async (dispose) => {
       const [userId] = createSignal('user-1')
       const pending = makeFakePending()
@@ -956,7 +956,7 @@ describe('useUserEvents (websocket dispatch)', () => {
   // because ResumeDelta carried no user_id to compare. Adopting one would fold
   // another tenant's records into confirmedState AND, via the op-log observer,
   // into this device's IndexedDB checkpoint, where they survive refreshes.
-  it('refuses a delta that names a different tenant', async () => {
+  it('refuses a delta that identifies a different tenant', async () => {
     await createRoot(async (dispose) => {
       const [userId] = createSignal('user-1')
       const pending = makeFakePending({ populated: true })
@@ -1617,7 +1617,7 @@ describe('useUserEvents (desktop bridge path)', () => {
 
   // The relay id the sidecar fences on must pair each attempt's open with its OWN
   // close: the two are separate RPCs run on unordered sidecar goroutines, so a close
-  // carrying the successor's id would tear down the relay it names.
+  // carrying the successor's id would tear down the relay it identifies.
   it('closes the relay id it opened, and a fresh id per attempt', async () => {
     bridge.isTauri = true
     await createRoot(async (dispose) => {

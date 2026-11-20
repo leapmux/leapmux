@@ -3,8 +3,9 @@ import { useNavigate } from '@solidjs/router'
 import { createSignal, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { formatErrorMessage } from '~/lib/errors'
-import { openHubPage } from '~/lib/hubSite'
+import { hubOrigin, openHubPage } from '~/lib/hubSite'
 import { loadSystemInfo } from '~/lib/systemInfo'
+import * as ceremonyPage from './ceremonyPage.css'
 import * as styles from './ContinueInBrowser.css'
 
 /**
@@ -47,12 +48,13 @@ export const ContinueInBrowser: Component = () => {
   }
 
   return (
-    <div class={styles.container}>
-      <h1 class={styles.title}>Continue in your browser</h1>
-      <p class={styles.description}>
+    <div class={ceremonyPage.container}>
+      <h1 class={ceremonyPage.title}>Continue in your browser</h1>
+      <p class={ceremonyPage.description}>
         This step runs on the Hub's own page.
       </p>
-      <div class={styles.actions}>
+      <p class={ceremonyPage.description}>{`Hub: ${hubOrigin()}`}</p>
+      <div class={ceremonyPage.actions}>
         <button type="button" onClick={() => void handleOpen()}>
           Open in browser
         </button>
@@ -61,7 +63,7 @@ export const ContinueInBrowser: Component = () => {
         </button>
       </div>
       <Show when={error()}>
-        <p class={styles.error}>{error()}</p>
+        <p class={ceremonyPage.error}>{error()}</p>
       </Show>
       <button type="button" class={styles.backLink} onClick={() => navigate('/login')}>
         Back to sign-in

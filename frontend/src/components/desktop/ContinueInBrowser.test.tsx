@@ -66,4 +66,10 @@ describe('ContinueInBrowser', () => {
       expect(mockRefreshUser).toHaveBeenCalledTimes(1)
     })
   })
+
+  it('renders the Hub line with the connected origin', async () => {
+    renderContinue()
+
+    expect(await screen.findByText('Hub: https://hub.example')).toBeInTheDocument()
+  })
 })

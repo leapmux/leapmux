@@ -23,14 +23,14 @@ export async function runBrowserAuth(
   signal?: AbortSignal,
 ): Promise<BrowserAuthFlow> {
   // Register the listener BEFORE starting, so a result that arrives before
-  // the start command resolves is captured.
-  const earlyResults: BrowserAuthResult[] = []
+  // the start command resolves is captured. The payload is kept whole: the
+  // ceremony id decides at flush whether an entry is this call's or a stale
+  // result of a superseded ceremony.
+  const earlyResults: { ceremonyId: string, ok: boolean, failure: string }[] = []
   let ownCeremonyId: string | null = null
   let resolveResult!: (r: BrowserAuthResult) => void
-  let _rejectResult!: (e: Error) => void
-  const resultPromise = new Promise<BrowserAuthResult>((resolve, reject) => {
+  const resultPromise = new Promise<BrowserAuthResult>((resolve) => {
     resolveResult = resolve
-    _rejectResult = reject
   })
 
   // `onEvent` hands the callback the emitted payload -- the fields of
@@ -42,11 +42,10 @@ export async function runBrowserAuth(
       return
     if (ownCeremonyId === null) {
       // Result arrived before the start resolved; buffer it.
-      earlyResults.push({ ok: p.ok, failure: p.failure })
+      earlyResults.push({ ceremonyId: p.ceremonyId, ok: p.ok, failure: p.failure })
       return
     }
     resolveResult({ ok: p.ok, failure: p.failure })
-    void platformBridge.onEvent(TAURI_EVENT_BROWSER_AUTH_RESULT, handleEvent).then(off => off())
   }
 
   const off = await platformBridge.onEvent(TAURI_EVENT_BROWSER_AUTH_RESULT, handleEvent)
@@ -55,13 +54,30 @@ export async function runBrowserAuth(
     const start = await platformBridge.startBrowserAuth(kind)
     ownCeremonyId = start.ceremonyId
 
-    // Flush any early result that matched.
-    const early = earlyResults[0]
-    if (early) {
-      resolveResult(early)
+    // Flush the early result of this ceremony. A buffered result that
+    // carries another ceremony id is stale and must not settle this call.
+    const early = earlyResults.find(r => r.ceremonyId === start.ceremonyId)
+    if (early)
+      resolveResult({ ok: early.ok, failure: early.failure })
+
+    const cancel = async (): Promise<void> => {
+      try {
+        await platformBridge.cancelBrowserAuth(start.ceremonyId)
+      }
+      catch {
+        // A rejected cancel settles the result as a cancellation.
+        resolveResult({ ok: false, failure: '' })
+      }
     }
 
-    // Check abort before opening the URL.
+    // An abort after the start also cancels. Register before opening the
+    // URL, so an abort during the open is not lost.
+    signal?.addEventListener('abort', () => {
+      void cancel()
+    }, { once: true })
+
+    // An already-aborted signal never fires its listener. Run the abort
+    // path at once instead of opening the URL.
     if (signal?.aborted) {
       await platformBridge.cancelBrowserAuth(start.ceremonyId)
       resolveResult({ ok: false, failure: '' })
@@ -74,21 +90,6 @@ export async function runBrowserAuth(
     }
 
     await openExternalUrl(start.authorizeUrl)
-
-    const cancel = async (): Promise<void> => {
-      try {
-        await platformBridge.cancelBrowserAuth(start.ceremonyId)
-      }
-      catch {
-        // A rejected cancel settles the result as a cancellation.
-        resolveResult({ ok: false, failure: '' })
-      }
-    }
-
-    // An abort after the start also cancels.
-    signal?.addEventListener('abort', () => {
-      void cancel()
-    }, { once: true })
 
     // Remove the listener when the result settles.
     void resultPromise.then(() => off())

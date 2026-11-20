@@ -1523,6 +1523,103 @@ func TestOAuthLogin_NearMissPathsAreNotConsentRoutes(t *testing.T) {
 	}
 }
 
+// errProofReadFailed is what the failing proof reads below return. A
+// sentinel, so the one fault a test plants is the one fault the flow meets.
+var errProofReadFailed = errors.New("proof read failed")
+
+// proofReadFailingStore fails one of the two reads the sign-in-proof
+// decision makes and delegates everything else to the real store, so the
+// flow reaches the proof decision and fails there.
+type proofReadFailingStore struct {
+	store.Store
+	failUserLookup   bool
+	failPasskeyCount bool
+}
+
+func (s proofReadFailingStore) Users() store.UserStore {
+	if !s.failUserLookup {
+		return s.Store.Users()
+	}
+	return proofReadFailingUsers{UserStore: s.Store.Users()}
+}
+
+type proofReadFailingUsers struct {
+	store.UserStore
+}
+
+func (proofReadFailingUsers) GetByID(context.Context, string) (*store.User, error) {
+	return nil, errProofReadFailed
+}
+
+func (s proofReadFailingStore) PasskeyCredentials() store.PasskeyCredentialStore {
+	if !s.failPasskeyCount {
+		return s.Store.PasskeyCredentials()
+	}
+	return proofReadFailingPasskeys{PasskeyCredentialStore: s.Store.PasskeyCredentials()}
+}
+
+type proofReadFailingPasskeys struct {
+	store.PasskeyCredentialStore
+}
+
+func (proofReadFailingPasskeys) CountByUser(context.Context, string) (int64, error) {
+	return 0, errProofReadFailed
+}
+
+// TestOAuthLogin_AStoreFailureInTheSignInProofRefusesTheSignIn pins the
+// fail-visible shape of the sign-in-proof decision.
+//
+// The decision reads the account twice: the user row, and the passkey count
+// behind accountElevatesOnlyThroughAProvider. A failure in either read is a
+// store failure and never an answer to the proof question. The sign-in must
+// fail visibly rather than record SignInProvedNoFactor, which would read a
+// broken lookup as "nothing was proved" and sign the user in on a silent
+// downgrade.
+func TestOAuthLogin_AStoreFailureInTheSignInProofRefusesTheSignIn(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the account lookup fails", func(t *testing.T) {
+		t.Parallel()
+
+		server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+			return proofReadFailingStore{Store: s, failUserLookup: true}
+		})
+		// The auto-link leg resolves the account by EMAIL and creates the
+		// provider link before it signs the user in, so the failing user
+		// lookup is the proof decision's own read and nothing earlier.
+		const email, subject = "proof-fail-user@example.com", "proof-fail-user-subject"
+		userID := id.Generate()
+		require.NoError(t, st.Users().Create(t.Context(), store.CreateUserParams{
+			ID: userID, Username: "proof-fail-user", PasswordHash: password.PlaceholderHash,
+			Email: email, EmailVerified: true,
+		}))
+		providerID := createCallbackTestProvider(t, st, ks, email, subject, true)
+
+		state, nonce, _ := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+		resp := completeCallback(t, server, providerID, state, nonce)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, readBody(t, resp))
+		assertNoCallbackSession(t, resp)
+		assert.Zero(t, countSessions(t, st, userID), "a store failure must not sign anybody in")
+	})
+
+	t.Run("the passkey count fails", func(t *testing.T) {
+		t.Parallel()
+
+		server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(s store.Store) store.Store {
+			return proofReadFailingStore{Store: s, failPasskeyCount: true}
+		})
+		const subject = "proof-fail-count-subject"
+		providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "proof-fail-count@example.com", subject)
+		userID := linkedProviderUser(t, st, providerID, subject, "proof-fail-count@example.com", false)
+
+		state, nonce, _ := beginLogin(t, server, providerID, "/oauth/authorize?client_id=cli")
+		resp := completeCallback(t, server, providerID, state, nonce)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, readBody(t, resp))
+		assertNoCallbackSession(t, resp)
+		assert.Zero(t, countSessions(t, st, userID), "a store failure must not sign anybody in")
+	})
+}
+
 func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
 	t.Parallel()
 

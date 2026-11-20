@@ -299,7 +299,7 @@ const permissionsTmpl = `{{define "permissions"}}
 var devicePageTmpl = mustParsePage("device", `{{define "pageClass"}} wide{{end}}{{define "body"}}
 <h1>{{if .Elevating}}Verify an app credential{{else}}Authorize an app{{end}}</h1>
 {{if .Elevating}}<p>This grants an existing app credential the right to make sensitive changes for the next two hours. It issues nothing new.</p>
-{{with .Credential}}<p>The credential is <strong>{{.Name}}</strong>, added {{.Added}} (UTC).{{if .Revoked}} It was revoked, so verifying it grants nothing.{{end}}</p>
+{{with .Credential}}<p>The credential is <strong>{{.Name}}</strong>, added {{.Added}} (UTC).{{if .Revoked}} It was revoked, so verifying it grants nothing.{{end}}{{if .Expired}} It has expired, so verifying it grants nothing.{{end}}</p>
 {{end}}{{else if .App}}{{if not .App.Verified}}<p class="alert">Nobody verified this app on this hub. It says its name is &ldquo;{{.App.Name}}&rdquo;.</p>
 {{end}}{{template "appIdentity" .App}}
 {{if .ConfirmAdmin}}<p class="alert">This code asks for <strong>hub administration</strong>. Authorizing it grants the app administrator authority over this hub. Continue only if you started this request yourself and meant to grant it.</p>
@@ -442,6 +442,10 @@ type deviceCredential struct {
 	// Revoked reports a credential the approval will refuse. The page says so,
 	// rather than asking a person to verify something that grants nothing.
 	Revoked bool
+	// Expired reports a credential past its lifetime. The approval refuses it
+	// too (the elevate step matches only a live row), so the page says so for
+	// the same reason Revoked does.
+	Expired bool
 }
 
 // devicePageData fills devicePageTmpl.

@@ -451,7 +451,7 @@ func (h *OAuthServerHandler) requireElevatedSession(w http.ResponseWriter, r *ht
 		return nil
 	}
 	// SOLO has no ceremony to prove a factor with, which is the same answer
-	// requireElevation gives on every other restricted surface. Its synthetic
+	// auth.RequireElevation gives on every other restricted surface. Its synthetic
 	// user carries no credential row, so Elevated is permanently false and the
 	// bounce below would send it to a /elevate page that can never succeed --
 	// making app authorization impossible on exactly the deployment the scope

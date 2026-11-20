@@ -1652,37 +1652,32 @@ struct BrowserAuthStart {
     authorize_url: String,
 }
 
-#[tauri::command]
-async fn start_browser_sign_in(
-    shell: State<'_, Arc<DesktopShell>>,
-) -> Result<BrowserAuthStart, String> {
-    let resp = check_response(
-        shell
-            .send_request_async(proto::request::Method::StartBrowserAuth(
-                proto::StartBrowserAuthRequest {
-                    kind: proto::BrowserAuthKind::SignIn as i32,
-                },
-            ))
-            .await?,
-    )?;
-    match resp.result {
-        Some(proto::response::Result::StartBrowserAuth(start)) => Ok(BrowserAuthStart {
-            ceremony_id: start.ceremony_id,
-            authorize_url: start.authorize_url,
-        }),
-        _ => Err("unexpected response for start_browser_sign_in".to_string()),
+/// The `kind` argument of the one start command, validated against the
+/// proto enum. `Unspecified` names no ceremony, and an unknown value can
+/// only come from a webview built against another enum. Both fail here
+/// rather than reach the sidecar with a kind nobody chose.
+fn parse_browser_auth_kind(kind: i32) -> Result<proto::BrowserAuthKind, String> {
+    match proto::BrowserAuthKind::try_from(kind) {
+        Ok(auth_kind @ (proto::BrowserAuthKind::SignIn | proto::BrowserAuthKind::StepUp)) => {
+            Ok(auth_kind)
+        }
+        Ok(proto::BrowserAuthKind::Unspecified) | Err(_) => {
+            Err(format!("invalid browser auth kind: {kind}"))
+        }
     }
 }
 
 #[tauri::command]
-async fn start_browser_step_up(
+async fn start_browser_auth(
     shell: State<'_, Arc<DesktopShell>>,
+    kind: i32,
 ) -> Result<BrowserAuthStart, String> {
+    let auth_kind = parse_browser_auth_kind(kind)?;
     let resp = check_response(
         shell
             .send_request_async(proto::request::Method::StartBrowserAuth(
                 proto::StartBrowserAuthRequest {
-                    kind: proto::BrowserAuthKind::StepUp as i32,
+                    kind: auth_kind as i32,
                 },
             ))
             .await?,
@@ -1692,7 +1687,11 @@ async fn start_browser_step_up(
             ceremony_id: start.ceremony_id,
             authorize_url: start.authorize_url,
         }),
-        _ => Err("unexpected response for start_browser_step_up".to_string()),
+        // The kind is in the message so a sign-in answer and a step-up
+        // answer stay distinguishable.
+        _ => Err(format!(
+            "unexpected response for start_browser_auth({auth_kind:?})"
+        )),
     }
 }
 
@@ -2175,8 +2174,7 @@ fn main() {
             restart_app,
             save_window_geometry,
             set_desktop_behavior,
-            start_browser_sign_in,
-            start_browser_step_up,
+            start_browser_auth,
             cancel_browser_auth,
             quit_app,
             open_web_inspector,
@@ -2884,6 +2882,33 @@ mod tests {
         assert_eq!(
             lifecycle_from_response(response).expect_err("sidecar info is required"),
             "lifecycle response missing sidecar info"
+        );
+    }
+
+    // The one start command carries the proto enum's ordinal. Only the two
+    // start kinds name a ceremony, so the unset value and a value this enum
+    // does not know must fail here instead of reaching the sidecar.
+    #[test]
+    fn parse_browser_auth_kind_accepts_the_two_ceremony_kinds() {
+        assert_eq!(
+            parse_browser_auth_kind(proto::BrowserAuthKind::SignIn as i32),
+            Ok(proto::BrowserAuthKind::SignIn)
+        );
+        assert_eq!(
+            parse_browser_auth_kind(proto::BrowserAuthKind::StepUp as i32),
+            Ok(proto::BrowserAuthKind::StepUp)
+        );
+    }
+
+    #[test]
+    fn parse_browser_auth_kind_rejects_an_unset_or_unknown_kind() {
+        assert_eq!(
+            parse_browser_auth_kind(proto::BrowserAuthKind::Unspecified as i32),
+            Err("invalid browser auth kind: 0".to_string())
+        );
+        assert_eq!(
+            parse_browser_auth_kind(7),
+            Err("invalid browser auth kind: 7".to_string())
         );
     }
 

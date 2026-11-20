@@ -42,8 +42,15 @@ import (
 // own request, and approving grants a WINDOW rather than a credential.
 
 // cliCredential mints a command-line credential for the environment's user and
-// returns its row id and its bearer secret.
+// returns its row id and its bearer secret. It never expires on its own.
 func cliCredential(t *testing.T, env *apiAuthEnv, name string) (tokenID, bearer string) {
+	t.Helper()
+	return cliCredentialExpiring(t, env, name, nil)
+}
+
+// cliCredentialExpiring mints the same credential with an expiry the test
+// sets, so a test can pin what a dead row does.
+func cliCredentialExpiring(t *testing.T, env *apiAuthEnv, name string, expiresAt *time.Time) (tokenID, bearer string) {
 	t.Helper()
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
@@ -55,6 +62,7 @@ func cliCredential(t *testing.T, env *apiAuthEnv, name string) (tokenID, bearer 
 		InstallationName: name,
 		GrantedScopes:    authscope.NonAdminGrant().String(),
 		SecretHash:       env.validator.HashSecret(secret),
+		ExpiresAt:        expiresAt,
 	}))
 	return tokenID, auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 }
@@ -418,6 +426,24 @@ func TestCLIStepUp_TheActivationPageIdentifiesTheStoredCredential(t *testing.T) 
 	assert.NotContains(t, page, "administer the hub", "a step-up widens nothing, so it offers no scope")
 }
 
+// A credential that expires after the ceremony started still renders on the
+// activation page, and the page must say so. The approval refuses it (the
+// elevate step matches only a live row), and a person must not prove a factor
+// for something that grants nothing -- the same reason a revoked credential is
+// named as revoked.
+func TestCLIStepUp_TheActivationPageSaysAnExpiredCredentialGrantsNothing(t *testing.T) {
+	env := setupAPIAuth(t)
+	soon := env.now().Add(time.Minute)
+	_, bearer := cliCredentialExpiring(t, env, "operator-laptop", &soon)
+	grant := decodeStepUpGrant(t, startStepUp(t, env, bearer, ""))
+
+	env.advance(5 * time.Minute)
+	page := activationPage(t, env, grant.UserCode, env.elevatedAdminCookie(t))
+
+	assert.Contains(t, page, "It has expired, so verifying it grants nothing.",
+		"an expired credential must be named as expired beside the revoked case")
+}
+
 // NEITHER leg renders the requester-supplied label, and the issuance leg is
 // the one that used to.
 //
@@ -653,7 +679,7 @@ func TestAuthorizeStepUp_TokenOfAnotherApp(t *testing.T) {
 	})
 	tokenID, _ := mintAppCredential(t, env, otherApp)
 	cookie := env.elevatedAdminCookie(t)
-	// The request names the control CLI; the credential belongs to the other app.
+	// The request identifies the control CLI; the credential belongs to the other app.
 	q := startQuery(url.Values{"step_up": {oauthapp.StepUpTokenPrefix + tokenID}})
 	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
 	deniedRedirect(t, resp)
@@ -671,6 +697,22 @@ func TestAuthorizeStepUp_RevokedToken(t *testing.T) {
 	deniedRedirect(t, resp)
 }
 
+// An expired token is as dead as a revoked one. It must fail the parse: the
+// consent page names no row the elevation write will refuse, and the person
+// must not prove a factor first.
+func TestAuthorizeStepUp_ExpiredToken(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	expiredAt := env.now().Add(-time.Hour)
+	tokenID, _ := cliCredentialExpiring(t, env, "operator-laptop", &expiredAt)
+	cookie := env.elevatedAdminCookie(t)
+	q := startQuery(url.Values{"step_up": {oauthapp.StepUpTokenPrefix + tokenID}})
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
+	dest := deniedRedirect(t, resp)
+	assert.Equal(t, "step_up token not found", dest.Get("error_description"),
+		"a token whose expiry has passed is a liveness refusal, as an expired session is")
+}
+
 func TestAuthorizeStepUp_AppWithoutElevationAllowed(t *testing.T) {
 	t.Parallel()
 	env := setupAPIAuth(t)
@@ -685,6 +727,52 @@ func TestAuthorizeStepUp_AppWithoutElevationAllowed(t *testing.T) {
 		"step_up":      {oauthapp.StepUpTokenPrefix + tokenID}})
 	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
 	deniedRedirect(t, resp)
+}
+
+// The app's permission to elevate covers a session target too. An operator
+// who turns the flag off for an app must withdraw every step-up that app runs,
+// not only the token one.
+func TestAuthorizeStepUp_SessionOfAppWithoutElevationAllowed(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	sess := desktopIssuedSession(t, env, env.userID, "LeapMux Desktop on alice@laptop")
+	rows, err := env.store.OAuthClients().SetElevationAllowed(context.Background(),
+		store.SetOAuthClientElevationAllowedParams{
+			ClientID: oauthapp.DesktopClientID, ElevationAllowed: false,
+			CallerUserID: userid.MustNew(env.userID), CallerIsAdmin: true,
+		})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, rows)
+	cookie := env.elevatedAdminCookie(t)
+	q := startQuery(url.Values{"client_id": {oauthapp.DesktopClientID},
+		"step_up": {oauthapp.StepUpSessionPrefix + sess.ID}})
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
+	dest := deniedRedirect(t, resp)
+	assert.Equal(t, "step_up token's app does not allow elevation", dest.Get("error_description"),
+		"a session target must meet the same app guard a token target does")
+}
+
+// A session's expiry is compared against the HANDLER's clock. Moving the seam
+// past the expiry must find the target dead even where wall time still calls
+// it live.
+func TestAuthorizeStepUp_SessionExpiryReadsTheHandlerClock(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	// A target with a lifetime far shorter than the approving session's, so
+	// one advance outlives the target without the session or its elevation.
+	sess, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(),
+		userid.MustNew(env.userID), time.Minute,
+		auth.SignInProvedNoFactor,
+		auth.SessionMeta{UserAgent: "LeapMux Desktop on alice@laptop", IssuedToClient: oauthapp.DesktopClientID})
+	require.NoError(t, err)
+	cookie := env.elevatedAdminCookie(t)
+	env.advance(5 * time.Minute)
+	q := startQuery(url.Values{"client_id": {oauthapp.DesktopClientID},
+		"step_up": {oauthapp.StepUpSessionPrefix + sess.ID}})
+	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie)
+	dest := deniedRedirect(t, resp)
+	assert.Equal(t, "step_up session not found", dest.Get("error_description"),
+		"expiry must be compared against the handler clock, not wall time")
 }
 
 // A step-up asks for nothing. A request that also asks for a scope is refused
@@ -754,7 +842,7 @@ func TestAuthorizeStepUp_ThePageShowsTheHubsOwnRecord(t *testing.T) {
 			"step_up":           {oauthapp.StepUpSessionPrefix + sess.ID},
 			"installation_name": {attackerLabel}})
 		page := bodyOf(t, getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie))
-		assert.Contains(t, page, "Verify LeapMux Desktop?", "the page must name the registered app")
+		assert.Contains(t, page, "Verify LeapMux Desktop?", "the page must identify the registered app")
 		assert.Contains(t, page, stepUpSentence)
 		assert.Contains(t, page, row.UserAgent, "the page must identify the credential the hub recorded")
 		assert.Contains(t, page, row.CreatedAt.UTC().Format("2006-01-02"),
@@ -773,7 +861,7 @@ func TestAuthorizeStepUp_ThePageShowsTheHubsOwnRecord(t *testing.T) {
 		q := startQuery(url.Values{"step_up": {oauthapp.StepUpTokenPrefix + tokenID},
 			"installation_name": {attackerLabel}})
 		page := bodyOf(t, getWithCookie(t, env.server.URL+"/oauth/authorize?"+q.Encode(), cookie))
-		assert.Contains(t, page, "Verify LeapMux control CLI?", "the page must name the registered app")
+		assert.Contains(t, page, "Verify LeapMux control CLI?", "the page must identify the registered app")
 		assert.Contains(t, page, stepUpSentence)
 		assert.Contains(t, page, "LeapMux control CLI on build-server-01",
 			"the page must identify the credential the hub recorded")
@@ -836,7 +924,7 @@ func (s recordingStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeSt
 }
 
 // The POST re-validates the `step_up` the form carries, because the form is
-// attacker-writable: a hidden field naming ANOTHER user's session must be
+// attacker-writable: a hidden field identifying ANOTHER user's session must be
 // refused and must leave no code behind.
 func TestConsentStepUp_TamperedFormIsRefusedWithoutACode(t *testing.T) {
 	t.Parallel()
@@ -1145,7 +1233,7 @@ func TestStepUpCodeExchange_AGrantStampStoreFailureAnswersInternalError(t *testi
 }
 
 // The no-row refusal is the one stamp outcome that stays an invalid_grant:
-// the credential the code names is gone, so there is nothing to elevate.
+// the credential the code identifies is gone, so there is nothing to elevate.
 func TestStepUpCodeExchange_AGrantNoRowAnswersInvalidGrant(t *testing.T) {
 	t.Parallel()
 	env := setupAPIAuthWithStore(t, func(st store.Store) store.Store {
@@ -1196,7 +1284,7 @@ func seedStepUpCode(t *testing.T, env *apiAuthEnv, clientID, stepUpSessionID, st
 	return code, verifier
 }
 
-// The code names the credential it verifies. A session code presented with
+// The code identifies the credential it verifies. A session code presented with
 // ANOTHER session of the same owner proves nothing about the target: the
 // person at the keyboard may be the owner, but not in the session the code
 // was approved for. The refusal must stamp neither row.
@@ -1217,7 +1305,7 @@ func TestStepUpCodeExchange_AnotherSessionOfTheSameUserIsRefused(t *testing.T) {
 	body := decodeJSONBody(t, resp)
 	assert.Equal(t, "invalid_grant", body["error"])
 	assert.Equal(t, "credential does not match the step-up target", body["error_description"],
-		"the refusal must name the mismatch, not some other invalid_grant")
+		"the refusal must specify the mismatch, not some other invalid_grant")
 
 	for _, sessionID := range []string{targetID, otherID} {
 		row, err := env.store.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
@@ -1227,7 +1315,7 @@ func TestStepUpCodeExchange_AnotherSessionOfTheSameUserIsRefused(t *testing.T) {
 	}
 }
 
-// The same rule for a command-line credential: a code that names token A must
+// The same rule for a command-line credential: a code that identifies token A must
 // not redeem with token B's bearer, however both belong to one owner. The
 // refusal stamps neither credential.
 func TestStepUpCodeExchange_AnotherTokensBearerIsRefused(t *testing.T) {
@@ -1244,7 +1332,7 @@ func TestStepUpCodeExchange_AnotherTokensBearerIsRefused(t *testing.T) {
 	body := decodeJSONBody(t, resp)
 	assert.Equal(t, "invalid_grant", body["error"])
 	assert.Equal(t, "credential does not match the step-up target", body["error_description"],
-		"the refusal must name the mismatch, not some other invalid_grant")
+		"the refusal must specify the mismatch, not some other invalid_grant")
 
 	for _, tokenID := range []string{tokenA, tokenB} {
 		row, err := env.store.APITokens().GetByID(ctx, tokenID)

@@ -163,7 +163,7 @@ func TestDeactivatePasskeyAuth_FromAnElevatedSessionKeepsThatSession(t *testing.
 
 	ctx := context.Background()
 	// A passwordless account (setupOAuthUserTest) that holds one passkey: the
-	// account HAS a factor, so requireElevation is the rule, and
+	// account HAS a factor, so auth.RequireElevation is the rule, and
 	// commitPasskeyDeactivation takes the passkey-only path that sets the
 	// replacement password and revokes.
 	env := setupOAuthUserTest(t)

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { BrowserAuthKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
@@ -46,6 +47,59 @@ describe('desktopFetch', () => {
 
     const response = await desktopFetch('https://hub.example/test')
     expect(response.headers.get('x-repeated')).toBe('one, two')
+  })
+
+  it('rejects with AbortError when the signal aborts while the call is in flight', async () => {
+    // The proxied request settles only when the test answers it, so the
+    // abort must reject the call without waiting for that answer.
+    let answer!: (resp: { status: number, headers: Record<string, string[]>, body: string }) => void
+    const inFlight = new Promise((resolve) => {
+      answer = resolve
+    })
+    mockIPC((cmd) => {
+      if (cmd === 'proxy_http')
+        return inFlight
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const controller = new AbortController()
+    const call = desktopFetch('https://hub.example/test', { signal: controller.signal })
+    controller.abort()
+    answer({ status: 200, headers: {}, body: '' })
+    await expect(call).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('rejects with AbortError when the signal is already aborted', async () => {
+    const invoked: string[] = []
+    mockIPC((cmd) => {
+      invoked.push(cmd)
+      return { status: 200, headers: {}, body: '' }
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    await expect(desktopFetch('https://hub.example/test', { signal: controller.signal }))
+      .rejects
+      .toMatchObject({ name: 'AbortError' })
+    expect(invoked).toEqual([])
+  })
+
+  it('removes the abort listener once the call settles', async () => {
+    mockIPC((cmd) => {
+      if (cmd === 'proxy_http') {
+        return {
+          status: 200,
+          headers: {},
+          body: '',
+        }
+      }
+      throw new Error(`unmocked Tauri command: ${cmd}`)
+    })
+
+    const controller = new AbortController()
+    const removed = vi.spyOn(controller.signal, 'removeEventListener')
+    await desktopFetch('https://hub.example/test', { signal: controller.signal })
+    expect(removed).toHaveBeenCalledWith('abort', expect.any(Function))
   })
 })
 
@@ -1257,10 +1311,10 @@ describe('platformBridge startBrowserAuth', () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
-  it('starts each ceremony kind through its own command', async () => {
-    const invoked: string[] = []
-    mockIPC((cmd) => {
-      invoked.push(cmd)
+  it('starts each ceremony kind through one command carrying the kind', async () => {
+    const invoked: Array<[string, unknown]> = []
+    mockIPC((cmd, args) => {
+      invoked.push([cmd, args])
       return { ceremonyId: 'c-1', authorizeUrl: 'https://hub.example/authorize' }
     })
 
@@ -1273,6 +1327,15 @@ describe('platformBridge startBrowserAuth', () => {
       authorizeUrl: 'https://hub.example/authorize',
     })
 
-    expect(invoked).toEqual(['start_browser_sign_in', 'start_browser_step_up'])
+    expect(invoked).toEqual([
+      [
+        'start_browser_auth',
+        { kind: BrowserAuthKind.SIGN_IN },
+      ],
+      [
+        'start_browser_auth',
+        { kind: BrowserAuthKind.STEP_UP },
+      ],
+    ])
   })
 })

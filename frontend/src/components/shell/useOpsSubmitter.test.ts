@@ -1,4 +1,5 @@
 import type { OpBatch } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import type { HubUserId } from '~/lib/browserStorage'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -43,7 +44,7 @@ function bootstrapPending(pending: PendingOpsManager, currentEpoch: bigint) {
 }
 
 function pendingAtEpoch(epoch: bigint) {
-  const pending = new PendingOpsManager('user', new HLCClock('client'))
+  const pending = new PendingOpsManager('user' as HubUserId, new HLCClock('client'))
   bootstrapPending(pending, epoch)
   return pending
 }

@@ -550,6 +550,51 @@ describe('PreferencesDialog admin unlock', () => {
     expect(screen.queryByText('ADMINISTRATION')).toBeNull()
     expect(listSettings).not.toHaveBeenCalled()
   })
+
+  // The unlock entry asks for a step-up; it must not double as a report that
+  // the admin catalog is empty or failed to load. A CURRENT window whose load
+  // failed or described zero keys also leaves zero descriptors with nothing
+  // loading, and reading that emptiness as "Administration is locked" shows
+  // the entry to a user for whom a step-up changes nothing.
+  it('hides the unlock entry for a failed or empty catalog, though a genuine elevation refusal keeps it', async () => {
+    isAdmin.mockReturnValue(true)
+    elevationExpiresAt.mockReturnValue(inTwoHours())
+    listSettings.mockRejectedValue(new Error('hub unreachable'))
+    renderDialog()
+    await waitFor(() => expect(listSettings).toHaveBeenCalled())
+    await waitFor(() => {
+      const found = screen.getAllByRole('alert').find(el => el.getAttribute('data-variant') === 'error')
+      expect(found).toBeTruthy()
+    })
+    expect(screen.queryByTestId('preferences-nav-unlock-admin')).toBeNull()
+    cleanup()
+
+    listSettings.mockResolvedValue({ descriptors: [], values: [] })
+    renderDialog()
+    await waitFor(() => expect(listSettings).toHaveBeenCalled())
+    // The settled reply has reached the store and the render. An absence
+    // cannot be waited on, so the wait is on the call plus a turn of the queue.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(screen.queryByTestId('preferences-nav-unlock-admin')).toBeNull()
+    cleanup()
+
+    // The genuine case: the window has lapsed and the user dismisses the
+    // step-up prompt. The entry stays, so the user can ask again.
+    elevationExpiresAt.mockReturnValue(undefined)
+    setElevationPrompter(async () => false)
+    listSettings.mockImplementation(async () => {
+      if (!(await promptForElevation()))
+        throw new Error('permission denied: this action requires a recent sign-in')
+      return { descriptors: [], values: [] }
+    })
+    renderDialog()
+    fireEvent.click(await screen.findByTestId('preferences-nav-unlock-admin'))
+    await waitFor(() => {
+      const found = screen.getAllByRole('alert').find(el => el.getAttribute('data-variant') === 'error')
+      expect(found).toBeTruthy()
+    })
+    expect(screen.getByTestId('preferences-nav-unlock-admin')).toBeTruthy()
+  })
 })
 
 describe('PreferencesDialog deep link', () => {

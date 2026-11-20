@@ -9,7 +9,7 @@ package oauthapp
 // the dependency-free constants home both sides of the wire already import.
 const (
 	// StepUpSessionPrefix introduces a session target: `session:<id>`. The
-	// value after the prefix names a user_sessions row this authorization
+	// value after the prefix identifies a user_sessions row this authorization
 	// VERIFIES rather than issues.
 	StepUpSessionPrefix = "session:"
 	// StepUpTokenPrefix introduces an app-credential target: `token:<id>`.

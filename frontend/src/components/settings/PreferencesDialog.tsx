@@ -239,7 +239,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
                 restartGroups={restartGroups}
                 compact={narrow()}
                 onUnlockAdmin={
-                  isAdmin() && adminStore.state.descriptors.length === 0 && !adminStore.state.loading
+                  isAdmin() && !adminUnlocked() && !adminStore.state.loading
                     ? handleUnlockAdmin
                     : undefined
                 }

@@ -252,7 +252,10 @@ test.describe('consent page variants', () => {
 
     // Sign in before loading the consent page so it shows the signed-in variant.
     await loginViaToken(page, cookie)
-    await page.goto(`${leapmuxServer.hubUrl}/oauth/authorize?client_id=leapmux-desktop&response_type=code&code_challenge_method=S256&redirect_uri=${encodeURIComponent('http://127.0.0.1:54321/callback')}&state=s1&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&installation_name=e2e-laptop`)
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, {
+      clientId: 'leapmux-desktop',
+      state: 's1',
+    }))
 
     await expect(page.getByRole('heading', { name: /Sign in to LeapMux Desktop/i })).toBeVisible()
     await expect(page.getByRole('button', { name: /Deny/i })).toBeVisible()
@@ -267,7 +270,10 @@ test.describe('consent page variants', () => {
 
     await loginViaToken(page, cookie)
 
-    await page.goto(`${leapmuxServer.hubUrl}/oauth/authorize?client_id=leapmux-control-cli&response_type=code&code_challenge_method=S256&redirect_uri=${encodeURIComponent('http://127.0.0.1:54321/callback')}&state=s2&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&installation_name=e2e-laptop&step_up=token:${tokenId}`)
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, {
+      state: 's2',
+      stepUp: `token:${tokenId}`,
+    }))
 
     await expect(page.getByRole('heading', { name: /Verify/i })).toBeVisible()
     await expect(page.getByRole('button', { name: /Verify/i })).toBeVisible()
@@ -282,7 +288,9 @@ test.describe('consent page variants', () => {
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     // Now navigate to the authorize URL directly.
-    await page.goto(`${leapmuxServer.hubUrl}/oauth/authorize?client_id=leapmux-control-cli&response_type=code&code_challenge_method=S256&redirect_uri=${encodeURIComponent('http://127.0.0.1:54321/callback')}&state=s3&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&installation_name=e2e-laptop`)
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, {
+      state: 's3',
+    }))
 
     // Should land on the consent page directly, not bounce to /elevate.
     await expect(page.getByRole('heading', { name: /Authorize/i })).toBeVisible()

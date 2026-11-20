@@ -1,3 +1,4 @@
+import type { HubUserId } from '~/lib/browserStorage'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
@@ -121,7 +122,7 @@ export interface UseTabHydratorsOpts {
    * resolves. NOT the composed storage account `metadata.state.userId` tracks,
    * which is why `isCurrent` narrows one to the other before comparing.
    */
-  userId: () => string | undefined
+  hubUserId: () => HubUserId | undefined
   view: TabView
   metadata: TabMetadataStore
   repoGitStore: ReturnType<typeof createRepoGitStore>
@@ -162,7 +163,7 @@ export interface UseTabHydratorsOpts {
 export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
   let current: TabHydrators | undefined
   createComputed(() => {
-    const account = opts.userId()
+    const account = opts.hubUserId()
     const accountGeneration = opts.metadata.state.accountGeneration
     if (!account)
       return
@@ -172,7 +173,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
       current = undefined
     })
     current = untrack(() => createAccountTabHydrators(opts, () =>
-      alive && opts.userId() === account && opts.view.ownerUserId() === account
+      alive && opts.hubUserId() === account && opts.view.ownerUserId() === account
       && storageAccountUserId(opts.metadata.state.userId) === account
       && opts.metadata.state.accountGeneration === accountGeneration))
   })

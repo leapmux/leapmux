@@ -1,10 +1,10 @@
 import type { Component } from 'solid-js'
-import type { BrowserAuthFlow } from '~/lib/browserAuth'
-import { createSignal, onCleanup, Show } from 'solid-js'
+import { Show } from 'solid-js'
+import { openExternalUrl } from '~/api/platformBridge'
 import { useAuth } from '~/context/AuthContext'
-import { runBrowserAuth } from '~/lib/browserAuth'
-import { formatErrorMessage } from '~/lib/errors'
-import * as styles from './BrowserSignIn.css'
+import { copyTextToClipboard } from '~/lib/clipboard'
+import * as ceremonyPage from './ceremonyPage.css'
+import { useBrowserCeremony } from './useBrowserCeremony'
 
 /**
  * Step-up prompt for desktop remote-Hub mode. Runs a browser ceremony to
@@ -14,56 +14,28 @@ export const BrowserStepUp: Component<{
   onElevated: () => void
 }> = (props) => {
   const auth = useAuth()
-  const [phase, setPhase] = createSignal<'idle' | 'waiting'>('idle')
-  const [failure, setFailure] = createSignal('')
-  const [flow, setFlow] = createSignal<BrowserAuthFlow | null>(null)
-
-  const controller = new AbortController()
-  onCleanup(() => controller.abort())
-
-  const handleVerify = async (): Promise<void> => {
-    setFailure('')
-    setPhase('waiting')
-    try {
-      const f = await runBrowserAuth('step-up', controller.signal)
-      setFlow(f)
-
-      const result = await f.result
-      if (!result.ok) {
-        setPhase('idle')
-        setFlow(null)
-        if (result.failure)
-          setFailure(result.failure)
-        return
-      }
-
-      await auth.refreshUser()
-      props.onElevated()
-    }
-    catch (err) {
-      setPhase('idle')
-      setFlow(null)
-      setFailure(formatErrorMessage(err))
-    }
-  }
+  const { phase, failure, flow, start } = useBrowserCeremony('step-up', async () => {
+    await auth.refreshUser()
+    props.onElevated()
+  })
 
   return (
     <div>
       <p>LeapMux verifies you through your browser.</p>
       <Show when={phase() === 'idle'}>
-        <button type="button" onClick={() => void handleVerify()}>
+        <button type="button" onClick={() => void start()}>
           Verify in your browser
         </button>
       </Show>
       <Show when={phase() === 'waiting'}>
         <p>Waiting for your browser...</p>
-        <div class={styles.waitingActions}>
+        <div class={ceremonyPage.waitingActions}>
           <button
             type="button"
             onClick={() => {
               const f = flow()
               if (f) {
-                void import('~/api/platformBridge').then(({ openExternalUrl }) => openExternalUrl(f.url))
+                void openExternalUrl(f.url)
               }
             }}
           >
@@ -74,7 +46,7 @@ export const BrowserStepUp: Component<{
             onClick={() => {
               const f = flow()
               if (f) {
-                void navigator.clipboard.writeText(f.url)
+                void copyTextToClipboard(f.url)
               }
             }}
           >
@@ -83,7 +55,7 @@ export const BrowserStepUp: Component<{
         </div>
       </Show>
       <Show when={failure()}>
-        <p class={styles.error}>{failure()}</p>
+        <p class={ceremonyPage.error}>{failure()}</p>
       </Show>
     </div>
   )

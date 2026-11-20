@@ -120,7 +120,7 @@ type UserSession struct {
 	ElevationExpiresAt *time.Time
 	UserAgent          string
 	IPAddress          string
-	// IssuedToClient names the built-in app this session was issued to through
+	// IssuedToClient identifies the built-in app this session was issued to through
 	// the browser handoff. Empty for a session that signed in on the Hub's own
 	// page. NULL reads as the empty string.
 	IssuedToClient string
@@ -856,7 +856,7 @@ type CreateSessionParams struct {
 	ExpiresAt  time.Time
 	UserAgent  string
 	IPAddress  string
-	// IssuedToClient names the built-in app this session is issued to through
+	// IssuedToClient identifies the built-in app this session is issued to through
 	// the browser handoff. Empty stores NULL.
 	IssuedToClient string
 	// ElevationProvenAt and ElevationExpiresAt carry the sign-in window when
@@ -1907,11 +1907,11 @@ type OAuthAuthorizationCode struct {
 	// code redeems into a session. It serves the replay remedy as
 	// MintedTokenID does.
 	MintedSessionID string
-	// StepUpSessionID names the session this code VERIFIES, when it verifies
+	// StepUpSessionID identifies the session this code VERIFIES, when it verifies
 	// one rather than issuing one. At most one of StepUpSessionID and
 	// StepUpTokenID is set.
 	StepUpSessionID string
-	// StepUpTokenID names the app credential this code verifies.
+	// StepUpTokenID identifies the app credential this code verifies.
 	StepUpTokenID string
 }
 
@@ -2066,11 +2066,11 @@ type CreateOAuthAuthorizationCodeParams struct {
 	GrantedScopes    string
 	InstallationName string
 	ExpiresAt        time.Time
-	// StepUpSessionID names the session this code verifies, when it verifies
+	// StepUpSessionID identifies the session this code verifies, when it verifies
 	// one rather than issuing one. Empty stores NULL. At most one of
 	// StepUpSessionID and StepUpTokenID is set; the CHECK refuses both.
 	StepUpSessionID string
-	// StepUpTokenID names the app credential this code verifies.
+	// StepUpTokenID identifies the app credential this code verifies.
 	StepUpTokenID string
 }
 

@@ -239,8 +239,9 @@ func (h *OAuthServerHandler) grantCredential(ctx context.Context, tokenID string
 		Added: row.CreatedAt.UTC().Format(credentialAddedLayout),
 		// A revoked credential cannot be elevated, so the page says so
 		// rather than asking a person to verify something the approval
-		// refuses.
+		// refuses. An expired one is refused the same way.
 		Revoked: row.RevokedAt != nil,
+		Expired: row.ExpiresAt != nil && !row.ExpiresAt.After(h.now()),
 	}, nil
 }
 

@@ -208,7 +208,7 @@ func (c *Client) startElevation(ctx context.Context) (*DeviceGrant, error) {
 		return nil, ErrElevationUnsupported
 	}
 	// 400 is the credential kind the device ceremony cannot carry: a
-	// browser-issued credential gets the refusal that names the browser leg,
+	// browser-issued credential gets the refusal that identifies the browser leg,
 	// and every other 400 is a credential kind that carries no window at
 	// all. Both are permanent for the device ceremony -- but the first one
 	// has a working alternative, so it is a sentinel rather than a failure.
@@ -287,7 +287,7 @@ func (c *Client) elevateViaLoopback(ctx context.Context) error {
 		return err
 	}
 	// The access token can expire or rotate while the person is at the
-	// browser; the redemption must present the credential the code names.
+	// browser; the redemption must present the credential the code identifies.
 	if err := c.EnsureFreshBearer(ctx); err != nil {
 		return err
 	}

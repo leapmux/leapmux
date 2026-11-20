@@ -1,5 +1,6 @@
 import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import type { HubUserId, StorageAccount } from '~/lib/browserStorage'
 import type { Projection } from '~/lib/crdt'
 import type { CheckpointRecorder, CheckpointRecorderOptions, HydratedBase } from '~/lib/crdt/checkpointRecorder'
 import type { HydrationPayload, PersistedBase } from '~/lib/crdt/hydrate'
@@ -43,14 +44,14 @@ export interface UseCrdtRuntimeOpts {
    * The storage account (hub + user id) that keys the checkpoint store; empty
    * until the session restores. NOT the identity the Hub reports.
    */
-  userId: () => string
+  storageAccount: () => StorageAccount
   /**
    * The authenticated user id the Hub reports on each frame; empty until the
    * session restores. `useUserEvents` compares it against every frame's
    * `user_id`, so it must stay the raw id — a storage account here refuses
    * every `UserMaterialized` frame and the CRDT never bootstraps.
    */
-  hubUserId: () => string
+  hubUserId: () => HubUserId
   /** Which workspace new ops are attributed to. Read live by the bridge. */
   getWorkspaceId: () => string | null
   /**
@@ -169,7 +170,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   const bumpPending = () => setPendingVersion(v => v + 1)
   // The most recent user id the resume-watermark persistence effect wrote
   // under, so a logout / user switch clears the prior account's watermark.
-  let lastResumeUid: string | null = null
+  let lastResumeUid: StorageAccount | null = null
   // The op-log/checkpoint persistence policy lives in its own object (see
   // ~/lib/crdt/checkpointRecorder): the queue, the coalesce, the frame counter,
   // the compaction threshold and the rewrite are one unit with one lifetime,
@@ -195,9 +196,9 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   function makeManager(): PendingOpsManager {
     // The constructor seeds `UserCrdtState.userId`, whose domain is the RAW Hub
     // user id -- what `bootstrap` copies off `UserMaterialized` and what the
-    // checkpoint header persists. NOT `opts.userId()`, which is the composed
-    // STORAGE account that keys the checkpoint store: seeding that would put
-    // two identity domains in one field, split at bootstrap.
+    // checkpoint header persists. NOT `opts.storageAccount()`, which is the
+    // composed STORAGE account that keys the checkpoint store: seeding that
+    // would put two identity domains in one field, split at bootstrap.
     return new PendingOpsManager(opts.hubUserId(), new HLCClock(ownClientId()), bumpPending)
   }
 
@@ -208,7 +209,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
    * the same turn as a logout could otherwise land after the wipe and leave a
    * previous account's frames on a shared device.
    */
-  function disposeRecorderAndClear(uid: string | null): void {
+  function disposeRecorderAndClear(uid: StorageAccount | null): void {
     const dying = recorder
     recorder = null
     const settled = dying
@@ -269,7 +270,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   const SWEEP_EVERY_TICKS = 60
 
   createEffect(() => {
-    const uid = opts.userId()
+    const uid = opts.storageAccount()
     // Re-runs when the client id is re-minted after a duplicate-tab collision,
     // so the duplicate re-hydrates under its own owner key instead of sharing
     // the incumbent's checkpoint.
@@ -434,7 +435,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
    * already falsified -- the kind of drift a reader cannot check without
    * re-deriving the whole branch tree.
    */
-  function installRuntimeFor(uid: string, clientId: string, payload: HydrationPayload | null): void {
+  function installRuntimeFor(uid: StorageAccount, clientId: string, payload: HydrationPayload | null): void {
     // A cold start under THIS run's owner key. Threading `clientId` rather than
     // re-reading `ownClientId()` inside the install keeps the recorder writing
     // under the id this pass hydrated from: one owner, one source. Reading it
@@ -469,7 +470,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
    * the persisted pair turned out to be unusable, having already wiped it —
    * the caller then cold-starts.
    */
-  function hydrateInto(uid: string, clientId: string, payload: HydrationPayload): boolean {
+  function hydrateInto(uid: StorageAccount, clientId: string, payload: HydrationPayload): boolean {
     const mgr = makeManager()
     try {
       mgr.hydrate(payload)
@@ -548,7 +549,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
    */
   function installObserverAndManager(
     mgr: PendingOpsManager,
-    uid: string,
+    uid: StorageAccount,
     clientId: string,
     hydratedFrom: CheckpointRecorderOptions['hydratedFrom'],
   ): void {
@@ -649,7 +650,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   // pending manager / user id.
   createEffect(() => {
     const mgr = pendingMgr()
-    const uid = opts.userId()
+    const uid = opts.storageAccount()
     if (!mgr || !uid) {
       setCRDTBridge(null)
       return

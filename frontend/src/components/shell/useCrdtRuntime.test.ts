@@ -1,3 +1,4 @@
+import type { HubUserId, StorageAccount } from '~/lib/browserStorage'
 import type { CheckpointRecorder, CheckpointRecorderOptions } from '~/lib/crdt/checkpointRecorder'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
@@ -198,12 +199,18 @@ async function settleUntilAsync(until: () => Promise<boolean>): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 0))
 }
 
-function mountRuntime(userId: () => string, hubUserId: () => string = userId) {
+function mountRuntime(
+  storageAccount: () => StorageAccount,
+  // The bare spelling (`TEST_USER_ID`): a test that passes one id runs both
+  // identity domains on it. A test about the mix-up risk passes both
+  // explicitly, as distinct values.
+  hubUserId: () => HubUserId = storageAccount as unknown as () => HubUserId,
+) {
   let dispose = () => {}
   const runtime = createRoot((d) => {
     dispose = d
     return useCrdtRuntime({
-      userId,
+      storageAccount,
       hubUserId,
       getWorkspaceId: () => 'ws-1',
       activeClient: createActiveClientStore(),
@@ -238,7 +245,7 @@ function seedCheckpoint(userId: string): Promise<boolean> {
   return writeCheckpointAndTruncateOpLog(userId, CLIENT, fullCheckpointDelta(seededState(userId)), WM, 1n)
 }
 
-/** A confirmed frame naming one node, so its entity key is observable. */
+/** A confirmed frame that identifies one node, so its entity key is observable. */
 function nodeFrameBytes(batchId: string, nodeId: string): Uint8Array {
   return toBinary(WatchUserEventSchema, create(WatchUserEventSchema, {
     event: {
@@ -302,7 +309,7 @@ describe('useCrdtRuntime hydration gate', () => {
   // stays shut and `/ws/userevents` is never dialled. The app looks like it is
   // "still loading" forever.
   it('opens the ready gate after a first-login hydration with no persisted checkpoint', async () => {
-    const { dispose } = mountRuntime(() => 'user-a')
+    const { dispose } = mountRuntime(() => 'user-a' as StorageAccount)
     expect(userEventsSpy.ready).not.toBeNull()
     // Gate starts shut: the socket must not race the checkpoint replay.
     expect(userEventsSpy.ready!()).toBe(false)
@@ -322,7 +329,7 @@ describe('useCrdtRuntime hydration gate', () => {
     // only the gate would pass even if the whole `if (payload)` branch were
     // deleted -- which is exactly what this suite used to do.
     await seedCheckpoint('user-b')
-    const { runtime, dispose } = mountRuntime(() => 'user-b')
+    const { runtime, dispose } = mountRuntime(() => 'user-b' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
 
     expect(userEventsSpy.ready!()).toBe(true)
@@ -339,12 +346,14 @@ describe('useCrdtRuntime hydration gate', () => {
   // token before the reset that bumps it made this case invalidate its own
   // hydration every time, wedging the gate shut for the incoming account.
   it('re-opens the ready gate across a direct user switch', async () => {
-    const [uid, setUid] = createSignal('user-a')
+    // The bare spelling: the account IS its user id, so one accessor drives
+    // both identity domains across the A -> B switch.
+    const [uid, setUid] = createSignal('user-a' as StorageAccount & HubUserId)
     const { dispose } = mountRuntime(uid)
     await settleUntil(() => userEventsSpy.ready!())
     expect(userEventsSpy.ready!()).toBe(true)
 
-    setUid('user-b')
+    setUid('user-b' as StorageAccount & HubUserId)
     // The gate shuts immediately so the socket cannot open against the previous
     // account's state...
     expect(userEventsSpy.ready!()).toBe(false)
@@ -364,7 +373,7 @@ describe('useCrdtRuntime hydration gate', () => {
   // on owner disposal as well as before each re-run, which is why the flag it
   // replaces covers this for free.
   it('abandons an in-flight hydration when its owner is disposed', async () => {
-    const { dispose } = mountRuntime(() => 'user-a')
+    const { dispose } = mountRuntime(() => 'user-a' as StorageAccount)
     expect(userEventsSpy.ready!()).toBe(false)
 
     // Tear down BEFORE hydration settles, with the user id still set.
@@ -386,7 +395,7 @@ describe('useCrdtRuntime hydration gate', () => {
     vi.useFakeTimers()
     try {
       hydrateSpy.hangNextRead = true
-      const { dispose } = mountRuntime(() => 'user-hang')
+      const { dispose } = mountRuntime(() => 'user-hang' as StorageAccount)
       await vi.advanceTimersByTimeAsync(0)
       expect(userEventsSpy.ready!()).toBe(false)
 
@@ -415,7 +424,7 @@ describe('useCrdtRuntime hydration gate', () => {
     vi.useFakeTimers()
     try {
       hydrateSpy.hangNextRead = true
-      const { dispose } = mountRuntime(() => 'user-superseded')
+      const { dispose } = mountRuntime(() => 'user-superseded' as StorageAccount)
       await vi.advanceTimersByTimeAsync(0)
 
       const superseded = handedSupersessionGuard()
@@ -438,7 +447,7 @@ describe('useCrdtRuntime hydration gate', () => {
   // deadline fired.
   it('flips the supersession guard when the run is disposed mid-read', async () => {
     hydrateSpy.hangNextRead = true
-    const { dispose } = mountRuntime(() => 'user-disposed')
+    const { dispose } = mountRuntime(() => 'user-disposed' as StorageAccount)
     await settle()
 
     const superseded = handedSupersessionGuard()
@@ -449,7 +458,7 @@ describe('useCrdtRuntime hydration gate', () => {
   })
 
   it('keeps the ready gate shut with no user id', async () => {
-    const { dispose } = mountRuntime(() => '')
+    const { dispose } = mountRuntime(() => '' as StorageAccount)
     await settle()
     expect(userEventsSpy.ready!()).toBe(false)
     dispose()
@@ -471,7 +480,7 @@ describe('useCrdtRuntime hydration gate', () => {
     const setSpy = vi.spyOn(globalThis, 'setInterval')
     const clearSpy = vi.spyOn(globalThis, 'clearInterval')
     try {
-      const { dispose } = mountRuntime(() => 'user-touch')
+      const { dispose } = mountRuntime(() => 'user-touch' as StorageAccount)
       await settleUntil(() => userEventsSpy.ready!() === true)
 
       const armed = setSpy.mock.results.map(r => r.value)
@@ -496,12 +505,13 @@ describe('useCrdtRuntime hydration gate', () => {
     const setSpy = vi.spyOn(globalThis, 'setInterval')
     const clearSpy = vi.spyOn(globalThis, 'clearInterval')
     try {
-      const [uid, setUid] = createSignal('user-touch-1')
+      // The bare spelling: one accessor drives both identity domains.
+      const [uid, setUid] = createSignal('user-touch-1' as StorageAccount & HubUserId)
       let dispose = () => {}
       createRoot((d) => {
         dispose = d
         return useCrdtRuntime({
-          userId: uid,
+          storageAccount: uid,
           hubUserId: uid,
           getWorkspaceId: () => 'ws-1',
           activeClient: createActiveClientStore(),
@@ -511,7 +521,7 @@ describe('useCrdtRuntime hydration gate', () => {
       })
       await settleUntil(() => userEventsSpy.ready!() === true)
 
-      setUid('user-touch-2')
+      setUid('user-touch-2' as StorageAccount & HubUserId)
       await settleUntil(() => userEventsSpy.ready!() === true)
       dispose()
 
@@ -556,7 +566,7 @@ describe('useCrdtRuntime when hydrate() throws', () => {
       throw new Error('applyOp rejected a replayed frame')
     })
 
-    const { runtime, dispose } = mountRuntime(() => 'user-c')
+    const { runtime, dispose } = mountRuntime(() => 'user-c' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
 
     expect(userEventsSpy.ready!()).toBe(true)
@@ -574,7 +584,7 @@ describe('useCrdtRuntime when hydrate() throws', () => {
       throw new Error('applyOp rejected a replayed frame')
     })
 
-    const { dispose } = mountRuntime(() => 'user-c')
+    const { dispose } = mountRuntime(() => 'user-c' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
     await settle()
 
@@ -614,7 +624,7 @@ describe('useCrdtRuntime recorder seeding', () => {
       nodeFrameBytes('b2', 'replayed-node-2'),
     ])
 
-    const { dispose } = mountRuntime(() => 'user-d')
+    const { dispose } = mountRuntime(() => 'user-d' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
 
     const recorder = recorderSpy.instances.at(-1)!
@@ -666,7 +676,7 @@ describe('useCrdtRuntime post-hydration compaction', () => {
     ])
     expect(await opLogFrameCount('user-e')).toBe(2)
 
-    const { dispose } = mountRuntime(() => 'user-e')
+    const { dispose } = mountRuntime(() => 'user-e' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
     await settle()
 
@@ -684,7 +694,7 @@ describe('useCrdtRuntime post-hydration compaction', () => {
     )
     expect(await opLogFrameCount('user-f')).toBe(CHECKPOINT_OP_LOG_THRESHOLD)
 
-    const { dispose } = mountRuntime(() => 'user-f')
+    const { dispose } = mountRuntime(() => 'user-f' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
     await settle()
 
@@ -700,7 +710,7 @@ describe('useCrdtRuntime post-hydration compaction', () => {
       nodeFrameBytes('b1', 'n1'),
     ])
 
-    const { dispose } = mountRuntime(() => 'user-g')
+    const { dispose } = mountRuntime(() => 'user-g' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
     await settle()
 
@@ -739,7 +749,7 @@ describe('useCrdtRuntime when the hydration chain throws', () => {
     // reason to cold-start -- not a reason to wedge the app.
     hydrateSpy.throwOnNextRead = true
 
-    const { runtime, dispose } = mountRuntime(() => 'user-h')
+    const { runtime, dispose } = mountRuntime(() => 'user-h' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
 
     expect(userEventsSpy.ready!()).toBe(true)
@@ -753,7 +763,7 @@ describe('useCrdtRuntime when the hydration chain throws', () => {
     // cold-start path the module already treats as correct.
     recorderSpy.failNextConstruction = true
 
-    const { runtime, dispose } = mountRuntime(() => 'user-i')
+    const { runtime, dispose } = mountRuntime(() => 'user-i' as StorageAccount)
     await settleUntil(() => userEventsSpy.ready!())
 
     expect(userEventsSpy.ready!()).toBe(true)
@@ -796,7 +806,7 @@ describe('useCrdtRuntime sibling seeding', () => {
 
   it('opens the ready gate with the sibling\'s state when this tab has no checkpoint', async () => {
     await seedSibling('user-1', 'c-other-tab')
-    const { runtime, dispose } = mountRuntime(() => 'user-1')
+    const { runtime, dispose } = mountRuntime(() => 'user-1' as StorageAccount)
     try {
       await settleUntil(() => userEventsSpy.ready!())
       expect(userEventsSpy.ready!()).toBe(true)
@@ -812,7 +822,7 @@ describe('useCrdtRuntime sibling seeding', () => {
   it('writes the copy under THIS tab\'s client id and leaves the sibling\'s row', async () => {
     await seedSibling('user-1', 'c-other-tab')
     const before = await readCheckpoint('user-1', 'c-other-tab')
-    const { dispose } = mountRuntime(() => 'user-1')
+    const { dispose } = mountRuntime(() => 'user-1' as StorageAccount)
     try {
       await settleUntil(() => userEventsSpy.ready!())
       await settleUntilAsync(async () => (await readCheckpoint('user-1', CLIENT)).status === 'ok')
@@ -827,7 +837,7 @@ describe('useCrdtRuntime sibling seeding', () => {
 
   it('hands the recorder the seeded base, so its first rewrite is INCREMENTAL', async () => {
     await seedSibling('user-1', 'c-other-tab')
-    const { dispose } = mountRuntime(() => 'user-1')
+    const { dispose } = mountRuntime(() => 'user-1' as StorageAccount)
     try {
       await settleUntil(() => userEventsSpy.ready!())
       expect(recorderSpy.options.at(-1)!.clientId).toBe(CLIENT)
@@ -854,7 +864,7 @@ describe('useCrdtRuntime sibling seeding', () => {
     vi.mocked(adoptCheckpoint).mockImplementationOnce(
       () => new Promise<number | null>((resolve) => { resolveAdopt = resolve }),
     )
-    const { dispose } = mountRuntime(() => 'user-1')
+    const { dispose } = mountRuntime(() => 'user-1' as StorageAccount)
     try {
       await settleUntil(() => userEventsSpy.ready!())
       // Open, with the adoption still in flight.
@@ -877,7 +887,7 @@ describe('useCrdtRuntime sibling seeding', () => {
   it('gives the recorder NO base when the adoption write did not land', async () => {
     await seedSibling('user-1', 'c-other-tab')
     vi.mocked(adoptCheckpoint).mockResolvedValueOnce(null)
-    const { runtime, dispose } = mountRuntime(() => 'user-1')
+    const { runtime, dispose } = mountRuntime(() => 'user-1' as StorageAccount)
     try {
       await settleUntil(() => userEventsSpy.ready!())
       // Still hydrated -- the state is correct in memory, so the tab resumes.
@@ -905,7 +915,7 @@ describe('useCrdtRuntime sibling seeding', () => {
 
   it('cold-starts when the only sibling is past the retention window', async () => {
     await seedSibling('user-1', 'c-other-tab', Date.now() - SEED_CANDIDATE_MAX_AGE_MS - 1)
-    const { runtime, dispose } = mountRuntime(() => 'user-1')
+    const { runtime, dispose } = mountRuntime(() => 'user-1' as StorageAccount)
     try {
       await settleUntil(() => userEventsSpy.ready!())
       expect(userEventsSpy.ready!()).toBe(true)
@@ -928,7 +938,7 @@ describe('useCrdtRuntime sibling seeding', () => {
     // One fresh sibling to actually seed from.
     await seedSibling('user-1', 'c-other-tab')
 
-    const { dispose } = mountRuntime(() => 'user-1')
+    const { dispose } = mountRuntime(() => 'user-1' as StorageAccount)
     try {
       await settleUntil(() => userEventsSpy.ready!())
       await settleUntilAsync(async () => (await readCheckpoint('user-1', CLIENT)).status === 'ok')
@@ -964,7 +974,7 @@ describe('useCrdtRuntime fatal close', () => {
   })
 
   it('tells a capped user to close a tab, and says it stickily', () => {
-    const { dispose } = mountRuntime(() => 'user-a')
+    const { dispose } = mountRuntime(() => 'user-a' as StorageAccount)
     expect(userEventsSpy.onFatalClose).not.toBeNull()
 
     userEventsSpy.onFatalClose!({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
@@ -978,7 +988,7 @@ describe('useCrdtRuntime fatal close', () => {
   })
 
   it('keeps the reload advice for a revoked credential', () => {
-    const { dispose } = mountRuntime(() => 'user-a')
+    const { dispose } = mountRuntime(() => 'user-a' as StorageAccount)
 
     userEventsSpy.onFatalClose!({ code: 1008, reason: 'credential' })
 
@@ -996,7 +1006,7 @@ describe('useCrdtRuntime fatal close', () => {
   // the sticky toast exists to prevent. Collapsing two toasts that are LIVE at
   // once is the toast layer's job, and is pinned in Toast.test.ts.
   it('announces every refusal, leaving duplicate suppression to the toast', () => {
-    const { dispose } = mountRuntime(() => 'user-a')
+    const { dispose } = mountRuntime(() => 'user-a' as StorageAccount)
 
     userEventsSpy.onFatalClose!({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
     userEventsSpy.onFatalClose!({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
@@ -1010,7 +1020,7 @@ describe('useCrdtRuntime fatal close', () => {
   // terminal got "Failed to open terminal" and no idea what to do.
   it('surfaces a channel-relay refusal with the same copy', () => {
     const subscribe = vi.spyOn(channelManager, 'onFatalClose')
-    const { dispose } = mountRuntime(() => 'user-a')
+    const { dispose } = mountRuntime(() => 'user-a' as StorageAccount)
 
     expect(subscribe).toHaveBeenCalled()
     subscribe.mock.calls[0]![0]({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
@@ -1048,8 +1058,8 @@ describe('useCrdtRuntime worker list changes', () => {
     createRoot((d) => {
       dispose = d
       useCrdtRuntime({
-        userId: () => 'user-a',
-        hubUserId: () => 'user-a',
+        storageAccount: () => 'user-a' as StorageAccount,
+        hubUserId: () => 'user-a' as HubUserId,
         getWorkspaceId: () => 'ws-1',
         activeClient: createActiveClientStore(),
         ...callbacks,
@@ -1096,7 +1106,7 @@ describe('useCrdtRuntime hub identity', () => {
   // and the CRDT never bootstraps.
   it('hands useUserEvents the hub user id, not the storage account', () => {
     const account = storageAccountFor('https://hub.example', 'user-a')
-    const { dispose } = mountRuntime(() => account, () => 'user-a')
+    const { dispose } = mountRuntime(() => account, () => 'user-a' as HubUserId)
 
     expect(userEventsSpy.userId).not.toBeNull()
     expect(userEventsSpy.userId!()).toBe('user-a')
@@ -1110,7 +1120,7 @@ describe('useCrdtRuntime hub identity', () => {
   // split at bootstrap.
   it('seeds state.userId with the raw Hub user id, not the composed storage account', async () => {
     const account = storageAccountFor('https://hub.example', 'user-a')
-    const { runtime, dispose } = mountRuntime(() => account, () => 'user-a')
+    const { runtime, dispose } = mountRuntime(() => account, () => 'user-a' as HubUserId)
     await settleUntil(() => userEventsSpy.ready!())
 
     expect(runtime.crdtState()!.userId).toBe('user-a')
@@ -1121,10 +1131,10 @@ describe('useCrdtRuntime hub identity', () => {
   // `UserCrdtState.userId` keeps the raw Hub user id. Seeding the blob with the
   // KEY is a shape no live bootstrap writes -- `bootstrap` copies
   // `materialized.userId` -- and it hides the comparison behind it.
-  it('replays a COMPOSED-key checkpoint whose blob names the raw Hub user id', async () => {
+  it('replays a COMPOSED-key checkpoint whose blob identifies the raw Hub user id', async () => {
     const account = storageAccountFor('https://hub.example', 'user-a')
     await writeCheckpointAndTruncateOpLog(account, CLIENT, fullCheckpointDelta(seededState('user-a')), WM, 1n)
-    const { runtime, dispose } = mountRuntime(() => account, () => 'user-a')
+    const { runtime, dispose } = mountRuntime(() => account, () => 'user-a' as HubUserId)
     await settleUntil(() => userEventsSpy.ready!())
 
     const state = runtime.crdtState()
@@ -1140,7 +1150,7 @@ describe('useCrdtRuntime hub identity', () => {
   it('keeps one checkpoint per hub when two hubs share a user id', async () => {
     const accountA = storageAccountFor('https://hub-a.example', 'user-x')
     const accountB = storageAccountFor('https://hub-b.example', 'user-x')
-    // The blob names the RAW Hub user id -- `bootstrap` copies it off
+    // The blob identifies the RAW Hub user id -- `bootstrap` copies it off
     // `UserMaterialized` -- while the row is keyed by the composed (hub, user)
     // account. Both rows therefore name the same tenant, and only the key keeps
     // the two hubs' checkpoints apart.
@@ -1160,7 +1170,7 @@ describe('useCrdtRuntime hub identity', () => {
       1n,
     )
 
-    const first = mountRuntime(() => accountA, () => 'user-x')
+    const first = mountRuntime(() => accountA, () => 'user-x' as HubUserId)
     await settleUntil(() => userEventsSpy.ready!())
     const stateA = first.runtime.crdtState()
     expect(stateA).not.toBeNull()
@@ -1168,7 +1178,7 @@ describe('useCrdtRuntime hub identity', () => {
     expect(Object.keys(stateA!.workspaces)).not.toContain('ws-2')
     first.dispose()
 
-    const second = mountRuntime(() => accountB, () => 'user-x')
+    const second = mountRuntime(() => accountB, () => 'user-x' as HubUserId)
     await settleUntil(() => userEventsSpy.ready!())
     const stateB = second.runtime.crdtState()
     expect(stateB).not.toBeNull()

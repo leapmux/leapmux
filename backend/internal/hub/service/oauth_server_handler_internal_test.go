@@ -30,7 +30,7 @@ func TestConsentRouteMatchesTheServedPathExactly(t *testing.T) {
 		{"the consent endpoint, served with POST only", "/oauth/consent", false},
 		{"the home page", "/", false},
 		{"an empty redirect", "", false},
-		{"the authorize page named inside a query", "/login?to=/oauth/authorize", false},
+		{"the authorize page specified inside a query", "/login?to=/oauth/authorize", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

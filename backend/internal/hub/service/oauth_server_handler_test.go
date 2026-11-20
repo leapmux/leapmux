@@ -3264,9 +3264,29 @@ func TestSessionCodeExchange_IssuesSession(t *testing.T) {
 	assert.Nil(t, sess.ElevationExpiresAt, "a fresh session carries no elevation")
 }
 
+// An empty installation label leaves the session's UserAgent the app's name
+// alone. "LeapMux Desktop on " is not a name, and the session list would
+// show it.
+func TestSessionCodeExchange_EmptyInstallationNameLeavesTheAppAlone(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	code, verifier := desktopSessionCode(t, env, "")
+	resp := exchangeSessionCode(t, env, code, verifier)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, true, sessionCodeExchangeBody(t, resp)["signed_in"])
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	require.NoError(t, err)
+	sess, err := env.store.Sessions().GetByID(ctx, row.MintedSessionID, env.now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, oauthapp.DesktopName, sess.UserAgent,
+		"no installation label means the app's name alone, with no trailing 'on '")
+}
+
 // desktopSessionCode walks the desktop consent and returns the one-shot code
-// plus the PKCE verifier its exchange must present.
-func desktopSessionCode(t *testing.T, env *apiAuthEnv) (code, verifier string) {
+// plus the PKCE verifier its exchange must present. installationName is the
+// label the requester gives itself.
+func desktopSessionCode(t *testing.T, env *apiAuthEnv, installationName string) (code, verifier string) {
 	t.Helper()
 	cookie := env.elevatedAdminCookie(t)
 	verifier, challenge := pkceVerifierAndChallenge()
@@ -3278,7 +3298,7 @@ func desktopSessionCode(t *testing.T, env *apiAuthEnv) (code, verifier string) {
 		"state":                 {id.Generate()},
 		"code_challenge":        {challenge},
 		"decision":              {"allow"},
-		"installation_name":     {"laptop"},
+		"installation_name":     {installationName},
 	}
 	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/oauth/consent", strings.NewReader(form.Encode()))
 	require.NoError(t, err)
@@ -3340,7 +3360,7 @@ func TestSessionCodeExchange_ReplayRevokesTheIssuedSession(t *testing.T) {
 
 	env := setupAPIAuth(t)
 	ctx := context.Background()
-	code, verifier := desktopSessionCode(t, env)
+	code, verifier := desktopSessionCode(t, env, "laptop")
 
 	// An RPC with a session cookie, through the interceptor a real client
 	// hits. The same call runs again after the replay, so the assertion reads
@@ -3385,7 +3405,7 @@ func TestSessionCodeExchange_ConcurrentExchangesIssueOneSession(t *testing.T) {
 
 	env := setupAPIAuth(t)
 	ctx := context.Background()
-	code, verifier := desktopSessionCode(t, env)
+	code, verifier := desktopSessionCode(t, env, "laptop")
 
 	start := make(chan struct{})
 	statuses := make(chan int, 2)
@@ -3436,7 +3456,7 @@ func TestSessionCodeExchange_WrongVerifierIssuesNoSession(t *testing.T) {
 
 	env := setupAPIAuth(t)
 	ctx := context.Background()
-	code, _ := desktopSessionCode(t, env)
+	code, _ := desktopSessionCode(t, env, "laptop")
 
 	resp := exchangeSessionCode(t, env, code, strings.Repeat("v", 43))
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)

@@ -95,10 +95,12 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 //
 // It admits every ELEVATABLE credential: a browser session, and a
 // command-line credential, which proves its factor in a browser through the
-// /oauth/step-up leg and carries a window of its own. A
-// delegation bearer and solo mode carry no window and cannot obtain one, so
-// requireElevation refuses them with the plain message that states the
-// remedy: sign in from a browser.
+// /oauth/step-up leg and carries a window of its own. A delegation bearer
+// carries no window and cannot obtain one, so auth.RequireElevation refuses
+// it with the plain message that states the remedy: sign in from a browser.
+// Solo mode carries no window either, but auth.RequireElevation exempts it
+// outright, and the transport re-decides that exemption on every request
+// rather than storing it.
 //
 // There is NO extra session rule here, and an earlier pass that added one was
 // wrong twice over. It refused a credential the whole elevation design admits
@@ -115,7 +117,7 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 // management verbs (rename, delete, deactivate) and ChangePassword work from
 // an elevated command-line credential.
 //
-// Every admitted account elevates, through requireElevation: one proven
+// Every admitted account elevates, through auth.RequireElevation: one proven
 // factor admits every sensitive action for auth.ElevationWindow, and each
 // success slides the window.
 //
@@ -139,7 +141,7 @@ func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserIn
 //
 // Each branch answers "a credential that never can prove itself" for itself,
 // so neither one gives such a caller a prompt that its retry would fail
-// again: requireElevation reaches requireElevatableCredential on the
+// again: auth.RequireElevation reaches auth.RequireElevatableCredential on the
 // elevation branch, and assertFirstCredentialAuthIsFresh refuses a bearer on
 // the first-credential branch. The two answers differ, and the difference is
 // the account shape rather than an oversight. An elevated command-line
@@ -297,7 +299,7 @@ func assertFirstCredentialAuthIsFresh(userInfo *auth.UserInfo, now time.Time, ma
 		// NO marker, and the message states the remedy instead. A delegation
 		// bearer can carry no elevation at all, so a step-up prompt would ask
 		// for a factor and then refuse the retry for the same reason -- what
-		// requireElevatableCredential says about its own refusal. A
+		// auth.RequireElevatableCredential says about its own refusal. A
 		// command-line credential can carry one, and the elevated branch
 		// above already took it if it did; reaching this line means it did
 		// not, and this account elevates only at its identity provider, in a
@@ -589,7 +591,7 @@ func recheckStepUpUnderLock(
 // api_tokens row for the one further fact this call needs, which is the
 // window.
 //
-// Nil-safe, like the elevatable-credential rules in elevation_service.go.
+// Nil-safe, like the elevatable-credential rules in auth/elevation.go.
 // recheckCredentialEpochUnderLock already refuses a nil UserInfo before this
 // runs, so this guard is the second one; it stays because a rule that reads
 // a credential must never panic on the absence of one.
@@ -600,12 +602,11 @@ func recheckActingCredentialUnderLock(ctx context.Context, tx store.Store, p ste
 	// A solo caller the hub authenticated with no credentials has no row to
 	// re-read: it holds the zero CredentialIdentity, so there is no session
 	// whose elevation could lapse and no token that could be revoked. Its
-	// admission comes from the TRANSPORT -- requireElevation exempts it -- and
+	// admission comes from the TRANSPORT -- auth.RequireElevation exempts it -- and
 	// the transport is re-decided on every request rather than stored.
 	//
 	// The case became reachable when ChangePassword stopped refusing solo
-	// mode; before that, rejectSolo was what kept it out, which is why the
-	// paragraph above still says requireElevation refuses it first.
+	// mode; before that, rejectSolo was what kept it out.
 	//
 	// The window this leaves open is two credential-free callers racing to set
 	// the first password, where the second overwrites the first. Both held

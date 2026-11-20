@@ -10,6 +10,7 @@ import {
   WINDOW_MODE_MAXIMIZED,
   WINDOW_MODE_NORMAL,
 } from '~/generated/contracts/desktop'
+import { BrowserAuthKind as ProtoBrowserAuthKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
@@ -975,10 +976,14 @@ export const platformBridge = {
     await refreshRuntimeState()
   },
   async startBrowserAuth(kind: BrowserAuthKind): Promise<BrowserAuthStart> {
-    const cmd = kind === 'sign-in'
-      ? 'start_browser_sign_in'
-      : 'start_browser_step_up'
-    return tauriInvoke<BrowserAuthStart>(cmd)
+    // The kind crosses as the proto ordinal the sidecar forwards in
+    // StartBrowserAuthRequest.kind. The map is exhaustive over the token
+    // union, so a new token is a compile error instead of a wrong kind.
+    const protoKind: Record<BrowserAuthKind, ProtoBrowserAuthKind> = {
+      'sign-in': ProtoBrowserAuthKind.SIGN_IN,
+      'step-up': ProtoBrowserAuthKind.STEP_UP,
+    }
+    return tauriInvoke<BrowserAuthStart>('start_browser_auth', { kind: protoKind[kind] })
   },
   async cancelBrowserAuth(ceremonyId: string): Promise<void> {
     await tauriInvoke('cancel_browser_auth', { ceremonyId })
@@ -1180,7 +1185,31 @@ export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
     : ''
   const parsed = new URL(url)
   const path = parsed.pathname + parsed.search
-  const resp = await platformBridge.proxyHttp(method, path, headers, body)
+
+  // The proxied request cannot be cancelled once sent, so an abort settles
+  // only this call while the request runs on. The listener is removed as
+  // soon as either side settles so a late abort cannot reject a call that
+  // already has its answer.
+  const signal = init?.signal ?? undefined
+  if (signal?.aborted)
+    throw new DOMException('The operation was aborted.', 'AbortError')
+  let onAbort: (() => void) | undefined
+  let proxied = platformBridge.proxyHttp(method, path, headers, body)
+  if (signal) {
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'))
+      signal.addEventListener('abort', onAbort)
+    })
+    proxied = Promise.race([proxied, aborted])
+  }
+  let resp: ProxyHttpResponse
+  try {
+    resp = await proxied
+  }
+  finally {
+    if (onAbort)
+      signal?.removeEventListener('abort', onAbort)
+  }
   const responseHeaders = Object.entries(resp.headers).flatMap(([name, values]) =>
     values.map(value => [name, value] as [string, string]),
   )

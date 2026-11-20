@@ -794,6 +794,34 @@ func (h *IdPHandler) secureCookies(ctx context.Context) bool {
 	return settings.SecureCookiesFor(ctx, h.set.Snapshot(ctx))
 }
 
+// decideSignInProof reports how much the sign-in proved. Only a provider
+// sign-in for a consent route can prove a factor, and only for an account
+// that elevates only through that provider: the re-authentication stage
+// asked the provider for a fresh authentication, so for that account the
+// sign-in is the proof. An account that holds a password or a passkey proves
+// its factor locally instead, and every other sign-in proves nothing.
+//
+// A store failure is fatal and visible. It must not fall through to
+// SignInProvedNoFactor: that reads a broken lookup as "nothing was proved"
+// and signs the user in on a silent downgrade.
+func (h *IdPHandler) decideSignInProof(ctx context.Context, userID, redirectURI string) (auth.SignInProof, error) {
+	if !isConsentRoute(redirectURI) {
+		return auth.SignInProvedNoFactor, nil
+	}
+	user, err := h.store.Users().GetByID(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	providerOnly, err := accountElevatesOnlyThroughAProvider(ctx, h.store, user)
+	if err != nil {
+		return 0, err
+	}
+	if providerOnly {
+		return auth.SignInProvedFactor, nil
+	}
+	return auth.SignInProvedNoFactor, nil
+}
+
 // loginOAuthUser stores tokens, creates a session, and redirects the user.
 // Both the existing-link and auto-link-by-email paths call it.
 func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, userID, providerID string, tokenSet *huboauth.TokenSet, redirectURI string) {
@@ -809,18 +837,11 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	// A provider sign-in for a consent route proves a factor when the account
-	// elevates only through a provider: the re-authentication stage asked the
-	// provider for a fresh authentication, so the sign-in counts as a proof.
-	proof := auth.SignInProvedNoFactor
-	if isConsentRoute(redirectURI) {
-		user, userErr := h.store.Users().GetByID(ctx, userID)
-		if userErr == nil {
-			providerOnly, provErr := accountElevatesOnlyThroughAProvider(ctx, h.store, user)
-			if provErr == nil && providerOnly {
-				proof = auth.SignInProvedFactor
-			}
-		}
+	proof, proofErr := h.decideSignInProof(ctx, userID, redirectURI)
+	if proofErr != nil {
+		slog.Error("oauth: decide sign-in proof", "error", proofErr)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
 	session, sessionErr := auth.CreateSession(ctx, h.store, h.sessionHasher, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), proof, auth.SessionMeta{
 		UserAgent: r.UserAgent(),

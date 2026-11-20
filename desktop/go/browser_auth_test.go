@@ -44,7 +44,7 @@ func testSessionID() string {
 	return strings.Repeat("i", 48)
 }
 
-// browserAuthTestContext bounds every wait these tests make. A passing test
+// browserAuthTestContext limits every wait these tests make. A passing test
 // never reaches the limit; it exists so a stuck wait fails with its call
 // instead of hanging the package.
 func browserAuthTestContext(t *testing.T) context.Context {
@@ -286,6 +286,96 @@ func TestBrowserAuthHubAnswersWithoutAnOAuthErrorBody(t *testing.T) {
 	assert.Equal(t, id, evt.CeremonyId)
 	assert.False(t, evt.Ok)
 	assert.Equal(t, "the Hub answered 500", evt.Failure)
+}
+
+func TestBrowserAuthHubAnswerDoesNotDecode(t *testing.T) {
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+
+	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "the-code")
+
+	evt := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, id, evt.CeremonyId)
+	assert.False(t, evt.Ok)
+	assert.Equal(t, "the Hub's answer could not be read", evt.Failure)
+}
+
+func TestBrowserAuthHubDoesNotConfirmSignIn(t *testing.T) {
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"signed_in": false}`))
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+
+	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "the-code")
+
+	evt := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, id, evt.CeremonyId)
+	assert.False(t, evt.Ok)
+	assert.Equal(t, "the Hub did not confirm that you are signed in", evt.Failure)
+}
+
+func TestBrowserAuthHubDoesNotConfirmStepUp(t *testing.T) {
+	hub := browserAuthHub(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"elevated": false}`))
+	})
+	proxy := mustNewProxy(t, hub.URL)
+	app, events := newBrowserAuthApp(t, proxy, hub.URL)
+	seedSessionCookie(proxy, testSecureSessionCookieName)
+
+	id, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_STEP_UP)
+	require.NoError(t, err)
+	completeBrowserCallback(t, authorizeURL, "the-code")
+
+	evt := requireBrowserAuthEvent(t, events)
+	assert.Equal(t, id, evt.CeremonyId)
+	assert.False(t, evt.Ok)
+	assert.Equal(t, "the Hub did not confirm that your session is elevated", evt.Failure)
+}
+
+// The three failure classes of the token exchange must carry three distinct
+// messages. Each names its own failure:
+//   - a non-200 with no readable error body
+//   - a 200 whose body does not decode
+//   - a 200 without the confirmation
+func TestBrowserAuthTokenFailureClassesAreDistinct(t *testing.T) {
+	responders := []http.HandlerFunc{
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("boom"))
+		},
+		func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("not json"))
+		},
+		func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"signed_in": false}`))
+		},
+	}
+	failures := make([]string, 0, len(responders))
+	for _, respond := range responders {
+		hub := browserAuthHub(t, respond)
+		app, events := newBrowserAuthApp(t, mustNewProxy(t, hub.URL), hub.URL)
+		_, authorizeURL, err := app.StartBrowserAuth(desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_SIGN_IN)
+		require.NoError(t, err)
+		completeBrowserCallback(t, authorizeURL, "the-code")
+		evt := requireBrowserAuthEvent(t, events)
+		require.False(t, evt.Ok)
+		require.NotEmpty(t, evt.Failure, "each failure class carries a message")
+		failures = append(failures, evt.Failure)
+	}
+	for i := range failures {
+		for j := i + 1; j < len(failures); j++ {
+			assert.NotEqual(t, failures[i], failures[j],
+				"each failure class carries its own message")
+		}
+	}
 }
 
 func TestBrowserAuthHubUnreachableForTheTokenRequest(t *testing.T) {

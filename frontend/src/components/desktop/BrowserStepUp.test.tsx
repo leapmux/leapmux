@@ -42,6 +42,11 @@ vi.mock('~/context/AuthContext', () => ({
   }),
 }))
 
+const copyTextToClipboard = vi.hoisted(() => vi.fn<(text: string) => Promise<boolean>>())
+vi.mock('~/lib/clipboard', () => ({
+  copyTextToClipboard: (text: string) => copyTextToClipboard(text),
+}))
+
 const START = {
   ceremonyId: 'c-1',
   authorizeUrl: 'https://hub.example/authorize',
@@ -67,6 +72,8 @@ describe('BrowserStepUp', () => {
     bridgeMocks.cancelBrowserAuth.mockReset()
     bridgeMocks.cancelBrowserAuth.mockResolvedValue(undefined)
     bridgeMocks.handlers.length = 0
+    copyTextToClipboard.mockReset()
+    copyTextToClipboard.mockResolvedValue(true)
     mockRefreshUser.mockReset()
     mockRefreshUser.mockResolvedValue(undefined)
   })
@@ -92,6 +99,23 @@ describe('BrowserStepUp', () => {
     await vi.waitFor(() => expect(bridgeMocks.openExternalUrl).toHaveBeenCalledTimes(2))
     expect(bridgeMocks.openExternalUrl).toHaveBeenNthCalledWith(2, 'https://hub.example/authorize')
     expect(bridgeMocks.startBrowserAuth).toHaveBeenCalledTimes(1)
+  })
+
+  it('copies the ceremony link through the clipboard gateway', async () => {
+    // A direct `navigator.clipboard` write would reach this spy instead of
+    // the gateway, which alone adds the fallback and the failure toast.
+    const directWrite = vi.fn()
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: directWrite },
+      configurable: true,
+    })
+    renderStepUp()
+    await startCeremony()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy link' }))
+
+    await vi.waitFor(() => expect(copyTextToClipboard).toHaveBeenCalledExactlyOnceWith('https://hub.example/authorize'))
+    expect(directWrite).not.toHaveBeenCalled()
   })
 
   // Every unmount aborts the ceremony -- also the one the app-root

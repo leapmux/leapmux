@@ -1,6 +1,7 @@
 import type { AuthState } from './AuthContext'
 /// <reference types="vitest/globals" />
 import type { EmailVerificationStatus, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
+import type { StorageAccount } from '~/lib/browserStorage'
 import { timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { render, screen } from '@solidjs/testing-library'
@@ -116,7 +117,7 @@ vi.mock('~/lib/browserStorage', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/browserStorage')>()
   return {
     ...actual,
-    hydrateStorageAccount: async (userId: string) => {
+    hydrateStorageAccount: async (userId: StorageAccount) => {
       await actual.hydrateStorageAccount(userId)
       const hold = hydrationHold
       if (hold) {

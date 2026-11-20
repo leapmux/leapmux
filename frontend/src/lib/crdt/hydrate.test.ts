@@ -1,5 +1,6 @@
 import type { CheckpointDelta } from './checkpointStore'
 import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { StorageAccount } from '~/lib/browserStorage'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -93,20 +94,20 @@ function seedDelta(userId: string, client: string, delta: CheckpointDelta, wm = 
 
 describe('loadHydrationState', () => {
   it('returns null when no checkpoint exists', async () => {
-    expect(await loadHydrationState('user-1', CLIENT)).toBeNull()
+    expect(await loadHydrationState('user-1' as StorageAccount, CLIENT)).toBeNull()
   })
 
   it('returns null when the store is unavailable', async () => {
     vi.unstubAllGlobals()
-    expect(await loadHydrationState('user-1', CLIENT)).toBeNull()
+    expect(await loadHydrationState('user-1' as StorageAccount, CLIENT)).toBeNull()
   })
 
   it('returns null for an empty userId', async () => {
-    expect(await loadHydrationState('', CLIENT)).toBeNull()
+    expect(await loadHydrationState('' as StorageAccount, CLIENT)).toBeNull()
   })
 
   it('returns null for an empty clientId', async () => {
-    expect(await loadHydrationState('u', '')).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, '')).toBeNull()
   })
 
   // The corruption wipe is OWNER-scoped. Every failure this module detects
@@ -133,7 +134,7 @@ describe('loadHydrationState', () => {
     const before = await readCheckpoint('u', 'tab-good')
     expect(before.status).toBe('ok')
 
-    await loadHydrationState('u', 'tab-bad')
+    await loadHydrationState('u' as StorageAccount, 'tab-bad')
 
     // Asserted against the STORE, not against a second loadHydrationState call:
     // since the seed path landed, a load for 'tab-good' would also succeed by
@@ -167,7 +168,7 @@ describe('loadHydrationState', () => {
     ])
     expect((await readCheckpoint('u', 'tab-bad')).status).toBe('ok')
 
-    expect(await loadHydrationState('u', 'tab-bad')).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, 'tab-bad')).toBeNull()
 
     // GONE, not merely unusable. A wipe that silently did nothing would leave
     // the undecodable header in place, and every later reload would re-pay the
@@ -186,7 +187,7 @@ describe('loadHydrationState', () => {
       batchFrame('b2'),
     ])
 
-    const payload = await loadHydrationState('u', CLIENT)
+    const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
     expect(payload).not.toBeNull()
     expect(payload!.watermark).toEqual(WM)
     expect(payload!.currentEpoch).toBe(1n)
@@ -204,7 +205,7 @@ describe('loadHydrationState', () => {
       const source = stateOf('u', 5n)
       await seed('u', CLIENT, source)
 
-      const payload = await loadHydrationState('u', CLIENT)
+      const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
       expect(payload!.state).toEqual(source)
     })
 
@@ -212,7 +213,7 @@ describe('loadHydrationState', () => {
       const source = create(UserCrdtStateSchema, { userId: 'u', currentEpoch: 1n })
       await seed('u', CLIENT, source)
 
-      const payload = await loadHydrationState('u', CLIENT)
+      const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
       expect(payload!.state).toEqual(source)
     })
 
@@ -239,11 +240,11 @@ describe('loadHydrationState', () => {
         full: true,
       })
 
-      expect(await loadHydrationState('u', CLIENT)).toBeNull()
-      expect(await loadHydrationState('u', CLIENT)).toBeNull()
+      expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
+      expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
     })
 
-    it('wipes and returns null when a chunk names an unknown kind', async () => {
+    it('wipes and returns null when a chunk identifies an unknown kind', async () => {
       // A row written by a build that shards something this one does not know.
       const source = stateOf('u', 5n)
       await seedDelta('u', CLIENT, {
@@ -259,7 +260,7 @@ describe('loadHydrationState', () => {
         full: true,
       })
 
-      expect(await loadHydrationState('u', CLIENT)).toBeNull()
+      expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
     })
 
     it('never returns a PARTIAL state — the wipe arm wins over a short one', async () => {
@@ -282,7 +283,7 @@ describe('loadHydrationState', () => {
         full: true,
       })
 
-      const payload = await loadHydrationState('u', CLIENT)
+      const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
       // Never a state carrying n1 alone.
       expect(payload).toBeNull()
     })
@@ -290,7 +291,7 @@ describe('loadHydrationState', () => {
 
   it('returns a payload with empty frames when the checkpoint has no op-log', async () => {
     await seed('u', CLIENT, stateOf('u', 5n))
-    const payload = await loadHydrationState('u', CLIENT)
+    const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
     expect(payload).not.toBeNull()
     expect(payload!.frames).toEqual([])
   })
@@ -311,9 +312,9 @@ describe('loadHydrationState', () => {
       batchFrame('b2'),
     ])
 
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
     // The pair was wiped: a second load also returns null (no poison record).
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
   })
 
   it('keeps the checkpoint and replays the decodable prefix when an op-log frame is unparseable', async () => {
@@ -330,7 +331,7 @@ describe('loadHydrationState', () => {
       batchFrame('after-corrupt'),
     ])
 
-    const payload = await loadHydrationState('u', CLIENT)
+    const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
     // The checkpoint is independently valid, so it survives: discarding it
     // would force the full-snapshot projection scan #267 exists to avoid.
     expect(payload).not.toBeNull()
@@ -338,7 +339,7 @@ describe('loadHydrationState', () => {
     expect(payload!.frames).toHaveLength(1)
     expect(payload!.frames[0]?.event.case).toBe('batch')
     // The checkpoint itself is untouched, so a second load still finds it.
-    expect(await loadHydrationState('u', CLIENT)).not.toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).not.toBeNull()
   })
 
   it('reports truncated=false when every op-log frame decodes', async () => {
@@ -348,13 +349,13 @@ describe('loadHydrationState', () => {
       batchFrame('b'),
     ])
 
-    const payload = await loadHydrationState('u', CLIENT)
+    const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
     expect(payload).not.toBeNull()
     expect(payload!.truncated).toBe(false)
     expect(payload!.frames).toHaveLength(2)
   })
 
-  it('wipes both stores and returns null when the checkpoint names another tenant', async () => {
+  it('wipes both stores and returns null when the checkpoint identifies another tenant', async () => {
     // A blob keyed under 'u' but carrying another user's state must be refused
     // the same way the wire path refuses a foreign-tenant UserMaterialized --
     // otherwise the persisted record, not the session, decides what is rendered.
@@ -363,12 +364,12 @@ describe('loadHydrationState', () => {
       batchFrame('b1'),
     ])
 
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
     // Wiped, so the poison record cannot be re-adopted on the next reload.
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
   })
 
-  it('wipes both stores and returns null when the checkpoint names NO tenant', async () => {
+  it('wipes both stores and returns null when the checkpoint identifies NO tenant', async () => {
     // The one blob whose provenance is completely unknown. Guarding the tenant
     // check with `state.userId && …` short-circuits past exactly this record,
     // adopting it as the session's own state -- while every other validation
@@ -379,15 +380,15 @@ describe('loadHydrationState', () => {
       batchFrame('b1'),
     ])
 
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
   })
 
-  it('hydrates a checkpoint keyed by a COMPOSED storage account when the blob names the raw Hub user id', async () => {
+  it('hydrates a checkpoint keyed by a COMPOSED storage account when the blob identifies the raw Hub user id', async () => {
     // `storageAccountFor` composes the account that keys the checkpoint store
     // as `hub/user`, while `UserCrdtState.userId` keeps the raw Hub user id
     // `bootstrap` copies off `UserMaterialized`. The tenant check compares the
-    // blob against the key, so it must take the user id the key names -- or it
+    // blob against the key, so it must take the user id the key identifies -- or it
     // refuses and wipes a good checkpoint on every reload.
     const account = storageAccountFor('https://hub.example.com', 'user-1')
     const source = stateOf('user-1', 5n)
@@ -399,9 +400,9 @@ describe('loadHydrationState', () => {
     expect(payload!.state).toEqual(source)
   })
 
-  it('still refuses a COMPOSED-key checkpoint whose blob names a different raw Hub user id', async () => {
+  it('still refuses a COMPOSED-key checkpoint whose blob identifies a different raw Hub user id', async () => {
     // The raw-id comparison must not weaken the tenant check into "any row
-    // under this key is mine": a blob naming another user is corrupt by
+    // under this key is mine": a blob identifying another user is corrupt by
     // construction, whoever wrote it there.
     const account = storageAccountFor('https://hub.example.com', 'user-1')
     await seed(account, CLIENT, stateOf('other-user', 5n))
@@ -419,8 +420,8 @@ describe('loadHydrationState', () => {
   it('wipes when the persisted watermark is out of int64 range', async () => {
     await seed('u', CLIENT, stateOf('u', 5n), { physical: 2n ** 63n, logical: 0n, clientId: 'c' })
 
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
   })
 
   it('carries the store\'s over-cap truncation through to the caller', async () => {
@@ -432,7 +433,7 @@ describe('loadHydrationState', () => {
     await seed('u', CLIENT, stateOf('u', 5n))
     await opLog.append('u', CLIENT, Array.from({ length: MAX_OPLOG_READ_FRAMES + 1 }, (_, i) => batchFrame(`b${i}`)))
 
-    const payload = await loadHydrationState('u', CLIENT)
+    const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
     expect(payload).not.toBeNull()
     expect(payload!.frames).toHaveLength(MAX_OPLOG_READ_FRAMES)
     expect(payload!.truncated).toBe(true)
@@ -442,7 +443,7 @@ describe('loadHydrationState', () => {
     await seed('u', CLIENT, stateOf('u', 5n))
     await opLog.append('u', CLIENT, Array.from({ length: MAX_OPLOG_READ_FRAMES }, (_, i) => batchFrame(`b${i}`)))
 
-    const payload = await loadHydrationState('u', CLIENT)
+    const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
     expect(payload!.frames).toHaveLength(MAX_OPLOG_READ_FRAMES)
     expect(payload!.truncated).toBe(false)
   })
@@ -475,7 +476,7 @@ describe('loadHydrationState', () => {
     })
     db.close()
 
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
   })
 
   it('wipes both stores and returns null when the epoch is out of range', async () => {
@@ -500,7 +501,7 @@ describe('loadHydrationState', () => {
     })
     db.close()
 
-    expect(await loadHydrationState('u', CLIENT)).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, CLIENT)).toBeNull()
   })
 })
 
@@ -531,7 +532,7 @@ describe('loadHydrationState seeding from a sibling', () => {
       batchFrame('b1'),
     ])
 
-    const payload = await loadHydrationState('u', 'tab-new')
+    const payload = await loadHydrationState('u' as StorageAccount, 'tab-new')
 
     expect(payload).not.toBeNull()
     expect(Object.keys(payload!.state.nodes).sort()).toEqual(['n1', 'n2'])
@@ -544,7 +545,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     await seed('u', 'tab-other', stateOf('u', 99n))
     await touchOwner('u', 'tab-other', Date.now() + 1000)
 
-    const payload = await loadHydrationState('u', CLIENT)
+    const payload = await loadHydrationState('u' as StorageAccount, CLIENT)
 
     expect(payload!.state.maxHlc!.physical).toBe(5n)
   })
@@ -556,7 +557,7 @@ describe('loadHydrationState seeding from a sibling', () => {
       batchFrame('b2'),
     ])
 
-    await loadHydrationState('u', 'tab-new')
+    await loadHydrationState('u' as StorageAccount, 'tab-new')
 
     const mine = await readCheckpoint('u', 'tab-new')
     expect(mine.status).toBe('ok')
@@ -578,7 +579,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     ])
     const before = await readCheckpoint('u', 'tab-old')
 
-    await loadHydrationState('u', 'tab-new')
+    await loadHydrationState('u' as StorageAccount, 'tab-new')
 
     expect(await readCheckpoint('u', 'tab-old')).toEqual(before)
   })
@@ -602,7 +603,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     expect((await readCheckpoint('u', 'tab-old')).status === 'ok'
       && (await readCheckpoint('u', 'tab-old') as { opLogNextOrdinal: number }).opLogNextOrdinal).toBe(3)
 
-    const payload = await loadHydrationState('u', 'tab-new')
+    const payload = await loadHydrationState('u' as StorageAccount, 'tab-new')
     const settled = await payload!.persistedBase
     expect(settled?.nextOpLogOrdinal).toBe(1)
 
@@ -613,7 +614,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     await appendOpLogSegment('u', 'tab-new', [
       batchFrame('b4'),
     ], settled!.nextOpLogOrdinal)
-    const next = await loadHydrationState('u', 'tab-new')
+    const next = await loadHydrationState('u' as StorageAccount, 'tab-new')
     expect(next!.frames).toHaveLength(4)
     expect(next!.truncated).toBe(false)
   })
@@ -629,7 +630,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     // instead of the ranking.
     await touchOwner('u', 'tab-b', Date.now() - 5000)
 
-    const payload = await loadHydrationState('u', 'tab-new')
+    const payload = await loadHydrationState('u' as StorageAccount, 'tab-new')
 
     expect(payload!.state.maxHlc!.physical).toBe(5n)
   })
@@ -645,7 +646,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     // Make the CORRUPT one the freshest, so it is tried first.
     await touchOwner('u', 'tab-bad', Date.now() + 5000)
 
-    const payload = await loadHydrationState('u', 'tab-new')
+    const payload = await loadHydrationState('u' as StorageAccount, 'tab-new')
 
     expect(payload).not.toBeNull()
     expect(Object.keys(payload!.state.nodes).sort()).toEqual(['n1', 'n2'])
@@ -665,7 +666,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     const before = await readCheckpoint('u', 'tab-bad')
     expect(before.status).toBe('ok')
 
-    expect(await loadHydrationState('u', 'tab-new')).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, 'tab-new')).toBeNull()
 
     expect(await readCheckpoint('u', 'tab-bad')).toEqual(before)
   })
@@ -683,24 +684,24 @@ describe('loadHydrationState seeding from a sibling', () => {
     await seed('u', 'tab-good', stateOf('u', 5n))
     await touchOwner('u', 'tab-good', Date.now() - 1000)
 
-    expect(await loadHydrationState('u', 'tab-new', { limit: 2 })).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, 'tab-new', { limit: 2 })).toBeNull()
   })
 
   it('returns null when there is no sibling at all', async () => {
-    expect(await loadHydrationState('u', 'tab-new')).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, 'tab-new')).toBeNull()
   })
 
   it('never seeds from another user\'s owner', async () => {
     await seed('other-user', 'tab-theirs', stateOf('other-user', 5n))
 
-    expect(await loadHydrationState('u', 'tab-new')).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, 'tab-new')).toBeNull()
   })
 
   it('does not seed from an owner last seen beyond the retention window', async () => {
     await seed('u', 'tab-ancient', stateOf('u', 5n))
     await touchOwner('u', 'tab-ancient', Date.now() - SEED_CANDIDATE_MAX_AGE_MS - 1)
 
-    expect(await loadHydrationState('u', 'tab-new')).toBeNull()
+    expect(await loadHydrationState('u' as StorageAccount, 'tab-new')).toBeNull()
   })
 
   it('carries a sibling\'s truncated op-log through as truncated', async () => {
@@ -714,7 +715,7 @@ describe('loadHydrationState seeding from a sibling', () => {
       new Uint8Array([0xFF, 0xFF, 0xFF]),
     ])
 
-    const payload = await loadHydrationState('u', 'tab-new')
+    const payload = await loadHydrationState('u' as StorageAccount, 'tab-new')
 
     expect(payload!.truncated).toBe(true)
     expect(payload!.frames).toHaveLength(1)
@@ -733,7 +734,7 @@ describe('loadHydrationState seeding from a sibling', () => {
       new Uint8Array([0xFF, 0xFF, 0xFF]),
     ])
 
-    const payload = await loadHydrationState('u', 'tab-new')
+    const payload = await loadHydrationState('u' as StorageAccount, 'tab-new')
     expect(await payload!.persistedBase).toEqual({ nextOpLogOrdinal: 1 })
 
     // Our own row is now self-consistent: what is on disk is exactly what was
@@ -763,7 +764,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     ])
     vi.mocked(adoptCheckpoint).mockResolvedValueOnce(null)
 
-    const payload = await loadHydrationState('u', 'tab-new')
+    const payload = await loadHydrationState('u' as StorageAccount, 'tab-new')
 
     expect(payload).not.toBeNull()
     expect(Object.keys(payload!.state.nodes).sort()).toEqual(['n1', 'n2'])
@@ -777,7 +778,7 @@ describe('loadHydrationState seeding from a sibling', () => {
   it('writes nothing when the run was superseded before the adoption', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
 
-    const payload = await loadHydrationState('u', 'tab-new', {
+    const payload = await loadHydrationState('u' as StorageAccount, 'tab-new', {
       superseded: () => true,
     })
 
@@ -799,7 +800,7 @@ describe('loadHydrationState seeding from a sibling', () => {
     })
     await seed('u', 'tab-old', stateOf('u', 5n))
 
-    expect(await loadHydrationState('u', 'tab-new', {
+    expect(await loadHydrationState('u' as StorageAccount, 'tab-new', {
       superseded: () => true,
     })).toBeNull()
 

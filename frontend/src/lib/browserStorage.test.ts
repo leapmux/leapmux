@@ -1,4 +1,4 @@
-import type { AsyncLocalKey, SyncLocalKey } from '~/lib/browserStorage'
+import type { AsyncLocalKey, StorageAccount, SyncLocalKey } from '~/lib/browserStorage'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
 import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, parseStoredKey, PREFIX_EDITOR_DRAFT, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storageAccountFor, storageAccountUserId, storedKeyFor } from '~/lib/browserStorage'
@@ -326,7 +326,7 @@ describe('browserStorage', () => {
       setStorageAccountForTests(ACCOUNT)
       expect(localStorageGet(KEY_BROWSER_PREFS)).toEqual({ diffView: 'split' })
       // The other account's value is still there, under its own key, and only
-      // its own namespace can name it.
+      // its own namespace can identify it.
       expect(mirrorEntryForTests(accountStorageKey(OTHER, KEY_BROWSER_PREFS))?.v)
         .toEqual({ diffView: 'unified' })
     })
@@ -349,7 +349,7 @@ describe('browserStorage', () => {
       expect(localStorageGet(KEY_BROWSER_PREFS)).toEqual({ diffView: 'split' })
     })
 
-    it('refuses an empty id, which names no account', () => {
+    it('refuses an empty id, which specifies no account', () => {
       expect(() => setStorageAccountForTests('')).toThrow(/Invalid storage account id/)
     })
 
@@ -416,7 +416,7 @@ describe('browserStorage', () => {
       expect(Object.keys(SESSION_KEY_SPECS).length).toBeGreaterThan(0)
     })
 
-    it('names keys logically, never in their stored form', () => {
+    it('identifies keys logically, never in their stored form', () => {
       for (const [name] of every) {
         expect(name, name).not.toContain('leapmux')
         expect(name.startsWith('u:'), name).toBe(false)
@@ -677,12 +677,12 @@ describe('storageAccountUserId', () => {
 
   // `setStorageAccountForTests` writes a bare Hub user id as the account -- the
   // form whose account IS its user id. It carries no separator and no encoding,
-  // so it names itself.
+  // so it identifies itself.
   it('returns a bare user id unchanged', () => {
-    expect(storageAccountUserId('usertest')).toBe('usertest')
+    expect(storageAccountUserId('usertest' as StorageAccount)).toBe('usertest')
   })
 
-  it('names no user when there is no account', () => {
+  it('identifies no user when there is no account', () => {
     expect(storageAccountUserId(null)).toBeNull()
   })
 })

@@ -37,7 +37,11 @@ const (
 	SignInProvedNoFactor SignInProof = 1
 	// SignInProvedFactor is a sign-in that proved a factor: a password, a
 	// passkey, or a provider sign-in for a consent route that asked for
-	// fresh authentication.
+	// fresh authentication. The provider sign-in counts only for an account
+	// that elevates only through that provider, one holding neither a
+	// password nor a passkey. A consent-route sign-in for any other account
+	// proves nothing here: its factor is the password or the passkey, and
+	// the provider sign-in did not present it.
 	SignInProvedFactor SignInProof = 2
 )
 
@@ -278,15 +282,37 @@ func RequireElevatableCredential(userInfo *UserInfo) error {
 			return nil
 		}
 	}
-	return ErrCredentialNotElevatable()
+	return CredentialNotElevatableError()
 }
 
-// ErrCredentialNotElevatable is the refusal both elevatable-credential rules
-// return. One constructor, because the two rules differ in WHICH credentials
-// they admit and not in what they tell a caller that holds none of them: the
-// remedy is the same sentence, and two copies of a security message drift the
-// moment somebody rewords one.
-func ErrCredentialNotElevatable() error {
+// RequireElevatableSession returns the acting SESSION id, refusing every
+// other credential -- a command-line credential included.
+//
+// The narrower rule, and the two service callers need it. The elevation RPCs
+// collect a factor and stamp a row: a bearer that could call them would
+// elevate ITSELF, which is exactly the property the browser leg exists to
+// prevent (the factor must be proven somewhere the credential file cannot
+// reach). requireElevatedSessionForDurableAuthority needs it for its own
+// reason, which it states.
+//
+// Nil-safe, like every sibling in this family.
+func RequireElevatableSession(userInfo *UserInfo) (string, error) {
+	var sessionID string
+	if userInfo != nil {
+		sessionID = userInfo.Credential.SessionID()
+	}
+	if sessionID == "" {
+		return "", CredentialNotElevatableError()
+	}
+	return sessionID, nil
+}
+
+// CredentialNotElevatableError is the refusal both elevatable-credential
+// rules return. One constructor, because the two rules differ in WHICH
+// credentials they admit and not in what they tell a caller that holds none
+// of them: the remedy is the same sentence, and two copies of a security
+// message drift the moment somebody rewords one.
+func CredentialNotElevatableError() error {
 	return connect.NewError(connect.CodeFailedPrecondition,
 		"this credential cannot verify your identity; sign in from a browser to perform this action")
 }

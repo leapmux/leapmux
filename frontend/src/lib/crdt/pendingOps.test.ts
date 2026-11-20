@@ -1,6 +1,7 @@
 import type { HydrationPayload } from './hydrate'
 import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import type { HubUserId } from '~/lib/browserStorage'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabIdentSchema, TabType } from '~/generated/proto/leapmux/v1/common_pb'
@@ -23,7 +24,7 @@ import { MAX_OWN_ECHO_BATCH_IDS, PendingOpsManager, pruneTombstonesAtOrBelow } f
 
 function makeMgr(notify?: () => void) {
   const clock = new HLCClock('clientA')
-  return new PendingOpsManager('user', clock, notify)
+  return new PendingOpsManager('user' as HubUserId, clock, notify)
 }
 
 /** The one op a fixture batch was built around; fails loudly if it is missing. */
@@ -1773,7 +1774,7 @@ describe('batch-end boundary', () => {
       persistedBase: { nextOpLogOrdinal: 0 },
     })
 
-    // A frame naming no boundary must not move the cursor: advancing on one
+    // A frame identifying no boundary must not move the cursor: advancing on one
     // would skip whatever the hub ships strictly after it, permanently.
     expect(live.state.resumeWatermark).toBeUndefined()
     expect(replay.state.resumeWatermark?.physical).toBe(7n)

@@ -390,7 +390,7 @@ func TestStepUpCodeExchange_AFailingCredentialReadAnswersInternalErrorAndKeepsTh
 	assert.NotNil(t, row.ElevationExpiresAt, "the working store's redemption stamps the window")
 }
 
-// The token rung of the same exchange: a step-up code that names a
+// The token rung of the same exchange: a step-up code that identifies a
 // command-line credential redeems with THAT credential's bearer, and the
 // window lands on the credential's own row.
 func TestStepUpCodeExchange_ATokenCodeRedeemsWithItsBearer(t *testing.T) {
@@ -417,7 +417,7 @@ func TestStepUpCodeExchange_ATokenCodeRedeemsWithItsBearer(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, http.StatusOK, resp.StatusCode, "the bearer that the code names redeems it")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "the bearer that the code identifies redeems it")
 	assert.Equal(t, true, decodeJSONBody(t, resp)["elevated"])
 
 	row, err := env.store.APITokens().GetByID(ctx, tokenID)

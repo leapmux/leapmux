@@ -173,7 +173,7 @@ func recordElevationSlide(ctx context.Context, until time.Time) {
 // is a stronger contract than v1's marker-on-the-error: every refusal of this
 // kind carries it, and a caller cannot forget to add it. A refusal that
 // deliberately carries no marker wraps no sentinel -- see
-// requireElevatableCredential.
+// auth.RequireElevatableCredential.
 //
 // The two writes happen at different moments because connect v2 flushes a
 // CallInfo's response headers at the handler's first Send: a header written
@@ -284,8 +284,8 @@ func verifyElevationPassword(ctx context.Context, user *store.User, currentPassw
 // the keyboard recently" has no answer for it -- and what these three verbs
 // create is a new way into an account that the bearer itself did not have. The
 // refusal carries no ElevationRequiredHeader, for the reason
-// requireElevatableSession states: a prompt would ask for a factor and then
-// refuse the retry for the same reason.
+// auth.RequireElevatableCredential states: a prompt would ask for a factor and
+// then refuse the retry for the same reason.
 //
 // It costs the headless path deliberately. `leapmux control admin user
 // create` and `... reset-password` now need a browser session, which is the
@@ -298,13 +298,13 @@ func requireElevatedSessionForDurableAuthority(ctx context.Context, now time.Tim
 	if err != nil {
 		return nil, err
 	}
-	// Solo mode first, for the reason requireElevation states. The session
-	// test below would refuse the synthetic user before the code could reach
-	// that reason, because solo mode holds no session row.
+	// Solo mode first, for the reason auth.RequireElevation states. The
+	// session test below would refuse the synthetic user before the code
+	// could reach that reason, because solo mode holds no session row.
 	if userInfo.SoloAuthenticated() {
 		return userInfo, nil
 	}
-	if _, err := requireElevatableSession(userInfo); err != nil {
+	if _, err := auth.RequireElevatableSession(userInfo); err != nil {
 		return nil, err
 	}
 	return userInfo, auth.RequireElevation(userInfo, now)
@@ -436,8 +436,8 @@ func assertElevatedActor(userInfo *auth.UserInfo, now time.Time) error {
 // administrator cookie that could add one gains more than any single account
 // mutation the elevation window already guards.
 //
-// requireElevatedActor, not requireElevation: an admin-scoped bearer holds
-// no session row to stamp and can never elevate, and
+// requireElevatedActor, not auth.RequireElevation: an admin-scoped bearer holds
+// no session row to stamp, and
 // `leapmux control admin settings ...` is the documented headless path.
 // The hub grants that scope only at a browser consent that itself required an
 // elevated session, so somebody proved the factor once for the credential.
@@ -673,7 +673,8 @@ func storedElevationDeadline(ctx context.Context, st store.Store, sessionID, api
 
 // rejectSoloElevation refuses the elevation surface for a caller the SOLO RUNG
 // authenticated: it carries the synthetic solo user, which holds no session
-// row to stamp and needs none, because requireElevation exempts it outright.
+// row to stamp and needs none, because auth.RequireElevation exempts it
+// outright.
 //
 // It reads the CALLER and not the hub's mode, and the difference is the whole
 // point. A solo hub that holds a password authenticates a TCP caller with an
@@ -734,28 +735,6 @@ func accountElevatesOnlyThroughAProvider(ctx context.Context, st store.Store, us
 // still runs no query at all.
 func accountShapeElevatesOnlyThroughAProvider(passwordSet bool, passkeyCount int64) bool {
 	return !passwordSet && passkeyCount == 0
-}
-
-// requireElevatableSession returns the acting SESSION id, refusing every
-// other credential -- a command-line credential included.
-//
-// The narrower rule, and the two callers need it. The elevation RPCs collect
-// a factor and stamp a row: a bearer that could call them would elevate
-// ITSELF, which is exactly the property the browser leg exists to prevent
-// (the factor must be proven somewhere the credential file cannot reach).
-// requireElevatedSessionForDurableAuthority needs it for its own reason,
-// which it states.
-//
-// Nil-safe, like requireElevatableCredential above.
-func requireElevatableSession(userInfo *auth.UserInfo) (string, error) {
-	var sessionID string
-	if userInfo != nil {
-		sessionID = userInfo.Credential.SessionID()
-	}
-	if sessionID == "" {
-		return "", auth.ErrCredentialNotElevatable()
-	}
-	return sessionID, nil
 }
 
 // errElevationSessionEnded reports a grant that found no live session to
@@ -901,7 +880,7 @@ func (s *UserService) elevationCaller(ctx context.Context) (*auth.UserInfo, stri
 	if err := rejectSoloElevation(userInfo); err != nil {
 		return nil, "", err
 	}
-	sessionID, err := requireElevatableSession(userInfo)
+	sessionID, err := auth.RequireElevatableSession(userInfo)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1056,7 +1035,7 @@ func (s *UserService) DropElevation(ctx context.Context, _ *leapmuxv1.DropElevat
 	}
 	sessionID, apiTokenID, ok := userInfo.Credential.ElevatableRow()
 	if !ok {
-		return nil, auth.ErrCredentialNotElevatable()
+		return nil, auth.CredentialNotElevatableError()
 	}
 	var n int64
 	if sessionID != "" {

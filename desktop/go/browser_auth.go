@@ -18,7 +18,7 @@ import (
 	"github.com/leapmux/leapmux/loopbackauth"
 )
 
-// browserAuthTokenTimeout bounds the /oauth/token request of one ceremony.
+// browserAuthTokenTimeout limits the /oauth/token request of one ceremony.
 // proxy.client carries no timeout of its own (it must serve streams), so the
 // ceremony ends the request on this clock instead.
 const browserAuthTokenTimeout = 30 * time.Second
@@ -254,6 +254,16 @@ func browserAuthOAuthMessage(code, description string) string {
 	return code + ": " + description
 }
 
+// browserAuthUnconfirmedMessage names the confirmation the Hub did not give.
+// The wording is kind-aware: "signed in" for a sign-in ceremony, "elevated"
+// for a step-up.
+func browserAuthUnconfirmedMessage(kind desktoppb.BrowserAuthKind) string {
+	if kind == desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_STEP_UP {
+		return "the Hub did not confirm that your session is elevated"
+	}
+	return "the Hub did not confirm that you are signed in"
+}
+
 // redeemBrowserAuthCode exchanges the code and reports the confirmation, or
 // why there is none. The request runs on the ceremony's own lifetime and ends
 // at browserAuthTokenTimeout on browserAuthClock.
@@ -323,14 +333,14 @@ func (a *App) postBrowserAuthToken(ctx context.Context, c *browserAuthCeremony, 
 		Elevated bool `json:"elevated"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return false, fmt.Sprintf("the Hub answered %d", resp.StatusCode), nil
+		return false, "the Hub's answer could not be read", nil
 	}
 	confirmed := out.SignedIn
 	if c.kind == desktoppb.BrowserAuthKind_BROWSER_AUTH_KIND_STEP_UP {
 		confirmed = out.Elevated
 	}
 	if !confirmed {
-		return false, fmt.Sprintf("the Hub answered %d", resp.StatusCode), nil
+		return false, browserAuthUnconfirmedMessage(c.kind), nil
 	}
 	return true, "", nil
 }

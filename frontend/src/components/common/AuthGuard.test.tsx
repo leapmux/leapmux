@@ -43,7 +43,7 @@ vi.mock('~/lib/systemInfo', () => ({
   isCaptchaEnabled: () => false,
 }))
 
-// Remote-Hub mode: the ceremonies HubPage gates run in the system browser.
+// Remote-Hub mode: the ceremonies HubPage requires to run in the system browser.
 const ceremoniesInBrowser = vi.hoisted(() => vi.fn<() => boolean>(() => false))
 vi.mock('~/lib/hubSite', () => ({
   ceremoniesRunInBrowser: () => ceremoniesInBrowser(),

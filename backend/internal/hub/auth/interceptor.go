@@ -1101,13 +1101,17 @@ func IsSessionOnlyAdminProcedure(procedure string) bool {
 // (usernames.IsReservedSystem) is what keeps a stored row from taking
 // that identity.
 //
-// It asks about the ACCOUNT alone. The parallel question -- was this
-// CREDENTIAL granted hub administration? -- used to live beside it as
-// enforceAdminScope, reading a single api_tokens.admin_scope boolean. It is
-// now the named admin scopes (admin:read, admin:users, admin:settings,
-// admin:workers, admin:apps) that enforceScope decides one rung earlier, so a
-// credential minted to administer users can no longer also rewrite the hub's
-// security settings.
+// It asks about the ACCOUNT, the CREDENTIAL KIND and a current elevation
+// window. The account question is administrator privileges. The
+// credential-kind question refuses every non-session credential on a
+// session-only procedure before the elevation check, so no client starts a
+// step-up that cannot help. The window question is RequireElevation. A
+// fourth question -- was this CREDENTIAL granted hub administration? -- used
+// to live beside it as enforceAdminScope, reading a single
+// api_tokens.admin_scope boolean. It is now the named admin scopes
+// (admin:read, admin:users, admin:settings, admin:workers, admin:apps) that
+// enforceScope decides one rung earlier, so a credential minted to
+// administer users can no longer also rewrite the hub's security settings.
 func enforceAdmin(procedure string, userInfo *UserInfo, now time.Time) error {
 	// Deny by PREFIX, never by a list of procedures. See
 	// adminProcedurePrefix: a list that missed a procedure would open one
@@ -1128,7 +1132,7 @@ func enforceAdmin(procedure string, userInfo *UserInfo, now time.Time) error {
 	if sessionOnlyAdminProcedures[procedure] {
 		sessionID, _, _ := userInfo.Credential.ElevatableRow()
 		if sessionID == "" {
-			return ErrCredentialNotElevatable()
+			return CredentialNotElevatableError()
 		}
 	}
 	return RequireElevation(userInfo, now)

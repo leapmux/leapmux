@@ -1,3 +1,4 @@
+import type { StorageAccount } from '~/lib/browserStorage'
 import type { StorageBroadcast, StorageChange } from '~/lib/browserStorageDb'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -21,6 +22,7 @@ import {
   resetStorageAccountForTests,
   setStorageAccount,
   setStorageAccountForTests,
+
   storedKeyFor,
 } from '~/lib/browserStorage'
 import { enqueueKvPut, kvInstanceIdForTests, peekKvPending, readKvRow } from '~/lib/browserStorageDb'
@@ -36,7 +38,7 @@ import { TEST_USER_ID } from '~/test-support/crdtBridge'
 // pending -- and these cases are exactly the ones that must reach a database.
 
 const ACCOUNT = TEST_USER_ID
-const OTHER = 'otheraccount'
+const OTHER = 'otheraccount' as StorageAccount
 
 // The worker segment is UNIQUE TO THIS FILE, and that is load-bearing rather
 // than cosmetic. A BroadcastChannel bus is shared by every test file running in
@@ -645,7 +647,7 @@ describe('cross-tab changes', () => {
    * Deliver `changes` as a peer tab would, and return once the module has them.
    *
    * THE WAIT IS A SENTINEL, NOT A TIMER. A second announcement follows on the
-   * SAME channel, naming the sentinel key, and this returns once the module
+   * SAME channel, identifying the sentinel key, and this returns once the module
    * applied that one. One channel delivers to one receiver in post order, so
    * the sentinel's arrival proves the announcement under test arrived first --
    * including where the module must IGNORE that announcement, which no
@@ -747,7 +749,7 @@ describe('cross-tab changes', () => {
     expect(heard).toEqual([])
   })
 
-  it('ignores a change naming another account\'s key', async () => {
+  it('ignores a change identifying another account\'s key', async () => {
     const { heard, stop } = recordHeard(accountStorageKey(OTHER, KEY_BROWSER_PREFS))
 
     await announce([
@@ -762,7 +764,7 @@ describe('cross-tab changes', () => {
     expect(heard).toEqual([])
   })
 
-  it('ignores a change naming an unmirrored or unregistered key', async () => {
+  it('ignores a change identifying an unmirrored or unregistered key', async () => {
     const { heard, stop } = recordHeard(accountStorageKey(ACCOUNT, ASYNC_KEY), 'leapmux:not-a-registered-key')
 
     await announce([

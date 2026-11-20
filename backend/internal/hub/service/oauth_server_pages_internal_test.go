@@ -106,6 +106,16 @@ func TestConsentPagesEscapeEveryInterpolatedValue(t *testing.T) {
 			"a step-up must never read as an authorization that issues something")
 	})
 
+	t.Run("device page names an expired credential as expired", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		writePage(w, 200, devicePageTmpl, devicePageData{
+			UserCode:   "abc-123",
+			Elevating:  true,
+			Credential: &deviceCredential{Name: "operator-laptop", Added: "2026-01-01", Expired: true},
+		}, "")
+		assert.Contains(t, w.Body.String(), "It has expired, so verifying it grants nothing.")
+	})
+
 	t.Run("elevation required page", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		writePage(w, 403, elevationRequiredPageTmpl, payload, "")

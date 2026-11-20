@@ -21,7 +21,7 @@ import (
 // express.
 //
 // So the omission an interceptor would make impossible is possible here: a
-// new sensitive RPC that nobody wires to requireElevation ships with no
+// new sensitive RPC that nobody wires to auth.RequireElevation ships with no
 // gate, and nothing says so. This record is the substitute. It is the same
 // bidirectional tripwire shape the auth package already uses for the public,
 // delegation and admin gates (auth/admin_procedures_test.go), and it fails
@@ -34,7 +34,7 @@ import (
 type elevationClass int
 
 const (
-	// protectedByRequireElevation calls requireElevation directly.
+	// protectedByRequireElevation calls auth.RequireElevation directly.
 	protectedByRequireElevation elevationClass = iota
 	// protectedByPasskeyManagementAuth runs through the fork that chooses
 	// between elevation and the first-credential sibling rule.
