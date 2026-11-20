@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -78,7 +79,7 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 	if err != nil {
 		return fmt.Errorf("recheck the pending control request before delivery: %w", err)
 	}
-	if pending.ClaimToken != plan.requestMeta.ClaimToken {
+	if pending.ClaimToken != plan.requestMeta.ClaimToken || !bytes.Equal(pending.Payload, plan.requestMeta.Payload) {
 		return agent.ErrControlInstanceReplaced
 	}
 	if pending.AgentSessionID != plan.requestMeta.AgentSessionID {

@@ -109,6 +109,37 @@ func TestAnswerControl_DeliversTheProvidersAnswerAndRecordsThePrompt(t *testing.
 	assert.Error(t, err, "the answered request is no longer pending")
 }
 
+func TestAnswerControlRefusesTheAuthenticatedSourceAgent(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, delivered := answerControlFixture(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "req-1", claudeEditRequest)
+	request := &leapmuxv1.AnswerControlRequest{
+		AgentId: "agent-1", RequestId: "req-1", ClaimToken: "claim-1", Decision: permissionDecisionOf("once", ""),
+	}
+	payload, err := proto.Marshal(request)
+	require.NoError(t, err)
+	call := &leapmuxv1.InnerRpcRequest{Method: leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure, Payload: payload}
+	own := newTestWriter()
+	dispatchTestRequest(dispatcher, t.Context(), tabCaller("agent-1"), call, own)
+	require.Len(t, own.rejections(), 1)
+	assert.Equal(t, codePermissionDenied, own.rejections()[0].code)
+	assert.Empty(t, own.responsesSnapshot())
+	assert.Empty(t, *delivered)
+
+	pending, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{
+		AgentID: request.AgentId, RequestID: request.RequestId,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, request.ClaimToken, pending.ClaimToken)
+
+	another := newTestWriter()
+	dispatchTestRequest(dispatcher, t.Context(), tabCaller("another-tab"), call, another)
+	require.Empty(t, another.rejections())
+	var response leapmuxv1.AnswerControlResponse
+	lastResponse(t, another, &response)
+	assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, response.GetState())
+	assert.Len(t, *delivered, 1)
+}
+
 func TestAnswerControl_RefusesADecisionThatDoesNotAnswerThePrompt(t *testing.T) {
 	t.Parallel()
 	svc, d, delivered := answerControlFixture(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "req-1", claudeEditRequest)

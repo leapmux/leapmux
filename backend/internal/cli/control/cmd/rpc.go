@@ -76,10 +76,9 @@ response prints as protobuf JSON with the field names of the .proto files,
 indented. --json prints it as the data of one envelope instead. A field that
 holds its default value does not print, as protobuf JSON states.
 
-The command bypasses every guard of the other commands. It refuses no call
-on the tab that runs it, checks no agent turn in progress, and validates no
-id in the request. The hub or the Worker receives the request as you write
-it, so a call that changes state takes effect at once.
+The command passes the request directly to the Hub or Worker. The receiving
+service applies its own authorization and validation. Check what the
+procedure does before calling one that changes state.
 
 The procedures are the methods of the services in proto/leapmux/v1. A
 procedure of a hub service runs on the hub. A procedure of a Worker service

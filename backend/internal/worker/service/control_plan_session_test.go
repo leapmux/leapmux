@@ -136,10 +136,12 @@ WHEN NEW.id='agent-1' BEGIN SELECT RAISE(ABORT, 'plan settings storage failed');
 func TestNativePlanRecordingDoesNotChangeAReplacementSession(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	old := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
+	pending, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: old.ID, RequestID: "plan"})
+	require.NoError(t, err)
 	response := []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`)
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
-		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim", AgentSessionID: "original",
-		RequestPayload:  []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
+		AgentID: old.ID, RequestID: pending.RequestID, ClaimToken: pending.ClaimToken, AgentSessionID: pending.AgentSessionID,
+		RequestPayload:  pending.Payload,
 		ResponseContent: response, ResolvedContent: response,
 		PlanApprovalSettings: []byte(`{"permissionMode":"bypassPermissions","clearContext":false}`),
 	})

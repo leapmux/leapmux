@@ -6,11 +6,14 @@
 -- control_requests row is gone. That guard is the fast path, and it gives the
 -- caller a clear error. This predicate closes the race between that guard's
 -- read and this INSERT: an agent restart, a context clear, or a provider-side
--- cancel deletes the request row in between. Keep both.
+-- cancel deletes the request row in between. A provider can also update the
+-- bytes under one claim token. Reserve only the snapshot that the Worker read.
 INSERT INTO control_response_payloads (delivery_id, request_payload, response_content, resolved_content, plan_approval_settings, source_seq, follow_up, follow_up_kind, non_blocking, agent_session_id, input_id, decision)
 SELECT sqlc.arg(delivery_id), COALESCE(CAST(sqlc.arg(request_payload) AS BLOB), X''), COALESCE(CAST(sqlc.arg(response_content) AS BLOB), X''), COALESCE(CAST(sqlc.arg(resolved_content) AS BLOB), X''), COALESCE(CAST(sqlc.arg(plan_approval_settings) AS BLOB), X''), sqlc.arg(source_seq), sqlc.arg(follow_up), sqlc.arg(follow_up_kind), sqlc.arg(non_blocking), sqlc.arg(agent_session_id), sqlc.arg(input_id), COALESCE(CAST(sqlc.arg(decision) AS BLOB), X'')
 WHERE EXISTS (SELECT 1 FROM control_requests
-WHERE agent_id = sqlc.arg(agent_id) AND request_id = sqlc.arg(request_id) AND claim_token = sqlc.arg(claim_token));
+WHERE agent_id = sqlc.arg(agent_id) AND request_id = sqlc.arg(request_id) AND claim_token = sqlc.arg(claim_token)
+AND payload = COALESCE(CAST(sqlc.arg(request_payload) AS BLOB), X'')
+AND agent_session_id = sqlc.arg(agent_session_id));
 
 -- name: GetControlResponseAnswer :one
 SELECT * FROM control_response_answers

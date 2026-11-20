@@ -195,15 +195,18 @@ func (plan controlResponsePlan) isPlanPrompt() bool {
 //     answer cannot carry the user's feedback
 //   - The neutral decision that the content delivers (deliveredControlDecision)
 //
-// No client sends answer content: AnswerControl builds it from a decision.
-// The answer row stores the decision, so the transcript row states it even
-// when a Worker restart interrupts the recording (controlResponsePlanFromAnswer).
+// The answer row stores the decision for the transcript, including when a
+// Worker restart interrupts recording (controlResponsePlanFromAnswer).
 type workerAnswer struct {
 	claimToken   string
 	content      []byte
 	planApproval *leapmuxv1.PlanApprovalSettings
 	followUp     agent.ControlFollowUp
 	decision     *leapmuxv1.ControlDecision
+	// observedRequest binds an answer built from a prior read to that request.
+	observedRequest *controlResponseRequestMetadata
+	// nativeContent retains the submitted bytes for the record. Delivery uses content.
+	nativeContent []byte
 }
 
 // encodeControlDecision is the form in which the answer row stores decision:
@@ -271,6 +274,10 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	if meta.answersARetiredInstance(claimToken) {
 		return nil
 	}
+	if observed := chosen.observedRequest; observed != nil &&
+		(!bytes.Equal(observed.Payload, meta.Payload) || observed.AgentSessionID != meta.AgentSessionID) {
+		return agent.ErrControlInstanceReplaced
+	}
 	// The row that the claim below stores must agree with its key. AnswerControl
 	// checked the row that it read, but a provider can republish under one claim
 	// token, so this read can hold other bytes. The check stays below the two
@@ -279,6 +286,13 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 		return err
 	}
 	plan := resolveControlResponsePlan(plugin, meta, content, chosen.planApproval)
+	submitted := content
+	if chosen.nativeContent != nil {
+		if plan.resolution.LeapMuxOwned || plan.resolution.PlanModeControl != agent.PlanModeControlNone {
+			return errors.New("this request requires a control decision")
+		}
+		submitted = chosen.nativeContent
+	}
 	if followUp != (agent.ControlFollowUp{}) {
 		if plan.resolution.FollowUp != (agent.ControlFollowUp{}) {
 			return errors.New("the answer and its resolution both state a follow-up")
@@ -321,7 +335,7 @@ func (svc *Service) processControlAnswer(dbAgent db.Agent, chosen workerAnswer) 
 	}
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
-		RequestPayload: plan.requestMeta.Payload, ResponseContent: content,
+		RequestPayload: plan.requestMeta.Payload, ResponseContent: submitted,
 		ResolvedContent: plan.resolution.Content, FollowUp: plan.resolution.FollowUp.Text,
 		FollowUpKind: plan.resolution.FollowUp.Kind, NonBlocking: plan.requestMeta.NonBlocking,
 		PlanApprovalSettings: plan.settingsJSON,

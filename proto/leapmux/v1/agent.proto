@@ -1275,14 +1275,21 @@ message RecordControlResponseResponse {
 message ListControlRequestsRequest { string agent_id = 1; }
 message ListControlRequestsResponse { repeated AgentControlRequest requests = 1; }
 
-// AnswerControlRequest answers one request instance with a neutral decision.
-// The Worker's provider package builds the provider's own answer from it.
+// AnswerControlRequest answers one request instance. Supply exactly one form.
+// The Worker's provider package builds the native answer for a decision.
 message AnswerControlRequest {
   string agent_id = 1;
   // The request ID and the claim token identify the exact request instance.
   string request_id = 2;
   string claim_token = 3;
   ControlDecision decision = 4;
+  NativeControlAnswer native_response = 5;
+}
+
+message NativeControlAnswer {
+  // The provider adapter's JSON response for an offered permission choice.
+  // The Worker validates the bytes before it attempts to deliver the answer.
+  bytes content = 1;
 }
 
 message AnswerControlResponse {

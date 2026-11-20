@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/base64"
 	"slices"
 	"sync"
 	"testing"
@@ -202,6 +203,34 @@ func TestRPCOverIPC_KeepsTheCodeOfARefusalOfTheWorker(t *testing.T) {
 
 	f := runControl(t, "rpc", "WorkerAgentService/ListAgents", "--worker", "self").requireFailure(t, cli.CodeNotFound)
 	assert.Contains(t, f.Message, "no such agent")
+}
+
+func TestRPCSendsNativeControlAnswerBytesOverBothTransports(t *testing.T) {
+	for _, transport := range tabOpenTransports {
+		t.Run(transport.name, func(t *testing.T) {
+			worker := &rpcDispatcher{answer: &leapmuxv1.AnswerControlResponse{
+				State: leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED,
+			}}
+			hub := &recordingHub{workers: workerRows("worker-A")}
+			hubFlag := transport.start(t, hub, worker)
+			payload := []byte(`{"id":"jsonrpc:9007199254740993","jsonrpc":"2.0","result":{}}`)
+			input := `{"agent_id":"a-1","request_id":"jsonrpc:9007199254740993","claim_token":"claim-1","native_response":{"content":"` +
+				base64.StdEncoding.EncodeToString(payload) + `"}}`
+			args := []string{"rpc", "WorkerAgentService/AnswerControl", "-", "--worker", "worker-A", "--json"}
+			out := runControlIn(t, input, append(args, testHubArgs(hubFlag)...)...)
+			assert.Equal(t, "CONTROL_RESPONSE_STATE_COMPLETED", out.Data(t)["state"])
+			calls := worker.recorded()
+			require.Len(t, calls, 1)
+			assert.Equal(t, leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure, calls[0].procedure)
+			var sent leapmuxv1.AnswerControlRequest
+			require.NoError(t, proto.Unmarshal(calls[0].payload, &sent))
+			assert.Equal(t, "a-1", sent.GetAgentId())
+			assert.Equal(t, "jsonrpc:9007199254740993", sent.GetRequestId())
+			assert.Equal(t, "claim-1", sent.GetClaimToken())
+			assert.Nil(t, sent.GetDecision())
+			assert.Equal(t, payload, sent.GetNativeResponse().GetContent())
+		})
+	}
 }
 
 func TestRPCOverHub_CallsAHubProcedureWithTheLoginOfTheUser(t *testing.T) {

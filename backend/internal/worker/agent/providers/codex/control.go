@@ -95,8 +95,9 @@ func (a *Agent) publishAsyncQuestions(sink agent.ProviderServices, event codexIt
 			slog.Error("codex marshal async question", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
 			continue
 		}
-		// The native identity remains the same after a restart or a repeated event.
-		identity, _ := json.Marshal([]any{event.threadID, event.itemID, index})
+		// An exact repeat keeps its claim across restart. A changed question
+		// requires a fresh claim, even when Codex keeps the same item ID.
+		identity, _ := json.Marshal([]any{event.threadID, event.itemID, index, json.RawMessage(payload)})
 		instanceID := fmt.Sprintf("%x", sha256.Sum256(identity))
 		if err := sink.PublishControlRequest(agent.ControlRequest{
 			AgentSessionID: event.threadID, RequestID: requestID, InstanceID: instanceID,

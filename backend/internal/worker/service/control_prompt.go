@@ -99,10 +99,9 @@ func unanswerableControlRequest() error {
 	return agent.InvalidControlDecision("LeapMux cannot read this request, so it takes no answer; stop the agent instead")
 }
 
-// answerControl answers one request instance with a neutral decision. The
-// provider builds its own answer from the decision, and the Worker then
-// claims, delivers and records it (deliverControlAnswer). No client sends
-// answer content of its own.
+// answerControl answers one request instance. The provider builds the
+// answer for a decision and verifies native permission choices against
+// the offered options. The Worker then claims, delivers and records it.
 //
 // A request that is gone, or an instance that the Worker retired, answers
 // with its state and no error, as RecordControlResponse does for it. A failed
@@ -115,6 +114,16 @@ func unanswerableControlRequest() error {
 func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRequest) (*leapmuxv1.AnswerControlResponse, error) {
 	if r.GetRequestId() == "" {
 		return nil, errors.New("the control request ID is missing")
+	}
+	if r.GetClaimToken() == "" {
+		return nil, errors.New("the control request claim token is missing")
+	}
+	native := r.GetNativeResponse()
+	if (r.GetDecision() == nil) == (native == nil) {
+		return nil, errors.New("supply exactly one control decision or native response")
+	}
+	if native != nil && len(native.GetContent()) == 0 {
+		return nil, errors.New("the native response is empty")
 	}
 	row, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: dbAgent.ID, RequestID: r.GetRequestId()})
 	if err != nil || row.ClaimToken != r.GetClaimToken() {
@@ -150,21 +159,24 @@ func (svc *Service) answerControl(dbAgent db.Agent, r *leapmuxv1.AnswerControlRe
 		Prompt:    prompt,
 		Decision:  r.GetDecision(),
 	}
-	answer, err := plugin.AnswerControlRequest(input)
+	chosen := workerAnswer{claimToken: r.GetClaimToken(), observedRequest: &meta}
+	var answer agent.ControlAnswer
+	if native != nil {
+		answer, input.Decision, err = matchNativePermissionAnswer(plugin, input, native.GetContent())
+		chosen.nativeContent = native.GetContent()
+	} else {
+		answer, err = plugin.AnswerControlRequest(input)
+	}
 	if err != nil {
 		return nil, err
 	}
-	var followUp agent.ControlFollowUp
 	if answer.FollowUp != "" {
-		followUp = agent.ControlFollowUp{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: answer.FollowUp}
+		chosen.followUp = agent.FeedbackFollowUp(answer.FollowUp)
 	}
-	state, errText, err := svc.deliverControlAnswer(dbAgent, row.RequestID, workerAnswer{
-		claimToken:   r.GetClaimToken(),
-		content:      answer.Content,
-		planApproval: answer.PlanApproval,
-		followUp:     followUp,
-		decision:     deliveredControlDecision(plugin, meta, input, answer),
-	})
+	chosen.content = answer.Content
+	chosen.planApproval = answer.PlanApproval
+	chosen.decision = deliveredControlDecision(plugin, meta, input, answer)
+	state, errText, err := svc.deliverControlAnswer(dbAgent, row.RequestID, chosen)
 	if err != nil {
 		return nil, err
 	}

@@ -834,6 +834,19 @@ func TestCodexAsyncQuestionInstanceSurvivesRepeatedPublication(t *testing.T) {
 	assert.Equal(t, "codex-async-question-call-1-2", records[1].RequestID)
 }
 
+func TestCodexAsyncQuestionRevisionsReceiveDistinctClaims(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newCodexControlAgent(t)
+	original := asyncQuestionCompletedLine("main-thread", "call-1", `[{"title":"Which color?","options":["Red","Blue"]}]`)
+	revised := asyncQuestionCompletedLine("main-thread", "call-1", `[{"title":"Which color?","options":["Red","Green"]}]`)
+	feedCodexLines(a, original, revised, revised)
+	records := sink.PublishedControls()
+	require.Len(t, records, 3)
+	assert.Equal(t, records[0].RequestID, records[1].RequestID)
+	assert.NotEqual(t, records[0].InstanceID, records[1].InstanceID)
+	assert.Equal(t, records[1].InstanceID, records[2].InstanceID)
+}
+
 func TestCodexQuestionIdentityPreservesUnicodeSeparators(t *testing.T) {
 	t.Parallel()
 	for _, itemID := range []string{"line\u2028separator", "paragraph\u2029separator", `literal\u2028`, `literal\u2029`, "slash\\\u2028"} {

@@ -563,7 +563,18 @@ leapmux control rpc leapmux.v1.WorkerAgentService/ListAgents '{"tab_ids": ["'"$A
 - A Worker procedure needs `--worker`, the Worker that serves it. It never defaults to the Worker of the calling tab.
 - A procedure that streams, such as `WatchEvents`, fails with `usage`. Use `events` or `agent messages --follow`.
 - Inside a LeapMux tab, the socket of the tab relays a fixed set of Hub procedures, which `rpc --help` lists. Another Hub procedure fails with `usage`; pass `--hub <url>` to call it with your own login.
-- **`rpc` bypasses every guard of the other commands.** It refuses no call on the calling tab, checks no busy agent, and validates no id in the request, so a call that changes state takes effect at once.
+- `rpc` sends the request directly. The Hub and Worker apply their own authorization and validation. Check the procedure before calling one that changes state.
+
+`WorkerAgentService/AnswerControl` accepts a native adapter response for an offered permission choice. Use `ListControlRequests` to get the request ID and its claim token. Send the adapter JSON bytes as Base64 in `native_response.content`. The Worker checks that the bytes match one offered choice for that request, then delivers the provider's answer. Use a typed `decision` for a plan, question, or form. The Worker refuses answers from the agent whose request is pending.
+
+```json
+{
+  "agent_id": "<agent-id>",
+  "request_id": "<request-id>",
+  "claim_token": "<claim-token>",
+  "native_response": { "content": "<base64 adapter response>" }
+}
+```
 
 ## End-to-end examples
 

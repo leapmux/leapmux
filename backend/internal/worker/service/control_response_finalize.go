@@ -123,8 +123,9 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 				return err
 			}
 		}
-		removed, err = queries.DeleteControlRequestInstance(ctx, db.DeleteControlRequestInstanceParams{
+		removed, err = queries.DeleteObservedControlRequest(ctx, db.DeleteObservedControlRequestParams{
 			AgentID: agentID, RequestID: answer.RequestID, ClaimToken: answer.ClaimToken,
+			RequestPayload: answer.RequestPayload, AgentSessionID: answer.AgentSessionID,
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil

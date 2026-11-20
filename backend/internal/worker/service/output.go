@@ -1450,6 +1450,10 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		return nil
 	}
 	claimToken := request.InstanceID
+	if claimToken != "" && err == nil && current.ClaimToken == claimToken &&
+		(!bytes.Equal(current.Payload, payload) || current.AgentSessionID != request.AgentSessionID || current.NonBlocking != request.NonBlocking) {
+		return errors.New("the control request instance changed without a new instance ID")
+	}
 	if claimToken == "" {
 		claimToken = id.Generate()
 	}

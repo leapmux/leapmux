@@ -327,7 +327,8 @@ type ControlRequest struct {
 	AgentSessionID string
 	RequestID      string
 	// InstanceID optionally identifies this publication across asynchronous cancellation.
-	// Providers that supply it must use a fresh secure ID for each new request instance.
+	// A provider that supplies it must use a fresh secure ID when the request
+	// changes its payload, session, or blocking behavior.
 	InstanceID string
 	Payload    []byte
 	SourceSeq  int64

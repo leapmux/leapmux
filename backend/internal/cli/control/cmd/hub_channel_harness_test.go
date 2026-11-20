@@ -113,6 +113,7 @@ var harnessWorkerProcedures = []string{
 	leapmuxv1connect.WorkerAgentInputServiceDeleteQueuedAgentInputProcedure,
 	leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure,
 	leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
+	leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure,
 	leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure,
 	leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure,
 	leapmuxv1connect.WorkerTabServiceCloseTabProcedure,

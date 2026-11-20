@@ -646,7 +646,11 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// An answer must finish even if the requesting client disconnects, as a
 	// recording does.
 	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceAnswerControlProcedure,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.AnswerControlRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.AnswerControlRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+			if caller.SourceTabID != "" && caller.SourceTabID == dbAgent.ID {
+				sendPermissionDenied(sender, "an agent cannot answer its own requests")
+				return
+			}
 			response, err := svc.answerControl(dbAgent, r)
 			if err != nil {
 				sendInvalidArgument(sender, err.Error())
