@@ -16,6 +16,7 @@
 package tofupins
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -100,11 +101,13 @@ type onDiskFile struct {
 	RemovalRevision removalRevision `json:"removal_revision,omitempty"`
 }
 
-// Store is a transactional pin-file handle. It holds no in-memory
-// mirror; every operation reads and writes the file under a
-// cross-process lock.
+// Store is a transactional pin-file handle. Every operation reads the file
+// under a cross-process lock. A decoded snapshot is reused only when those
+// exact bytes still match, so another process remains authoritative.
 type Store struct {
-	opts Options
+	opts       Options
+	cacheData  []byte
+	cacheState *onDiskFile
 }
 
 // Open prepares the pin-file path and its parent directory. It does
@@ -160,6 +163,9 @@ func (s *Store) readState() (*onDiskFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read pins: %w", err)
 	}
+	if s.cacheState != nil && bytes.Equal(data, s.cacheData) {
+		return cloneState(s.cacheState), nil
+	}
 	var f onDiskFile
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("parse pins in %s: %w", s.opts.Path, err)
@@ -167,7 +173,21 @@ func (s *Store) readState() (*onDiskFile, error) {
 	if f.Pins == nil {
 		return nil, fmt.Errorf("parse pins in %s: missing or null \"pins\" object", s.opts.Path)
 	}
-	return &f, nil
+	s.cacheData = bytes.Clone(data)
+	s.cacheState = cloneState(&f)
+	return cloneState(&f), nil
+}
+
+func cloneState(state *onDiskFile) *onDiskFile {
+	cloned := &onDiskFile{
+		Pins:            make(pinMap, len(state.Pins)),
+		RemovalRevision: state.RemovalRevision,
+	}
+	for workerID, entry := range state.Pins {
+		copied := *entry
+		cloned.Pins[workerID] = &copied
+	}
+	return cloned
 }
 
 func (f *onDiskFile) marshal() ([]byte, error) {
@@ -183,7 +203,18 @@ func (s *Store) writeState(ctx context.Context, encode func() ([]byte, error)) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return atomicfile.WriteFile(s.opts.Path, data, s.opts.FileMode)
+	if err := atomicfile.WriteFile(s.opts.Path, data, s.opts.FileMode); err != nil {
+		return err
+	}
+	var state onDiskFile
+	if err := json.Unmarshal(data, &state); err != nil {
+		s.cacheData = nil
+		s.cacheState = nil
+		return nil
+	}
+	s.cacheData = bytes.Clone(data)
+	s.cacheState = cloneState(&state)
+	return nil
 }
 
 // Resolve checks the presented keys against the durable pin for
@@ -225,8 +256,8 @@ func (s *Store) Resolve(ctx context.Context, workerID string, publicKey, mlkemPu
 	if err != nil {
 		var unreadable *unreadablePinError
 		if errors.As(err, &unreadable) && unreadable.workerID == workerID {
-			return nil, fmt.Errorf("%w. Repair the pin file before retrying. %v", err,
-				s.keyMismatchError(workerID, "", "<unreadable>", presented))
+			return nil, fmt.Errorf("%w. Repair the pin file before retrying. worker %s key mismatch (pinned <unreadable>, presented %s)",
+				err, workerID, presented.fingerprint())
 		}
 		return nil, err
 	}
@@ -282,7 +313,7 @@ func (s *Store) commit(ctx context.Context, workerID string, presented Entry, re
 			presented.FirstSeenAt = now
 			current = &presented
 			state.Pins[workerID] = current
-		} else if s.opts.LastUsedPersistMinGap >= 0 &&
+		} else if s.opts.LastUsedPersistMinGap >= 0 && !now.Before(current.LastUsedAt) &&
 			now.Sub(current.LastUsedAt) < s.opts.LastUsedPersistMinGap {
 			return nil
 		}

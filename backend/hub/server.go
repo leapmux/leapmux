@@ -375,16 +375,17 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 			return nil, acquired.close(
 				fmt.Errorf("listen tcp %q: %w", e, listenErr))
 		}
-		bound = append(bound, baseBinding{ln: ln, addr: parsed})
+		resolved := resolvePort(parsed, ln)
+		bound = append(bound, baseBinding{ln: ln, resolved: resolved})
 		acquired.tcpLns = append(acquired.tcpLns, ln)
-		resolvedTCP = append(resolvedTCP, resolvePort(parsed, ln).DialAddr())
+		resolvedTCP = append(resolvedTCP, resolved.DialAddr())
 	}
 	// The local IPC URLs come from the same list. The default factory uses
 	// locallisten so each gets the platform socket. Unix listeners check native
 	// peer credentials before accepting HTTP and also use mode 0600.
 	// ListenEntries guarantees at least one; see its INVARIANT.
 	var localLns []net.Listener
-	var localListenURLs []string
+	localListenURLs := append([]string(nil), localEntries...)
 	for _, e := range localEntries {
 		ln, listenErr := so.listenLocal(e)
 		if listenErr != nil {
@@ -392,7 +393,6 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 				fmt.Errorf("listen local %q: %w", e, listenErr))
 		}
 		localLns = append(localLns, ln)
-		localListenURLs = append(localListenURLs, e)
 		acquired.localLns = localLns
 	}
 
@@ -408,11 +408,10 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// resolved to. locallisten.IsLocal is the predicate config.SplitListen
 	// classifies with, so the replay and the split cannot disagree.
 	stateListen := make([]string, 0, len(entries))
-	tcpAt, localAt := 0, 0
+	tcpAt := 0
 	for _, e := range entries {
 		if locallisten.IsLocal(e) {
-			stateListen = append(stateListen, localEntries[localAt])
-			localAt++
+			stateListen = append(stateListen, e)
 			continue
 		}
 		stateListen = append(stateListen, resolvedTCP[tcpAt])

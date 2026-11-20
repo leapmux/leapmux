@@ -809,7 +809,7 @@ describe('platformBridge tunnel operations', () => {
     ])
     expect(calls).toContainEqual([
       'delete_tunnel',
-      { tunnelId: 'tunnel', channelEpoch: 'successor-epoch' },
+      { tunnelId: 'tunnel', channelEpoch: 'successor-epoch', expectedUserId: 'outgoing' },
     ])
     expect(resets).toBe(2)
   })
@@ -849,7 +849,7 @@ describe('platformBridge tunnel operations', () => {
       ],
       [
         'delete_tunnel',
-        { tunnelId: 'tunnel', channelEpoch: 'outgoing-epoch' },
+        { tunnelId: 'tunnel', channelEpoch: 'outgoing-epoch', expectedUserId: 'successor' },
       ],
     ])
   })
@@ -1109,17 +1109,22 @@ describe('platformBridge tunnel operations', () => {
     expect(invocations).toEqual(['list_tunnels'])
   })
 
-  it('skips an ID already absent from the scoped native list', async () => {
+  it('replays deletion natively and derives bulk targets from the scoped list', async () => {
     const invocations: string[] = []
-    mockIPC((cmd) => {
+    const args: unknown[] = []
+    mockIPC((cmd, value) => {
       invocations.push(cmd)
+      args.push(value)
       return { ...list, tunnels: [] }
     })
     await platformBridge.deleteTunnel('removed', scope)
-    await expect(platformBridge.deleteTunnels(['removed'], scope)).resolves.toEqual([
-      { status: 'fulfilled', value: undefined },
-    ])
-    expect(invocations).toEqual(['list_tunnels', 'list_tunnels'])
+    await expect(platformBridge.deleteTunnels('w1', scope)).resolves.toEqual([])
+    expect(invocations).toEqual(['list_tunnels', 'delete_tunnel', 'list_tunnels'])
+    expect(args[1]).toEqual({
+      tunnelId: 'removed',
+      channelEpoch: list.channelEpoch,
+      expectedUserId: scope.userId,
+    })
   })
 
   it('keeps browser reset and list free of native invocations', async () => {

@@ -73,7 +73,7 @@ func TestServer_EphemeralTCPPortAllowsTheBrowserPasskeyOrigin(t *testing.T) {
 // Two identical port-zero requests bind two sockets, and each occurrence must
 // keep the port its own listener resolved to. The first assigned port is the
 // primary. A report keyed by the raw request string overwrote the first
-// resolution with the second and named that port twice.
+// resolution with the second and reported that port twice.
 func TestServer_StateFileKeepsARepeatEphemeralRequestApart(t *testing.T) {
 	srv := startTestServer(t, &config.Config{Listen: []string{"127.0.0.1:0", "127.0.0.1:0"}})
 

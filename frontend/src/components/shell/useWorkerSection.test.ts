@@ -142,7 +142,7 @@ describe('useWorkerSection', () => {
   })
 
   // The tunnel list is the sidecar's, and it answers only the rows one
-  // identity owns — so the listing names that identity, and it is read as
+  // identity owns — so the listing specifies that identity, and it is read as
   // soon as the identity is known.
   it('lists the tunnels for the identity', async () => {
     await createRoot(async (dispose) => {

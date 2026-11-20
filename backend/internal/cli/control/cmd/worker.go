@@ -12,7 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
-// pinOpTimeout bounds pin-store file transactions (list, show, remove).
+// pinOpTimeout limits pin-store file transactions (list, show, remove).
 const pinOpTimeout = 10 * time.Second
 
 // RunWorkerGet prints metadata for a single worker. The resolver

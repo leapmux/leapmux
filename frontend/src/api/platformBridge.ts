@@ -23,6 +23,7 @@ import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
 import { isMac } from '~/lib/shortcuts/platform'
+import { currentWorkerTrustScope, setWorkerTrustScopeReader } from '~/lib/workerTrustScope'
 
 export type PlatformMode = 'web' | 'tauri-desktop-solo' | 'tauri-desktop-distributed' | 'tauri-mobile-distributed'
 
@@ -1026,23 +1027,20 @@ interface ScopedTunnelReads {
   channelEpoch: string | undefined
 }
 
-let getTunnelTrustScope: (() => WorkerTrustScope) | undefined
 let scopedTunnelReads: ScopedTunnelReads | undefined
 let pendingTunnelReset: TunnelReset | undefined
 
 function setTunnelTrustScope(readScope: () => WorkerTrustScope): () => void {
-  getTunnelTrustScope = readScope
+  const dispose = setWorkerTrustScopeReader(readScope)
   return () => {
-    if (getTunnelTrustScope === readScope) {
-      getTunnelTrustScope = undefined
-      scopedTunnelReads = undefined
-    }
+    dispose()
+    scopedTunnelReads = undefined
   }
 }
 
 function requireTunnelAccount(scope: WorkerTrustScope): string {
   scope.signal.throwIfAborted()
-  if (!scope.userId || scope !== getTunnelTrustScope?.())
+  if (!scope.userId || scope !== currentWorkerTrustScope())
     throw new Error('The account changed. Open the tunnel action again.')
   return scope.userId
 }
@@ -1334,20 +1332,24 @@ export const platformBridge = {
     })
   },
   deleteTunnel(tunnelId: string, scope: WorkerTrustScope): Promise<void> {
-    return mutateTunnels(scope, async (invoke, { tunnels, channelEpoch }) => {
-      if (tunnels.some(tunnel => tunnel.id === tunnelId))
-        await invokeTunnel<void>(invoke, 'delete_tunnel', { tunnelId, channelEpoch })
+    return mutateTunnels(scope, async (invoke, { channelEpoch }) => {
+      await invokeTunnel<void>(invoke, 'delete_tunnel', {
+        tunnelId,
+        channelEpoch,
+        expectedUserId: requireTunnelAccount(scope),
+      })
     })
   },
-  deleteTunnels(tunnelIds: string[], scope: WorkerTrustScope): Promise<PromiseSettledResult<void>[]> {
+  deleteTunnels(workerId: string, scope: WorkerTrustScope): Promise<PromiseSettledResult<void>[]> {
     return mutateTunnels(scope, (invoke, { tunnels, channelEpoch }) => {
-      // A previous attempt can have removed a row before its reply or the
-      // reconciliation arrived. Its absence satisfies the requested deletion.
-      const ownedIds = new Set(tunnels.map(tunnel => tunnel.id))
-      return Promise.allSettled(tunnelIds.map(async (tunnelId) => {
-        if (ownedIds.has(tunnelId))
-          await invokeTunnel<void>(invoke, 'delete_tunnel', { tunnelId, channelEpoch })
-      }))
+      const expectedUserId = requireTunnelAccount(scope)
+      return Promise.allSettled(tunnels
+        .filter(tunnel => tunnel.workerId === workerId)
+        .map(tunnel => invokeTunnel<void>(invoke, 'delete_tunnel', {
+          tunnelId: tunnel.id,
+          channelEpoch,
+          expectedUserId,
+        })))
     })
   },
   async listTunnels(scope: WorkerTrustScope): Promise<ListTunnelsResult> {

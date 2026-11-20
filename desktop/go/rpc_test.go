@@ -173,7 +173,7 @@ func TestHandleResetTunnelsAcksOK(t *testing.T) {
 		"the dispatch arm must actually route to App.ResetTunnels")
 	successor := app.tunnels.currentEpoch()
 
-	// A replay naming the epoch the reset above retired is a REPLAY: it acks OK
+	// A replay that specifies the epoch the reset above retired is a REPLAY: it acks OK
 	// without touching the successor state.
 	session.handleRequest(context.Background(), &desktoppb.Request{
 		Id: 2,
@@ -331,7 +331,7 @@ func TestHandleListTunnelsReportsStoppedKeyMismatchRows(t *testing.T) {
 	assert.Equal(t, "able-arch-bird-clay", tunnels[0].GetKeyMismatch().GetExpectedFingerprint())
 	assert.Equal(t, "fern-golf-harp-iris", tunnels[0].GetKeyMismatch().GetPresentedFingerprint())
 
-	// A listing that names no user is refused rather than answered for one owner.
+	// A listing that specifies no user is refused rather than answered for one owner.
 	output.Reset()
 	session.handleRequest(context.Background(), &desktoppb.Request{
 		Id:     10,

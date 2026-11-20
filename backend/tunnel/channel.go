@@ -34,6 +34,10 @@ import (
 // same budget as its REKEY_TIMEOUT_MS; both are generated from contracts/wire.json.
 const sessionVerifyTimeout = contracts.SessionVerifyTimeout
 
+// The channel retires if a frame cannot finish writing within this limit.
+// The budget belongs to the transport and also applies to rekey frames.
+const channelFrameWriteTimeout = 10 * time.Second
+
 // Channel manages a single E2EE channel from the desktop app to a Worker
 // via the Hub's WebSocket relay.
 //
@@ -1037,7 +1041,9 @@ func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *
 			if err != nil {
 				return fmt.Errorf("encrypt inner message: %w", err)
 			}
-			return channelwire.WriteChannelMessage(ch.ctx, ch.ws, frame)
+			writeCtx, cancelWrite := context.WithTimeout(ch.ctx, channelFrameWriteTimeout)
+			defer cancelWrite()
+			return channelwire.WriteChannelMessage(writeCtx, ch.ws, frame)
 		}); err != nil {
 		// An encrypt failure (nonce exhaustion) abandons this message BETWEEN
 		// chunks and a write failure means the transport is broken: either way

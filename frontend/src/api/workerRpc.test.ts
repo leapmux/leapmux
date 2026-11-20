@@ -666,6 +666,10 @@ describe('resolveTunnelTrust', () => {
   it.each([
     { pin: null, removalRevision: 1 },
     {
+      pin: { publicKeyHex: 'committed', firstSeen: 3000 },
+      removalRevision: 1,
+    },
+    {
       pin: { publicKeyHex: 'replacement', firstSeen: 1000 },
       removalRevision: 0,
     },
@@ -674,15 +678,16 @@ describe('resolveTunnelTrust', () => {
     const scope = { userId: 'account', generation: 2, signal: new AbortController().signal }
     const dispose = setExpectedUserId(() => scope)
     try {
-      seams.reviewOpen.mockResolvedValueOnce({ publicKeyHex: 'committed', scope })
+      seams.reviewOpen.mockResolvedValueOnce({ publicKeyHex: 'committed', scope, pinSnapshot: savedPin })
       const approval = await refreshWorkerTrustForTunnel(workerId, scope)
       expect(approval).toEqual({
         workerId,
         expectedUserId: 'account',
         identityGeneration: 2,
         publicKeyHex: 'committed',
+        pinSnapshot: savedPin,
       })
-      expect(seams.reviewOpen).toHaveBeenCalledExactlyOnceWith(workerId)
+      expect(seams.reviewOpen).toHaveBeenCalledExactlyOnceWith(workerId, undefined)
       seams.readPin.mockResolvedValueOnce(savedPin).mockResolvedValueOnce(snapshot)
       await expect(resolveTunnelTrust(workerId, scope, approval)).resolves.toBe('committed')
       await expect(resolveTunnelTrust(workerId, scope, approval)).rejects.toThrow('Verify the Worker key again')

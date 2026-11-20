@@ -11,7 +11,7 @@ import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import type { WatchEventsRequestSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from '~/lib/channel'
-import type { KeyPinConfirmFn } from '~/lib/keyPinStore'
+import type { KeyPinConfirmFn, WorkerKeyPinSnapshot } from '~/lib/keyPinStore'
 import { Code, createClient } from '@connectrpc/connect'
 import { isTauriApp } from '~/api/platformBridge'
 import { bufferStreamHandle } from '~/api/streamBuffer'
@@ -35,6 +35,7 @@ import { readWorkerKeyPin } from '~/lib/keyPinStore'
 import { procedureOf } from '~/lib/rpcProcedure'
 import { sleep } from '~/lib/sleep'
 import { workerKeyBundleFromWire } from '~/lib/workerKeyBundle'
+import { currentWorkerTrustScope, setWorkerTrustScopeReader } from '~/lib/workerTrustScope'
 
 // ---- Browser-specific channel transport ----
 
@@ -51,20 +52,13 @@ export function setConfirmKeyPin(fn: KeyPinConfirmFn): () => void {
   return keyPinStore.setConfirmKeyPin(fn)
 }
 
-let expectedUserScope: (() => WorkerTrustScope) | undefined
-
-/** Register the AppShell accessor for the page's adopted identity. */
+/** Register a Worker trust scope reader. Tests use this without an AuthProvider. */
 export function setExpectedUserId(getScope: () => WorkerTrustScope): () => void {
-  const read = () => getScope()
-  expectedUserScope = read
-  return () => {
-    if (expectedUserScope === read)
-      expectedUserScope = undefined
-  }
+  return setWorkerTrustScopeReader(getScope)
 }
 
 export function getCurrentWorkerTrustScope(): WorkerTrustScope | undefined {
-  return expectedUserScope?.()
+  return currentWorkerTrustScope()
 }
 
 class BrowserChannelTransport implements ChannelTransport {
@@ -121,6 +115,7 @@ export interface TunnelKeyApproval {
   expectedUserId: string
   identityGeneration: number
   publicKeyHex: string
+  pinSnapshot: WorkerKeyPinSnapshot
 }
 
 export class TunnelKeyApprovalExpiredError extends Error {
@@ -145,11 +140,14 @@ export async function resolveTunnelTrust(workerId: string, scope: WorkerTrustSco
   }
 
   const storageScope = { accountId: expectedUserId, signal: scope.signal }
-  const { pin } = await readWorkerKeyPin(workerId, storageScope)
+  const { pin, removalRevision } = await readWorkerKeyPin(workerId, storageScope)
   requireTunnelTrustAccount(scope)
   if (approval) {
-    if (pin?.publicKeyHex !== approval.publicKeyHex)
+    if (removalRevision !== approval.pinSnapshot.removalRevision
+      || pin?.publicKeyHex !== approval.pinSnapshot.pin?.publicKeyHex
+      || pin?.firstSeen !== approval.pinSnapshot.pin?.firstSeen) {
       throw new TunnelKeyApprovalExpiredError()
+    }
     return approval.publicKeyHex
   }
   if (pin?.publicKeyHex)
@@ -165,9 +163,9 @@ export async function resolveTunnelTrust(workerId: string, scope: WorkerTrustSco
   return verified.pin.publicKeyHex
 }
 
-export async function refreshWorkerTrustForTunnel(workerId: string, scope: WorkerTrustScope): Promise<TunnelKeyApproval> {
+export async function refreshWorkerTrustForTunnel(workerId: string, scope: WorkerTrustScope, operationSignal?: AbortSignal): Promise<TunnelKeyApproval> {
   const expectedUserId = requireTunnelTrustAccount(scope)
-  const review = await channelManager.openChannelForKeyReview(workerId)
+  const review = await channelManager.openChannelForKeyReview(workerId, operationSignal)
   requireTunnelTrustAccount(scope)
   if (review.scope !== scope)
     throw new TunnelKeyApprovalExpiredError()
@@ -176,6 +174,7 @@ export async function refreshWorkerTrustForTunnel(workerId: string, scope: Worke
     expectedUserId,
     identityGeneration: scope.generation,
     publicKeyHex: review.publicKeyHex,
+    pinSnapshot: review.pinSnapshot,
   }
 }
 
@@ -236,12 +235,22 @@ async function callWorker<I extends DescMessage, O extends DescMessage>(
   opts?: WorkerCallOptions,
 ): Promise<MessageShape<O>> {
   const procedure = procedureOf(method)
-  const scope = channelManager.captureOpenScope()
+  const initialScope = channelManager.captureOpenScope()
+  const identity = initialScope.identity
+  const accountId = initialScope.accountId
+  const identitySignal = identity?.signal ?? initialScope.signal
   const retrySignal = opts?.signal === undefined
-    ? scope.signal
-    : AbortSignal.any([opts.signal, scope.signal])
+    ? identitySignal
+    : AbortSignal.any([opts.signal, identitySignal])
   for (let attempt = 0; ; attempt++) {
-    scope.assertCurrent()
+    const scope = channelManager.captureOpenScope()
+    identitySignal.throwIfAborted()
+    if (scope.accountId !== accountId
+      || scope.identity?.signal !== identity?.signal
+      || scope.identity?.userId !== identity?.userId
+      || scope.identity?.generation !== identity?.generation) {
+      throw new ChannelError('client', 'The account changed during the Worker request.')
+    }
     emitDevEvent('leapmux:rpc-send', () => ({
       method: procedure,
       at: performance.now(),

@@ -1,10 +1,12 @@
 package tofupins
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -14,22 +16,63 @@ type pinMap map[string]*Entry
 
 // UnmarshalJSON validates every pin before exposing any of them to the store.
 func (pins *pinMap) UnmarshalJSON(data []byte) error {
-	var rawPins map[string]json.RawMessage
-	if err := json.Unmarshal(data, &rawPins); err != nil {
-		return err
-	}
-	if rawPins == nil {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		*pins = nil
 		return nil
 	}
-
-	decoded := make(pinMap, len(rawPins))
-	for workerID, rawPin := range rawPins {
-		pin, err := decodePin(workerID, rawPin)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	start, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if start != json.Delim('{') {
+		return errors.New("pins must be an object")
+	}
+	type rawPinEntry struct {
+		workerID string
+		pin      json.RawMessage
+	}
+	seen := make(map[string]struct{})
+	rawPins := make([]rawPinEntry, 0)
+	for decoder.More() {
+		key, err := decoder.Token()
 		if err != nil {
-			return fmt.Errorf("pin for worker %q: %w", workerID, err)
+			return err
 		}
-		decoded[workerID] = pin
+		workerID, ok := key.(string)
+		if !ok {
+			return errors.New("pin worker id must be a string")
+		}
+		if _, exists := seen[workerID]; exists {
+			return fmt.Errorf("duplicate pin for worker %q", workerID)
+		}
+		seen[workerID] = struct{}{}
+		var rawPin json.RawMessage
+		if err := decoder.Decode(&rawPin); err != nil {
+			return err
+		}
+		rawPins = append(rawPins, rawPinEntry{workerID: workerID, pin: rawPin})
+	}
+	decoded := make(pinMap, len(rawPins))
+	for _, raw := range rawPins {
+		pin, err := decodePin(raw.workerID, raw.pin)
+		if err != nil {
+			return fmt.Errorf("pin for worker %q: %w", raw.workerID, err)
+		}
+		decoded[raw.workerID] = pin
+	}
+	end, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if end != json.Delim('}') {
+		return errors.New("pins object is not closed")
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected data after pins object")
+		}
+		return err
 	}
 	*pins = decoded
 	return nil

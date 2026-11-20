@@ -11,7 +11,7 @@ import type { ChannelOpenMode, ChannelOpenScope, ChannelPool, PooledChannel } fr
 import type { ChannelRelay } from './channelRelay'
 import type { RpcChannel } from './channelRpc'
 import type { FinishHandshakeParams, SessionHandshake } from './channelSessionClient'
-import type { KeyPinStore, ResolvedKeyPin } from './keyPinStore'
+import type { KeyPinStore, ResolvedKeyPin, WorkerKeyPinSnapshot } from './keyPinStore'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contracts/wire'
@@ -49,6 +49,7 @@ export interface ChannelOpenSession {
  */
 export interface OpeningChannel extends RpcChannel, PooledChannel {
   publicKeyHex: string
+  committedPin: WorkerKeyPinSnapshot | undefined
   retirement: AbortController
   closeOnHub: () => Promise<void>
   /**
@@ -135,6 +136,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
     try {
       scope.assertCurrent()
       const result = await this.deps.transport.openChannel(workerId, handshake.message1)
+      const channelId = result.channelId
 
       // From here on the Hub has REGISTERED a channel and the Worker holds a live Noise
       // session, so every failure exit must tell the Hub to drop it. Without that, a
@@ -147,7 +149,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       let closing: Promise<void> | undefined
       const closeOnHub = () => {
         closing ??= Promise.resolve()
-          .then(() => this.deps.transport.closeChannel(result.channelId))
+          .then(() => this.deps.transport.closeChannel(channelId))
           .catch(() => {
             // The Hub also expires channels with the credential that opened them.
           })
@@ -214,6 +216,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
           retirement,
           closeOnHub,
           publicKeyHex: pin.publicKeyHex,
+          committedPin: undefined,
           maxMessageSize: limits.payload,
           maxReassembledMessageSize: limits.reassembled,
           pendingRequests: new Map(),
@@ -235,7 +238,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         // 5. Prove the session and commit its pin before offering it to callers.
         await this.deps.verifySession(opening)
         assertOpening()
-        await pin.commit()
+        opening.committedPin = await pin.commit()
         assertOpening()
         opening.state = 'verified'
       }

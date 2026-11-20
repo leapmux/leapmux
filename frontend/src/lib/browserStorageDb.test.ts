@@ -839,7 +839,7 @@ describe('cross-tab changes', () => {
 
   // The pin rows carry key material, so their values never travel on the
   // channel: a committed change publishes a key-only hint and the receiver
-  // re-reads. The hint names the stored row and nothing else.
+  // re-reads. The hint identifies the stored row and nothing else.
   it('broadcasts key-only invalidation hints after both a pin write and a removal', async () => {
     const { seen, drain, stop } = recordPublished()
 
@@ -1142,7 +1142,10 @@ describe('the pin gateway', () => {
     try {
       await expect(updateKeyPinState({ ...firstContact, expectRevision: revision.v }, { signal: controller.signal }))
         .resolves
-        .toBeUndefined()
+        .toEqual({
+          pins: { [WORKER]: firstContact.pin },
+          removalRevision: revision.v,
+        })
       expect(retired).toHaveBeenCalledOnce()
       expect(await readKeyPinState()).toEqual({
         pins: { [WORKER]: firstContact.pin },
@@ -1636,5 +1639,28 @@ describe('the pin gateway', () => {
       { k: mapKey, invalidate: true },
       { k: mapKey, invalidate: true },
     ])
+  })
+
+  it('keeps a committed pin update successful when one observer throws', async () => {
+    const refusal = new Error('observer failed')
+    const stopFailure = onKeyPinsInvalidated(() => {
+      throw refusal
+    })
+    const seen: string[] = []
+    const stopHealthy = onKeyPinsInvalidated(change => seen.push(change.k))
+    try {
+      await expect(updateKeyPinState(firstContact)).resolves.toMatchObject({
+        pins: { [WORKER]: firstContact.pin },
+        removalRevision: 0,
+      })
+      expect(seen).toEqual([
+        storedKeyFor(KEY_KEY_PINS),
+      ])
+      expect((await readKeyPinState()).pins[WORKER]).toEqual(firstContact.pin)
+    }
+    finally {
+      stopHealthy()
+      stopFailure()
+    }
   })
 })

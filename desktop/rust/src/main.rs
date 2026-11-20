@@ -1755,10 +1755,15 @@ fn create_tunnel_request(config: TunnelConfigInput) -> proto::request::Method {
     })
 }
 
-fn delete_tunnel_request(tunnel_id: String, channel_epoch: String) -> proto::request::Method {
+fn delete_tunnel_request(
+    tunnel_id: String,
+    channel_epoch: String,
+    expected_user_id: String,
+) -> proto::request::Method {
     proto::request::Method::DeleteTunnel(proto::DeleteTunnelRequest {
         tunnel_id,
         channel_epoch,
+        expected_user_id,
     })
 }
 
@@ -1809,10 +1814,15 @@ async fn delete_tunnel(
     shell: State<'_, Arc<DesktopShell>>,
     tunnel_id: String,
     channel_epoch: String,
+    expected_user_id: String,
 ) -> Result<(), String> {
     check_response(
         shell
-            .send_request_async(delete_tunnel_request(tunnel_id, channel_epoch))
+            .send_request_async(delete_tunnel_request(
+                tunnel_id,
+                channel_epoch,
+                expected_user_id,
+            ))
             .await?,
     )?;
     Ok(())
@@ -3334,10 +3344,11 @@ mod tests {
             })
         );
         assert_eq!(
-            delete_tunnel_request("tunnel-a".into(), "epoch-a".into()),
+            delete_tunnel_request("tunnel-a".into(), "epoch-a".into(), "user-a".into(),),
             proto::request::Method::DeleteTunnel(proto::DeleteTunnelRequest {
                 tunnel_id: "tunnel-a".into(),
                 channel_epoch: "epoch-a".into(),
+                expected_user_id: "user-a".into(),
             })
         );
         assert_eq!(

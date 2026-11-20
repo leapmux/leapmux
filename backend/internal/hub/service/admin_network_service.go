@@ -53,47 +53,17 @@ type ListenReporter interface {
 // reporter applies when nothing is bound, spelled a second time. Stating it
 // once as a default keeps the two from drifting.
 type ConfiguredListen struct {
-	// Listen is the primary TCP address --listen gave, or "" for a hub that
-	// binds no TCP address.
-	Listen string
-	// Entries is the configured bind set --listen named, in bind order,
-	// exactly as the launcher holds it. The TCP half is derived from it; see
-	// ConfiguredTCPListenAddresses.
-	Entries []string
+	primary string
+	tcp     []string
 }
 
 func (c ConfiguredListen) Bound() []listenset.Bound  { return nil }
-func (c ConfiguredListen) PrimaryListenAddr() string { return c.Listen }
-
-// ConfiguredTCPListenAddresses is the TCP merge input of a reporter with no
-// live sockets: every TCP address the bind set names, in bind order. Nothing
-// is bound, so no port has resolved; the addresses are the configured
-// requests themselves.
-//
-// It reuses the split and launcher defaults of the bind path: the same
-// classification config.SplitListen applies, and the launcher's TCP address
-// when the set names none at all. A bind set of local URLs alone names no TCP
-// address and reports none.
-func (c ConfiguredListen) ConfiguredTCPListenAddresses() []string {
-	tcp, _ := config.SplitListen(c.Entries)
-	if len(tcp) > 0 {
-		return append([]string(nil), tcp...)
-	}
-	if len(c.Entries) > 0 {
-		return nil
-	}
-	// An empty set takes the launcher's TCP address, which is the primary
-	// this reporter already carries.
-	if c.Listen == "" {
-		return nil
-	}
-	return []string{c.Listen}
-}
+func (c ConfiguredListen) PrimaryListenAddr() string { return c.primary }
 
 // BaseTCPAddresses answers the merge input. With no live sockets bound, that
 // is the configured set; see ConfiguredTCPListenAddresses.
 func (c ConfiguredListen) BaseTCPAddresses() []string {
-	return c.ConfiguredTCPListenAddresses()
+	return append([]string(nil), c.tcp...)
 }
 
 // LocalIPCAddresses is empty: local endpoints are startup facts -- which
@@ -108,8 +78,8 @@ func configuredListenFrom(cfg *config.Config) ConfiguredListen {
 		return ConfiguredListen{}
 	}
 	return ConfiguredListen{
-		Listen:  cfg.PrimaryTCPListen(),
-		Entries: append([]string(nil), cfg.Listen...),
+		primary: cfg.PrimaryTCPListen(),
+		tcp:     cfg.ConfiguredTCPListenAddresses(),
 	}
 }
 

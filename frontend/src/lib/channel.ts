@@ -37,6 +37,7 @@ import type { ChannelOpenMode, ChannelOpenScope } from './channelPool'
 import type { ChannelSocket } from './channelRelay'
 import type { StreamAction } from './channelRpc'
 import type { SessionWorkerPort } from './channelSessionClient'
+import type { WorkerKeyPinSnapshot } from './keyPinStore'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import type { FatalCloseInfo } from './wsCloseCodes'
 import type { WorkerTrustScope } from '~/context/AuthContext'
@@ -204,6 +205,7 @@ export class ChannelManager {
   private rpcTimeoutFn: () => number
   private workerTrustScope: () => WorkerTrustScope | undefined
   private lastOpenScope: ChannelOpenScope | undefined
+  private recoverablePoolGeneration: number | undefined
   private keyPins: KeyPinStore
 
   private stateListeners = new Set<() => void>()
@@ -410,13 +412,42 @@ export class ChannelManager {
   }
 
   /** Verify the current announcement through a fresh open for a user-initiated review. */
-  async openChannelForKeyReview(workerId: string): Promise<{ publicKeyHex: string, scope: WorkerTrustScope }> {
-    const scope = this.captureOpenScope()
-    const identity = scope.identity
+  async openChannelForKeyReview(workerId: string, operationSignal?: AbortSignal): Promise<{ publicKeyHex: string, scope: WorkerTrustScope, pinSnapshot: WorkerKeyPinSnapshot }> {
+    const captured = this.captureOpenScope()
+    const identity = captured.identity
     if (identity === undefined || identity.userId === null)
       throw new ChannelError('client', 'Sign in to review the Worker key.')
+    const scope: ChannelOpenScope = operationSignal === undefined
+      ? captured
+      : {
+          ...captured,
+
+          signal: AbortSignal.any([captured.signal, operationSignal]),
+
+          assertCurrent: () => {
+            captured.assertCurrent()
+            operationSignal.throwIfAborted()
+          },
+        }
     const channelId = await this.openScopedChannel(workerId, scope, 'review')
-    return { publicKeyHex: this.verifiedChannel(channelId, scope).publicKeyHex, scope: identity }
+    const channel = this.verifiedChannel(channelId, scope)
+    if (channel.committedPin === undefined)
+      throw new ChannelError('client', 'The reviewed Worker key has no committed pin state.')
+    const candidates = [
+      ...this.pool.entries(),
+    ]
+    for (const [candidateId, candidate] of candidates) {
+      if (candidateId !== channelId
+        && candidate.workerId === workerId
+        && candidate.userId === channel.userId) {
+        void this.closeChannel(candidateId)
+      }
+    }
+    return {
+      publicKeyHex: channel.publicKeyHex,
+      scope: identity,
+      pinSnapshot: channel.committedPin,
+    }
   }
 
   /** Capture the identity and pool lifetime before a call can wait or retry. */
@@ -640,12 +671,28 @@ export class ChannelManager {
 
   /** Get an open channel for a worker, or open a new one. */
   async getOrOpenChannel(workerId: string, scope = this.captureOpenScope()): Promise<string> {
-    const channelId = await this.pool.getOrOpenChannel(workerId, scope, {
-      openChannel: id => this.openChannelUncached(id, scope, 'ordinary'),
-      closeChannel: id => this.closeChannel(id),
-      ensureReady: ch => this.sessionClient.ensureReady(ch.channelId),
-    })
-    return this.verifiedChannel(channelId, scope).channelId
+    for (;;) {
+      try {
+        const channelId = await this.pool.getOrOpenChannel(workerId, scope, {
+          openChannel: id => this.openChannelUncached(id, scope, 'ordinary'),
+          closeChannel: id => this.closeChannel(id),
+          ensureReady: ch => this.sessionClient.ensureReady(ch.channelId),
+        })
+        return this.verifiedChannel(channelId, scope).channelId
+      }
+      catch (err) {
+        if (!this.canRecoverTransportScope(scope))
+          throw err
+        scope = this.captureOpenScope()
+      }
+    }
+  }
+
+  private canRecoverTransportScope(scope: ChannelOpenScope): boolean {
+    return scope.poolGeneration === this.recoverablePoolGeneration
+      && scope.poolGeneration !== this.pool.closeGeneration
+      && sameWorkerTrustScope(scope.identity, this.workerTrustScope())
+      && !scope.identity?.signal.aborted
   }
 
   /** Check if a channel is open. */
@@ -678,6 +725,7 @@ export class ChannelManager {
   closeAll(): void {
     // First, invalidate every in-flight open (see closeGeneration): the
     // snapshot below cannot see a channel that has not registered yet.
+    this.recoverablePoolGeneration = undefined
     this.pool.bumpCloseGeneration()
     // Snapshot the ids before iterating: closeChannel deletes from the pool,
     // and a listener it notifies could in principle open a channel mid-loop. ES
@@ -712,7 +760,6 @@ export class ChannelManager {
       throw abortError(opts.signal, procedure)
     }
     const channelId = await this.getOrOpenChannel(workerId, scope)
-    this.verifiedChannel(channelId, scope)
     // Re-check after the (potentially async) channel-open: a long
     // handshake gives the caller plenty of time to abort. Skipping
     // this check would still get caught by call()'s pre-check, but
@@ -730,9 +777,10 @@ export class ChannelManager {
     const payload = toBinary(reqSchema, msg)
     let responsePayload
     try {
+      const accountSignal = scope.identity?.signal ?? scope.signal
       const signal = opts?.signal === undefined
-        ? scope.signal
-        : AbortSignal.any([opts.signal, scope.signal])
+        ? accountSignal
+        : AbortSignal.any([opts.signal, accountSignal])
       responsePayload = await this.call(channelId, procedure, payload, opts?.timeoutMs, signal)
     }
     catch (err) {
@@ -802,6 +850,7 @@ export class ChannelManager {
    * handshakes lived in that worker. The next open starts a fresh worker.
    */
   private handleWorkerLost(err: ChannelError): void {
+    this.recoverablePoolGeneration = this.pool.closeGeneration
     this.pool.bumpCloseGeneration(err)
     for (const channelId of [
       ...this.pool.keys(),
@@ -863,8 +912,10 @@ export class ChannelManager {
       : new ChannelError('transport', 'channel disconnected')
     // A close with no successor dial retires the generation before listeners
     // can start another open. A successor dial may still serve unregistered opens.
-    if (!successorDialing)
+    if (!successorDialing) {
+      this.recoverablePoolGeneration = undefined
       this.pool.bumpCloseGeneration(reason)
+    }
     for (const channelId of [
       ...this.pool.keys(),
     ]) {

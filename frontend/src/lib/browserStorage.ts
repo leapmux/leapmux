@@ -1831,9 +1831,9 @@ export async function readKeyPinState({ accountId = storageAccount, signal }: Ke
 export async function updateKeyPinState(
   change: KeyPinStateChange,
   { accountId = storageAccount, signal }: KeyPinStorageScope = {},
-): Promise<void> {
+): Promise<KeyPinState> {
   const keys = resolvePinKeys(accountId)
-  const hint = await updateKvTransaction(async (tx) => {
+  const { state, hint } = await updateKvTransaction(async (tx) => {
     const { state, expiredPins, now } = await loadKeyPinState(tx, keys, signal)
     const removalRevision = nextRemovalRevision(state.removalRevision, change)
     const map = applyKeyPinMap(state.pins, change)
@@ -1850,12 +1850,23 @@ export async function updateKeyPinState(
       })
     }
     const changed = map.kind !== 'unchanged' || bumpRevision || expiredPins
-    return changed
-      ? { k: keys.pins, invalidate: true as const }
-      : undefined
+    return {
+      state: {
+        pins: map.kind === 'write'
+          ? map.pins
+          : map.kind === 'delete'
+            ? {}
+            : state.pins,
+        removalRevision,
+      },
+      hint: changed
+        ? { k: keys.pins, invalidate: true as const }
+        : undefined,
+    }
   }, signal)
   if (hint !== undefined)
     commitPinInvalidations([hint])
+  return state
 }
 
 /** What the transaction does to the pin map row. */
@@ -1893,13 +1904,7 @@ function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMa
   }
   if (!isWorkerKeyPinRecord(change.pin))
     throw new Error('Cannot store an invalid pin record.')
-  if (change.expectPin === null) {
-    if (current === null) {
-      return {
-        kind: 'write',
-        pins: { ...pins, [change.workerId]: change.pin },
-      }
-    }
+  if (change.expectPin === null && current !== null) {
     if (current.publicKeyHex === change.pin.publicKeyHex) {
       // A concurrent first contact installed the same keys. Its `firstSeen`
       // stands, and this commit is the idempotent one.
@@ -1907,7 +1912,7 @@ function applyKeyPinMap(pins: WorkerKeyPinMap, change: KeyPinStateChange): PinMa
     }
     throw new Error('A different key was already recorded for this worker; the update is refused.')
   }
-  if (current === null || !sameKeyPinRecord(current, change.expectPin)) {
+  if (change.expectPin !== null && (current === null || !sameKeyPinRecord(current, change.expectPin))) {
     throw new Error('The stored key pin changed since the decision was taken; the update is refused.')
   }
   return {
@@ -1935,7 +1940,12 @@ function nextRemovalRevision(revision: number, change: KeyPinStateChange): numbe
 function commitPinInvalidations(changes: readonly KeyInvalidationChange[]): void {
   if (changes.length === 0)
     return
-  publishKvInvalidations(changes.map(change => change.k))
+  try {
+    publishKvInvalidations(changes.map(change => change.k))
+  }
+  catch (err) {
+    log.warn('failed to broadcast committed key pin invalidations', err)
+  }
   deliverPinInvalidations(changes)
 }
 
@@ -2158,7 +2168,7 @@ const changeListeners = new Set<(storedKeys: ReadonlySet<string> | null) => void
 /**
  * Subscribers to pin-only invalidation hints.
  *
- * A pin hint says "a pin row changed; re-read it" and names the stored row --
+ * A pin hint says "a pin row changed; re-read it" and identifies the stored row --
  * it carries no pin bytes, so key material never reaches the BroadcastChannel
  * every tab receives. Both this tab's own commits and another tab's broadcast
  * arrive here through the same shape.
@@ -2207,8 +2217,14 @@ function deliverPinInvalidations(changes: readonly KeyInvalidationChange[]): voi
   for (const change of changes) {
     if (!isActiveAccountPinKey(change.k))
       continue
-    for (const listener of pinInvalidationListeners)
-      listener(change)
+    for (const listener of pinInvalidationListeners) {
+      try {
+        listener(change)
+      }
+      catch (err) {
+        log.warn('key pin invalidation listener failed', err)
+      }
+    }
   }
 }
 
@@ -2255,9 +2271,8 @@ onKvBroadcast((changes) => {
   const pinHints: KeyInvalidationChange[] = []
   for (const change of changes) {
     // PIN ROWS never enter the mirror and their values never travel on the
-    // channel: whatever variant names one, the meaning here is "re-read". A
-    // value or removal variant can only come from an older build's mirror-era
-    // write, and re-reading is the correct answer to that too.
+    // channel: every variant that identifies one means "re-read", because the
+    // pin gateway never accepts a value from this notification path.
     if (isPinStoredKey(change.k)) {
       pinHints.push({ k: change.k, invalidate: true })
       continue

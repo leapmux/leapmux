@@ -624,7 +624,11 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 		})
 
 	case *desktoppb.Request_DeleteTunnel:
-		s.writeErrOrOK(id, s.app.DeleteTunnel(m.DeleteTunnel.TunnelId, m.DeleteTunnel.ChannelEpoch))
+		s.writeErrOrOK(id, s.app.DeleteTunnel(
+			m.DeleteTunnel.TunnelId,
+			m.DeleteTunnel.ChannelEpoch,
+			m.DeleteTunnel.ExpectedUserId,
+		))
 
 	case *desktoppb.Request_ResetTunnels:
 		s.writeErrOrOK(id, s.app.ResetTunnels(m.ResetTunnels.ChannelEpoch))

@@ -37,7 +37,7 @@ describe('keyPinStore', () => {
     expect(state.pins.w1?.publicKeyHex.length).toBeGreaterThan(0)
   })
 
-  it('matching pin returns a commit that writes nothing but validates', async () => {
+  it('returns a validating no-write commit for a matching pin', async () => {
     const store = new KeyPinStore({
       confirmKeyPin: async () => 'reject',
     })
@@ -53,7 +53,7 @@ describe('keyPinStore', () => {
     expect(await readWorkerKeyPin('w1')).toEqual(before)
   })
 
-  it('a matching commit fails when the observed pin was removed since the decision', async () => {
+  it('fails a matching commit when the observed pin was removed since the decision', async () => {
     const store = new KeyPinStore({
       confirmKeyPin: async () => 'reject',
     })
@@ -65,7 +65,7 @@ describe('keyPinStore', () => {
     expect((await readKeyPinState()).pins).toEqual({})
   })
 
-  it('a first-contact commit fails when a different key was installed since the decision', async () => {
+  it('fails a first-contact commit when a different key was installed since the decision', async () => {
     const store = new KeyPinStore({
       confirmKeyPin: async () => 'accept',
     })
@@ -93,7 +93,7 @@ describe('keyPinStore', () => {
     expect((await readWorkerKeyPin('w1')).pin?.firstSeen).toBe(firstSeen)
   })
 
-  it('a replacement commit fails when the observed pin was replaced in another tab', async () => {
+  it('fails a replacement commit when another tab replaced the observed pin', async () => {
     const confirmKeyPin = vi.fn().mockResolvedValue('accept' as const)
     const store = new KeyPinStore({ confirmKeyPin })
     await (await store.resolve('w1', bundle(1))).commit()

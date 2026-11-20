@@ -22,7 +22,7 @@ export interface SoloServerFixtures {
   soloListenHost: string
   /** A second `-listen` request beside the primary one, for a spec that needs two TCP binds. */
   soloExtraListen: string | undefined
-  /** A solo hub for this test alone. The fixture stops it and removes its data after the test. Its handle carries the resolved ordered endpoints: `listen` for the primary TCP address a browser reaches, and `tcp` / `local` for the full bind set the startup state file names. */
+  /** A solo hub for this test alone. The fixture stops it and removes its data after the test. Its handle carries the resolved ordered endpoints: `listen` for the primary TCP address a browser reaches, and `tcp` / `local` for the full bind set the startup state file lists. */
   soloServer: SoloServerHandle
 }
 

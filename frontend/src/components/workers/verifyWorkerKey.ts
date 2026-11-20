@@ -5,9 +5,9 @@ import { formatErrorMessage } from '~/lib/errors'
 import { KeyPinRejectedError } from '~/lib/keyPinStore'
 
 /** Prove the current Worker announcement after explicit review and return the exact approval. */
-export async function verifyWorkerKey(workerId: string, scope: WorkerTrustScope): Promise<TunnelKeyApproval> {
+export async function verifyWorkerKey(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal): Promise<TunnelKeyApproval> {
   try {
-    return await refreshWorkerTrustForTunnel(workerId, scope)
+    return await refreshWorkerTrustForTunnel(workerId, scope, signal)
   }
   catch (err) {
     if (err instanceof KeyPinRejectedError) {

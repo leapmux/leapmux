@@ -264,8 +264,8 @@ export function decodeWireMessage(buf: ArrayBuffer) {
 /**
  * `decodeWireMessage`, answering null for anything that is not yet a complete
  * framed message. For a waiter that must see a frame the client has not sent
- * yet -- the open-time Ping trails the pin decision's IndexedDB commit, which a
- * session settle cannot observe.
+ * yet -- the pin decision's IndexedDB commit follows the open-time Ping, and a
+ * session settle can observe neither the wire frame nor the later commit.
  */
 function tryDecodeWireMessage(buf: ArrayBuffer | undefined): ReturnType<typeof decodeWireMessage> | null {
   if (buf === undefined)

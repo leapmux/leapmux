@@ -143,8 +143,8 @@ type listenerSet struct {
 // it stands for. The two travel together so the set cannot register an address
 // against the wrong listener.
 type baseBinding struct {
-	ln   net.Listener
-	addr listenset.Addr
+	ln       net.Listener
+	resolved listenset.Addr
 }
 
 // newListenerSet builds the set around the already-bound base listeners.
@@ -167,9 +167,8 @@ func newListenerSet(bound []baseBinding, serveErr chan<- error) *listenerSet {
 	}
 	s.bases = make([]listenset.Addr, 0, len(bound))
 	for _, b := range bound {
-		resolved := resolvePort(b.addr, b.ln)
-		s.bases = append(s.bases, resolved)
-		s.active[resolved.String()] = &boundListener{ln: &ownedListener{Listener: b.ln}, addr: resolved, source: SourceListen}
+		s.bases = append(s.bases, b.resolved)
+		s.active[b.resolved.String()] = &boundListener{ln: &ownedListener{Listener: b.ln}, addr: b.resolved, source: SourceListen}
 	}
 	return s
 }
@@ -599,7 +598,7 @@ func (s *listenerSet) Bound() []listenset.Bound {
 	return out
 }
 
-// BaseTCPAddresses reports the addresses --listen named, in bind order, each
+// BaseTCPAddresses reports the addresses --listen specifies, in bind order, each
 // with the port its own listener resolved to. It is the full TCP merge input
 // an extra address folds into, read from the base list built at startup and
 // never rewritten: a reconfiguration merges the bases away in the LIVE report

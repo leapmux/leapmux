@@ -210,7 +210,7 @@ func TestAdminNetworkService_ToleratesNoListenerSet(t *testing.T) {
 
 // The fallback without live sockets reports the configured TCP bind set as
 // the merge input: the explicit list in bind order, the launcher's default
-// when the set names none, and nothing at all for a local-only set.
+// when the set lists none, and nothing at all for a local-only set.
 func TestAdminNetworkService_TheFallbackSplitsTheConfiguredBindSet(t *testing.T) {
 	t.Setenv("LEAPMUX_HUB_LISTEN", "")
 	launcherConfig, _, err := config.LoadWithOptions(nil, config.LoadOptions{

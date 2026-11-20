@@ -67,7 +67,7 @@ func TestWorkerPins_MismatchRefusesUntilCleared(t *testing.T) {
 }
 
 // Removing one target's pin must keep the pins of unrelated targets: the
-// remove verb names exactly one target worker id.
+// remove verb identifies exactly one target worker id.
 func TestWorkerPins_RemovePreservesUnrelatedPins(t *testing.T) {
 	store, err := crossworker.NewPinStore(t.TempDir())
 	require.NoError(t, err)

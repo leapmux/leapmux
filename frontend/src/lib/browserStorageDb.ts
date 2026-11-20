@@ -159,7 +159,7 @@ export interface KvRowTransaction {
 }
 
 /**
- * Run `body` as ONE read-write transaction over the rows it names.
+ * Run `body` as ONE read-write transaction over the rows it lists.
  *
  * Strict where `readOrEmpty` is forgiving: an unavailable database, a failed
  * open and a failed request all REJECT, because the callers here decide trust
@@ -556,7 +556,7 @@ export async function flushKvWrites(): Promise<void> {
  * the gateway runs it ONCE per page and leaves the hourly timer on the
  * index-bounded expiry arm.
  *
- * `isExemptFromExpiry` shields a row the expiry arm must never take even when
+ * `isExemptFromExpiry` shields a row the expiry branch must never take even when
  * its expiration has passed. The gateway keeps exactly one such row -- the key
  * pin removal revision, which is nonexpiring by policy -- so a corrupted or
  * foreign expiration on it cannot reset a revision that pending pin commits
@@ -615,10 +615,10 @@ export async function sweepKv(
 const CHANNEL_NAME = 'leapmux:browser-storage'
 
 /**
- * A key-only change: the named row changed, and the receiver must re-read it
+ * A key-only change: the identified row changed, and the receiver must re-read it
  * rather than trust a value in the message.
  *
- * For the pin rows, whose values never travel on the channel: a hint names the
+ * For the pin rows, whose values never travel on the channel: a hint identifies the
  * stored key and carries no pin bytes. See `publishKvInvalidations`.
  */
 export interface KeyInvalidationChange { readonly k: string, readonly invalidate: true }
@@ -683,8 +683,14 @@ if (channel !== null) {
     const message = event.data
     if (!message || message.from === instanceId)
       return
-    for (const listener of broadcastListeners)
-      listener(message.changes)
+    for (const listener of broadcastListeners) {
+      try {
+        listener(message.changes)
+      }
+      catch (err) {
+        log.warn('browser storage broadcast listener failed', err)
+      }
+    }
   }
 }
 

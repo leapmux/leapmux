@@ -168,8 +168,9 @@ func TestStore_ResolveMismatchReturnsHintWithWorkerID(t *testing.T) {
 		"the error still starts with the worker and the fact: %v", err)
 }
 
-// A malformed pin file fails to load. The error still includes the presented
-// fingerprint and the configured command without inventing a pinned fingerprint.
+// A malformed pin file fails to load. The error includes the presented
+// fingerprint and repair guidance without advertising a command that cannot
+// read the same file.
 func TestStore_ResolveMismatchReportsAnUnreadablePinnedKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pins.json")
@@ -195,7 +196,7 @@ func TestStore_ResolveMismatchReportsAnUnreadablePinnedKey(t *testing.T) {
 	assert.ErrorAs(t, err, &cause)
 	assert.Contains(t, err.Error(), "pinned <unreadable>")
 	assert.Contains(t, err.Error(), "presented "+noise.CompositeKeyFingerprint([]byte("x"), []byte("m"), []byte("sl")))
-	assert.Contains(t, err.Error(), "test-cli pins remove --worker-id=w-B")
+	assert.NotContains(t, err.Error(), "pins remove")
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, document, after)
@@ -430,15 +431,44 @@ func TestStore_AFreshHandleHonorsThePersistedLastUsedAtThrottle(t *testing.T) {
 	clock = start.Add(5 * time.Minute)
 	before, err := os.ReadFile(path)
 	require.NoError(t, err)
+	beforeInfo, err := os.Stat(path)
+	require.NoError(t, err)
 	require.NoError(t, resolveCommit(t.Context(), second, "w", []byte("x"), []byte("m"), []byte("sl")))
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
+	afterInfo, err := os.Stat(path)
+	require.NoError(t, err)
 	assert.Equal(t, before, after, "a fresh handle inside the throttle window must not rewrite the pin file")
+	assert.True(t, os.SameFile(beforeInfo, afterInfo), "the throttled open must not atomically replace identical bytes")
 
 	clock = start.Add(10 * time.Minute)
 	require.NoError(t, resolveCommit(t.Context(), second, "w", []byte("x"), []byte("m"), []byte("sl")))
 	entry := snapshot(t, second)["w"]
 	assertTime(t, start.Add(10*time.Minute), entry.LastUsedAt, "the fresh handle flushes at the interval")
+}
+
+func TestStore_BackwardClockMovementRepairsLastUsedAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pins.json")
+	start := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	clock := start.Add(time.Hour)
+	first := openStoreAt(t, path, &clock)
+	require.NoError(t, resolveCommit(t.Context(), first, "w", []byte("x"), []byte("m"), []byte("sl")))
+
+	clock = start
+	second := openStoreAt(t, path, &clock)
+	require.NoError(t, resolveCommit(t.Context(), second, "w", []byte("x"), []byte("m"), []byte("sl")))
+	assertTime(t, start, snapshot(t, second)["w"].LastUsedAt,
+		"a backward clock correction must not leave a future throttle baseline")
+
+	clock = start.Add(5 * time.Minute)
+	require.NoError(t, resolveCommit(t.Context(), second, "w", []byte("x"), []byte("m"), []byte("sl")))
+	assertTime(t, start, snapshot(t, second)["w"].LastUsedAt,
+		"the repaired timestamp starts the ordinary throttle interval")
+
+	clock = start.Add(10 * time.Minute)
+	require.NoError(t, resolveCommit(t.Context(), second, "w", []byte("x"), []byte("m"), []byte("sl")))
+	assertTime(t, clock, snapshot(t, second)["w"].LastUsedAt,
+		"the repaired throttle persists again at the normal interval")
 }
 
 func TestStore_ResolveFlushesLastUsedAtPastThrottleWindow(t *testing.T) {
@@ -704,6 +734,30 @@ func TestStore_OperationsFailOnANullOrAbsentPinsObject(t *testing.T) {
 		require.Error(t, err, "document %s", document)
 		require.Error(t, s.Remove(t.Context(), "w"), "document %s", document)
 	}
+}
+
+func TestStore_OperationsRejectDuplicateWorkerPins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pins.json")
+	store := openStore(t, path)
+	require.NoError(t, resolveCommit(t.Context(), store, "worker-a", []byte("x"), []byte("m"), []byte("sl")))
+	pins, err := store.Snapshot(t.Context())
+	require.NoError(t, err)
+	validPin, err := json.Marshal(pins["worker-a"])
+	require.NoError(t, err)
+	pending, err := store.Resolve(t.Context(), "worker-b", []byte("x-b"), []byte("m-b"), []byte("sl-b"))
+	require.NoError(t, err)
+	document := []byte(fmt.Sprintf(`{"pins":{"worker-a":null,"worker-a":%s}}`, validPin))
+	require.NoError(t, os.WriteFile(path, document, 0o644))
+
+	_, err = store.Resolve(t.Context(), "worker-a", []byte("x"), []byte("m"), []byte("sl"))
+	assert.ErrorContains(t, err, "duplicate pin")
+	_, err = store.Snapshot(t.Context())
+	assert.ErrorContains(t, err, "duplicate pin")
+	assert.ErrorContains(t, store.Remove(t.Context(), "worker-a"), "duplicate pin")
+	assert.ErrorContains(t, pending(t.Context()), "duplicate pin")
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, document, after)
 }
 
 func TestStore_OperationsRejectNullRevisionAndEntries(t *testing.T) {
@@ -1051,11 +1105,17 @@ func startStoreHelper(t *testing.T, ctx context.Context, env ...string) (io.Writ
 	require.NoError(t, err)
 	command.Stderr = os.Stderr
 	require.NoError(t, command.Start())
+	var waitOnce sync.Once
+	var waitErr error
+	wait := func() error {
+		waitOnce.Do(func() { waitErr = command.Wait() })
+		return waitErr
+	}
 	t.Cleanup(func() {
 		_ = command.Process.Kill()
-		_, _ = command.Process.Wait()
+		_ = wait()
 	})
-	return stdin, bufio.NewReader(stdout), command.Wait
+	return stdin, bufio.NewReader(stdout), wait
 }
 
 func readLine(t *testing.T, r *bufio.Reader) string {

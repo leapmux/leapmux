@@ -20,7 +20,7 @@ import { loadSystemInfo, soloPasswordSet } from '~/lib/systemInfo'
 import { fieldLabel } from '../account/accountFields.css'
 import { createAccountAction } from '../account/createAccountAction'
 import * as styles from './NetworkAccessControl.css'
-import { ANY_HOST, mergeNotes, newRow, portOf, rowFromAddress, rowIsLoopback, toAddress } from './networkAddress'
+import { ANY_HOST, mergeNotes, newRow, portOf, rowFromAddress, rowIsLoopback, rowsRepeatAddress, toAddress } from './networkAddress'
 
 /**
  * The Network access panel: which addresses this hub answers on, and the
@@ -159,6 +159,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
   }
 
   const rowsAreValid = () => rows().every(r => r.host !== '' && isValidPort(r.port))
+    && !rowsRepeatAddress(rows())
   const exposesTheHub = () => rows().some(r => !rowIsLoopback(r))
   /**
    * The password half is shown only while the account has none, and then only

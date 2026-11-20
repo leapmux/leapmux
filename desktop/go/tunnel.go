@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -65,6 +66,7 @@ type TunnelConfig struct {
 	// expectation, fails before a listener is bound or a channel opened.
 	ExpectedUserID        string
 	ExpectedWorkerKeysHex string
+	expectedWorkerKeyPin  tunnelpkg.KeyPinStore
 	// ChannelEpoch is the channel epoch the caller read from a tunnel
 	// listing. The create is admitted against that exact epoch: a submission
 	// fenced on a listing that a reset has since invalidated is refused before
@@ -114,9 +116,11 @@ func (cfg *TunnelConfig) validateAndNormalize() error {
 	if cfg.ExpectedWorkerKeysHex == "" {
 		return fmt.Errorf("expectedWorkerKeysHex is required")
 	}
-	if _, err := tunnelpkg.NewExpectedWorkerKeyPin(cfg.ExpectedWorkerKeysHex); err != nil {
+	pin, err := tunnelpkg.NewExpectedWorkerKeyPin(cfg.ExpectedWorkerKeysHex)
+	if err != nil {
 		return err
 	}
+	cfg.expectedWorkerKeyPin = pin
 	if cfg.ChannelEpoch == "" {
 		return fmt.Errorf("channelEpoch is required")
 	}
@@ -363,6 +367,7 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 	expect := channelExpectation{
 		userID:  cfg.ExpectedUserID,
 		keysHex: cfg.ExpectedWorkerKeysHex,
+		pin:     cfg.expectedWorkerKeyPin,
 	}
 
 	// Ensure we have an E2EE channel to the worker.
@@ -429,6 +434,9 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 		"bind", actualAddr.String(),
 		"target", fmt.Sprintf("%s:%d", cfg.TargetAddr, cfg.TargetPort),
 	)
+	if m.onChanged != nil {
+		m.onChanged()
+	}
 	return &info, nil
 }
 
@@ -501,7 +509,7 @@ func validateTunnelBindAddr(bindAddr string) error {
 // channelEpoch is the epoch the caller's listing reported. A delete fenced on
 // a listing a reset has since invalidated is refused before the lookup: the
 // caller's row set is stale and it must re-read before mutating.
-func (m *TunnelManager) DeleteTunnel(tunnelID string, channelEpoch string) error {
+func (m *TunnelManager) DeleteTunnel(tunnelID string, channelEpoch string, expectedUsers ...string) error {
 	m.mu.Lock()
 	if channelEpoch != m.pool.currentEpoch() {
 		m.mu.Unlock()
@@ -510,10 +518,23 @@ func (m *TunnelManager) DeleteTunnel(tunnelID string, channelEpoch string) error
 	t, ok := m.tunnels[tunnelID]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("tunnel not found: %s", tunnelID)
+		return nil
 	}
-	t.state = tunnelRemoving
-	t.stopAdmission()
+	if len(expectedUsers) > 0 {
+		expectedUser := expectedUsers[0]
+		if expectedUser == "" {
+			m.mu.Unlock()
+			return fmt.Errorf("expectedUserId is required")
+		}
+		if t.expect.userID != expectedUser {
+			m.mu.Unlock()
+			return fmt.Errorf("tunnel does not belong to the expected user")
+		}
+	}
+	if t.state != tunnelRemoving {
+		t.state = tunnelRemoving
+		t.stopAdmission()
+	}
 	m.mu.Unlock()
 
 	m.closeAndRemove(t)
@@ -528,7 +549,7 @@ func (m *TunnelManager) DeleteTunnel(tunnelID string, channelEpoch string) error
 // exactly the listing it saw.
 //
 // The owner is the expected user a create was admitted under; a listing that
-// names no user is refused rather than silently answered for one owner.
+// specifies no user is refused rather than silently answered for one owner.
 func (m *TunnelManager) ListTunnels(expectedUser string) (string, []TunnelInfo, error) {
 	if expectedUser == "" {
 		return "", nil, fmt.Errorf("expectedUserId is required")
@@ -542,6 +563,7 @@ func (m *TunnelManager) ListTunnels(expectedUser string) (string, []TunnelInfo, 
 		}
 		result = append(result, t.info)
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return m.pool.currentEpoch(), result, nil
 }
 
@@ -688,6 +710,9 @@ func (m *TunnelManager) failTunnel(t *tunnel, reason error) {
 	slog.Error("tunnel listener failed; removing the tunnel",
 		"tunnel_id", t.info.ID, "error", reason)
 	m.closeAndRemove(t)
+	if m.onChanged != nil {
+		m.onChanged()
+	}
 }
 
 func (m *TunnelManager) retireLiveTunnel(t *tunnel, state tunnelState) bool {

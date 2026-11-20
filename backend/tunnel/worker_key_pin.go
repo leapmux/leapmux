@@ -75,7 +75,7 @@ func NewExpectedWorkerKeyPin(compositeHex string) (*ExpectedWorkerKeyPin, error)
 //
 // OpenChannel validates the announcement before it reaches Resolve, so this
 // compares the full sets -- all three keys, never the fingerprints -- and
-// returns a WorkerKeyMismatchError naming both fingerprints when they differ.
+// returns a WorkerKeyMismatchError that identifies both fingerprints when they differ.
 // A match returns a nil commit: this pin writes nothing.
 func (p *ExpectedWorkerKeyPin) Resolve(ctx context.Context, workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (func(context.Context) error, error) {
 	presented := &leapmuxv1.WorkerPublicKeys{

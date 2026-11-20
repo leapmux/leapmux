@@ -97,7 +97,7 @@ describe('createTunnelStore', () => {
 
     await store.refresh(scope)
     await expect(store.removeAllForWorker('w1', scope)).rejects.toThrow('One tunnel could not be deleted')
-    expect(platformBridge.deleteTunnels).toHaveBeenCalledExactlyOnceWith(['active', 'stopped'], scope)
+    expect(platformBridge.deleteTunnels).toHaveBeenCalledExactlyOnceWith('w1', scope)
     expect(store.tunnels()).toEqual([stopped])
   })
 

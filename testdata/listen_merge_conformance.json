@@ -62,6 +62,7 @@
     { "a": "[::1]:4327", "b": "[0:0:0:0:0:0:0:1]:4327", "covers": true, "why": "one address, two spellings: identity is the canonical form" },
     { "a": "[FE80::1%en0]:4327", "b": "[fe80::1%en0]:4327", "covers": true, "why": "the hexadecimal digits fold; the zone is an interface name and keeps its case" },
     { "a": "[fe80::1%en0]:4327", "b": "[fe80::1%en1]:4327", "covers": false, "why": "a zone picks the interface, so two zones are two addresses" },
+    { "a": "[::%lo0]:4327", "b": "[::1]:4327", "covers": false, "why": "a zoned unspecified address stays a scoped literal in the portable merge rule" },
 
     { "a": "hub.example:4327", "b": "hub.example:4327", "covers": true, "why": "a name covers nothing but an identical address" },
     { "a": "HUB.EXAMPLE:4327", "b": "hub.example:4327", "covers": true, "why": "a name is case-insensitive, so both fold to one identity" },

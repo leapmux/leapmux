@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, resetBrowserStorageForTests } from '~/lib/browserStorage'
+import { IDB_NATIVE_SCHEMA_VERSION } from '~/lib/idb'
 import { testKeyPinHex } from '~/test-support/keyPins'
 import { countRows, databaseStores, deleteEntries, readEntry, storageKeys, waitForStoredEntry, writeEntry } from './storage'
 
@@ -97,6 +98,28 @@ describe('pin storage fixture', () => {
     }
     await writeEntry(page, key, pins, NEVER)
     await expect(readKeyPinState({ accountId })).resolves.toEqual({ pins, removalRevision: 0 })
+  })
+
+  it('rejects and closes the database when the declared store has the wrong key path', async () => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open('leapmux-kv', IDB_NATIVE_SCHEMA_VERSION)
+      request.onerror = () => reject(request.error)
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('entries', { keyPath: 'wrong' }).createIndex('e', 'e')
+      }
+      request.onsuccess = () => {
+        request.result.close()
+        resolve()
+      }
+    })
+
+    await expect(writeEntry(page, key, {}, NEVER)).rejects.toMatchObject({ name: 'DataError' })
+    await expect(new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase('leapmux-kv')
+      request.onerror = () => reject(request.error)
+      request.onblocked = () => reject(new Error('the failed write left the database open'))
+      request.onsuccess = () => resolve()
+    })).resolves.toBeUndefined()
   })
 })
 

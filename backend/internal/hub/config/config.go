@@ -976,14 +976,24 @@ func (c *Config) PrimaryTCPListen() string {
 	if c.resolvedPrimaryTCP != "" {
 		return c.resolvedPrimaryTCP
 	}
-	tcp, _ := SplitListen(c.Listen)
+	tcp := c.ConfiguredTCPListenAddresses()
 	if len(tcp) > 0 {
 		return tcp[0]
 	}
-	if len(c.Listen) > 0 {
-		return ""
+	return ""
+}
+
+// ConfiguredTCPListenAddresses is the configured TCP bind set in order.
+// A local-only set returns none. An empty set takes the launcher's default.
+func (c *Config) ConfiguredTCPListenAddresses() []string {
+	tcp, _ := SplitListen(c.Listen)
+	if len(tcp) > 0 {
+		return append([]string(nil), tcp...)
 	}
-	return c.defaultTCPAddr()
+	if len(c.Listen) > 0 {
+		return nil
+	}
+	return []string{c.defaultTCPAddr()}
 }
 
 // WithResolvedPrimaryTCPListen gives one running server its assigned address.

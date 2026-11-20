@@ -124,11 +124,14 @@ export function toAddress(row: AddressRow): string {
  */
 export function parseAddress(address: string): ParsedAddress {
   const { host, port } = splitAddress(address)
+  const canonicalPort = isValidPort(port)
+    ? String(Number(port.trim()))
+    : port
   if (host === '' || host === ANY_HOST) {
     return {
       kind: 'any',
       host: '',
-      port,
+      port: canonicalPort,
       bytes: null,
       zone: '',
     }
@@ -153,7 +156,7 @@ export function parseAddress(address: string): ParsedAddress {
         ? 'any-ipv4'
         : 'ip',
       host: literal,
-      port,
+      port: canonicalPort,
       bytes: v4,
       zone,
     }
@@ -161,13 +164,13 @@ export function parseAddress(address: string): ParsedAddress {
 
   const v6 = parseIPv6(literal)
   if (v6) {
-    if (isUnspecified(v6)) {
+    if (zone === '' && isUnspecified(v6)) {
       return {
         kind: mappedIPv4(v6)
           ? 'any-ipv4'
           : 'any-ipv6',
         host: literal,
-        port,
+        port: canonicalPort,
         bytes: v6,
         zone,
       }
@@ -175,7 +178,7 @@ export function parseAddress(address: string): ParsedAddress {
     return {
       kind: 'ip',
       host: literal,
-      port,
+      port: canonicalPort,
       bytes: v6,
       zone,
     }
@@ -185,7 +188,7 @@ export function parseAddress(address: string): ParsedAddress {
   return {
     kind: 'host',
     host: literal.toLowerCase(),
-    port,
+    port: canonicalPort,
     bytes: null,
     zone,
   }
@@ -262,6 +265,14 @@ export function covers(a: ParsedAddress, b: ParsedAddress): boolean {
     default:
       return sameAddress(a, b)
   }
+}
+
+/** Whether two editable rows become the same configured extra address. */
+export function rowsRepeatAddress(rows: AddressRow[]): boolean {
+  const parsed = rows.map(row => parseAddress(toAddress(row)))
+  return parsed.some((address, index) => parsed
+    .slice(0, index)
+    .some(previous => covers(address, previous) && covers(previous, address)))
 }
 
 /**

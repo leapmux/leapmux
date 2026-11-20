@@ -987,7 +987,7 @@ describe('ChannelManager open-time verification', () => {
     const pinCommit = vi.spyOn(browserStorage, 'updateKeyPinState').mockImplementationOnce(async (change, options) => {
       commitStarted.resolve()
       await releaseCommit.promise
-      await update(change, options)
+      return update(change, options)
     })
     try {
       const open = cm.openChannel('worker-1')
@@ -1394,10 +1394,18 @@ describe('ChannelManager openChannelForKeyReview', () => {
         {
           publicKeyHex: verified,
           scope: h.identity(),
+          pinSnapshot: {
+            pin: expect.objectContaining({ publicKeyHex: verified }),
+            removalRevision: 0,
+          },
         },
         {
           publicKeyHex: verified,
           scope: h.identity(),
+          pinSnapshot: {
+            pin: expect.objectContaining({ publicKeyHex: verified }),
+            removalRevision: 0,
+          },
         },
       ])
       expect(lookup).toHaveBeenCalledTimes(2)
@@ -1437,6 +1445,10 @@ describe('ChannelManager openChannelForKeyReview', () => {
       await expect(next).resolves.toEqual({
         publicKeyHex: candidate,
         scope: h.identity(),
+        pinSnapshot: {
+          pin: expect.objectContaining({ publicKeyHex: candidate }),
+          removalRevision: 0,
+        },
       })
       expect(h.confirmKeyPin).toHaveBeenCalledTimes(2)
       expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(candidate)
@@ -1455,6 +1467,56 @@ describe('ChannelManager openChannelForKeyReview', () => {
       expect((await readKeyPinState()).pins).toEqual({})
     }
     finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('reports the reviewed pin transaction even if the same key is reinstalled before return', async () => {
+    const h = setup()
+    const workerId = 'worker'
+    const publicKeyHex = testKeyPinHex('02')
+    await seedKeyPin(workerId, {
+      publicKeyHex: testKeyPinHex('01'),
+      firstSeen: 1,
+    })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    h.confirmKeyPin.mockResolvedValueOnce('accept')
+    const committed = deferred<void>()
+    const release = deferred<void>()
+    const resolve = h.keyPins.resolve.bind(h.keyPins)
+    vi.spyOn(h.keyPins, 'resolve').mockImplementationOnce(async (...args) => {
+      const decision = await resolve(...args)
+      return {
+        ...decision,
+        commit: async () => {
+          const result = await decision.commit()
+          committed.resolve()
+          await release.promise
+          return result
+        },
+      }
+    })
+
+    try {
+      const review = h.cm.openChannelForKeyReview(workerId)
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await committed.promise
+      const { pins, removalRevision } = await readKeyPinState()
+      expect(pins[workerId]?.publicKeyHex).toBe(publicKeyHex)
+
+      const { updateKeyPinState } = await import('./browserStorage')
+      await updateKeyPinState({ kind: 'remove', workerId })
+      await seedKeyPin(workerId, { publicKeyHex, firstSeen: 2 })
+      expect((await readKeyPinState()).removalRevision).toBe(removalRevision + 1)
+
+      release.resolve()
+      await expect(review).resolves.toMatchObject({
+        pinSnapshot: { pin: pins[workerId], removalRevision },
+      })
+    }
+    finally {
+      release.resolve()
       h.cm.closeAll()
     }
   })

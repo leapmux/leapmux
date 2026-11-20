@@ -242,6 +242,7 @@ message CreateTunnelRequest {
 message DeleteTunnelRequest {
   string tunnel_id = 1;
   string channel_epoch = 2;
+  string expected_user_id = 3;
 }
 
 message OpenInExternalAppRequest {

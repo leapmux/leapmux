@@ -84,8 +84,16 @@ export async function writeEntry(page: Page, storedKey: string, value: unknown, 
         reject(new Error(`The database ${dbName} has no object store ${table}.`))
         return
       }
-      const tx = db.transaction(table, 'readwrite')
-      tx.objectStore(table).put({ k: key, v, e })
+      let tx: IDBTransaction
+      try {
+        tx = db.transaction(table, 'readwrite')
+        tx.objectStore(table).put({ k: key, v, e })
+      }
+      catch (err) {
+        db.close()
+        reject(err)
+        return
+      }
       tx.oncomplete = () => {
         db.close()
         resolve()

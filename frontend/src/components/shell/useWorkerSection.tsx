@@ -11,7 +11,7 @@ import { channelManager, setConfirmKeyPin } from '~/api/workerRpc'
 import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
-import { EVENT_TUNNELS_CHANGED } from '~/generated/contracts/desktop'
+import { TAURI_EVENT_TUNNELS_CHANGED } from '~/generated/contracts/desktop'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createIdentityCache } from '~/lib/identityCache'
 import { listAllWorkers } from '~/lib/listAllWorkers'
@@ -158,7 +158,7 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
 
     // The hint carries no rows. Wait until its listener is attached before
     // reading the initial snapshot, then invalidate a list already in flight.
-    void platformBridge.onEvent(EVENT_TUNNELS_CHANGED, () => {
+    void platformBridge.onEvent(TAURI_EVENT_TUNNELS_CHANGED, () => {
       untrack(() => {
         if (registered())
           refreshTunnels(opts.workerTrustScope(), 'invalidate')

@@ -3,7 +3,8 @@ import type { TunnelConfig, TunnelInfo, TunnelKeyMismatch } from '../../src/api/
 import type { StorageAccount } from '../../src/lib/browserStorage'
 import { expect } from '@playwright/test'
 import { decodeProxyResponse } from '~/api/platformBridge'
-import { EVENT_TUNNELS_CHANGED } from '../../src/generated/contracts/desktop'
+import { TAURI_EVENT_TUNNELS_CHANGED } from '../../src/generated/contracts/desktop'
+import { MLKEM_PUBLIC_KEY_SIZE, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '../../src/generated/contracts/wire'
 import { accountStorageKey, KEY_KEY_PINS, storageAccountFor } from '../../src/lib/browserStorage'
 import { keyFingerprintHex } from '../../src/lib/fingerprint'
 import { test } from './fixtures'
@@ -24,6 +25,7 @@ type RelayDeliveryForEncoding = {
 // load so the UI renders the tunnel entrypoints at initial render time.
 
 type NativeCreate = TunnelConfig & { expectedWorkerKeysHex: string, expectedUserId: string, channelEpoch: string }
+const EXPECTED_KEY_HEX_LENGTH = 2 * (X25519_PUBLIC_KEY_SIZE + MLKEM_PUBLIC_KEY_SIZE + SLHDSA_PUBLIC_KEY_SIZE)
 
 interface DesktopTunnelHarness {
   creates: NativeCreate[]
@@ -88,7 +90,7 @@ async function addTunnelMockInitScript(page: Page, expectedUserId: string) {
         }
       : { close: delivery.close },
   ))))
-  return page.addInitScript(({ encoderBinding, relayEncoderBinding, expectedUserId, tunnelEvent }) => {
+  return page.addInitScript(({ encoderBinding, relayEncoderBinding, expectedKeyHexLength, expectedUserId, tunnelEvent }) => {
     const win = window as any
     const tunnels: Array<{ expectedUserId: string, info: TunnelInfo }> = []
     let epochNumber = 1
@@ -196,7 +198,7 @@ async function addTunnelMockInitScript(page: Page, expectedUserId: string) {
           const config = args.config as NativeCreate
           harness.creates.push(config)
           if (config.expectedUserId !== expectedUserId || config.channelEpoch !== currentEpoch()
-            || !/^[a-f0-9]{3328}$/.test(config.expectedWorkerKeysHex)) {
+            || !new RegExp(`^[a-f0-9]{${expectedKeyHexLength}}$`).test(config.expectedWorkerKeysHex)) {
             return Promise.reject(new Error('invalid tunnel admission'))
           }
           const failure = nextCreateFailure
@@ -406,7 +408,13 @@ async function addTunnelMockInitScript(page: Page, expectedUserId: string) {
       },
     }
     win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener }
-  }, { encoderBinding, relayEncoderBinding, expectedUserId, tunnelEvent: EVENT_TUNNELS_CHANGED })
+  }, {
+    encoderBinding,
+    expectedKeyHexLength: EXPECTED_KEY_HEX_LENGTH,
+    expectedUserId,
+    relayEncoderBinding,
+    tunnelEvent: TAURI_EVENT_TUNNELS_CHANGED,
+  })
 }
 
 /** Open the worker context menu in the Workers sidebar section. */
@@ -448,12 +456,12 @@ test.describe('Tunnel UI', () => {
     await openWorkspace(page, workspace.workspaceId)
   })
 
-  test('add tunnel menu item appears when tunnel API is available', async ({ page }) => {
+  test('shows the add-tunnel menu item when the tunnel API is available', async ({ page }) => {
     await openWorkerMenu(page)
     await expect(page.getByRole('menuitem', { name: 'Add tunnel...' })).toBeVisible()
   })
 
-  test('add tunnel dialog opens and has correct fields', async ({ page }) => {
+  test('opens the add-tunnel dialog with its fields', async ({ page }) => {
     const { dialog } = await openAddTunnelDialog(page)
 
     await expect(dialog.getByTestId('target-addr')).toBeVisible()
@@ -464,7 +472,7 @@ test.describe('Tunnel UI', () => {
     await expect(dialog.getByTestId('tunnel-cancel')).toBeVisible()
   })
 
-  test('add tunnel dialog validates required fields', async ({ page }) => {
+  test('validates required fields in the add-tunnel dialog', async ({ page }) => {
     const { dialog } = await openAddTunnelDialog(page)
 
     await expect(dialog.getByTestId('tunnel-create')).toBeDisabled()
@@ -486,7 +494,8 @@ test.describe('Tunnel UI', () => {
     await expect(dialog).not.toBeVisible()
     await expect(workersSection.getByText(/127\.0\.0\.1:3000/)).toBeVisible()
     const trusted = await readPin(page, account, workerId)
-    expect(trusted?.publicKeyHex).toMatch(/^[a-f0-9]{3328}$/)
+    expect(trusted?.publicKeyHex).toHaveLength(EXPECTED_KEY_HEX_LENGTH)
+    expect(trusted?.publicKeyHex).toMatch(/^[a-f0-9]+$/)
     expect(await createArguments(page)).toEqual([
       {
         workerId,
@@ -641,7 +650,7 @@ test.describe('Tunnel UI', () => {
     expect(await createArguments(page)).toEqual([original, original])
   })
 
-  test('cancel button closes dialog without creating tunnel', async ({ page }) => {
+  test('closes the dialog without creating a tunnel after cancellation', async ({ page }) => {
     const { workersSection, dialog } = await openAddTunnelDialog(page)
 
     await dialog.getByTestId('tunnel-cancel').click()

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { covers, mergeNotes, newRow, parseAddress, portOf, rowFromAddress, rowIsLoopback, splitAddress, toAddress } from './networkAddress'
+import { covers, mergeNotes, newRow, parseAddress, portOf, rowFromAddress, rowIsLoopback, rowsRepeatAddress, splitAddress, toAddress } from './networkAddress'
 
 describe('splitAddress', () => {
   it('splits a canonical host and port', () => {
@@ -142,6 +142,7 @@ describe('mergeNotes', () => {
 
   it('folds the -listen address into a wildcard row that covers it', () => {
     expect(notes(['127.0.0.1:4327'], '*:4327')).toEqual(['127.0.0.1:4327 -> *:4327'])
+    expect(notes(['127.0.0.1:4327'], '*:04327')).toEqual(['127.0.0.1:4327 -> *:04327'])
   })
 
   // The direction the panel never reported: -listen is an ordinary entry, and a
@@ -181,6 +182,11 @@ describe('mergeNotes', () => {
 
   it('reports a duplicated row as absorbed by the earlier one', () => {
     expect(notes([], '127.0.0.1:4327', '127.0.0.1:4327')).toEqual(['127.0.0.1:4327 -> 127.0.0.1:4327'])
+  })
+
+  it('recognizes duplicate editable addresses after canonicalization', () => {
+    expect(rowsRepeatAddress(rows('127.0.0.1:4327', '127.0.0.1:04327'))).toBe(true)
+    expect(rowsRepeatAddress(rows('127.0.0.1:4327', '127.0.0.2:4327'))).toBe(false)
   })
 
   it('works with no -listen address to report', () => {

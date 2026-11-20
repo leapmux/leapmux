@@ -741,7 +741,7 @@ func TestResetTunnelsBumpsChannelEpochAndKeepsConnection(t *testing.T) {
 }
 
 // TestResetTunnelsReplayOfRetiredEpochIsANoOp pins the reset's fencing: a
-// request naming an epoch an earlier reset already retired is a replay of that
+// request that specifies an epoch an earlier reset already retired is a replay of that
 // reset. It must succeed WITHOUT touching the successor state, so a late
 // identity-change teardown can never clear the next identity's tunnels and a
 // retry after an uncertain delivery is harmless.

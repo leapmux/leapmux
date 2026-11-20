@@ -11,7 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
 
-// crossWorkerPinsOpTimeout bounds pin-store file transactions.
+// crossWorkerPinsOpTimeout limits pin-store file transactions.
 const crossWorkerPinsOpTimeout = 10 * time.Second
 
 // runWorkerCrossWorkerPins implements `leapmux worker cross-worker-pins

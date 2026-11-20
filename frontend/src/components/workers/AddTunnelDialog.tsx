@@ -57,6 +57,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
   const [mismatch, setMismatch] = createSignal<TunnelKeyMismatch | null>(null)
   const [verifying, setVerifying] = createSignal(false)
   let disposed = false
+  const reviewLifetime = new AbortController()
 
   const identityIsLive = () => !disposed && auth.workerTrustScope() === scope && !scope.signal.aborted
   const { submitting, formHandler } = useDialogSubmit({
@@ -71,6 +72,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
 
   onCleanup(() => {
     disposed = true
+    reviewLifetime.abort()
   })
   createEffect(() => {
     if (!identityIsLive())
@@ -133,7 +135,7 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
     setVerifying(true)
     setSubmissionError(null)
     try {
-      const approval = await verifyWorkerKey(workerId, scope)
+      const approval = await verifyWorkerKey(workerId, scope, reviewLifetime.signal)
       if (!identityIsLive())
         return
       setTrust({ kind: 'approved', approval })

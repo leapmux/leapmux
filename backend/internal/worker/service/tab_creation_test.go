@@ -138,6 +138,8 @@ func TestTabCreation_ReplaysASharedRequestOnceAndRejectsAnAlteredRequest(t *test
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, first)
 	require.Empty(t, first.rejections())
 	require.Len(t, first.responsesSnapshot(), 1)
+	firstResult := &leapmuxv1.OpenAgentResponse{}
+	require.NoError(t, proto.Unmarshal(first.responsesSnapshot()[0].GetPayload(), firstResult))
 	assert.Equal(t, int32(1), publishCount.Load(), "the first dispatch publishes once")
 	_, err := svc.Queries.GetAgentByID(t.Context(), generated)
 	require.NoError(t, err, "one resource exists for the generated ID")
@@ -145,6 +147,9 @@ func TestTabCreation_ReplaysASharedRequestOnceAndRejectsAnAlteredRequest(t *test
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, second)
 	require.Empty(t, second.rejections())
 	require.Len(t, second.responsesSnapshot(), 1, "the repeated dispatch replays the same result")
+	secondResult := &leapmuxv1.OpenAgentResponse{}
+	require.NoError(t, proto.Unmarshal(second.responsesSnapshot()[0].GetPayload(), secondResult))
+	assert.True(t, proto.Equal(firstResult, secondResult), "the repeated dispatch replays the same result")
 	assert.Equal(t, int32(1), publishCount.Load(), "the repeated dispatch publishes no second tab")
 	storedAgentIDs, err := svc.Queries.ListAllAgentIDs(t.Context())
 	require.NoError(t, err)

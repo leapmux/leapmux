@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -162,7 +163,7 @@ func TestChannelPool_RemovesClosedCachedChannel(t *testing.T) {
 	require.Eventually(t, func() bool {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		return len(p.channels) == 0
+		return len(p.epoch.cache) == 0
 	}, time.Second, time.Millisecond)
 
 	reopened, err := p.getOrOpen(context.Background(), p.currentEpoch(), hubURL, workerID, channelExpectation{})
@@ -198,7 +199,7 @@ func TestChannelPool_LiveReResolvesWhenLifetimeCancelled(t *testing.T) {
 	require.Eventually(t, func() bool {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		return len(p.channels) == 0
+		return len(p.epoch.cache) == 0
 	}, time.Second, time.Millisecond, "a channel whose lifetime ended must be evicted from the cache")
 
 	live, err := p.live(context.Background(), dying, p.currentEpoch(), hubURL, workerID, channelExpectation{})
@@ -240,7 +241,7 @@ func TestChannelPool_LiveReResolvesWhenClosed(t *testing.T) {
 	require.Eventually(t, func() bool {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		return len(p.channels) == 0
+		return len(p.epoch.cache) == 0
 	}, time.Second, time.Millisecond)
 	live, err = p.live(context.Background(), first, p.currentEpoch(), hubURL, workerID, channelExpectation{})
 	require.NoError(t, err)
@@ -333,8 +334,8 @@ func TestChannelPool_ResetClosesCachedChannels(t *testing.T) {
 	assert.Error(t, lifetime.Err(), "reset must cancel the lifetime the channel was opened under")
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	assert.Empty(t, p.channels)
-	assert.Empty(t, p.inflight)
+	assert.Empty(t, p.epoch.cache)
+	assert.Empty(t, p.epoch.inflight)
 }
 
 func TestWrapChannel_NilReturnsNil(t *testing.T) {
@@ -402,7 +403,7 @@ func TestChannelPool_SuccessfulOpenAfterResetIsRejected(t *testing.T) {
 		assert.True(t, closed.Load(), "late channel must be closed, not cached under the new epoch")
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		assert.Empty(t, p.channels)
+		assert.Empty(t, p.epoch.cache)
 	})
 }
 
@@ -549,15 +550,17 @@ func TestChannelPool_PassesExpectationOnEveryOpen(t *testing.T) {
 func TestChannelPool_RefusesInvalidExpectation(t *testing.T) {
 	p := newChannelPool(nil)
 	defer func() { p.rotate().close() }()
+	var openCalls atomic.Int32
 	p.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
-		t.Fatal("an invalid expectation must fail before the open starts")
-		return nil, nil
+		openCalls.Add(1)
+		return nil, errors.New("unexpected open")
 	}
 
 	_, err := p.getOrOpen(context.Background(), p.currentEpoch(), "http://hub", "worker",
 		channelExpectation{userID: "user-a", keysHex: "zz"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decode the expected worker keys")
+	assert.Zero(t, openCalls.Load(), "an invalid expectation must fail before the open starts")
 }
 
 // live compares the admitted epoch even on a cache HIT: a tunnel admitted
@@ -602,6 +605,8 @@ func TestChannelPool_ResetJoinsAnOpenAfterItsLastWaiterLeaves(t *testing.T) {
 		fresh, _ := newTestManagedChannel()
 		started := make(chan context.Context, 1)
 		release := make(chan struct{})
+		releaseOpen := sync.OnceFunc(func() { close(release) })
+		defer releaseOpen()
 		opens := 0
 		p.openCh = func(ctx context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
 			opens++
@@ -647,7 +652,7 @@ func TestChannelPool_ResetJoinsAnOpenAfterItsLastWaiterLeaves(t *testing.T) {
 			p.rotate().close()
 		}()
 		assertTunnelCleanupPending(t, reset, "reset lost ownership of an abandoned open")
-		close(release)
+		releaseOpen()
 		<-reset
 		<-replacement
 		assert.True(t, late.closed(), "reset must wait for the late transport to close")

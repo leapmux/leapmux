@@ -78,7 +78,7 @@ func TestHelperProcessFileLock(t *testing.T) {
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	if err != nil {
 		_ = child.Process.Kill()
-		_, _ = child.Process.Wait()
+		_ = child.Wait()
 	}
 	require.NoError(t, err)
 	fields := strings.Fields(line)
@@ -100,7 +100,8 @@ func TestLockIsNotInherited(t *testing.T) {
 	require.NoError(t, err)
 	command.Stderr = os.Stderr
 	require.NoError(t, command.Start())
-	t.Cleanup(func() { _ = command.Process.Kill(); _, _ = command.Process.Wait() })
+	wait := waitCommandOnce(command)
+	t.Cleanup(func() { _ = command.Process.Kill(); _ = wait() })
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	require.NoError(t, err)
 	fields := strings.Fields(line)
@@ -118,7 +119,7 @@ func TestLockIsNotInherited(t *testing.T) {
 			_ = process.Release()
 		}
 	})
-	require.NoError(t, command.Wait())
+	require.NoError(t, wait())
 	require.NoError(t, ctx.Err())
 	after, err := Open(path, false)
 	require.NoError(t, err)
@@ -173,9 +174,10 @@ func startLockHolder(t *testing.T, path string) (release func()) {
 	require.NoError(t, err)
 	command.Stderr = os.Stderr
 	require.NoError(t, command.Start())
+	wait := waitCommandOnce(command)
 	t.Cleanup(func() {
 		_ = command.Process.Kill()
-		_, _ = command.Process.Wait()
+		_ = wait()
 		cancel()
 	})
 	line, err := bufio.NewReader(stdout).ReadString('\n')
@@ -186,8 +188,17 @@ func startLockHolder(t *testing.T, path string) (release func()) {
 		once.Do(func() {
 			_, _ = io.WriteString(stdin, "release\n")
 			_ = stdin.Close()
-			require.NoError(t, command.Wait())
+			require.NoError(t, wait())
 		})
+	}
+}
+
+func waitCommandOnce(command *exec.Cmd) func() error {
+	var once sync.Once
+	var err error
+	return func() error {
+		once.Do(func() { err = command.Wait() })
+		return err
 	}
 }
 

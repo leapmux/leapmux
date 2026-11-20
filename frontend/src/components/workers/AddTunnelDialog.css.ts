@@ -26,7 +26,7 @@ export const fieldGroup = style({
 /**
  * The Worker key trust line and its verify button. The state text is not an
  * interactive control, so it needs no tooltip; the button shows a word and
- * names itself.
+ * identifies itself.
  */
 export const trustRow = style({
   display: 'flex',

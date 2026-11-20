@@ -640,7 +640,6 @@ func (a *App) finishDisconnect(connection *desktopConnection) {
 	// Wait for the loopback listener only after releasing lifecycleMu.
 	defer func() { ceremony.closeListener() }()
 	a.lifecycleMu.Lock()
-	defer a.lifecycleMu.Unlock()
 
 	if a.browserAuth != nil && a.browserAuth.connection == connection {
 		ceremony = a.detachBrowserAuthLocked()
@@ -661,6 +660,11 @@ func (a *App) finishDisconnect(connection *desktopConnection) {
 	// freeze every lifecycle reader for relayDrainTimeout (see wsRelay.detach).
 	_ = closeChannelRelayOn(connection)
 	_ = closeUserEventsRelayOn(connection)
+	a.lifecycleMu.Unlock()
+
+	// The transition gate keeps a successor connection from committing while
+	// this cleanup runs. Keep lifecycle readers available while tunnel opens,
+	// listeners, and owned connections finish retiring.
 	a.tunnels.CloseAll()
 }
 
@@ -951,13 +955,13 @@ func (a *App) applyProxyToTunnels(proxy *HubProxy) {
 	})
 }
 
-func (a *App) DeleteTunnel(tunnelID string, channelEpoch string) error {
+func (a *App) DeleteTunnel(tunnelID string, channelEpoch string, expectedUserID string) error {
 	done, err := a.beginOperation()
 	if err != nil {
 		return err
 	}
 	defer done()
-	return a.tunnels.DeleteTunnel(tunnelID, channelEpoch)
+	return a.tunnels.DeleteTunnel(tunnelID, channelEpoch, expectedUserID)
 }
 
 // ListTunnels reports the current channel epoch and the tunnels owned by

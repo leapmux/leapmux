@@ -3,7 +3,7 @@ import type { WorkerTrustScope } from '~/context/AuthContext'
 import { describe, expect, it, vi } from 'vitest'
 import { verifyWorkerKey } from './verifyWorkerKey'
 
-const review = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope) => Promise<TunnelKeyApproval>>())
+const review = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal) => Promise<TunnelKeyApproval>>())
 vi.mock('~/api/workerRpc', () => ({ refreshWorkerTrustForTunnel: review }))
 
 const KeyPinRejectedError = vi.hoisted(() => class KeyPinRejectedError extends Error {})
@@ -18,10 +18,14 @@ describe('verifyWorkerKey', () => {
       expectedUserId: 'user',
       identityGeneration: 1,
       publicKeyHex: 'approved',
+      pinSnapshot: {
+        pin: { publicKeyHex: 'approved', firstSeen: 1 },
+        removalRevision: 0,
+      },
     }
     review.mockResolvedValueOnce(approval)
     await expect(verifyWorkerKey('w1', scope)).resolves.toBe(approval)
-    expect(review).toHaveBeenCalledExactlyOnceWith('w1', scope)
+    expect(review).toHaveBeenCalledExactlyOnceWith('w1', scope, undefined)
   })
 
   it('explains how to confirm the fingerprint after a rejection', async () => {

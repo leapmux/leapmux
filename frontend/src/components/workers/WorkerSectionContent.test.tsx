@@ -8,6 +8,7 @@ import type { TunnelStore } from '~/stores/tunnel.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isTunnelAvailable, platformBridge } from '~/api/platformBridge'
 import { actionSlot, actionSlotResting } from '~/components/tree/sidebarActions.css'
@@ -19,6 +20,7 @@ import { clippedText } from '~/styles/shared.css'
 import { deferred, settle } from '~/test-support/async'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
+import { testTunnelKeyApproval as approve } from '~/test-support/workerTrust'
 import { WorkerSectionContent } from './WorkerSectionContent'
 
 /** A port-forward tunnel, whose label is the one that carries the arrow. */
@@ -52,7 +54,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
 
 // The verify button's one action: the browser channel path that resolves the
 // Worker key pin. Mocked so a test sees the call without opening a channel.
-const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope) => Promise<TunnelKeyApproval>>())
+const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal) => Promise<TunnelKeyApproval>>())
 vi.mock('./verifyWorkerKey', () => ({ verifyWorkerKey }))
 
 const authState = vi.hoisted(() => ({
@@ -60,28 +62,14 @@ const authState = vi.hoisted(() => ({
   scope: undefined as undefined | (() => WorkerTrustScope),
 }))
 vi.mock('~/context/AuthContext', async () => {
-  const { createSignal } = await import('solid-js')
-  let controller = new AbortController()
-  const [scope, setScope] = createSignal<WorkerTrustScope>({ userId: 'user-1', generation: 1, signal: controller.signal })
-  authState.scope = scope
-  authState.setUserId = (id) => {
-    controller.abort()
-    controller = new AbortController()
-    setScope(previous => ({ userId: id ?? null, generation: previous.generation + 1, signal: controller.signal }))
-  }
+  const { createTestWorkerTrustState } = await import('~/test-support/workerTrust')
+  const state = createTestWorkerTrustState()
+  authState.scope = state.scope
+  authState.setUserId = state.setUserId
   return {
-    useAuth: () => ({ workerTrustScope: scope }),
+    useAuth: () => ({ workerTrustScope: state.scope }),
   }
 })
-
-function approve(scope: WorkerTrustScope): TunnelKeyApproval {
-  return {
-    workerId: 'w1',
-    expectedUserId: scope.userId!,
-    identityGeneration: scope.generation,
-    publicKeyHex: 'verified',
-  }
-}
 
 beforeEach(() => {
   authState.setUserId?.('user-1')
@@ -465,7 +453,7 @@ describe('WorkerSectionContent stopped tunnel rows', () => {
 
     const scope = authState.scope!()
     await vi.waitFor(() => expect(onAddTunnel).toHaveBeenCalledOnce())
-    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', scope)
+    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', scope, expect.any(AbortSignal))
     expect(onAddTunnel).toHaveBeenCalledExactlyOnceWith({
       worker,
       scope,
@@ -499,6 +487,33 @@ describe('WorkerSectionContent stopped tunnel rows', () => {
 
     expect(onAddTunnel).not.toHaveBeenCalled()
     expect(screen.getByTestId('tunnel-verify-key')).toBeEnabled()
+  })
+
+  it('aborts review when the stopped row disappears', async () => {
+    const [rows, setRows] = createSignal<TunnelInfo[]>([
+      stoppedTunnel(),
+    ])
+    const store = createTunnelStore(authState.scope!)
+    Object.defineProperty(store, 'tunnels', { value: rows })
+    Object.defineProperty(store, 'tunnelsForWorker', {
+      value: (workerId: string) => rows().filter(tunnel => tunnel.workerId === workerId),
+    })
+    const review = deferred<TunnelKeyApproval>()
+    let signal: AbortSignal | undefined
+    verifyWorkerKey.mockImplementationOnce((_workerId, _scope, operationSignal) => {
+      signal = operationSignal
+      return review.promise
+    })
+    const { onAddTunnel } = renderSection({ store })
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+    expect(signal?.aborted).toBe(false)
+
+    setRows([])
+    await settle()
+    expect(signal?.aborted).toBe(true)
+    review.resolve(approve(authState.scope!()))
+    await settle()
+    expect(onAddTunnel).not.toHaveBeenCalled()
   })
 
   it('shows the verification failure beside the row that asked for it', async () => {

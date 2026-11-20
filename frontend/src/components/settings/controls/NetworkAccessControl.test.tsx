@@ -282,6 +282,17 @@ describe('NetworkAccessControl', () => {
     expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
   })
 
+  it('refuses duplicate editable addresses after canonicalization', async () => {
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['127.0.0.1:4327', '127.0.0.1:04327'],
+      })}
+      />
+    ))
+
+    expect(await screen.findByRole('button', { name: 'Apply' })).toBeDisabled()
+  })
+
   // Publishing an address without a password would put the whole app behind
   // nothing, so the panel refuses until one exists.
   it('refuses to publish an exposed address while the account has no password', async () => {

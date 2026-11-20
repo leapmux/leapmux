@@ -4,6 +4,7 @@ import type { ParentComponent } from 'solid-js'
 import type { EmailVerificationStatus, GetCurrentUserResponse, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { StorageAccount } from '~/lib/browserStorage'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
+import type { WorkerTrustScope } from '~/lib/workerTrustScope'
 import { create } from '@bufbuild/protobuf'
 import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -129,14 +130,7 @@ export type UserAdoption = (user: User | undefined, verification?: EmailVerifica
  * mid-operation cancelled its `signal` and must not have its decision
  * published into the successor's world.
  */
-export interface WorkerTrustScope {
-  /** The adopted user, or null while signed out. */
-  userId: string | null
-  /** Monotonic identity generation; one per lifetime. */
-  generation: number
-  /** Aborted when this scope retires. */
-  signal: AbortSignal
-}
+export type { WorkerTrustScope } from '~/lib/workerTrustScope'
 
 export interface AuthState {
   user: () => User | null
@@ -753,8 +747,8 @@ export const AuthProvider: ParentComponent = (props) => {
    *
    * Without an account, the sign-in still SUCCEEDED: the session cookie now
    * belongs to an account this page cannot read yet. The identity transition
-   * happens at once -- the previous identity, its elevation and, through the
-   * `user` effect, its pooled channels go -- and sign-in recovery starts.
+   * happens at once -- `setUser` releases the previous identity's pooled
+   * channels and elevation -- and sign-in recovery starts.
    * `SignInRecoveryGate` replaces every route while the account read runs, and
    * recovery owns the navigation that follows.
    */
@@ -1030,9 +1024,8 @@ export const AuthProvider: ParentComponent = (props) => {
     try {
       const resp = await attempt()
       advanceAuthSessionEpoch()
-      // Through adoptSignInReport: setUser drives the eager release of the
-      // previous user's pooled channels through the createEffect above,
-      // rather than leaving them to the lazy per-request identity check
+      // Through adoptSignInReport: setUser eagerly releases the previous
+      // user's pooled channels rather than leaving them to the per-request check
       // (which evicts one channel per request while the shared WebSocket
       // stays held for the old user) -- and it clears the elevation the
       // previous identity held.

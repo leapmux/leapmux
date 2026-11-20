@@ -77,7 +77,6 @@ type channelKey struct {
 	workerID       string
 	expectedUserID string
 	expectedKeys   string // the composite hex identifying the expected Worker key set
-	epoch          string
 }
 
 // channelExpectation is the Worker identity one admitted tunnel proves on
@@ -86,6 +85,7 @@ type channelKey struct {
 // channel only when their expectations are equal.
 type channelExpectation struct {
 	userID string
+	pin    tunnelpkg.KeyPinStore
 	// keysHex is the composite encoding NewExpectedWorkerKeyPin decodes. It is
 	// the input for the per-open pin and, once normalized to lowercase, for
 	// the cache identity. Empty means no expectation:
@@ -98,6 +98,9 @@ type channelExpectation struct {
 // empty expectation means the open trusts whatever the Hub announces -- the
 // pre-expectation behaviour, reachable only from internal callers.
 func (e channelExpectation) buildPin() (tunnelpkg.KeyPinStore, error) {
+	if e.pin != nil {
+		return e.pin, nil
+	}
 	if e.keysHex == "" {
 		return nil, nil
 	}
@@ -126,6 +129,9 @@ type channelEpoch struct {
 	// An evicted channel and an open whose last waiter left still own
 	// resources. Only the current epoch can add or remove owned channels.
 	channels map[*managedChannel]struct{}
+	cache    map[channelKey]*managedChannel
+	inflight map[channelKey]*channelOpen
+	chanOpts *tunnelpkg.OpenChannelOptions
 	opening  sync.WaitGroup
 }
 
@@ -134,30 +140,33 @@ type channelEpoch struct {
 // open/cache/evict/epoch state machine is unit-testable without a listener
 // harness. See https://github.com/leapmux/leapmux/issues/283.
 type channelPool struct {
-	mu       sync.Mutex
-	channels map[channelKey]*managedChannel
-	inflight map[channelKey]*channelOpen
-	chanOpts *tunnelpkg.OpenChannelOptions
-	epoch    *channelEpoch
-	openCh   openChannelFunc
+	mu     sync.Mutex
+	epoch  *channelEpoch
+	openCh openChannelFunc
 }
 
 func newChannelPool(openCh openChannelFunc) *channelPool {
 	return &channelPool{
-		channels: make(map[channelKey]*managedChannel),
-		inflight: make(map[channelKey]*channelOpen),
-		epoch:    newChannelEpoch(),
-		openCh:   openCh,
+		epoch:  newChannelEpoch(nil),
+		openCh: openCh,
 	}
 }
 
-func newChannelEpoch() *channelEpoch {
+func newChannelEpoch(opts *tunnelpkg.OpenChannelOptions) *channelEpoch {
 	ctx, cancel := context.WithCancel(context.Background())
+	var copiedOpts *tunnelpkg.OpenChannelOptions
+	if opts != nil {
+		copied := *opts
+		copiedOpts = &copied
+	}
 	return &channelEpoch{
 		id:       uuid.New().String(),
 		ctx:      ctx,
 		cancel:   cancel,
 		channels: make(map[*managedChannel]struct{}),
+		cache:    make(map[channelKey]*managedChannel),
+		inflight: make(map[channelKey]*channelOpen),
+		chanOpts: copiedOpts,
 	}
 }
 
@@ -177,28 +186,20 @@ func (epoch *channelEpoch) close() {
 func (p *channelPool) setOptions(opts *tunnelpkg.OpenChannelOptions) *channelEpoch {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if opts == nil {
-		p.chanOpts = nil
-	} else {
-		copied := *opts
-		p.chanOpts = &copied
-	}
-	return p.rotateLocked()
+	return p.rotateLocked(opts)
 }
 
 func (p *channelPool) rotate() *channelEpoch {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.rotateLocked()
+	return p.rotateLocked(p.epoch.chanOpts)
 }
 
-func (p *channelPool) rotateLocked() *channelEpoch {
+func (p *channelPool) rotateLocked(opts *tunnelpkg.OpenChannelOptions) *channelEpoch {
 	// Cancel the retiring lifetime and detach every resource it still owns.
 	retired := p.epoch
 	retired.cancel()
-	p.epoch = newChannelEpoch()
-	p.channels = make(map[channelKey]*managedChannel)
-	p.inflight = make(map[channelKey]*channelOpen)
+	p.epoch = newChannelEpoch(opts)
 	return retired
 }
 
@@ -245,16 +246,15 @@ func (p *channelPool) getOrOpen(
 		workerID:       workerID,
 		expectedUserID: expect.userID,
 		expectedKeys:   strings.ToLower(expect.keysHex),
-		epoch:          activeEpoch.id,
 	}
-	if ch := p.channels[key]; ch != nil {
+	if ch := activeEpoch.cache[key]; ch != nil {
 		if !ch.closed() {
 			p.mu.Unlock()
 			return ch, nil
 		}
-		delete(p.channels, key)
+		delete(activeEpoch.cache, key)
 	}
-	open := p.inflight[key]
+	open := activeEpoch.inflight[key]
 	if open == nil {
 		openCtx, cancelOpen := context.WithCancel(activeEpoch.ctx)
 		open = &channelOpen{
@@ -263,11 +263,11 @@ func (p *channelPool) getOrOpen(
 			done:   make(chan struct{}),
 			key:    key,
 		}
-		p.inflight[key] = open
+		activeEpoch.inflight[key] = open
 		activeEpoch.opening.Add(1)
 		opts := tunnelpkg.OpenChannelOptions{}
-		if p.chanOpts != nil {
-			opts = *p.chanOpts
+		if activeEpoch.chanOpts != nil {
+			opts = *activeEpoch.chanOpts
 		}
 		opts.LifetimeContext = activeEpoch.ctx
 		// Per-open identity: the channel must authenticate as the expected
@@ -286,10 +286,10 @@ func (p *channelPool) getOrOpen(
 	case <-operationCtx.Done():
 		p.mu.Lock()
 		open.waiters--
-		if open.waiters == 0 && p.inflight[key] == open {
+		if open.waiters == 0 && activeEpoch.inflight[key] == open {
 			// A later caller can start again, while reset keeps owning
 			// this open until the transport and rollback finish.
-			delete(p.inflight, key)
+			delete(activeEpoch.inflight, key)
 			open.cancel()
 		}
 		p.mu.Unlock()
@@ -329,17 +329,17 @@ func (p *channelPool) runChannelOpen(
 		switch {
 		case epoch != p.epoch:
 			err = fmt.Errorf("tunnel manager reset while opening channel")
-		case p.inflight[open.key] != open:
+		case epoch.inflight[open.key] != open:
 			err = context.Canceled
 		default:
 			err = openCtx.Err()
 		}
 	}
-	if p.inflight[open.key] == open {
-		delete(p.inflight, open.key)
+	if epoch.inflight[open.key] == open {
+		delete(epoch.inflight, open.key)
 	}
 	if err == nil {
-		p.channels[open.key] = ch
+		epoch.cache[open.key] = ch
 		epoch.channels[ch] = struct{}{}
 		open.channel = ch
 	}
@@ -363,8 +363,8 @@ func (p *channelPool) runChannelOpen(
 func (p *channelPool) watchChannelClose(epoch *channelEpoch, key channelKey, ch *managedChannel) {
 	<-ch.done()
 	p.mu.Lock()
-	if p.channels[key] == ch {
-		delete(p.channels, key)
+	if epoch.cache[key] == ch {
+		delete(epoch.cache, key)
 	}
 	p.mu.Unlock()
 

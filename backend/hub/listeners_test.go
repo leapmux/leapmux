@@ -148,7 +148,7 @@ func newTestSet(t *testing.T, baseAddrs ...string) (*listenerSet, chan error) {
 		parsed := listenset.MustParse(baseAddr)
 		ln, err := net.Listen("tcp", parsed.DialAddr())
 		require.NoError(t, err)
-		bound = append(bound, baseBinding{ln: ln, addr: parsed})
+		bound = append(bound, baseBinding{ln: ln, resolved: resolvePort(parsed, ln)})
 	}
 
 	serveErr := make(chan error, 1)
@@ -667,7 +667,7 @@ func TestListenerSet_DoesNotServeBeforeServeRuns(t *testing.T) {
 	baseLn, err := net.Listen("tcp", base.DialAddr())
 	require.NoError(t, err)
 
-	set := newListenerSet([]baseBinding{{ln: baseLn, addr: base}}, make(chan error, 1))
+	set := newListenerSet([]baseBinding{{ln: baseLn, resolved: resolvePort(base, baseLn)}}, make(chan error, 1))
 	set.setServer(server)
 	t.Cleanup(func() {
 		_ = set.Close()
@@ -871,7 +871,7 @@ func TestListenerSet_BindsBeforeItHasAServer(t *testing.T) {
 	baseLn, err := net.Listen("tcp", base.DialAddr())
 	require.NoError(t, err)
 
-	set := newListenerSet([]baseBinding{{ln: baseLn, addr: base}}, make(chan error, 1))
+	set := newListenerSet([]baseBinding{{ln: baseLn, resolved: resolvePort(base, baseLn)}}, make(chan error, 1))
 	t.Cleanup(func() { _ = set.Close() })
 
 	extraPort := freePort(t)

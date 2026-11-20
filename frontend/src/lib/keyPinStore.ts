@@ -138,7 +138,7 @@ interface KeyPinResolveOpts extends KeyPinStorageScope {
 
 export interface ResolvedKeyPin {
   publicKeyHex: string
-  commit: () => Promise<void>
+  commit: () => Promise<WorkerKeyPinSnapshot>
 }
 
 function createConfirmation(confirm: KeyPinConfirmFn) {
@@ -241,7 +241,16 @@ export class KeyPinStore {
               expectRevision: removalRevision,
               expectPin: pin,
             }
-        await updateKeyPinState(change, storageScope)
+        const committed = await updateKeyPinState(change, storageScope)
+        const committedPin = Object.hasOwn(committed.pins, workerId)
+          ? committed.pins[workerId] ?? null
+          : null
+        if (committedPin === null)
+          throw new Error('The verified Worker key was not committed.')
+        return {
+          pin: committedPin,
+          removalRevision: committed.removalRevision,
+        }
       },
     }
 

@@ -61,9 +61,11 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
   const [deleting, setDeleting] = createSignal(false)
   const [review, setReview] = createSignal<TunnelReview | null>(null)
   const [verifyError, setVerifyError] = createSignal<(TunnelReview & { message: string }) | null>(null)
+  let reviewLifetime: AbortController | undefined
   let disposed = false
   onCleanup(() => {
     disposed = true
+    reviewLifetime?.abort()
   })
 
   function identityIsLive(scope: WorkerTrustScope): boolean {
@@ -91,8 +93,11 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
     if (target && !identityIsLive(target.scope))
       closeDelete(target)
     const activeReview = review()
-    if (activeReview && !identityIsLive(activeReview.scope))
+    if (activeReview && (!identityIsLive(activeReview.scope)
+      || !tunnel?.tunnels().some(row => row.id === activeReview.id && row.keyMismatch))) {
+      reviewLifetime?.abort()
       setReview(null)
+    }
     const failure = verifyError()
     if (failure && !identityIsLive(failure.scope))
       setVerifyError(null)
@@ -148,12 +153,17 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
     if (!scope.userId || !identityIsLive(scope) || review())
       return
     const verification = { id: stopped.id, scope }
+    reviewLifetime?.abort()
+    const lifetime = new AbortController()
+    reviewLifetime = lifetime
     setReview(verification)
     setVerifyError(null)
     try {
-      const approval = await verifyWorkerKey(worker.id, scope)
-      if (!identityIsLive(scope))
+      const approval = await verifyWorkerKey(worker.id, scope, lifetime.signal)
+      if (!identityIsLive(scope)
+        || !tunnel?.tunnels().some(row => row.id === stopped.id && row.keyMismatch)) {
         return
+      }
       const { type, targetAddr, targetPort, bindAddr, bindPort } = stopped
       props.onAddTunnel({
         worker,
@@ -172,7 +182,8 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
       })
     }
     catch (err) {
-      if (identityIsLive(scope)) {
+      if (identityIsLive(scope)
+        && tunnel?.tunnels().some(row => row.id === stopped.id && row.keyMismatch)) {
         setVerifyError({
           ...verification,
           message: formatErrorMessage(err, 'Could not verify the Worker key.'),
@@ -180,6 +191,8 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
       }
     }
     finally {
+      if (reviewLifetime === lifetime)
+        reviewLifetime = undefined
       if (!disposed && review() === verification)
         setReview(null)
     }

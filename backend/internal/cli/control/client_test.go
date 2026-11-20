@@ -595,7 +595,7 @@ func TestPinStore_ACorruptFileRefusesOnlyTheChannel(t *testing.T) {
 	_, err = c.OpenE2EEChannel(ctx, ctx, "worker-1")
 	require.Error(t, err, "the E2EE channel is the one caller that needs a pin")
 	assert.Contains(t, err.Error(), "worker key pin: parse pins",
-		"the refusal must be the pin resolve naming the unreadable document, not a failure elsewhere in the handshake")
+		"the refusal must be the pin resolve that identifies the unreadable document, not a failure elsewhere in the handshake")
 
 	// Repair the document; the same client must recover, because every
 	// store operation reads the file again.

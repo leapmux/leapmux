@@ -10,6 +10,7 @@ import { TunnelKeyApprovalExpiredError } from '~/api/workerRpc'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { deferred, settle } from '~/test-support/async'
+import { testTunnelKeyApproval as approve } from '~/test-support/workerTrust'
 import { AddTunnelDialog } from './AddTunnelDialog'
 
 beforeAll(() => {
@@ -26,31 +27,17 @@ const authState = vi.hoisted(() => ({
   scope: undefined as undefined | (() => WorkerTrustScope),
 }))
 vi.mock('~/context/AuthContext', async () => {
-  const { createSignal } = await import('solid-js')
-  let controller = new AbortController()
-  const [scope, setScope] = createSignal<WorkerTrustScope>({ userId: 'user-1', generation: 1, signal: controller.signal })
-  authState.scope = scope
-  authState.setUserId = (id) => {
-    controller.abort()
-    controller = new AbortController()
-    setScope(previous => ({ userId: id ?? null, generation: previous.generation + 1, signal: controller.signal }))
-  }
+  const { createTestWorkerTrustState } = await import('~/test-support/workerTrust')
+  const state = createTestWorkerTrustState()
+  authState.scope = state.scope
+  authState.setUserId = state.setUserId
   return {
-    useAuth: () => ({ workerTrustScope: scope }),
+    useAuth: () => ({ workerTrustScope: state.scope }),
   }
 })
 
-const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope) => Promise<TunnelKeyApproval>>())
+const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal) => Promise<TunnelKeyApproval>>())
 vi.mock('./verifyWorkerKey', () => ({ verifyWorkerKey }))
-
-function approve(scope: WorkerTrustScope): TunnelKeyApproval {
-  return {
-    workerId: 'w1',
-    expectedUserId: scope.userId!,
-    identityGeneration: scope.generation,
-    publicKeyHex: 'verified',
-  }
-}
 
 function createMockTunnelStore(overrides?: Partial<TunnelStore>): TunnelStore {
   return {
@@ -456,7 +443,7 @@ describe('AddTunnelDialog key trust', () => {
     fireEvent.click(screen.getByTestId('tunnel-verify-key'))
     await vi.advanceTimersByTimeAsync(0)
     expect(screen.getByTestId('tunnel-create')).toBeEnabled()
-    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', target.scope)
+    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', target.scope, expect.any(AbortSignal))
     expect(add).toHaveBeenCalledOnce()
     submit()
     await vi.advanceTimersByTimeAsync(0)
@@ -497,6 +484,41 @@ describe('AddTunnelDialog key trust', () => {
     expect(add).toHaveBeenCalledOnce()
   })
 
+  it('aborts a pending review when the form closes', async () => {
+    const scope = authState.scope!()
+    const review = deferred<TunnelKeyApproval>()
+    let signal: AbortSignal | undefined
+    verifyWorkerKey.mockImplementationOnce((_workerId, _scope, operationSignal) => {
+      signal = operationSignal
+      return review.promise
+    })
+    const rendered = renderDialog({
+      replacement: {
+        config: {
+          workerId: 'w1',
+          type: 'port_forward',
+          targetAddr: 'internal.example',
+          targetPort: 8443,
+          bindAddr: '127.0.0.1',
+          bindPort: 9443,
+        },
+        approval: approve(scope),
+      },
+      store: {
+        add: vi.fn().mockRejectedValue(new TunnelKeyApprovalExpiredError()),
+      },
+    })
+    submit()
+    fireEvent.click(await screen.findByTestId('tunnel-verify-key'))
+    expect(signal?.aborted).toBe(false)
+
+    rendered.unmount()
+    expect(signal?.aborted).toBe(true)
+    review.resolve(approve(scope))
+    await settle()
+    expect(rendered.onCreated).not.toHaveBeenCalled()
+  })
+
   it('discards the values of a retired replacement before a new form opens', () => {
     const scope = authState.scope!()
     const previous = renderDialog({
@@ -534,7 +556,7 @@ describe('AddTunnelDialog key trust', () => {
     submit()
 
     fireEvent.click(await screen.findByTestId('tunnel-verify-key'))
-    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', target.scope)
+    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', target.scope, expect.any(AbortSignal))
     authState.setUserId?.('user-2')
     verification.resolve(approve(target.scope))
     await settle()

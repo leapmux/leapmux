@@ -101,10 +101,17 @@ export function createTunnelStore(getScope: () => WorkerTrustScope): TunnelStore
         const previous = snapshot()
         if (previous?.scope !== scope || previous.channelEpoch !== result.channelEpoch)
           rowIdentity.clear()
+        const tunnels = rowIdentity.stabilize(result.tunnels)
+        if (previous?.scope === scope
+          && previous.channelEpoch === result.channelEpoch
+          && previous.tunnels.length === tunnels.length
+          && previous.tunnels.every((tunnel, index) => tunnel === tunnels[index])) {
+          return
+        }
         setSnapshot({
           ...result,
           scope,
-          tunnels: rowIdentity.stabilize(result.tunnels),
+          tunnels,
         })
       }),
     }
@@ -161,12 +168,8 @@ export function createTunnelStore(getScope: () => WorkerTrustScope): TunnelStore
     },
     removeAllForWorker: async (workerId, scope) => {
       requireCurrent(scope)
-      const tunnelIds = tunnels().filter(t => t.workerId === workerId).map(t => t.id)
-      if (tunnelIds.length === 0)
-        return
-
       await reconcileDelete(scope, async () => {
-        const results = await platformBridge.deleteTunnels(tunnelIds, scope)
+        const results = await platformBridge.deleteTunnels(workerId, scope)
         const failures = results.filter(result => result.status === 'rejected')
         if (failures.length === 0)
           return

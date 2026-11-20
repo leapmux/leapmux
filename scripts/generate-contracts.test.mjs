@@ -3946,7 +3946,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('emits the tunnel change event to Rust and TypeScript', () => {
     const d = readContract('desktop')
-    expect(emitTsDesktop(d)).toContain('export const EVENT_TUNNELS_CHANGED = "tunnel:changed" as const')
+    expect(emitTsDesktop(d)).toContain('export const TAURI_EVENT_TUNNELS_CHANGED = "tunnel:changed" as const')
     expect(emitRsDesktop(d)).toContain('pub const EVENT_TUNNELS_CHANGED: &str = "tunnel:changed"')
   })
 

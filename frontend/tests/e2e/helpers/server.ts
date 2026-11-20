@@ -91,6 +91,10 @@ export function findFreePort(): Promise<number> {
 
 /** Wait for a successful HTTP response within the startup deadline. */
 export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
+  return waitForHttpReady(url, timeoutMs)
+}
+
+function waitForHttpReady(url: string, timeoutMs: number, proc?: ChildProcess): Promise<void> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
     return Promise.reject(new RangeError('The startup deadline must fit a positive Node timer delay'))
   return new Promise((resolve, reject) => {
@@ -102,6 +106,15 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
       finish(new Error(`Server at ${url} did not start within ${timeoutMs}ms`, { cause: lastError }))
     }, timeoutMs)
 
+    const onError = (error: Error) => finish(error)
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      finish(new Error(`The hub at ${url} exited before startup completed: code=${code ?? 'none'} signal=${signal ?? 'none'}`))
+    }
+    proc?.once('error', onError)
+    proc?.once('exit', onExit)
+    if (proc && (proc.exitCode !== null || proc.signalCode !== null))
+      onExit(proc.exitCode, proc.signalCode)
+
     function finish(error?: Error) {
       if (finished)
         return
@@ -110,6 +123,8 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
       clearTimeout(retry)
       // Stop requests that never return headers. Cancellation releases the body after a successful response.
       controller.abort()
+      proc?.removeListener('error', onError)
+      proc?.removeListener('exit', onExit)
       if (error)
         reject(error)
       else
@@ -122,6 +137,8 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
         if (finished)
           return
         if (response.ok) {
+          if (proc !== undefined)
+            await response.body?.cancel()
           finish()
           return
         }
@@ -138,7 +155,7 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
   })
 }
 
-/** The ordered listen endpoints a hub's state file names. */
+/** The ordered listen endpoints a hub's state file lists. */
 export interface ResolvedListenAddresses {
   /** TCP addresses in bind order, each carrying the port its listener resolved to. */
   tcp: string[]
@@ -195,6 +212,20 @@ export function resolvedHubTCPFromStateJson(raw: string): string {
 export function hubUrlFromStateJson(raw: string, browserHost = E2E_BROWSER_HOST): string {
   const entry = resolvedHubTCPFromStateJson(raw)
   return `http://${browserHost}:${entry.slice(entry.lastIndexOf(':') + 1)}`
+}
+
+/** Parse one state-file snapshot into the complete result a started Hub exposes. */
+export function startedHubFromStateJson(raw: string, browserHost = E2E_BROWSER_HOST): StartedHub {
+  const { tcp, local } = resolvedHubListenAddresses(raw)
+  const listen = tcp[0]
+  if (listen === undefined)
+    throw new Error('expected at least one TCP address in the hub state file\'s listen list')
+  return {
+    hubUrl: `http://${browserHost}:${listen.slice(listen.lastIndexOf(':') + 1)}`,
+    listen,
+    tcp,
+    local,
+  }
 }
 
 /** Read the hub's state file once it appears, or fail when the process exits. */
@@ -259,67 +290,13 @@ export interface StartedHub extends ResolvedListenAddresses {
  */
 export async function waitForHubStart(statePath: string, proc: ChildProcess, browserHost = E2E_BROWSER_HOST): Promise<StartedHub> {
   const state = await waitForHubStateFile(statePath, proc)
-  const { tcp, local } = resolvedHubListenAddresses(state)
-  const listen = resolvedHubTCPFromStateJson(state)
-  const hubUrl = hubUrlFromStateJson(state, browserHost)
+  const result = startedHubFromStateJson(state, browserHost)
+  const { hubUrl } = result
   await waitForHubReady(hubUrl, proc)
-  return { hubUrl, listen, tcp, local }
+  return result
 }
 
 /** Wait until the hub responds or its process exits. */
 export function waitForHubReady(url: string, proc: ChildProcess, timeoutMs = 30_000): Promise<void> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
-    return Promise.reject(new RangeError('The startup deadline must fit a positive Node timer delay'))
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController()
-    let finished = false
-    let retry: ReturnType<typeof setTimeout> | undefined
-    let lastError: unknown
-    const deadline = setTimeout(() => finish(new Error(`Server at ${url} did not start within ${timeoutMs}ms`, { cause: lastError })), timeoutMs)
-
-    const onError = (error: Error) => finish(error)
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      finish(new Error(`The hub at ${url} exited before startup completed: code=${code ?? 'none'} signal=${signal ?? 'none'}`))
-    }
-    proc.once('error', onError)
-    proc.once('exit', onExit)
-    if (proc.exitCode !== null || proc.signalCode !== null)
-      onExit(proc.exitCode, proc.signalCode)
-
-    function finish(error?: Error) {
-      if (finished)
-        return
-      finished = true
-      clearTimeout(deadline)
-      clearTimeout(retry)
-      controller.abort()
-      proc.removeListener('error', onError)
-      proc.removeListener('exit', onExit)
-      if (error)
-        reject(error)
-      else
-        resolve()
-    }
-
-    async function check() {
-      try {
-        const response = await fetchHub(url, { signal: controller.signal })
-        if (finished)
-          return
-        if (response.ok) {
-          await response.body?.cancel()
-          finish()
-          return
-        }
-        await response.body?.cancel()
-        lastError = new Error(`Startup request returned HTTP ${response.status}`)
-      }
-      catch (error) {
-        lastError = error
-      }
-      if (!finished)
-        retry = setTimeout(check, 25)
-    }
-    void check()
-  })
+  return waitForHttpReady(url, timeoutMs, proc)
 }
