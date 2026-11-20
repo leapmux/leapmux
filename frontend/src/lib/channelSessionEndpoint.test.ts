@@ -17,6 +17,7 @@ import {
   RekeyRejectSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
 import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
+import { allZero, handshakeStateIsZero } from '~/test-support/noiseVectors'
 import { frameAssociatedData, unframeBytes } from './channelFraming'
 import { FIRST_REKEY_CORRELATION_ID } from './channelSession'
 import { createChannelSessionEndpoint } from './channelSessionEndpoint'
@@ -202,17 +203,13 @@ function fillSecrets(state: HybridHandshakeState): void {
   state.e.privateKey.fill(1)
   state.ss.ck.fill(2)
   state.ss.k.fill(3)
+  state.ss.h.fill(5)
   state.mlkemEphemeralSecretKey.fill(4)
 }
 
 /** Whether every secret of a hybrid handshake state is zero. */
 function secretsZero(state: HybridHandshakeState): boolean {
-  return [
-    state.e.privateKey,
-    state.ss.ck,
-    state.ss.k,
-    state.mlkemEphemeralSecretKey,
-  ].every(bytes => bytes.every(byte => byte === 0))
+  return handshakeStateIsZero(state) && allZero(state.mlkemEphemeralSecretKey)
 }
 
 afterEach(() => {

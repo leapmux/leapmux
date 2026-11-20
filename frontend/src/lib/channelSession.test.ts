@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_REJECT_BACKOFF_MS, MAX_CHUNK_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS } from '~/generated/contracts/wire'
 import { ChannelMessageFlags, ChannelMessageSchema, EncryptionMode, InnerMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { blankClassicHandshakeState, blankHybridHandshakeState } from '~/test-support/channelSessionDoubles'
+import { handshakeStateIsZero } from '~/test-support/noiseVectors'
 import { ChannelError } from './channelError'
 import { frameAssociatedData, unframeBytes } from './channelFraming'
 import { ChannelSession, createSessionChannel, FIRST_REKEY_CORRELATION_ID } from './channelSession'
@@ -153,14 +154,9 @@ function fillHybridSecrets(state: HybridHandshakeState): void {
   state.mlkemEphemeralSecretKey.fill(0x55)
 }
 
-/** Whether every secret of a classic handshake state is zero. */
-function classicSecretsZero(state: HandshakeState): boolean {
-  return allZero(state.e.privateKey) && allZero(state.ss.ck) && allZero(state.ss.h) && allZero(state.ss.k)
-}
-
 /** Whether every secret of a hybrid handshake state is zero. */
 function hybridSecretsZero(state: HybridHandshakeState): boolean {
-  return classicSecretsZero(state) && allZero(state.mlkemEphemeralSecretKey)
+  return handshakeStateIsZero(state) && allZero(state.mlkemEphemeralSecretKey)
 }
 
 const keys = {
@@ -263,7 +259,7 @@ describe('ChannelSession beginHandshake', () => {
     const pending = session.beginHandshake('worker-1', EncryptionMode.CLASSIC, keys)
 
     await expect(pending.finish(new Uint8Array([1]))).rejects.toThrow('bad classic handshake-2')
-    expect(classicSecretsZero(state)).toBe(true)
+    expect(handshakeStateIsZero(state)).toBe(true)
   })
 
   it('zeroes the state after a finish that succeeds', async () => {
@@ -304,7 +300,7 @@ describe('ChannelSession beginHandshake', () => {
     hybridPending.abandon()
     expect(() => hybridPending.abandon()).not.toThrow()
 
-    expect(classicSecretsZero(classic)).toBe(true)
+    expect(handshakeStateIsZero(classic)).toBe(true)
     expect(hybridSecretsZero(hybrid)).toBe(true)
   })
 

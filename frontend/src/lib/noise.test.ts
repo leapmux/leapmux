@@ -1,64 +1,17 @@
-import type { NoiseEntropy } from './noise'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
-import { frameAssociatedData } from './channelFraming'
-import { CipherState, initiatorHandshake1WithEntropy, initiatorHandshake2 } from './noise'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { describe, expect, it, vi } from 'vitest'
+import { allZero, entropy, expectHandshakeFrames, handshakeStateIsZero, handshakeVector, readNoiseVectors, vectorKeys } from '~/test-support/noiseVectors'
+import { CipherState, initiatorHandshake1WithEntropy, initiatorHandshake2, SymmetricState } from './noise'
 
-interface EntropyVector { x25519SeedHex?: string, mlkemEncapsulationSeedHex?: string }
-interface FrameVector { correlationId: string, flags: number, plaintext: string, ciphertextHex: string }
-interface HandshakeVector {
-  mode: string
-  workerId: string
-  channelId: string
-  responderPublic: { x25519Hex: string, mlkemHex: string, slhdsaHex: string }
-  initiatorEntropy: EntropyVector
-  message1Hex: string
-  message2Hex: string
-  initiatorFrame: FrameVector
-  responderFrame: FrameVector
-}
-const vector = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../testdata/noise_handshake_vectors.json'), 'utf8')) as { vectors: HandshakeVector[] }
-const classic = vector.vectors.find(v => v.mode === 'classic')!
+const classic = handshakeVector('classic')
 const EMPTY = new Uint8Array(0)
 
-function fromHex(hex: string): Uint8Array {
-  return Uint8Array.from(hex.match(/../g)!.map(byte => Number.parseInt(byte, 16)))
+function start(kept?: Uint8Array[], workerId = classic.workerId, keys = vectorKeys(classic)) {
+  return initiatorHandshake1WithEntropy(entropy(classic.initiatorEntropy, kept), workerId, keys)
 }
-function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
-}
-function allZero(bytes: Uint8Array): boolean {
-  return bytes.every(byte => byte === 0)
-}
-function entropy(kept?: Uint8Array[]): NoiseEntropy {
-  const draw = (hex: string | undefined): Uint8Array => {
-    const bytes = fromHex(hex ?? '')
-    kept?.push(bytes)
-    return bytes
-  }
-  return {
-    x25519Seed: () => draw(classic.initiatorEntropy.x25519SeedHex),
-    mlkemKeygenSeed: () => draw(undefined),
-    mlkemEncapsulationSeed: () => draw(classic.initiatorEntropy.mlkemEncapsulationSeedHex),
-  }
-}
-function keys(mlkem = fromHex(classic.responderPublic.mlkemHex)) {
-  return {
-    x25519PublicKey: fromHex(classic.responderPublic.x25519Hex),
-    mlkemPublicKey: mlkem,
-    slhdsaPublicKey: fromHex(classic.responderPublic.slhdsaHex),
-  }
-}
-function start(kept?: Uint8Array[], workerId = classic.workerId, keyBundle = keys()) {
-  return initiatorHandshake1WithEntropy(entropy(kept), workerId, keyBundle)
-}
+
 function expectStateZero(state: ReturnType<typeof start>['handshakeState']): void {
-  expect(allZero(state.e.privateKey)).toBe(true)
-  expect(allZero(state.ss.h)).toBe(true)
-  expect(allZero(state.ss.ck)).toBe(true)
-  expect(allZero(state.ss.k)).toBe(true)
+  expect(handshakeStateIsZero(state)).toBe(true)
 }
 
 describe('classic Noise handshake', () => {
@@ -66,34 +19,29 @@ describe('classic Noise handshake', () => {
     const kept: Uint8Array[] = []
     const { handshakeState, message1 } = start(kept)
     expect(message1).toHaveLength(1632)
-    expect(toHex(message1)).toBe(classic.message1Hex)
+    expect(bytesToHex(message1)).toBe(classic.message1Hex)
     expect(allZero(kept[0]!)).toBe(false)
     expect(allZero(kept[1]!)).toBe(true)
-    initiatorHandshake2(handshakeState, fromHex(classic.message2Hex))
+    initiatorHandshake2(handshakeState, hexToBytes(classic.message2Hex))
     expectStateZero(handshakeState)
   })
 
   it('derives the session keys and frame authentication of the Go vector', () => {
     const { handshakeState } = start()
-    const session = initiatorHandshake2(handshakeState, fromHex(classic.message2Hex))
-    const outgoing = classic.initiatorFrame
-    const outgoingAd = frameAssociatedData(classic.channelId, BigInt(outgoing.correlationId), outgoing.flags)
-    expect(toHex(session.send.encrypt(outgoingAd, new TextEncoder().encode(outgoing.plaintext)))).toBe(outgoing.ciphertextHex)
-    const incoming = classic.responderFrame
-    const incomingAd = frameAssociatedData(classic.channelId, BigInt(incoming.correlationId), incoming.flags)
-    expect(new TextDecoder().decode(session.receive.decrypt(incomingAd, fromHex(incoming.ciphertextHex)))).toBe(incoming.plaintext)
+    const session = initiatorHandshake2(handshakeState, hexToBytes(classic.message2Hex))
+    expectHandshakeFrames(session, classic)
     expectStateZero(handshakeState)
   })
 
   it('refuses another Worker id and zeroes the state', () => {
     const { handshakeState } = start(undefined, 'worker-other')
-    expect(() => initiatorHandshake2(handshakeState, fromHex(classic.message2Hex))).toThrow('invalid tag')
+    expect(() => initiatorHandshake2(handshakeState, hexToBytes(classic.message2Hex))).toThrow('invalid tag')
     expectStateZero(handshakeState)
   })
 
   it('refuses a forged payload tag and zeroes the state', () => {
     const { handshakeState } = start()
-    const message2 = fromHex(classic.message2Hex)
+    const message2 = hexToBytes(classic.message2Hex)
     message2[32] = (message2[32] ?? 0) ^ 1
     expect(() => initiatorHandshake2(handshakeState, message2)).toThrow('invalid tag')
     expectStateZero(handshakeState)
@@ -117,14 +65,51 @@ describe('classic Noise handshake', () => {
 
   it('zeroes every seed when message 1 fails', () => {
     const kept: Uint8Array[] = []
-    expect(() => start(kept, classic.workerId, keys(new Uint8Array(1568).fill(0xFF)))).toThrow('wrong publicKey modulus')
+    expect(() => start(kept, classic.workerId, vectorKeys(classic, new Uint8Array(1568).fill(0xFF)))).toThrow('wrong publicKey modulus')
     expect(kept.length).toBe(2)
     for (const bytes of kept)
       expect(allZero(bytes)).toBe(true)
   })
 })
 
+describe('SymmetricState', () => {
+  it('replaces key material in the owned buffers and clears them together', () => {
+    const state = new SymmetricState('test')
+    const chainingKey = state.ck
+    const cipherKey = state.k
+    state.mixKey(new Uint8Array(32).fill(1))
+    const firstChainingKey = chainingKey.slice()
+    const firstCipherKey = cipherKey.slice()
+
+    state.mixKey(new Uint8Array(32).fill(2))
+
+    expect(state.ck).toBe(chainingKey)
+    expect(state.k).toBe(cipherKey)
+    expect(chainingKey).not.toEqual(firstChainingKey)
+    expect(cipherKey).not.toEqual(firstCipherKey)
+    state.clear()
+    expect(allZero(chainingKey)).toBe(true)
+    expect(allZero(cipherKey)).toBe(true)
+  })
+})
+
 describe('CipherState limits', () => {
+  it('clears the previous receive key while idle', () => {
+    vi.useFakeTimers()
+    try {
+      const oldKey = new Uint8Array(32).fill(1)
+      const cipher = new CipherState(oldKey)
+      cipher.rekeyWithSecret(new Uint8Array(32).fill(2), null, true)
+      expect(allZero(oldKey)).toBe(false)
+      vi.advanceTimersByTime(10_000)
+      expect(allZero(oldKey)).toBe(true)
+      cipher.destroy()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('rejects plaintext above the chunk limit', () => {
     const cs = new CipherState(new Uint8Array(32).fill(1))
     expect(() => cs.encrypt(EMPTY, new Uint8Array(65520))).toThrow('plaintext too large')
@@ -184,17 +169,17 @@ describe('CipherState limits', () => {
   })
 
   it('matches the Go rekey ratchet vectors', () => {
-    const fixture = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../testdata/noise_rekey_vectors.json'), 'utf8')) as {
+    const fixture = readNoiseVectors<{
       vectors: { keyHex: string, dhSecretHex: string, pqSecretHex?: string, warmupPlaintext: string, plaintext: string, expectedCiphertextHex: string }[]
-    }
+    }>('noise_rekey_vectors.json')
     for (const vector of fixture.vectors) {
-      const cs = new CipherState(fromHex(vector.keyHex))
+      const cs = new CipherState(hexToBytes(vector.keyHex))
       cs.encrypt(EMPTY, new TextEncoder().encode(vector.warmupPlaintext))
-      cs.rekeyWithSecret(fromHex(vector.dhSecretHex), vector.pqSecretHex === undefined
+      cs.rekeyWithSecret(hexToBytes(vector.dhSecretHex), vector.pqSecretHex === undefined
         ? null
-        : fromHex(vector.pqSecretHex), true)
+        : hexToBytes(vector.pqSecretHex), true)
       const ciphertext = cs.encrypt(EMPTY, new TextEncoder().encode(vector.plaintext))
-      expect(toHex(ciphertext)).toBe(vector.expectedCiphertextHex)
+      expect(bytesToHex(ciphertext)).toBe(vector.expectedCiphertextHex)
     }
   })
 

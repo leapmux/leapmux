@@ -312,9 +312,6 @@ func TestSealAndOpenChannelMessage(t *testing.T) {
 	assert.Equal(t, "ch-1", frame.GetChannelId())
 	assert.Equal(t, uint64(7), frame.GetCorrelationId())
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, frame.GetFlags())
-	opened, err := OpenChannelMessage(responder, frame)
-	require.NoError(t, err)
-	assert.Equal(t, plaintext, opened)
 
 	for _, tc := range []struct {
 		name   string
@@ -334,6 +331,10 @@ func TestSealAndOpenChannelMessage(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+
+	opened, err := OpenChannelMessage(responder, frame)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, opened)
 }
 
 // The close notification is the channel id and the CLOSE flag, and nothing else.
@@ -344,6 +345,10 @@ func TestCloseNotification(t *testing.T) {
 		Flags:     leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
 	}
 	assert.True(t, proto.Equal(want, got), "got %v", got)
+	assert.True(t, IsCloseNotification(got))
+	assert.False(t, IsCloseNotification(nil))
+	assert.False(t, IsCloseNotification(&leapmuxv1.ChannelMessage{Flags: got.GetFlags(), CorrelationId: 1}))
+	assert.False(t, IsCloseNotification(&leapmuxv1.ChannelMessage{Flags: got.GetFlags(), Ciphertext: []byte{1}}))
 	assert.NotSame(t, got, CloseNotification("ch1"), "each call builds its own message")
 }
 
@@ -356,7 +361,7 @@ func TestChunkContinuation(t *testing.T) {
 	}{
 		{"unspecified is a valid final chunk", leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, false, true},
 		{"more is a valid non-final chunk", leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, true, true},
-		{"close is valid and carries no continuation", leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, false, true},
+		{"close is not a data flag", leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, false, false},
 		// proto3 enums are open: a hostile peer can put any integer on the
 		// wire. A combined value must NOT be read as "final chunk" -- that
 		// delivers a truncated assembly -- so it is invalid, full stop.

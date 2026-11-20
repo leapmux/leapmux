@@ -965,6 +965,65 @@ func TestCloseAll(t *testing.T) {
 	assert.Equal(t, 0, count)
 }
 
+func TestHandleClose_WipesTransportKeysDuringAWrite(t *testing.T) {
+	t.Parallel()
+
+	worker, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	writerEntered := make(chan struct{})
+	releaseWriter := make(chan struct{})
+	unblockWriter := sync.OnceFunc(func() { close(releaseWriter) })
+	t.Cleanup(unblockWriter)
+	mgr := NewManager(testWorkerID, worker, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(*leapmuxv1.ConnectRequest) error {
+		close(writerEntered)
+		<-releaseWriter
+		return nil
+	}, nil, 0, 0)
+	const channelID = "ch-close-during-write"
+	initiator := performClassicalHandshake(t, mgr, worker, channelID, "user-close-during-write")
+	sess, ok := mgr.getSession(channelID)
+	require.True(t, ok)
+	completed := make(chan error, 1)
+	go func() {
+		completed <- sess.sender.sendEncrypted(1, &leapmuxv1.InnerMessage{
+			Kind: &leapmuxv1.InnerMessage_Response{Response: channelwire.NewPayloadResponse([]byte("response"))},
+		})
+	}()
+	deadline := time.After(30 * time.Second)
+	select {
+	case <-writerEntered:
+	case <-deadline:
+		t.Fatal("the session never reached the writer")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		mgr.HandleClose(channelID)
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-deadline:
+		t.Fatal("closing a session waited for its writer")
+	}
+
+	_, err = sess.Session.Encrypt(nil, []byte("after close"))
+	assert.ErrorContains(t, err, "destroyed")
+	assert.True(t, IsTransportTeardown(fmt.Errorf("encrypt inner message: %w", err)))
+	ciphertext, err := initiator.Encrypt(nil, []byte("before close"))
+	require.NoError(t, err)
+	_, err = sess.Session.Decrypt(nil, ciphertext)
+	assert.ErrorContains(t, err, "destroyed")
+
+	unblockWriter()
+	select {
+	case err := <-completed:
+		require.NoError(t, err)
+	case <-deadline:
+		t.Fatal("the writer did not return after release")
+	}
+}
+
 // TestHandleClose_CancelsSessionCtx pins the session-ctx → handler-ctx
 // chain that the entire dispatcher refactor was built to enable. The
 // session ctx is what HandleMessage hands to the dispatcher; cancelling
@@ -2564,10 +2623,12 @@ func TestHandleMessage_RekeyBadEphemeralCancels(t *testing.T) {
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(ct)
 
-	// sess.cancel() fires synchronously: the session's lifetime context is done.
-	require.Error(t, sess.ctx.Err(), "bad ephemeral must cancel the session lifetime")
-	// No Ack/Reject was sent: the worker fails closed silently.
-	assert.Equal(t, msgsBefore, len(sender.messages()), "bad ephemeral must send no response")
+	require.ErrorIs(t, sess.ctx.Err(), context.Canceled)
+	_, stillRegistered := mgr.getSession(channelID)
+	assert.False(t, stillRegistered)
+	msgs := sender.messages()
+	require.Len(t, msgs, msgsBefore+1)
+	assert.True(t, proto.Equal(channelwire.CloseNotification(channelID), msgs[msgsBefore].GetChannelMessageResp()))
 }
 
 func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
@@ -2587,14 +2648,17 @@ func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mgr, kp, _ := setupTestManager(t)
+			mgr, kp, sender := setupTestManager(t)
 			const channelID = "ch-badct"
+			var released []string
+			mgr.SetOnReleasedMaxMessageSize(func(id string) { released = append(released, id) })
 			initiator := performHandshake(t, mgr, kp, channelID, "user-badct")
 			mgr.mu.RLock()
 			sess := mgr.sessions[channelID]
 			mgr.mu.RUnlock()
 			require.NotNil(t, sess)
-			sess.lastRekeyAt = time.Now().Add(-contracts.MinRekeyInterval - time.Second)
+			// Invalid setup is rejected even while a valid rekey would be rate-limited.
+			sess.lastRekeyAt = time.Now()
 
 			seed, err := noiseutil.GenerateEphemeralX25519Seed()
 			require.NoError(t, err)
@@ -2615,7 +2679,13 @@ func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
 			require.NoError(t, err)
 			ct := sealChannelPlaintext(t, initiator, channelID, 201, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, pt)
 			mgr.HandleMessage(ct)
-			require.Error(t, sess.ctx.Err(), "invalid ML-KEM material must cancel the session lifetime")
+			require.ErrorIs(t, sess.ctx.Err(), context.Canceled)
+			_, stillRegistered := mgr.getSession(channelID)
+			assert.False(t, stillRegistered, "a failed rekey must retire the session")
+			assert.Equal(t, []string{channelID}, released)
+			sent := sender.messages()
+			require.Len(t, sent, 1)
+			assert.True(t, proto.Equal(channelwire.CloseNotification(channelID), sent[0].GetChannelMessageResp()))
 		})
 	}
 }

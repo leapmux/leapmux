@@ -8,6 +8,8 @@
 
 import { LENGTH_PREFIX_BYTES } from '~/generated/contracts/wire'
 
+const textEncoder = new TextEncoder()
+
 /** Prefix `payload` with its big-endian length. */
 export function frameBytes(payload: Uint8Array): Uint8Array {
   const buf = new Uint8Array(LENGTH_PREFIX_BYTES + payload.length)
@@ -18,7 +20,7 @@ export function frameBytes(payload: Uint8Array): Uint8Array {
 
 /** Bind the complete ChannelMessage envelope except its ciphertext. */
 export function frameAssociatedData(channelId: string, correlationId: bigint, flags: number): Uint8Array {
-  const channel = new TextEncoder().encode(channelId)
+  const channel = textEncoder.encode(channelId)
   const out = new Uint8Array(12 + channel.length)
   const view = new DataView(out.buffer)
   view.setBigUint64(0, correlationId)

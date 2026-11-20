@@ -412,7 +412,7 @@ describe('ChannelManager openChannel', () => {
   // tag, invalid SLH-DSA signature) otherwise strands a Hub-registered channel
   // and a live Worker session per retry against a misbehaving worker. The Go
   // client covers the same step under its rollback defer
-  // (backend/tunnel/channel.go's handshaker.finish).
+  // (backend/tunnel/channel.go's HandshakeState.Finish).
   it('tells the Hub to close the channel when handshake-2 verification fails', async () => {
     const ws = new MockWebSocket()
     const base = createMockTransport(ws)
@@ -679,7 +679,7 @@ describe('ChannelManager openChannel', () => {
 describe('ChannelManager encryption modes', () => {
   const h = new ChannelManagerTestHarness()
 
-  it('should open a channel with classic encryption (X25519 only)', async () => {
+  it('should open a channel with classic encryption (X25519 and static ML-KEM)', async () => {
     // Create a transport that returns CLASSIC mode.
     const classicWs = new MockWebSocket()
     const classicSessions = new Map<string, { initiator: Session, responder: Session }>()

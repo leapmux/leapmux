@@ -235,6 +235,12 @@ func OpenChannelMessage(session FrameOpener, msg *leapmuxv1.ChannelMessage) ([]b
 	return session.Decrypt(ad, msg.GetCiphertext())
 }
 
+// IsCloseNotification reports whether a frame has the complete close sentinel shape.
+func IsCloseNotification(msg *leapmuxv1.ChannelMessage) bool {
+	return msg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE &&
+		msg.GetCorrelationId() == 0 && len(msg.GetCiphertext()) == 0
+}
+
 // CloseNotification builds the unauthenticated close sentinel. It carries no
 // ciphertext and never enters the Noise cipher.
 func CloseNotification(channelID string) *leapmuxv1.ChannelMessage {
@@ -493,29 +499,14 @@ func ReadProtoFrame(ctx context.Context, ws *websocket.Conn, msg proto.Message) 
 	return nil
 }
 
-// ChunkContinuation interprets a ChannelMessage's flags field for the
-// reassembly path. It returns more=true only for FLAGS_MORE (a non-final
-// chunk), more=false for FLAGS_UNSPECIFIED (a final chunk) and FLAGS_CLOSE
-// (a standalone teardown frame, which never carries chunk data), and
-// valid=false for every other value.
-//
-// The wire enum is a set of distinct values, not a bitmask: SendChannelFrames
-// (and the browser's copy in frontend/src/lib/channel.ts) emit exactly
-// UNSPECIFIED or MORE on data frames. proto3 enums are open, though, so a
-// hostile or non-conformant peer can put any integer on the wire -- and a
-// site that reads the field as `flags == FLAGS_MORE` silently reads a
-// combined value such as MORE|CLOSE (3) as "final chunk", delivering a
-// truncated assembly to the decoder. Every receiver of this wire contract
-// (hub relay, ws relay, worker session, tunnel client) routes the decision
-// through this one predicate and DROPS the frame when valid is false: an
-// out-of-spec flags value is a protocol violation, not a chunk boundary the
-// receiver may guess about.
+// ChunkContinuation classifies flags on an encrypted data frame. MORE starts
+// or continues a chunked message. UNSPECIFIED finishes it. Callers handle the
+// separate close sentinel before classifying data flags.
 func ChunkContinuation(flags leapmuxv1.ChannelMessageFlags) (more, valid bool) {
 	switch flags {
 	case leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE:
 		return true, true
-	case leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED,
-		leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE:
+	case leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED:
 		return false, true
 	default:
 		return false, false

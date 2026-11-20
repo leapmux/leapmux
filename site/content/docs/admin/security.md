@@ -92,7 +92,7 @@ The channel is established in two stages, over two different transports. The Fro
 |------|-----------|--------------|
 | Key exchange | X25519 ECDH | ML-KEM-1024 (FIPS 203) |
 | Forward secrecy | Ephemeral X25519 exchange | Ephemeral ML-KEM-1024 exchange in post-quantum mode |
-| Worker static-key authentication | Noise NK pre-message and static ML-KEM-1024 encapsulation | Static ML-KEM-1024 encapsulation plus an SLH-DSA-SHAKE-256f (FIPS 205) signature over the handshake hash |
+| Worker static-key authentication | Noise NK pre-message and static ML-KEM-1024 encapsulation | Static ML-KEM-1024 encapsulation plus a Stateless Hash-Based Digital Signature Algorithm (SLH-DSA-SHAKE-256f, FIPS 205) signature over the handshake hash |
 | Transport encryption | ChaCha20-Poly1305 AEAD | — |
 | Hashing / key derivation | BLAKE2b | — |
 
@@ -123,7 +123,7 @@ The encrypted channel has built-in limits that cap the damage from desync, repla
 
 The Hub enforces resource limits **without decrypting**: it caps the reassembled message size at the negotiated payload budget plus 64 KiB of envelope headroom (default ~16.06 MiB; administrators may raise the payload budget up to 64 MiB via the Hub's `max_message_size_bytes` setting) and allows only one in-flight chunked message per channel and direction, so a peer cannot exhaust Hub memory through the opaque relay. The Worker also fast-rejects a duplicate channel ID *before* running the (expensive) post-quantum handshake, so a peer cannot amplify Worker CPU by replaying open requests.
 
-**In-band rekey** rotates the channel's transport keys without closing it. The initiator proposes fresh key material — a new classical ephemeral and, on post-quantum channels, a fresh ML-KEM encapsulation key. The Worker encapsulates to that fresh ML-KEM key as well as answering the static-key encapsulation. The initiator keeps sending under the current key until the peer acknowledges, and only then switches. Both sides mix fresh Diffie–Hellman *and* post-quantum entropy into the next epoch, so compromising one epoch's key does not yield the next.
+**In-band rekey** rotates the channel's transport keys on the existing connection. Both modes mix a fresh X25519 secret into the next key epoch. In post-quantum mode, the initiator also encapsulates to the Worker's static ML-KEM key and supplies a fresh ML-KEM public key. The Worker encapsulates to that fresh key, and both sides mix the two ML-KEM secrets into the next epoch. The initiator keeps sending under the current key until the Worker acknowledges the rekey.
 
 The exchange travels inside the already-encrypted channel, so the current cipher authenticates it and no extra signature is needed; the Hub relays it without decrypting, as it does everything else. A refused rekey leaves both sides on their existing keys. A short key-overlap window (~10 s) lets frames a peer encrypted just before the swap still decrypt afterwards, so traffic keeps flowing across the round trip — the Frontend, `leapmux control`, cross-worker links, and the desktop app's tunnels all share this, which is why port-forwards and SOCKS sessions survive hourly rotation without a stall.
 

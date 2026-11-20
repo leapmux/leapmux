@@ -71,8 +71,6 @@ export function sessionGoneError(): ChannelError {
 /**
  * Same shape as transport / TOFU key material — see workerKeyBundle.ts.
  */
-export type SessionKeyBundle = WorkerKeyBundle
-
 /**
  * Initiator handshake message 1, a deferred finish that consumes the Worker's
  * handshake-2 payload, and an abandon for a handshake that will not finish.
@@ -95,6 +93,18 @@ export interface HeldSend {
   plaintext: Uint8Array
   correlationId: number
   startsRequest: boolean
+}
+
+interface RekeyMaterial {
+  ePriv: Uint8Array
+  pq: RekeyPQOffer | null
+}
+
+function clearRekeyMaterial(material: RekeyMaterial | null): void {
+  if (material === null)
+    return
+  material.ePriv.fill(0)
+  clearRekeyPQOffer(material.pq)
 }
 
 /**
@@ -164,7 +174,7 @@ export interface SessionChannel {
    * RekeyRequest is sent, consumed when the matching Ack arrives. Null outside
    * an in-flight rekey.
    */
-  rekeyMaterial: { ePriv: Uint8Array, pq: RekeyPQOffer | null } | null
+  rekeyMaterial: RekeyMaterial | null
 }
 
 /** What a fresh SessionChannel needs; createSessionChannel defaults the rest. */
@@ -287,7 +297,7 @@ export class ChannelSession {
    * The hybrid finish verifies the SLH-DSA signature on this thread. The
    * session runs in a Web Worker, so the verification holds up no page work.
    */
-  beginHandshake(workerId: string, mode: EncryptionMode, keys: SessionKeyBundle): PendingHandshake {
+  beginHandshake(workerId: string, mode: EncryptionMode, keys: WorkerKeyBundle): PendingHandshake {
     if (mode === EncryptionMode.CLASSIC) {
       const hs = this.classicHS1(workerId, keys)
       const state: HandshakeState = hs.handshakeState
@@ -455,45 +465,52 @@ export class ChannelSession {
     }
     const rm = ch.rekeyMaterial
     ch.rekeyMaterial = null
-    const wipe = (): void => {
-      if (rm === null)
-        return
-      rm.ePriv.fill(0)
-      clearRekeyPQOffer(rm.pq)
-    }
-    if (accepted) {
-      let pqSecret: Uint8Array | null = null
+    try {
       try {
-        if (rm === null || ack === undefined || ack.dhPub.length !== X25519_PUBLIC_KEY_SIZE)
-          throw new Error('rekey ack has no valid responder ephemeral key')
-        pqSecret = acceptRekeyPQ(rm.pq, ack.mlkemEphemeralCt)
-        const derived = deriveRekeySecrets(rm.ePriv, ack.dhPub, pqSecret)
-        const dhForRecv = derived.dhSecret.slice()
-        const pqForRecv = derived.pqSecret?.slice() ?? null
-        ch.session.send.rekeyWithSecret(derived.dhSecret, derived.pqSecret, false)
-        ch.session.receive.rekeyWithSecret(dhForRecv, pqForRecv, true)
-      }
-      catch (err) {
-        log.error('rekey ack key agreement failed; closing channel', {
-          channel_id: ch.channelId,
-          responder_pub_len: ack?.dhPub.length ?? -1,
-          error: formatErrorMessage(err),
-        })
-        wipe()
-        ch.rekeyAbort?.()
-        this.deps.endSession(ch, new ChannelError('transport', 'rekey ack key agreement failed', { disconnected: false }))
-        return
+        if (accepted)
+          this.rotateRekey(ch, rm, ack)
       }
       finally {
-        pqSecret?.fill(0)
+        clearRekeyMaterial(rm)
       }
-      wipe()
     }
-    else {
-      wipe()
+    catch (err) {
+      log.error('rekey ack key agreement failed, closing channel', {
+        channel_id: ch.channelId,
+        responder_pub_len: ack?.dhPub.length ?? -1,
+        error: formatErrorMessage(err),
+      })
+      ch.rekeyAbort?.()
+      this.deps.endSession(ch, new ChannelError('transport', 'rekey ack key agreement failed', { disconnected: false }))
+      return
     }
     const wait = ch.rekeyWait
     wait(accepted, retryAfterMs)
+  }
+
+  private rotateRekey(ch: SessionChannel, material: RekeyMaterial | null, ack: Pick<RekeyAck, 'dhPub' | 'mlkemEphemeralCt'> | undefined): void {
+    if (material === null || ack === undefined || ack.dhPub.length !== X25519_PUBLIC_KEY_SIZE)
+      throw new Error('rekey ack has no valid responder ephemeral key')
+    const offer = material.pq
+    material.pq = null
+    const pqSecret = acceptRekeyPQ(offer, ack.mlkemEphemeralCt)
+    try {
+      const { dhSecret } = deriveRekeySecrets(material.ePriv, ack.dhPub, pqSecret)
+      const dhForRecv = dhSecret.slice()
+      const pqForRecv = pqSecret?.slice() ?? null
+      try {
+        ch.session.send.rekeyWithSecret(dhSecret, pqSecret, false)
+        ch.session.receive.rekeyWithSecret(dhForRecv, pqForRecv, true)
+      }
+      finally {
+        dhSecret.fill(0)
+        dhForRecv.fill(0)
+        pqForRecv?.fill(0)
+      }
+    }
+    finally {
+      pqSecret?.fill(0)
+    }
   }
 
   /**
@@ -504,6 +521,7 @@ export class ChannelSession {
    * the frames that it already posted.
    */
   private encryptAndSend(ch: SessionChannel, plaintext: Uint8Array, correlationId: number): void {
+    const wireCorrelationId = BigInt(correlationId)
     let offset = 0
     do {
       const end = Math.min(offset + MAX_CHUNK_SIZE, plaintext.length)
@@ -514,10 +532,10 @@ export class ChannelSession {
         : ChannelMessageFlags.UNSPECIFIED
       const msg = create(ChannelMessageSchema, {
         channelId: ch.channelId,
-        ciphertext: ch.session.send.encrypt(frameAssociatedData(ch.channelId, BigInt(correlationId), flags), chunk),
+        ciphertext: ch.session.send.encrypt(frameAssociatedData(ch.channelId, wireCorrelationId, flags), chunk),
         // uint64 on the wire; see the decode boundary in channelSessionInbound.ts
         // for why ids stay plain numbers on this side.
-        correlationId: BigInt(correlationId),
+        correlationId: wireCorrelationId,
         flags,
       })
       // Guarded like the receive-side sites: this runs for every outbound frame,
@@ -618,10 +636,7 @@ export class ChannelSession {
         // X25519 ephemeral or post-quantum offer lingering in the heap.
         const pending = ch.rekeyMaterial
         ch.rekeyMaterial = null
-        if (pending !== null) {
-          pending.ePriv.fill(0)
-          clearRekeyPQOffer(pending.pq)
-        }
+        clearRekeyMaterial(pending)
       }
       /* eslint-enable ts/no-use-before-define */
       ch.rekeyClear = clearRekeySlot
@@ -638,12 +653,14 @@ export class ChannelSession {
 
     // Generate the fresh X25519 key and PQ offer, then send the request past the
     // held lane. Every failure wipes the material and ends the session.
-    let eph: { privateKey: Uint8Array, publicKey: Uint8Array } | null = null
-    let pq: RekeyPQOffer | null = null
+    let preparing: RekeyMaterial | null = null
     try {
-      eph = generateRekeyEphemeral()
-      pq = offerRekeyPQ(ch.workerMlkemPub)
-      ch.rekeyMaterial = { ePriv: eph.privateKey, pq }
+      const eph = generateRekeyEphemeral()
+      preparing = { ePriv: eph.privateKey, pq: null }
+      const pq = offerRekeyPQ(ch.workerMlkemPub)
+      preparing.pq = pq
+      ch.rekeyMaterial = preparing
+      preparing = null
 
       const envelope = create(InnerMessageSchema, {
         kind: {
@@ -664,9 +681,7 @@ export class ChannelSession {
       // wipes rekeyMaterial; the locals are zeroed here in case generation
       // failed before the material was stashed.
       ch.rekeyClear?.()
-      if (eph !== null)
-        eph.privateKey.fill(0)
-      clearRekeyPQOffer(pq)
+      clearRekeyMaterial(preparing)
       const failure = sendFailureError(err)
       this.deps.endSession(ch, failure)
       throw failure

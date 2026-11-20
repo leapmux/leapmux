@@ -2,6 +2,7 @@ package noise
 
 import (
 	"bytes"
+	"crypto/ecdh"
 	"crypto/mlkem"
 	"crypto/mlkem/mlkemtest"
 	"encoding/binary"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cloudflare/circl/sign/slhdsa"
@@ -302,6 +304,52 @@ func TestCipherStateRekey(t *testing.T) {
 	assert.Equal(t, []byte("after"), pt)
 }
 
+func TestSessionZeroPreventsCipherReuse(t *testing.T) {
+	t.Parallel()
+
+	session := &Session{
+		Send:    &CipherState{k: [keyLen]byte{1}},
+		Receive: &CipherState{k: [keyLen]byte{1}},
+	}
+	frame, err := session.Encrypt(nil, []byte("before close"))
+	require.NoError(t, err)
+	session.Zero()
+	session.Zero()
+
+	_, err = session.Encrypt(nil, []byte("after close"))
+	require.ErrorContains(t, err, "destroyed")
+	_, err = session.Decrypt(nil, frame)
+	require.ErrorContains(t, err, "destroyed")
+
+	dhSecret := bytes.Repeat([]byte{1}, dhLen)
+	pqSecret := bytes.Repeat([]byte{2}, 2*keyLen)
+	session.RekeySendWithSecret(dhSecret, pqSecret)
+	assert.Equal(t, make([]byte, dhLen), dhSecret)
+	assert.Equal(t, make([]byte, 2*keyLen), pqSecret)
+	assert.Equal(t, [keyLen]byte{}, session.Send.k)
+	_, err = session.Encrypt(nil, []byte("after rekey"))
+	require.ErrorContains(t, err, "destroyed")
+}
+
+func TestCipherStateRetiresPreviousKeyWhileIdle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cipher := &CipherState{k: [keyLen]byte{1}}
+		cipher.rekeyWithSecret(bytes.Repeat([]byte{2}, dhLen), nil, true)
+		cipher.mu.Lock()
+		prev := cipher.prev
+		cipher.mu.Unlock()
+		require.NotNil(t, prev)
+
+		<-time.After(RekeyGraceWindow)
+		synctest.Wait()
+
+		cipher.mu.Lock()
+		defer cipher.mu.Unlock()
+		assert.Nil(t, cipher.prev)
+		assert.Equal(t, [keyLen]byte{}, prev.k)
+	})
+}
+
 func TestCipherStateRekeyGraceWindowExpiry(t *testing.T) {
 	key := [keyLen]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
 	cs := &CipherState{k: key}
@@ -320,7 +368,9 @@ func TestCipherStateRekeyGraceWindowExpiry(t *testing.T) {
 
 	// Force expiry: push prevExpiresAt into the past. A fresh old-key frame
 	// (nonce 1, since prev already consumed 0) must now fail closed.
+	cs.mu.Lock()
 	cs.prevExpiresAt = time.Now().Add(-time.Second)
+	cs.mu.Unlock()
 	ctStraddle2, err := oldKey.Encrypt(nil, []byte("straddle2"))
 	require.NoError(t, err)
 	_, err = cs.Decrypt(nil, ctStraddle2)
@@ -330,6 +380,8 @@ func TestCipherStateRekeyGraceWindowExpiry(t *testing.T) {
 	// not merely skip it — otherwise an idle channel leaves the still-valid
 	// previous-epoch key in the heap until the next rekey or close, widening
 	// the forward-secrecy surface the grace window introduced.
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 	assert.Nil(t, cs.prev, "expired prev must be zeroed and dropped on the next decrypt")
 	assert.True(t, cs.prevExpiresAt.IsZero(), "prevExpiresAt must be cleared when prev is retired")
 }
@@ -844,7 +896,11 @@ func TestStaticKeyHolderCannotReplayARecordedSession(t *testing.T) {
 	responderSeed, err := GenerateEphemeralX25519Seed()
 	require.NoError(t, err)
 	rnd := systemEntropy
-	rnd.x25519Seed = func() ([]byte, error) { return slices.Clone(responderSeed), nil }
+	rnd.x25519Key = func() (*ecdh.PrivateKey, []byte, error) {
+		seed := slices.Clone(responderSeed)
+		key, err := ecdh.X25519().NewPrivateKey(seed)
+		return key, seed, err
+	}
 
 	hs, message1, err := InitiatorHandshake1(testWorkerID, worker.X25519Public, worker.MlkemPublicKeyBytes(), slhdsaPublicKey(t, worker))
 	require.NoError(t, err)
@@ -1218,15 +1274,17 @@ func TestHandshake1ClearsItsSecretsOnAFailure(t *testing.T) {
 		for _, invalidKey := range []string{"mlkem", "x25519"} {
 			var kept [][]byte
 			rnd := systemEntropy
-			rnd.x25519Seed = func() ([]byte, error) {
+			rnd.x25519Key = func() (*ecdh.PrivateKey, []byte, error) {
 				seed := bytes.Repeat([]byte{1}, dhLen)
 				kept = append(kept, seed)
-				return seed, nil
+				key, err := ecdh.X25519().NewPrivateKey(seed)
+				return key, seed, err
 			}
-			rnd.mlkemSeed = func() ([]byte, error) {
-				seed := bytes.Repeat([]byte{2}, 64)
+			rnd.mlkemKey = func() (*mlkem.DecapsulationKey1024, []byte, error) {
+				seed := bytes.Repeat([]byte{2}, mlkem.SeedSize)
 				kept = append(kept, seed)
-				return seed, nil
+				key, err := mlkem.NewDecapsulationKey1024(seed)
+				return key, seed, err
 			}
 			x25519Pub := worker.X25519Public
 			mlkemPub := worker.MlkemPublicKeyBytes()
@@ -1263,7 +1321,9 @@ func TestOfferRekeyPQClearsItsSecretsOnAFailure(t *testing.T) {
 		sharedSecret, ciphertext = ek.Encapsulate()
 		return sharedSecret, ciphertext
 	}
-	rnd.mlkemSeed = func() ([]byte, error) { return nil, errors.New("key generation failed") }
+	rnd.mlkemKey = func() (*mlkem.DecapsulationKey1024, []byte, error) {
+		return nil, nil, errors.New("key generation failed")
+	}
 	offer, err := offerRekeyPQ(rnd, worker.MlkemPublicKeyBytes())
 	require.Error(t, err)
 	assert.Nil(t, offer)
@@ -1387,8 +1447,8 @@ type noiseHandshakeVector struct {
 	ResponderEntropy noiseEntropyVector `json:"responderEntropy"`
 	Message1Hex      string             `json:"message1Hex"`
 	Message2Hex      string             `json:"message2Hex"`
-	InitiatorFrame   noiseFrameVector   `json:"initiatorFrame"`
-	ResponderFrame   noiseFrameVector   `json:"responderFrame"`
+	InitiatorFrames  []noiseFrameVector `json:"initiatorFrames"`
+	ResponderFrames  []noiseFrameVector `json:"responderFrames"`
 }
 
 type noiseHandshakeFixture struct {
@@ -1438,15 +1498,14 @@ func sourceHandshakeVectors(t *testing.T) noiseHandshakeFixture {
 			ResponderEntropy: noiseEntropyVector{
 				X25519SeedHex: hex.EncodeToString(patternedBytes(dhLen, offset+5)),
 			},
-			InitiatorFrame: noiseFrameVector{
-				CorrelationID: "9007199254740993",
-				Flags:         1,
-				Plaintext:     "from the initiator",
+			InitiatorFrames: []noiseFrameVector{
+				{CorrelationID: "9007199254740993", Flags: 1, Plaintext: "from the initiator"},
+				{CorrelationID: "9007199254740993"},
 			},
-			ResponderFrame: noiseFrameVector{
-				CorrelationID: "5",
-				Flags:         0,
-				Plaintext:     "from the responder",
+			ResponderFrames: []noiseFrameVector{
+				{CorrelationID: "5", Plaintext: "from the responder"},
+				{CorrelationID: "6"},
+				{CorrelationID: "7", Plaintext: "after the empty response"},
 			},
 		}
 		if mode == "post_quantum" {
@@ -1473,8 +1532,16 @@ func vectorEntropy(t *testing.T, v noiseEntropyVector) entropy {
 	encapsulationSeed := decodeVectorHex(t, v.MlkemEncapsulationSeedHex)
 	signRandom := decodeVectorHex(t, v.SignRandomHex)
 	return entropy{
-		x25519Seed: func() ([]byte, error) { return slices.Clone(x25519Seed), nil },
-		mlkemSeed:  func() ([]byte, error) { return slices.Clone(mlkemSeed), nil },
+		x25519Key: func() (*ecdh.PrivateKey, []byte, error) {
+			seed := slices.Clone(x25519Seed)
+			key, err := ecdh.X25519().NewPrivateKey(seed)
+			return key, seed, err
+		},
+		mlkemKey: func() (*mlkem.DecapsulationKey1024, []byte, error) {
+			seed := slices.Clone(mlkemSeed)
+			key, err := mlkem.NewDecapsulationKey1024(seed)
+			return key, seed, err
+		},
 		encapsulate: func(ek *mlkem.EncapsulationKey1024) ([]byte, []byte) {
 			sharedSecret, ciphertext, err := mlkemtest.Encapsulate1024(ek, encapsulationSeed)
 			require.NoError(t, err)
@@ -1495,7 +1562,7 @@ func vectorFrameAssociatedData(t *testing.T, channelID string, frame noiseFrameV
 	return ad
 }
 
-func replayHandshakeVector(t *testing.T, v noiseHandshakeVector) (publicKeys noiseKeyPairVector, message1, message2, initiatorCiphertext, responderCiphertext []byte) {
+func replayHandshakeVector(t *testing.T, v noiseHandshakeVector) noiseHandshakeVector {
 	t.Helper()
 	worker, err := RestoreCompositeKeypair(
 		decodeVectorHex(t, v.ResponderPrivate.X25519Hex),
@@ -1503,55 +1570,45 @@ func replayHandshakeVector(t *testing.T, v noiseHandshakeVector) (publicKeys noi
 		decodeVectorHex(t, v.ResponderPrivate.SlhdsaHex),
 	)
 	require.NoError(t, err)
-	publicKeys = noiseKeyPairVector{
+	v.ResponderPublic = noiseKeyPairVector{
 		X25519Hex: hex.EncodeToString(worker.X25519Public),
 		MlkemHex:  hex.EncodeToString(worker.MlkemPublicKeyBytes()),
 		SlhdsaHex: hex.EncodeToString(slhdsaPublicKey(t, worker)),
 	}
-	var hs *HandshakeState
-	if v.Mode == "post_quantum" {
-		hs, message1, err = initiatorHandshake1(vectorEntropy(t, v.InitiatorEntropy), v.WorkerID, worker.X25519Public, worker.MlkemPublicKeyBytes(), slhdsaPublicKey(t, worker))
-		require.NoError(t, err)
-		message2, responderSession, err := responderHandshake(vectorEntropy(t, v.ResponderEntropy), worker, v.WorkerID, message1)
-		require.NoError(t, err)
-		defer responderSession.Zero()
-		initiatorSession, err := hs.Finish(message2)
-		require.NoError(t, err)
-		defer initiatorSession.Zero()
-		initiatorCiphertext, err = initiatorSession.Encrypt(vectorFrameAssociatedData(t, v.ChannelID, v.InitiatorFrame), []byte(v.InitiatorFrame.Plaintext))
-		require.NoError(t, err)
-		responderCiphertext, err = responderSession.Encrypt(vectorFrameAssociatedData(t, v.ChannelID, v.ResponderFrame), []byte(v.ResponderFrame.Plaintext))
-		require.NoError(t, err)
-		return publicKeys, message1, message2, initiatorCiphertext, responderCiphertext
+	require.Contains(t, []string{"classic", "post_quantum"}, v.Mode)
+	postQuantum := v.Mode == "post_quantum"
+	hs, message1, err := runInitiatorHandshake1(vectorEntropy(t, v.InitiatorEntropy), postQuantum, v.WorkerID, worker.X25519Public, worker.MlkemPublicKeyBytes(), slhdsaPublicKey(t, worker))
+	require.NoError(t, err)
+	message2, responder, err := runResponderHandshake(vectorEntropy(t, v.ResponderEntropy), postQuantum, worker, v.WorkerID, message1)
+	require.NoError(t, err)
+	defer responder.Zero()
+	initiator, err := hs.Finish(message2)
+	require.NoError(t, err)
+	defer initiator.Zero()
+
+	v.Message1Hex = hex.EncodeToString(message1)
+	v.Message2Hex = hex.EncodeToString(message2)
+	sealFrames := func(sender *Session, frames []noiseFrameVector) []noiseFrameVector {
+		frames = slices.Clone(frames)
+		for i := range frames {
+			frame := &frames[i]
+			ciphertext, err := sender.Encrypt(vectorFrameAssociatedData(t, v.ChannelID, *frame), []byte(frame.Plaintext))
+			require.NoError(t, err)
+			frame.CiphertextHex = hex.EncodeToString(ciphertext)
+		}
+		return frames
 	}
-	require.Equal(t, "classic", v.Mode)
-	hs, message1, err = classicalInitiatorHandshake1(vectorEntropy(t, v.InitiatorEntropy), v.WorkerID, worker.X25519Public, worker.MlkemPublicKeyBytes(), slhdsaPublicKey(t, worker))
-	require.NoError(t, err)
-	message2, responderSession, err := classicalResponderHandshake(vectorEntropy(t, v.ResponderEntropy), worker, v.WorkerID, message1)
-	require.NoError(t, err)
-	defer responderSession.Zero()
-	initiatorSession, err := hs.Finish(message2)
-	require.NoError(t, err)
-	defer initiatorSession.Zero()
-	initiatorCiphertext, err = initiatorSession.Encrypt(vectorFrameAssociatedData(t, v.ChannelID, v.InitiatorFrame), []byte(v.InitiatorFrame.Plaintext))
-	require.NoError(t, err)
-	responderCiphertext, err = responderSession.Encrypt(vectorFrameAssociatedData(t, v.ChannelID, v.ResponderFrame), []byte(v.ResponderFrame.Plaintext))
-	require.NoError(t, err)
-	return publicKeys, message1, message2, initiatorCiphertext, responderCiphertext
+	v.InitiatorFrames = sealFrames(initiator, v.InitiatorFrames)
+	v.ResponderFrames = sealFrames(responder, v.ResponderFrames)
+	return v
 }
 
 func TestHandshakeVectors(t *testing.T) {
 	const path = "../../../testdata/noise_handshake_vectors.json"
 	if *updateVectors {
 		fixture := sourceHandshakeVectors(t)
-		for i := range fixture.Vectors {
-			v := &fixture.Vectors[i]
-			publicKeys, message1, message2, initiatorCiphertext, responderCiphertext := replayHandshakeVector(t, *v)
-			v.ResponderPublic = publicKeys
-			v.Message1Hex = hex.EncodeToString(message1)
-			v.Message2Hex = hex.EncodeToString(message2)
-			v.InitiatorFrame.CiphertextHex = hex.EncodeToString(initiatorCiphertext)
-			v.ResponderFrame.CiphertextHex = hex.EncodeToString(responderCiphertext)
+		for i, vector := range fixture.Vectors {
+			fixture.Vectors[i] = replayHandshakeVector(t, vector)
 		}
 		writeNoiseVectorFile(t, path, fixture)
 	}
@@ -1562,12 +1619,12 @@ func TestHandshakeVectors(t *testing.T) {
 	require.Len(t, fixture.Vectors, 2)
 	for _, v := range fixture.Vectors {
 		t.Run(v.Name, func(t *testing.T) {
-			publicKeys, message1, message2, initiatorCiphertext, responderCiphertext := replayHandshakeVector(t, v)
-			assert.Equal(t, v.ResponderPublic, publicKeys)
-			assert.Equal(t, v.Message1Hex, hex.EncodeToString(message1))
-			assert.Equal(t, v.Message2Hex, hex.EncodeToString(message2))
-			assert.Equal(t, v.InitiatorFrame.CiphertextHex, hex.EncodeToString(initiatorCiphertext))
-			assert.Equal(t, v.ResponderFrame.CiphertextHex, hex.EncodeToString(responderCiphertext))
+			want := replayHandshakeVector(t, v)
+			assert.Equal(t, v.ResponderPublic, want.ResponderPublic)
+			assert.Equal(t, v.Message1Hex, want.Message1Hex)
+			assert.Equal(t, v.Message2Hex, want.Message2Hex)
+			assert.Equal(t, v.InitiatorFrames, want.InitiatorFrames)
+			assert.Equal(t, v.ResponderFrames, want.ResponderFrames)
 		})
 	}
 }

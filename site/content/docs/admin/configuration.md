@@ -551,7 +551,7 @@ The `encryption_mode` key (flag `--encryption-mode`, env `LEAPMUX_WORKER_ENCRYPT
 | Value          | Notes                                                                          |
 | -------------- | ------------------------------------------------------------------------------ |
 | `post-quantum` | Default. Aliases `pq`, `post_quantum`, and an empty value all map here.         |
-| `classic`      | Static ML-KEM authentication without the SLH-DSA signature or post-quantum forward secrecy. |
+| `classic`      | Static Module-Lattice-Based Key-Encapsulation Mechanism (ML-KEM) authentication without the Stateless Hash-Based Digital Signature Algorithm (SLH-DSA) signature or post-quantum forward secrecy. |
 
 Any unrecognized value falls back to `post-quantum` (fail-safe). For what each mode protects and the underlying primitives, see [Security & Threat Model](/docs/admin/security/).
 

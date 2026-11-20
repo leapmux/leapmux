@@ -379,7 +379,7 @@ func startInitiatorHandshake(workerID string, params *leapmuxv1.GetWorkerHandsha
 }
 
 // mlkemPubForRekey returns nil on a classic channel, whose rekey has no ML-KEM
-// exchange. The same mode read selects the handshake and the retained key.
+// exchange. The same announced mode selects the handshake and the rekey.
 func mlkemPubForRekey(params *leapmuxv1.GetWorkerHandshakeParamsResponse) []byte {
 	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		return nil
@@ -454,6 +454,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	rollback := true
 	defer func() {
 		if rollback {
+			hs.Clear()
 			rollbackRegisteredChannel(channelClient, opts, channelID)
 		}
 	}()
@@ -1205,21 +1206,8 @@ func (ch *Channel) reassemble(correlationID uint64, flags leapmuxv1.ChannelMessa
 // recvLoop reads messages from the WebSocket and dispatches them.
 func (ch *Channel) recvLoop() {
 	defer ch.Close()
-	// Zero the transport keys (and any retained grace-window previous key) once
-	// the recvLoop is quiescent. Closes the retained-key surface the grace
-	// window (#321) widens: without this, a channel closed mid-window leaves the
-	// still-valid previous-epoch key in the heap until GC. Take rekeyMu so any
-	// sender goroutine mid-Encrypt in sendInnerRaw (which holds the same lock
-	// around Encrypt) finishes before we wipe Send.k — without it, zeroing the
-	// send key races an IN-FLIGHT Encrypt read of it. A sender that has not yet
-	// acquired rekeyMu can still start a NEW Encrypt after this defer releases
-	// the lock (and before ch.Close cancels the ctx, which the outer defer runs
-	// next); that Encrypt runs under an all-zero key and produces one
-	// undecryptable frame on an already-dying channel (no key compromise — a
-	// zeroed key is not a secret). The receive direction is recvLoop-owned, so
-	// its wipe is safe under the same hold. (The worker side cannot zero on
-	// close: its dispatcher Encrypts on independent goroutines with no shared
-	// lock — see Session.Zero's doc.)
+	// Serialize destruction with senders that have already acquired a frame
+	// permit. The cipher rejects any operation that reaches it after this.
 	defer func() {
 		if ch.session != nil {
 			ch.rekey.rekeyMu.Lock()
@@ -1238,7 +1226,12 @@ func (ch *Channel) recvLoop() {
 			return
 		}
 
-		if chMsg.GetFlags() == leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE {
+		if chMsg.GetChannelId() != ch.channelID {
+			slog.Error("tunnel frame belongs to a different channel",
+				"channel_id", ch.channelID, "received_channel_id", chMsg.GetChannelId())
+			return
+		}
+		if channelwire.IsCloseNotification(chMsg) {
 			slog.Debug("tunnel channel received close frame", "channel_id", ch.channelID)
 			return
 		}

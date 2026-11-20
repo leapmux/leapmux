@@ -91,10 +91,23 @@ describe('ChannelInbound handleMessage', () => {
     const ch = makeChannel()
     const { inbound, forwardInbound, closedByPeer } = makeInbound(ch)
 
-    inbound.handleMessage('ch-1', frame(ChannelMessageFlags.CLOSE))
+    inbound.handleMessage('ch-1', create(ChannelMessageSchema, {
+      channelId: 'ch-1',
+      flags: ChannelMessageFlags.CLOSE,
+    }))
 
     expect(closedByPeer).toHaveBeenCalledExactlyOnceWith('ch-1')
     expect(forwardInbound).not.toHaveBeenCalled()
+  })
+
+  it('forwards a frame to the cipher when it has a payload', () => {
+    const { inbound, forwardInbound, closedByPeer } = makeInbound(makeChannel())
+    const withPayload = frame(ChannelMessageFlags.CLOSE)
+
+    inbound.handleMessage('ch-1', withPayload)
+
+    expect(forwardInbound).toHaveBeenCalledExactlyOnceWith('ch-1', withPayload)
+    expect(closedByPeer).not.toHaveBeenCalled()
   })
 
   it('ignores frames for unknown channel ids', () => {
@@ -102,7 +115,10 @@ describe('ChannelInbound handleMessage', () => {
     const { inbound, forwardInbound, closedByPeer } = makeInbound(ch)
 
     inbound.handleMessage('missing', frame(ChannelMessageFlags.UNSPECIFIED, 'missing'))
-    inbound.handleMessage('missing', frame(ChannelMessageFlags.CLOSE, 'missing'))
+    inbound.handleMessage('missing', create(ChannelMessageSchema, {
+      channelId: 'missing',
+      flags: ChannelMessageFlags.CLOSE,
+    }))
 
     expect(forwardInbound).not.toHaveBeenCalled()
     expect(closedByPeer).not.toHaveBeenCalled()

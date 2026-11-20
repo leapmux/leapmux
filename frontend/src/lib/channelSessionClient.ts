@@ -400,6 +400,10 @@ export class ChannelSessionClient {
         clearTimeout(timer)
         worker.pending.delete(command.requestId)
         reject(new ChannelError('transport', `post to the channel session worker: ${formatErrorMessage(err)}`))
+        if (command.type === 'finishHandshake') {
+          // The worker still owns the handshake when the finish never arrives.
+          this.post(worker, { type: 'abandonHandshake', handshakeId: command.handshakeId }, [])
+        }
       }
     })
   }

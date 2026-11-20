@@ -5,6 +5,7 @@ package channel
 
 import (
 	"context"
+	"crypto/mlkem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -97,16 +98,8 @@ type channelSession struct {
 	// time.Now(); Go embeds a monotonic reading so MinRekeyInterval checks
 	// via Before/Sub are immune to NTP wall-clock steps within the process.
 	lastRekeyAt time.Time
-	// compositeKey is the worker's long-lived X25519 + ML-KEM + SLH-DSA
-	// keypair, retained on the session so an in-band rekey can decapsulate
-	// the initiator's fresh ML-KEM ciphertext. Only the X25519 private and
-	// ML-KEM decapsulation halves are touched (the SLH-DSA signing key is not
-	// needed — rekey frames ride inside the AEAD-encrypted channel).
-	compositeKey *noiseutil.CompositeKeypair
-	// encryptionMode records whether this channel used the post-quantum hybrid
-	// or classical handshake, so the rekey knows whether to expect an ML-KEM
-	// ciphertext. Matches m.encryptionMode at open time.
-	encryptionMode leapmuxv1.EncryptionMode
+	// rekeyDecapsulationKey is set only on post-quantum channels.
+	rekeyDecapsulationKey *mlkem.DecapsulationKey1024
 	// streams maps live server-stream correlation ids to their controllers so
 	// client->worker InnerStreamRequest frames can revise or cancel a
 	// subscription without tearing the channel down.
@@ -115,7 +108,7 @@ type channelSession struct {
 
 // close ends a session that its caller already removed from Manager.sessions.
 // The caller must not hold the manager's lock, so a handler's cleanup can take
-// the lock again. The order of the three steps matters:
+// the lock again. The order of the steps matters:
 //
 //  1. stopSends ends the sender's lifetime, so the session sends nothing more.
 //     The Hub forgets a channel before it tells the Worker to close it, so a
@@ -127,10 +120,13 @@ type channelSession struct {
 //     and its controller would then never see OnCancel.
 //  3. cancel ends ctx, which every handler of this channel holds, so a handler
 //     that waits on a subprocess unwinds at once.
+//  4. Zero destroys both ciphers. Later operations through a captured
+//     session fail even when their caller already entered the send gate.
 func (sess *channelSession) close() {
 	sess.stopSends()
 	sess.streams.releaseAll()
 	sess.cancel()
+	sess.Session.Zero()
 }
 
 // CloseCallback is called when a channel is closed, allowing cleanup
@@ -389,6 +385,11 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		)
 	}
 
+	var rekeyKey *mlkem.DecapsulationKey1024
+	if m.encryptionMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
+		rekeyKey = m.compositeKey.MlkemDecapsulationKey
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	sendLifetime, stopSends := context.WithCancel(ctx)
 
@@ -414,6 +415,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		m.mu.Unlock()
 		stopSends()
 		cancel()
+		session.Zero()
 		return rejectChannelReopen(req.GetChannelId())
 	}
 	sess := &channelSession{
@@ -430,13 +432,12 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 			lifetime:       sendLifetime,
 			errorSends:     make(chan errorSend, errorSendQueueSize),
 		},
-		ctx:            ctx,
-		cancel:         cancel,
-		stopSends:      stopSends,
-		reassembly:     newReassembler(reassembledMax, m.maxIncompleteChunked),
-		lastRekeyAt:    time.Now(),
-		compositeKey:   m.compositeKey,
-		encryptionMode: m.encryptionMode,
+		ctx:                   ctx,
+		cancel:                cancel,
+		stopSends:             stopSends,
+		reassembly:            newReassembler(reassembledMax, m.maxIncompleteChunked),
+		lastRekeyAt:           time.Now(),
+		rekeyDecapsulationKey: rekeyKey,
 	}
 	sess.sender.streams = &sess.streams
 	m.sessions[req.GetChannelId()] = sess
@@ -492,25 +493,16 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 	// the receive cipher state tracks a nonce counter.
 	decrypted, err := channelwire.OpenChannelMessage(sess.Session, msg)
 	if err != nil {
+		if sess.ctx.Err() != nil {
+			return
+		}
 		channelID := msg.GetChannelId()
 		slog.Error("failed to decrypt channel message, closing channel",
 			"channel_id", channelID,
 			"ciphertext_len", len(msg.GetCiphertext()),
 			"error", err,
 		)
-		// Nonce desync is unrecoverable — notify the frontend and tear down.
-		// trySendFn (wired to Client.TrySendOrReset) enqueues ahead of
-		// HandleClose on the connection's FIFO writer; a drop under budget
-		// cancels the connection so reconnect recovers rather than leaving
-		// the frontend on a dead channel until its own timeout.
-		if m.trySendFn != nil {
-			_ = m.trySendFn(&leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
-					ChannelMessageResp: channelwire.CloseNotification(channelID),
-				},
-			})
-		}
-		m.HandleClose(channelID)
+		m.closeFailedSession(sess)
 		return
 	}
 
@@ -597,7 +589,9 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 		}
 
 	case *leapmuxv1.InnerMessage_RekeyRequest:
-		sess.handleRekeyRequest(requestID, kind.RekeyRequest)
+		if !sess.handleRekeyRequest(requestID, kind.RekeyRequest) {
+			m.closeFailedSession(sess)
+		}
 
 	case *leapmuxv1.InnerMessage_StreamRequest:
 		if cleanup, err := sess.streams.deliver(requestID, kind.StreamRequest); err != nil {
@@ -627,25 +621,32 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 	}
 }
 
-// handleRekeyRequest applies the worker (responder) half of in-band Noise
-// rekey. Rate-limited requests get RekeyReject without rotating keys (Request
-// decrypt and Reject encrypt still advance nonces); accepted ones mix the fresh
-// X25519 + ML-KEM entropy from the request, rotate receive (retaining the
-// previous key for the grace window) before Ack, and rotate send after the Ack
-// is on the wire.
-//
-// The fresh DH + ML-KEM exchange is what closes the #321 forward-secrecy gap:
-// the next epoch's key cannot be derived from the current one because it mixes
-// new ephemeral key-agreement entropy. The rekey frames ride inside the
-// AEAD-encrypted channel, so the rekey's public values and ciphertexts need no signature.
-//
-// Soft-nonce inspection of Send and the send rotation both run under the
-// SendGate frame permit so they cannot race concurrent Encrypt from
-// DispatchAsync handlers. Rekey still runs on the receive goroutine
-// (RekeyReceiveWithSecret must happen before the next Decrypt); rekey is rare
-// (~hourly) so a brief gate wait is acceptable versus the error-send queue's
-// flood path.
-func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.RekeyRequest) {
+// handleRekeyRequest reports whether the session can stay open. A valid
+// request can be rejected by rate policy. An accepted request rotates receive
+// before the Ack and rotates send under the same frame permit as the Ack.
+func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.RekeyRequest) bool {
+	initiatorPub := req.GetDhPub()
+	if len(initiatorPub) != noiseutil.EphemeralPublicKeySize {
+		slog.Error("rekey request missing valid ephemeral key, closing channel",
+			"channel_id", sess.ChannelID,
+			"correlation_id", requestID,
+			"dh_pub_len", len(initiatorPub),
+		)
+		return false
+	}
+
+	pqRequest, err := noiseutil.ParseRekeyPQRequest(
+		sess.rekeyDecapsulationKey, req.GetMlkemStaticCt(), req.GetMlkemEphemeralPub(),
+	)
+	if err != nil {
+		slog.Error("rekey request has invalid ML-KEM material, closing channel",
+			"channel_id", sess.ChannelID,
+			"correlation_id", requestID,
+			"error", err,
+		)
+		return false
+	}
+
 	now := time.Now()
 	soft := sess.Session.Receive.NeedsRekey() || sess.sender.peekSendNeedsRekey()
 	if !channelwire.AllowRekey(now, sess.lastRekeyAt, soft) {
@@ -660,48 +661,18 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 				"correlation_id", requestID,
 				"error", err,
 			)
+			return false
 		}
-		return
+		return true
 	}
 
-	// Validate the fresh ephemeral the initiator sent before touching keys.
-	initiatorPub := req.GetDhPub()
-	if len(initiatorPub) != noiseutil.EphemeralPublicKeySize {
-		// A missing/wrong-size ephemeral is a protocol violation by a peer
-		// that did not run the fresh-DH rekey. Fail closed rather than fall
-		// back to the old HKDF derivation: the channel cannot safely continue
-		// under a derivation the attacker could predict.
-		slog.Error("rekey request missing valid ephemeral key; closing channel",
-			"channel_id", sess.ChannelID,
-			"correlation_id", requestID,
-			"dh_pub_len", len(initiatorPub),
-		)
-		sess.cancel()
-		return
-	}
-
-	// Post-quantum channels combine the static and ephemeral ML-KEM secrets.
-	// Classic channels require both request fields to be empty.
-	workerMlkemKey := sess.compositeKey.MlkemDecapsulationKey
-	if sess.encryptionMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
-		workerMlkemKey = nil
-	}
-	pqSecret, ephemeralCiphertext, err := noiseutil.AnswerRekeyPQ(
-		workerMlkemKey,
-		req.GetMlkemStaticCt(),
-		req.GetMlkemEphemeralPub(),
-	)
+	pqSecret, ephemeralCiphertext, err := pqRequest.Answer()
 	if err != nil {
-		slog.Error("rekey request has invalid ML-KEM material; closing channel",
-			"channel_id", sess.ChannelID,
-			"correlation_id", requestID,
-			"mlkem_static_ct_len", len(req.GetMlkemStaticCt()),
-			"mlkem_ephemeral_pub_len", len(req.GetMlkemEphemeralPub()),
-			"error", err,
-		)
-		sess.cancel()
-		return
+		slog.Error("rekey ML-KEM exchange failed, closing channel",
+			"channel_id", sess.ChannelID, "correlation_id", requestID, "error", err)
+		return false
 	}
+	defer noiseutil.Zero(pqSecret)
 
 	// Generate the responder's fresh ephemeral and complete the DH agreement.
 	ephemeralSeed, err := noiseutil.GenerateEphemeralX25519Seed()
@@ -711,9 +682,7 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 			"correlation_id", requestID,
 			"error", err,
 		)
-		noiseutil.Zero(pqSecret)
-		sess.cancel()
-		return
+		return false
 	}
 	responderPub, pubErr := noiseutil.X25519PublicFromSeed(ephemeralSeed)
 	if pubErr != nil {
@@ -722,10 +691,8 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 			"correlation_id", requestID,
 			"error", pubErr,
 		)
-		noiseutil.Zero(pqSecret)
 		noiseutil.Zero(ephemeralSeed)
-		sess.cancel()
-		return
+		return false
 	}
 
 	dhSecret, pq, dhErr := noiseutil.DeriveRekeySecrets(noiseutil.RekeyMaterial{
@@ -744,9 +711,7 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 			"correlation_id", requestID,
 			"error", dhErr,
 		)
-		noiseutil.Zero(pqSecret)
-		sess.cancel()
-		return
+		return false
 	}
 
 	// Rotate receive first, retaining the previous key for the grace window so
@@ -782,10 +747,10 @@ func (sess *channelSession) handleRekeyRequest(requestID uint64, req *leapmuxv1.
 		)
 		noiseutil.Zero(dhForSend)
 		noiseutil.Zero(pqForSend)
-		sess.cancel()
-		return
+		return false
 	}
 	sess.lastRekeyAt = time.Now()
+	return true
 }
 
 // reactToReassembly acts on one reassembly outcome: it logs each arm with
@@ -852,6 +817,24 @@ func (m *Manager) reactToReassembly(
 		return outcome.plaintext, true
 	}
 	return nil, false
+}
+
+// closeFailedSession tells the peer that the session cannot continue and runs
+// the same local cleanup as a Hub-requested close. TrySendOrReset enqueues the
+// notification or resets a saturated connection so the Hub can clean it up.
+func (m *Manager) closeFailedSession(sess *channelSession) {
+	if sess.ctx.Err() != nil {
+		return
+	}
+	channelID := sess.ChannelID
+	if m.trySendFn != nil {
+		_ = m.trySendFn(&leapmuxv1.ConnectRequest{
+			Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
+				ChannelMessageResp: channelwire.CloseNotification(channelID),
+			},
+		})
+	}
+	m.HandleClose(channelID)
 }
 
 // HandleClose removes a channel session and invokes the close callback.
@@ -1177,7 +1160,9 @@ func sendFailureLevel(err error) slog.Level {
 // error on a LIVE connection too. That case is a real fault and must stay a
 // warning.
 func IsTransportTeardown(err error) bool {
-	return errors.Is(err, ErrTransportGone) || errors.Is(err, channelwire.ErrSendAborted)
+	return errors.Is(err, ErrTransportGone) ||
+		errors.Is(err, channelwire.ErrSendAborted) ||
+		errors.Is(err, noiseutil.ErrCipherDestroyed)
 }
 
 // logSendFailure logs a failed send with the channel/correlation/method

@@ -51,9 +51,15 @@
       "properties": {
         "correlationId": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
         "flags": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
-        "plaintext": { "type": "string", "minLength": 1 },
+        "plaintext": { "type": "string" },
         "ciphertextHex": { "type": "string", "pattern": "^([0-9a-f]{2})+$" }
       }
+    },
+    "frames": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/frame" },
+      "contains": { "type": "object", "required": ["plaintext"], "properties": { "plaintext": { "const": "" } } }
     },
     "vector": {
       "type": "object",
@@ -69,8 +75,8 @@
         "responderEntropy",
         "message1Hex",
         "message2Hex",
-        "initiatorFrame",
-        "responderFrame"
+        "initiatorFrames",
+        "responderFrames"
       ],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
@@ -83,8 +89,8 @@
         "responderEntropy": { "$ref": "#/$defs/entropy" },
         "message1Hex": { "type": "string" },
         "message2Hex": { "type": "string" },
-        "initiatorFrame": { "$ref": "#/$defs/frame" },
-        "responderFrame": { "$ref": "#/$defs/frame" }
+        "initiatorFrames": { "$ref": "#/$defs/frames" },
+        "responderFrames": { "$ref": "#/$defs/frames" }
       },
       "allOf": [
         {

@@ -682,6 +682,37 @@ describe('ChannelSessionClient lost worker', () => {
     expect(h.spawn).toHaveBeenCalledOnce()
   })
 
+  it.each([false, true])('releases a handshake when posting its finish fails (abandon fails: %s)', async (abandonFails) => {
+    const h = clientHarness()
+    const handshake = await begin(h)
+    const port = h.ports[0]!
+    const post = port.postMessage.bind(port)
+    port.postMessage = (command, transfer) => {
+      if (command.type === 'finishHandshake')
+        throw new Error('the finish could not be cloned')
+      if (abandonFails && command.type === 'abandonHandshake')
+        throw new Error('the port closed')
+      post(command, transfer)
+    }
+
+    await expect(h.client.finishHandshake(handshake, {
+      channelId: 'ch-1',
+      payload: new Uint8Array(1),
+      maxReassembledMessageSize: 100,
+    })).rejects.toThrow('the finish could not be cloned')
+
+    if (abandonFails) {
+      expect(port.terminate).toHaveBeenCalledOnce()
+      expect(h.deps.onWorkerLost).toHaveBeenCalledOnce()
+    }
+    else {
+      expect(port.commands('abandonHandshake')).toEqual([
+        { type: 'abandonHandshake', handshakeId: handshake.id },
+      ])
+      expect(port.terminate).not.toHaveBeenCalled()
+    }
+  })
+
   it('throws a send that cannot be posted to its caller, and keeps the worker', () => {
     const h = clientHarness()
     h.client.prepare()

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -254,10 +256,7 @@ func sendRekeyOutcomeWithKey(t *testing.T, peer *noiseutil.Session, peerWS *webs
 				MlkemEphemeralCt: ephemeralCiphertext,
 			}},
 		}
-		pt, err := proto.Marshal(envelope)
-		require.NoError(t, err)
-		frame := sealChannelPlaintextForTunnel(t, peer, corr, pt)
-		require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, frame))
+		writePeerMessage(t, peer, peerWS, corr, envelope)
 		peer.RekeySendWithSecret(dhForSend, pqForSend)
 		return
 	}
@@ -266,10 +265,7 @@ func sendRekeyOutcomeWithKey(t *testing.T, peer *noiseutil.Session, peerWS *webs
 			RetryAfterMs: retryAfterMs,
 		}},
 	}
-	pt, err := proto.Marshal(envelope)
-	require.NoError(t, err)
-	frame := sealChannelPlaintextForTunnel(t, peer, corr, pt)
-	require.NoError(t, channelwire.WriteChannelMessage(context.Background(), peerWS, frame))
+	writePeerMessage(t, peer, peerWS, corr, envelope)
 }
 
 func sealChannelPlaintextForTunnel(t *testing.T, session *noiseutil.Session, correlationID uint64, plaintext []byte) *leapmuxv1.ChannelMessage {
@@ -511,6 +507,52 @@ func TestChannelRekeyRejectLeavesChannelOpen(t *testing.T) {
 	assert.False(t, ch.rekey.rekeyNotBefore.IsZero(), "Reject arms age-only backoff")
 }
 
+func TestPreparedRekeyRequestOwnsWireBytes(t *testing.T) {
+	t.Parallel()
+
+	worker, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	offer, err := noiseutil.OfferRekeyPQ(worker.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	seed, err := noiseutil.GenerateEphemeralX25519Seed()
+	require.NoError(t, err)
+	material := rekeySecrets{ephemeralSeed: seed, pq: offer}
+	defer material.zero()
+	wantCiphertext := slices.Clone(offer.StaticCiphertext)
+	wantPublicKey := slices.Clone(offer.EphemeralPublicKey)
+	envelope, err := material.request()
+	require.NoError(t, err)
+
+	material.zero()
+
+	assert.Equal(t, wantCiphertext, envelope.GetRekeyRequest().GetMlkemStaticCt())
+	assert.Equal(t, wantPublicKey, envelope.GetRekeyRequest().GetMlkemEphemeralPub())
+	assert.Equal(t, make([]byte, len(seed)), seed)
+}
+
+func TestStaleRekeyWatchdogLeavesCurrentAttemptAlone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		waiter := make(chan rekeyOutcome, 1)
+		currentDone := make(chan struct{})
+		ch := &Channel{
+			ctx: ctx, cancel: cancel,
+			rekey: rekeyController{
+				rekeyWaiters: []chan rekeyOutcome{waiter},
+				rekeyDone:    currentDone,
+			},
+		}
+
+		// An older attempt can already be claimed without having broadcast its outcome yet.
+		ch.runRekeyTimer(make(chan struct{}))
+
+		assert.NoError(t, ctx.Err())
+		assert.Empty(t, waiter)
+		assert.Equal(t, currentDone, ch.rekey.rekeyDone)
+	})
+}
+
 func TestChannelRekeyTimeoutCancelsChannel(t *testing.T) {
 	// The whole cost of this test is waiting out testRekeyWatchdog, and it
 	// shares no state with anything else -- so it waits alongside its sibling
@@ -618,11 +660,12 @@ func TestChannelRekeyAwaitPrefersTerminalOutcomeOverCancel(t *testing.T) {
 
 	// Reproduce the exact state cancelAndResolveRekeyTerminal is in between its
 	// claim and its broadcast: waiters claimed, channel already cancelled.
-	claim := ch.claimRekeyResolution()
+	attempt := ch.rekey.rekeyDone
+	claim := ch.claimRekeyResolution(attempt)
 	ch.cancel()
 
 	got := make(chan error, 1)
-	go func() { got <- ch.awaitRekeyOutcome(waiter) }()
+	go func() { got <- ch.awaitRekeyOutcome(waiter, attempt) }()
 
 	select {
 	case err := <-got:
@@ -1064,17 +1107,7 @@ func TestChannelRekeyIgnoresAStaleReject(t *testing.T) {
 		"a stale Reject must not arm the backoff against a live rekey")
 }
 
-// TestChannelResolveRekeyTerminalIsSafeUnderRekeyMu pins the lock-order rule the
-// code used to state only in prose.
-//
-// startRekeyLocked raises a resolution while holding rekeyMu, and it survived
-// only because that one outcome happened to carry a non-nil error, which skipped
-// the backoff arm -- the single place resolveRekey takes rekeyMu. A second such
-// call site with a nil error, or an author "simplifying" the pubkey failure into
-// a plain Reject, self-deadlocked the sender with no compile-time signal.
-// resolveRekeyTerminal makes that structural: its signature cannot express the
-// arming outcome.
-func TestChannelResolveRekeyTerminalIsSafeUnderRekeyMu(t *testing.T) {
+func TestChannelResolveTerminalRekeyIsSafeUnderRekeyMu(t *testing.T) {
 	ch, _, _, _ := pairedRekeyChannel(t)
 
 	waiter := make(chan rekeyOutcome, 1)
@@ -1087,13 +1120,13 @@ func TestChannelResolveRekeyTerminalIsSafeUnderRekeyMu(t *testing.T) {
 		defer close(done)
 		ch.rekey.rekeyMu.Lock()
 		defer ch.rekey.rekeyMu.Unlock()
-		ch.resolveRekeyTerminal(errors.New("boom"))
+		ch.resolveRekey(terminalRekeyOutcome(errors.New("boom")), ch.rekey.rekeyDone)
 	}()
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("resolveRekeyTerminal deadlocked while holding rekeyMu")
+	case <-time.After(eventWaitLimit):
+		t.Fatal("terminal rekey resolution deadlocked while holding rekeyMu")
 	}
 	require.Len(t, waiter, 1, "the terminal resolution must still wake the waiters")
 	outcome := <-waiter
