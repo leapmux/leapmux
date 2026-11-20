@@ -30,6 +30,20 @@ func TestDiracTaskletMetadataKeepsNativeOwnershipAndOutcome(t *testing.T) {
 	assert.Equal(t, "The parser is correct.", *child.Record.Outcome.Response)
 }
 
+func TestDiracTaskletDiscoveryIgnoresUnrelatedRuntimeSettings(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeDiracTaskletStore(t, root)
+	runtime := filepath.Join(root, "data", "acp-session-runtime-configs", "dirac-session.json")
+	require.NoError(t, os.WriteFile(runtime, []byte(`{"taskId":"native-root","settings":{"mode":42}}`), 0o600))
+
+	metadata, err := readDiracTaskletMetadata(root, "dirac-session")
+	require.NoError(t, err)
+	assert.Equal(t, "native-root", metadata.RootTaskID)
+	require.Len(t, metadata.Tasklets, 1)
+	assert.Equal(t, "Witten", metadata.Tasklets[0].Record.ID)
+}
+
 func TestDiracTaskletAcceptedReceiptDoesNotFinishTheChild(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

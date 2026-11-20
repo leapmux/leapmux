@@ -2,10 +2,15 @@ package launch
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/stretchr/testify/assert"
@@ -204,7 +209,7 @@ func TestBuildNuCommand_SingleQuoteInArgs(t *testing.T) {
 		StripEnvKeys: []string{"CLAUDECODE"},
 		BaseArgs:     []string{"--output-format", "stream-json"},
 		EnvGated:     testEnvGate("--model", "it's-a-model"),
-	}, "test", nil), "__DELIM__", "__META__ ")
+	}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__", MetaPrefix: "__META__ "})
 	// Single quotes in args must be safely double-quoted, not POSIX-quoted.
 	assert.Contains(t, inner, `"it's-a-model"`)
 	assert.NotContains(t, inner, `'\''`)
@@ -492,7 +497,7 @@ func TestBuildShellWrappedCommand_QuotesProgramPathWithSpace(t *testing.T) {
 	nu := buildNuCommand(prepareShellLaunch(WrapSpec{
 		Launch:   Spec{Program: program},
 		BaseArgs: []string{"/opt/zcode.cjs"},
-	}, "test", nil), "__DELIM__", "")
+	}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
 	assert.Contains(t, nu, `^"`+program+`"`)
 
 	pwsh := buildPwshCommand(prepareShellLaunch(WrapSpec{
@@ -511,7 +516,7 @@ func TestBuildShellWrappedCommand_EscapesQuoteInProgramPath(t *testing.T) {
 	pwsh := buildPwshCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
 	assert.Contains(t, pwsh, `__leapmux_lookup '/opt/it''s/node'`)
 
-	nu := buildNuCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: `/opt/say"hi"/node`}}, "test", nil), "__DELIM__", "")
+	nu := buildNuCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: `/opt/say"hi"/node`}}, "test", nil), &PreparedLaunch{Delimiter: "__DELIM__"})
 	assert.Contains(t, nu, `^"/opt/say\"hi\"/node"`)
 }
 
@@ -834,6 +839,66 @@ func TestBuildShellWrappedCommand_CshSetsTheSetEnvValue(t *testing.T) {
 				WorkingDir: t.TempDir(),
 			}, "LEAPMUX_TEST_VALUE=inherited", "LEAPMUX_TEST_GATE_A=", "LEAPMUX_TEST_GATE_B=")
 			assert.Equal(t, tc.wantOut, out)
+		})
+	}
+}
+
+const environmentObservationPeerArgument = "--leapmux-test-observed-provider"
+
+func TestMain(m *testing.M) {
+	if code, handled := envprobe.Run(os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
+	if len(os.Args) == 2 && os.Args[1] == environmentObservationPeerArgument {
+		if _, err := os.Stdout.WriteString("provider output\n"); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func TestWrapObservesTheExternalProviderEnvironment(t *testing.T) {
+	t.Parallel()
+	for _, shell := range []string{"sh", "bash", "zsh", "fish", "nu", "pwsh", "powershell", "csh", "tcsh", "xonsh"} {
+		t.Run(shell, func(t *testing.T) {
+			t.Parallel()
+			shellPath, err := exec.LookPath(shell)
+			if err != nil {
+				t.Skip("the shell is unavailable")
+			}
+			executable, err := os.Executable()
+			require.NoError(t, err)
+			work := t.TempDir()
+			const pinned = "first=second;third\nnext line"
+			prepared, err := Wrap(t.Context(), WrapSpec{
+				Shell: shellPath, WorkingDir: work,
+				Launch: Spec{Program: executable}, BaseArgs: []string{environmentObservationPeerArgument},
+				SetEnv: []string{"LEAPMUX_OBSERVATION_PIN=" + pinned, "LEAPMUX_OBSERVATION_PATH=state"},
+				ObserveEnvironment: &ObservationRequest{
+					Variables:     []string{"LEAPMUX_OBSERVATION_PIN", "LEAPMUX_OBSERVATION_UNSET"},
+					PathVariables: map[string]string{"LEAPMUX_OBSERVATION_PATH": ""},
+				},
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, prepared.Close()) })
+			output, err := prepared.Cmd.Output()
+			require.NoError(t, err)
+			lines := strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n")
+			require.Len(t, lines, 5, string(output))
+			require.Empty(t, lines[0])
+			encoded, found := strings.CutPrefix(lines[1], prepared.MetaPrefix+envprobe.ObservationKey+"=")
+			require.True(t, found, string(output))
+			assert.Equal(t, prepared.Delimiter, lines[2])
+			assert.Equal(t, "provider output", lines[3])
+			data, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+			require.NoError(t, err)
+			var snapshot envprobe.Snapshot
+			require.NoError(t, json.Unmarshal(data, &snapshot))
+			assert.Equal(t, pinned, snapshot.Values["LEAPMUX_OBSERVATION_PIN"])
+			assert.Contains(t, snapshot.Values, "LEAPMUX_OBSERVATION_UNSET")
+			assert.Empty(t, snapshot.Values["LEAPMUX_OBSERVATION_UNSET"])
+			assert.Equal(t, filepath.Join(snapshot.WorkingDir, "state"), snapshot.Paths["LEAPMUX_OBSERVATION_PATH"])
 		})
 	}
 }

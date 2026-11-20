@@ -185,7 +185,7 @@ func TestCapturedAdmissionRejectsIncompleteOwnersBeforeEffects(t *testing.T) {
 					case "notification":
 						accepted, callErr = services.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content)
 					case "handler message":
-						callErr = svc.Output.persistAndBroadcast(agentID, output.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, output.tracker)
+						callErr = svc.Output.persistAndBroadcast(agentID, output.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, output.currentSpanTracker())
 					case "handler notification":
 						accepted, callErr = svc.Output.persistNotificationThreaded(agentID, output.agentProvider, output.plugin, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content)
 					case "enrichment":

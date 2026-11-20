@@ -592,9 +592,7 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 			a.stopZCodeTurnWatcherLocked(owner)
 		}
 		owner.settled = true
-		if a.foregroundTurnID == owner.id {
-			a.foregroundTurnID = ""
-		}
+		a.retireZCodeForegroundTurnLocked(owner)
 	}
 	if compacting {
 		a.compactionSessionID = ""
@@ -602,6 +600,7 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 	a.cancelStoppedZCodeTurnLocked()
 	a.refreshTurnActiveLocked()
 	a.Mu.Unlock()
+	a.publishZCodeModelAPIRetryLocked()
 	defer a.PublishTurnActive()
 
 	if compacting {
@@ -740,14 +739,7 @@ func (a *Agent) Stop() {
 	a.stopAllZCodeTurnWatchers()
 	a.cancelAllZCodeRuntimeHeaderAnswers()
 	a.withdrawPendingControls()
-	completion := a.ProcessExitCompletion()
-	a.flushZCodeGeneration(completion)
-	a.Mu.Lock()
-	a.compactionSessionID = ""
-	// The tear-down clears every turn owner: nothing survives the process.
-	a.clearZCodeTurnsLocked()
-	a.Mu.Unlock()
-	a.persistIncompleteZCodeTools(completion)
+	a.finalizeZCodeProcessTranscript()
 	if stopWasPending {
 		a.persistZCodeStopRow()
 	}
@@ -766,15 +758,29 @@ func (a *Agent) Wait() error {
 	a.cancelAllZCodeRuntimeHeaderAnswers()
 	a.withdrawPendingControls()
 	a.cancelStoppedZCodeTurn()
-	completion := a.ProcessExitCompletion()
-	a.flushZCodeGeneration(completion)
-	a.Mu.Lock()
-	a.compactionSessionID = ""
-	a.clearZCodeTurnsLocked()
-	a.Mu.Unlock()
-	a.persistIncompleteZCodeTools(completion)
+	a.finalizeZCodeProcessTranscript()
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.resetZCodeSteers()
 	a.forgetZCodeConversation()
 	return err
+}
+
+func (a *Agent) finalizeZCodeProcessTranscript() {
+	completion := a.ProcessExitCompletion()
+	a.flushZCodeGeneration(completion)
+	a.retireZCodeProcessTurns()
+	a.persistIncompleteZCodeTools(completion)
+}
+
+// retireZCodeProcessTurns clears every owner after process exit and orders the
+// last retry callback with native event dispatch.
+func (a *Agent) retireZCodeProcessTurns() {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.retryHistory = nil
+	a.Mu.Lock()
+	a.compactionSessionID = ""
+	a.clearZCodeTurnsLocked()
+	a.Mu.Unlock()
+	a.publishZCodeModelAPIRetryLocked()
 }

@@ -126,3 +126,18 @@ func TestJSONRPCTimeoutRemovesTheReplyObserver(t *testing.T) {
 	assert.False(t, connection.Deliver(1, json.RawMessage(`{"result":true}`)))
 	assert.Zero(t, observed.Load())
 }
+
+func TestQueuedJSONRPCNotificationHasTheNormalWireFrame(t *testing.T) {
+	t.Parallel()
+	frames := make(chan string, 2)
+	connection := newObserverTestProcess(t, observerRequestWriter(func(data []byte) (int, error) {
+		frames <- string(data)
+		return len(data), nil
+	}))
+	params := json.RawMessage(`{"sessionId":"session"}`)
+	require.NoError(t, connection.SendNotification("session/cancel", params))
+	done, err := connection.EnqueueNotification("session/cancel", params)
+	require.NoError(t, err)
+	require.NoError(t, <-done)
+	assert.Equal(t, <-frames, <-frames, "queued and waiting notifications use the same JSONL frame")
+}

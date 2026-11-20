@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -333,4 +334,15 @@ func TestProcessCompletionFollowsTheLastHandledLine(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestPreambleRejectsDuplicateEnvironmentObservation(t *testing.T) {
+	t.Parallel()
+	process := NewProcessFrom(ProcessConfig{
+		Ctx: t.Context(), PreambleDelimiter: "ready", PreambleMetaPrefix: "nonce:",
+	})
+	process.skipPreamble(bufio.NewScanner(strings.NewReader("profile output\nnonce:environment=first\nnonce:environment=second\nnonce:environment=third\nready\n")))
+	assert.True(t, process.Ready())
+	assert.Empty(t, process.PreambleMetaValue("environment"))
+	assert.Equal(t, "profile output", process.PreambleOutput())
 }

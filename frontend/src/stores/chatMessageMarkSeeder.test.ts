@@ -100,6 +100,22 @@ describe('chatMessageMarkSeeder', () => {
     expect(data.marks.map(m => m.seq)).toEqual([2n])
   })
 
+  it('discards an in-flight seed after deleting a sequence with no cached mark', async () => {
+    const { rpc, marks, seeder } = harness()
+    const inflight = deferred<Awaited<ReturnType<typeof workerAgent.listMessageMarks>>>()
+    rpc
+      .mockReturnValueOnce(inflight.promise)
+      .mockResolvedValueOnce(marksResponse([1n], 1n, 1n))
+
+    const load = seeder.load('w1', 'a1')
+    marks.remove('a1', 2n)
+    inflight.resolve(marksResponse([1n, 2n], 1n, 2n))
+    await load
+
+    expect(rpc).toHaveBeenCalledTimes(2)
+    expect(marks.get('a1').marks.map(mark => mark.seq)).toEqual([1n])
+  })
+
   it('stops the retry chain when the watch signal is aborted after a retry was scheduled', async () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)

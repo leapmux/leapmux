@@ -47,7 +47,7 @@ func StartOverCommand(ctx context.Context, cancel context.CancelFunc, cmd *exec.
 	}
 
 	scanner := agent.NewStdoutScanner(stdout)
-	go a.readOutputLoop(scanner)
+	a.startOutputReader(scanner)
 
 	return a, nil
 }

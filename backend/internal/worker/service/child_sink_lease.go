@@ -11,9 +11,10 @@ import (
 // childSinkLifetime is the sole cleanup authority for one acquired child sink.
 // The root mutation lock protects the identity and its frozen capture.
 type childSinkLifetime struct {
-	frozen            *frozenChildCapture
-	reset             agent.TranscriptPublication
-	activationClaimed atomic.Bool
+	frozen                *frozenChildCapture
+	reset                 agent.TranscriptPublication
+	activationClaimed     atomic.Bool
+	retainTranscriptSpans bool
 }
 
 type frozenChildCapture struct {
@@ -27,7 +28,7 @@ func (s *agentOutputSink) freezeChildLifetimeLocked(child *agentOutputSink) {
 	}
 	content := child.captureMessageUnderMutation(agent.MessageContent{}, agent.SpanInfo{})
 	owner := content.Publication.Owner().(*transcriptOwner)
-	child.childLifetime.frozen = &frozenChildCapture{owner: owner, tracker: child.tracker.Freeze()}
+	child.childLifetime.frozen = &frozenChildCapture{owner: owner, tracker: child.currentSpanTracker().Freeze()}
 }
 
 // AcquireChildSink allocates a lifetime while native session adoption remains independent.
@@ -55,11 +56,15 @@ func (s *agentOutputSink) acquireChildSink(childAgentID string) (agent.ChildSink
 		mutation.Unlock()
 		return agent.ChildSinkLease{}, nil
 	}
+	previousLifetime := child.childLifetime
 	s.freezeChildLifetimeLocked(child)
 	lifetime := &childSinkLifetime{}
 	activity := s.h.activityFor(childAgentID, s.rootAgentID)
 	activity.mu.Lock()
 	child.childLifetime = lifetime
+	if previousLifetime != nil && previousLifetime.retainTranscriptSpans {
+		child.rebindSpanTracker()
+	}
 	activity.mu.Unlock()
 	s.childMu.Unlock()
 	mutation.Unlock()
@@ -74,7 +79,7 @@ func (s *agentOutputSink) acquireChildSink(childAgentID string) (agent.ChildSink
 			previous := s.h.scopeLocked(activity, s.rootAgentID)
 			activity.scope = &activityScope{publisher: previous.publisher}
 			activity.mu.Unlock()
-			child.tracker.Reset()
+			child.currentSpanTracker().Reset()
 			reset := child.captureMessageUnderMutation(agent.MessageContent{}, agent.SpanInfo{}).Publication.(*transcriptPublication)
 			owner := *reset.owner
 			owner.activationLease = lifetime
@@ -109,6 +114,15 @@ func (s *agentOutputSink) acquireChildSink(childAgentID string) (agent.ChildSink
 			owner.sessionID = content.AgentSessionID
 			content.Publication = &transcriptPublication{owner: owner.withSpanSnapshot(frozen.tracker, span)}
 			return content
+		},
+		RetainTranscriptSpans: func() bool {
+			mutation.Lock()
+			defer mutation.Unlock()
+			if child.childLifetime != lifetime || !child.registeredCurrent() {
+				return false
+			}
+			lifetime.retainTranscriptSpans = true
+			return true
 		},
 		Activate: func() {
 			if lifetime.activationClaimed.Load() {

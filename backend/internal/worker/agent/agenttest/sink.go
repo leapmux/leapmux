@@ -169,9 +169,20 @@ type Sink struct {
 	// Native record identities include their original provider session.
 	messageKeys map[nativeMessageIdentity]int
 	turnEndKeys map[nativeMessageIdentity]struct{}
+	// retractedKeys holds the eviction receipts: a retained key never reinserts.
+	retractedKeys map[nativeMessageIdentity]struct{}
+	retractions   []MessageRetraction
 }
 
 type nativeMessageIdentity struct{ sessionID, key string }
+
+// MessageRetraction records one RetractMessagesByIdempotencyKey call and the
+// stored rows it removed, in recorded-position sequence order.
+type MessageRetraction struct {
+	AgentSessionID string
+	Keys           []string
+	Seqs           []int64
+}
 
 // Sink implements the service facets. A test passes it to a provider through
 // NewProviderServices, as the production sink does.
@@ -189,13 +200,16 @@ type Message struct {
 	SupplementalRevision int64
 	Completion           agent.MessageCompletion
 	TranscriptOnly       bool
-	ParentSpanID         string
-	ConnectorSpanID      string
-	SpanID               string
-	SpanType             string
-	Closing              bool
-	SpanColor            int32
-	MarkType             leapmuxv1.MarkType
+	// Retracted marks a committed row that a native eviction later deleted.
+	// The fake keeps the attempt visible at its recorded position.
+	Retracted       bool
+	ParentSpanID    string
+	ConnectorSpanID string
+	SpanID          string
+	SpanType        string
+	Closing         bool
+	SpanColor       int32
+	MarkType        leapmuxv1.MarkType
 	// NoSpan mirrors SpanInfo.NoSpan.
 	// The row carries a span ID but owns no span.
 	// Its span_color stays zero. Persistence must not copy a color from the connector.
@@ -259,14 +273,20 @@ func (s *Sink) persistMessageLocked(source leapmuxv1.MessageSource, content agen
 		return err
 	}
 	identity := s.messageIdentityLocked(content)
-	if identity.key != "" && s.PersistErr == nil {
-		if _, exists := s.messageKeys[identity]; exists {
+	if identity.key != "" {
+		if _, retracted := s.retractedKeys[identity]; retracted {
+			// A retained key never reinserts, exactly as CreateMessage skips it.
 			return nil
 		}
-		if s.messageKeys == nil {
-			s.messageKeys = make(map[nativeMessageIdentity]int)
+		if s.PersistErr == nil {
+			if _, exists := s.messageKeys[identity]; exists {
+				return nil
+			}
+			if s.messageKeys == nil {
+				s.messageKeys = make(map[nativeMessageIdentity]int)
+			}
+			s.messageKeys[identity] = len(s.messages)
 		}
-		s.messageKeys[identity] = len(s.messages)
 	}
 	spans := s.liveSpansLocked()
 	if owner != nil {
@@ -339,7 +359,7 @@ func (s *Sink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
 			continue
 		}
 		message := &s.messages[index]
-		if !message.stored {
+		if !message.stored || message.Retracted {
 			continue
 		}
 		if message.AgentSessionID != sessionID {
@@ -382,6 +402,64 @@ func (s *Sink) ReadMessageByIdempotencyKey(sessionID, idempotencyKey string) (*a
 	return s.storedSpanRow(index), nil
 }
 
+// RetractMessagesByIdempotencyKey records eviction receipts and marks the
+// matching stored rows retracted. A duplicate key claims nothing new. A
+// captured content whose owner no longer matches this sink refuses the claim.
+func (s *Sink) RetractMessagesByIdempotencyKey(captured agent.MessageContent, keys []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.capturedOwnerLocked(captured); err != nil {
+		return err
+	}
+	base := s.messageIdentityLocked(captured)
+	record := MessageRetraction{AgentSessionID: base.sessionID, Keys: append([]string(nil), keys...)}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		identity := nativeMessageIdentity{sessionID: base.sessionID, key: key}
+		if _, exists := s.retractedKeys[identity]; exists {
+			continue
+		}
+		if s.retractedKeys == nil {
+			s.retractedKeys = make(map[nativeMessageIdentity]struct{})
+		}
+		s.retractedKeys[identity] = struct{}{}
+		if index, stored := s.messageKeys[identity]; stored {
+			s.messages[index].Retracted = true
+			delete(s.messageKeys, identity)
+			record.Seqs = append(record.Seqs, int64(index+1))
+		}
+	}
+	s.retractions = append(s.retractions, record)
+	return nil
+}
+
+// IsMessageRetracted reports a retained eviction receipt for one key in the
+// captured scope. An empty key is never retracted.
+func (s *Sink) IsMessageRetracted(captured agent.MessageContent, key string) (bool, error) {
+	if key == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.capturedOwnerLocked(captured); err != nil {
+		return false, err
+	}
+	identity := s.messageIdentityLocked(captured)
+	identity.key = key
+	_, retracted := s.retractedKeys[identity]
+	return retracted, nil
+}
+
+// Retractions returns a snapshot of every RetractMessagesByIdempotencyKey
+// call in order, with the stored-row sequences each call removed.
+func (s *Sink) Retractions() []MessageRetraction {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]MessageRetraction(nil), s.retractions...)
+}
+
 func (s *Sink) ReadToolRequest(spanID string) (*agent.StoredMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -405,7 +483,7 @@ func (s *Sink) ReadToolResultForSession(spanID, sessionID string) (*agent.Stored
 	defer s.mu.Unlock()
 	for index := len(s.messages) - 1; index >= 0; index-- {
 		message := s.messages[index]
-		if message.stored && spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == sessionID {
+		if message.stored && !message.Retracted && spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == sessionID {
 			return s.storedSpanRow(index), nil
 		}
 	}
@@ -419,14 +497,14 @@ func (s *Sink) ReadToolResultBySeq(seq int64) (*agent.StoredMessage, error) {
 		return nil, nil
 	}
 	message := s.messages[seq-1]
-	if !message.stored || message.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || message.SpanID == "" {
+	if !message.stored || message.Retracted || message.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || message.SpanID == "" {
 		return nil, nil
 	}
 	return s.storedSpanRow(int(seq - 1)), nil
 }
 
 func (s *Sink) spanRowMatches(message Message, spanID string) bool {
-	return message.stored && spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == s.currentSessionIDLocked()
+	return message.stored && !message.Retracted && spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == s.currentSessionIDLocked()
 }
 
 // storedSpanRow copies a committed row. The fake uses recorded positions as
@@ -1960,13 +2038,17 @@ func (nop) ReadToolResult(string) (*agent.StoredMessage, error)                 
 func (nop) ReadToolResultBySeq(int64) (*agent.StoredMessage, error)                  { return nil, nil }
 func (nop) ReadToolResultForSession(string, string) (*agent.StoredMessage, error)    { return nil, nil }
 func (nop) ReadMessageByIdempotencyKey(string, string) (*agent.StoredMessage, error) { return nil, nil }
-func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)             { return false, nil }
-func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error                { return nil }
-func (nop) SetTurnState(agent.TurnState, uint64)                                     {}
-func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error        { return nil }
-func (nop) CaptureBackgroundTaskExit(bool) func() error                              { return nil }
-func (nop) CaptureBackgroundTaskStartFailure() func() error                          { return nil }
-func (nop) OutputQueue() *agent.OutputQueue                                          { return nil }
+func (nop) RetractMessagesByIdempotencyKey(agent.MessageContent, []string) error {
+	return nil
+}
+func (nop) IsMessageRetracted(agent.MessageContent, string) (bool, error)     { return false, nil }
+func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)      { return false, nil }
+func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error         { return nil }
+func (nop) SetTurnState(agent.TurnState, uint64)                              {}
+func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error { return nil }
+func (nop) CaptureBackgroundTaskExit(bool) func() error                       { return nil }
+func (nop) CaptureBackgroundTaskStartFailure() func() error                   { return nil }
+func (nop) OutputQueue() *agent.OutputQueue                                   { return nil }
 func (nop) CaptureSteerReport(int, agent.SteerOutcome) func() error {
 	return func() error { return nil }
 }
@@ -2159,4 +2241,25 @@ func (sink *Sink) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
 
 func (nop) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
 	return agent.ValidateTranscriptOutputTicket(ticket)
+}
+
+func (owner *testTranscriptOwner) IsTranscriptFrameCurrent() bool {
+	owner.sink.mu.Lock()
+	defer owner.sink.mu.Unlock()
+	return owner.currentNativeStateSourceLocked()
+}
+
+func (owner *testTranscriptOwner) TranscriptFrameSpans() agent.SpanServices {
+	return owner.sink
+}
+
+var _ agent.TranscriptFrameOwner = (*testTranscriptOwner)(nil)
+
+// SnapshotTranscriptFrame records geometry when an admitted frame executes.
+func (owner *testTranscriptOwner) SnapshotTranscriptFrame(agent.SpanInfo) agent.TranscriptPublication {
+	owner.sink.mu.Lock()
+	defer owner.sink.mu.Unlock()
+	snapshot := *owner
+	snapshot.spans = owner.sink.liveSpansLocked()
+	return &snapshot
 }

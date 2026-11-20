@@ -14,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -2310,4 +2311,175 @@ func TestClaude_RestartedSubagentKeepsOneRegistryRow(t *testing.T) {
 				"the restarted run keeps the row it already had")
 		})
 	}
+}
+
+func TestClaudeTaskStartedWaitsForItsCapturedSendMessage(t *testing.T) {
+	t.Parallel()
+	for _, sibling := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sibling=%t", sibling), func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			services := agentapi.NewProviderServices(sink)
+			a := newTestAgent(services)
+			recipient := spawnAndFinishSubagent(t, a, sink)
+			before := len(recipient.Messages())
+			sender := services
+			if sibling {
+				a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"sender","tool_use_id":"sender-spawn","task_type":"local_agent","prompt":"send"}`))
+				sender = services.ChildSink("child-of-sender-spawn")
+			}
+			queue := agentapi.OutputQueueFor(sender)
+			require.NotNil(t, queue)
+			blocker := agentapi.NewOutputOwner()
+			queue.Append(agentapi.OutputWrite{Owner: blocker, Label: "block sender storage", Run: func() error {
+				return errors.New("the sender store is unavailable")
+			}})
+			if sibling {
+				sendMessageFromChild(a, "sender-spawn", "send-call", "task-1")
+			} else {
+				sendMessageTo(a, "send-call", "task-1")
+			}
+			restartTaskStarted(a, "send-call", "Also check the tests.")
+			a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","summary":"again"}`))
+
+			replies, unregister, err := a.controlReplies.Register("independent")
+			require.NoError(t, err)
+			defer unregister()
+			reply := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"independent","response":{}}}`)
+			require.True(t, a.handlePendingControlResponse(&providerkit.ParsedLine{Type: claudeMsgTypeControlResponse, Raw: reply}))
+			select {
+			case got := <-replies:
+				assert.JSONEq(t, string(reply), string(got))
+			default:
+				t.Fatal("the control reply must reach its waiter while the task start waits")
+			}
+
+			assert.Empty(t, sink.RevivedTasks())
+			assert.Len(t, recipient.Messages(), before)
+			queue.ClearOwner(blocker)
+			require.NoError(t, agentapi.FlushPendingOutput(sender))
+			require.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+			rows := recipient.Messages()
+			require.Len(t, rows, before+1)
+			assert.JSONEq(t, `{"content":"Also check the tests."}`, string(rows[before].Content))
+			_, status, found, err := sink.LookupBackgroundTask("task-1")
+			require.NoError(t, err)
+			require.True(t, found)
+			assert.Equal(t, bgtask.StatusSucceeded, status, "the later notification closes the restarted task")
+		})
+	}
+}
+
+func TestClaudeFinalHoldFollowsFramesWaitingForRestartRouting(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	services := agentapi.NewProviderServices(sink)
+	a := newTestAgent(services)
+	spawnAndFinishSubagent(t, a, sink)
+	queue := agentapi.OutputQueueFor(services)
+	require.NotNil(t, queue)
+	blocker := agentapi.NewOutputOwner()
+	queue.Append(agentapi.OutputWrite{Owner: blocker, Label: "block sender storage", Run: func() error {
+		return errors.New("the sender store is unavailable")
+	}})
+	sendMessageTo(a, "send-call", "task-1")
+	restartTaskStarted(a, "send-call", "continue")
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"final","is_api_error_message":true,"message":{"content":[{"type":"text","text":"EOF error"}]}}`))
+	a.readerFinalReservation = make(chan struct{})
+	a.flushHeldAPIError()
+	select {
+	case <-a.readerFinalReservation:
+	default:
+		t.Fatal("the reader must reserve EOF while the sender store is still unavailable")
+	}
+	assert.Empty(t, sink.Messages())
+
+	queue.ClearOwner(blocker)
+	require.NoError(t, agentapi.FlushPendingOutput(services))
+	require.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.Equal(t, "send-call", rows[0].SpanID)
+	assert.Equal(t, "final", rows[1].IdempotencyKey)
+}
+
+func TestClaudeEOFReservesBeforeLaterWorkerWriteWhileSiblingSenderWaits(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a, services, sender, blocker := holdClaudeSiblingRestart(t, sink, sink)
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"final","is_api_error_message":true,"message":{"content":[{"type":"text","text":"EOF error"}]}}`))
+	a.readerFinalReservation = make(chan struct{})
+	a.flushHeldAPIError()
+	select {
+	case <-a.readerFinalReservation:
+	default:
+		t.Fatal("EOF must reserve its queue position while sender storage is unavailable")
+	}
+	rootQueue := agentapi.OutputQueueFor(services)
+	var sentinelKeys []string
+	sentinel := rootQueue.Append(agentapi.OutputWrite{Label: "later Worker write", Run: func() error {
+		for _, row := range sink.Messages() {
+			sentinelKeys = append(sentinelKeys, row.IdempotencyKey)
+		}
+		return nil
+	}})[0]
+	_ = agentapi.FlushPendingOutput(services)
+	assert.False(t, sentinel.Done(), "the later Worker write must stay behind EOF")
+
+	agentapi.OutputQueueFor(sender).ClearOwner(blocker)
+	require.NoError(t, agentapi.FlushPendingOutput(sender))
+	require.NoError(t, agentapi.FlushPendingOutput(services))
+	require.True(t, sentinel.Done())
+	assert.Equal(t, []string{"final"}, sentinelKeys)
+}
+
+type claudeContextResetOrderSink struct {
+	agenttest.Sink
+	keysBeforeReset []string
+}
+
+func (sink *claudeContextResetOrderSink) PersistNotification(source leapmuxv1.MessageSource, content agentapi.MessageContent) (bool, error) {
+	if providerkit.StringField(content.Original, "type") == "context_cleared" {
+		for _, row := range sink.Messages() {
+			sink.keysBeforeReset = append(sink.keysBeforeReset, row.IdempotencyKey)
+		}
+	}
+	return sink.Sink.PersistNotification(source, content)
+}
+
+func TestClaudeConversationResetFollowsFrameWaitingForSiblingRestart(t *testing.T) {
+	t.Parallel()
+
+	sink := &claudeContextResetOrderSink{}
+	a, services, sender, blocker := holdClaudeSiblingRestart(t, sink, &sink.Sink)
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"before-reset","message":{"content":[{"type":"text","text":"before reset"}]}}`))
+	a.HandleOutput([]byte(`{"type":"conversation_reset","new_conversation_id":"ignored"}`))
+	assert.Empty(t, sink.PersistedNotifications(), "the reset must wait for the prior frame's route")
+
+	agentapi.OutputQueueFor(sender).ClearOwner(blocker)
+	require.NoError(t, agentapi.FlushPendingOutput(sender))
+	require.NoError(t, agentapi.FlushPendingOutput(services))
+	assert.Equal(t, []string{"before-reset"}, sink.keysBeforeReset)
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 1)
+	assert.JSONEq(t, `{"type":"context_cleared"}`, string(notifications[0].Content))
+}
+
+func holdClaudeSiblingRestart(t *testing.T, sink agentapi.ServiceFacets, recorder *agenttest.Sink) (*Agent, agentapi.ProviderServices, agentapi.ProviderServices, *agentapi.OutputOwner) {
+	t.Helper()
+
+	services := agentapi.NewProviderServices(sink)
+	a := newTestAgent(services)
+	spawnAndFinishSubagent(t, a, recorder)
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"sender","tool_use_id":"sender-spawn","task_type":"local_agent","prompt":"send"}`))
+	sender := services.ChildSink("child-of-sender-spawn")
+	queue := agentapi.OutputQueueFor(sender)
+	require.NotNil(t, queue)
+	blocker := agentapi.NewOutputOwner()
+	queue.Append(agentapi.OutputWrite{Owner: blocker, Label: "block sibling storage", Run: func() error {
+		return errors.New("sibling storage is unavailable")
+	}})
+	sendMessageFromChild(a, "sender-spawn", "send-call", "task-1")
+	restartTaskStarted(a, "send-call", "continue")
+	return a, services, sender, blocker
 }

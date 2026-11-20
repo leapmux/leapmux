@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { hasDiracResumeCheckpoint, waitForDiracCheckpoint } from './resumeCheckpoint'
 
 describe('hasDiracResumeCheckpoint', () => {
-  const runtime = { taskId: 'current-task' }
+  const runtime = {
+    taskId: 'current-task',
+    settings: { mode: 'act' },
+  }
   const row = { id: 'current-task', ulid: 'session' }
 
   it('requires the current task and session while allowing older tasks', () => {
@@ -30,8 +33,20 @@ describe('hasDiracResumeCheckpoint', () => {
     { taskId: ' ' },
     { taskId: 0 },
     { taskId: -1 },
+    { ...runtime, settings: {} },
+    {
+      ...runtime,
+      settings: { mode: 'unknown' },
+    },
   ])('rejects an invalid runtime %j', (value) => {
     expect(hasDiracResumeCheckpoint(value, [row], 'session')).toBe(false)
+  })
+
+  it('rejects an unsafe task ID even if the index row matches it exactly', () => {
+    const taskId = '../current-task'
+    expect(hasDiracResumeCheckpoint({ ...runtime, taskId }, [
+      { ...row, id: taskId },
+    ], 'session')).toBe(false)
   })
 
   it.each([

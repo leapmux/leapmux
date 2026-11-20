@@ -13,7 +13,7 @@ import { createRoot, mapArray } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchEventsViaChannel, workerAgent } from '~/api/workerRpc'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageCompletion, MessagePageAnchor, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, AgentTodoSnapshotSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageCompletion, MessagePageAnchor, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import {
@@ -3616,7 +3616,12 @@ describe('useWorkspaceConnection replay ownership', () => {
     const state = mountReplay({ seq: 7n, viewportHeight: 384 })
     await flushStream()
     const listMessages = vi.mocked(workerAgent.listAgentMessages)
-    listMessages.mockResolvedValue(create(ListAgentMessagesResponseSchema))
+    listMessages.mockResolvedValue(create(ListAgentMessagesResponseSchema, {
+      messages: [
+        ...state.chatStore.getMessages(state.agentId),
+      ],
+      latestSeq: 23n,
+    }))
     emitCatchUpStart(state, 23n, { replayPageLimit: 8, messageReplaySkipped: false })
     await flushStream()
     listMessages.mockClear().mockResolvedValue(create(ListAgentMessagesResponseSchema, {
@@ -3674,6 +3679,27 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(state.chatStore.getLastSeq(state.agentId)).toBe(1n)
   })
 
+  it('reads another initial page when retraction invalidates the cold reply', async () => {
+    const stale = deferred<ReturnType<typeof pageReply>>()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear()
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue(pageReply(6n))
+    const state = mountReplay({ cold: true })
+    await flushStream()
+    acknowledgeReplay(state)
+    expect(listMessages).toHaveBeenCalledTimes(1)
+
+    retractReplayRows(state, 7n)
+    expect(state.chatStore.liveTail.get(state.agentId)).toBe(0n)
+    stale.resolve(pageReply(7n))
+    await flushStream()
+
+    expect(state.chatStore.getMessages(state.agentId).map(row => row.seq)).toEqual([6n])
+    expect(state.chatStore.isInitialLoadComplete(state.agentId)).toBe(true)
+    expect(listMessages).toHaveBeenCalledTimes(2)
+  })
+
   it('refreshes marks once when a warm replay finishes', async () => {
     const state = mountReplay({ seq: 1n })
     await flushStream()
@@ -3711,6 +3737,135 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(listMessages.mock.calls[0]![2]?.signal?.aborted).toBe(false)
     oldest.resolve(pageReply(1n))
     await expect(home).resolves.toBe(true)
+  })
+
+  it('keeps an explicit oldest request when retraction empties the loaded window', async () => {
+    const state = mountReplay({ seq: 7n })
+    await flushStream()
+    acknowledgeReplay(state)
+    const oldest = deferred<ReturnType<typeof pageReply>>()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockReturnValue(oldest.promise)
+
+    const home = state.chatStore.jumpToOldestMessages('w1', state.agentId)
+    state.handles.at(-1)!.emit(receivedEvent({
+      agentId: state.agentId,
+      event: {
+        case: 'messagesRetracted',
+        value: {
+          seqs: [7n],
+        },
+      },
+    }))
+    expect(state.chatStore.getMessages(state.agentId)).toEqual([])
+    expect(listMessages.mock.calls[0]![2]?.signal?.aborted).toBe(false)
+
+    oldest.resolve(pageReply(1n))
+    await expect(home).resolves.toBe(true)
+    await flushStream()
+
+    expect(listMessages.mock.calls.map(([, request]) => request.anchor)).toEqual([MessagePageAnchor.OLDEST])
+    expect(state.chatStore.getMessages(state.agentId).map(row => row.seq)).toEqual([1n])
+    expect(state.chatStore.hasPendingLatestAnchor(state.agentId)).toBe(false)
+  })
+
+  function retractReplayRows(state: ReturnType<typeof mountReplay>, ...seqs: bigint[]): void {
+    state.handles.at(-1)!.emit(receivedEvent({
+      agentId: state.agentId,
+      event: {
+        case: 'messagesRetracted',
+        value: { seqs },
+      },
+    }))
+  }
+
+  it('recovers an empty retracted window after a transient latest request failure', async () => {
+    const state = mountReplay({ seq: 7n, viewportHeight: 384 })
+    await flushStream()
+    acknowledgeReplay(state)
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear()
+      .mockRejectedValueOnce(new Error('The history request failed.'))
+      .mockResolvedValue(pageReply(6n))
+
+    retractReplayRows(state, 7n)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushStream()
+
+    expect(listMessages.mock.calls.map(([, request]) => [request.anchor, request.limit])).toEqual([
+      [MessagePageAnchor.LATEST, 8],
+      [MessagePageAnchor.LATEST, 8],
+    ])
+    expect(state.chatStore.getMessages(state.agentId).map(row => row.seq)).toEqual([6n])
+    expect(state.chatStore.hasPendingLatestAnchor(state.agentId)).toBe(false)
+  })
+
+  it('stops retrying a failed deletion recovery while retaining the pending anchor', async () => {
+    const state = mountReplay({ seq: 7n })
+    await flushStream()
+    acknowledgeReplay(state)
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockRejectedValue(new Error('The history request failed.'))
+
+    retractReplayRows(state, 7n)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushStream()
+
+    expect(listMessages).toHaveBeenCalledTimes(2)
+    expect(state.chatStore.hasPendingLatestAnchor(state.agentId)).toBe(true)
+  })
+
+  it('keeps recovering when retraction removes the entire latest reply', async () => {
+    const state = mountReplay({ seq: 8n })
+    await flushStream()
+    acknowledgeReplay(state)
+    const stale = deferred<ReturnType<typeof pageReply>>()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockReturnValueOnce(stale.promise).mockResolvedValue(pageReply(6n))
+
+    retractReplayRows(state, 8n)
+    expect(listMessages).toHaveBeenCalledTimes(1)
+    retractReplayRows(state, 7n)
+    stale.resolve(pageReply(7n))
+    await flushStream()
+
+    expect(state.chatStore.getMessages(state.agentId).map(row => row.seq)).toEqual([6n])
+    expect(state.chatStore.hasPendingLatestAnchor(state.agentId)).toBe(false)
+  })
+
+  it('preserves live todos when a deletion recovery returns older metadata', async () => {
+    const state = mountReplay({ seq: 8n })
+    await flushStream()
+    acknowledgeReplay(state)
+    const latest = deferred<ReturnType<typeof pageReply>>()
+    const listMessages = vi.mocked(workerAgent.listAgentMessages)
+    listMessages.mockClear().mockReturnValue(latest.promise)
+
+    retractReplayRows(state, 8n)
+    expect(listMessages).toHaveBeenCalledTimes(1)
+    state.handles.at(-1)!.emit(receivedEvent({
+      agentId: state.agentId,
+      event: {
+        case: 'todosChanged',
+        value: {
+          todos: [
+            { id: 'current-task', content: 'Current task', status: TodoStatus.IN_PROGRESS },
+          ],
+        },
+      },
+    }))
+    latest.resolve(create(ListAgentMessagesResponseSchema, {
+      ...pageReply(7n),
+      todos: create(AgentTodoSnapshotSchema, {
+        todos: [
+          { id: 'old-task', content: 'Old task', status: TodoStatus.PENDING },
+        ],
+      }),
+    }))
+    await flushStream()
+
+    expect(state.chatStore.getMessages(state.agentId).map(row => row.seq)).toEqual([7n])
+    expect(state.chatStore.todos.get(state.agentId).map(todo => todo.content)).toEqual(['Current task'])
   })
 
   function pageReply(seq: bigint) {
@@ -4814,7 +4969,7 @@ describe('useWorkspaceConnection replay ownership', () => {
       },
     }))
     expect(state.agentActivityStore.isBusy(state.agentId)).toBe(true)
-    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n)
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n, false, state.handles[0]?.handle)
     expect(state.settled).not.toHaveBeenCalled()
   })
 
@@ -4857,7 +5012,7 @@ describe('useWorkspaceConnection replay ownership', () => {
       },
     }))
     expect(state.agentActivityStore.publishedState(state.agentId)).toBe(AgentActivityState.WORKING)
-    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n)
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n, false, state.handles[0]?.handle)
     expect(state.settled).not.toHaveBeenCalled()
   })
 
@@ -4903,6 +5058,43 @@ describe('useWorkspaceConnection replay ownership', () => {
     await flushStream()
     return requestedEntry(state).replayId
   }
+
+  it('fences retracted messages from a demoted replay on the same handle', async () => {
+    const state = mountReplay({ seq: 1n })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const handle = state.handles[0]!
+    const removed = state.emitMessage({ type: 'assistant' }, { seq: 2n, replay: true })
+    expect(state.chatStore.getMessages('a1').map(message => message.seq)).toEqual([1n, 2n])
+
+    handle.emit(receivedEvent({
+      agentId: 'a1',
+      event: {
+        case: 'messagesRetracted',
+        value: {
+          seqs: [2n, 2n, 0n, -1n],
+        },
+      },
+    }))
+    expect(state.chatStore.getMessages('a1').map(message => message.seq)).toEqual([1n])
+
+    state.addAgent('other', { workerId: 'w1' })
+    await flushStream()
+    expect(state.agentSessionStore.acceptsReplay('a1', entry.replayId)).toBe(false)
+    expect(state.handles).toHaveLength(1)
+    handle.emit(receivedEvent({
+      agentId: 'a1',
+      replay: true,
+      replayId: entry.replayId,
+      event: { case: 'agentMessage', value: removed },
+    }))
+    expect(state.chatStore.getMessages('a1').map(message => message.seq)).toEqual([1n])
+    expect(state.chatStore.isMessageRetracted('a1', 2n, handle.handle)).toBe(true)
+
+    acknowledgeReplay(state)
+    expect(state.chatStore.isMessageRetracted('a1', 2n, handle.handle)).toBe(false)
+    expect(state.handles).toHaveLength(1)
+  })
 
   describe('controlRequest guard for inactive agents', () => {
     function emitRequest(tabs: ReturnType<typeof mountReplay>, replay = false) {
@@ -5244,6 +5436,120 @@ describe('useWorkspaceConnection replay ownership', () => {
     expect(state.chatStore.getMessages('a1').map(message => message.id)).toEqual(['wire-message-1', 'wire-message-2'])
   })
 
+  it('drops a missed retry clear on promotion and still restores the current retry', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const emitRetry = (attempt: number, replayId?: bigint) => {
+      const frame = {
+        type: 'agent_session_info',
+        info: {
+          model_api_retry: { phase: 'running', attempt },
+        },
+      }
+      state.emitMessage(frame, replayId === undefined
+        ? { seq: -1n }
+        : { seq: -1n, replay: true, replayId })
+    }
+
+    state.handles[0]!.emit(receivedEvent({
+      agentId: state.agentId,
+      event: {
+        case: 'statusChange',
+        value: { status: AgentStatus.ACTIVE, agentSessionId: 'session-a' },
+      },
+    }))
+    emitRetry(2)
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toEqual({ phase: 'running', attempt: 2 })
+    const replayId = await replaceReplay(state)
+    // An idle replacement can omit the retry key from its replay.
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toBeUndefined()
+
+    emitRetry(3, replayId)
+    state.handles[0]!.emit(receivedEvent({
+      agentId: state.agentId,
+      replay: true,
+      replayId,
+      event: {
+        case: 'statusChange',
+        value: { status: AgentStatus.ACTIVE, agentSessionId: 'session-b' },
+      },
+    }))
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toEqual({ phase: 'running', attempt: 3 })
+    emitRetry(4)
+    state.handles[0]!.emit(receivedEvent({
+      agentId: state.agentId,
+      replay: true,
+      replayId,
+      event: {
+        case: 'statusChange',
+        value: { status: AgentStatus.INACTIVE },
+      },
+    }))
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toEqual({ phase: 'running', attempt: 4 })
+  })
+
+  it('clears retry state when a demoted agent leaves a shared watch', async () => {
+    const state = mountReplay()
+    await flushStream()
+    acknowledgeReplay(state)
+    const retry = { phase: 'running', attempt: 2 }
+    const frame = {
+      type: 'agent_session_info',
+      info: { model_api_retry: retry },
+    }
+    state.emitMessage(frame, { seq: -1n })
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toEqual(retry)
+
+    state.addAgent('other', { workerId: 'w1' })
+    await flushStream()
+    acknowledgeReplay(state)
+    expect(state.handles).toHaveLength(1)
+    expect(state.transmitted.at(-1)?.agents.find(entry => entry.agentId === state.agentId)?.mode).toBe(WatchMode.NOTIFY)
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toEqual(retry)
+
+    state.agentSessionStore.setModelAPIRetry('other', { phase: 'running', attempt: 3 })
+    emitRemoveTab(TabType.AGENT, state.agentId)
+    await flushStream()
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toBeUndefined()
+    expect(state.agentSessionStore.acceptsReplay(state.agentId, 0n)).toBe(true)
+    state.emitMessage(frame, { seq: -1n })
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toBeUndefined()
+    expect(state.agentSessionStore.getModelAPIRetry('other')).toEqual({ phase: 'running', attempt: 3 })
+    expect(state.handles).toHaveLength(1)
+  })
+
+  it('applies a delayed retry clear while leaving the agent inactive', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const handle = state.handles[0]!
+    const receipt = requestedEntry(state)
+    state.emitMessage({
+      type: 'agent_session_info',
+      info: {
+        model_api_retry: { phase: 'running', attempt: 2 },
+      },
+    }, { seq: -1n })
+    handle.emit(receivedEvent({
+      agentId: state.agentId,
+      replay: true,
+      replayId: receipt.replayId,
+      event: {
+        case: 'statusChange',
+        value: { status: AgentStatus.INACTIVE },
+      },
+    }))
+    expect(state.view.getAgentTab(state.agentId)?.agentStatus).toBe(AgentStatus.INACTIVE)
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)?.attempt).toBe(2)
+
+    state.emitMessage({
+      type: 'agent_session_info',
+      info: { model_api_retry: null },
+    }, { seq: -1n })
+
+    expect(state.agentSessionStore.getModelAPIRetry(state.agentId)).toBeUndefined()
+    expect(state.view.getAgentTab(state.agentId)?.agentStatus).toBe(AgentStatus.INACTIVE)
+  })
+
   it('compares stored history with live sequences on the same request', async () => {
     const state = mountReplay()
     await flushStream()
@@ -5448,7 +5754,7 @@ describe('useWorkspaceConnection replay ownership', () => {
         value: { latestSeq: 7n },
       },
     }))
-    expect(reconcile).toHaveBeenLastCalledWith('a1', 7n, 7n)
+    expect(reconcile).toHaveBeenLastCalledWith('a1', 7n, 7n, false, state.handles[0]?.handle)
     expect(state.chatStore.getMessages('a1').some(message => message.seq === 8n)).toBe(true)
   })
 

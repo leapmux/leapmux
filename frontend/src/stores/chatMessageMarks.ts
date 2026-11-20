@@ -161,14 +161,17 @@ function normalizeSeed(marks: readonly SeqMark[]): SeqMark[] {
 
 export function createMessageMarksStore() {
   const base = createPerAgentStore<MessageMarks>(EMPTY_MARKS)
-  // Per-agent "live mutation revision", bumped by noteMark/remove on every REAL change (never a
-  // no-op) so a concurrent loadMessageMarks can detect a mark change that raced its in-flight seed
-  // RPC. Owning it HERE -- rather than the caller bumping after a returned bool -- makes it
-  // mechanically impossible for a mark mutation to skip the bump. seed() deliberately does NOT
-  // bump: it is the snapshot being raced against, not a live change.
+  // A seed captures this revision before requesting marks. Any exact deletion
+  // can invalidate that response, even if its sequence never had a cached dot.
   const liveRevisions = new Map<string, number>()
   const bump = (agentId: string) => {
     liveRevisions.set(agentId, (liveRevisions.get(agentId) ?? 0) + 1)
+  }
+
+  function recordRemoval(agentId: string, current: MessageMarks, marks: readonly SeqMark[]): void {
+    if (marks !== current.marks)
+      base.set(agentId, { ...current, marks })
+    bump(agentId)
   }
 
   return {
@@ -178,34 +181,17 @@ export function createMessageMarksStore() {
     },
     /** The marks state for an agent (EMPTY_MARKS when unseeded; treat as read-only). */
     get: base.get,
-    /**
-     * The per-agent live-mutation revision: a monotonically-increasing count bumped by every real
-     * noteMark/remove. loadMessageMarks reads it before and after its seed RPC to detect a mark
-     * change that raced the fetch (see the seed-race retry there). 0 for an agent never mutated.
-     */
+    /** The live mark revision captured before each seed request. */
     liveRevision(agentId: string): number {
       return liveRevisions.get(agentId) ?? 0
     },
     /**
-     * Replace an agent's marks from a ListMessageMarks response. An INDETERMINATE range
-     * (min/max unset -- the worker couldn't read the seq range on a DB error) keeps the
-     * prior value rather than trusting a bogus 0.
+     * Replace cached marks with the worker's snapshot. The seeder verifies that
+     * no live mutation occurred during the request. An indeterminate range
+     * retains the known endpoints while the seeder requests a complete result.
      */
     seed(agentId: string, marks: readonly SeqMark[], minSeq: bigint | undefined, maxSeq: bigint | undefined) {
       const cur = base.get(agentId)
-      // Preserve any already-noted mark BEYOND this snapshot's horizon (seq > maxSeq): a
-      // live message can be noteMark'd from a broadcast in the window between the worker
-      // reading ListMessageMarks and this response applying (e.g. a send landing during a
-      // reconnect reseed). Since maxSeq is the snapshot's MAX(seq), such a mark is provably
-      // newer than the snapshot and absent from `marks`; a wholesale replace would drop its
-      // dot until the next reseed. Marks at/below maxSeq stay the snapshot's authority, so a
-      // delete that happened while disconnected is still healed. When maxSeq is indeterminate
-      // (unset) the horizon is unknown, so the preserve is skipped and the fresh snapshot is
-      // trusted wholesale (a beyond-horizon race mark is dropped); loadMessageMarks schedules a
-      // retry to heal it once a good horizon returns.
-      const freshBeyondSnapshot = maxSeq !== undefined
-        ? cur.marks.filter(m => m.seq > maxSeq)
-        : []
       base.set(agentId, {
         // `loaded` is what reveals the rail. Claim it only once we hold a usable range:
         // a FIRST seed whose min/max came back indeterminate (unset, a worker DB error) would
@@ -219,10 +205,7 @@ export function createMessageMarksStore() {
         seedMaxSeq: maxSeq !== undefined
           ? maxSeq
           : cur.seedMaxSeq,
-        marks: normalizeSeed([
-          ...marks,
-          ...freshBeyondSnapshot,
-        ]),
+        marks: normalizeSeed(marks),
       })
     },
     /**
@@ -246,18 +229,26 @@ export function createMessageMarksStore() {
       base.set(agentId, { ...cur, minSeq: nextMin, marks: nextMarks })
       bump(agentId)
     },
-    /**
-     * Drop the mark at `seq` (no-op when absent). Called on message delete / phantom
-     * reap. Bumps the live-mutation revision only on a real removal -- an unmarked seq
-     * is a no-op and must not perturb the concurrent-seed race detector.
-     */
+    /** Drop a deleted sequence's mark and invalidate older seed requests. */
     remove(agentId: string, seq: bigint): void {
-      const cur = base.get(agentId)
-      const nextMarks = removeMarkAt(cur.marks, seq)
-      if (nextMarks === cur.marks)
+      if (seq <= 0n)
         return
-      base.set(agentId, { ...cur, marks: nextMarks })
-      bump(agentId)
+      const cur = base.get(agentId)
+      recordRemoval(agentId, cur, removeMarkAt(cur.marks, seq))
+    },
+    /** Remove a validated set of deleted sequences in one pass over cached marks. */
+    removeSequences(agentId: string, sequences: ReadonlySet<bigint>): void {
+      if (sequences.size === 0)
+        return
+      const cur = base.get(agentId)
+      if (sequences.size === 1) {
+        recordRemoval(agentId, cur, removeMarkAt(cur.marks, sequences.values().next().value!))
+        return
+      }
+      const kept = cur.marks.filter(mark => !sequences.has(mark.seq))
+      recordRemoval(agentId, cur, kept.length === cur.marks.length
+        ? cur.marks
+        : kept)
     },
     /** Drop an agent's marks (and its live-revision counter) entirely when the agent is closed. */
     forget(agentId: string) {

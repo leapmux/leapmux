@@ -1209,3 +1209,28 @@ func TestDecodeAssembledMessage(t *testing.T) {
 		assert.False(t, ok, name)
 	}
 }
+
+func TestSinkRetractedToolRowIsAbsentFromSequenceReadsAndEnrichment(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	content := agent.MessageContent{Original: []byte(`{"kind":"tool"}`), IdempotencyKey: "removed"}
+	span := agent.SpanInfo{SpanID: "tool"}
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span))
+	row, err := sink.ReadToolResultBySeq(1)
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.NoError(t, sink.RetractMessagesByIdempotencyKey(sink.CaptureMessage(content, span), []string{"removed"}))
+	deleted, err := sink.ReadToolResultBySeq(row.Seq)
+	require.NoError(t, err)
+	assert.Nil(t, deleted)
+	amended, err := sink.EnrichMessage(agent.MessageEnrichment{
+		Seq: row.Seq, SpanID: span.SpanID, OriginalContent: content.Original,
+		SupplementalContent: []byte(`{"more":true}`),
+	})
+	require.NoError(t, err)
+	assert.False(t, amended)
+	attempts := sink.Messages()
+	require.Len(t, attempts, 1)
+	assert.True(t, attempts[0].Retracted)
+	assert.Empty(t, attempts[0].SupplementalContent)
+}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/util/id"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
@@ -46,6 +47,21 @@ type WrapSpec struct {
 	// metadata line.
 	EnvGated   *EnvGatedArgs
 	WorkingDir string // cmd.Dir for the launched process
+	// ObserveEnvironment requests an environment observation record in the
+	// preamble. The probe runs after profile and environment pins, before
+	// provider exec. The observation is the launch-specific metadata prefix
+	// followed by `environment=<base64url JSON Snapshot>`.
+	ObserveEnvironment *ObservationRequest
+}
+
+// ObservationRequest configures the environment observation emitted in the
+// launch preamble. Dirac uses this to discover the effective profile root.
+type ObservationRequest struct {
+	// Variables are the environment variable names to capture.
+	Variables []string
+	// PathVariables maps an environment variable to trim characters for
+	// resolved path output.
+	PathVariables map[string]string
 }
 
 // EnvGatedArgs makes arguments depend on the environment that the user's shell
@@ -88,13 +104,14 @@ func checkEnvGate(gate *EnvGatedArgs) {
 
 // PreparedLaunch owns the optional files required by a wrapped process.
 type PreparedLaunch struct {
-	Cmd             *exec.Cmd
-	Delimiter       string
-	MetaPrefix      string
-	candidates      []string
-	exhaustedMarker string
-	closeFiles      func() error
-	pinSources      []string
+	Cmd              *exec.Cmd
+	Delimiter        string
+	MetaPrefix       string
+	candidates       []string
+	exhaustedMarker  string
+	closeFiles       func() error
+	pinSources       []string
+	environmentProbe []string
 }
 
 // ReusableEnvironment returns the shell environment without this launch's
@@ -139,8 +156,21 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 		exhaustedMarker: "__LEAPMUX_EXHAUSTED_" + token + "__",
 		candidates:      slices.Clone(spec.Launch.candidates),
 	}
-	if spec.EnvGated != nil {
+	if spec.EnvGated != nil || spec.ObserveEnvironment != nil {
 		prepared.MetaPrefix = "__LEAPMUX_META_" + token + "__ "
+	}
+	if observation := spec.ObserveEnvironment; observation != nil {
+		request := envprobe.Request{
+			Variables: observation.Variables, PathVariables: observation.PathVariables,
+			ObservationPrefix: prepared.MetaPrefix,
+		}
+		arguments, err := request.Arguments()
+		if err != nil {
+			return nil, err
+		}
+		if executable, err := os.Executable(); err == nil {
+			prepared.environmentProbe = append([]string{executable}, arguments...)
+		}
 	}
 	shell := terminal.ShellBaseName(spec.Shell)
 	if shell == "cmd" {
@@ -175,7 +205,7 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 		}
 		script = buildNuSelection(shellSpec, prepared, scripts)
 	case shell == "nu":
-		script = buildNuCommand(shellSpec, prepared.Delimiter, prepared.MetaPrefix)
+		script = buildNuCommand(shellSpec, prepared)
 	case shell == "fish":
 		script = buildFishCommand(shellSpec, prepared)
 	case shell == "xonsh":
@@ -277,11 +307,12 @@ func writeNuInvocation(path, name string, count int) error {
 }
 
 // buildNuCommand builds the inner command string for Nushell.
-func buildNuCommand(spec shellLaunchSpec, delimiter, metaPrefix string) string {
+func buildNuCommand(spec shellLaunchSpec, prepared *PreparedLaunch) string {
 	// `^"<program>"` is Nushell's documented form for running an external
 	// command whose path contains a space.
 	return nuClearEnv(spec.StripEnvKeys) + nuSetEnv(spec.pins) + "\n" +
-		nuLaunchArguments(spec.WrapSpec, delimiter, metaPrefix) +
+		nuLaunchArguments(spec.WrapSpec, prepared.MetaPrefix) +
+		prepared.nuReadiness(spec.EnvGated == nil, "") +
 		"^" + nuQuote(spec.Launch.Program) + " ...$__lm_args\n"
 }
 

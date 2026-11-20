@@ -3,6 +3,7 @@ package envprobe
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -138,4 +139,52 @@ func TestRootedReadPathPreservesNativeSegments(t *testing.T) {
 	assert.Equal(t, cwd+string(filepath.Separator)+"child/../file", rootedReadPath("child/../file", cwd))
 	absolute := cwd + string(filepath.Separator) + "link/../file"
 	assert.Equal(t, absolute, rootedReadPath(absolute, cwd))
+}
+
+func TestRunWritesOneEnvironmentObservationRecord(t *testing.T) {
+	const prefix = "__TEST_META__ "
+	const value = "equals=semicolon;\r\nnew line"
+	t.Setenv("LEAPMUX_OBSERVED_VALUE", value)
+	t.Setenv("LEAPMUX_OBSERVED_EMPTY", "")
+	t.Setenv("LEAPMUX_OBSERVED_MISSING", "")
+	require.NoError(t, os.Unsetenv("LEAPMUX_OBSERVED_MISSING"))
+	t.Setenv("LEAPMUX_OBSERVED_TRIMMED_PATH", " \t ")
+	request := Request{
+		Variables:         []string{"LEAPMUX_OBSERVED_VALUE", "LEAPMUX_OBSERVED_EMPTY", "LEAPMUX_OBSERVED_MISSING"},
+		PathVariables:     map[string]string{"LEAPMUX_OBSERVED_TRIMMED_PATH": " \t"},
+		ObservationPrefix: prefix,
+	}
+	args, err := request.Arguments()
+	require.NoError(t, err)
+	var output, diagnostic bytes.Buffer
+	code, handled := Run(args, &output, &diagnostic)
+	require.True(t, handled)
+	require.Zero(t, code, diagnostic.String())
+	lines := strings.Split(output.String(), "\n")
+	require.Len(t, lines, 3)
+	require.Empty(t, lines[0])
+	require.Empty(t, lines[2])
+	encoded, ok := strings.CutPrefix(lines[1], prefix+ObservationKey+"=")
+	require.True(t, ok)
+	data, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+	require.NoError(t, err)
+	var snapshot Snapshot
+	require.NoError(t, json.Unmarshal(data, &snapshot))
+	assert.Equal(t, map[string]string{
+		"LEAPMUX_OBSERVED_VALUE": value, "LEAPMUX_OBSERVED_EMPTY": "",
+		"LEAPMUX_OBSERVED_MISSING": "", "LEAPMUX_OBSERVED_TRIMMED_PATH": " \t ",
+	}, snapshot.Values)
+	assert.Equal(t, map[string]bool{
+		"LEAPMUX_OBSERVED_VALUE": true, "LEAPMUX_OBSERVED_EMPTY": true,
+		"LEAPMUX_OBSERVED_MISSING": false, "LEAPMUX_OBSERVED_TRIMMED_PATH": true,
+	}, snapshot.Present)
+	assert.Equal(t, map[string]string{"LEAPMUX_OBSERVED_TRIMMED_PATH": ""}, snapshot.Paths)
+
+	decoded, accepted := request.DecodeObservation(encoded)
+	require.True(t, accepted)
+	assert.Equal(t, snapshot, decoded)
+	wrongRequest := request
+	wrongRequest.Variables = []string{"LEAPMUX_OBSERVED_VALUE", "LEAPMUX_OBSERVED_EMPTY", "WRONG_VARIABLE"}
+	_, accepted = wrongRequest.DecodeObservation(encoded)
+	assert.False(t, accepted)
 }

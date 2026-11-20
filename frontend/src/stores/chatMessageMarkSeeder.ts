@@ -133,20 +133,10 @@ export function createMessageMarkSeeder(deps: MessageMarkSeederDeps) {
           resp.minSeq,
           resp.maxSeq,
         )
-        // A FIRST seed whose range came back indeterminate (min/max unset: the worker's
-        // seq-range subquery errored) leaves the rail hidden (seed keeps loaded=false), and the
-        // live add/remove path can never reveal a never-seeded rail. Retry so a transient range
-        // error self-heals instead of hiding the rail for the whole session.
-        if (!marks.get(agentId).loaded) {
-          scheduleRetry('first seed range indeterminate')
-        }
-        // An ALREADY-loaded agent reseeded with an indeterminate range stays loaded, but seed()
-        // can no longer tell a beyond-horizon live mark (noteMark'd during the reseed race) from
-        // a stale one, so it trusts the snapshot wholesale and drops that mark -- and nothing
-        // re-notes it until the next reconnect reseed. Retry so a good horizon returns and seed()
-        // heals the dropped dot promptly instead of leaving it missing for the session.
-        else if (resp.minSeq === undefined || resp.maxSeq === undefined) {
-          scheduleRetry('reseed range indeterminate')
+        if (resp.minSeq === undefined || resp.maxSeq === undefined) {
+          scheduleRetry(marks.get(agentId).loaded
+            ? 'reseed range indeterminate'
+            : 'first seed range indeterminate')
         }
         return
       }

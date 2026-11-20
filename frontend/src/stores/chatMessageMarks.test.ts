@@ -87,30 +87,25 @@ describe('chatMessageMarks', () => {
       })
     })
 
-    it('preserves a live mark noted BEYOND the snapshot horizon across a reseed (reconnect race)', () => {
+    it('removes a cached mark beyond the current history tail', () => {
       withStore((s) => {
         s.seed('a1', [
           { seq: 2n, type: U },
-        ], 1n, 5n)
-        // A send lands live (broadcast) AFTER the worker snapshotted ListMessageMarks but
-        // before its response applies -- noteMark records seq 9n, past the snapshot's max.
-        s.noteMark('a1', 9n, U)
-        // The slightly-stale reseed (max=5n, no 9n) must NOT drop the freshly-noted 9n dot.
+          { seq: 9n, type: U },
+        ], 1n, 9n)
         s.seed('a1', [
           { seq: 2n, type: U },
         ], 1n, 5n)
-        expect(s.get('a1').marks.map(m => m.seq)).toEqual([2n, 9n])
+        expect(s.get('a1').marks.map(m => m.seq)).toEqual([2n])
       })
     })
 
-    it('a reseed still heals a delete WITHIN the snapshot horizon (wholesale replace at/below max)', () => {
+    it('removes a cached mark below the current history tail', () => {
       withStore((s) => {
         s.seed('a1', [
           { seq: 2n, type: U },
           { seq: 4n, type: U },
         ], 1n, 5n)
-        // While disconnected, seq 4n's message was deleted. The reseed (which read the DB
-        // fresh, so 4n <= max is gone) drops it -- only marks BEYOND max are preserved.
         s.seed('a1', [
           { seq: 2n, type: U },
         ], 1n, 5n)
@@ -191,7 +186,7 @@ describe('chatMessageMarks', () => {
       })
     })
 
-    it('bumps the live revision only when remove actually drops a mark, so an unmarked-row delete is not counted', () => {
+    it('invalidates older seeds after deleting positive sequences without a cached mark', () => {
       withStore((s) => {
         s.seed('a1', [
           { seq: 2n, type: U },
@@ -200,9 +195,11 @@ describe('chatMessageMarks', () => {
         s.remove('a1', 2n) // present -> dropped
         const r1 = s.liveRevision('a1')
         expect(r1).toBeGreaterThan(r0)
-        s.remove('a1', 2n) // already gone
-        s.remove('a1', 99n) // never marked
-        expect(s.liveRevision('a1')).toBe(r1) // neither no-op bumped the revision
+        s.remove('a1', 99n)
+        expect(s.liveRevision('a1')).toBe(r1 + 1)
+        s.remove('a1', 0n)
+        s.remove('a1', -1n)
+        expect(s.liveRevision('a1')).toBe(r1 + 1)
       })
     })
   })

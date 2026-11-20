@@ -217,7 +217,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// the first message is sent to stdin (Claude Code behavior with
 	// --input-format stream-json).
 	scanner := a.NewOutputScanner(stdout)
-	go a.readOutputLoop(scanner)
+	a.startOutputReader(scanner)
 
 	// cleanup terminates the agent process and waits for it to exit.
 	// This ensures no orphaned process or goroutine is left behind.

@@ -349,9 +349,9 @@ type messageEmitter func(*leapmuxv1.AgentChatMessage) error
 // matching Subscription.dispatch, so a late WatchEvents frame for the same seq
 // cannot race the drain and be forwarded twice. If emission fails, the error is
 // returned and the follow command stops instead of reconnecting past data stdout
-// never accepted. The `before` re-read guards against a server returning rows at
-// or below the bound: without it a hasMore=true page that fails to advance the
-// cursor would spin forever.
+// never accepted. The read cursor advances over retracted rows in a stale
+// page without moving the delivery cursor. A page that fails to advance the
+// read cursor ends the drain even if it reports more rows.
 //
 // Returns whether it emitted any message, so the reconnect loop can count a drain
 // that forwarded real history as session activity: a transport that serves the
@@ -362,20 +362,23 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 	fetch messagePager, emit messageEmitter,
 ) (bool, error) {
 	emitted := false
+	readThrough := cursor.Get(agentID)
 	for {
 		if ctx.Err() != nil {
 			return emitted, nil
 		}
-		before := cursor.Get(agentID)
+		before := max(readThrough, cursor.Get(agentID))
 		msgs, hasMore, err := fetch(ctx, before)
 		if err != nil || len(msgs) == 0 {
 			return emitted, nil
 		}
+		readThrough = before
 		for _, m := range msgs {
 			// Only persisted rows (seq >= 0) advance the cursor; the fetch returns
 			// only persisted rows, but the guard mirrors the subscription dedup.
 			if seq := m.GetSeq(); seq >= 0 {
-				if !cursor.Advance(agentID, seq) {
+				readThrough = max(readThrough, seq)
+				if seq <= before || !cursor.Advance(agentID, seq) {
 					continue
 				}
 			}
@@ -384,7 +387,7 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 			}
 			emitted = true
 		}
-		if !hasMore || cursor.Get(agentID) <= before {
+		if !hasMore || readThrough <= before {
 			return emitted, nil
 		}
 	}
@@ -397,9 +400,8 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 // drains any backlog the capped replay would skip (see drainBacklog), so
 // messages generated during a long disconnect aren't lost.
 //
-// Output format: each line is the AgentChatMessage proto rendered via
-// the same encoder the polling implementation used, so external
-// scripts written against the old behaviour keep working byte-for-byte.
+// Each line contains a rendered chat message or the sequence numbers
+// removed by a live retraction.
 func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID string,
 	startSeq int64, em *lineEmitter,
 ) error {
@@ -423,19 +425,17 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 		return em.emit(renderAgentMessage(m))
 	}
 
-	// Set on every delivered (non-duplicate) message so the reconnect loop can
-	// tell a session that did real work from a flap. Reset per session below.
+	// Track whether this subscription delivered a record before reconnecting.
 	var delivered atomic.Bool
 	onAgent := func(ae *leapmuxv1.AgentEvent) {
-		msg := ae.GetAgentMessage()
-		if msg == nil {
-			return
-		}
-		if err := emitMsg(msg); err != nil {
+		emitted, err := em.emitFollowEvent(ae)
+		if err != nil {
 			cancel()
 			return
 		}
-		delivered.Store(true)
+		if emitted {
+			delivered.Store(true)
+		}
 	}
 	onCursorReset := func(_ string) { /* not relevant for agent-only follow */ }
 	sub := streamevents.NewSubscription(transport.transport, cursor, terminals, onAgent, nil, onCursorReset)
@@ -622,6 +622,20 @@ func (e *lineEmitter) emit(v any) error {
 		return err
 	}
 	return nil
+}
+
+// emitFollowEvent reports whether the event produces a JSON record.
+func (e *lineEmitter) emitFollowEvent(event *leapmuxv1.AgentEvent) (bool, error) {
+	if message := event.GetAgentMessage(); message != nil {
+		return true, e.emit(renderAgentMessage(message))
+	}
+	if removed := event.GetMessagesRetracted().GetSeqs(); len(removed) > 0 {
+		return true, e.emit(map[string]any{
+			"type": "messages_retracted",
+			"seqs": removed,
+		})
+	}
+	return false, nil
 }
 
 func (e *lineEmitter) Err() error {

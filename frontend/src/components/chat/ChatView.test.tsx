@@ -1042,6 +1042,96 @@ describe('computeOverscanPx', () => {
 })
 
 describe('ChatView', () => {
+  it('shows the model retry only at the live tail', async () => {
+    const messages = [
+      makeMessage('assistant', 'The answer', 'retry-msg'),
+    ]
+    const [hasNewerMessages, setHasNewerMessages] = createSignal(false)
+    const [phase, setPhase] = createSignal<'waiting' | 'running'>('waiting')
+    const [retryDelayMs, setRetryDelayMs] = createSignal<number | undefined>(4000)
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          pagination={{
+            get hasNewerMessages() { return hasNewerMessages() },
+          }}
+          agentLifecycle={{
+            get liveModelAPIRetry() {
+              const delay = retryDelayMs()
+              return {
+                phase: phase(),
+                attempt: 2,
+                maxAttempts: 5,
+                ...(delay === undefined
+                  ? {}
+                  : { retryDelayMs: delay }),
+                errorStatus: 529,
+                error: 'Overloaded',
+              }
+            },
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    await reportChatViewportSize(view)
+    const indicator = view.getByTestId('model-api-retry-indicator')
+    expect(indicator).toHaveAttribute('role', 'status')
+    expect(indicator).toHaveTextContent('Model API retry 2/5 · HTTP 529 · Waiting 4s')
+    expect(indicator).toHaveTextContent('Overloaded')
+
+    setRetryDelayMs(0)
+    expect(indicator).toHaveTextContent('Waiting 0ms')
+    setRetryDelayMs(undefined)
+    expect(indicator).toHaveTextContent('Waiting · Overloaded')
+    setRetryDelayMs(4000)
+    setPhase('running')
+    expect(indicator).toHaveTextContent('Model API retry 2/5 · HTTP 529 · Running')
+    expect(indicator).not.toHaveTextContent('4s')
+    setHasNewerMessages(true)
+    expect(view.queryByTestId('model-api-retry-indicator')).toBeNull()
+  })
+
+  it('keeps following the bottom when only the retry indicator grows', async () => {
+    const messages = [
+      makeMessage('assistant', 'Earlier answer', 'retry-scroll'),
+    ]
+    const [retry, setRetry] = createSignal(false)
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={messages}
+          agentLifecycle={{
+            get liveModelAPIRetry() {
+              return retry()
+                ? { phase: 'waiting' as const, attempt: 2 }
+                : undefined
+            },
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    const list = view.container.querySelector<HTMLElement>('[data-chat-scroll-container]')!
+    const metrics = { scrollTop: 0, scrollHeight: 1100, clientHeight: 500 }
+    stubScrollMetrics(list, metrics)
+    Object.defineProperty(list, 'scrollTop', {
+      configurable: true,
+      get: () => metrics.scrollTop,
+      set: (value: number) => {
+        metrics.scrollTop = Math.max(0, Math.min(value, metrics.scrollHeight - metrics.clientHeight))
+      },
+    })
+    await reportChatViewportSize(view, 800, metrics.clientHeight)
+    metrics.scrollTop = 600
+    fireEvent.scroll(list)
+    await flushAnimationFrame()
+
+    metrics.scrollHeight = 1200
+    setRetry(true)
+    await flushAnimationFrame()
+    await waitFor(() => expect(metrics.scrollTop).toBe(700))
+  })
+
   it('draws the live compaction while the agent is idle', async () => {
     const messages = [
       makeMessage('assistant', 'The answer', 'msg-1'),

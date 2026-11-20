@@ -23,11 +23,12 @@ diracTest.describe('native session resume', () => {
     })
     const texts = nativeResumeTexts()
     const firstAnswer = texts.originalAnswer
+    const progressCallId = 'dirac-resume-progress'
     const diracGate = 'dirac-incomplete-resume'
     const progressStep = await modelScript.queue(
       {
         toolCalls: [
-          diracRespondToolCall('dirac-resume-progress', 'progress', firstAnswer),
+          diracRespondToolCall(progressCallId, 'progress', firstAnswer),
         ],
       },
       { gate: diracGate, text: 'The first task remains incomplete.' },
@@ -38,14 +39,27 @@ diracTest.describe('native session resume', () => {
       await sendMessage(page, modelScript.prompt(texts.originalPrompt))
       const held = await modelScript.waitForGate(diracGate)
       diracGateHeld = true
-      expect(JSON.stringify(stepRequest(held, progressStep + 1).body)).toContain(firstAnswer)
+      const nextRequest = stepRequest(held, progressStep + 1).body
+      expect(JSON.stringify(nextRequest)).toContain(firstAnswer)
+      // ACP buffers the assistant row until this held turn stops. The next
+      // request proves the native progress tool already ran.
+      expect(nextRequest).toMatchObject({
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: 'tool',
+            tool_call_id: progressCallId,
+            content: expect.stringContaining('Shown to the user.'),
+          }),
+        ]),
+      })
+      await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
       sessionId = await retryUntilPass(async () => {
         const stored = (await nativeAgentById({ leapmuxServer }, subjectId))?.agentSessionId ?? ''
         expect(stored, 'the Worker stores the native session of the held turn').not.toBe('')
         return stored
       })
-      await waitForDiracCheckpoint(leapmuxServer.agentEnv?.DIRAC_DIR ?? '', sessionId)
       await closeNativeAgentAndWait({ leapmuxServer }, subjectId)
+      await waitForDiracCheckpoint(leapmuxServer.agentEnv?.DIRAC_DIR ?? '', sessionId)
     }
     finally {
       if (diracGateHeld && (await modelScript.status()).pendingGates.includes(diracGate))

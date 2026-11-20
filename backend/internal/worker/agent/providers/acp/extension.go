@@ -26,6 +26,19 @@ type PromptEnding struct {
 // base keeps it in a field that no provider writes, so no hook changes after the
 // start, and the base reads each hook without b.Mu.
 //
+// ACPStopSnapshot carries the session state that a PrepareStop hook needs to
+// decide whether a pre-close checkpoint is ready. The cancellation function is
+// bound to this process and snapshot.
+type ACPStopSnapshot struct {
+	// SessionID is the exact native session ID at the time of the snapshot.
+	SessionID string
+	// PromptActive reports whether a prompt write is in flight.
+	PromptActive bool
+	// Cancel sends a single ID-less cancellation notification through the
+	// normal JSON-RPC writer. It is safe to call once.
+	Cancel func()
+}
+
 // A zero hook keeps the base behavior that the hook controls.
 type Hooks struct {
 	// OpenRootTranscript allocates an immutable root output target under turnMu.
@@ -231,6 +244,11 @@ type Hooks struct {
 	// Wait calls it after Process.Wait and before it ends the turn and child
 	// conversations. A provider must not send another request to the exited process.
 	BeforeWaitCleanup func()
+	// PrepareStop runs once during Stop, after closing prompt admission and
+	// marking intentional stop, and before terminal release or pipe EOF. The
+	// hook receives an ACPStopSnapshot with the session state and a
+	// cancellation function. A nil hook skips the pre-stop check.
+	PrepareStop func(snapshot ACPStopSnapshot)
 	// AfterWaitCleanup closes provider factories after the base admits its final
 	// root and child writes. Retained queue writes keep their original ownership.
 	AfterWaitCleanup func()

@@ -168,7 +168,7 @@ func TestHandleOutput_AssistantToolUse(t *testing.T) {
 }
 
 // Persist a subagent's tool_use row before opening its own span, as the parent transcript does.
-// handlePersistableMessage persists first, and processAssistantBlocks then opens the span.
+// persistClaudeRootFrame stores the opener before processAssistantBlocks opens the span.
 // The sink derives span_lines from the spans open during persistence.
 // Opening first would give the announcing row its own active line, an extra depth column, and a rail with no preceding segment.
 // Persist the matching tool_result while the span remains open, so connector_end closes that rail.
@@ -3005,14 +3005,24 @@ func TestHandleOutput_AResultResetsTheRetry(t *testing.T) {
 	assert.Empty(t, sink.LeapMuxNotifications())
 }
 
-func TestHandleOutput_AnUnstoredRetryResolvesNothing(t *testing.T) {
+func TestHandleOutput_RetryResolutionWaitsForTheNoticeToStore(t *testing.T) {
 	t.Parallel()
+
 	sink := &claudeRetryOrderSink{notificationError: assert.AnError}
-	a := newTestAgent(agent.NewProviderServices(sink))
+	services := agent.NewProviderServices(sink)
+	a := newTestAgent(services)
 	a.HandleOutput([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`))
-	sink.notificationError = nil
 	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"answer"}]}}`))
+	assert.Empty(t, sink.PersistedNotifications())
 	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Empty(t, sink.Messages())
+
+	sink.notificationError = nil
+	require.NoError(t, agent.FlushPendingOutput(services))
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.Equal(t, []map[string]interface{}{{"type": "api_retry_resolved"}}, sink.LeapMuxNotifications())
+	assert.Equal(t, []bool{true}, sink.resolvedBeforeMessage)
+	require.Len(t, sink.Messages(), 1)
 }
 
 func TestHandleOutput_KnownDroppedFrameTypesStoreNoRow(t *testing.T) {
@@ -3313,4 +3323,33 @@ func elicitationEntries(a *Agent) map[string]string {
 		}
 	}
 	return entries
+}
+
+type claudeRetryNoticeFailureSink struct {
+	claudeRetryOrderSink
+	failResolution bool
+}
+
+func (s *claudeRetryNoticeFailureSink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
+	if s.failResolution {
+		return false, errors.New("the retry resolution store is unavailable")
+	}
+	return s.Sink.PersistWorkerNotification(content)
+}
+
+func TestClaudeRetriesTheResolutionBeforeItsAnswer(t *testing.T) {
+	t.Parallel()
+	sink := &claudeRetryNoticeFailureSink{failResolution: true}
+	services := agent.NewProviderServices(sink)
+	a := newTestAgent(services)
+	a.HandleOutput([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`))
+	require.Len(t, sink.PersistedNotifications(), 1)
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"answer","message":{"content":[{"type":"text","text":"answer"}]}}`))
+	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Empty(t, sink.Messages())
+	sink.failResolution = false
+	require.NoError(t, agent.FlushPendingOutput(services))
+	assert.Equal(t, []map[string]interface{}{{"type": "api_retry_resolved"}}, sink.LeapMuxNotifications())
+	assert.Equal(t, []bool{true}, sink.resolvedBeforeMessage)
+	require.Len(t, sink.Messages(), 1)
 }

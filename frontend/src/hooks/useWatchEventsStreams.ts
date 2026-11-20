@@ -73,7 +73,9 @@ interface WorkerStream {
 export interface UseWatchEventsStreamsOpts {
   view: TabView
   plans: () => Map<string, WatchPlan>
-  onEvent: (workerId: string, resp: WatchEventsResponse) => void
+  onEvent: (workerId: string, resp: WatchEventsResponse, handle: WatchEventsHandle) => void
+  onHandleRetired?: (handle: WatchEventsHandle) => void
+  onAgentInterestApplied?: (handle: WatchEventsHandle, fullAgentIds: ReadonlyMap<string, bigint>) => void
   onWorkerOnline: (workerId: string, online: boolean) => void
   /** Report accepted FULL promotions to the caller that loads or refreshes messages. */
   onPromoted: (workerId: string, agentIds: string[]) => void
@@ -224,6 +226,22 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     return transmitted
   }
 
+  function retireHandle(s: WorkerStream): WatchEventsHandle | null {
+    const handle = s.handle
+    if (handle) {
+      s.handle = null
+      opts.onHandleRetired?.(handle)
+    }
+    return handle
+  }
+
+  function clearInflightUpdate(s: WorkerStream): void {
+    s.inflightPlan = null
+    s.inflightUpdateId = 0n
+    s.inflightKey = ''
+    s.inflightReplays.clear()
+  }
+
   /** Clear stream authority and retire its exact replay receipts. */
   function resetForReconnect(workerId: string, s: WorkerStream): void {
     retireReplays(workerId, s, [
@@ -232,13 +250,10 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     if (streamProvedHealthy(s.openedAt))
       reconnectBackoff.reset(workerId)
     s.openedAt = undefined
-    s.handle = null
-    s.inflightPlan = null
-    s.inflightUpdateId = 0n
-    s.inflightKey = ''
+    retireHandle(s)
+    clearInflightUpdate(s)
     s.transmittedPlan = null
     s.fullReplays.clear()
-    s.inflightReplays.clear()
     s.sentKey = ''
   }
 
@@ -305,16 +320,13 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     s.fullReplays = new Map(plan.agents
       .filter(entry => entry.mode === WatchMode.FULL && acceptedFull.get(entry.agentId) === entry.replayId)
       .map(entry => [entry.agentId, entry.replayId]))
-    s.inflightPlan = null
-    s.inflightUpdateId = 0n
-    s.inflightKey = ''
-    s.inflightReplays.clear()
+    clearInflightUpdate(s)
     const promoted = [...s.fullReplays].filter(([agentId, replayId]) => prevFull.get(agentId) !== replayId).map(([agentId]) => agentId)
     if (promoted.length > 0)
       opts.onPromoted(workerId, promoted)
   }
 
-  function handleUpdateAck(workerId: string, resp: WatchEventsResponse): boolean | null {
+  function handleUpdateAck(workerId: string, resp: WatchEventsResponse, handle: WatchEventsHandle): boolean | null {
     const ack = resp.event.case === 'updateAck'
       ? resp.event.value
       : undefined
@@ -330,6 +342,8 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
 
     const inflight = s.inflightPlan
     const acceptedFull = new Map(ack.agentStates.filter(entry => entry.mode === WatchMode.FULL).map(entry => [entry.agentId, entry.replayId]))
+    // AgentStates lists the registrations that the Worker holds, including registrations kept after a refused lookup.
+    opts.onAgentInterestApplied?.(handle, acceptedFull)
     const unaccepted = [...s.replayRequests].filter(([agentId, receipt]) => acceptedFull.get(agentId) !== receipt.entry.replayId)
     retireReplays(workerId, s, unaccepted.filter(([, receipt]) => !receipt.completed).map(([agentId]) => agentId), 'rejected')
     // LOOKUP_FAILED preserves prior worker registrations. Durable refusals remove the refused entries.
@@ -346,15 +360,11 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     if (inflight && !needsRetry) {
       // Settle this requested plan after a durable refusal. Record only the acknowledged FULL
       // identities as accepted.
-
       commitAckedPlan(workerId, s, inflight, acceptedFull)
     }
     else if (needsRetry) {
       // LOOKUP_FAILED leaves interest unconfirmed. Send the current plan after the retry delay.
-      s.inflightPlan = null
-      s.inflightUpdateId = 0n
-      s.inflightKey = ''
-      s.inflightReplays.clear()
+      clearInflightUpdate(s)
       s.sentKey = ''
     }
 
@@ -400,7 +410,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         handle.close()
         return
       }
-      s.handle?.close()
+      retireHandle(s)?.close()
       s.handle = handle
       s.openedAt = Date.now()
       // 161-watch-stream-continuity.spec.ts counts successful stream opens.
@@ -415,7 +425,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
         if (resp.event.case === 'updateAck') {
           // A settled acknowledgment resets the rejection count.
           // An ignored acknowledgment must preserve a pending retry and its count.
-          if (handleUpdateAck(workerId, resp) === false)
+          if (handleUpdateAck(workerId, resp, handle) === false)
             rejectionBackoff.reset(workerId)
         }
         else {
@@ -430,7 +440,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
             }
           }
           // Unrelated traffic must preserve the LOOKUP_FAILED retry cap.
-          opts.onEvent(workerId, resp)
+          opts.onEvent(workerId, resp, handle)
         }
       })
       handle.onEnd(() => {
@@ -498,10 +508,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       log.warn('The watch update failed. Send the latest plan again.', { workerId, err })
       for (const [agentId, replayId] of s.inflightReplays)
         retireReplays(workerId, s, [agentId], 'rejected', replayId)
-      s.inflightPlan = null
-      s.inflightUpdateId = 0n
-      s.inflightKey = ''
-      s.inflightReplays.clear()
+      clearInflightUpdate(s)
       s.pendingPlan = opts.plans().get(workerId) ?? plan
       scheduleDrain(workerId)
     }
@@ -598,8 +605,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     // Reset this worker only. A sibling worker must retain its reconnect timer.
     reconnectBackoff.reset(workerId)
     rejectionBackoff.reset(workerId)
-    s.handle?.close()
-    s.handle = null
+    retireHandle(s)?.close()
     s.abort.abort()
     streams.delete(workerId)
   }

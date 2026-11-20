@@ -29,8 +29,10 @@ type transcriptOwner struct {
 	activity *agentActivity
 	scope    *activityScope
 	session  *nativeSessionFact
-	// Only activation resets require the exact cleanup lease as well as scope.
+	// Each child capture retains the exact lease that owned its output.
+	childLease      *childSinkLifetime
 	activationLease *childSinkLifetime
+	frameAuthority  bool
 	// publisherSession protects state admission without changing transcript activity.
 	publisherSession *nativeSessionFact
 	sessionID        string
@@ -40,6 +42,7 @@ type transcriptOwner struct {
 	spanColor        int32
 	passthroughLines string
 	span             agent.SpanInfo
+	tracker          *SpanTracker
 	// beforeSessionInfoAdmission controls the cache/admission lock boundary in tests.
 	beforeSessionInfoAdmission func()
 }
@@ -61,12 +64,27 @@ func (owner *transcriptOwner) sameLiveAuthority(other *transcriptOwner) bool {
 		return owner == other
 	}
 	return owner.sink == other.sink && owner.activity == other.activity && owner.scope == other.scope &&
-		owner.session == other.session && owner.sessionID == other.sessionID && owner.activationLease == other.activationLease
+		owner.session == other.session && owner.sessionID == other.sessionID &&
+		owner.publisherSession == other.publisherSession && owner.childLease == other.childLease && owner.activationLease == other.activationLease
 }
 
 func (owner *transcriptOwner) currentLocked() bool {
 	return owner.sessionCurrentLocked() && owner.activity.scope == owner.scope &&
-		(owner.activationLease == nil || owner.sink.childLifetime == owner.activationLease)
+		(owner.activationLease == nil || owner.sink.childLifetime == owner.activationLease) &&
+		(!owner.frameAuthority || owner.frameSessionCurrentLocked())
+}
+
+func (owner *transcriptOwner) frameSessionCurrentLocked() bool {
+	publisher := owner.sink.turnPublisherSink()
+	return !publisher.processOutputRetired.Load() && owner.sink.childLifetime == owner.childLease &&
+		publisher.currentMessageSessionFact() == owner.publisherSession &&
+		owner.sink.currentSpanTracker() == owner.tracker
+}
+
+func (owner *transcriptOwner) IsTranscriptFrameCurrent() bool {
+	owner.activity.mu.Lock()
+	defer owner.activity.mu.Unlock()
+	return owner.sessionCurrentLocked() && owner.frameSessionCurrentLocked()
 }
 
 func (owner *transcriptOwner) sessionCurrentLocked() bool {
@@ -280,8 +298,8 @@ func (sink *agentOutputSink) captureMessageUnderMutation(content agent.MessageCo
 	}
 	activity.mu.Unlock()
 	owner := &transcriptOwner{sink: sink, activity: activity, scope: scope, session: session, publisherSession: publisherSession, sessionID: content.AgentSessionID,
-		thread: thread}
-	content.Publication = &transcriptPublication{owner: owner.withSpanSnapshot(sink.tracker, span)}
+		thread: thread, childLease: sink.childLifetime, tracker: sink.currentSpanTracker()}
+	content.Publication = &transcriptPublication{owner: owner.withSpanSnapshot(owner.tracker, span)}
 	return content
 }
 

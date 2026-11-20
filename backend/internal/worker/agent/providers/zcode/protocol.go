@@ -336,6 +336,8 @@ type zcodeEventEnvelope struct {
 	archive bool
 	// replayUncertain carries checkpoint uncertainty to owners first seen in a replay drain.
 	replayUncertain bool
+	// retryReplayTurnGeneration identifies the foreground turn when a current gap fetch began.
+	retryReplayTurnGeneration uint64
 }
 
 // UnmarshalJSON retains fields that the provider adds and the exact original bytes.

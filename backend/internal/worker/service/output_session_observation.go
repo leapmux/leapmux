@@ -52,15 +52,10 @@ func (writer *capturedSessionObservationWriter) PublishSessionInfo(info map[stri
 		sink.catalogMu.Unlock()
 		return false
 	}
-	changed := sink.admitPreparedSessionInfo(prepared)
-	if len(changed) > 0 {
-		if event := sessionInfoEvent(sink.agentID, changed); event != nil {
-			sink.h.watcher.EnqueueAgentEvent(sink.agentID, event)
-		}
-	}
+	enqueued := sink.enqueuePreparedSessionInfo(prepared)
 	release()
 	sink.catalogMu.Unlock()
-	if len(changed) > 0 {
+	if enqueued {
 		sink.h.watcher.DrainAgentEvents(sink.agentID)
 	}
 	return true
@@ -88,8 +83,8 @@ func prepareSessionInfo(info map[string]interface{}) (map[string]json.RawMessage
 	return prepared, nil
 }
 
-// admitPreparedSessionInfo updates the cache from owned JSON with no custom callbacks.
-func (sink *agentOutputSink) admitPreparedSessionInfo(prepared map[string]json.RawMessage) map[string]interface{} {
+// enqueuePreparedSessionInfo updates the cache and queues its event under the same lock.
+func (sink *agentOutputSink) enqueuePreparedSessionInfo(prepared map[string]json.RawMessage) bool {
 	sink.sessionInfoMu.Lock()
 	defer sink.sessionInfoMu.Unlock()
 	if sink.lastSessionInfo == nil {
@@ -97,6 +92,9 @@ func (sink *agentOutputSink) admitPreparedSessionInfo(prepared map[string]json.R
 	}
 	changed := make(map[string]interface{}, len(prepared))
 	for key, encoded := range prepared {
+		if sink.turnPublisherSink().processOutputRetired.Load() && (key == contracts.SessionInfoKeyCompaction || key == contracts.SessionInfoKeyModelAPIRetry) {
+			continue
+		}
 		if _, exempt := dedupExemptSessionInfoKeys[key]; exempt {
 			if key == contracts.SessionInfoKeyRunningTool {
 				sink.cachePermissionCheckLocked(encoded)
@@ -110,5 +108,13 @@ func (sink *agentOutputSink) admitPreparedSessionInfo(prepared map[string]json.R
 		sink.lastSessionInfo[key] = encoded
 		changed[key] = encoded
 	}
-	return changed
+	if len(changed) == 0 {
+		return false
+	}
+	event := sessionInfoEvent(sink.agentID, changed)
+	if event == nil {
+		return false
+	}
+	sink.h.watcher.EnqueueAgentEvent(sink.agentID, event)
+	return true
 }

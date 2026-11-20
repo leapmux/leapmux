@@ -1,4 +1,5 @@
 import type { GoalProgress } from './chatGoal'
+import type { ModelAPIRetryPhase } from '~/generated/contracts/session-info'
 import type { ContextUsageInfo, RateLimitInfo } from '~/models/agentSession'
 import { getOwner, onCleanup } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
@@ -10,6 +11,16 @@ export interface AgentSessionInfo {
   contextUsage?: ContextUsageInfo
   rateLimits?: Record<string, RateLimitInfo>
   planFilePath?: string
+}
+
+/** Live foreground model API retry state. */
+export interface LiveModelAPIRetry {
+  phase: ModelAPIRetryPhase
+  attempt: number
+  maxAttempts?: number
+  retryDelayMs?: number
+  errorStatus?: number
+  error?: string
 }
 
 export interface LiveGenerationProgress {
@@ -26,7 +37,7 @@ export interface SessionMetadataDelivery {
 }
 
 type SessionField = keyof AgentSessionInfo
-type ReceiptField = SessionField | `goalProgress:${keyof GoalProgress}`
+type ReceiptField = SessionField | `goalProgress:${keyof GoalProgress}` | 'modelAPIRetry'
 
 // A new progress field must supply a clear rule.
 const GOAL_PROGRESS_FIELDS = {
@@ -74,6 +85,7 @@ function saveToStorage(agentId: string, info: AgentSessionInfo) {
 interface AgentSessionStoreState {
   infoByAgent: Record<string, AgentSessionInfo>
   progressByAgent: Record<string, LiveGenerationProgress>
+  modelAPIRetryByAgent: Record<string, LiveModelAPIRetry | undefined>
 }
 
 export interface AgentSessionUpdateOptions {
@@ -99,6 +111,7 @@ export function createAgentSessionStore() {
   const [state, setState] = createStore<AgentSessionStoreState>({
     infoByAgent: {},
     progressByAgent: {},
+    modelAPIRetryByAgent: {},
   })
   const reads = new Map<string, StorageRead>()
   const replays = new Map<string, ReplayReceipt>()
@@ -108,7 +121,7 @@ export function createAgentSessionStore() {
   const unsubscribe = onStorageAccountChange(() => {
     reads.clear()
     replays.clear()
-    setState(reconcile({ infoByAgent: {}, progressByAgent: {} }))
+    setState(reconcile({ infoByAgent: {}, progressByAgent: {}, modelAPIRetryByAgent: {} }))
   })
   const finishOperation = () => {
     pendingOperations--
@@ -252,6 +265,8 @@ export function createAgentSessionStore() {
         active: true,
         liveFields: new Map(),
       })
+      // The current FULL replay can restore this memory-only value.
+      setState('modelAPIRetryByAgent', agentId, undefined)
     },
 
     retireReplay(agentId: string, replayId: bigint) {
@@ -267,6 +282,14 @@ export function createAgentSessionStore() {
         replays.delete(agentId)
     },
 
+    /** Release the departed tab's replay receipt and live retry together. */
+    forgetAgentWatch(agentId: string, replayId?: bigint) {
+      if (replayId !== undefined && replays.get(agentId)?.replayId !== replayId)
+        return
+      replays.delete(agentId)
+      setState('modelAPIRetryByAgent', agentId, undefined)
+    },
+
     acceptsReplay,
 
     claimGoalProgressWrite(agentId: string, field: keyof GoalProgress, delivery: SessionMetadataDelivery): boolean {
@@ -276,6 +299,20 @@ export function createAgentSessionStore() {
     claimGoalProgressClear(agentId: string, delivery: SessionMetadataDelivery): void {
       for (const field of Object.keys(GOAL_PROGRESS_FIELDS) as (keyof GoalProgress)[])
         claimFieldWrite(agentId, `goalProgress:${field}`, delivery)
+    },
+
+    getModelAPIRetry(agentId: string): LiveModelAPIRetry | undefined {
+      return state.modelAPIRetryByAgent[agentId]
+    },
+
+    setModelAPIRetry(agentId: string, retry: LiveModelAPIRetry, delivery?: SessionMetadataDelivery) {
+      if (claimFieldWrite(agentId, 'modelAPIRetry', delivery))
+        setState('modelAPIRetryByAgent', agentId, reconcile(retry))
+    },
+
+    clearModelAPIRetry(agentId: string, delivery?: SessionMetadataDelivery) {
+      if (claimFieldWrite(agentId, 'modelAPIRetry', delivery))
+        setState('modelAPIRetryByAgent', agentId, undefined)
     },
 
     getInfo(agentId: string): AgentSessionInfo {

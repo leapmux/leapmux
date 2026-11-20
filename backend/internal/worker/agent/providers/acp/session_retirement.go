@@ -222,11 +222,49 @@ func (b *Base) releaseOutgoingSession(sessionID string) error {
 // caller chooses the session: Interrupt through WithSessionID, and a context
 // clear under the sessionMu that it already holds.
 func (b *Base) sendSessionCancel(sessionID string) error {
-	params, err := json.Marshal(map[string]any{"sessionId": sessionID})
+	params, err := encodeSessionCancel(sessionID)
 	if err != nil {
-		return fmt.Errorf("marshal cancel params: %w", err)
+		return err
 	}
 	return b.SendNotification(MethodSessionCancel, params)
+}
+
+func encodeSessionCancel(sessionID string) ([]byte, error) {
+	params, err := json.Marshal(map[string]string{"sessionId": sessionID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal cancel params: %w", err)
+	}
+	return params, nil
+}
+
+// enqueueStopCancellation attributes the interrupt before admitting a
+// notification for the captured prompt. Neither a stalled writer nor a full
+// queue can block the pre-stop hook.
+func (b *Base) enqueueStopCancellation(sessionID string, target *acpTranscriptTarget) {
+	params, err := encodeSessionCancel(sessionID)
+	if err != nil {
+		return
+	}
+	if !b.turnMu.TryLock() {
+		return
+	}
+	b.Mu.Lock()
+	if b.sessionID != sessionID || b.promptTarget != target || !b.promptActive ||
+		b.promptOutputDrained || b.interruptRequested {
+		b.Mu.Unlock()
+		b.turnMu.Unlock()
+		return
+	}
+	b.interruptRequested = true
+	_, err = b.EnqueueNotification(MethodSessionCancel, params)
+	if err != nil {
+		b.interruptRequested = false
+	}
+	b.Mu.Unlock()
+	b.turnMu.Unlock()
+	if err != nil {
+		slog.Debug("could not queue ACP cancellation before shutdown", "agent_id", b.AgentID(), "session_id", sessionID, "error", err)
+	}
 }
 
 // retireSession ends what the outgoing session of a context clear left behind.

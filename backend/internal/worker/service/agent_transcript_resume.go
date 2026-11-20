@@ -57,20 +57,33 @@ func (svc *Service) createAgentRecordWithTranscriptUsing(ctx context.Context, qu
 	if err == nil {
 		// The source tab can hold several native sessions after a context clear.
 		// Its complete Worker transcript is what the reader saw in that tab.
-		if _, err := queries.CloneAgentMessagesForResume(ctx, db.CloneAgentMessagesForResumeParams{
-			TargetAgentID: params.ID,
-			SourceAgentID: sourceID,
-		}); err != nil {
+		if err := cloneAgentTranscript(ctx, queries, sourceID, params.ID); err != nil {
 			return fmt.Errorf("copy the prior Worker transcript: %w", err)
-		}
-		if err := queries.CloneAgentTurnEndsForResume(ctx, db.CloneAgentTurnEndsForResumeParams{
-			TargetAgentID: params.ID, SourceAgentID: sourceID,
-		}); err != nil {
-			return fmt.Errorf("copy the prior native completion receipts: %w", err)
 		}
 		if err := cloneArchivedChildTree(ctx, queries, sourceID, params.ID); err != nil {
 			return fmt.Errorf("copy the prior Worker child transcripts: %w", err)
 		}
+	}
+	return nil
+}
+
+// cloneAgentTranscript copies the rows and receipts that belong to one transcript.
+// The caller's transaction commits this copy with the destination agent record.
+func cloneAgentTranscript(ctx context.Context, queries *db.Queries, sourceID, targetID string) error {
+	if _, err := queries.CloneAgentMessagesForResume(ctx, db.CloneAgentMessagesForResumeParams{
+		TargetAgentID: targetID, SourceAgentID: sourceID,
+	}); err != nil {
+		return fmt.Errorf("copy messages: %w", err)
+	}
+	if err := queries.CloneAgentTurnEndsForResume(ctx, db.CloneAgentTurnEndsForResumeParams{
+		TargetAgentID: targetID, SourceAgentID: sourceID,
+	}); err != nil {
+		return fmt.Errorf("copy native completion receipts: %w", err)
+	}
+	if err := queries.CloneAgentMessageRetractionsForResume(ctx, db.CloneAgentMessageRetractionsForResumeParams{
+		TargetAgentID: targetID, SourceAgentID: sourceID,
+	}); err != nil {
+		return fmt.Errorf("copy native eviction receipts: %w", err)
 	}
 	return nil
 }
@@ -103,15 +116,8 @@ func cloneArchivedChildTree(ctx context.Context, queries *db.Queries, sourceRoot
 		if count != 1 {
 			return fmt.Errorf("copy archived child %q: expected one row, got %d", child.ID, count)
 		}
-		if _, err := queries.CloneAgentMessagesForResume(ctx, db.CloneAgentMessagesForResumeParams{
-			TargetAgentID: newChildID, SourceAgentID: child.ID,
-		}); err != nil {
-			return fmt.Errorf("copy archived child %q messages: %w", child.ID, err)
-		}
-		if err := queries.CloneAgentTurnEndsForResume(ctx, db.CloneAgentTurnEndsForResumeParams{
-			TargetAgentID: newChildID, SourceAgentID: child.ID,
-		}); err != nil {
-			return fmt.Errorf("copy archived child %q native completion receipts: %w", child.ID, err)
+		if err := cloneAgentTranscript(ctx, queries, child.ID, newChildID); err != nil {
+			return fmt.Errorf("copy archived child %q transcript: %w", child.ID, err)
 		}
 		mappedIDs[child.ID] = newChildID
 	}

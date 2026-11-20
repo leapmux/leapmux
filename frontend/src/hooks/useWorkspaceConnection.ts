@@ -1,4 +1,5 @@
 import type { CatchUpPhase } from './agentEvents'
+import type { WatchEventsHandle } from '~/api/workerRpc'
 import type { AgentEvent, TerminalEvent } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
@@ -123,6 +124,7 @@ export function clearOfflineAgentState(
   // Remove its stored activity level so the view removes the spinner and the unusable Interrupt button.
   stores.agentActivityStore?.forget(agentId)
   stores.chatStore.clearLiveCompaction(agentId)
+  stores.agentSessionStore.clearModelAPIRetry(agentId)
   clearPerTurnLiveState(agentId, stores)
 }
 
@@ -138,6 +140,7 @@ function needsTailReanchor(lastSeq: bigint, liveSeq: bigint, mayReplaceWindow: b
 export function reconcileLaggingTails(deps: {
   agentTabs: () => ReadonlyArray<{ id: string, workerId: string }>
   hasNewerMessages: (agentId: string) => boolean
+  hasPendingLatestAnchor?: (agentId: string) => boolean
   caughtUpToLiveTail: (agentId: string) => boolean
   isTailFillDeferred: (agentId: string) => boolean
   getLastSeq: (agentId: string) => bigint
@@ -158,6 +161,10 @@ export function reconcileLaggingTails(deps: {
       continue
     if (deps.isFetchingNewer(tab.id) || deps.isFetchingOlder(tab.id))
       continue
+    if (deps.hasPendingLatestAnchor?.(tab.id)) {
+      deps.jumpToLatest(tab.workerId, tab.id)
+      continue
+    }
     if (deps.caughtUpToLiveTail(tab.id)) {
       if (!deps.isReplaying(tab.id))
         deps.clearReplayPaging?.(tab.id)
@@ -262,9 +269,24 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
   function reanchorHistory(workerId: string, agentId: string): void {
     const signal = recoverySignal(workerId, agentId)
-    const result = chatStore.jumpToLatestMessages(workerId, agentId, signal, {
-      mayReplace: () => mayReplaceHistory(agentId),
-      pageLimit: replayPaging.get(agentId)?.pageLimit,
+    const deletion = chatStore.hasPendingLatestAnchor(agentId)
+    if (deletion && !agentReplaySignal(workerId, agentId))
+      return
+    const pending = pendingReanchors.get(agentId)
+    if (pending && pending.signal === signal)
+      return
+    const mayReplace = () => view.getAgentTab(agentId)?.workerId === workerId && mayReplaceHistory(agentId)
+    const pageLimit = replayPaging.get(agentId)?.pageLimit
+    function request() {
+      return chatStore.jumpToLatestMessages(workerId, agentId, signal, { mayReplace, pageLimit })
+    }
+    const result = request().catch((error: unknown) => {
+      // One retry can recover a transient failure without repeatedly retrying an empty window.
+      if (!deletion || signal?.aborted || signal !== agentReplaySignal(workerId, agentId)
+        || view.getAgentTab(agentId)?.workerId !== workerId || !chatStore.hasPendingLatestAnchor(agentId)) {
+        throw error
+      }
+      return request()
     })
     const owner = { signal, result }
     pendingReanchors.set(agentId, owner)
@@ -340,6 +362,23 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   })
 
+  let agentWorkers = new Map<string, string>()
+  createEffect(() => {
+    const current = new Map<string, string>()
+    for (const tab of view.all()) {
+      if (isAgentTab(tab) && tab.workerId)
+        current.set(tab.id, tab.workerId)
+    }
+    for (const [agentId, workerId] of agentWorkers) {
+      if (current.get(agentId) === workerId)
+        continue
+      const receipt = resumeTails.get(agentId)
+      if (receipt === undefined || receipt.workerId === workerId)
+        agentSessionStore.forgetAgentWatch(agentId, receipt?.replayId)
+    }
+    agentWorkers = current
+  })
+
   const setWorkerOnline = (workerId: string, online: boolean) => {
     if (!params.workerOnline.setOnline(workerId, online) || !online)
       return
@@ -391,14 +430,18 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     ),
   )
 
-  async function refreshRetainedRevisions(workerId: string, agentId: string, signal: AbortSignal): Promise<void> {
+  async function refreshRetainedRevisions(workerId: string, agentId: string, signal: AbortSignal, handle: WatchEventsHandle): Promise<void> {
     // Read the operation chosen by the reconciliation effect after the replay update.
     await Promise.resolve()
     const pending = pendingReanchors.get(agentId)
     if (pending?.signal === signal && await pending.result.catch(() => false))
       return
-    if (!signal.aborted)
-      await chatStore.refreshLoadedMessages(workerId, agentId, signal)
+    if (!signal.aborted) {
+      await chatStore.refreshLoadedMessages(workerId, agentId, signal, handle, {
+        mayReplace: () => mayReplaceHistory(agentId),
+        pageLimit: replayPaging.get(agentId)?.pageLimit,
+      })
+    }
   }
 
   /** Use the worker's root field, or a complete same-worker parent chain. */
@@ -460,7 +503,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     }
   }
 
-  const handleAgentEvent = (agentEvent: AgentEvent, streamWorkerId: string) => {
+  const handleAgentEvent = (agentEvent: AgentEvent, streamWorkerId: string, handle: WatchEventsHandle) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
     const isReplay = agentEvent.replay !== undefined
@@ -481,14 +524,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     // - INACTIVE cleanup.
     // See AgentEvent.replay.
     const catchUpPhase: CatchUpPhase = isReplay ? 'catchingUp' : 'live'
-    const markLiveAgentActive = () => {
+    const noteLiveAgentEvent = (provesRunning: boolean) => {
       if (catchUpPhase !== 'live')
         return
       const wid = view.getAgentTab(agentId)?.workerId || streamWorkerId || ''
       if (wid)
         setWorkerOnline(wid, true)
       const current = view.getAgentTab(agentId)
-      if (current?.agentStatus === AgentStatus.INACTIVE) {
+      if (provesRunning && current?.agentStatus === AgentStatus.INACTIVE) {
         // Record the live status so a pending ListAgents reply cannot restore its older answer.
         // See TabMetadataStore.liveStatusEpoch.
         metadata.patchLiveStatus(agentId, { agentStatus: AgentStatus.ACTIVE })
@@ -497,13 +540,17 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
     switch (inner.case) {
       case 'agentMessage': {
+        if (!isReplay && view.getAgentTab(agentId)?.workerId !== streamWorkerId)
+          break
         // The Worker emits the result of one ordered AFTER query for this receipt.
         const previousCoverage = requested?.replayCoveredThrough
         const extendsCoverage = previousCoverage !== undefined && inner.value.seq > previousCoverage
         if (requested && extendsCoverage)
           requested.replayCoveredThrough = inner.value.seq
+        if (chatStore.isMessageRetracted(agentId, inner.value.seq, handle))
+          break
         if (!inner.value.transcriptOnly)
-          markLiveAgentActive()
+          noteLiveAgentEvent(inner.value.seq > 0n)
         handleAgentMessage(
           agentId,
           inner.value,
@@ -524,6 +571,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         )
         break
       }
+      case 'messagesRetracted': {
+        if (view.getAgentTab(agentId)?.workerId !== streamWorkerId)
+          break
+        chatStore.retractMessages(agentId, inner.value.seqs, handle)
+        break
+      }
       case 'statusChange':
         handleAgentStatusChange(
           agentId,
@@ -542,12 +595,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           settingsLoading,
           () => setWorkerOnline(view.getAgentTab(agentId)?.workerId || streamWorkerId || '', true),
           streamWorkerId,
+          replayId,
         )
         break
       case 'controlRequest':
       case 'controlResponseChanged':
         if (inner.case === 'controlRequest')
-          markLiveAgentActive()
+          noteLiveAgentEvent(true)
         handleControlRequest(
           agentId,
           inner.value,
@@ -634,19 +688,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'catchUpStart': {
-        batch(() => {
+        const needsAnchor = batch(() => {
           if (requested) {
             replayPaging.set(agentId, {
               pageLimit: inner.value.replayPageLimit,
               skipped: inner.value.messageReplaySkipped,
             })
           }
-          chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTail)
+          return chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTail, false, handle)
         })
-        if (requested && requested.cursorSeq > 0n && chatStore.isInitialLoadComplete(agentId)) {
+        if (!needsAnchor && requested && requested.cursorSeq > 0n && chatStore.isInitialLoadComplete(agentId)) {
           const signal = agentReplaySignal(streamWorkerId, agentId)
           if (signal && !signal.aborted)
-            void refreshRetainedRevisions(streamWorkerId, agentId, signal).catch(warnChatHistoryLoadFailed)
+            void refreshRetainedRevisions(streamWorkerId, agentId, signal, handle).catch(warnChatHistoryLoadFailed)
         }
         // Restore an unclaimed valid activity level without an alert.
         // A valid live publication retains its activity claim until replay ends.
@@ -656,7 +710,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentActivityStore.seedPublished(agentId, inner.value.activityState)
         break
       }
-      case 'catchUpComplete':
+      case 'catchUpComplete': {
         requested?.liveClaims.clear()
         agentSessionStore.retireReplay(agentId, replayId)
         batch(() => {
@@ -667,15 +721,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
               ? resumeTail
               : inner.value.startTailSeq,
             true,
+            handle,
           )
           chatStore.setCatchingUp(agentId, false)
         })
-        void chatStore.loadMessageMarks(
-          view.getAgentTab(agentId)?.workerId ?? '',
-          agentId,
-          abortSignalFor(view.getAgentTab(agentId)?.workerId ?? '') ?? undefined,
-        )
+        void chatStore.loadMessageMarks(streamWorkerId, agentId, agentReplaySignal(streamWorkerId, agentId))
         break
+      }
     }
   }
 
@@ -826,16 +878,18 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         entry.replayPageLimit = chatStore.replayPageLimit(agentId)
       return entry
     },
-    onEvent: (workerId, resp) => {
+    onEvent: (workerId, resp, handle) => {
       switch (resp.event.case) {
         case 'agentEvent':
-          handleAgentEvent(resp.event.value, workerId)
+          handleAgentEvent(resp.event.value, workerId, handle)
           break
         case 'terminalEvent':
           handleTerminalEvent(resp.event.value, workerId)
           break
       }
     },
+    onHandleRetired: chatStore.retireWatchHandle,
+    onAgentInterestApplied: chatStore.retainWatchRetractions,
     onWorkerOnline: setWorkerOnline,
     onReplayRequested: (workerId, replayId, entries, identities) => {
       batch(() => {
@@ -880,7 +934,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const signal = agentReplaySignal(workerId, agentId)
         if (!signal || signal.aborted)
           continue
-        if (!chatStore.isInitialLoadComplete(agentId))
+        chatStore.notifyFullWatchPromotion(agentId, signal)
+        if (chatStore.hasPendingLatestAnchor(agentId))
+          reanchorHistory(workerId, agentId)
+        else if (!chatStore.isInitialLoadComplete(agentId))
           void chatStore.loadInitialMessages(workerId, agentId).catch(warnChatHistoryLoadFailed)
       }
     },
@@ -943,6 +1000,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       .filter(t => t.type === TabType.AGENT)
       .map(t => ({ id: t.id, workerId: t.workerId ?? '' })),
     hasNewerMessages: id => chatStore.hasNewerMessages(id),
+    hasPendingLatestAnchor: chatStore.hasPendingLatestAnchor,
     caughtUpToLiveTail: id => chatStore.caughtUpToLiveTail(id),
     isTailFillDeferred: id => chatStore.isTailFillDeferred(id),
     getLastSeq: id => chatStore.getLastSeq(id),

@@ -32,7 +32,7 @@ func TestPiProtocolEventConstants(t *testing.T) {
 		"compaction_end":        contracts.PiEventCompactionEnd,
 		"auto_retry_start":      contracts.PiEventAutoRetryStart,
 		"auto_retry_end":        contracts.PiEventAutoRetryEnd,
-		"queue_update":          contracts.PiEventQueueUpdate,
+		"queue_update":          piEventQueueUpdate,
 		"response":              contracts.PiEventResponse,
 	}
 	for want, got := range cases {

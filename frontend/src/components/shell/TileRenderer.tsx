@@ -1022,6 +1022,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // the same pattern for the same reason.
             const agentLifecycle: AgentLifecycleProps = {
               get liveCompaction() { return chatStore.getLiveCompaction(agentId) },
+              get liveModelAPIRetry() { return agentSessionStore.getModelAPIRetry(agentId) },
               get agentWorking() { return agentThinking(agentId) },
               get thinkingTokens() { return agentSessionStore.getProgress(agentId).thinkingTokens },
               get outputBytes() { return agentSessionStore.getProgress(agentId).output?.bytes },

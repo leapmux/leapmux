@@ -20,7 +20,6 @@
     "CompactionEnd": "compaction_end",
     "AutoRetryStart": "auto_retry_start",
     "AutoRetryEnd": "auto_retry_end",
-    "QueueUpdate": "queue_update",
     "BashExecutionUpdate": "bash_execution_update",
     "SessionInfoChanged": "session_info_changed",
     "ThinkingLevelChanged": "thinking_level_changed",
@@ -43,11 +42,7 @@
     "Editor": "editor"
   },
   "extensionMethods": {
-    "Notify": "notify",
-    "SetStatus": "setStatus",
-    "SetWidget": "setWidget",
-    "SetTitle": "setTitle",
-    "SetEditorText": "set_editor_text"
+    "Notify": "notify"
   },
   "toolNames": {
     "AskUserQuestion": "ask_user_question",

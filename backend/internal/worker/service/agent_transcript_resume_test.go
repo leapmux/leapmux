@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -603,5 +604,88 @@ func TestEmbeddedNotificationJournalSurvivesRootNestedAndRepeatedResume(t *testi
 			_, err = svc.DB.ExecContext(t.Context(), "UPDATE agents SET closed_at = ? WHERE id = ?", "2026-01-01T00:00:00.000Z", "journal-old-root")
 			require.NoError(t, err)
 		}
+	}
+}
+
+func TestResumeSelectsTheNewestReceiptOnlyTree(t *testing.T) {
+	t.Parallel()
+	for _, childOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("child_only=%t", childOnly), func(t *testing.T) {
+			t.Parallel()
+			svc, dispatcher := transcriptResumeService(t)
+			ctx := t.Context()
+			workingDir := t.TempDir()
+			const nativeSessionID = "native-root"
+			const childSessionID = "native-child"
+			provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+
+			seedTranscriptSource(t, svc, "old-with-message", workingDir, nativeSessionID, provider, false)
+			_, err := svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
+				ID: "old-answer", AgentID: "old-with-message", AgentSessionID: nativeSessionID,
+				Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: []byte(`{"type":"assistant"}`),
+				ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+				SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+				CreatedAt:                      sqltime.NewSQLiteTime(nowMillis()),
+			})
+			require.NoError(t, err)
+			_, err = svc.Queries.CloseAgent(ctx, "old-with-message")
+			require.NoError(t, err)
+
+			const rootID = "receipt-root"
+			const childID = "receipt-child"
+			seedTranscriptSource(t, svc, rootID, workingDir, nativeSessionID, provider, false)
+			require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
+				ID: childID, ParentAgentID: sql.NullString{String: rootID, Valid: true},
+				SpawnSpanID: "receipt-only-spawn", WorkingDir: workingDir, AgentProvider: provider,
+			}))
+			require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: childID, AgentSessionID: childSessionID}))
+			_, err = svc.Queries.RecordMessageRetraction(ctx, db.RecordMessageRetractionParams{
+				AgentID: childID, AgentSessionID: childSessionID, IdempotencyKey: "child-evicted",
+			})
+			require.NoError(t, err)
+			if !childOnly {
+				_, err = svc.Queries.RecordMessageRetraction(ctx, db.RecordMessageRetractionParams{
+					AgentID: rootID, AgentSessionID: nativeSessionID, IdempotencyKey: "root-evicted",
+				})
+				require.NoError(t, err)
+			}
+			for _, id := range []string{childID, rootID} {
+				_, err = svc.Queries.CloseAgent(ctx, id)
+				require.NoError(t, err)
+			}
+
+			resumedID := openTranscriptResumeAgent(t, dispatcher, workingDir, nativeSessionID, provider)
+			rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: resumedID})
+			require.NoError(t, err)
+			assert.Empty(t, rows, "the newest tree owns the eviction receipts")
+			children, err := svc.Queries.ListAgentDescendantsForResume(ctx, sql.NullString{String: resumedID, Valid: true})
+			require.NoError(t, err)
+			require.Len(t, children, 1)
+			clonedChild, err := svc.Queries.GetAgentByID(ctx, children[0].ID)
+			require.NoError(t, err)
+			assert.Equal(t, "receipt-only-spawn", clonedChild.SpawnSpanID)
+			assert.Equal(t, childSessionID, clonedChild.AgentSessionID)
+			rootReceipt, err := svc.Queries.HasMessageRetraction(ctx, db.HasMessageRetractionParams{
+				AgentID: resumedID, AgentSessionID: nativeSessionID, IdempotencyKey: "root-evicted",
+			})
+			require.NoError(t, err)
+			assert.Equal(t, !childOnly, rootReceipt)
+
+			replays := []db.CreateMessageParams{
+				{AgentID: clonedChild.ID, AgentSessionID: childSessionID, IdempotencyKey: "child-evicted"},
+			}
+			if !childOnly {
+				replays = append(replays, db.CreateMessageParams{AgentID: resumedID, AgentSessionID: nativeSessionID, IdempotencyKey: "root-evicted"})
+			}
+			for _, replay := range replays {
+				replay.ID = replay.AgentID + "-replay"
+				replay.Source = leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
+				replay.Content = []byte(`{"type":"assistant"}`)
+				replay.ContentCompression = leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
+				replay.CreatedAt = sqltime.NewSQLiteTime(nowMillis())
+				_, err = createMessageRow(ctx, svc.Queries, replay)
+				assert.ErrorIs(t, err, sql.ErrNoRows, "the copied receipt suppresses redelivery")
+			}
+		})
 	}
 }

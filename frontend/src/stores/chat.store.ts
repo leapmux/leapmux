@@ -4,6 +4,7 @@ import type { PromptSuggestion } from './chatPromptSuggestion'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
 import type { TurnRetryOffer } from './chatTurnRetryOffer'
 import type { LandingRefillPages, SavedViewportScroll, ViewportHistoryIntent } from './chatTypes'
+import type { WatchEventsHandle } from '~/api/workerRpc'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity, ToolSpanSide } from '~/lib/messageSpan'
 import { toBinary } from '@bufbuild/protobuf'
@@ -42,6 +43,7 @@ export const MAX_LOADED_CHAT_MESSAGES = 150
 export type ChatWindowChange
   = | { kind: 'eviction', dropped: readonly AgentChatMessage[], kept: readonly AgentChatMessage[] }
     | { kind: 'retraction', includes: (message: Pick<AgentChatMessage, 'id' | 'seq'>) => boolean }
+    | { kind: 'promotion', signal: AbortSignal }
 
 /**
  * Limit the loaded window while the reader scrolls above the live tail or the scroll hook fetches visible content.
@@ -240,6 +242,11 @@ export function createChatStore() {
   // createHistoryFetchRunner owns fetchAbort, beginHistoryFetch, and runHistoryFetch.
   const historyFetches = createHistoryFetchRunner({ setState, catchUpAbort })
 
+  // Logical interest changes can retire a replay before its physical stream
+  // stops delivering rows. Keep its deleted sequences until that handle retires.
+  const watchRetractions = new WeakMap<WatchEventsHandle, Map<string, Set<bigint>>>()
+  const pendingLatestAnchors = createPerAgentStore<boolean | undefined>(undefined)
+
   /**
    * Rebuild the span index from the current loaded window.
    * Rebuild after each change that removes or reorders rows:
@@ -273,6 +280,96 @@ export function createChatStore() {
     forgetContentVersions(prev.filter(m => !keptIds.has(m.id)).map(m => m.id))
   }
 
+  function commitRetraction(
+    agentId: string,
+    seqs: ReadonlySet<bigint>,
+    includes: Extract<ChatWindowChange, { kind: 'retraction' }>['includes'],
+    handle?: WatchEventsHandle,
+    revisions: AgentChatMessage[] = [],
+  ): boolean {
+    if (seqs.size === 0) {
+      notifyWindowObservers(agentId, { kind: 'retraction', includes })
+      return false
+    }
+    if (handle) {
+      let agents = watchRetractions.get(handle)
+      if (!agents) {
+        agents = new Map()
+        watchRetractions.set(handle, agents)
+      }
+      let removed = agents.get(agentId)
+      if (!removed) {
+        removed = new Set()
+        agents.set(agentId, removed)
+      }
+      for (const seq of seqs)
+        removed.add(seq)
+    }
+    historyFetches.noteRetractions(agentId, seqs)
+    return batch(() => {
+      publishOrderedPage(agentId)
+      const previous = state.messagesByAgent[agentId] ?? []
+      const removedIds: string[] = []
+      const surviving = hasLoadedRetraction(previous, seqs)
+        ? previous.filter((message) => {
+            if (!seqs.has(message.seq))
+              return true
+            removedIds.push(message.id)
+            return false
+          })
+        : previous
+      const next = revisions.length === 0
+        ? surviving
+        : mergeWindow(surviving, revisions, 'newer')
+      const needsAnchor = removedIds.length > 0 && next.length === 0
+      if (needsAnchor)
+        pendingLatestAnchors.set(agentId, true)
+      if (next !== previous) {
+        if (next !== surviving) {
+          publishWindowReplacement(agentId, surviving, next)
+          invalidateNewSupplements(surviving, next)
+          reclaimDroppedRows(surviving, next)
+        }
+        spanIdx.reindex(agentId, next)
+        setState('messagesByAgent', agentId, next)
+      }
+      messageMarks.removeSequences(agentId, seqs)
+      notifyWindowObservers(agentId, { kind: 'retraction', includes })
+      contentVersions.forget(removedIds)
+      for (const message of revisions) {
+        notifyMessageObservers(agentId, message)
+        liveTail.bump(agentId, message.seq)
+      }
+      return needsAnchor
+    })
+  }
+
+  function hasLoadedRetraction(messages: AgentChatMessage[], sequences: ReadonlySet<bigint>): boolean {
+    // Search individual sequences for a small deletion. A dense miss needs no copy either.
+    if (sequences.size > 8)
+      return messages.some(message => sequences.has(message.seq))
+    for (const seq of sequences) {
+      if (messages[lowerBoundBySeq(messages, seq)]?.seq === seq)
+        return true
+    }
+    return false
+  }
+
+  function reconcileLoadedPage(agentId: string, sequences: readonly bigint[], revisions: AgentChatMessage[], handle?: WatchEventsHandle): void {
+    const seqs = new Set(sequences.filter(seq => seq > 0n))
+    if (seqs.size > 0)
+      commitRetraction(agentId, seqs, message => seqs.has(message.seq), handle, revisions)
+    else
+      mergeFetchedMessages(agentId, revisions, 'newer')
+  }
+
+  function retractMessages(agentId: string, sequences: readonly bigint[], handle?: WatchEventsHandle): boolean {
+    const seqs = new Set(sequences.filter(seq => seq > 0n))
+    return seqs.size > 0 && commitRetraction(agentId, seqs, message => seqs.has(message.seq), handle)
+  }
+
+  const hasPendingLatestAnchor = (agentId: string): boolean => pendingLatestAnchors.get(agentId) === true
+
   /**
    * Remove all chat state when the agent closes.
    * Window trims remove rows, but they do not remove the complete agent entry.
@@ -290,6 +387,7 @@ export function createChatStore() {
     // Abort history fetches and background catch-up, then remove their controllers.
     // A delayed response must not change the removed window.
     historyFetches.forget(agentId)
+    pendingLatestAnchors.remove(agentId)
     catchUpAbort.get(agentId)?.abort()
     catchUpAbort.delete(agentId)
     // Remove the agent's row state:
@@ -336,39 +434,6 @@ export function createChatStore() {
   }
 
   /**
-   * Remove loaded phantom rows above latestSeq, except rows above a supplied reapCeilingSeq.
-   * Those exempt rows can arrive live during replay.
-   * Reclaim each removed row's state and rebuild the span index, as a trim or delete does.
-   * Then compare the surviving window tail with latestSeq to set hasMoreNewer.
-   * This helper applies the row removal that reconcileAuthoritativeTail selects.
-   * Return without changes when no loaded row qualifies.
-   */
-  function reapPhantomRows(agentId: string, latestSeq: bigint, reapCeilingSeq?: bigint) {
-    publishOrderedPage(agentId)
-    const prev = state.messagesByAgent[agentId]
-    if (!prev || prev.length === 0)
-      return
-    const survivors = prev.filter(m => !isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
-    if (survivors.length === prev.length)
-      return // No loaded row qualifies for removal.
-    // Remove each deleted row's scroll-rail mark also.
-    // A stale mark above the new maximum sequence could otherwise survive a concurrent marks response.
-    // A later append would then display a mark for a deleted row.
-    // The mark store increases its revision only after an actual removal.
-    for (const m of prev) {
-      if (isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
-        messageMarks.remove(agentId, m.seq)
-    }
-    reclaimDroppedRows(prev, survivors)
-    spanIdx.reindex(agentId, survivors)
-    setState('messagesByAgent', agentId, survivors)
-    // The window retains rows at or below latestSeq and any live rows above reapCeilingSeq.
-    // A surviving live row can therefore exceed latestSeq.
-    // Set hasMoreNewer only when the surviving window tail remains below the authoritative tail.
-    setState('hasMoreNewer', agentId, (lastMessageSeq(survivors) ?? 0n) < latestSeq)
-  }
-
-  /**
    * Reconcile the loaded window with the tail that CatchUpStart or CatchUpComplete reports.
    * Remove rows above latestSeq, except rows above a supplied reapCeilingSeq.
    * Reconcile the recorded live tail with the same exemption so the newer-message control cannot point past deleted history.
@@ -385,27 +450,38 @@ export function createChatStore() {
    * catchUpToTail then reads the actual tail. settleToWindow removes that increase when the server supplies no newer row.
    * CatchUpStart does not request this probe because it would race the active replay.
    */
-  function reconcileAuthoritativeTail(agentId: string, latestSeq: bigint | undefined, reapCeilingSeq?: bigint, probeIndeterminate = false) {
+  function reconcileAuthoritativeTail(
+    agentId: string,
+    latestSeq: bigint | undefined,
+    reapCeilingSeq?: bigint,
+    probeIndeterminate = false,
+    handle?: WatchEventsHandle,
+  ): boolean {
     if (latestSeq === undefined) {
       if (probeIndeterminate) {
         const windowTail = lastMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
         if (windowTail > 0n)
           liveTail.bump(agentId, windowTail + 1n)
       }
-      return
+      return false
     }
-    batch(() => {
+    return batch(() => {
+      // In-flight pages can hold rows past the window. Preserve deliveries
+      // beyond the watch cursor, or beyond the observed tail if no cursor exists.
+      historyFetches.noteReapedRange(agentId, latestSeq, reapCeilingSeq ?? liveTail.get(agentId))
       liveTail.setAuthoritative(agentId, latestSeq, reapCeilingSeq)
-      // A resolver can hold a row that already left the loaded window.
-      notifyWindowObservers(agentId, {
-        kind: 'retraction',
-        includes: message => isReapablePhantom(message.seq, latestSeq, reapCeilingSeq),
-      })
-      reapPhantomRows(agentId, latestSeq, reapCeilingSeq)
+      publishOrderedPage(agentId)
+      const includes = (message: Pick<AgentChatMessage, 'seq'>) => isReapablePhantom(message.seq, latestSeq, reapCeilingSeq)
+      const seqs = new Set((state.messagesByAgent[agentId] ?? []).filter(includes).map(message => message.seq))
+      // The observer can hold additional rows that already left the window.
+      const needsAnchor = commitRetraction(agentId, seqs, includes, handle)
+      if (seqs.size > 0)
+        setState('hasMoreNewer', agentId, (lastMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n) < latestSeq)
       if ((lastMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n) >= liveTail.get(agentId)) {
         setState('hasMoreNewer', agentId, false)
         setState('tailFillDeferred', agentId, false)
       }
+      return needsAnchor
     })
   }
 
@@ -592,6 +668,30 @@ export function createChatStore() {
   const baseStore = {
     state,
 
+    isMessageRetracted(agentId: string, seq: bigint, handle: WatchEventsHandle): boolean {
+      return watchRetractions.get(handle)?.get(agentId)?.has(seq) ?? false
+    },
+
+    retainWatchRetractions(handle: WatchEventsHandle, fullAgents: ReadonlyMap<string, bigint>): void {
+      const retractions = watchRetractions.get(handle)
+      if (!retractions)
+        return
+      for (const agentId of retractions.keys()) {
+        if (!fullAgents.has(agentId))
+          retractions.delete(agentId)
+      }
+      if (retractions.size === 0)
+        watchRetractions.delete(handle)
+    },
+
+    retireWatchHandle(handle: WatchEventsHandle): void {
+      watchRetractions.delete(handle)
+    },
+
+    notifyFullWatchPromotion(agentId: string, signal: AbortSignal): void {
+      notifyWindowObservers(agentId, { kind: 'promotion', signal })
+    },
+
     subscribeMessages(agentId: string, observer: (message: AgentChatMessage) => void): () => void {
       return subscribeTo(messageObservers, agentId, observer)
     },
@@ -758,8 +858,6 @@ export function createChatStore() {
         // The worker supplies markType in the protobuf message.
         // A previousSeq move removes the old mark before recording the new one.
         // Otherwise, the old sequence could retain a mark for a moved row.
-        // The mark store increases its revision only for a real change.
-        // An unmarked move or repeated identical mark therefore preserves a concurrent loadMessageMarks request.
         if (message.previousSeq !== 0n)
           messageMarks.remove(agentId, message.previousSeq)
         if (message.markType !== MarkType.UNSPECIFIED)
@@ -1047,6 +1145,10 @@ export function createChatStore() {
     setState,
     catchUpAbort,
     runHistoryFetch: historyFetches.runHistoryFetch,
+    duringHistoryRead: historyFetches.duringHistoryRead,
+    reconcileLoadedPage,
+    needsLatestAnchor: hasPendingLatestAnchor,
+    completeLatestAnchor: pendingLatestAnchors.remove,
     mergeFetchedMessages,
     applyMessages,
     setLandingRefillPages: landingRefillPages.set,
@@ -1073,6 +1175,8 @@ export function createChatStore() {
   // The window core still owns message changes and window rules. It also supplies annotations.
   return Object.assign(baseStore, paginator, {
     forgetAgent,
+    retractMessages,
+    hasPendingLatestAnchor,
     reconcileAuthoritativeTail,
     liveTail,
     messageMarks,

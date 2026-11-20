@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -1527,6 +1528,720 @@ func TestHandleZCodeOutput_NetworkRetryPersistsAndOtherStatusesDrop(t *testing.T
 			assert.Equal(t, tc.rows, sink.NotificationCount())
 			assert.Equal(t, 0, sink.MessageCount())
 		})
+	}
+}
+
+// The live model API retry follows the foreground owner's physical requests.
+// An established call carries no indicator, the schedule publishes Waiting 2/5,
+// the handoff to the retry's new request ID publishes Running 2/5, and the
+// completion publishes an explicit null. A side query, a background owner, an
+// archive event and the late completion of the handed-off predecessor interleave
+// without a single extra update. The schedule's own retry notice is the one
+// persisted history row.
+func TestHandleZCodeOutput_PublishesTheLiveModelAPIRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	const backgroundID = "background"
+	a.HandleOutput(zcodeTurnEventLine(t, 0, backgroundID, contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputSource":"background_task"}`))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`))
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry),
+		"an established call carries no active retry")
+
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,`+
+			`"delayMs":4000,"statusCode":529,"message":"Overloaded","modelCall":{"logicalCallId":"L1"},`+
+			`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":1,"maxRetries":4,"retryDelayMs":4000,"errorStatus":529,"error":"overloaded"}}}}`))
+
+	// This side-query schedule would otherwise renew the current retry.
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,`+
+			`"delayMs":99,"querySource":"compact","modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, backgroundID, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"BG","attempt":1,"modelCall":{"logicalCallId":"L3"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, backgroundID, contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"BG","attempt":1,"nextAttempt":2,"maxAttempts":5,`+
+			`"modelCall":{"logicalCallId":"L3"}}`))
+	a.Mu.Lock()
+	backgroundRetry := a.turns[backgroundID].modelAPIRetry
+	a.Mu.Unlock()
+	assert.Nil(t, backgroundRetry, "the live retry state belongs only to the foreground")
+	a.dispatchZCodeEventOrdered(zcodeEventEnvelope{
+		SessionID: "sess-1", TurnID: "turn-1", Type: contracts.ZCodeEventSessionUpdated, archive: true,
+		Payload: json.RawMessage(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,` +
+			`"maxAttempts":5,"delayMs":88,"modelCall":{"logicalCallId":"L1"}}`),
+	})
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 1,
+		"the noise interleaves no live update")
+
+	// Request B of the same logical call takes ownership; a delayed completion
+	// of A then leaves the indicator on B until B completes.
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"B","attempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"A","modelCall":{"logicalCallId":"L1"}}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 2,
+		"a delayed completion of the predecessor clears nothing")
+	assert.Empty(t, sink.LeapMuxNotifications(), "the predecessor cannot resolve the successor's retry notice")
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"B","modelCall":{"logicalCallId":"L1"}}`))
+
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, values, 3)
+	assert.Equal(t, map[string]interface{}{
+		"phase":          contracts.ModelAPIRetryPhaseWaiting,
+		"attempt":        int64(2),
+		"max_attempts":   int64(5),
+		"retry_delay_ms": int64(4000),
+		"error_status":   529,
+		"error":          "Overloaded",
+	}, values[0])
+	assert.Equal(t, map[string]interface{}{
+		"phase":        contracts.ModelAPIRetryPhaseRunning,
+		"attempt":      int64(2),
+		"max_attempts": int64(5),
+		"error_status": 529,
+		"error":        "Overloaded",
+	}, values[1])
+	assert.Nil(t, values[2], "the completion clears the indicator with an explicit null")
+	assert.Len(t, sink.PersistedNotifications(), 1, "the schedule keeps its one retry history notice")
+	require.Len(t, sink.LeapMuxNotifications(), 1)
+	assert.Equal(t, contracts.NotificationTypeApiRetryResolved, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+}
+
+func TestZCodeArchivedRetryResolutionKeepsTurnOwnership(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	update := func(turnID, payload string) {
+		a.dispatchZCodeEventOrdered(zcodeEventEnvelope{
+			SessionID: "sess-1", TurnID: turnID, Type: contracts.ZCodeEventSessionUpdated,
+			archive: true, Payload: json.RawMessage(payload),
+		})
+	}
+	update("archived-turn", `{"type":"model_retry_scheduled","requestId":"A","querySource":"main_turn",`+
+		`"modelCall":{"logicalCallId":"archived-call"},"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":1,"maxRetries":4}}}}`)
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+	const complete = `{"type":"model_request_completed","requestId":"A","modelCall":{"logicalCallId":"archived-call"}}`
+	update("different-turn", complete)
+	assert.Empty(t, sink.LeapMuxNotifications(), "another turn cannot resolve the archived retry")
+	update("archived-turn", complete)
+	update("archived-turn", complete)
+	require.Len(t, sink.LeapMuxNotifications(), 1)
+	assert.Equal(t, contracts.NotificationTypeApiRetryResolved, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+}
+
+func TestZCodeLiveModelAPIRetryKeepsExactCompletionIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		call string
+	}{
+		{name: "absent optional call"},
+		{name: "malformed call", call: `,"modelCall":[]`},
+		{name: "malformed logical ID", call: `,"modelCall":{"logicalCallId":7}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			update := startZCodeModelRetryTestTurn(t, a)
+			update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L"}}`)
+			update(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"modelCall":{"logicalCallId":"L"}}`)
+			update(`{"type":"model_request_started","requestId":"B","attempt":2,"modelCall":{"logicalCallId":"L"}}`)
+			const complete = `{"type":"model_request_completed","requestId":`
+			update(complete + `"A"` + tc.call + `}`)
+			require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 2, "the previous request cannot clear the current retry")
+			update(complete + `"B"` + tc.call + `}`)
+			values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+			require.Len(t, values, 3, "the exact current request can complete without usable optional call metadata")
+			assert.Nil(t, values[2])
+		})
+	}
+}
+
+func TestZCodeLiveModelAPIRetryRejectsConflictingSettlement(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{"model_request_completed", "model_request_failed"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			update := startZCodeModelRetryTestTurn(t, a)
+			update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L"}}`)
+			update(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"modelCall":{"logicalCallId":"L"}}`)
+			const conflict = `","requestId":"A","retryable":false,"modelCall":{"logicalCallId":"other-call"}}`
+			update(`{"type":"` + status + conflict)
+			assert.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 1, "a matching request ID cannot settle a conflicting logical call")
+			update(`{"type":"` + status + `","requestId":"A","retryable":false,"modelCall":{"logicalCallId":"L"}}`)
+			values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+			require.Len(t, values, 2)
+			assert.Nil(t, values[1])
+		})
+	}
+}
+
+func TestZCodeLiveModelAPIRetryRejectsReusedRequestForANextAttempt(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		wait bool
+	}{
+		{name: "with a schedule", wait: true},
+		{name: "without a schedule"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			update := startZCodeModelRetryTestTurn(t, a)
+			update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L"}}`)
+			if tc.wait {
+				update(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"modelCall":{"logicalCallId":"L"}}`)
+			}
+			previous := len(sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+			update(`{"type":"model_request_started","requestId":"A","attempt":2,"modelCall":{"logicalCallId":"L"}}`)
+			assert.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), previous, "a later attempt requires a new request ID")
+			update(`{"type":"model_request_started","requestId":"B","attempt":2,"modelCall":{"logicalCallId":"L"}}`)
+			update(`{"type":"model_request_completed","requestId":"B"}`)
+			values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+			require.Len(t, values, previous+2)
+			assert.Equal(t, map[string]any{"phase": contracts.ModelAPIRetryPhaseRunning, "attempt": int64(2)}, values[previous])
+			assert.Nil(t, values[previous+1])
+		})
+	}
+}
+
+func TestZCodeLiveModelAPIRetryPreservesAndLearnsTheAttemptLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		firstLimit string
+		wantLimit  int64
+	}{
+		{name: "retain the known limit during the wait", firstLimit: `,"maxAttempts":5`, wantLimit: 5},
+		{name: "learn the limit at the successor start"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			update := startZCodeModelRetryTestTurn(t, a)
+			update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L"}` + tc.firstLimit + `}`)
+			update(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"delayMs":0,"modelCall":{"logicalCallId":"L"}}`)
+			update(`{"type":"model_request_started","requestId":"B","attempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L"}}`)
+			values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+			require.Len(t, values, 2)
+			waiting := map[string]any{"phase": contracts.ModelAPIRetryPhaseWaiting, "attempt": int64(2), "retry_delay_ms": int64(0)}
+			if tc.wantLimit > 0 {
+				waiting["max_attempts"] = tc.wantLimit
+			}
+			assert.Equal(t, waiting, values[0])
+			assert.Equal(t, map[string]any{"phase": contracts.ModelAPIRetryPhaseRunning, "attempt": int64(2), "max_attempts": int64(5)}, values[1])
+		})
+	}
+}
+
+// A later attempt cannot hand ownership to a request of a different logical
+// call, and a schedule of another call cannot renew the live state.
+func TestHandleZCodeOutput_LiveModelAPIRetryRefusesAnotherLogicalCall(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"B","attempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L2"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"B","attempt":2,"nextAttempt":3,"maxAttempts":5,"modelCall":{"logicalCallId":"L2"}}`))
+
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, values, 1, "a different logical call in the same turn cannot take over")
+	assert.Equal(t, int64(2), values[0].(map[string]interface{})[contracts.ModelAPIRetryFieldAttempt])
+}
+
+// A permanent failure clears the indicator and retains the failed request ID.
+// An unlinked recovery start is refused; a linked successor of the retained
+// request runs from its typed retry record even with a new logical call and no
+// ordinary schedule. Its predecessor's delayed completion clears nothing, and
+// the successor's own completion clears the indicator.
+func TestHandleZCodeOutput_LiveModelAPIRetryFollowsALinkedStreamRecovery(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,"delayMs":4000,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_failed","requestId":"A","attempt":1,"retryable":false,"statusCode":500,"modelCall":{"logicalCallId":"L1"}}`))
+
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"R1","modelCall":{"logicalCallId":"L9"},`+
+			`"streamRecovery":{"attemptId":"x","retryNumber":1,"maxRetries":4,"recoveredFromRequestId":"OTHER"}}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 2,
+		"an unlinked recovery start is refused")
+
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"B","modelCall":{"logicalCallId":"L2"},`+
+			`"streamRecovery":{"attemptId":"x","retryNumber":2,"maxRetries":4,"recoveredFromRequestId":"A"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 6, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"A","modelCall":{"logicalCallId":"L1"}}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 3,
+		"a delayed completion of the failed predecessor clears nothing")
+	a.HandleOutput(zcodeTurnEventLine(t, 7, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_completed","requestId":"B","modelCall":{"logicalCallId":"L2"}}`))
+
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, values, 4)
+	assert.Nil(t, values[1], "a permanent failure clears the indicator")
+	assert.Equal(t, map[string]interface{}{
+		"phase":        contracts.ModelAPIRetryPhaseRunning,
+		"attempt":      int64(2),
+		"max_attempts": int64(5),
+	}, values[2])
+	assert.Nil(t, values[3])
+}
+
+// A retryable failure keeps current ownership, and the next schedule updates
+// the next attempt and delay. A schedule with no outer nextAttempt and
+// maxAttempts derives them from the nested failed attempt plus one and its
+// retry budget plus one; a malformed but present history record keeps its own
+// classification and never corrupts the live facts.
+func TestHandleZCodeOutput_LiveModelAPIRetryRenewsAndDerives(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"},`+
+			`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":1,"maxRetries":4}}}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_request_failed","requestId":"A","attempt":1,"retryable":true,"modelCall":{"logicalCallId":"L1"}}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), 1,
+		"a retryable failure keeps current ownership")
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":3,"maxAttempts":5,"delayMs":500,"modelCall":{"logicalCallId":"L1"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":4,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"},`+
+			`"_meta":{"zcode":{"apiRetry":5}}}`))
+
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, values, 3)
+	assert.Equal(t, map[string]interface{}{
+		"phase":        contracts.ModelAPIRetryPhaseWaiting,
+		"attempt":      int64(2),
+		"max_attempts": int64(5),
+	}, values[0], "the nested failed attempt and retry budget derive 2/5")
+	assert.Equal(t, map[string]interface{}{
+		"phase":          contracts.ModelAPIRetryPhaseWaiting,
+		"attempt":        int64(3),
+		"max_attempts":   int64(5),
+		"retry_delay_ms": int64(500),
+	}, values[1], "the next schedule updates the next attempt and delay")
+	assert.Equal(t, map[string]interface{}{
+		"phase":        contracts.ModelAPIRetryPhaseWaiting,
+		"attempt":      int64(4),
+		"max_attempts": int64(5),
+	}, values[2], "malformed history metadata keeps the live facts of the outer fields")
+	assert.Len(t, sink.PersistedNotifications(), 2,
+		"malformed but present history metadata keeps the base classification")
+}
+
+func TestZCodeLiveModelAPIRetryRejectsFirstAttemptsWhileActive(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		attempt string
+		phase   string
+	}{
+		{name: "unrelated first attempt while waiting", attempt: `,"attempt":1`, phase: "waiting"},
+		{name: "unrelated first attempt while running", attempt: `,"attempt":1`, phase: "running"},
+		{name: "absent attempt", phase: "waiting"},
+		{name: "null attempt", attempt: `,"attempt":null`, phase: "waiting"},
+		{name: "zero attempt", attempt: `,"attempt":0`, phase: "waiting"},
+		{name: "fractional attempt", attempt: `,"attempt":1.5`, phase: "waiting"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			update := startZCodeModelRetryTestTurn(t, a)
+			update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`)
+			update(`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":2,"maxAttempts":5}`)
+			requestID := "A"
+			if test.phase == "running" {
+				update(`{"type":"model_request_started","requestId":"B","attempt":2,"modelCall":{"logicalCallId":"L1"}}`)
+				requestID = "B"
+			}
+			before := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+			require.NotEmpty(t, before)
+			assert.Equal(t, test.phase, before[len(before)-1].(map[string]any)["phase"])
+
+			update(`{"type":"model_request_started","requestId":"OTHER","modelCall":{"logicalCallId":"L2"}` + test.attempt + `}`)
+			assert.Equal(t, before, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+			update(fmt.Sprintf(`{"type":"model_request_completed","requestId":%q}`, requestID))
+			assert.Equal(t, append(before, nil), sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+		})
+	}
+}
+
+func TestZCodeLiveModelAPIRetryHandsOffRepeatedStreamRecoveryMetadata(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	update := startZCodeModelRetryTestTurn(t, a)
+	update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`)
+	update(`{"type":"model_request_failed","requestId":"A","retryable":false}`)
+	const recovery = `,"modelCall":{"logicalCallId":"L2"},"streamRecovery":{"attemptId":"recovery","retryNumber":2,"maxRetries":4,"recoveredFromRequestId":"A"}}`
+	update(`{"type":"model_request_started","requestId":"B","attempt":1,"maxAttempts":5` + recovery)
+	update(`{"type":"model_retry_scheduled","requestId":"B","attempt":1,"nextAttempt":2,"maxAttempts":5` + recovery)
+	update(`{"type":"model_request_started","requestId":"C","attempt":2,"maxAttempts":5` + recovery)
+	update(`{"type":"model_request_completed","requestId":"B"}`)
+	values := []any{
+		map[string]any{"phase": "running", "attempt": int64(2), "max_attempts": int64(5)},
+		map[string]any{"phase": "waiting", "attempt": int64(2), "max_attempts": int64(5)},
+		map[string]any{"phase": "running", "attempt": int64(2), "max_attempts": int64(5)},
+	}
+	assert.Equal(t, values, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+	update(`{"type":"model_request_completed","requestId":"C"}`)
+	assert.Equal(t, append(values, nil), sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+}
+
+func TestZCodeLiveModelAPIRetryHandoffsOffPeakQueueAttempts(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		initial     bool
+		wantWaiting int64
+	}{
+		{name: "first attempt reuses the request ID", initial: true, wantWaiting: 2},
+		{name: "later attempt receives a new request ID", wantWaiting: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			update := startZCodeModelRetryTestTurn(t, a)
+			update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`)
+			if tc.initial {
+				update(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,"reason":"offpeak_queued","modelCall":{"logicalCallId":"L1"}}`)
+				update(`{"type":"model_request_started","requestId":"X","attempt":1,"modelCall":{"logicalCallId":"unrelated"}}`)
+				update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`)
+			} else {
+				update(`{"type":"model_request_started","requestId":"B","attempt":2,"modelCall":{"logicalCallId":"L1"}}`)
+				update(`{"type":"model_retry_scheduled","requestId":"B","attempt":2,"nextAttempt":3,"maxAttempts":5,"reason":"offpeak_queued","modelCall":{"logicalCallId":"L1"}}`)
+				update(`{"type":"model_request_started","requestId":"C","attempt":2,"modelCall":{"logicalCallId":"L1"}}`)
+				update(`{"type":"model_request_completed","requestId":"B"}`)
+			}
+
+			got := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+			require.GreaterOrEqual(t, len(got), 2)
+			assert.Equal(t, contracts.ModelAPIRetryPhaseWaiting, got[len(got)-2].(map[string]any)["phase"])
+			assert.Equal(t, map[string]any{
+				"phase":   contracts.ModelAPIRetryPhaseRunning,
+				"attempt": tc.wantWaiting, "max_attempts": int64(5),
+				"error": "offpeak_queued",
+			}, got[len(got)-1])
+			if tc.initial {
+				update(`{"type":"model_request_completed","requestId":"A"}`)
+			} else {
+				update(`{"type":"model_request_completed","requestId":"C"}`)
+			}
+			assert.Equal(t, append(got, nil), sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+		})
+	}
+}
+
+func TestZCodeLiveModelAPIRetryOffPeakRestartAtTheAttemptLimit(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	update := startZCodeModelRetryTestTurn(t, a)
+	update(`{"type":"model_request_started","requestId":"A","attempt":1,"maxAttempts":1,"modelCall":{"logicalCallId":"L"}}`)
+	update(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"reason":"offpeak_queued","modelCall":{"logicalCallId":"L"}}`)
+	update(`{"type":"model_request_started","requestId":"A","attempt":1,"maxAttempts":1,"modelCall":{"logicalCallId":"L"}}`)
+	assert.Equal(t, []any{
+		map[string]any{"phase": contracts.ModelAPIRetryPhaseWaiting, "attempt": int64(2), "error": "offpeak_queued"},
+		map[string]any{"phase": contracts.ModelAPIRetryPhaseRunning, "attempt": int64(2), "error": "offpeak_queued"},
+	}, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+}
+
+func TestZCodeLiveModelAPIRetryStartsFromScheduleWhenPreflightFails(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	update := startZCodeModelRetryTestTurn(t, a)
+	update(`{"type":"model_request_failed","requestId":"A","attempt":1,"retryable":true,"modelCall":{"logicalCallId":"L1"}}`)
+	update(`{"type":"model_retry_scheduled","requestId":"invalid","attempt":1,"nextAttempt":2,"maxAttempts":5}`)
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+	update(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`)
+	update(`{"type":"model_request_started","requestId":"X","attempt":2,"modelCall":{"logicalCallId":"unrelated"}}`)
+	update(`{"type":"model_request_started","requestId":"B","attempt":2,"modelCall":{"logicalCallId":"L1"}}`)
+	update(`{"type":"model_request_completed","requestId":"A"}`)
+	update(`{"type":"model_request_completed","requestId":"B"}`)
+	update(`{"type":"model_request_failed","requestId":"A","attempt":1,"retryable":true,"modelCall":{"logicalCallId":"L1"}}`)
+	update(`{"type":"model_retry_scheduled","requestId":"A","attempt":1,"nextAttempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`)
+	assert.Equal(t, []any{
+		map[string]any{"phase": "waiting", "attempt": int64(2), "max_attempts": int64(5)},
+		map[string]any{"phase": "running", "attempt": int64(2), "max_attempts": int64(5)},
+		nil,
+	}, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+
+	update(`{"type":"model_request_failed","requestId":"new","attempt":1,"retryable":true,"modelCall":{"logicalCallId":"L2"}}`)
+	update(`{"type":"model_retry_scheduled","requestId":"new","attempt":1,"nextAttempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L2"}}`)
+	updates := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+	require.Len(t, updates, 4)
+	assert.Equal(t, "waiting", updates[3].(map[string]any)["phase"])
+}
+
+func TestZCodeLiveModelAPIRetryRejectsInvalidBudgetFacts(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		wire string
+	}{
+		{name: "outer total without a matching outer attempt does not borrow the nested attempt", wire: `"maxAttempts":5,"_meta":{"zcode":{"apiRetry":{"attempt":2,"maxRetries":4}}}`},
+		{name: "null outer attempt is invalid rather than absent", wire: `"nextAttempt":null,"maxAttempts":5,"_meta":{"zcode":{"apiRetry":{"attempt":2,"maxRetries":4}}}`},
+		{name: "fractional outer attempt is invalid rather than absent", wire: `"nextAttempt":2.5,"maxAttempts":5,"_meta":{"zcode":{"apiRetry":{"attempt":2,"maxRetries":4}}}`},
+		{name: "missing nested budget is invalid", wire: `"_meta":{"zcode":{"apiRetry":{"attempt":2}}}`},
+		{name: "negative nested budget is invalid", wire: `"_meta":{"zcode":{"apiRetry":{"attempt":2,"maxRetries":-5}}}`},
+		{name: "null outer total is invalid", wire: `"nextAttempt":2,"maxAttempts":null`},
+		{name: "unsafe outer attempt is invalid", wire: `"nextAttempt":9007199254740992,"maxAttempts":9007199254740992`},
+		{name: "unsafe outer total is invalid", wire: `"nextAttempt":2,"maxAttempts":9007199254740992`},
+		{name: "nested attempt cannot grow beyond the safe integer limit", wire: `"_meta":{"zcode":{"apiRetry":{"attempt":9007199254740991,"maxRetries":9007199254740991}}}`},
+		{name: "nested total cannot grow beyond the safe integer limit", wire: `"_meta":{"zcode":{"apiRetry":{"attempt":1,"maxRetries":9007199254740991}}}`},
+		{name: "outer total cannot be smaller than the attempt", wire: `"nextAttempt":3,"maxAttempts":2`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			update := startZCodeModelRetryTestTurn(t, a)
+			update(`{"type":"model_request_started","requestId":"A","attempt":1}`)
+			// Keep a valid waiting state so each malformed schedule must leave it intact.
+			update(`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":2,"maxAttempts":5,"delayMs":7}`)
+			before := sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry)
+			require.Len(t, before, 1)
+			update(`{"type":"model_retry_scheduled","requestId":"A","delayMs":8,` + test.wire + `}`)
+			assert.Equal(t, before, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+		})
+	}
+}
+
+func TestZCodeLiveModelAPIRetryNeverBorrowsPartOfANestedBudget(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	update := startZCodeModelRetryTestTurn(t, a)
+	update(`{"type":"model_request_started","requestId":"A","attempt":1}`)
+	update(`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":3,` +
+		`"_meta":{"zcode":{"apiRetry":{"attempt":1,"maxRetries":4}}}}`)
+	assert.Equal(t, []any{
+		map[string]any{"phase": "waiting", "attempt": int64(3)},
+	}, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+}
+
+func TestZCodeLiveModelAPIRetryRequiresAValidRecoveryRecord(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		record string
+	}{
+		{name: "absent budget", record: `{"attemptId":"recovery","retryNumber":2,"recoveredFromRequestId":"A"}`},
+		{name: "null budget", record: `{"attemptId":"recovery","retryNumber":2,"maxRetries":null,"recoveredFromRequestId":"A"}`},
+		{name: "fractional budget", record: `{"attemptId":"recovery","retryNumber":2,"maxRetries":3.5,"recoveredFromRequestId":"A"}`},
+		{name: "impossible budget", record: `{"attemptId":"recovery","retryNumber":2,"maxRetries":1,"recoveredFromRequestId":"A"}`},
+		{name: "overflowing total", record: `{"attemptId":"recovery","retryNumber":2,"maxRetries":9007199254740991,"recoveredFromRequestId":"A"}`},
+		{name: "missing recovery attempt ID", record: `{"retryNumber":2,"maxRetries":4,"recoveredFromRequestId":"A"}`},
+		{name: "wrong recovery record type", record: `true`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			update := startZCodeModelRetryTestTurn(t, a)
+			update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`)
+			update(`{"type":"model_request_failed","requestId":"A","retryable":false}`)
+			const start = `{"type":"model_request_started","requestId":"B","attempt":1,"modelCall":{"logicalCallId":"L2"},"streamRecovery":`
+			update(start + test.record + `}`)
+			assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+			update(start + `{"attemptId":"recovery","retryNumber":2,"maxRetries":4,"recoveredFromRequestId":"A"}}`)
+			assert.Equal(t, []any{
+				map[string]any{"phase": "running", "attempt": int64(2), "max_attempts": int64(5)},
+			}, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry), "the invalid record must leave the predecessor available")
+		})
+	}
+}
+
+func TestZCodeLiveModelAPIRetryRenewsOptionalDetails(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	update := startZCodeModelRetryTestTurn(t, a)
+	update(`{"type":"model_request_started","requestId":"A","attempt":1,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`)
+	update(`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":2,"maxAttempts":5,"delayMs":4000,"statusCode":529,"message":"old"}`)
+	update(`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":2,"maxAttempts":5,"delayMs":null,"statusCode":null}`)
+	update(`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":2,"maxAttempts":5,"delayMs":0,"statusCode":600,"reason":"new"}`)
+	update(`{"type":"model_request_started","requestId":"B","attempt":2,"maxAttempts":5,"modelCall":{"logicalCallId":"L1"}}`)
+
+	assert.Equal(t, []any{
+		map[string]any{"phase": "waiting", "attempt": int64(2), "max_attempts": int64(5), "retry_delay_ms": int64(4000), "error_status": 529, "error": "old"},
+		map[string]any{"phase": "waiting", "attempt": int64(2), "max_attempts": int64(5)},
+		map[string]any{"phase": "waiting", "attempt": int64(2), "max_attempts": int64(5), "retry_delay_ms": int64(0), "error": "new"},
+		map[string]any{"phase": "running", "attempt": int64(2), "max_attempts": int64(5), "error": "new"},
+	}, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+}
+
+func TestZCodeLiveModelAPIRetryNeverReturnsToARetainedForegroundTurn(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	update := startZCodeModelRetryTestTurn(t, a)
+	update(`{"type":"model_request_started","requestId":"A","attempt":1,"modelCall":{"logicalCallId":"L1"}}`)
+	update(`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":2,"maxAttempts":5}`)
+	a.Mu.Lock()
+	previous := a.foregroundZCodeTurnLocked()
+	// A pending native end keeps the old owner until canonical reconciliation.
+	previous.pendingNative = &zcodePendingNativeSettlement{}
+	a.stopZCodeTurnWatcherLocked(previous)
+	a.Mu.Unlock()
+
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "new-turn", contracts.ZCodeEventTurnStarted, `{"turnNumber":2}`))
+	a.Mu.Lock()
+	retained := a.turns[previous.id]
+	retainedRetry := previous.modelAPIRetry
+	a.Mu.Unlock()
+	require.Same(t, previous, retained)
+	assert.Nil(t, retainedRetry, "foreground retirement drops retry state and predecessor proof")
+	update(`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":2,"maxAttempts":5,"delayMs":50}`)
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "new-turn", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	update(`{"type":"model_request_started","requestId":"B","attempt":2,"modelCall":{"logicalCallId":"L1"}}`)
+
+	assert.Equal(t, []any{
+		map[string]any{"phase": "waiting", "attempt": int64(2), "max_attempts": int64(5)}, nil,
+	}, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+}
+
+type zcodeRetryCallbackSink struct {
+	*agenttest.Sink
+	beforeRetry func(any)
+}
+
+func (s *zcodeRetryCallbackSink) BroadcastSessionInfo(info map[string]any) {
+	if value, ok := info[contracts.SessionInfoKeyModelAPIRetry]; ok {
+		s.beforeRetry(value)
+	}
+	s.Sink.BroadcastSessionInfo(info)
+}
+
+func TestZCodeLiveModelAPIRetryOrdersCallbacksWithProcessExit(t *testing.T) {
+	t.Parallel()
+
+	sink := &zcodeRetryCallbackSink{Sink: &agenttest.Sink{}}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	update := startZCodeModelRetryTestTurn(t, a)
+	update(`{"type":"model_request_started","requestId":"A","attempt":1}`)
+	waiting := make(chan struct{})
+	release := make(chan struct{})
+	type callbackLocks struct {
+		dispatchHeld bool
+		stateFree    bool
+	}
+	observed := make(chan callbackLocks, 2)
+	sink.beforeRetry = func(value any) {
+		dispatchFree := a.dispatchMu.TryLock()
+		if dispatchFree {
+			a.dispatchMu.Unlock()
+		}
+		stateFree := a.Mu.TryLock()
+		if stateFree {
+			a.Mu.Unlock()
+		}
+		observed <- callbackLocks{dispatchHeld: !dispatchFree, stateFree: stateFree}
+		if state, active := value.(map[string]any); active && state != nil {
+			close(waiting)
+			<-release
+		}
+	}
+	frame := zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventSessionUpdated,
+		`{"type":"model_retry_scheduled","requestId":"A","nextAttempt":2,"maxAttempts":5}`)
+	ctx := testutil.DeadlineContext(t)
+	waitStarted := make(chan struct{})
+	done := make(chan error, 1)
+	go a.HandleOutput(frame)
+	select {
+	case <-waiting:
+	case <-ctx.Done():
+		close(release)
+		t.Fatal("the waiting callback did not start")
+	}
+	a.SimulateExitForTest()
+	go func() {
+		close(waitStarted)
+		done <- a.Wait()
+	}()
+	select {
+	case <-waitStarted:
+		close(release)
+	case <-ctx.Done():
+		close(release)
+		t.Fatal("the process exit did not start")
+	}
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("the process exit did not finish")
+	}
+	assert.Equal(t, []any{
+		map[string]any{"phase": "waiting", "attempt": int64(2), "max_attempts": int64(5)}, nil,
+	}, sink.SessionInfoValues(contracts.SessionInfoKeyModelAPIRetry))
+	require.Len(t, observed, 2)
+	assert.Equal(t, callbackLocks{dispatchHeld: true, stateFree: true}, <-observed)
+	assert.Equal(t, callbackLocks{dispatchHeld: true, stateFree: true}, <-observed)
+}
+
+func startZCodeModelRetryTestTurn(t *testing.T, a *Agent) func(string) {
+	t.Helper()
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	return func(payload string) {
+		t.Helper()
+		a.HandleOutput(zcodeTurnEventLine(t, 0, "turn-1", contracts.ZCodeEventSessionUpdated, payload))
 	}
 }
 

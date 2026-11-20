@@ -1031,7 +1031,7 @@ func (svc *Service) HandleAgentProcessExit(exit agent.ProcessExit) {
 	// is also the only signal a client gets that a CRASHED agent stopped working:
 	// this handler broadcasts no AgentStatusChange, so without it a lost process
 	// left every watching tab showing work that had already died.
-	svc.Output.NoteAgentProcessExited(agentID)
+	svc.Output.NoteAgentProcessExited(agentID, exit.Output)
 }
 
 // abandonUnownedTurn reconciles the input queue with a process boundary. It is

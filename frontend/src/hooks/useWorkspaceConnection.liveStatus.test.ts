@@ -1,6 +1,5 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { TerminalEventSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
-import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +19,7 @@ import { emitAddTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
+import { testWatchStreams } from '~/test-support/watchEvents'
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
@@ -45,29 +45,19 @@ vi.mock('~/components/common/Toast', () => ({
 }))
 
 // Capture the stream hook's options so each test sends frames through the dispatcher.
-const streams = vi.hoisted(() => ({ opts: undefined as unknown }))
-
-vi.mock('~/hooks/useWatchEventsStreams', () => ({
-  useWatchEventsStreams: (opts: unknown) => {
-    streams.opts = opts
-    return {
-      abortSignalFor: () => undefined,
-    }
-  },
-}))
-
-beforeEach(() => {
-  streams.opts = undefined
+vi.mock('~/hooks/useWatchEventsStreams', async () => {
+  const { testWatchStreams } = await import('~/test-support/watchEvents')
+  return { useWatchEventsStreams: testWatchStreams.useWatchEventsStreams }
 })
 
-function streamOpts(): UseWatchEventsStreamsOpts {
-  if (!streams.opts)
-    throw new Error('useWorkspaceConnection did not open its watch streams')
-  return streams.opts as UseWatchEventsStreamsOpts
-}
+beforeEach(() => {
+  testWatchStreams.reset()
+})
 
 const WS = 'ws-live-status'
 const WORKER = 'w-1'
+
+const deliverWatchEvent = testWatchStreams.deliverFor(WORKER)
 
 function mountConnection(initial: AgentStatus) {
   const harness = installTestBridge({ workspaceId: WS })
@@ -101,7 +91,7 @@ function mountConnection(initial: AgentStatus) {
       getActiveWorkspaceId: () => WS,
     })
   })
-  streamOpts().onReplayRequested?.(WORKER, 1n, [
+  testWatchStreams.getOptions().onReplayRequested?.(WORKER, 1n, [
     create(WatchAgentEntrySchema, {
       agentId: 'a1',
       mode: WatchMode.FULL,
@@ -157,7 +147,7 @@ describe('useWorkspaceConnection live status writers', () => {
   it('counts a statusChange event', () => {
     const { dispose, status, epoch } = mountConnection(AgentStatus.STARTING)
 
-    streamOpts().onEvent(WORKER, agentEvent({
+    deliverWatchEvent(agentEvent({
       case: 'statusChange',
       value: {
         status: AgentStatus.ACTIVE,
@@ -173,7 +163,7 @@ describe('useWorkspaceConnection live status writers', () => {
   it('counts the live event that revives an INACTIVE tab', () => {
     const { dispose, status, epoch } = mountConnection(AgentStatus.INACTIVE)
 
-    streamOpts().onEvent(WORKER, agentEvent(controlRequest()))
+    deliverWatchEvent(agentEvent(controlRequest()))
 
     expect(status(), 'a live request proves that the agent runs').toBe(AgentStatus.ACTIVE)
     expect(epoch()).toBe(1)
@@ -183,7 +173,7 @@ describe('useWorkspaceConnection live status writers', () => {
   it('does not count a live event that writes no status', () => {
     const { dispose, status, epoch } = mountConnection(AgentStatus.ACTIVE)
 
-    streamOpts().onEvent(WORKER, agentEvent(controlRequest()))
+    deliverWatchEvent(agentEvent(controlRequest()))
 
     expect(status()).toBe(AgentStatus.ACTIVE)
     expect(epoch(), 'the tab was ACTIVE already, so the event wrote none').toBe(0)
@@ -193,7 +183,7 @@ describe('useWorkspaceConnection live status writers', () => {
   it('does not revive an INACTIVE tab from a replayed event, and does not count it', () => {
     const { dispose, status, epoch } = mountConnection(AgentStatus.INACTIVE)
 
-    streamOpts().onEvent(WORKER, agentEvent(controlRequest(), true))
+    deliverWatchEvent(agentEvent(controlRequest(), true))
 
     expect(status()).toBe(AgentStatus.INACTIVE)
     expect(epoch()).toBe(0)
@@ -215,7 +205,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
   it('counts a catalog and a status that arrive in one event, each on its own count', () => {
     const { dispose, status, epoch, catalogEpoch } = mountConnection(AgentStatus.STARTING)
 
-    streamOpts().onEvent(WORKER, agentEvent({
+    deliverWatchEvent(agentEvent({
       case: 'statusChange',
       value: {
         status: AgentStatus.ACTIVE,
@@ -232,7 +222,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
   it('counts a settings refresh that has no status as a catalog and not as a status', () => {
     const { dispose, status, epoch, catalogEpoch } = mountConnection(AgentStatus.ACTIVE)
 
-    streamOpts().onEvent(WORKER, agentEvent({
+    deliverWatchEvent(agentEvent({
       case: 'statusChange',
       value: {
         status: AgentStatus.UNSPECIFIED,
@@ -249,7 +239,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
   it('counts a status event that carries no catalog as a status and not as a catalog', () => {
     const { dispose, epoch, catalogEpoch } = mountConnection(AgentStatus.ACTIVE)
 
-    streamOpts().onEvent(WORKER, agentEvent({
+    deliverWatchEvent(agentEvent({
       case: 'statusChange',
       value: {
         status: AgentStatus.INACTIVE,
@@ -265,7 +255,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
   it('counts a git-only event as neither', () => {
     const { dispose, epoch, catalogEpoch } = mountConnection(AgentStatus.ACTIVE)
 
-    streamOpts().onEvent(WORKER, agentEvent({
+    deliverWatchEvent(agentEvent({
       case: 'statusChange',
       value: {
         status: AgentStatus.UNSPECIFIED,
@@ -339,7 +329,7 @@ describe('useWorkspaceConnection live terminal status writers', () => {
   it('counts a statusChange event', () => {
     const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.STARTING)
 
-    streamOpts().onEvent(WORKER, terminalEvent({
+    deliverWatchEvent(terminalEvent({
       case: 'statusChange',
       value: { status: TerminalStatus.READY },
     }))
@@ -352,7 +342,7 @@ describe('useWorkspaceConnection live terminal status writers', () => {
   it('counts the close of a shell', () => {
     const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.READY)
 
-    streamOpts().onEvent(WORKER, terminalEvent({
+    deliverWatchEvent(terminalEvent({
       case: 'closed',
       value: { exitCode: 0 },
     }))
@@ -365,7 +355,7 @@ describe('useWorkspaceConnection live terminal status writers', () => {
   it('does not count a statusChange event that the tab refuses', () => {
     const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.READY)
 
-    streamOpts().onEvent(WORKER, terminalEvent({
+    deliverWatchEvent(terminalEvent({
       case: 'statusChange',
       value: { status: TerminalStatus.STARTING },
     }))
@@ -378,7 +368,7 @@ describe('useWorkspaceConnection live terminal status writers', () => {
   it('does not count a bell', () => {
     const { dispose, epoch } = mountTerminalConnection(TerminalStatus.READY)
 
-    streamOpts().onEvent(WORKER, terminalEvent({ case: 'bell', value: {} }))
+    deliverWatchEvent(terminalEvent({ case: 'bell', value: {} }))
 
     expect(epoch()).toBe(0)
     dispose()

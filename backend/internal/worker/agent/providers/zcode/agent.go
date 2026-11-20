@@ -188,7 +188,11 @@ type Agent struct {
 	// foregroundTurnID is the key in turns of the user's own turn, empty while
 	// the user runs none. A background start never replaces it. Guarded by a.Mu.
 	foregroundTurnID string
-	retryResolution  providerkit.RetryResolution
+	// retryHistory owns the latest persisted retry notice. Guarded by dispatchMu.
+	retryHistory *zcodeRetryHistory
+	// modelAPIRetryPublished is the last published display. A zero value means
+	// the indicator is clear. Guarded by dispatchMu.
+	modelAPIRetryPublished zcodeModelAPIRetryDisplay
 	// stopWindow ends a turn whose stop the app-server accepted and then never
 	// reported. Guarded by a.Mu. See stoppedTurnWindow and armStoppedZCodeTurnLocked.
 	stopWindow stoppedTurnWindow
@@ -337,6 +341,38 @@ type zcodeTurnState struct {
 	// read from the tool-call records themselves (see dropZCodeTurnLocked).
 	toolInvocationIDs     map[string]struct{}
 	invocationsByNativeID map[string]map[string]*zcodeToolInvocation
+	// modelAPIRetry carries the live foreground retry state. It is published
+	// through the dispatch path and cleared on owner retirement.
+	modelAPIRetry *zcodeModelAPIRetryState
+	// Completed logical calls cannot send a new preflight for this turn.
+	completedModelAPIRetryCalls map[string]struct{}
+}
+
+// zcodeModelAPIRetryState tracks the live foreground model API retry for a
+// turn's current physical request. The state is published as session-info
+// under the model_api_retry key.
+type zcodeModelAPIRetryState struct {
+	zcodeRetryPhysicalRequest
+	// The physical limit counts request attempts. A recovery display uses its
+	// own limit until a retry schedule supplies a new display.
+	physicalMaxAttempts int64
+	// Phase is "waiting" or "running".
+	Phase string
+	// Attempt is the current attempt number (positive).
+	Attempt int64
+	// MaxAttempts is the total attempt budget (positive, optional).
+	MaxAttempts int64
+	// RetryDelayMs is the scheduled delay in milliseconds (optional, nonnegative).
+	RetryDelayMs zcodeModelAPIRetryCount
+	// ErrorStatus is the HTTP status of the last failure (optional).
+	ErrorStatus int
+	// Error is the error text of the last failure (optional).
+	Error *string
+	// LastFailedPhysicalID retains the last failed physical request ID after
+	// a permanent failure clears the indicator.
+	LastFailedPhysicalID string
+	// StreamRecovery identifies the recovery already proved for this call.
+	StreamRecovery *zcodeModelAPIRetryRecovery
 }
 
 // zcodeScopeContent separates observed bytes from immutable queued output.
@@ -660,6 +696,7 @@ func (a *Agent) createProvisionalZCodeTurnForSession(identity zcodeSessionObserv
 		admission.owner = turn
 	}
 	a.Mu.Unlock()
+	a.publishZCodeModelAPIRetryLocked()
 	a.PublishTurnActive()
 }
 

@@ -693,6 +693,20 @@ export const SESSION_INFO_TABLES = [
     tsType: 'PromptSuggestionField',
     what: 'fields of the prompt_suggestion object',
   },
+  {
+    json: 'modelApiRetryFields',
+    goPrefix: 'ModelAPIRetryField',
+    ts: 'MODEL_API_RETRY_FIELD',
+    tsType: 'ModelAPIRetryField',
+    what: 'fields of the model_api_retry object',
+  },
+  {
+    json: 'modelApiRetryPhases',
+    goPrefix: 'ModelAPIRetryPhase',
+    ts: 'MODEL_API_RETRY_PHASE',
+    tsType: 'ModelAPIRetryPhase',
+    what: 'phases of a live model API retry',
+  },
 ]
 
 export function checkSessionInfo(v) {

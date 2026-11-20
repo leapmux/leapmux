@@ -34,15 +34,20 @@ func (r *RetryResolution) Pending() bool {
 // Resolve writes one resolution before the first model output after a retry.
 // The sink runs outside the state lock.
 func (r *RetryResolution) Resolve(sink LeapMuxNotificationServices) {
-	r.mu.Lock()
-	pending := r.pending
-	r.pending = false
-	r.mu.Unlock()
-	if pending {
+	if r.TakePending() {
 		sink.PersistLeapMuxNotification(map[string]interface{}{
 			contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved,
 		})
 	}
+}
+
+// TakePending transfers the pending retry to a caller that owns its resolution write.
+func (r *RetryResolution) TakePending() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending := r.pending
+	r.pending = false
+	return pending
 }
 
 // Reset forgets a pending retry at the turn end or failure.

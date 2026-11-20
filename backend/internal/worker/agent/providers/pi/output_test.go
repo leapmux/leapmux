@@ -1127,7 +1127,7 @@ func TestHandlePiOutput_ToolExecutionStart_DropsLineWithoutToolCallID(t *testing
 	assert.Empty(t, sink.OpenSpans())
 }
 
-func TestHandlePiOutput_QueueUpdate_BroadcastsDepth(t *testing.T) {
+func TestHandlePiOutput_QueueUpdate_ConsumedWithoutBroadcast(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
@@ -1137,11 +1137,17 @@ func TestHandlePiOutput_QueueUpdate_BroadcastsDepth(t *testing.T) {
 		`{"type":"queue_update","steering":["a","b"],"followUp":["c"]}`,
 	)))
 
-	require.Equal(t, 1, sink.SessionInfoCount())
-	info := sink.LastSessionInfo()
-	assert.Equal(t, 3, info["pi_queue_depth"])
-	assert.Equal(t, 2, info["pi_steering_depth"])
-	assert.Equal(t, 1, info["pi_follow_up_depth"])
+	assert.Zero(t, sink.SessionInfoCount(), "queue_update must not broadcast session info")
+	assert.Zero(t, sink.MessageCount(), "queue_update must not persist a row")
+	assert.Empty(t, sink.Notifications(), "queue_update must not persist a notification")
+
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"queue_update","steering":[],"followUp":[]}`,
+	)))
+
+	assert.Zero(t, sink.SessionInfoCount())
+	assert.Zero(t, sink.MessageCount())
+	assert.Empty(t, sink.Notifications())
 }
 
 func TestPiCompactionStartPublishesLiveStateAndStoresNoRow(t *testing.T) {
@@ -1321,96 +1327,36 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyMissingNotifyTypePreservesRaw(t
 	assert.Empty(t, sink.Notifications(), "no synthesized agent_notify on the side channel")
 }
 
-func TestHandlePiOutput_ExtensionUIRequest_SetStatus_BroadcastsSessionInfo(t *testing.T) {
+func TestHandlePiOutput_ExtensionUIRequest_DisplayMethods_ConsumedWithoutBroadcast(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-
-	statusValue := "Turn 3 running…"
-	body := map[string]any{
-		"type":       "extension_ui_request",
-		"id":         "x",
-		"method":     "setStatus",
-		"statusKey":  "my-ext",
-		"statusText": statusValue,
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"setStatus with text", `{"type":"extension_ui_request","id":"x","method":"setStatus","statusKey":"my-ext","statusText":"running"}`},
+		{"setStatus without text", `{"type":"extension_ui_request","id":"x","method":"setStatus","statusKey":"my-ext"}`},
+		{"setWidget with lines", `{"type":"extension_ui_request","id":"x","method":"setWidget","widgetKey":"my-ext","widgetLines":["a","b"],"widgetPlacement":"belowEditor"}`},
+		{"setWidget without lines", `{"type":"extension_ui_request","id":"x","method":"setWidget","widgetKey":"my-ext"}`},
+		{"setTitle", `{"type":"extension_ui_request","id":"x","method":"setTitle","title":"pi - my project"}`},
+		{"setTitle absent", `{"type":"extension_ui_request","id":"x","method":"setTitle"}`},
+		{"setEditorText", `{"type":"extension_ui_request","id":"x","method":"set_editor_text","text":"prefilled"}`},
+		{"setEditorText absent", `{"type":"extension_ui_request","id":"x","method":"set_editor_text"}`},
 	}
-	raw, err := json.Marshal(body)
-	require.NoError(t, err)
 
-	handlePiOutput(a, providerkit.ParseLine(raw))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
 
-	require.Equal(t, 1, sink.SessionInfoCount())
-	status, ok := sink.LastSessionInfo()["pi_status"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, statusValue, status["my-ext"])
-}
+			handlePiOutput(a, providerkit.ParseLine([]byte(tc.raw)))
 
-func TestHandlePiOutput_ExtensionUIRequest_SetStatus_NilClearsKey(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-
-	// The frame omits statusText.
-	// Broadcast nil so the frontend clears the key.
-	handlePiOutput(a, providerkit.ParseLine([]byte(
-		`{"type":"extension_ui_request","id":"x","method":"setStatus","statusKey":"my-ext"}`,
-	)))
-
-	require.Equal(t, 1, sink.SessionInfoCount())
-	status, ok := sink.LastSessionInfo()["pi_status"].(map[string]any)
-	require.True(t, ok)
-	val, present := status["my-ext"]
-	assert.True(t, present, "key should be present so the frontend can clear it")
-	assert.Nil(t, val)
-}
-
-func TestHandlePiOutput_ExtensionUIRequest_SetWidget_BroadcastsSessionInfo(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-
-	handlePiOutput(a, providerkit.ParseLine([]byte(
-		`{"type":"extension_ui_request","id":"x","method":"setWidget","widgetKey":"my-ext","widgetLines":["a","b"],"widgetPlacement":"belowEditor"}`,
-	)))
-
-	require.Equal(t, 1, sink.SessionInfoCount())
-	widgets, ok := sink.LastSessionInfo()["pi_widget"].(map[string]any)
-	require.True(t, ok)
-	widget, ok := widgets["my-ext"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "belowEditor", widget["placement"])
-	assert.NotNil(t, widget["lines"])
-}
-
-func TestHandlePiOutput_ExtensionUIRequest_SetTitle_BroadcastsSessionInfo(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-
-	handlePiOutput(a, providerkit.ParseLine([]byte(
-		`{"type":"extension_ui_request","id":"x","method":"setTitle","title":"pi - my project"}`,
-	)))
-
-	require.Equal(t, 1, sink.SessionInfoCount())
-	assert.Equal(t, "pi - my project", sink.LastSessionInfo()["pi_terminal_title"])
-}
-
-func TestHandlePiOutput_ExtensionUIRequest_SetEditorText_BroadcastsSessionInfo(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-
-	handlePiOutput(a, providerkit.ParseLine([]byte(
-		`{"type":"extension_ui_request","id":"x","method":"set_editor_text","text":"prefilled"}`,
-	)))
-
-	require.Equal(t, 1, sink.SessionInfoCount())
-	assert.Equal(t, "prefilled", sink.LastSessionInfo()["pi_editor_text"])
+			assert.Zero(t, sink.SessionInfoCount(), "display method must not broadcast session info")
+			assert.Zero(t, sink.MessageCount(), "display method must not persist a row")
+			assert.Empty(t, sink.Notifications(), "display method must not persist a notification")
+		})
+	}
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_UnknownMethod_PersistAsNotification(t *testing.T) {

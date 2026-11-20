@@ -19,7 +19,9 @@
     "goalProgressFields",
     "turnRetryOfferFields",
     "compactionFields",
-    "promptSuggestionFields"
+    "promptSuggestionFields",
+    "modelApiRetryFields",
+    "modelApiRetryPhases"
   ],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
@@ -35,7 +37,9 @@
     "goalProgressFields": { "$ref": "#/$defs/table" },
     "turnRetryOfferFields": { "$ref": "#/$defs/table" },
     "compactionFields": { "$ref": "#/$defs/table" },
-    "promptSuggestionFields": { "$ref": "#/$defs/table" }
+    "promptSuggestionFields": { "$ref": "#/$defs/table" },
+    "modelApiRetryFields": { "$ref": "#/$defs/table" },
+    "modelApiRetryPhases": { "$ref": "#/$defs/table" }
   },
   "$defs": {
     "table": {

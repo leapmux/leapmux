@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
@@ -605,4 +606,62 @@ func TestClaudeTurnActive_IssuesRisingOrderingTokens(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
 	agenttest.AssertRisingTurnTokens(t, sink, a)
+}
+
+func TestClaudeQueuedNativeIdleWaitsForTheResultEdge(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	queue := sink.OutputQueue()
+	services := agent.NewOrderedProviderServices(queue, agent.NewProviderServices(sink))
+	a, _ := newClaudeAgentWithStdin(services)
+	require.NoError(t, a.SendInput("first", nil))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"first-tool","message":{"content":[{"type":"tool_use","id":"old-tool","name":"Read"}]}}`))
+	require.Equal(t, []agenttest.SpanOpen{{SpanID: "old-tool"}}, sink.OpenSpans())
+	blocked := true
+	queue.Append(agent.OutputWrite{Label: "block Claude output", Run: func() error {
+		if blocked {
+			return errors.New("storage unavailable")
+		}
+		return nil
+	}})
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.True(t, a.turnActive, "idle cannot release the provider before the result commits")
+	assert.Equal(t, []string{"turn_active:true"}, sink.TurnLifecycle())
+	blocked = false
+	require.NoError(t, agent.FlushPendingOutput(services))
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	require.NoError(t, a.SendInput("next", nil))
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"next-tool","message":{"content":[{"type":"tool_use","id":"next-tool","name":"Read"}]}}`))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	rows := sink.Messages()
+	require.Len(t, rows, 4)
+	assert.Equal(t, "next-tool", rows[2].IdempotencyKey)
+	assert.Empty(t, rows[2].SpansOpenAtPersist, "the next opener starts at clean geometry")
+	assert.Equal(t, []int{1, 1}, agenttest.TurnToolUseCounts(t, rows))
+}
+
+func TestClaudeNativeRunningSupersedesAnIdleRetainedByStorage(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	queue := sink.OutputQueue()
+	services := agent.NewOrderedProviderServices(queue, agent.NewProviderServices(sink))
+	a, _ := newClaudeAgentWithStdin(services)
+	blocked := true
+	queue.Append(agent.OutputWrite{Label: "block Claude output", Run: func() error {
+		if blocked {
+			return errors.New("storage unavailable")
+		}
+		return nil
+	}})
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	assert.True(t, a.turnActive, "native running announces the busy turn while the queue waits")
+	assert.Equal(t, []bool{true}, sink.TurnActives())
+	blocked = false
+	require.NoError(t, agent.FlushPendingOutput(services))
+	assert.True(t, a.turnActive)
+	assert.Equal(t, []bool{true}, sink.TurnActives(), "the earlier idle has lost its authority")
 }

@@ -230,7 +230,7 @@ func TestClaudeRootTurnEndKeepsChildControlsUntilTheirOwnResult(t *testing.T) {
 	a.HandleOutput(nativeToolPermission("root", "Bash"))
 	child := strings.Replace(string(nativeToolPermission("child", "Bash")), `"subtype":"can_use_tool"`, `"subtype":"can_use_tool","agent_id":"child-agent"`, 1)
 	a.HandleOutput([]byte(child))
-	a.disarmTurn()
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 	assert.Equal(t, []string{"root"}, sink.CanceledControls())
 	a.Mu.Lock()
 	assert.Contains(t, a.incomingControls, "child")

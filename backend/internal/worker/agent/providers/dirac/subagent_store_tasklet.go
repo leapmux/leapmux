@@ -170,17 +170,21 @@ func diracTaskletCardStates(messages []json.RawMessage) (map[string]bool, error)
 }
 
 func readDiracRuntimeTask(root sessionstore.ArchiveRoot, sessionID string) (string, error) {
-	raw, err := sessionstore.ReadRegularFileWithoutSymlinkAncestors(root, diracTaskHistoryLimit, "data", "acp-session-runtime-configs", sessionID+".json")
+	link, err := readDiracRuntimeLink(root, sessionID)
 	if err != nil {
 		return "", err
 	}
-	var runtime struct {
-		TaskID string `json:"taskId"`
+	return link.TaskID, nil
+}
+
+// readDiracRuntimeLink reads the runtime-link record that binds one ACP session
+// to its native root task and runtime mode.
+func readDiracRuntimeLink(root sessionstore.ArchiveRoot, sessionID string) (diracRuntimeLink, error) {
+	raw, err := sessionstore.ReadRegularFileWithoutSymlinkAncestors(root, diracTaskHistoryLimit, "data", "acp-session-runtime-configs", sessionID+".json")
+	if err != nil {
+		return diracRuntimeLink{}, err
 	}
-	if err := json.Unmarshal(raw, &runtime); err != nil || !safeDiracComponent(runtime.TaskID) {
-		return "", fmt.Errorf("the Dirac session has no valid native root task")
-	}
-	return runtime.TaskID, nil
+	return decodeDiracRuntimeLink(raw)
 }
 
 func readDiracPresentation(root sessionstore.ArchiveRoot) ([]json.RawMessage, error) {
@@ -200,6 +204,29 @@ func readDiracPresentation(root sessionstore.ArchiveRoot) ([]json.RawMessage, er
 		return nil, err
 	}
 	return decodeDiracPresentation(snapshot, baseline, operations)
+}
+
+type diracAPIHistoryFiles struct {
+	snapshot, baseline, operations []byte
+}
+
+// readDiracAPIHistoryFiles reads the baseline in preference to the legacy
+// snapshot, then reads the operations written after either seed.
+func readDiracAPIHistoryFiles(root sessionstore.ArchiveRoot) (diracAPIHistoryFiles, error) {
+	var files diracAPIHistoryFiles
+	baseline, err := readOptionalDiracFile(root, "api_conversation_history.baseline.jsonl")
+	if err != nil {
+		return files, err
+	}
+	files.baseline = baseline
+	if baseline == nil {
+		files.snapshot, err = readOptionalDiracFile(root, "api_conversation_history.json")
+		if err != nil {
+			return files, err
+		}
+	}
+	files.operations, err = readOptionalDiracFile(root, "api_conversation_history.jsonl")
+	return files, err
 }
 
 func readOptionalDiracFile(root sessionstore.ArchiveRoot, name string) ([]byte, error) {

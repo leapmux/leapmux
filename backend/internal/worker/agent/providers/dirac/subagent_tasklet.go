@@ -32,7 +32,8 @@ func (a *Agent) observeTaskletCard(updateType string, raw json.RawMessage) {
 		Name string `json:"name"`
 		ID   string `json:"toolCallId"`
 	}
-	if json.Unmarshal(raw, &call) != nil || call.ID == "" || a.root == "" || call.Name != "" && call.Name != contracts.DiracToolSubagents {
+	profile, _ := a.archiveProfile()
+	if json.Unmarshal(raw, &call) != nil || call.ID == "" || profile == "" || call.Name != "" && call.Name != contracts.DiracToolSubagents {
 		return
 	}
 	sessionID := a.CurrentSessionID()
@@ -131,7 +132,8 @@ func (a *Agent) pollDiracTasklets(watch *diracTaskletWatch) (bool, error) {
 	if !a.diracTaskletWatchCurrent(watch) {
 		return false, nil
 	}
-	metadata, err := readDiracTaskletMetadata(a.root, watch.sessionID)
+	profile, _ := a.archiveProfile()
+	metadata, err := readDiracTaskletMetadata(profile, watch.sessionID)
 	if err != nil {
 		return false, err
 	}
@@ -221,7 +223,8 @@ func (a *Agent) publishDiracTasklet(watch *diracTaskletWatch, tasklet diracStore
 		watch.writers[key] = writer
 		delete(watch.observed, key)
 	}
-	messages, presentation, err := readDiracTaskletHistory(a.root, record)
+	profile, _ := a.archiveProfile()
+	messages, presentation, err := readDiracTaskletHistory(profile, record)
 	if err != nil {
 		return err
 	}

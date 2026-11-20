@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -404,9 +405,18 @@ func (h *OutputHandler) bgTaskCtx() context.Context {
 	return context.Background()
 }
 
-// ResetSpanTracker resets the span tracker for the given agent, clearing all
-// active spans. Used when the agent's context is cleared or plan execution restarts.
+// ResetSpanTracker clears live span geometry before a context replacement.
 func (h *OutputHandler) ResetSpanTracker(agentID string) {
+	mutation := h.transcriptMutationMutex(agentID)
+	mutation.Lock()
+	defer mutation.Unlock()
+	if value, found := h.rootSinks.Load(agentID); found {
+		sink := value.(*agentOutputSink)
+		if sink.usesLifetimeSpanTracker() {
+			sink.rebindSpanTracker()
+			return
+		}
+	}
 	h.trackers.reset(agentID)
 }
 
@@ -875,7 +885,11 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 		outputGeneration: source.OutputGeneration,
 		messageSession:   &nativeSessionFact{id: source.AgentSessionID},
 	}
-	s.tracker = h.rootTracker(agentID)
+	if s.usesLifetimeSpanTracker() {
+		s.spanTracker.Store(h.trackers.replace(agentID, spanTrackerRoot))
+	} else {
+		s.spanTracker.Store(h.rootTracker(agentID))
+	}
 	s.progress = newGenerationProgressPublisher(&h.progressPublishers, func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	}, s.currentMessageSessionID)
@@ -885,7 +899,11 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 	unlockRootSinks()
 	var retiredIDs []string
 	if replaced {
-		retiredIDs = append([]string{agentID}, previous.(*agentOutputSink).retireRegisteredTree()...)
+		previousSink := previous.(*agentOutputSink)
+		for _, retired := range previousSink.originalSinkTree() {
+			h.clearProcessSessionInfo(retired)
+		}
+		retiredIDs = append([]string{agentID}, previousSink.retireRegisteredTree()...)
 	}
 	h.enqueueProgressClears(retiredIDs)
 	mutation.Unlock()
@@ -926,10 +944,7 @@ func (s *agentOutputSink) closeProgressTree() []string {
 		return nil
 	}
 	s.childMu.Lock()
-	children := make([]*agentOutputSink, 0, len(s.childSinks))
-	for _, child := range s.childSinks {
-		children = append(children, child)
-	}
+	children := slices.Collect(maps.Values(s.childSinks))
 	s.childSinks = nil
 	s.progressClosed = true
 	s.childMu.Unlock()
@@ -960,10 +975,7 @@ func (s *agentOutputSink) retireRegisteredTree() []string {
 
 func (s *agentOutputSink) originalSinkTree() []*agentOutputSink {
 	s.childMu.Lock()
-	children := make([]*agentOutputSink, 0, len(s.childSinks))
-	for _, child := range s.childSinks {
-		children = append(children, child)
-	}
+	children := slices.Collect(maps.Values(s.childSinks))
 	s.childMu.Unlock()
 	sinks := []*agentOutputSink{s}
 	for _, child := range children {
@@ -979,10 +991,7 @@ func (s *agentOutputSink) detachChildSink(agentID string) *agentOutputSink {
 		s.childMu.Unlock()
 		return child
 	}
-	children := make([]*agentOutputSink, 0, len(s.childSinks))
-	for _, child := range s.childSinks {
-		children = append(children, child)
-	}
+	children := slices.Collect(maps.Values(s.childSinks))
 	s.childMu.Unlock()
 	for _, child := range children {
 		if found := child.detachChildSink(agentID); found != nil {
@@ -1011,7 +1020,8 @@ type agentOutputSink struct {
 	outputGeneration int64
 	agentProvider    leapmuxv1.AgentProvider
 	plugin           agent.Provider
-	tracker          *SpanTracker
+	// A native lifetime can replace the live tracker while its captured frames finish.
+	spanTracker atomic.Pointer[SpanTracker]
 	// childSinks caches ChildSink results by child agent id so repeated
 	// PersistChild* / nested-spawn calls reuse the same child sink (and its
 	// span tracker). Guarded by childMu.
@@ -1039,8 +1049,10 @@ type agentOutputSink struct {
 	// recursive `reflect.DeepEqual`. The wire encoding of these values
 	// is JSON anyway, so the cached bytes line up exactly with what the
 	// frontend would observe.
-	sessionInfoMu          sync.Mutex
-	lastSessionInfo        map[string][]byte
+	sessionInfoMu   sync.Mutex
+	lastSessionInfo map[string][]byte
+	// The root mutation lock and sessionInfoMu both protect retirement writes.
+	processOutputRetired   atomic.Bool
 	activePermissionChecks map[permissionCheckKey]json.RawMessage
 	progress               *generationProgressPublisher
 
@@ -1073,7 +1085,7 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 	}
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.RLock()
-	result, err := s.h.persistPreparedMessage(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.tracker, todoEvent)
+	result, err := s.h.persistPreparedMessage(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.currentSpanTracker(), todoEvent)
 	if err == nil && span.Closing && span.SpanID != "" && content.WriteReceipt.ClaimOutputCompletion() {
 		owner.dropOutputTail(span.SpanID)
 	}
@@ -1140,7 +1152,7 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 			return nil
 		}
 	}
-	result, err = s.h.persistPreparedMessage(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker, todoEvent)
+	result, err = s.h.persistPreparedMessage(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.currentSpanTracker(), todoEvent)
 	if err != nil {
 		return err
 	}
@@ -1199,7 +1211,8 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	// sink, which is what a launch adopts.
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.Lock()
-	if !s.registeredCurrent() || !s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
+	if !s.registeredCurrent() || s.turnPublisherSink().processOutputRetired.Load() ||
+		!s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
 		mutation.Unlock()
 		return
 	}
@@ -1328,31 +1341,47 @@ func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, co
 	return s.h.writeNotification(s.agentID, s.agentProvider, s.plugin, source, content, mode)
 }
 
+func (s *agentOutputSink) usesLifetimeSpanTracker() bool {
+	return s.agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+}
+
+func (s *agentOutputSink) currentSpanTracker() *SpanTracker {
+	return s.spanTracker.Load()
+}
+
+func (s *agentOutputSink) rebindSpanTracker() {
+	kind := spanTrackerRoot
+	if s.root != nil {
+		kind = spanTrackerChild
+	}
+	s.spanTracker.Store(s.h.trackers.replace(s.agentID, kind))
+}
+
 func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
-	s.tracker.OpenSpan(spanID, parentSpanID)
+	s.currentSpanTracker().OpenSpan(spanID, parentSpanID)
 }
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
 	// The call behind a closed span keeps no live tail. See PersistMessage for why
 	// the drop sits on both events.
 	s.progress.dropTail(spanID)
-	s.tracker.CloseSpan(spanID)
+	s.currentSpanTracker().CloseSpan(spanID)
 }
 
 func (s *agentOutputSink) ResetSpans() {
-	s.tracker.Reset()
+	s.currentSpanTracker().Reset()
 }
 
 func (s *agentOutputSink) SetSpanType(spanID, spanType string) {
-	s.tracker.SetSpanType(spanID, spanType)
+	s.currentSpanTracker().SetSpanType(spanID, spanType)
 }
 
 func (s *agentOutputSink) GetSpanType(spanID string) string {
-	return s.tracker.GetSpanType(spanID)
+	return s.currentSpanTracker().GetSpanType(spanID)
 }
 
 func (s *agentOutputSink) ReserveSpanColor(spanID, parentSpanID string) int32 {
-	return s.tracker.ReserveSpanColor(spanID, parentSpanID)
+	return s.currentSpanTracker().ReserveSpanColor(spanID, parentSpanID)
 }
 
 func (s *agentOutputSink) ReportProgress(update agent.ProgressUpdate) {
@@ -1536,8 +1565,14 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 	var failureMessage string
 	var failure error
 	var sessionChanged bool
+	var liveCleared bool
 	defer func() {
 		mutation.Unlock()
+		if liveCleared {
+			// Transport work drains after the mutation and activity locks are
+			// released, so a slow watcher cannot stall the replacement.
+			s.h.watcher.DrainAgentEvents(s.agentID)
+		}
 		if failure != nil {
 			slog.Error(failureMessage, "agent_id", s.agentID, "error", failure)
 			return
@@ -1559,6 +1594,9 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 	nativeSessionChanged := newLifetime || s.messageSession == nil || s.messageSession.id != sessionID
 	if nativeSessionChanged {
 		s.messageSession = &nativeSessionFact{id: sessionID}
+		if s.usesLifetimeSpanTracker() {
+			s.rebindSpanTracker()
+		}
 	}
 	s.messageSessionMu.Unlock()
 	activity.mu.Unlock()
@@ -1566,6 +1604,9 @@ func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 	if nativeSessionChanged {
 		delete(s.lastSessionInfo, contracts.SessionInfoKeyContextUsage)
 		delete(s.lastSessionInfo, contracts.SessionInfoKeyTotalCostUsd)
+		// A native session replacement ends the previous model retry, even
+		// when both lifetimes use the same native ID.
+		liveCleared = s.h.invalidateCachedLiveSessionInfoLocked(s, contracts.SessionInfoKeyModelAPIRetry)
 	}
 	for key := range s.activePermissionChecks {
 		if newLifetime || key.sessionID != sessionID {
@@ -1719,6 +1760,26 @@ var dedupExemptSessionInfoKeys = map[string]struct{}{
 	contracts.SessionInfoKeyRunningTool: {},
 }
 
+// processExitSessionInfoKeys are cached live values cleared on process exit.
+var processExitSessionInfoKeys = []string{
+	contracts.SessionInfoKeyCompaction,
+	contracts.SessionInfoKeyModelAPIRetry,
+}
+
+// invalidateCachedLiveSessionInfoLocked replaces a cached live value with its
+// explicit null and enqueues the authoritative clear under the same admission,
+// so a browser that missed the live broadcast still learns the state ended.
+// The caller holds sessionInfoMu. It reports whether a live value was active.
+func (h *OutputHandler) invalidateCachedLiveSessionInfoLocked(sink *agentOutputSink, key string) bool {
+	raw, found := sink.lastSessionInfo[key]
+	if !found || string(raw) == "null" {
+		return false
+	}
+	sink.lastSessionInfo[key] = []byte("null")
+	h.watcher.EnqueueAgentEvent(sink.agentID, sessionInfoEvent(sink.agentID, map[string]interface{}{key: nil}))
+	return true
+}
+
 // BroadcastSessionInfo emits an ephemeral agent_session_info update,
 // but only for keys whose values changed since the previous broadcast.
 // Agent handlers commonly re-emit identical payloads (Pi especially,
@@ -1733,17 +1794,34 @@ var dedupExemptSessionInfoKeys = map[string]struct{}{
 // rateLimits) compare as their canonical JSON encoding (Go marshals map
 // keys in sorted order). Any change inside a nested map ships the whole
 // sub-map, which matches the frontend store's per-key merge semantics
-// in agentSession.store.ts. A marshal failure is treated as "changed"
-// so the value still passes through to the broadcast.
+// in agentSession.store.ts. A marshal failure skips the broadcast.
 func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
+	var retrySource nativeSessionSource
+	if _, hasRetry := info[contracts.SessionInfoKeyModelAPIRetry]; hasRetry {
+		publisher := s.turnPublisherSink()
+		retrySource = nativeSessionSource{
+			sink: s, publisher: publisher, session: s.currentMessageSessionFact(),
+			publisherSession: publisher.currentMessageSessionFact(),
+		}
+	}
 	prepared, err := prepareSessionInfo(info)
 	if err != nil {
 		slog.Warn("marshal agent session info", "agent_id", s.agentID, "error", err)
 		return
 	}
-	changed := s.admitPreparedSessionInfo(prepared)
-	if len(changed) > 0 {
-		s.h.broadcastAgentSessionInfo(s.agentID, changed)
+	var enqueued bool
+	if retrySource.sink != nil {
+		release := retrySource.lock()
+		if !retrySource.currentLocked() {
+			delete(prepared, contracts.SessionInfoKeyModelAPIRetry)
+		}
+		enqueued = s.enqueuePreparedSessionInfo(prepared)
+		release()
+	} else {
+		enqueued = s.enqueuePreparedSessionInfo(prepared)
+	}
+	if enqueued {
+		s.h.watcher.DrainAgentEvents(s.agentID)
 	}
 }
 
@@ -1987,23 +2065,22 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 	if h.wakeLock != nil {
 		h.wakeLock.RecordActivity()
 	}
-	if tracker == nil {
-		// Read-only resolution: the nil-tracker callers (control-response
-		// echoes, synthetic user turns) target an agent that already owns a
-		// sink and thus a tracker. Seeding one here would mask a missing-sink
-		// bug; a fallback empty tracker renders "[]" for a genuinely unknown
-		// agent, and trackerForSnapshot logs the miss.
-		tracker = h.trackerForSnapshot(agentID)
-	}
-	connectorSpanID := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
-	depth, spanLines, connectorColor := tracker.Snapshot(span.ParentSpanID, connectorSpanID, span.Closing)
 	var owner *transcriptOwner
 	if content.Publication != nil {
 		owner, _ = content.Publication.Owner().(*transcriptOwner)
-		if owner != nil {
-			span = owner.span
-			depth, spanLines, connectorColor = owner.depth, owner.spanLines, owner.spanColor
+	}
+	var depth, connectorColor int32
+	var spanLines string
+	if owner != nil {
+		span = owner.span
+		depth, spanLines, connectorColor = owner.depth, owner.spanLines, owner.spanColor
+	} else {
+		if tracker == nil {
+			// Read-only snapshots resolve the active tracker without creating one.
+			tracker = h.trackerForSnapshot(agentID)
 		}
+		connector := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
+		depth, spanLines, connectorColor = tracker.Snapshot(span.ParentSpanID, connector, span.Closing)
 	}
 
 	// Resolve span color: if the span is already active (e.g. tool_result
@@ -2232,6 +2309,20 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 					return messagePersistenceResult{}, fmt.Errorf("read immutable message key: %w", err)
 				}
 				if stored {
+					cache.Mu.Unlock()
+					return messagePersistenceResult{}, nil
+				}
+				retracted, err := h.queries.HasMessageRetraction(ctx, db.HasMessageRetractionParams{
+					AgentID: agentID, AgentSessionID: content.AgentSessionID, IdempotencyKey: content.IdempotencyKey,
+				})
+				if err != nil {
+					cache.Mu.Unlock()
+					return messagePersistenceResult{}, fmt.Errorf("read message retraction: %w", err)
+				}
+				if retracted {
+					// A retained key follows the immutable duplicate path: this
+					// early retry must mutate no to-do state before the insert
+					// that would be skipped.
 					cache.Mu.Unlock()
 					return messagePersistenceResult{}, nil
 				}

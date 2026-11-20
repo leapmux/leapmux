@@ -970,6 +970,7 @@ type zcodeTurnSettlement struct {
 // settleZCodeTurn retains the owner's output before it finalizes the turn.
 // It then resets retry and stop state, closes incomplete tools, and records the
 // turn end before it releases activity. Native completion and recovery share it.
+// The caller holds dispatchMu.
 //
 // settle states the per-path half: which completions close the turn's scopes
 // and tools, and which row its end leaves behind.
@@ -1024,11 +1025,12 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 		a.pendingExitMode = ""
 	}
 	owner.settled = true
-	if a.foregroundTurnID == owner.id {
-		a.foregroundTurnID = ""
-	}
+	a.retireZCodeForegroundTurnLocked(owner)
 	a.refreshTurnActiveLocked()
 	a.Mu.Unlock()
+	if foreground {
+		a.publishZCodeModelAPIRetryLocked()
+	}
 	defer func() {
 		a.Mu.Lock()
 		owner.settlementWriting = false
@@ -1050,9 +1052,6 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 		}
 		a.PublishTurnActive()
 	}()
-	if foreground {
-		a.retryResolution.Reset()
-	}
 	// The finalizer publishes inactivity after the row and retry bookkeeping.
 	// That publication can release queued input into the next foreground.
 

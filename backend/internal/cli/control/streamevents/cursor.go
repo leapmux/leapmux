@@ -81,6 +81,10 @@ func (c *Cursor[Entry]) Advance(id string, value int64) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.advanceLocked(id, value)
+}
+
+func (c *Cursor[Entry]) advanceLocked(id string, value int64) bool {
 	cur, ok := c.values[id]
 	if !ok || value > cur {
 		c.values[id] = value
@@ -142,12 +146,68 @@ func (c *Cursor[Entry]) Snapshot(restrict map[string]struct{}) []Entry {
 	return out
 }
 
-// AgentCursor records the highest agent-message seq seen per agent_id.
-type AgentCursor = Cursor[*leapmuxv1.WatchAgentEntry]
+// AgentCursor records the highest delivered sequence and fences ahead-of-cursor
+// retractions. An older replay page can have read those rows before deletion.
+type AgentCursor struct {
+	*Cursor[*leapmuxv1.WatchAgentEntry]
+	retracted map[string]map[int64]struct{}
+}
 
 // NewAgentCursor returns an empty cursor seeded with no agents.
 func NewAgentCursor() *AgentCursor {
-	return NewCursor(AgentWatchEntry)
+	return &AgentCursor{
+		Cursor:    NewCursor(AgentWatchEntry),
+		retracted: make(map[string]map[int64]struct{}),
+	}
+}
+
+func (c *AgentCursor) recordRetraction(id string, sequences []int64) {
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fence := c.retracted[id]
+	for _, sequence := range sequences {
+		if sequence <= 0 || sequence <= c.values[id] {
+			continue
+		}
+		if fence == nil {
+			fence = make(map[int64]struct{})
+			c.retracted[id] = fence
+		}
+		fence[sequence] = struct{}{}
+	}
+}
+
+// Advance admits a new message unless a retraction already removed it.
+func (c *AgentCursor) Advance(id string, value int64) bool {
+	if id == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fence := c.retracted[id]
+	if _, deleted := fence[value]; deleted || !c.advanceLocked(id, value) {
+		return false
+	}
+	for sequence := range fence {
+		if sequence < value {
+			delete(fence, sequence)
+		}
+	}
+	if len(fence) == 0 {
+		delete(c.retracted, id)
+	}
+	return true
+}
+
+// Reset drops the cursor and outstanding retractions for one agent.
+func (c *AgentCursor) Reset(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.values, id)
+	delete(c.retracted, id)
 }
 
 // IsResumeCursor reports whether `seq` names a real resume point. Message seqs are

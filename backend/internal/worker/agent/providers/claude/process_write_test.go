@@ -26,15 +26,15 @@ func TestClaudeInputDoesNotReopenATurnThatEndsDuringTheWrite(t *testing.T) {
 	provider.SetStdinForTest(inspectingInputWriter{inspect: func() {
 		if provider.Mu.TryLock() {
 			provider.Mu.Unlock()
-			provider.disarmTurn()
+			provider.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
 		}
 	}})
 	require.NoError(t, provider.SendInput("input", nil))
 	require.False(t, provider.PublishTurnActive().Active)
 	provider.Mu.Lock()
-	awaiting := provider.awaitingResult
+	awaited := provider.awaitedInputRevision
 	provider.Mu.Unlock()
-	require.False(t, awaiting)
+	require.Zero(t, awaited)
 }
 
 type inspectingInputWriter struct {

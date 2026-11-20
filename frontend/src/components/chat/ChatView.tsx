@@ -9,6 +9,7 @@ import type { ChatLoadedRows, ChatScrollState, PaginationCallbacks, UseChatScrol
 import type { ChatVirtualizerRange } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TodoItem } from '~/models/todo'
+import type { LiveModelAPIRetry } from '~/stores/agentSession.store'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { LiveCompaction } from '~/stores/chatCompaction'
 import type { GoalSurface } from '~/stores/chatGoal'
@@ -68,6 +69,7 @@ import { useChatScroll } from './useChatScroll'
 import { useChatVirtualizer } from './useChatVirtualizer'
 import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
 import { CompactionIndicator } from './widgets/CompactionIndicator'
+import { ModelAPIRetryIndicator } from './widgets/ModelAPIRetryIndicator'
 import { SpanLineGapBridges } from './widgets/SpanLineGapBridges'
 import { SpanLines } from './widgets/SpanLines'
 import { reservedRowContentColumnStyle, rowBleedLeftStyle } from './widgets/SpanLines.geometry'
@@ -161,6 +163,7 @@ export interface ChatPaginationProps extends PaginationCallbacks {
 export interface AgentLifecycleProps {
   /** A compaction can remain active after the model turn ends. */
   liveCompaction?: LiveCompaction | undefined
+  liveModelAPIRetry?: LiveModelAPIRetry | undefined
   /** Whether the agent is actively working (for showing the thinking indicator). */
   agentWorking?: boolean
   /**
@@ -1259,6 +1262,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // signature and that onExpandTick only catches during the expand/mount animation.
   createEffect(on(() => props.agentLifecycle?.thinkingTokens, restickAfterCommit))
   createEffect(on(() => props.agentLifecycle?.outputBytes, restickAfterCommit))
+  createEffect(on(() => {
+    const retry = props.pagination?.hasNewerMessages ? undefined : props.agentLifecycle?.liveModelAPIRetry
+    return [
+      retry?.phase,
+      retry?.attempt,
+      retry?.maxAttempts,
+      retry?.retryDelayMs,
+      retry?.errorStatus,
+      retry?.error,
+    ]
+  }, restickAfterCommit))
 
   onMount(() => {
     props.onScrollApiReady?.({
@@ -1335,7 +1349,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             a time, so at most one banner is in the DOM for any given state.
           */}
             <Show
-              when={hasVisibleEntries() || props.agentLifecycle?.agentWorking
+              when={hasVisibleEntries() || props.agentLifecycle?.agentWorking || props.agentLifecycle?.liveModelAPIRetry
                 || props.pagination?.hasOlderMessages || props.pagination?.hasNewerMessages
                 || props.pagination?.fetchingOlder || props.pagination?.fetchingNewer}
               fallback={(
@@ -1607,6 +1621,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         : {})}
                       onExpandTick={() => scroll.restickIfAtBottom()}
                     />
+                    <ModelAPIRetryIndicator retry={props.agentLifecycle?.liveModelAPIRetry} />
                     {/*
                     The startup banner is tail-anchored like the progress
                     UI above: while windowed away from the live tail (hasNewerMessages)

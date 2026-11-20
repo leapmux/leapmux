@@ -83,7 +83,7 @@ func TestHistoricalTranscriptScopePreservesLiveState(t *testing.T) {
 				assert.True(t, activity.turnActive)
 				assert.Nil(t, activity.settledToolUses)
 				activity.mu.Unlock()
-				live := physical.tracker.ActiveSpans()
+				live := physical.currentSpanTracker().ActiveSpans()
 				require.Len(t, live, 1)
 				assert.Equal(t, "live-span", live[0].SpanID)
 				rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: id})
@@ -176,5 +176,5 @@ func TestHistoricalTranscriptScopePreservesOverridesAndRejectsForeignAuthority(t
 	require.Error(t, err)
 	_, err = scope.CaptureTranscript(agent.MessageContent{AgentSessionID: "different"}, agent.SpanInfo{})
 	require.Error(t, err)
-	assert.Empty(t, requireRootOutputSink(t, svc.Output, "historical-override").tracker.ActiveSpans())
+	assert.Empty(t, requireRootOutputSink(t, svc.Output, "historical-override").currentSpanTracker().ActiveSpans())
 }

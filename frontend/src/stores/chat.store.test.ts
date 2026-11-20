@@ -1573,6 +1573,84 @@ describe('createChatStore', () => {
     })
 
     describe('loadInitialMessages', () => {
+      it('keeps the live arrival and settles a pending anchor when the cold page loses its only row', async () => {
+        const store = createChatStore()
+        const old = makeMessage('removed', 1n)
+        const reply = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+        mockListAgentMessages.mockReturnValueOnce(reply.promise)
+
+        const initial = store.loadInitialMessages('w1', 'a1')
+        store.addMessage('a1', old)
+        expect(store.retractMessages('a1', [1n])).toBe(true)
+        store.addMessage('a1', makeMessage('arrival', 2n))
+        reply.resolve({
+          messages: [old],
+          hasMore: false,
+        })
+        await initial
+
+        expect(store.getMessages('a1').map(message => message.id)).toEqual(['arrival'])
+        expect(store.isInitialLoadComplete('a1')).toBe(true)
+        expect(store.hasPendingLatestAnchor('a1')).toBe(false)
+      })
+
+      it('does not restart the cold page when a live row changes the window', async () => {
+        await createRoot(async (dispose) => {
+          try {
+            const store = createChatStore()
+            const started = deferred<void>()
+            const reply = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+            const applied = deferred<void>()
+            mockListAgentMessages.mockImplementation(() => {
+              started.resolve()
+              return reply.promise
+            })
+            createEffect(() => {
+              if (!store.isInitialLoadComplete('a1'))
+                void store.loadInitialMessages('w1', 'a1').then(applied.resolve)
+            })
+
+            await started.promise
+            store.addMessage('a1', makeMessage('arrival', 2n))
+            reply.resolve({ messages: [], hasMore: false })
+            await applied.promise
+
+            expect(mockListAgentMessages).toHaveBeenCalledOnce()
+            expect(store.getMessages('a1').map(message => message.id)).toEqual(['arrival'])
+          }
+          finally {
+            dispose()
+          }
+        })
+      })
+
+      it('keeps concurrent resequences and newer supplemental content in the cold page', async () => {
+        const store = createChatStore()
+        const original = makeMessage('movement', 1n)
+        const unchanged = makeMessage('unchanged-seq', 2n)
+        store.addMessage('a1', original)
+        store.addMessage('a1', unchanged)
+        const reply = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+        mockListAgentMessages.mockReturnValueOnce(reply.promise)
+
+        const initial = store.loadInitialMessages('w1', 'a1')
+        store.addMessage('a1', makeReseq(original.id, 3n, original.seq))
+        store.addMessage('a1', { ...unchanged, supplementalRevision: 2n })
+        reply.resolve({
+          messages: [
+            original,
+            { ...unchanged, supplementalRevision: 1n },
+          ],
+          hasMore: false,
+        })
+        await initial
+
+        expect(store.getMessages('a1').map(message => [message.id, message.seq, message.supplementalRevision])).toEqual([
+          [unchanged.id, 2n, 2n],
+          [original.id, 3n, 0n],
+        ])
+      })
+
       it('should fetch and set messages with hasMore', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
@@ -1627,6 +1705,66 @@ describe('createChatStore', () => {
           dispose()
         })
       })
+    })
+
+    it('keeps the page fence after the producing watch handle retires', async () => {
+      const store = createChatStore()
+      const handle = {
+        update: vi.fn(),
+        close: vi.fn(),
+        onEvent: vi.fn(),
+        onEnd: vi.fn(),
+        onError: vi.fn(),
+      }
+      store.setMessages('a1', [
+        makeMessage('loaded', 10n),
+      ], true)
+      const retracted = makeMarkedMessage('off-window', 8n, MarkType.USER_MESSAGE)
+      const older = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+      mockListAgentMessages.mockReturnValueOnce(older.promise)
+      const page = store.loadOlderMessages('w1', 'a1')
+      const observer = vi.fn()
+      const unsubscribe = store.subscribeWindowChanges('a1', observer)
+
+      const mark = store.messageMarks.liveRevision('a1')
+      store.retractMessages('a1', [8n], handle)
+      expect(store.messageMarks.liveRevision('a1')).toBe(mark + 1)
+      expect(store.isMessageRetracted('a1', 8n, handle)).toBe(true)
+      expect(observer.mock.calls[0]?.[0]?.includes(retracted)).toBe(true)
+      store.retireWatchHandle(handle)
+      expect(store.isMessageRetracted('a1', 8n, handle)).toBe(false)
+      older.resolve({
+        messages: [
+          makeMessage('older-survivor', 7n),
+          retracted,
+        ],
+        hasMore: false,
+      })
+      await page
+
+      expect(store.getMessages('a1').map(message => message.seq)).toEqual([7n, 10n])
+      expect(store.messageMarks.get('a1').marks).toEqual([])
+      unsubscribe()
+    })
+
+    it('keeps a stale latest page from restoring a row reaped by catch-up', async () => {
+      const store = createChatStore()
+      const surviving = makeMessage('surviving', 1n)
+      const retracted = makeMessage('retracted', 9n)
+      store.setMessages('a1', [surviving, retracted])
+      const latest = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+      mockListAgentMessages.mockReturnValueOnce(latest.promise)
+      const page = store.jumpToLatestMessages('w1', 'a1')
+
+      store.reconcileAuthoritativeTail('a1', 1n, 9n)
+      expect(store.getMessages('a1').map(message => message.seq)).toEqual([1n])
+      latest.resolve({
+        messages: [surviving, retracted],
+        hasMore: false,
+      })
+      await page
+
+      expect(store.getMessages('a1').map(message => message.seq)).toEqual([1n])
     })
 
     describe('refreshLoadedMessages', () => {
@@ -1693,6 +1831,132 @@ describe('createChatStore', () => {
           }, { signal })
           dispose()
         })
+      })
+
+      it('retracts missing sequences across sparse pages and an empty final page', async () => {
+        const store = createChatStore()
+        const first = makeMessage('first', 10n)
+        const middle = makeMessage('middle', 20n)
+        store.setMessages('a1', [
+          first,
+          makeMessage('removed-middle', 15n),
+          middle,
+          makeMessage('removed-tail', 30n),
+        ], true)
+        mockListAgentMessages
+          .mockResolvedValueOnce({
+            messages: [first, middle],
+            hasMore: true,
+          })
+          .mockResolvedValueOnce({ messages: [], hasMore: false })
+
+        await store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)
+
+        expect(store.getMessages('a1').map(message => message.seq)).toEqual([10n, 20n])
+        expect(store.hasOlderMessages('a1')).toBe(true)
+      })
+
+      it('re-anchors after an empty final page and keeps a concurrent live message', async () => {
+        const store = createChatStore()
+        store.setMessages('a1', [
+          makeMessage('removed', 10n),
+        ], true)
+        const latest = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+        const reanchoring = deferred<void>()
+        mockListAgentMessages
+          .mockResolvedValueOnce({ messages: [], hasMore: false })
+          .mockImplementationOnce(() => {
+            reanchoring.resolve()
+            return latest.promise
+          })
+
+        const refreshed = store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)
+        await Promise.race([refreshed, reanchoring.promise])
+        expect(store.getMessages('a1')).toEqual([])
+        expect(mockListAgentMessages).toHaveBeenNthCalledWith(2, 'w1', expect.objectContaining({
+          anchor: MessagePageAnchor.LATEST,
+        }), expect.objectContaining({
+          signal: expect.any(AbortSignal),
+        }))
+        store.addMessage('a1', makeMessage('live', 11n))
+        latest.resolve({
+          messages: [
+            makeMessage('older-survivor', 2n),
+          ],
+          hasMore: false,
+        })
+        await refreshed
+
+        expect(store.getMessages('a1').map(message => message.id)).toEqual(['older-survivor', 'live'])
+      })
+
+      it('keeps an empty window eligible for refresh after the latest page fails', async () => {
+        const store = createChatStore()
+        store.setMessages('a1', [
+          makeMessage('removed', 10n),
+        ], true)
+        mockListAgentMessages
+          .mockResolvedValueOnce({ messages: [], hasMore: false })
+          .mockRejectedValueOnce(new Error('Latest history unavailable'))
+          .mockResolvedValueOnce({
+            messages: [
+              makeMessage('older-survivor', 2n),
+            ],
+            hasMore: false,
+          })
+          .mockResolvedValue({ messages: [], hasMore: false })
+
+        await expect(store.refreshLoadedMessages('w1', 'a1', new AbortController().signal))
+          .rejects
+          .toThrow('Latest history unavailable')
+        expect(store.getMessages('a1')).toEqual([])
+        expect(store.isFetchingNewer('a1')).toBe(false)
+
+        await store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)
+
+        expect(mockListAgentMessages.mock.calls.map(([, request]) => request.anchor)).toEqual([
+          MessagePageAnchor.AFTER,
+          MessagePageAnchor.LATEST,
+          MessagePageAnchor.LATEST,
+          MessagePageAnchor.AFTER,
+        ])
+        expect(mockListAgentMessages).toHaveBeenNthCalledWith(3, 'w1', expect.objectContaining({
+          anchor: MessagePageAnchor.LATEST,
+        }), expect.objectContaining({
+          signal: expect.any(AbortSignal),
+        }))
+        expect(store.getMessages('a1').map(message => message.id)).toEqual(['older-survivor'])
+      })
+
+      it('reports a missing captured row after concurrent window eviction', async () => {
+        const store = createChatStore()
+        const removed = makeMessage('evicted-while-refreshing', 10n)
+        const surviving = makeMessage('surviving', 11n)
+        store.setMessages('a1', [
+          removed,
+          surviving,
+        ])
+        const retracted = vi.fn()
+        const unsubscribe = store.subscribeWindowChanges('a1', (change) => {
+          if (change.kind === 'retraction' && change.includes(removed))
+            retracted()
+        })
+        const reply = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+        mockListAgentMessages.mockReturnValueOnce(reply.promise)
+        const refresh = store.refreshLoadedMessages('w1', 'a1', new AbortController().signal)
+        store.trimOldestEnd('a1', 1)
+        expect(retracted).not.toHaveBeenCalled()
+        reply.resolve({
+          messages: [
+            surviving,
+          ],
+          hasMore: false,
+        })
+        await refresh
+
+        expect(retracted).toHaveBeenCalledOnce()
+        expect(store.getMessages('a1').map(row => row.id)).toEqual(['surviving'])
+        unsubscribe()
       })
 
       it('keeps a newer live revision and excludes rows removed during the refresh', async () => {
@@ -2631,6 +2895,33 @@ describe('createChatStore', () => {
           dispose()
         })
       })
+
+      it.each([9n, undefined])('fences a reaped off-window sequence with watch cursor %s', async (cursor) => {
+        const store = createChatStore()
+        const initial = makeMessage('loaded', 7n)
+        store.setMessages('a1', [
+          initial,
+          makeMessage('was-off-window', 9n),
+        ])
+        store.trimNewestEnd('a1', 1)
+        const reply = deferred<{ messages: AgentChatMessage[], hasMore: boolean }>()
+        mockListAgentMessages.mockReturnValueOnce(reply.promise)
+
+        const loading = store.loadNewerPage('w1', 'a1')
+        store.reconcileAuthoritativeTail('a1', 8n, cursor)
+        reply.resolve({
+          messages: [
+            makeMessage('surviving', 8n),
+            makeMessage('removed', 9n),
+            makeMessage('fresh', 10n),
+          ],
+          hasMore: false,
+        })
+        await loading
+
+        expect(store.getMessages('a1').map(message => message.seq)).toEqual([7n, 8n, 10n])
+      })
+
       it('appends a page, clears hasMoreNewer at the tail', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()

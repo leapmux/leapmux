@@ -159,11 +159,21 @@ describe('PROVIDER_WIRE_TOKENS', () => {
     ['leapmux_amp_permission', 'amp-protocol permissionRequestTypes'],
     ['error_during_execution', 'amp-protocol resultSubtypes'],
     ['leapmux_ask_answer', 'ohmypi-protocol askTypes'],
-    ['setStatus', 'pi-protocol extensionMethods'],
+    ['setStatus', 'ohmypi-protocol extensionMethods'],
     ['agent_end', 'pi-protocol events'],
     ['text_delta', 'pi-protocol assistantEvents'],
   ])('rejects %s from %s', (token, source) => {
     expect(wireTokenSources(PROVIDER_WIRE_TOKENS, token)).toContain(source)
+  })
+
+  it.each([
+    ['queue_update', 'pi-protocol events'],
+    ['setStatus', 'pi-protocol extensionMethods'],
+    ['setWidget', 'pi-protocol extensionMethods'],
+    ['setTitle', 'pi-protocol extensionMethods'],
+    ['set_editor_text', 'pi-protocol extensionMethods'],
+  ])('excludes the Go-only Pi token %s from %s', (token, source) => {
+    expect(wireTokenSources(PROVIDER_WIRE_TOKENS, token)).not.toContain(source)
   })
 
   it.each([

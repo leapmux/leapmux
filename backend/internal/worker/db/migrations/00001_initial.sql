@@ -248,6 +248,20 @@ CREATE INDEX idx_messages_notification_entries
     ON messages (agent_id, agent_session_id, seq)
     WHERE notification_entry_count <> 0;
 
+-- Record processed native message retractions separately from stored messages.
+-- A provider evicting a native message (Claude Code's retracted_message_uuids
+-- and supersedes) deletes its stored row, and this receipt keeps the eviction
+-- idempotent across a replay or restart: a redelivered frame whose key is
+-- retained never reinserts. The receipt lives with the owning agent's stored
+-- transcript; reopening copies it under the cloned agent ID in the same
+-- transaction as the transcript.
+CREATE TABLE agent_message_retractions (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_session_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL CHECK (idempotency_key <> ''),
+    PRIMARY KEY (agent_id, agent_session_id, idempotency_key)
+) WITHOUT ROWID;
+
 -- Record processed native completions separately from stored messages.
 -- A failed completion claim can leave its message stored without its effects.
 -- Replay then publishes those effects once, after it claims this receipt.
@@ -798,6 +812,7 @@ DROP TABLE IF EXISTS agent_input_queue_attachments;
 DROP TABLE IF EXISTS agent_input_queue_items;
 DROP TABLE IF EXISTS agent_input_queue_state;
 DROP TABLE IF EXISTS agent_turn_ends;
+DROP TABLE IF EXISTS agent_message_retractions;
 DROP VIEW IF EXISTS control_response_answers;
 DROP TABLE IF EXISTS control_response_payloads;
 DROP TABLE IF EXISTS control_deliveries;

@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 // diracSteerMethod is the extension notification that carries steering text
@@ -21,16 +22,34 @@ const diracSteerMethod = "dev.dirac/whisper"
 // Agent manages one Dirac ACP process.
 type Agent struct {
 	acp.Base
-	root         string
-	clock        quartz.Clock
-	childMu      sync.Mutex
-	childStop    chan struct{}
-	archiveWG    sync.WaitGroup
-	taskletWatch *diracTaskletWatch
+	profileMu             sync.RWMutex
+	root                  string
+	profileObserved       bool
+	openCheckpointArchive func(string) (sessionstore.ArchiveRoot, error)
+	resumedSession        string
+	clock                 quartz.Clock
+	childMu               sync.Mutex
+	childStop             chan struct{}
+	archiveWG             sync.WaitGroup
+	taskletWatch          *diracTaskletWatch
 	// claimedMu guards claimedCards, the tool calls whose cards the notice
 	// observer consumed (see observeDiracNotice).
 	claimedMu    sync.Mutex
 	claimedCards map[string]struct{}
+}
+
+func (a *Agent) archiveProfile() (root string, observed bool) {
+	a.profileMu.RLock()
+	defer a.profileMu.RUnlock()
+	return a.root, a.profileObserved
+}
+
+func (a *Agent) checkpointProfile() string {
+	root, observed := a.archiveProfile()
+	if observed {
+		return root
+	}
+	return ""
 }
 
 // This assertion makes a missing Agent method a compile error.
@@ -56,10 +75,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if err := providerkit.TextOnlySteer("Dirac", attachments); err != nil {
 		return err
 	}
-	if !a.PromptActive() {
-		return agent.ErrNoActiveTurn
-	}
-	err := a.WithSessionID(func(sessionID string) error {
+	err := a.WithActivePromptSession(func(sessionID string) error {
 		params, err := json.Marshal(map[string]any{
 			"sessionId": sessionID,
 			"text":      content,
@@ -67,12 +83,13 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		if err != nil {
 			return fmt.Errorf("marshal the Dirac whisper: %w", err)
 		}
-		return a.SendNotification(diracSteerMethod, params)
+		if err := a.SendNotification(diracSteerMethod, params); err != nil {
+			return providerkit.ClassifyJSONRPCDeliveryError(diracSteerMethod, err)
+		}
+		return nil
 	})
-	// A write failure is a delivery failure, not a missing turn: the turn ran
-	// while the whisper left.
 	if err != nil {
-		return providerkit.ClassifyJSONRPCDeliveryError(diracSteerMethod, err)
+		return err
 	}
 	// The turn can end while the whisper writes; a whisper into an ended turn
 	// reaches nothing.

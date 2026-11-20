@@ -215,7 +215,17 @@ message AgentEvent {
     AgentActivityChanged activity_changed = 21;
     // Worker response state updates do not establish that the provider process is active.
     AgentControlRequest control_response_changed = 22;
+    AgentMessagesRetracted messages_retracted = 23;
   }
+}
+
+// AgentMessagesRetracted reports stored transcript rows the Worker deleted
+// after the provider evicted the native messages behind them. Content-only:
+// sequence values are positive, unique and sorted. An empty deletion emits no
+// frame. History reads return only surviving rows, so a reconnecting client
+// reconciles its loaded identities against the canonical transcript.
+message AgentMessagesRetracted {
+  repeated int64 seqs = 1;
 }
 
 // ReplayOrigin identifies the replay that produced a replay frame.

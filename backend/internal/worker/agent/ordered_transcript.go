@@ -81,6 +81,118 @@ func FlushPendingOutput(writer TranscriptServices) error {
 	return err
 }
 
+// TranscriptSequence executes related writes at one queue position.
+type TranscriptSequence struct {
+	ticket *OutputTicket
+}
+
+// ReserveTranscriptSequence reserves a position before the caller lets it drain.
+// The callback owns its completed substeps and retains them if a write fails.
+func ReserveTranscriptSequence(writer TranscriptServices, label string, run func(TranscriptSequence) error) (func() error, error) {
+	queue := OutputQueueFor(writer)
+	if queue == nil {
+		return func() error { return run(TranscriptSequence{}) }, nil
+	}
+	var ready atomic.Pointer[OutputTicket]
+	tickets, err := writer.ReserveTranscriptOutput(queue, OutputWrite{Label: label, Run: func() error {
+		ticket := ready.Load()
+		if ticket == nil {
+			return ErrOutputInFlight
+		}
+		return run(TranscriptSequence{ticket: ticket})
+	}})
+	if err != nil {
+		return nil, err
+	}
+	ticket := tickets[0]
+	ready.Store(ticket)
+	return func() error {
+		return transcriptTicketResult(ticket, queue.FlushAfterReady(ticket))
+	}, nil
+}
+
+// Persist writes an immutable operation at the active position without taking another ticket.
+func (sequence TranscriptSequence) Persist(operation CapturedTranscriptOperation) (bool, error) {
+	if operation.err != nil {
+		return false, operation.err
+	}
+	writer := operation.captured.TranscriptWriter()
+	if writer == nil {
+		return false, errors.New("the transcript operation has no writer")
+	}
+	if err := sequence.validateWriter(writer); err != nil {
+		return false, err
+	}
+	var execution *outputExecution
+	if sequence.ticket != nil {
+		execution = &outputExecution{ticket: sequence.ticket, operation: operation.operation, source: operation.source}
+	}
+	return operation.captured.persistWithExecution(operation.operation, operation.source, execution)
+}
+
+// Retract applies the captured claim at the active position on its writer's queue.
+func (sequence TranscriptSequence) Retract(writer TranscriptServices, captured MessageContent, keys []string) error {
+	if writer == nil {
+		return errors.New("the transcript retraction has no writer")
+	}
+	if err := sequence.validateWriter(writer); err != nil {
+		return err
+	}
+	return DirectTranscript(writer).RetractMessagesByIdempotencyKey(captured, keys)
+}
+
+func (sequence TranscriptSequence) validateWriter(writer TranscriptServices) error {
+	queue := OutputQueueFor(writer)
+	if sequence.ticket == nil && queue == nil {
+		return nil
+	}
+	if queue == nil || sequence.ticket == nil || sequence.ticket.Queue() != queue || !queue.executes(sequence.ticket) {
+		return errors.New("the transcript operation has no active position on its output queue")
+	}
+	return writer.ValidateTranscriptOutput(sequence.ticket)
+}
+
+// TranscriptFrameOwner supplies all operations that need the same captured lifetime.
+type TranscriptFrameOwner interface {
+	TranscriptOwner
+	IsTranscriptFrameCurrent() bool
+	TranscriptFrameSpans() SpanServices
+	SnapshotTranscriptFrame(SpanInfo) TranscriptPublication
+}
+
+// TranscriptFrameIsCurrent checks exact native lifetime authority for an admitted frame.
+func TranscriptFrameIsCurrent(content MessageContent) bool {
+	if content.Publication == nil {
+		return true
+	}
+	owner, ok := content.Publication.Owner().(TranscriptFrameOwner)
+	return ok && owner.IsTranscriptFrameCurrent()
+}
+
+// TranscriptFrameSpans returns span services for a frame's original lifetime.
+// A capture without a publication comes from a sink that tracks spans directly.
+func TranscriptFrameSpans(content MessageContent, live SpanServices) SpanServices {
+	if content.Publication == nil {
+		return live
+	}
+	if owner, ok := content.Publication.Owner().(TranscriptFrameOwner); ok {
+		return owner.TranscriptFrameSpans()
+	}
+	return nil
+}
+
+// CaptureTranscriptFrame takes geometry at execution while keeping admission-time authority.
+func CaptureTranscriptFrame(writer TranscriptServices, content MessageContent, span SpanInfo) (CapturedTranscript, error) {
+	if content.Publication != nil {
+		owner, ok := content.Publication.Owner().(TranscriptFrameOwner)
+		if !ok {
+			return CapturedTranscript{}, errors.New("the transcript publication has no frame authority")
+		}
+		content.Publication = owner.SnapshotTranscriptFrame(span)
+	}
+	return CaptureTranscriptWithReceipt(writer, content, span)
+}
+
 // TranscriptMessage supplies one immutable message in an ordered batch.
 type TranscriptMessage struct {
 	Source  leapmuxv1.MessageSource
@@ -312,13 +424,7 @@ func (batch *CapturedTranscriptBatch) FlushAfterReady() error {
 		_ = batch.queue.Flush()
 		return refusal
 	}
-	if batch.ticket.Done() {
-		return nil
-	}
-	if err == nil {
-		err = ErrOutputInFlight
-	}
-	return &PendingOutputError{Err: err}
+	return transcriptTicketResult(batch.ticket, err)
 }
 
 // Discard releases a group only before preparation begins. It invokes no sink.
@@ -436,6 +542,14 @@ func DirectTranscript(writer TranscriptServices) TranscriptServices {
 	}
 }
 
+// DirectProviderServices exposes provider effects when a sequence already owns their order.
+func DirectProviderServices(services ProviderServices) ProviderServices {
+	if ordered, ok := services.(*orderedProviderServices); ok {
+		return ordered.ProviderServices
+	}
+	return services
+}
+
 // OrderedTranscript shares one output queue with the caller's generation buffers.
 // It captures each native record before submission and delegates to the supplied writer.
 func OrderedTranscript(queue *OutputQueue, writer TranscriptServices) TranscriptServices {
@@ -444,7 +558,10 @@ func OrderedTranscript(queue *OutputQueue, writer TranscriptServices) Transcript
 
 func (writer orderedTranscript) submit(label string, run func() error) error {
 	ticket := writer.queue.Append(OutputWrite{Label: label, Run: run})[0]
-	err := writer.queue.Flush()
+	return transcriptTicketResult(ticket, writer.queue.Flush())
+}
+
+func transcriptTicketResult(ticket *OutputTicket, err error) error {
 	if ticket.Done() {
 		return nil
 	}
@@ -547,6 +664,22 @@ func (writer orderedTranscript) PersistWorkerNotification(content MessageContent
 	return writer.persist(capturedWorkerNotification, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, SpanInfo{})
 }
 
+// RetractMessagesByIdempotencyKey queues the retraction ahead of later writes
+// on its destination, so a queued write of a retracted key executes only after
+// the receipt lands and its insert is skipped. A storage failure retains the
+// operation on the queue for the registered retry path.
+func (writer orderedTranscript) RetractMessagesByIdempotencyKey(captured MessageContent, keys []string) error {
+	return writer.submit("retract ordered transcript", func() error {
+		return writer.TranscriptServices.RetractMessagesByIdempotencyKey(captured, keys)
+	})
+}
+
+// IsMessageRetracted is a pure receipt lookup and takes no queue position: it
+// reads the durable receipts that earlier completed writes recorded.
+func (writer orderedTranscript) IsMessageRetracted(captured MessageContent, key string) (bool, error) {
+	return writer.TranscriptServices.IsMessageRetracted(captured, key)
+}
+
 type orderedProviderServices struct {
 	ProviderServices
 	transcript orderedTranscript
@@ -583,6 +716,12 @@ func (services *orderedProviderServices) PersistTurnEnd(content MessageContent, 
 }
 func (services *orderedProviderServices) PersistWorkerNotification(content MessageContent) (bool, error) {
 	return services.transcript.PersistWorkerNotification(content)
+}
+func (services *orderedProviderServices) RetractMessagesByIdempotencyKey(captured MessageContent, keys []string) error {
+	return services.transcript.RetractMessagesByIdempotencyKey(captured, keys)
+}
+func (services *orderedProviderServices) IsMessageRetracted(captured MessageContent, key string) (bool, error) {
+	return services.transcript.IsMessageRetracted(captured, key)
 }
 func (services *orderedProviderServices) PersistLeapMuxNotification(content map[string]interface{}) {
 	raw, err := json.Marshal(content)

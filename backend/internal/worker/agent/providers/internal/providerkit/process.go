@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/quartz"
 
+	"github.com/leapmux/leapmux/internal/util/envprobe"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/util/procutil"
@@ -700,6 +701,7 @@ func (p *Process) skipPreamble(scanner *bufio.Scanner) {
 	delimBytes := []byte(p.preambleDelimiter)
 	metaPrefixBytes := []byte(p.preambleMetaPrefix)
 	const maxPreambleLines = 50
+	var observedEnvironment bool
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if bytes.Equal(line, delimBytes) {
@@ -711,7 +713,14 @@ func (p *Process) skipPreamble(scanner *bufio.Scanner) {
 			kv := string(line[len(metaPrefixBytes):])
 			if eqIdx := strings.IndexByte(kv, '='); eqIdx >= 0 {
 				p.Mu.Lock()
-				p.preambleMeta[kv[:eqIdx]] = kv[eqIdx+1:]
+				key, value := kv[:eqIdx], kv[eqIdx+1:]
+				if key == envprobe.ObservationKey {
+					if observedEnvironment {
+						value = ""
+					}
+					observedEnvironment = true
+				}
+				p.preambleMeta[key] = value
 				p.Mu.Unlock()
 			}
 			continue

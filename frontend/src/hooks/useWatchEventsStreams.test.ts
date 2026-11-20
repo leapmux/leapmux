@@ -146,7 +146,7 @@ describe('useWatchEventsStreams', () => {
     await Promise.resolve()
   }
 
-  function mount(plansFn: () => Map<string, WatchPlan>, opts: Partial<Pick<UseWatchEventsStreamsOpts, 'onEvent' | 'onWorkerOnline' | 'onPromoted' | 'onReplayRequested' | 'onReplayRetired'>> = {}) {
+  function mount(plansFn: () => Map<string, WatchPlan>, opts: Partial<Pick<UseWatchEventsStreamsOpts, 'onEvent' | 'onHandleRetired' | 'onWorkerOnline' | 'onPromoted' | 'onReplayRequested' | 'onReplayRetired'>> = {}) {
     return createRoot((dispose) => {
       disposeRoot = dispose
       const harness = installTestBridge({ workspaceId: WS })
@@ -156,6 +156,9 @@ describe('useWatchEventsStreams', () => {
         view: stores.view,
         plans,
         onEvent: opts.onEvent ?? (() => {}),
+        ...(opts.onHandleRetired
+          ? { onHandleRetired: opts.onHandleRetired }
+          : {}),
         onWorkerOnline: opts.onWorkerOnline ?? (() => {}),
         onPromoted: opts.onPromoted ?? (() => {}),
         ...(opts.onReplayRequested
@@ -1039,7 +1042,7 @@ describe('useWatchEventsStreams', () => {
       },
     })
     handles[0]!._emit(completed)
-    expect(onEvent).toHaveBeenCalledWith('w1', completed)
+    expect(onEvent).toHaveBeenCalledWith('w1', completed, handles[0])
     setIncludeOther(true)
     await flush()
     handles[0]!._emit({
@@ -1332,6 +1335,7 @@ describe('useWatchEventsStreams', () => {
   it('ignores events and closure callbacks from a replaced stream', async () => {
     const onEvent = vi.fn()
     const onWorkerOnline = vi.fn()
+    const onHandleRetired = vi.fn()
     mount(() => new Map([
       [
         'w1',
@@ -1343,12 +1347,13 @@ describe('useWatchEventsStreams', () => {
           terminalResync: new Set<string>(),
         },
       ],
-    ]), { onEvent, onWorkerOnline })
+    ]), { onEvent, onWorkerOnline, onHandleRetired })
     await flush()
     const previous = handles[0]
     if (previous === undefined)
       throw new Error('expected a replaced stream handle')
     previous._end()
+    expect(onHandleRetired).toHaveBeenCalledExactlyOnceWith(previous)
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
     expect(handles).toHaveLength(2)
@@ -1369,7 +1374,8 @@ describe('useWatchEventsStreams', () => {
     expect(onEvent).not.toHaveBeenCalled()
     expect(onWorkerOnline).not.toHaveBeenCalled()
     current._emit(response)
-    expect(onEvent).toHaveBeenCalledOnce()
+    expect(onEvent).toHaveBeenCalledExactlyOnceWith('w1', response, current)
+    expect(onHandleRetired).toHaveBeenCalledExactlyOnceWith(previous)
     await vi.advanceTimersByTimeAsync(5000)
     expect(handles).toHaveLength(2)
   })

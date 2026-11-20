@@ -971,7 +971,11 @@ func (s *agentOutputSink) rawChildSinkLocked(childAgentID string) (*agentOutputS
 	current := s.registeredCurrent() && !s.progressClosed
 	tracker := &SpanTracker{}
 	if current {
-		tracker = s.h.childTracker(childAgentID)
+		if s.usesLifetimeSpanTracker() {
+			tracker = s.h.trackers.replace(childAgentID, spanTrackerChild)
+		} else {
+			tracker = s.h.childTracker(childAgentID)
+		}
 	}
 	child := &agentOutputSink{
 		h:                s.h,
@@ -981,9 +985,9 @@ func (s *agentOutputSink) rawChildSinkLocked(childAgentID string) (*agentOutputS
 		outputGeneration: s.outputGeneration,
 		agentProvider:    s.agentProvider,
 		plugin:           s.plugin,
-		tracker:          tracker,
 		messageSession:   &nativeSessionFact{},
 	}
+	child.spanTracker.Store(tracker)
 	var restoreErr error
 	if current {
 		restoreErr = child.restoreMessageSession()
