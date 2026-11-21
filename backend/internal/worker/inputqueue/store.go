@@ -1773,37 +1773,43 @@ func (s *Store) ResolveUnechoedSteers(ctx context.Context, agentID string, count
 	if err != nil {
 		return Snapshot{}, 0, false, err
 	}
-	for _, id := range ids {
-		_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
-			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN,
-			"the agent did not confirm whether the model read this message", nowText(), agentID, id)
-		if err != nil {
-			return Snapshot{}, 0, false, err
-		}
-	}
-	if len(ids) > 0 {
-		if err := placeResolvedSteers(ctx, tx, agentID, ids); err != nil {
-			return Snapshot{}, 0, false, err
-		}
-		paused, err := pauseAndEndTurn(ctx, tx, agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerDelivery)
-		if err != nil {
-			return Snapshot{}, 0, false, err
-		}
-		rows, err := paused.RowsAffected()
-		if err != nil {
-			return Snapshot{}, 0, false, err
-		}
-		if rows == 0 {
-			if err := bumpRevision(ctx, tx, agentID); err != nil {
-				return Snapshot{}, 0, false, err
-			}
-		}
+	if err := markSteerIDsUncertain(ctx, tx, agentID, ids); err != nil {
+		return Snapshot{}, 0, false, err
 	}
 	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
 	if err != nil {
 		return Snapshot{}, 0, false, err
 	}
 	return snapshot, len(ids), inFlight, nil
+}
+
+func markSteerIDsUncertain(ctx context.Context, tx *sql.Tx, agentID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
+			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN,
+			"the agent did not confirm whether the model read this message", nowText(), agentID, id)
+		if err != nil {
+			return err
+		}
+	}
+	if err := placeResolvedSteers(ctx, tx, agentID, ids); err != nil {
+		return err
+	}
+	paused, err := pauseAndEndTurn(ctx, tx, agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerDelivery)
+	if err != nil {
+		return err
+	}
+	rows, err := paused.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return bumpRevision(ctx, tx, agentID)
+	}
+	return nil
 }
 
 func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliveryErr error, uncertain bool) (Snapshot, error) {

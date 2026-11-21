@@ -450,8 +450,7 @@ func (a *Agent) handleItemStarted(raw []byte, params json.RawMessage) {
 	if event.itemType == contracts.CodexItemTypeUserMessage {
 		a.persistDroppedCodexResponse(event.threadID)
 		if a.isMainThreadID(event.threadID) {
-			a.steerLedger.EchoKey(providerkit.StringField(event.item, "clientId"))
-			a.steerLedger.Settle(a.sink)
+			a.recordCodexSteerEcho(event.threadID, event.turnID, providerkit.StringField(event.item, "clientId"))
 		}
 	}
 
@@ -721,12 +720,6 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	a.flushCodexGeneration(completion)
 	incompleteToolUses := a.persistIncompleteCodexTools("", false, completion)
 	a.finishCodexRawExecutions(notif.ThreadID, completion)
-	if completion == agent.MessageCompletionInterrupted {
-		a.steerLedger.DropAll()
-	} else {
-		a.steerLedger.EchoOldest(len(a.steerLedger.Pending()))
-	}
-	a.steerLedger.Settle(a.sink)
 
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
@@ -761,6 +754,13 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	// Ingress already retained process authentication evidence. Keep the
 	// current turn's classification here to exclude automatic server retries.
 	authenticationFailure := codexCompletedTurnAuthFailure(turnStatus, turnErrorMessage, turnErrorInfo)
+	if notif.ThreadID != "" && turnID != "" {
+		outcome := agent.SteerOutcomeUncertain
+		if completion == agent.MessageCompletionInterrupted {
+			outcome = agent.SteerOutcomeDropped
+		}
+		a.resolveCodexUnechoedSteers(notif.ThreadID, turnID, outcome)
+	}
 	// Clear provider turn state before the deferred publish below releases the
 	// Worker's input queue. This lets the next queued input start a new turn.
 	a.Mu.Lock()

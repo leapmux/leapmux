@@ -88,19 +88,18 @@ func (a *Agent) ClearContext() (string, error) {
 func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 	a.outputMu.Lock()
 	a.Mu.Lock()
-	sameThread := thread.ID == a.threadID
+	oldThreadID := a.threadID
 	a.Mu.Unlock()
-	if sameThread {
+	if thread.ID == oldThreadID {
 		a.outputMu.Unlock()
 		return "", fmt.Errorf("the new Codex thread reused the current thread ID")
 	}
-	a.steerLedger.DropAll()
-	a.steerLedger.Settle(a.sink)
 	a.Mu.Lock()
 	a.mainTurn.steers = 0
 	clear(a.pendingSteerCalls)
 	a.Mu.Unlock()
 	a.finishDeferredCodexSteerOutput()
+	a.resolveCodexUnechoedSteers(oldThreadID, "", agent.SteerOutcomeUncertain)
 	a.retryResolution.Reset()
 	a.Mu.Lock()
 	compactingThreads := make([]string, 0, len(a.openCompactions))
@@ -136,7 +135,6 @@ func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 			close(pending.done)
 		}
 	}
-	oldThreadID := a.threadID
 	if a.retiredCodexThreads == nil {
 		a.retiredCodexThreads = make(map[string]struct{})
 	}
@@ -170,7 +168,7 @@ func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 	a.incompleteToolOrder = 0
 	a.Mu.Unlock()
 	if oldThreadID != "" {
-		a.retireCodexReplyStarts(oldThreadID)
+		a.retireCodexInputReplies(oldThreadID)
 	}
 	a.generationBuffer.Reset()
 	// New-thread output must observe the new transcript identity.

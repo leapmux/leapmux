@@ -819,8 +819,8 @@ const (
 	SteerOutcomeUncertain
 )
 
-// SteerResolution identifies one queue dispatch that the provider consumed or
-// removed. A consumed input can carry the receipt of its receiving turn.
+// SteerResolution reports the delivery outcome of one queue dispatch.
+// A consumed input can carry the receipt of its receiving turn.
 type SteerResolution struct {
 	InputID   string
 	AttemptID string

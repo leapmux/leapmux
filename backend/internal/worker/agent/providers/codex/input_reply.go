@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -112,12 +113,58 @@ func finishCodexReplyLocked(pending *codexPendingTurnStart, err error) {
 	}
 }
 
+// recordCodexSteerEcho retains the input row at the matching notification.
+// The caller holds outputMu, which orders the echo with reply rows and turn end.
+func (a *Agent) recordCodexSteerEcho(threadID, turnID, clientID string) {
+	receipt := agent.NativeInputReceipt{SessionID: threadID, TurnID: turnID, InputID: clientID}
+	report, matched := a.steerLedger.TakeIdentifiedEcho(receipt)
+	if matched && a.retainCodexSteerResolution(report) {
+		a.replySteers = append(a.replySteers, receipt)
+	}
+}
+
+func (a *Agent) resolveCodexUnechoedSteers(threadID, turnID string, outcome agent.SteerOutcome) {
+	// Each resolved steer moves ahead of the other resolved inputs. Resolve
+	// newest first to preserve the original send order in the queue.
+	for _, report := range slices.Backward(a.steerLedger.TakeUnechoedSteers(threadID, turnID)) {
+		report.Outcome = outcome
+		report.Receipt = agent.NativeInputReceipt{}
+		a.retainCodexSteerResolution(report)
+	}
+}
+
+func (a *Agent) retainCodexSteerResolution(report agent.SteerResolution) bool {
+	err := agent.RetainSteerResolution(a.sink, report)
+	if !agent.OutputRetained(err) {
+		slog.Warn("retain the Codex steer outcome", "input_id", report.InputID, "error", err)
+		return false
+	}
+	return true
+}
+
+// takeCodexSteerReplies releases echoed steers for the selected native turn,
+// session, or process. The caller holds outputMu.
+func (a *Agent) takeCodexSteerReplies(threadID, turnID string) []agent.NativeInputReceipt {
+	var receipts []agent.NativeInputReceipt
+	a.replySteers = slices.DeleteFunc(a.replySteers, func(receipt agent.NativeInputReceipt) bool {
+		if (threadID != "" && receipt.SessionID != threadID) || (turnID != "" && receipt.TurnID != turnID) {
+			return false
+		}
+		receipts = append(receipts, receipt)
+		return true
+	})
+	return receipts
+}
+
 func (a *Agent) recordCodexReplyEnd(threadID, turnID string, retained bool) {
 	if threadID == "" || turnID == "" {
 		return
 	}
+	unproved := a.takeCodexSteerReplies(threadID, turnID)
+	if retained {
+		unproved = nil
+	}
 	a.Mu.Lock()
-	var unproved []agent.NativeInputReceipt
 	for inputID, pending := range a.replyStarts {
 		if pending.receipt.SessionID != threadID {
 			continue
@@ -159,9 +206,9 @@ func (a *Agent) codexReplyControlSink(params json.RawMessage) agent.ControlServi
 	return codexTurnControlSink{ControlServices: a.sink, threadID: owner.ThreadID, turnID: owner.TurnID}
 }
 
-func (a *Agent) retireCodexReplyStarts(threadID string) {
+func (a *Agent) retireCodexInputReplies(threadID string) {
+	receipts := a.takeCodexSteerReplies(threadID, "")
 	a.Mu.Lock()
-	var receipts []agent.NativeInputReceipt
 	for inputID, pending := range a.replyStarts {
 		if threadID == "" || threadID == pending.receipt.SessionID {
 			delete(a.replyStarts, inputID)

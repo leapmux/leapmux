@@ -1,10 +1,15 @@
 import { expect } from '@playwright/test'
+import { AgentInputState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
+import { withCleanup } from '../helpers/cleanup'
 import { mintCLITokenForAdmin, runCLI } from '../helpers/cli'
 import { NATIVE_CONTROL_QUESTION } from '../helpers/nativeQuestion'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
-import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
+import { askUserQuestionToolCall, bashToolCall } from '../helpers/providerToolCalls'
+import { queuedInputRow } from '../helpers/steer'
+import { createToolOutputControl } from '../helpers/toolOutputControl'
 import { assistantBubbles, chooseSettingsOption, userBubbles, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from '../helpers/ui'
+import { codexAsyncExecRules } from './asyncExec'
 
 codexTest('retries the completed reply of an exact sent input', async ({ native, leapmuxServer }) => {
   const { id: agentId } = await currentNativeAgent(native)
@@ -80,4 +85,83 @@ codexTest('retries the completed reply of an exact sent input', async ({ native,
   }
   await expect(userBubbles(native.page).filter({ hasText: question })).toHaveCount(1)
   await expect(assistantBubbles(native.page).filter({ hasText: answer })).toHaveCount(1)
+})
+
+codexTest('returns an exact reply after a native steer boundary', async ({ native, leapmuxServer }) => {
+  const { id: agentId, workingDir } = await currentNativeAgent(native)
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const { modelScript, page } = native
+  const output = createToolOutputControl(workingDir)
+  const steerText = 'Include the revised checklist.'
+  const before = 'I will run the checklist command.'
+  const after = 'The revised checklist passed.'
+  await modelScript.rule(...codexAsyncExecRules(steerText))
+  await modelScript.queue({
+    text: before,
+    toolCalls: [
+      bashToolCall(native.provider, 'codex-cli-steer-boundary', output.command),
+    ],
+  }, nativeTextStep(native, after))
+  const root = [
+    'agent',
+    'send',
+    agentId,
+    modelScript.prompt('Run the controlled checklist command.'),
+    '--request-id',
+    'codex-cli-steer-root',
+    '--wait',
+    '--all',
+    '--timeout',
+    '25s',
+  ]
+  const steer = [
+    'agent',
+    'send',
+    agentId,
+    modelScript.prompt(steerText),
+    '--request-id',
+    'codex-cli-steer-input',
+    '--wait',
+    '--all',
+    '--timeout',
+    '25s',
+  ]
+  const deliverSteer = async () => {
+    await output.waitForFirstOutput()
+    return await Promise.all([
+      runCLI(cli, steer),
+      (async () => {
+        const row = queuedInputRow(page, steerText)
+        await row.getByRole('button', { name: 'Steer', exact: true }).click()
+        await expect(row.and(page.locator(`:not([data-input-state="${AgentInputState.AWAITING_ECHO}"])`))).toHaveCount(0)
+        await output.releaseFirstOutput()
+        await output.waitForSecondOutput()
+        await output.releaseFinalOutput()
+      })(),
+    ])
+  }
+  const [first, [steered]] = await withCleanup(async () => await Promise.all([
+    runCLI(cli, root),
+    deliverSteer(),
+  ]), async () => {
+    await output.releaseFirstOutput()
+    await output.releaseFinalOutput()
+  })
+  expect(first).toMatchObject({
+    turn_outcome: 'completed',
+    replies: expect.arrayContaining([
+      before,
+      after,
+    ]),
+  })
+  const expected = {
+    input_id: (steered as { input_id: string }).input_id,
+    turn_outcome: 'completed',
+    replies: [
+      after,
+    ],
+  }
+  expect(steered).toMatchObject(expected)
+  expect(await runCLI(cli, steer)).toMatchObject(expected)
+  await expect(userBubbles(page).filter({ hasText: steerText })).toHaveCount(1)
 })

@@ -270,19 +270,15 @@ func classifyCodexTurnStartRequestError(operation string, err error) error {
 const codexSteerClientIDPrefix = "leapmux-steer-"
 
 // sendTurnSteer serializes its write with context replacement, then waits without the lock.
-// A caller that owns its row itself passes trackEcho false, and the steer joins no ledger.
 // sessionValidated marks a steer whose session the Worker already validated --
-// a recorded question's answer -- which stays deliverable while input recovery
-// is required, so the turn that asked the question can finish.
-func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}, trackEcho, sessionValidated bool) (ticket providerkit.SteerTicket, err error) {
-	defer func() {
-		if err != nil {
-			a.outputMu.Lock()
-			a.forgetCodexSteer(ticket)
-			a.outputMu.Unlock()
-		}
-	}()
-	clientID := codexSteerClientIDPrefix + id.Short()
+// a recorded question's answer. It joins no echo ledger and stays deliverable
+// during input recovery, so the turn that asked the question can finish.
+func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}, request agent.SteerRequest, sessionValidated bool) (providerkit.SteerTicket, error) {
+	clientID := request.AttemptID
+	if clientID == "" {
+		clientID = id.Short()
+	}
+	clientID = codexSteerClientIDPrefix + clientID
 	raw, err := json.Marshal(map[string]interface{}{"threadId": threadID, "expectedTurnId": turnID, "input": input, "clientUserMessageId": clientID})
 	if err != nil {
 		return 0, fmt.Errorf("marshal turn/steer params: %w", err)
@@ -305,8 +301,14 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 		a.turnDispatchMu.Unlock()
 		return 0, err
 	}
-	if trackEcho {
-		ticket = a.steerLedger.Add(clientID)
+	// The queue already owns the row for a control reply. It supplies an attempt
+	// ID only for a dispatch whose transcript row must wait for the native echo.
+	var ticket providerkit.SteerTicket
+	if !sessionValidated && request.AttemptID != "" {
+		ticket = a.steerLedger.AddIdentified(agent.SteerResolution{
+			InputID: request.InputID, AttemptID: request.AttemptID,
+			Receipt: agent.NativeInputReceipt{SessionID: threadID, TurnID: turnID, InputID: clientID},
+		})
 		if a.pendingSteerCalls == nil {
 			a.pendingSteerCalls = make(map[providerkit.SteerTicket]struct{})
 		}
@@ -328,12 +330,6 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 	return ticket, providerkit.ClassifyJSONRPCDeliveryError("turn/steer", err)
 }
 
-// forgetCodexSteer releases later echoes after a failed call. Call it with outputMu held.
-func (a *Agent) forgetCodexSteer(ticket providerkit.SteerTicket) {
-	a.steerLedger.Forget(ticket)
-	a.steerLedger.Settle(a.sink)
-}
-
 // finishCodexSteersAfterExit forgets requests whose delivery the process never confirmed.
 // The service marks unresolved queue inputs uncertain. Call this with outputMu held.
 func (a *Agent) finishCodexSteersAfterExit() {
@@ -344,7 +340,6 @@ func (a *Agent) finishCodexSteersAfterExit() {
 	clear(a.pendingSteerCalls)
 	a.mainTurn.steers = 0
 	a.Mu.Unlock()
-	a.steerLedger.Settle(a.sink)
 	a.finishDeferredCodexSteerOutput()
 	a.steerLedger.Reset()
 }

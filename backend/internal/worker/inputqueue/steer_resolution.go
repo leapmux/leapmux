@@ -24,7 +24,9 @@ func (s *Store) resolveSteer(ctx context.Context, agentID string, report agent.S
 	if !validateIdentity(report.InputID) || report.AttemptID == "" {
 		return resolvedSteer{}, fmt.Errorf("the steer report requires an input and dispatch identity")
 	}
-	if report.Outcome != agent.SteerOutcomeEchoed && report.Outcome != agent.SteerOutcomeDropped {
+	switch report.Outcome {
+	case agent.SteerOutcomeEchoed, agent.SteerOutcomeDropped, agent.SteerOutcomeUncertain:
+	default:
 		return resolvedSteer{}, fmt.Errorf("invalid identified steer outcome %d", report.Outcome)
 	}
 	if report.Receipt != (agent.NativeInputReceipt{}) &&
@@ -61,6 +63,10 @@ func (s *Store) resolveSteer(ctx context.Context, agentID string, report agent.S
 		if err := compactAfterSteerEcho(ctx, tx, agentID); err != nil {
 			return resolvedSteer{}, err
 		}
+	} else if report.Outcome == agent.SteerOutcomeUncertain {
+		if err := markSteerIDsUncertain(ctx, tx, agentID, []string{report.InputID}); err != nil {
+			return resolvedSteer{}, err
+		}
 	} else if !inFlight {
 		// finishSteer handles a removal that precedes the dispatch reply.
 		if err := requeueSteerIDs(ctx, tx, agentID, []string{report.InputID}); err != nil {
@@ -74,8 +80,8 @@ func (s *Store) resolveSteer(ctx context.Context, agentID string, report agent.S
 	return result, err
 }
 
-// ResolveSteer accepts or requeues the reported dispatch, even if the native
-// echo arrived before the provider returned from delivering it.
+// ResolveSteer applies the reported outcome, even if the provider reports it
+// before returning from the dispatch call.
 func (m *Manager) ResolveSteer(ctx context.Context, agentID string, report agent.SteerResolution, spanLines string) (bool, error) {
 	if !m.beginActivity() {
 		return false, ErrManagerStopped
@@ -101,7 +107,7 @@ func (m *Manager) ResolveSteer(ctx context.Context, agentID string, report agent
 			m.enqueuePublicationLocked(c, queuePublication{
 				snapshot: cloneQueueSnapshot(result.snapshot), accepted: []AcceptedTranscript{result.accepted},
 			})
-		} else if !result.inFlight {
+		} else if !result.inFlight || report.Outcome == agent.SteerOutcomeUncertain {
 			m.enqueueSnapshotLocked(c, result.snapshot)
 		}
 	}

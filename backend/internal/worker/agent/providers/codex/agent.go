@@ -78,6 +78,8 @@ type Agent struct {
 	// outputMu protects notifications that follow the held turn end and their replay.
 	deferredSteerOutput  []*providerkit.ParsedLine
 	replayingSteerOutput bool
+	// outputMu protects echoed steers whose native turn has yet to end.
+	replySteers []agent.NativeInputReceipt
 	// pendingStart keeps delivery ownership after a caller stops waiting.
 	pendingStart     *codexPendingTurnStart
 	replyStarts      map[string]*codexPendingTurnStart
@@ -514,7 +516,7 @@ func (a *Agent) Stop() {
 	a.persistIncompleteCodexTools("", true, completion)
 	a.finishAllCodexRawExecutions(completion)
 	a.retireCodexInputAfterExit()
-	a.retireCodexReplyStarts("")
+	a.retireCodexInputReplies("")
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	a.sink.ReportProgress(agent.ResetProgress())
@@ -530,7 +532,7 @@ func (a *Agent) Wait() error {
 	a.persistIncompleteCodexTools("", true, completion)
 	a.finishAllCodexRawExecutions(completion)
 	a.retireCodexInputAfterExit()
-	a.retireCodexReplyStarts("")
+	a.retireCodexInputReplies("")
 	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	a.sink.ReportProgress(agent.ResetProgress())
@@ -690,7 +692,7 @@ var _ agent.SessionInputSteerer = (*Agent)(nil)
 func (a *Agent) SupportsSteering() bool { return true }
 
 func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	return a.steerInput(nil, request.Content, request.Attachments, true)
+	return a.steerInput(nil, request)
 }
 
 // SteerInputForSession delivers the answer to a LeapMux-owned question. The
@@ -698,10 +700,10 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 // joins no steer ledger: the native echo that later repeats the answer is not
 // news the queue waits for.
 func (a *Agent) SteerInputForSession(sessionID string, request agent.SteerRequest) error {
-	return a.steerInput(&sessionID, request.Content, request.Attachments, false)
+	return a.steerInput(&sessionID, request)
 }
 
-func (a *Agent) steerInput(expected *string, content string, attachments []*leapmuxv1.Attachment, trackEcho bool) error {
+func (a *Agent) steerInput(expected *string, request agent.SteerRequest) error {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.threadID); err != nil {
 		a.Mu.Unlock()
@@ -732,10 +734,10 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	// Retry acceptance must wait until every earlier steer resolves.
 	a.mainTurn.steers++
 	a.Mu.Unlock()
-	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	input, err := buildCodexInputBlocks(request.Content, agent.ClassifyAttachments(request.Attachments))
 	var ticket providerkit.SteerTicket
 	if err == nil {
-		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho, expected != nil)
+		ticket, err = a.sendTurnSteer(threadID, turnID, input, request, expected != nil)
 	}
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
@@ -767,7 +769,7 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	}
 	a.retryOfferMu.Unlock()
 	if err != nil || !stillActive {
-		a.forgetCodexSteer(ticket)
+		a.steerLedger.Forget(ticket)
 	}
 	a.finishDeferredCodexSteerOutput()
 	if err != nil {
