@@ -24,7 +24,7 @@ func computeShells() (shells []string, defaultShell string) {
 		shells = append(shells, defaultShell)
 	}
 
-	knownShells := []string{"sh", "bash", "zsh", "fish", "pwsh", "powershell"}
+	knownShells := []string{"sh", "bash", "zsh", "fish", "nu", "elvish", "pwsh", "powershell"}
 	defaultBase := ShellBaseName(defaultShell)
 	for _, name := range knownShells {
 		if name == defaultBase {

@@ -11,12 +11,14 @@
  * `runCLI`, so a wait that does not end fails with the CLI's own message.
  */
 
+import { spawnSync } from 'node:child_process'
+import { basename } from 'node:path'
 import { expect } from '@playwright/test'
 import { TerminalStatus } from '../../src/generated/proto/leapmux/v1/terminal_pb'
 import { test } from './fixtures'
 import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { waitForTerminalText } from './helpers/terminal'
-import { tabById } from './helpers/ui'
+import { openNewTerminalDialog, tabById, workspaceRow } from './helpers/ui'
 import { waitForTerminalExitViaAPI } from './helpers/workerTabs'
 
 /** The result of `terminal open`. */
@@ -45,6 +47,36 @@ interface TerminalRecord {
 }
 
 test.describe('control CLI terminals', () => {
+  test('lists installed Nushell and Elvish in the CLI and terminal picker', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    const installed = [
+      { name: 'nu', version: '--version' },
+      { name: 'elvish', version: '-version' },
+    ].filter(shell => spawnSync(shell.name, [shell.version], { stdio: 'ignore' }).status === 0).map(shell => shell.name)
+    test.skip(installed.length === 0, 'Neither Nushell nor Elvish is installed on the test host.')
+
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
+    const listed = await runCLI(cli, [
+      'terminal',
+      'shells',
+      '--worker',
+      leapmuxServer.workerId,
+    ]) as { shells: string[], default_shell: string }
+    const shellName = (path: string) => basename(path).replace(/\.exe$/i, '')
+    const paths = listed.shells.filter(path => installed.includes(shellName(path)))
+    expect(paths.map(shellName)).toEqual(expect.arrayContaining(installed))
+
+    await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
+    await openNewTerminalDialog(page)
+    const dialog = page.getByRole('dialog', { name: 'New Terminal' })
+    await dialog.getByTestId('shell-select-menu-trigger').click()
+    for (const path of paths) {
+      const label = path === listed.default_shell
+        ? `${path} (default)`
+        : path
+      await expect(page.getByRole('menuitemradio', { name: label, exact: true })).toBeVisible()
+    }
+  })
+
   test('runs the initial command of a terminal that the CLI opens', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     const cli = await mintCLITokenForAdmin(leapmuxServer)
     // The shell prints the product, which the command line does not hold, so

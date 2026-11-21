@@ -787,7 +787,7 @@ Press **Enter** — that's the only key an exited terminal acts on; it restarts 
 The **Shell** dropdown in the **New terminal** dialog doesn't list the shell you want, or shows **"No shells available"**.
 
 **Cause**
-The shell list is probed **on the Worker**. The Worker resolves a default shell (from `LEAPMUX_DEFAULT_SHELL`, then `SHELL`, then platform detection) and probes a fixed known-shells set (`sh`, `bash`, `zsh`, `fish`, `pwsh`, `powershell`) via `PATH`. Only shells found on the Worker appear.
+The Worker builds the shell list. It resolves the default shell from `LEAPMUX_DEFAULT_SHELL`, then `SHELL`, then platform detection. It also searches `PATH` for `sh`, `bash`, `zsh`, `fish`, `nu` (Nushell), `elvish`, `pwsh`, and `powershell`.
 
 **Fix**
 Install the shell on the Worker and ensure it's on the Worker's `PATH`, then reopen the dialog (the list is per-Worker and refetched when you change Worker). To force a specific default, set `LEAPMUX_DEFAULT_SHELL` in the Worker's environment (a bare name like `zsh` or an absolute path).
