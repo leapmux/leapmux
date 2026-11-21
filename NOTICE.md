@@ -520,10 +520,10 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [tao 0.37.2 (Apache-2.0)](#tao-0372-apache-20)
 - [tao-macros 0.1.4 (MIT OR Apache-2.0)](#tao-macros-014-mit-or-apache-20)
 - [target-lexicon 0.12.16 (Apache-2.0 WITH LLVM-exception)](#target-lexicon-01216-apache-20-with-llvm-exception)
-- [tauri 2.12.6 (Apache-2.0 OR MIT)](#tauri-2126-apache-20-or-mit)
-- [tauri-build 2.7.5 (Apache-2.0 OR MIT)](#tauri-build-275-apache-20-or-mit)
-- [tauri-codegen 2.7.5 (Apache-2.0 OR MIT)](#tauri-codegen-275-apache-20-or-mit)
-- [tauri-macros 2.7.5 (Apache-2.0 OR MIT)](#tauri-macros-275-apache-20-or-mit)
+- [tauri 2.12.7 (Apache-2.0 OR MIT)](#tauri-2127-apache-20-or-mit)
+- [tauri-build 2.7.6 (Apache-2.0 OR MIT)](#tauri-build-276-apache-20-or-mit)
+- [tauri-codegen 2.7.6 (Apache-2.0 OR MIT)](#tauri-codegen-276-apache-20-or-mit)
+- [tauri-macros 2.7.6 (Apache-2.0 OR MIT)](#tauri-macros-276-apache-20-or-mit)
 - [tauri-plugin 2.7.2 (Apache-2.0 OR MIT)](#tauri-plugin-272-apache-20-or-mit)
 - [tauri-plugin-autostart 2.7.0 (Apache-2.0 OR MIT)](#tauri-plugin-autostart-270-apache-20-or-mit)
 - [tauri-plugin-clipboard-manager 2.5.0 (Apache-2.0 OR MIT)](#tauri-plugin-clipboard-manager-250-apache-20-or-mit)
@@ -532,9 +532,9 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [tauri-plugin-notification 2.8.1 (Apache-2.0 OR MIT)](#tauri-plugin-notification-281-apache-20-or-mit)
 - [tauri-plugin-opener 2.7.3 (Apache-2.0 OR MIT)](#tauri-plugin-opener-273-apache-20-or-mit)
 - [tauri-plugin-single-instance 2.5.5 (Apache-2.0 OR MIT)](#tauri-plugin-single-instance-255-apache-20-or-mit)
-- [tauri-runtime 2.12.3 (Apache-2.0 OR MIT)](#tauri-runtime-2123-apache-20-or-mit)
-- [tauri-runtime-wry 2.12.4 (Apache-2.0 OR MIT)](#tauri-runtime-wry-2124-apache-20-or-mit)
-- [tauri-utils 2.10.3 (Apache-2.0 OR MIT)](#tauri-utils-2103-apache-20-or-mit)
+- [tauri-runtime 2.12.4 (Apache-2.0 OR MIT)](#tauri-runtime-2124-apache-20-or-mit)
+- [tauri-runtime-wry 2.12.5 (Apache-2.0 OR MIT)](#tauri-runtime-wry-2125-apache-20-or-mit)
+- [tauri-utils 2.10.4 (Apache-2.0 OR MIT)](#tauri-utils-2104-apache-20-or-mit)
 - [tauri-winres 0.3.7 (MIT)](#tauri-winres-037-mit)
 - [tauri-winrt-notification 0.8.1 (MIT OR Apache-2.0)](#tauri-winrt-notification-081-mit-or-apache-20)
 - [tempfile 3.27.0 (MIT OR Apache-2.0)](#tempfile-3270-mit-or-apache-20)
@@ -76692,7 +76692,7 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ```
 
-### tauri 2.12.6 (Apache-2.0 OR MIT)
+### tauri 2.12.7 (Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -76897,7 +76897,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-build 2.7.5 (Apache-2.0 OR MIT)
+### tauri-build 2.7.6 (Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -77102,7 +77102,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-codegen 2.7.5 (Apache-2.0 OR MIT)
+### tauri-codegen 2.7.6 (Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -77307,7 +77307,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-macros 2.7.5 (Apache-2.0 OR MIT)
+### tauri-macros 2.7.6 (Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -79315,7 +79315,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-runtime 2.12.3 (Apache-2.0 OR MIT)
+### tauri-runtime 2.12.4 (Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -79520,7 +79520,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-runtime-wry 2.12.4 (Apache-2.0 OR MIT)
+### tauri-runtime-wry 2.12.5 (Apache-2.0 OR MIT)
 
 ```
                                  Apache License
@@ -79725,7 +79725,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-utils 2.10.3 (Apache-2.0 OR MIT)
+### tauri-utils 2.10.4 (Apache-2.0 OR MIT)
 
 ```
                                  Apache License

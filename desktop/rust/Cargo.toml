@@ -21,7 +21,7 @@ sha2 = "0.11"
 # decodes the PNG at COMPILE time into OUT_DIR. Only `Image::from_bytes` and
 # `Image::from_path` need that feature, and both would move the decode into
 # startup for no gain.
-tauri = { version = "=2.12.6", features = ["devtools", "tray-icon"] }
+tauri = { version = "=2.12.7", features = ["devtools", "tray-icon"] }
 tauri-plugin-clipboard-manager = "=2.5.0"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "=2.7.3"
