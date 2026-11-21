@@ -41,13 +41,15 @@ type Agent struct {
 	turnOrder          providerkit.TurnSeq
 	activityRevision   uint64
 
-	// outputMu serializes the reader goroutine against every caller that replaces
-	// or ends the session. It also guards the three maps below, which only those
-	// two paths touch.
+	// outputMu serializes the native reader with send acknowledgments, session
+	// replacement, and shutdown. It guards the session's output state below.
 	outputMu  sync.Mutex
 	closing   bool
 	children  map[string]*copilotNativeChild
 	openTools map[string]*copilotOpenTool
+	// replyCaptures owns the submitted inputs still awaiting native proof.
+	// outputMu orders the reader, acknowledgement, and session retirement.
+	replyCaptures map[*copilotReplyCapture]struct{}
 	// nextNativeToolOrder numbers the open calls, so a turn that ends with several
 	// of them closes each one in the order the runtime opened it.
 	nextNativeToolOrder uint64
@@ -98,6 +100,7 @@ type Agent struct {
 }
 
 var _ agent.Agent = (*Agent)(nil)
+var _ agent.InputReceiptSender = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.SteerEchoReporter = (*Agent)(nil)
 var _ agent.SteerSurvivor = (*Agent)(nil)
@@ -141,6 +144,7 @@ func (a *Agent) stopNativeConnection() {
 	a.closing = true
 	a.clearNativeChildren()
 	a.clearNativeControls()
+	a.discardNativeReplyCaptures()
 	a.outputMu.Unlock()
 	a.forgetNativeControlEvents()
 	a.clearNativeCompaction()
@@ -235,6 +239,10 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 	return a.sendInputForSession(nil, content, attachments)
 }
 
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments, true)
+}
+
 // CompactContext asks the native runtime to summarize the current session.
 // The RPC can take a model turn, so the response ends the active state after
 // the request leaves this method. The runtime supplies the transcript notices.
@@ -305,28 +313,34 @@ func (a *Agent) reportNativeCompactionError(err error) {
 }
 
 func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.sendNativeInput(expected, content, attachments, false)
+	return err
+}
+
+func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment, trackReply bool) (receipt agent.NativeInputReceipt, sendErr error) {
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
 	if a.IsStopped() {
-		return fmt.Errorf("the Copilot process is stopped")
+		return receipt, fmt.Errorf("the Copilot process is stopped")
 	}
 	a.stateMu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.stateMu.Unlock()
-		return err
+		return receipt, err
 	}
 	if a.active || a.compactingRevision != 0 {
 		a.stateMu.Unlock()
-		return agent.ErrAgentBusy
+		return receipt, agent.ErrAgentBusy
 	}
 	if a.sessionID == "" {
 		a.stateMu.Unlock()
-		return fmt.Errorf("the Copilot session is unavailable")
+		return receipt, fmt.Errorf("the Copilot session is unavailable")
 	}
 	a.active = true
 	a.activityRevision++
 	revision := a.activityRevision
 	fleet := a.fleetOnLocked()
+	sessionID := a.sessionID
 	a.stateMu.Unlock()
 	a.PublishTurnActive()
 	values := map[string]any{"prompt": content}
@@ -334,7 +348,16 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		values["attachments"] = copilotBlobAttachments(attachments)
 	}
 	if fleet {
-		return a.startFleetTurn(values, revision)
+		return receipt, a.startFleetTurn(values, revision)
+	}
+	var capture *copilotReplyCapture
+	if trackReply {
+		capture = a.beginNativeReplyCapture(sessionID)
+		defer func() {
+			if sendErr != nil {
+				a.discardNativeReplyCapture(capture)
+			}
+		}()
 	}
 	raw, err := a.requestNativeSession("send", values)
 	if err != nil {
@@ -342,15 +365,18 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		if errors.As(err, &rejection) {
 			a.rejectNativeInput(revision)
 		}
-		return providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
+		return receipt, providerkit.ClassifyJSONRPCDeliveryError("session.send", err)
 	}
 	var response struct {
 		MessageID string `json:"messageId"`
 	}
 	if json.Unmarshal(raw, &response) != nil || response.MessageID == "" {
-		return fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
+		return receipt, fmt.Errorf("%w: Copilot omitted the delivered message ID", agent.ErrDeliveryUncertain)
 	}
-	return nil
+	if capture != nil {
+		receipt = a.acceptNativeReplyCapture(capture, response.MessageID)
+	}
+	return receipt, nil
 }
 
 // startFleetTurn starts a new turn as a fleet request, which tells the model to
@@ -513,6 +539,7 @@ func (a *Agent) Stop() {
 	a.outputMu.Lock()
 	a.clearNativeChildren()
 	a.clearNativeControls()
+	a.discardNativeReplyCaptures()
 	a.outputMu.Unlock()
 	a.clearNativeCompaction()
 	a.setNativeTurnActive(false)
@@ -524,6 +551,7 @@ func (a *Agent) Wait() error {
 	a.closing = true
 	a.clearNativeChildren()
 	a.clearNativeControls()
+	a.discardNativeReplyCaptures()
 	a.outputMu.Unlock()
 	a.forgetNativeControlEvents()
 	a.clearNativeCompaction()

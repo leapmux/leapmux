@@ -1000,17 +1000,23 @@ func (a *Agent) persistNativeFrameTo(sink agent.ProviderServices, raw []byte, sp
 		Method string `json:"method"`
 		Params struct {
 			Event struct {
-				Type string `json:"type"`
+				Type    string `json:"type"`
+				ID      string `json:"id"`
+				AgentID string `json:"agentId"`
 			} `json:"event"`
 		} `json:"params"`
 	}
+	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}
 	if json.Unmarshal(raw, &header) == nil && header.Method == copilotMethodSessionEvent {
 		if _, dropped := copilotDroppedEvents[header.Params.Event.Type]; dropped || copilotEventIsRuntimeTrace(header.Params.Event.Type) {
 			return
 		}
+		event := header.Params.Event
+		if event.Type == contracts.CopilotEventAssistantMessage && event.ID != "" && event.AgentID == "" {
+			content.IdempotencyKey = copilotReplyMessageKey(event.ID)
+		}
 	}
-	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}, span); err != nil {
+	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span); err != nil {
 		slog.Error("Persist Copilot event", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -1042,6 +1048,7 @@ func (a *Agent) handleNativeOutput(line *providerkit.ParsedLine) {
 		return
 	}
 	a.handleNativeEvent(line.Raw, event)
+	a.observeNativeReply(line.Raw, event)
 }
 
 func (a *Agent) persistNativeFrame(raw []byte, span agent.SpanInfo) {

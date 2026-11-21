@@ -149,6 +149,7 @@ func (a *Agent) forgetNativeSessionState(nextSessionID string) {
 	a.steers.DropAll()
 	a.steers.Settle(a.sink)
 	a.clearNativeControls()
+	a.discardNativeReplyCaptures()
 	// The tool calls that the outgoing turn counted end with that turn, so the first
 	// turn of the replacement starts from zero.
 	a.turnToolUses = 0
