@@ -771,9 +771,9 @@ func TestRunAuthLogin_LocalRedirectLoginWithOpenBrowserReplaced(t *testing.T) {
 	}
 	t.Cleanup(func() { control.OpenBrowser = prev })
 
-	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthLogin(fakeCmdCtx{}, []string{"--hub", srv.URL, "--device-name", "test-laptop"}))
-	})
+	out := runControl(t, "auth", "login", "--hub", srv.URL, "--device-name", "test-laptop")
+	assert.Equal(t, "loopuser", out.Data(t)["username"])
+	assert.Len(t, out.lines(), 1)
 
 	creds, err := control.LoadCredentials(srv.URL)
 	require.NoError(t, err)
@@ -786,7 +786,8 @@ func TestRunAuthLogin_LocalRedirectLoginWithOpenBrowserReplaced(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, 1, openHits, "one login opens the detour once")
 	assert.Contains(t, opened, "/oauth/authorize?")
-	assert.Contains(t, string(out), opened, "the opener gets the URL the CLI printed")
+	assert.Contains(t, out.Stderr, opened, "the opener gets the URL the CLI printed")
+	assert.NotContains(t, out.Stdout, opened)
 	require.NotNil(t, tokenForm)
 	assert.Equal(t, "authorization_code", tokenForm.Get("grant_type"))
 	assert.Equal(t, "C-9", tokenForm.Get("code"))

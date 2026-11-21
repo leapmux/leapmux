@@ -12,8 +12,8 @@ import (
 
 	"github.com/coder/quartz"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/leapmux/leapmux/util/useronly"
 )
 
