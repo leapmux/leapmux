@@ -313,7 +313,7 @@ func TestKimiReconnectReadsBackTheStatusTheStreamMissed(t *testing.T) {
 		session.PlanMode = true
 		session.SwarmMode = true
 	})
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 
 	waitFor(t, func() bool {
 		return rig.sink.PermissionMode() == contracts.KimiModePlan &&
@@ -410,7 +410,7 @@ func beginNativeKimiReconnect(t *testing.T, rig *kimiTestRig, frames ...any) fun
 	rig.fake.mu.Unlock()
 	rig.fake.update(sessionID, func(session *fakeKapSession) { session.ReplayFrames = append([]any(nil), frames...) })
 	rig.fake.setSubscribeCodeFor(nil)
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	return func() bool {
 		select {
 		case err := <-requestResult:
@@ -555,7 +555,7 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 			rig.fake.push(t, approval)
 			return kimiCodeOK
 		})
-		rig.fake.closeConnections()
+		require.NoError(t, rig.fake.disconnectClients())
 		waitFor(t, func() bool { return rig.sink.PublishedControlCount() == 1 }, "the loaded native session re-emits its pending request")
 		require.Len(t, rig.fake.subscribeFrames(), 3)
 		rig.agent.stream.mu.Lock()
@@ -787,8 +787,15 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		foregroundBefore, backgroundBefore := len(foregroundSink.TurnActives()), len(backgroundSink.TurnActives())
 		rig.fake.mu.Lock()
 		rig.fake.taskStateFor = func(command fakeKimiTaskCommand) any {
-			assert.Equal(t, foreground.taskID, command.TaskID)
-			return foreground.taskState("ended", "killed")
+			switch command.TaskID {
+			case foreground.taskID:
+				return foreground.taskState("ended", "killed")
+			case background.taskID:
+				return background.taskState("running", "")
+			default:
+				t.Errorf("unexpected task lookup for %q", command.TaskID)
+				return nil
+			}
 		}
 		rig.fake.mu.Unlock()
 		list, err := json.Marshal(map[string]any{"type": contracts.KimiEventTaskList, "session_id": rig.sessionID(), "agent_id": kimiMainAgentID,

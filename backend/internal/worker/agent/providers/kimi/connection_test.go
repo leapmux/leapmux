@@ -422,6 +422,40 @@ func assertKimiNativeSubscriptionCommand(t *testing.T, subscription fakeKapSubsc
 	assert.Len(t, command, fields, "the command contains only the current native subscription fields")
 }
 
+func TestKimiFakeSocketRestartSendsCloseFrame(t *testing.T) {
+	t.Parallel()
+	fake, server := newFakeKap(t)
+	endpoint, err := providerkit.NewHTTPEndpoint(server.URL, providerkit.BearerAuth(fakeKapToken))
+	require.NoError(t, err)
+	t.Cleanup(endpoint.Close)
+	ctx := testutil.DeadlineContext(t)
+	const clients = 2
+	readResults := make(chan error, clients)
+	for range clients {
+		conn, err := endpoint.OpenWebSocket(ctx, kimiRouteWS, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.CloseNow() })
+		go func() {
+			_, _, err := conn.Read(ctx)
+			readResults <- err
+		}()
+	}
+	waitFor(t, func() bool { return fake.connectionCount() == clients }, "the fake records every socket before the restart")
+
+	require.NoError(t, fake.disconnectClients())
+	for range clients {
+		select {
+		case readErr := <-readResults:
+			require.Error(t, readErr)
+			assert.Equal(t, websocket.StatusGoingAway, websocket.CloseStatus(readErr), "each peer must receive a close frame")
+		case <-ctx.Done():
+			t.Fatal("a client did not receive the restart close frame")
+		}
+	}
+	assert.Zero(t, fake.connectionCount())
+	require.ErrorContains(t, fake.disconnectClients(), "no connected clients")
+}
+
 func TestKimiReconnectConfirmationCannotOutliveItsConnection(t *testing.T) {
 	t.Parallel()
 	rig := newKimiStreamRig(t)
@@ -444,10 +478,10 @@ func TestKimiReconnectConfirmationCannotOutliveItsConnection(t *testing.T) {
 			return nil
 		}
 	}
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	first := nextConfirmation()
 	require.NoError(t, first.Err())
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	second := nextConfirmation()
 	assert.ErrorIs(t, first.Err(), context.Canceled, "a replacement socket cannot confirm the previous socket's replay")
 	assert.NoError(t, second.Err(), "the new connection retains its own live confirmation context")
@@ -644,21 +678,25 @@ func TestKimiStreamSubscribe(t *testing.T) {
 		t.Parallel()
 		rig := newKimiStreamRig(t)
 		release := make(chan struct{})
+		defer close(release)
+		ctx := testutil.DeadlineContext(t)
 		rig.fake.setSubscribeCodeFor(func(sub fakeKapSubscribe) int {
 			<-release
 			return kimiCodeOK
 		})
 		done := make(chan error, 1)
 		go func() {
-			err := rig.stream.subscribe(context.Background(), "session_1")
+			err := rig.stream.subscribe(ctx, "session_1")
 			done <- err
 		}()
 		waitFor(t, func() bool { return len(rig.fake.subscribeFrames()) == 1 }, "the subscribe reaches the server")
-		rig.fake.closeConnections()
-		err := <-done
-		close(release)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "closed before the subscribe response")
+		require.NoError(t, rig.fake.disconnectClients())
+		select {
+		case err := <-done:
+			require.ErrorContains(t, err, "closed before the subscribe response")
+		case <-ctx.Done():
+			t.Fatal("closing the socket did not release the pending subscription")
+		}
 	})
 }
 
@@ -687,7 +725,7 @@ func TestKimiStreamReconnectsAndRestoresSubscriptions(t *testing.T) {
 	}
 	push("before reconnect")
 	waitFor(t, func() bool { return len(rig.conversationFrames()) == 1 }, "the first native event arrives")
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	waitFor(t, func() bool { return len(rig.fake.subscribeFrames()) == 2 }, "the stream restores its exact subscription on a new socket")
 	subscription := rig.fake.subscribeFrames()[1]
 	assert.Equal(t, "session_1", subscription.SessionID)
@@ -737,7 +775,7 @@ func TestKimiStreamReconnectsWithoutPriorConversation(t *testing.T) {
 	err := rig.stream.subscribe(context.Background(), "session_1")
 	require.NoError(t, err)
 
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	waitFor(t, func() bool { return len(rig.reconnected()) == 1 }, "the stream re-subscribes on a new socket")
 	assertKimiNativeSubscriptionCommand(t, rig.fake.subscribeFrames()[1])
 	assert.Equal(t, []kimiReconnect{{sessionID: "session_1"}}, rig.reconnected(),
@@ -760,7 +798,7 @@ func TestKimiStreamResyncsWhatItCannotReplay(t *testing.T) {
 		}
 		return kimiCodeOK
 	})
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	waitFor(t, func() bool { return len(rig.reconnected()) == 2 }, "both sessions resync")
 	assert.Equal(t, []kimiReconnect{{sessionID: "session_1"}, {sessionID: "session_2"}}, rig.reconnected(),
 		"each renewed or unavailable session reaches its recovery handler once")
@@ -853,7 +891,7 @@ func TestKimiStreamCloseEndsItsGoroutines(t *testing.T) {
 		armed := clock.Trap().NewTimer(kimiStreamReconnectTimerTag)
 		defer armed.Close()
 		rig := newKimiStreamRigOnClock(t, clock, kimiStreamFirstBackoff)
-		rig.fake.closeConnections()
+		require.NoError(t, rig.fake.disconnectClients())
 		assert.Equal(t, kimiStreamFirstBackoff, testutil.WaitForTimer(t, ctx, armed), "the reader waits before it dials again")
 
 		rig.stream.close()
@@ -913,7 +951,7 @@ func TestKimiStreamKeepsDialingAfterAFailedReconnect(t *testing.T) {
 	require.NoError(t, err)
 
 	rig.fake.refuseNextSockets(3)
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	waitFor(t, func() bool { return len(rig.reconnected()) == 1 }, "the stream re-subscribes once a dial succeeds")
 	assert.Equal(t, 5, rig.fake.socketDialCount(), "the first socket, three refused dials, and the one that succeeded")
 	assert.Equal(t, []kimiReconnect{{sessionID: "session_1"}}, rig.reconnected())
@@ -935,7 +973,7 @@ func TestKimiStreamReconnectBackoffDoublesUpToItsCap(t *testing.T) {
 		kimiStreamMaxBackoff, kimiStreamMaxBackoff, kimiStreamMaxBackoff,
 	}
 	rig.fake.refuseNextSockets(len(want) - 1)
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	for i, delay := range want {
 		require.Equal(t, delay, testutil.WaitForTimer(t, ctx, armed), "the wait before dial %d", i+1)
 		clock.Advance(delay).MustWait(ctx)
@@ -1239,7 +1277,7 @@ func TestKimiStreamDropsCachedStateWhileDisconnected(t *testing.T) {
 		_, exists := rig.stream.sessionStatus("session_1")
 		return exists
 	}, "the native state frame arrives after its acknowledgement")
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	assert.Equal(t, kimiStreamFirstBackoff, testutil.WaitForTimer(t, ctx, reconnectTimer))
 	_, exists := rig.stream.sessionStatus("session_1")
 	assert.False(t, exists, "disconnected state must not satisfy a settings confirmation")

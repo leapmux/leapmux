@@ -371,16 +371,39 @@ func (f *fakeKap) push(t *testing.T, frame any) {
 	require.NoError(t, conn.write(ctx, frame))
 }
 
-// closeConnections closes every event socket, as a server restart or a network
-// failure does.
-func (f *fakeKap) closeConnections() {
+func (f *fakeKap) takeConnections() []*fakeKapConn {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	conns := f.conns
 	f.conns = nil
-	f.mu.Unlock()
-	for _, conn := range conns {
+	return conns
+}
+
+// closeConnections drops every socket during fixture shutdown.
+func (f *fakeKap) closeConnections() {
+	for _, conn := range f.takeConnections() {
 		_ = conn.conn.CloseNow()
 	}
+}
+
+// disconnectClients simulates a server restart with a WebSocket close frame.
+// An abrupt TCP close can leave a loopback read parked on macOS arm64.
+// See https://github.com/golang/go/issues/37795.
+func (f *fakeKap) disconnectClients() error {
+	conns := f.takeConnections()
+	if len(conns) == 0 {
+		return errors.New("the fake Kimi server has no connected clients to disconnect")
+	}
+	var closeErr error
+	for _, conn := range conns {
+		err := conn.conn.Close(websocket.StatusGoingAway, "the fake Kimi server is restarting")
+		// Close sends the frame before reading the acknowledgment. The peer can
+		// end the transport first while its other requests are still in flight.
+		if !errors.Is(err, io.EOF) {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+	return closeErr
 }
 
 func (f *fakeKap) ServeHTTP(w http.ResponseWriter, r *http.Request) {

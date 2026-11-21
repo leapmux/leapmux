@@ -376,7 +376,7 @@ func TestKimiChildInvocationFenceDefersStateUntilParentReplay(t *testing.T) {
 	rig.fake.beforeReplay = func(fakeKapSubscribe) { enteredOnce(); <-released }
 	rig.fake.sessions[rig.sessionID()].ReplayFrames = []any{json.RawMessage(page)}
 	rig.fake.mu.Unlock()
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-entered:
@@ -406,7 +406,7 @@ func TestKimiChildInvocationFenceCompletesWithEmptyConversationPages(t *testing.
 	rig.fake.mu.Lock()
 	rig.fake.beforeReplay = func(fakeKapSubscribe) { enteredOnce(); <-released }
 	rig.fake.mu.Unlock()
-	rig.fake.closeConnections()
+	require.NoError(t, rig.fake.disconnectClients())
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-entered:
