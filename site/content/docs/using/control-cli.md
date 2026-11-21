@@ -447,6 +447,9 @@ A script that loses the answer of `agent send` or `agent open`, for a timeout or
 - `terminal open --command <command>` opens an interactive shell that evaluates the command after its startup files run. Use Bash, zsh, fish, sh, or Dash on Unix, or use PowerShell. The Worker reports a startup failure if the shell cannot acknowledge the handoff. `--command -` reads the command from stdin. A restart does not run the command again. If the Worker stops after claiming the command, recovery reports an unverified outcome. Use `terminal wait --exit` to get the shell's exit code.
   - With `--command`, macOS system Bash loads the standard login profiles from an interactive startup file.
 - `terminal get` prints `exit_code` once the shell ended.
+- `terminal restart <terminal>` starts a new shell after the previous one exits. Use `--replace` to end a running shell and start a new one in the same tab. The Worker preserves the scrollback and refuses if the shell changed after the CLI looked it up.
+  - `--command <command>` runs a new command after the replacement shell's startup files. Use `--command -` to read the command from stdin.
+  - Replacing the calling terminal ends the CLI process that requested it. Pass `--allow-self` to do this deliberately.
 - `terminal wait <terminal>` waits until the shell ends or the terminal shows a text; see [Waiting for terminals](#waiting-for-terminals).
 - `terminal read [terminal]` prints what the terminal shows as plain text. It replays retained output and recorded resizes through the same terminal emulator as `terminal wait`.
   - Each row loses its trailing blanks, and the empty rows at the end of the screen do not print.

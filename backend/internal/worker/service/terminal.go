@@ -136,12 +136,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, dispatchTracked,
 		svc.handleOpenTerminal)
 
-	// RestartTerminal respawns the shell process for a terminal whose
-	// previous PTY has exited. Reuses the tab's working_dir / shell /
-	// shell_start_dir and mints fresh LEAPMUX_CONTROL_* env vars. The
-	// existing screen buffer (including the "[Terminal process exited
-	// (N) - Press Enter to restart]" notice) is preserved so the new
-	// shell's prompt lands directly below the notice.
+	// RestartTerminal starts a new shell in the existing tab. An explicit
+	// replacement stops the observed shell before it starts the next one.
 	registerTerminalForRestartGuarded(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
@@ -183,13 +179,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, "terminal startup in progress")
 				return
 			}
-			// Reject synchronously if the PTY is still alive so the user sees
-			// FailedPrecondition rather than waiting for an async
-			// STARTUP_FAILED broadcast from the spawn goroutine. The TOCTOU
-			// between this check and Manager.RestartTerminal's own check is
-			// benign: a PTY that exits between calls yields a false reject
-			// that retrying Enter resolves.
-			if svc.Terminals.IsRunning(terminalID) {
+			replaceShellID := r.GetReplaceShellInstanceId()
+			if replaceShellID == "" && svc.Terminals.IsRunning(terminalID) {
 				sendFailedPrecondition(sender, terminal.ErrTerminalStillRunning.Error())
 				return
 			}
@@ -217,6 +208,11 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendFailedPrecondition(sender, "terminal has no shell to restart")
 				return
 			}
+			command := r.GetInitialCommand()
+			if err := terminal.CheckInitialCommand(shell, command); err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
 
 			// Seed STARTING without git status — the goroutine fetches and
 			// re-broadcasts with branch/origin once it lands. Mirrors
@@ -233,7 +229,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				svc.sendStartupRefused(sender, "a restart for this terminal is already in progress")
 				return
 			}
-			if !svc.Terminals.ExitHandlerFinished(terminalID) {
+			if replaceShellID == "" && !svc.Terminals.ExitHandlerFinished(terminalID) {
 				svc.TerminalStartup.abandon(startupHandle)
 				sendFailedPrecondition(sender, "terminal exit cleanup is still in progress; try again")
 				return
@@ -244,6 +240,18 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if !open || refuseArchivedWrite(sender, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, live.WorkspaceArchived, "terminal") {
 				svc.TerminalStartup.abandon(startupHandle)
 				return
+			}
+			if replaceShellID != "" {
+				// The old exit is visible before the response. A wait that follows
+				// the response can observe startup without ending on that exit.
+				stopCtx, cancelStop := context.WithTimeout(startupCtx, svc.creationAttemptTimeout())
+				err := svc.Terminals.StopShellForRestart(stopCtx, terminalID, replaceShellID)
+				cancelStop()
+				if err != nil {
+					svc.TerminalStartup.abandon(startupHandle)
+					sendFailedPrecondition(sender, fmt.Sprintf("stop the previous shell: %v", err))
+					return
+				}
 			}
 			svc.announceTerminalStarting(terminalID, shell)
 
@@ -268,12 +276,14 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				WorkingDir: dbTerm.WorkingDir,
 			}
 			go svc.runTerminalRestart(startupCtx, terminal.Options{
-				ID:            terminalID,
-				Shell:         shell,
-				WorkingDir:    dbTerm.WorkingDir,
-				ShellStartDir: dbTerm.ShellStartDir,
-				Cols:          uint16(cols),
-				Rows:          uint16(rows),
+				ID:                terminalID,
+				Shell:             shell,
+				WorkingDir:        dbTerm.WorkingDir,
+				ShellStartDir:     dbTerm.ShellStartDir,
+				Cols:              uint16(cols),
+				Rows:              uint16(rows),
+				InitialCommand:    command,
+				InitialCommandDir: svc.DataDir,
 			}, spawnInfo, fallbackOffset, outputFn, exitFn, startupHandle)
 		})
 
@@ -594,6 +604,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Quake:           row.IsQuake,
 				GitStatus:       gitStatuses[e.ID],
 				ExitCode:        state.exitCode,
+				ShellInstanceId: state.shellInstanceID,
 			}
 			terminals = append(terminals, ti)
 		}
@@ -625,6 +636,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Quake:           ts.IsQuake,
 				GitStatus:       gitStatuses[ts.ID],
 				ExitCode:        state.exitCode,
+				ShellInstanceId: state.shellInstanceID,
 			}
 			terminals = append(terminals, ti)
 		}
@@ -900,11 +912,9 @@ func (svc *Service) runTerminalRestart(
 	// path; see its doc for what minting first cost.
 	//
 	// The previous spawn's token is retired on every exit from here, including
-	// the fatal-identity path. The old PTY has already exited by the time this
-	// runs -- RestartTerminal refuses synchronously while IsRunning -- so there
-	// is no live shell whose remote control needs preserving, and leaving the
-	// old cleanup registered would strand a listening unix socket plus an
-	// unrevoked per-user delegation bearer for a process that is gone.
+	// the fatal-identity path. The old PTY and its exit handler have finished.
+	// Leaving the old cleanup registered would leave its socket and bearer
+	// available after the process exited.
 	remoteEnvs, ownsIPCToken, ipcErr := svc.remintControlIPC(tabKindTerminal, terminalID, "restart", spawnInfo.UserID,
 		func() ([]string, func(), error) {
 			return svc.ControlIPC.TerminalSpawning(spawnInfo)
@@ -1126,6 +1136,8 @@ type terminalState struct {
 	startupError string
 	// startupMessage is set only for STARTING.
 	startupMessage string
+	// shellInstanceID is set only for READY.
+	shellInstanceID string
 	// exitCode is set only for EXITED, and only when the Worker holds a record
 	// of the exit: the exit code of the shell that ended, as
 	// TerminalClosed.exit_code states it.
@@ -1171,7 +1183,7 @@ func (svc *Service) deriveTerminalStatus(t *db.Terminal) terminalState {
 	}
 	shell := svc.Terminals.ShellStatus(t.ID)
 	if shell.Running {
-		return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY}
+		return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, shellInstanceID: shell.InstanceID}
 	}
 	if t.StartupError != "" {
 		return terminalState{status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, startupError: t.StartupError}

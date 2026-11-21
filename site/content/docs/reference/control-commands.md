@@ -1535,8 +1535,15 @@ leapmux control terminal restart <terminal> [flags]
 |---|---|
 | `<terminal>` | A terminal id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the terminal that runs this command. |
 
+| Flag | Description |
+|---|---|
+| `--replace` | stop the running shell before starting a new one in the same tab |
+| `--command string` | run this command in the new shell after its startup files, or read it from stdin with - |
+| `--allow-self` | replace this tab's shell even though it ends this command's own process |
+
 ```sh
 leapmux control terminal restart 4cbb3f34
+leapmux control terminal restart 4cbb3f34 --replace --command 'npm run dev'
 ```
 
 ### `leapmux control terminal shells`

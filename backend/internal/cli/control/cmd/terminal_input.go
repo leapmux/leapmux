@@ -147,11 +147,9 @@ func runTerminalRun(inv *cli.Invocation) (any, error) {
 	return terminalRunResult{ID: id, Command: command}, nil
 }
 
-// readCommandLine reads one command line for `terminal run` and for
-// `terminal open --command`: text, or standard input when text is "-". It
-// drops the line endings at the end, because the Worker presses Enter itself,
-// and it refuses a command that holds nothing else. name states the source of
-// the command in that refusal, such as "--command".
+// readCommandLine reads a command from text, or from stdin when text is "-".
+// It drops trailing line endings and refuses an empty command. name identifies
+// the source in the refusal, such as "--command".
 func readCommandLine(inv *cli.Invocation, text, name string) (string, error) {
 	if text == "-" {
 		data, err := io.ReadAll(inv.Stdin)
@@ -167,9 +165,7 @@ func readCommandLine(inv *cli.Invocation, text, name string) (string, error) {
 	return text, nil
 }
 
-// initialCommandOf reads --command of `terminal open`: the command line that
-// the new shell runs once it is ready. It returns "" when the command line
-// gives none.
+// initialCommandOf reads --command for the new shell when the caller supplied it.
 func initialCommandOf(inv *cli.Invocation) (string, error) {
 	if !inv.Changed("command") {
 		return "", nil

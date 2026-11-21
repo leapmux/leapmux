@@ -103,15 +103,17 @@ message OpenTerminalResponse {
   PublishedTab publication = 3;
 }
 
-// RestartTerminalRequest respawns the shell process for an exited
-// terminal in place, reusing the tab's working_dir / shell / shell_start_dir
-// and freshly minting LEAPMUX_CONTROL_* env vars. The screen buffer
-// (including the "[Terminal process exited (N) - Press Enter to restart]"
-// notice) is preserved so the new shell's prompt appears below it.
+// RestartTerminalRequest starts a new shell in the same tab with the same
+// working directory and retained screen. The Worker mints fresh control credentials.
 message RestartTerminalRequest {
   string terminal_id = 1;
   uint32 cols = 2;
   uint32 rows = 3;
+  // Without this ID, the Worker requires the previous shell to have exited.
+  // With it, the Worker stops only the live shell with this instance ID.
+  string replace_shell_instance_id = 4;
+  // The new shell evaluates this command once after its startup files.
+  string initial_command = 5;
 }
 
 message RestartTerminalResponse {}
@@ -213,6 +215,8 @@ message TerminalInfo {
   // Geometry of the retained real bytes in screen. Its mode prefix also
   // appears at the start of screen.
   TerminalScreenTimeline screen_timeline = 15;
+  // Identifies the current live shell. Each restart installs a different ID.
+  string shell_instance_id = 16;
 }
 
 message TerminalData {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -247,6 +248,103 @@ func TestRestartTerminal_StillRunning(t *testing.T) {
 	require.Len(t, w.errors, 1)
 	assert.Equal(t, codeFailedPrecondition, w.errors[0].code, "expected FailedPrecondition")
 	assert.Contains(t, w.errors[0].message, "still running")
+}
+
+func TestRestartTerminal_ReplacesOnlyTheObservedRunningShell(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, opened := setupTestService(t)
+	defer drainAllInFlight(svc)
+	terminalID := openTerminalViaRPC(t, svc, dispatcher, opened, t.TempDir())
+	svc.TerminalStartup.WaitForInFlight()
+	before := listOneTerminal(t, dispatcher, terminalID)
+	require.Len(t, before.GetShellInstanceId(), 48)
+
+	replace := func(command string) *testResponseWriter {
+		t.Helper()
+		w := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+			TerminalId: terminalID, ReplaceShellInstanceId: before.GetShellInstanceId(), InitialCommand: command,
+		}, w)
+		return w
+	}
+	invalid := replace("invalid\x00command")
+	require.Empty(t, invalid.responses)
+	require.Len(t, invalid.errors, 1)
+	assert.Equal(t, codeInvalidArgument, invalid.errors[0].code)
+	assert.Equal(t, before.GetShellInstanceId(), listOneTerminal(t, dispatcher, terminalID).GetShellInstanceId())
+
+	admit := make(chan struct{})
+	results := make(chan *testResponseWriter, 2)
+	for range 2 {
+		go func() {
+			<-admit
+			results <- replace("")
+		}()
+	}
+	close(admit)
+	accepted, rejected := <-results, <-results
+	if len(accepted.errors) != 0 {
+		accepted, rejected = rejected, accepted
+	}
+	require.Empty(t, accepted.errors)
+	require.Len(t, accepted.responses, 1)
+	require.Empty(t, rejected.responses)
+	require.Len(t, rejected.errors, 1)
+	assert.Equal(t, codeFailedPrecondition, rejected.errors[0].code)
+	svc.TerminalStartup.WaitForInFlight()
+	after := listOneTerminal(t, dispatcher, terminalID)
+	require.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, after.GetStatus())
+	require.Len(t, after.GetShellInstanceId(), 48)
+	assert.NotEqual(t, before.GetShellInstanceId(), after.GetShellInstanceId())
+	assert.Equal(t, before.GetTerminalId(), after.GetTerminalId())
+	assert.Equal(t, before.GetWorkingDir(), after.GetWorkingDir())
+	assert.Equal(t, before.GetCols(), after.GetCols())
+	assert.Equal(t, before.GetRows(), after.GetRows())
+
+	stale := replace("")
+	require.Empty(t, stale.responses)
+	require.Len(t, stale.errors, 1)
+	assert.Equal(t, codeFailedPrecondition, stale.errors[0].code)
+	assert.Contains(t, stale.errors[0].message, "observed running shell")
+	assert.Equal(t, after.GetShellInstanceId(), listOneTerminal(t, dispatcher, terminalID).GetShellInstanceId())
+}
+
+func TestRestartTerminal_ReplacementLaunchFailureKeepsTheTab(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, opened := setupTestService(t)
+	defer drainAllInFlight(svc)
+	terminalID := openTerminalViaRPC(t, svc, dispatcher, opened, t.TempDir())
+	svc.TerminalStartup.WaitForInFlight()
+	before := listOneTerminal(t, dispatcher, terminalID)
+	require.NotEmpty(t, before.GetShellInstanceId())
+	missing := filepath.Join(t.TempDir(), "missing-shell")
+	_, err := svc.DB.ExecContext(t.Context(), "UPDATE terminals SET shell = ? WHERE id = ?", missing, terminalID)
+	require.NoError(t, err)
+
+	replacement := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+		TerminalId: terminalID, ReplaceShellInstanceId: before.GetShellInstanceId(),
+	}, replacement)
+	require.Empty(t, replacement.errors)
+	require.Len(t, replacement.responses, 1)
+	svc.TerminalStartup.WaitForInFlight()
+	failed := listOneTerminal(t, dispatcher, terminalID)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, failed.GetStatus())
+	assert.Contains(t, failed.GetStartupError(), "missing-shell")
+	assert.Empty(t, failed.GetShellInstanceId())
+	assert.False(t, svc.Terminals.IsRunning(terminalID))
+
+	_, err = svc.DB.ExecContext(t.Context(), "UPDATE terminals SET shell = ? WHERE id = ?", testutil.TestShell(), terminalID)
+	require.NoError(t, err)
+	recovered := newTestWriter()
+	dispatchRestart(dispatcher, terminalID, recovered)
+	require.Empty(t, recovered.errors)
+	svc.TerminalStartup.WaitForInFlight()
+	after := listOneTerminal(t, dispatcher, terminalID)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, after.GetStatus())
+	assert.Equal(t, terminalID, after.GetTerminalId())
+	assert.NotEmpty(t, after.GetShellInstanceId())
+	assert.NotEqual(t, before.GetShellInstanceId(), after.GetShellInstanceId())
 }
 
 // TestRestartTerminal_AfterWorkerRestart exercises the path where the

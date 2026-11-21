@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/terminput"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -122,6 +123,9 @@ var ErrTerminalInstanceChanged = errors.New("terminal closed or restarted during
 // lets callers errors.Is instead of string-matching.
 var ErrTerminalStillRunning = errors.New("terminal still running")
 
+// ErrTerminalShellChanged means there is no live shell with the observed ID.
+var ErrTerminalShellChanged = errors.New("the terminal no longer has the observed running shell")
+
 // TerminalMeta holds the working directory, title and dimensions for a
 // terminal. Shell is intentionally NOT mirrored here: RestartTerminal reads the
 // shell from the DB row via GetTerminalForRestart, which is the single
@@ -157,6 +161,7 @@ const defaultReadDrainGrace = 2 * time.Second
 // in draining until its reader and exit handler return, even after removal or replacement.
 type terminalRegistration struct {
 	id       string
+	shellID  string
 	terminal *Terminal
 	meta     TerminalMeta
 	done     chan struct{}
@@ -291,13 +296,13 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 
 // addRegistrationLocked reads the old metadata under the install lock so a
 // concurrent title update can only happen before or after the replacement.
-func (m *Manager) addRegistrationLocked(id string, t *Terminal, composeMeta func(TerminalMeta) TerminalMeta) *terminalRegistration {
+func (m *Manager) addRegistrationLocked(terminalID string, t *Terminal, composeMeta func(TerminalMeta) TerminalMeta) *terminalRegistration {
 	var previous TerminalMeta
-	if current := m.current[id]; current != nil {
+	if current := m.current[terminalID]; current != nil {
 		previous = current.meta
 	}
-	registration := &terminalRegistration{id: id, terminal: t, meta: composeMeta(previous), done: make(chan struct{})}
-	m.current[id] = registration
+	registration := &terminalRegistration{id: terminalID, shellID: id.Generate(), terminal: t, meta: composeMeta(previous), done: make(chan struct{})}
+	m.current[terminalID] = registration
 	m.draining[registration] = struct{}{}
 	return registration
 }
@@ -502,6 +507,28 @@ func (m *Manager) StopTerminal(terminalID string) {
 	}
 }
 
+// StopShellForRestart stops the observed shell and waits for its exit handler.
+// The caller holds startup admission until the replacement is installed.
+func (m *Manager) StopShellForRestart(ctx context.Context, terminalID, shellID string) error {
+	m.mu.RLock()
+	registration := m.current[terminalID]
+	matches := registration != nil && registration.shellID == shellID && !registration.terminal.IsExited()
+	m.mu.RUnlock()
+	if !matches {
+		return ErrTerminalShellChanged
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	registration.terminal.Stop()
+	select {
+	case <-registration.done:
+		return ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // RemoveTerminal stops and removes a terminal from the manager.
 func (m *Manager) RemoveTerminal(terminalID string) {
 	m.mu.Lock()
@@ -539,6 +566,8 @@ type ShellStatus struct {
 	Held bool
 	// Running reports whether the shell runs.
 	Running bool
+	// InstanceID identifies the shell while it runs.
+	InstanceID string
 	// ExitCode is the exit code of a shell that ended: -1 for a shell that a
 	// signal ended. It is zero while the shell runs.
 	ExitCode int
@@ -553,13 +582,16 @@ type ShellStatus struct {
 // both from here.
 func (m *Manager) ShellStatus(terminalID string) ShellStatus {
 	m.mu.RLock()
-	t, ok := m.currentTerminalLocked(terminalID)
+	registration := m.current[terminalID]
 	m.mu.RUnlock()
-	if !ok {
+	if registration == nil {
 		return ShellStatus{}
 	}
-	code, exited := t.ExitCode()
-	return ShellStatus{Held: true, Running: !exited, ExitCode: code}
+	code, exited := registration.terminal.ExitCode()
+	if exited {
+		return ShellStatus{Held: true, ExitCode: code}
+	}
+	return ShellStatus{Held: true, Running: true, InstanceID: registration.shellID}
 }
 
 // WaitForExit blocks until the terminal's exit-handler goroutine has

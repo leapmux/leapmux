@@ -14,6 +14,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/cli"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -46,13 +47,14 @@ func (d *shellsDispatcher) called() []string {
 	return append([]string(nil), d.methods...)
 }
 
-// terminalWorker is a fake Worker that serves one terminal: ListTerminals
-// answers its record, and SendInput records each request. mu guards every
-// field.
+// terminalWorker serves one terminal record and records requests that mutate it.
+// mu guards every field.
 type terminalWorker struct {
-	mu     sync.Mutex
-	info   *leapmuxv1.TerminalInfo
-	inputs []*leapmuxv1.SendInputRequest
+	mu       sync.Mutex
+	info     *leapmuxv1.TerminalInfo
+	inputs   []*leapmuxv1.SendInputRequest
+	resizes  []*leapmuxv1.ResizeTerminalRequest
+	restarts []*leapmuxv1.RestartTerminalRequest
 	// refuseInput, when not empty, is the InvalidArgument message that
 	// SendInput answers instead.
 	refuseInput string
@@ -85,9 +87,61 @@ func (w *terminalWorker) DispatchWith(_ context.Context, _ channel.Caller, req *
 			return
 		}
 		writeProtoResponse(rw, &leapmuxv1.SendInputResponse{})
+	case leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure:
+		var in leapmuxv1.ResizeTerminalRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		w.resizes = append(w.resizes, &in)
+		writeProtoResponse(rw, &leapmuxv1.ResizeTerminalResponse{})
+	case leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure:
+		var in leapmuxv1.RestartTerminalRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = rw.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		w.restarts = append(w.restarts, &in)
+		writeProtoResponse(rw, &leapmuxv1.RestartTerminalResponse{})
 	default:
 		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
 	}
+}
+
+func TestRunTerminalRestartAndResizeSendTheObservedTarget(t *testing.T) {
+	const terminalID = "terminal-for-restart"
+	const shellID = "shell-instance"
+	w := &terminalWorker{info: &leapmuxv1.TerminalInfo{
+		TerminalId: terminalID, ShellInstanceId: shellID, Cols: 170, Rows: 49,
+	}}
+	startTerminalWorker(t, w, terminalID)
+
+	_ = runControl(t, "terminal", "resize", terminalID, "165", "47").Data(t)
+	_ = runControl(t, "terminal", "restart", terminalID).Data(t)
+	t.Setenv("LEAPMUX_CONTROL_TAB_ID", terminalID)
+	refusal := runControl(t, "terminal", "restart", terminalID, "--replace").requireFailure(t, cli.CodeSelfTargetRefused)
+	assert.Contains(t, refusal.Message, terminalID)
+	_ = runControlIn(t, "printf before\nprintf after\n",
+		"terminal", "restart", terminalID, "--replace", "--allow-self", "--command", "-", "--json").Data(t)
+
+	w.mu.Lock()
+	w.info.ShellInstanceId = ""
+	w.mu.Unlock()
+	runControl(t, "terminal", "restart", terminalID, "--replace", "--allow-self").requireFailure(t, cli.CodeConflict)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	require.Len(t, w.resizes, 1)
+	assert.True(t, proto.Equal(&leapmuxv1.ResizeTerminalRequest{
+		TerminalId: terminalID, Cols: 165, Rows: 47,
+	}, w.resizes[0]))
+	require.Len(t, w.restarts, 2, "the refusals send no restart request")
+	assert.True(t, proto.Equal(&leapmuxv1.RestartTerminalRequest{
+		TerminalId: terminalID, Cols: 170, Rows: 49,
+	}, w.restarts[0]))
+	assert.True(t, proto.Equal(&leapmuxv1.RestartTerminalRequest{
+		TerminalId: terminalID, Cols: 170, Rows: 49, ReplaceShellInstanceId: shellID, InitialCommand: "printf before\nprintf after",
+	}, w.restarts[1]))
 }
 
 // recordedInputs returns the SendInput requests that reached the Worker.

@@ -125,6 +125,12 @@ func newTerminalCommand() *cobra.Command {
 			Mutates: true,
 			Examples: []cli.Example{
 				{Command: "leapmux control terminal restart 4cbb3f34"},
+				{Command: "leapmux control terminal restart 4cbb3f34 --replace --command 'npm run dev'"},
+			},
+			Flags: func(fs *pflag.FlagSet) {
+				fs.Bool("replace", false, "stop the running shell before starting a new one in the same tab")
+				fs.String("command", "", "run this command in the new shell after its startup files, or read it from stdin with -")
+				fs.Bool(allowSelfFlag, false, "replace this tab's shell even though it ends this command's own process")
 			},
 			Complete: completeTargets,
 			Run:      runTerminalRestart,
@@ -310,6 +316,10 @@ func runTerminalResize(inv *cli.Invocation) (any, error) {
 
 // runTerminalRestart starts the terminal's shell again at its current size.
 func runTerminalRestart(inv *cli.Invocation) (any, error) {
+	command, err := initialCommandOf(inv)
+	if err != nil {
+		return nil, err
+	}
 	s, err := openSession(inv)
 	if err != nil {
 		return nil, err
@@ -319,11 +329,23 @@ func runTerminalRestart(inv *cli.Invocation) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	replace := boolFlag(inv, "replace")
+	if replace && got.ID == callingTabID() && !boolFlag(inv, allowSelfFlag) {
+		return nil, errSelfTargetRefused("refusing to replace the shell of the calling tab " + got.ID)
+	}
 	info, err := s.terminalInfo(got)
 	if err != nil {
 		return nil, err
 	}
-	req := &leapmuxv1.RestartTerminalRequest{TerminalId: got.ID, Cols: info.GetCols(), Rows: info.GetRows()}
+	req := &leapmuxv1.RestartTerminalRequest{
+		TerminalId: got.ID, Cols: info.GetCols(), Rows: info.GetRows(), InitialCommand: command,
+	}
+	if replace {
+		req.ReplaceShellInstanceId = info.GetShellInstanceId()
+		if req.GetReplaceShellInstanceId() == "" {
+			return nil, cli.Newf(cli.CodeConflict, "terminal %s has no running shell to replace", got.ID)
+		}
+	}
 	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, req, nil); err != nil {
 		return nil, err
 	}

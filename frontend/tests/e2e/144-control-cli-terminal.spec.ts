@@ -1,6 +1,6 @@
 /**
  * End-to-end coverage of the terminal commands of `leapmux control` that a
- * real shell decides: `terminal open --command` and `terminal wait --exit`.
+ * real shell decides: startup commands, replacement and exit codes.
  *
  * Go tests cover the request, the readiness rule and the exit-code record with
  * a recording shell and fake Workers. This spec runs the CLI against the real
@@ -101,6 +101,54 @@ test.describe('control CLI terminals', () => {
     // The browser shows the same output.
     await tabById(page, opened.id).click()
     await waitForTerminalText(page, 'INITIAL_42')
+  })
+
+  test('replaces the running shell in the same terminal tab', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
+    const opened = await runCLI(cli, [
+      'terminal',
+      'open',
+      '--workspace',
+      authenticatedWorkspace.workspaceId,
+      '--worker',
+      leapmuxServer.workerId,
+      '--command',
+      'export LEAPMUX_TEST_OLD_VALUE=$((6 * 7)); echo BEFORE_$LEAPMUX_TEST_OLD_VALUE',
+    ]) as OpenedTerminal
+    const waitForLine = async (regex: string) => {
+      return await runCLI(cli, [
+        'terminal',
+        'wait',
+        opened.id,
+        '--regex',
+        regex,
+        '--timeout',
+        '20s',
+      ]) as TerminalWaitResult
+    }
+    expect(await waitForLine('^BEFORE_42$')).toMatchObject({ reached: true })
+    await expect(runCLI(cli, ['terminal', 'restart', opened.id])).rejects.toThrow('terminal still running')
+
+    expect(await runCLI(cli, [
+      'terminal',
+      'restart',
+      opened.id,
+      '--replace',
+      '--command',
+      'test -z "$LEAPMUX_TEST_OLD_VALUE" && LEAPMUX_TEST_NEW_VALUE=$((7 * 8)) && echo AFTER_$LEAPMUX_TEST_NEW_VALUE',
+    ])).toMatchObject({ id: opened.id })
+    expect(await waitForLine('^AFTER_56$')).toMatchObject({ reached: true })
+    const screen = await runCLI(cli, [
+      'terminal',
+      'read',
+      opened.id,
+      '--scrollback',
+    ]) as RenderedScreen
+    expect(screen.lines.filter(line => line === 'BEFORE_42')).toHaveLength(1)
+    expect(screen.lines.filter(line => line === 'AFTER_56')).toHaveLength(1)
+
+    await tabById(page, opened.id).click()
+    await waitForTerminalText(page, 'AFTER_56')
   })
 
   test('prints the exit code of a shell that ended before the wait', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
