@@ -124,8 +124,11 @@ func TestTabCreation_ReplaysASharedRequestOnceAndRejectsAnAlteredRequest(t *test
 	require.Regexp(t, `^[A-Za-z0-9]{48}$`, generated)
 	svc, dispatcher, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
+	startupFailure := errors.New("test prevents agent startup")
+	var startupCount atomic.Int32
 	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
-		return nil, errors.New("test prevents agent startup")
+		startupCount.Add(1)
+		return nil, startupFailure
 	}
 	var publishCount atomic.Int32
 	svc.PublishTab = func(ctx context.Context, r *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
@@ -140,16 +143,26 @@ func TestTabCreation_ReplaysASharedRequestOnceAndRejectsAnAlteredRequest(t *test
 	require.Len(t, first.responsesSnapshot(), 1)
 	firstResult := &leapmuxv1.OpenAgentResponse{}
 	require.NoError(t, proto.Unmarshal(first.responsesSnapshot()[0].GetPayload(), firstResult))
+	require.NotNil(t, firstResult.GetPublication())
+	assert.Equal(t, generated, firstResult.GetPublication().GetTab().GetTabId())
+	assert.Equal(t, generated, firstResult.GetAgent().GetId())
+	require.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, firstResult.GetAgent().GetStatus())
 	assert.Equal(t, int32(1), publishCount.Load(), "the first dispatch publishes once")
+	// Finish startup before replay so the response must reflect the new agent state.
+	svc.AgentStartup.WaitForInFlight()
 	_, err := svc.Queries.GetAgentByID(t.Context(), generated)
 	require.NoError(t, err, "one resource exists for the generated ID")
 	second := newTestWriter()
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, second)
 	require.Empty(t, second.rejections())
-	require.Len(t, second.responsesSnapshot(), 1, "the repeated dispatch replays the same result")
+	require.Len(t, second.responsesSnapshot(), 1)
 	secondResult := &leapmuxv1.OpenAgentResponse{}
 	require.NoError(t, proto.Unmarshal(second.responsesSnapshot()[0].GetPayload(), secondResult))
-	assert.True(t, proto.Equal(firstResult, secondResult), "the repeated dispatch replays the same result")
+	assert.True(t, proto.Equal(firstResult.GetPublication(), secondResult.GetPublication()), "the repeated dispatch replays the saved publication receipt")
+	assert.Equal(t, generated, secondResult.GetAgent().GetId(), "the replay returns the original agent")
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, secondResult.GetAgent().GetStatus())
+	assert.Contains(t, secondResult.GetAgent().GetStartupError(), startupFailure.Error())
+	assert.Equal(t, int32(1), startupCount.Load(), "the repeated dispatch starts no second process")
 	assert.Equal(t, int32(1), publishCount.Load(), "the repeated dispatch publishes no second tab")
 	storedAgentIDs, err := svc.Queries.ListAllAgentIDs(t.Context())
 	require.NoError(t, err)

@@ -231,19 +231,19 @@ var errAddressInUse = errors.New("the port of the Cline hub is in use")
 // tries a second port once when another process took the first one in the
 // moment between the choice and the bind.
 func startDaemonProcess(ctx context.Context, opts agent.Options, spec launch.Spec, dir string, clock quartz.Clock) (*daemonStart, error) {
-	return retryDaemonPort(ctx, opts.AgentID, func(port int) (*daemonStart, error) {
+	return retryDaemonPort(ctx, opts.AgentID, freePort, func(port int) (*daemonStart, error) {
 		return startDaemonOnPort(ctx, opts, spec, dir, port, clock)
 	})
 }
 
-func retryDaemonPort(ctx context.Context, agentID string, start func(port int) (*daemonStart, error)) (*daemonStart, error) {
+func retryDaemonPort(ctx context.Context, agentID string, choosePort func() (int, error), start func(port int) (*daemonStart, error)) (*daemonStart, error) {
 	var lastErr error
 	var rejectedPort int
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		port, err := freePort()
+		port, err := choosePort()
 		if err != nil {
 			return nil, err
 		}

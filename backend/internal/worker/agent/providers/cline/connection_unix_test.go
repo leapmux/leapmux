@@ -4,7 +4,6 @@ package cline
 
 import (
 	"context"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,7 +140,7 @@ func cancelClineWhileDraining(t *testing.T, candidate, wrapper string) error {
 	attempts := 0
 	go func() {
 		opts := agent.Options{Shell: profile.Shell, WorkingDir: dir, StartupTimeout: 30 * time.Second}
-		_, err := retryDaemonPort(ctx, opts.AgentID, func(port int) (*daemonStart, error) {
+		_, err := retryDaemonPort(ctx, opts.AgentID, freePort, func(port int) (*daemonStart, error) {
 			attempts++
 			return startDaemonOnPort(ctx, opts, launch.ShellCommands(candidate), dir, port, clock)
 		})
@@ -160,10 +159,7 @@ func cancelClineWhileDraining(t *testing.T, candidate, wrapper string) error {
 }
 
 func TestClineKeepsAnObservedBindFailureAfterItsDiscoveryDeadline(t *testing.T) {
-	listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, "0"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = listener.Close() })
-	port := listener.Addr().(*net.TCPAddr).Port
+	port := occupyDaemonPort(t)
 	profile := agenttest.InstallStartupExhaustionProfile(t, "TestClineStartupExhaustionPeer", false)
 	executable, err := os.Executable()
 	require.NoError(t, err)

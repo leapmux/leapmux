@@ -86,16 +86,13 @@ func TestDaemonArgsAndEnv(t *testing.T) {
 	}, env)
 }
 
-func TestFreePortIsALoopbackPort(t *testing.T) {
+func TestFreePortReturnsAValidPort(t *testing.T) {
 	t.Parallel()
 	port, err := freePort()
 	require.NoError(t, err)
+	// Another process can take the port as soon as freePort closes its listener.
 	assert.Positive(t, port)
-	// The port is free at the daemon's own address, which the daemon binds a
-	// moment later.
-	listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, strconv.Itoa(port)))
-	require.NoError(t, err, "the daemon can bind the port on its loopback address")
-	require.NoError(t, listener.Close())
+	assert.LessOrEqual(t, port, 65535)
 }
 
 func TestReadDiscoveryNeedsACompleteRecord(t *testing.T) {
@@ -762,6 +759,16 @@ func TestClineDoesNotRetryCandidateExhaustion(t *testing.T) {
 	assert.Equal(t, "attempt\n", string(data))
 }
 
+// occupyDaemonPort keeps a system-assigned port in use until the test ends, so
+// the child process encounters a bind failure on that port.
+func occupyDaemonPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, "0"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
 const failedBindWitnessEnv = "LEAPMUX_TEST_CLINE_FAILED_BIND"
 
 func TestClineBindFailureWitness(t *testing.T) {
@@ -797,12 +804,13 @@ func TestClineDoesNotRetryABindFailureAfterCancellation(t *testing.T) {
 	defer cancel()
 	opts := agent.Options{Shell: "/bin/sh", WorkingDir: dir, StartupTimeout: 30 * time.Second}
 	attempts := 0
-	started, err := retryDaemonPort(ctx, opts.AgentID, func(port int) (*daemonStart, error) {
+	choosePort := func() (int, error) {
+		require.Zero(t, attempts, "cancellation must prevent another port selection")
+		return occupyDaemonPort(t), nil
+	}
+	started, err := retryDaemonPort(ctx, opts.AgentID, choosePort, func(port int) (*daemonStart, error) {
 		attempts++
 		require.Equal(t, 1, attempts, "the retry loop must check the canceled context before invoking another attempt")
-		listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, strconv.Itoa(port)))
-		require.NoError(t, err)
-		defer func() { _ = listener.Close() }()
 		started, err := startDaemonOnPort(ctx, opts, launch.Spec{Program: daemon}, dir, port, quartz.NewReal())
 		require.Nil(t, started)
 		require.ErrorIs(t, err, errAddressInUse, "the real invocation must finish and qualify for a retry before cancellation")
@@ -827,23 +835,23 @@ func TestClineReportsTheNativeStatusOfTheLastBindFailure(t *testing.T) {
 	require.NoError(t, err)
 	testutil.WriteExecutable(t, daemon, "#!/bin/sh\nexec "+shellquote.POSIX.Quote(executable)+" -test.run=^TestClineBindFailureWitness$\n")
 
-	attempts := 0
+	var attemptedPorts []int
 	opts := agent.Options{Shell: "/bin/sh", WorkingDir: dir, StartupTimeout: 30 * time.Second}
-	started, err := retryDaemonPort(t.Context(), opts.AgentID, func(port int) (*daemonStart, error) {
-		attempts++
-		listener, err := net.Listen("tcp", net.JoinHostPort(daemonListen.address, strconv.Itoa(port)))
-		require.NoError(t, err)
-		defer func() { _ = listener.Close() }()
-		opts.ExtraEnv = []string{failedBindWitnessEnv + "=" + strconv.Itoa(36+attempts)}
+	choosePort := func() (int, error) { return occupyDaemonPort(t), nil }
+	started, err := retryDaemonPort(t.Context(), opts.AgentID, choosePort, func(port int) (*daemonStart, error) {
+		attemptedPorts = append(attemptedPorts, port)
+		opts.ExtraEnv = []string{failedBindWitnessEnv + "=" + strconv.Itoa(36+len(attemptedPorts))}
 		return startDaemonOnPort(t.Context(), opts, launch.Spec{Program: daemon}, dir, port, quartz.NewReal())
 	})
 	require.Nil(t, started)
+	require.Len(t, attemptedPorts, 2)
+	assert.NotEqual(t, attemptedPorts[0], attemptedPorts[1])
 	require.ErrorIs(t, err, errAddressInUse)
 	assert.ErrorContains(t, err, "EADDRINUSE")
+	assert.ErrorContains(t, err, net.JoinHostPort(daemonListen.address, strconv.Itoa(attemptedPorts[1])))
 	var native *exec.ExitError
 	require.ErrorAs(t, err, &native)
 	assert.Equal(t, 38, native.ExitCode())
-	assert.Equal(t, 2, attempts)
 }
 
 func TestClineLogsOnlyAnAttemptItActuallyRetries(t *testing.T) {
@@ -853,7 +861,7 @@ func TestClineLogsOnlyAnAttemptItActuallyRetries(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			attempts := 0
-			_, err := retryDaemonPort(ctx, "log-test", func(int) (*daemonStart, error) {
+			_, err := retryDaemonPort(ctx, "log-test", freePort, func(int) (*daemonStart, error) {
 				attempts++
 				if canceled {
 					cancel()
