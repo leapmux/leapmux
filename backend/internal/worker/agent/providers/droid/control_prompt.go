@@ -2,8 +2,9 @@ package droid
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -239,26 +240,23 @@ func (q droidQuestion) prompt() *leapmuxv1.ControlQuestion {
 	return &leapmuxv1.ControlQuestion{Question: q.question, Options: options, MultiSelect: q.multiSelect}
 }
 
-// answerText is the answer to the question, as Droid's own client writes it:
-// the values of the answer (agent.QuestionAnswerValues), joined with ", ".
-//
-// The chosen options come first, in the order of the options and once each,
-// as Droid's client lists them. The typed text follows the chosen options of
-// a multiple choice as one more value, and answers a single choice alone
-// when nothing is chosen. A question with neither takes "", which Droid's
-// client also sends.
-func (q droidQuestion) answerText(question *leapmuxv1.ControlQuestion, answer *leapmuxv1.QuestionAnswer) string {
-	values := agent.QuestionAnswerValues(question, answer)
-	parts := []string{}
+// orderedSelection lists each pick once, in the order that Droid offered it.
+func (q droidQuestion) orderedSelection(selected []string) []string {
+	if len(selected) < 2 {
+		return selected
+	}
+	remaining := make(map[string]bool, len(selected))
+	for _, pick := range selected {
+		remaining[pick] = true
+	}
+	ordered := make([]string, 0, len(selected))
 	for _, option := range q.options {
-		if slices.Contains(answer.GetSelected(), option) {
-			parts = append(parts, option)
+		if remaining[option] {
+			ordered = append(ordered, option)
+			delete(remaining, option)
 		}
 	}
-	// QuestionAnswerValues lists the selected values first, so what follows
-	// them is the typed text.
-	parts = append(parts, values[len(answer.GetSelected()):]...)
-	return strings.Join(parts, droidAnswerPartSeparator)
+	return ordered
 }
 
 // AnswerControlRequest builds Droid's answer in the neutral envelope, which
@@ -335,17 +333,25 @@ func droidQuestionAnswer(input agent.ControlAnswerInput) (agent.ControlAnswer, e
 	if len(questions) != len(prompted) {
 		return agent.ControlAnswer{}, agent.InvalidControlDecision("the prompt states %d questions, and the request %d", len(prompted), len(questions))
 	}
+	delivered := proto.CloneOf(input.Decision)
 	answers := make([]map[string]any, 0, len(questions))
 	for i, question := range questions {
-		answer := agent.QuestionAnswerAt(decision, i)
-		entry := map[string]any{contracts.DroidAskUserFieldAnswer: question.answerText(prompted[i], answer)}
+		answer := agent.QuestionAnswerAt(delivered.GetQuestion(), i)
+		if answer != nil {
+			answer.Selected = question.orderedSelection(answer.GetSelected())
+		}
+		text := strings.Join(agent.QuestionAnswerValues(prompted[i], answer), droidAnswerPartSeparator)
+		entry := map[string]any{contracts.DroidAskUserFieldAnswer: text}
 		if question.hasIndex {
 			entry[contracts.DroidAskUserFieldIndex] = question.index
 		}
 		answers = append(answers, entry)
 	}
-	return agent.ControlAnswer{Content: agent.ControlResponseEnvelope(input.RequestID, map[string]any{
-		"behavior":                  contracts.ControlAnswerBehaviorAllow,
-		contracts.DroidReplyAnswers: answers,
-	})}, nil
+	return agent.ControlAnswer{
+		Content: agent.ControlResponseEnvelope(input.RequestID, map[string]any{
+			"behavior":                  contracts.ControlAnswerBehaviorAllow,
+			contracts.DroidReplyAnswers: answers,
+		}),
+		DeliveredDecision: delivered,
+	}, nil
 }

@@ -46,7 +46,9 @@ func (a *Agent) canBypassControlLocked(record *droidPendingControl) bool {
 }
 
 func (a *Agent) publishRegisteredControl(record *droidPendingControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.sessionID, RequestID: record.requestID, Payload: record.payload})
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: record.sessionID, NativeTurnID: record.nativeTurnID, RequestID: record.requestID, Payload: record.payload,
+	})
 	a.Mu.Lock()
 	current := a.controls[record.requestID] == record
 	record.published, record.ready = err == nil, true

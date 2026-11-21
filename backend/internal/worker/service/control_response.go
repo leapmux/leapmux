@@ -500,8 +500,9 @@ func withoutControlFeedback(decision *leapmuxv1.ControlDecision) *leapmuxv1.Cont
 }
 
 // deliveredControlDecision is the decision that answer delivers to the
-// runtime: the decision of input, without feedback that reaches the runtime
-// neither in the answer nor as a message after it. The answer row stores it,
+// runtime. A provider can state the delivered decision if it changes the
+// caller's decision. The answer row stores it without feedback that neither
+// the answer nor a follow-up sends to the runtime,
 // so the transcript row never states a reason that the runtime did not
 // receive. A runtime that takes no reason with some answer, such as
 // OpenCode's dismissed question, gets none from its provider.
@@ -512,7 +513,10 @@ func withoutControlFeedback(decision *leapmuxv1.ControlDecision) *leapmuxv1.Cont
 // bytes, the same follow-up and the same plan settings. A second answer that
 // fails keeps the feedback, which errs toward stating it.
 func deliveredControlDecision(plugin agent.Provider, meta controlResponseRequestMetadata, input agent.ControlAnswerInput, answer agent.ControlAnswer) *leapmuxv1.ControlDecision {
-	decision := input.Decision
+	decision := answer.DeliveredDecision
+	if decision == nil {
+		decision = input.Decision
+	}
 	if controlFeedback(decision) == "" {
 		return decision
 	}

@@ -37,6 +37,9 @@ type Agent struct {
 	// dispatchMu serializes event dispatch. The reader goroutine and
 	// HandleOutput both reach handleFrame.
 	dispatchMu sync.Mutex
+	// The dispatcher owns each ordinary input's native message and tool chain.
+	nativeReplies map[string]*droidNativeReply
+	currentReply  *droidNativeReply
 
 	// --- guarded by Mu ---
 
@@ -106,11 +109,12 @@ type droidLaunch struct {
 }
 
 var (
-	_ agent.Agent             = (*Agent)(nil)
-	_ agent.InputSteerer      = (*Agent)(nil)
-	_ agent.ContextCompactor  = (*Agent)(nil)
-	_ agent.SteerEchoReporter = (*Agent)(nil)
-	_ agent.SteerSurvivor     = (*Agent)(nil)
+	_ agent.Agent              = (*Agent)(nil)
+	_ agent.InputReceiptSender = (*Agent)(nil)
+	_ agent.InputSteerer       = (*Agent)(nil)
+	_ agent.ContextCompactor   = (*Agent)(nil)
+	_ agent.SteerEchoReporter  = (*Agent)(nil)
+	_ agent.SteerSurvivor      = (*Agent)(nil)
 )
 
 // errAgentStopped reports that the agent's process already ended.
@@ -181,6 +185,7 @@ type droidPendingControl struct {
 	requestID       string
 	rpcID           string
 	sessionID       string
+	nativeTurnID    string
 	root            bool
 	payload         []byte
 	automaticReply  []byte
@@ -199,6 +204,10 @@ type droidPendingControl struct {
 // A running turn refuses ordinary input with ErrAgentBusy, so the LeapMux queue retains it.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInput(nil, content, attachments, droidInputOrdinary)
+}
+
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments, droidInputOrdinary, true)
 }
 
 // SendInputForSession delivers a user message when the session it states is
@@ -238,10 +247,15 @@ const (
 // turn runs: the LeapMux input queue owns queueing. A steering message uses
 // the same native placement while the turn is active.
 func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, mode droidInputMode) error {
+	_, err := a.sendNativeInput(expected, content, attachments, mode, false)
+	return err
+}
+
+func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment, mode droidInputMode, captureReply bool) (agent.NativeInputReceipt, error) {
 	steer := mode != droidInputOrdinary
 	message, err := buildUserMessage(content, attachments)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 
 	// Serialize model-setting changes with attachment validation and native admission.
@@ -253,11 +267,11 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.stopped {
 		a.Mu.Unlock()
-		return errAgentStopped
+		return agent.NativeInputReceipt{}, errAgentStopped
 	}
 	active := a.turnActive
 	compacting := a.compaction != nil
@@ -269,17 +283,17 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	a.Mu.Unlock()
 
 	if compacting {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	if steer {
 		if !active {
-			return agent.ErrNoActiveTurn
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 		}
 	} else if active {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	if modelErr != nil {
-		return modelErr
+		return agent.NativeInputReceipt{}, modelErr
 	}
 
 	params := addUserMessageParams{
@@ -290,10 +304,16 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		Files:          message.Files,
 		QueuePlacement: droidQueueEndOfTurn,
 	}
+	id := a.nextRequestID()
+	var reply *droidNativeReply
+	var receipt agent.NativeInputReceipt
 	if !steer {
+		if captureReply {
+			receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: params.MessageID, TurnID: params.MessageID}
+			reply = a.beginDroidReply(receipt, id)
+		}
 		a.startTurn()
 	}
-	id := a.nextRequestID()
 	var ticket providerkit.SteerTicket
 	if mode == droidInputSteer {
 		a.dispatchMu.Lock()
@@ -302,6 +322,9 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.dispatchMu.Unlock()
 	}
 	if err := a.requestInput(id, params); err != nil {
+		if reply != nil && a.droidReplyEchoedAfterInputFailure(reply) {
+			return receipt, nil
+		}
 		if ticket != 0 {
 			a.dispatchMu.Lock()
 			pending := false
@@ -316,15 +339,15 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 			a.dispatchMu.Unlock()
 			if !pending {
 				// An echo or a discard already resolved this input, even if its report still waits for storage.
-				return nil
+				return receipt, nil
 			}
 		}
 		if !steer {
 			a.endTurn()
 		}
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
-	return nil
+	return receipt, nil
 }
 
 // startTurn marks a turn active and publishes the flag. A repeat of the current

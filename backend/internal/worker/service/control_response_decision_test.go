@@ -84,6 +84,27 @@ func TestAnswerControl_RecordsTheDecisionWithTheAnswer(t *testing.T) {
 	requireDecision(t, decision, recordedControlDecision(t, svc))
 }
 
+func TestAnswerControl_RecordsDroidChoicesInTheirDeliveredOrder(t *testing.T) {
+	t.Parallel()
+	const requestID = "droid-ask-query"
+	payload := fmt.Sprintf(`{"type":%q,"requestId":"droid-ask-query","rpcId":"query","toolCallId":"query","questions":[{"index":1,"question":"Which colors?","options":["Blue","Green","Red"],"multiSelect":true}]}`, contracts.DroidRequestTypeAskUser)
+	svc, d, delivered := answerControlFixture(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, requestID, payload)
+
+	decision := agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"Red", "Blue"}, CustomText: "Purple"})
+	response, errs := answerControl(t, d, &leapmuxv1.AnswerControlRequest{
+		AgentId: "agent-1", RequestId: requestID, ClaimToken: "claim-1", Decision: decision,
+	})
+	require.Empty(t, errs)
+	require.Empty(t, response.GetError())
+	require.Len(t, *delivered, 1)
+	assert.Contains(t, string((*delivered)[0]), "Blue, Red, Purple")
+
+	want := agenttest.QuestionDecision(&leapmuxv1.QuestionAnswer{Selected: []string{"Blue", "Red"}, CustomText: "Purple"})
+	requireDecision(t, want, storedAnswerDecision(t, svc, requestID))
+	requireDecision(t, want, recordedControlDecision(t, svc))
+	assert.Equal(t, []string{"Red", "Blue"}, decision.GetQuestion().GetAnswers()[0].GetSelected())
+}
+
 // A runtime whose answer cannot carry the feedback receives it as the user's
 // next message, which draws a row of its own. The answer row keeps the
 // feedback, and the answer's transcript row states the decision without it.

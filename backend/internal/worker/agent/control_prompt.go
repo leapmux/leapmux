@@ -57,6 +57,9 @@ type ControlAnswerInput struct {
 // answer.
 type ControlAnswer struct {
 	Content []byte
+	// DeliveredDecision supplies the neutral decision when the runtime
+	// receives a different order or shape than the caller submitted.
+	DeliveredDecision *leapmuxv1.ControlDecision
 	// PlanApproval is the LeapMux settings that a plan approval applies.
 	PlanApproval *leapmuxv1.PlanApprovalSettings
 	// FollowUp is text that the Worker sends as a message after the answer,

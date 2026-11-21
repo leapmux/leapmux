@@ -119,6 +119,13 @@ func (a *Agent) onRequestPermission(env *droidEnvelope) {
 			record.root = false
 		}
 	}
+	if record.root {
+		toolIDs := make([]string, 0, len(params.ToolUses))
+		for _, use := range params.ToolUses {
+			toolIDs = append(toolIDs, use.ToolUse.ID)
+		}
+		record.nativeTurnID = a.droidReplyTurnForTools(toolIDs)
+	}
 	ordinary := true
 	for _, use := range params.ToolUses {
 		if !droidToolAllowsBypass(use.ToolUse.Name) || !droidConfirmationAllowsBypass(use.ConfirmationType, use.Details) {
@@ -218,7 +225,10 @@ func (a *Agent) onAskUser(env *droidEnvelope) {
 		a.respond(env.ID, droidCancelledAskUser())
 		return
 	}
-	a.registerControl(&droidPendingControl{requestID: requestID, rpcID: env.ID, payload: payload, root: true, cancelAnswer: droidCancelledAskUser()})
+	a.registerControl(&droidPendingControl{
+		requestID: requestID, rpcID: env.ID, payload: payload, root: true,
+		nativeTurnID: a.droidReplyTurnForTools([]string{params.ToolCallID}), cancelAnswer: droidCancelledAskUser(),
+	})
 }
 
 // respond sends a JSON-RPC response for a server->client request.
