@@ -225,6 +225,7 @@ type agentEndEnvelope struct {
 		ErrorMessage string `json:"errorMessage"`
 	} `json:"messages"`
 	IsTerminal *bool `json:"isTerminal"`
+	Yielded    *bool `json:"yielded"`
 }
 
 // completion reads how the run ended from its last assistant message: an error
@@ -249,6 +250,7 @@ func (a *Agent) handleAgentStart() {
 	now := a.Clock().Now()
 	a.Mu.Lock()
 	a.rootConversationLocked().ttsrPending = false
+	a.startReplyOutputLocked()
 	firstRun := !a.turn.runStarted
 	a.turn.active = true
 	a.turn.runStarted = true
@@ -332,9 +334,12 @@ func (a *Agent) takePendingSteer() {
 // stays open for the run that the steer starts. See agentEndEnvelope.
 func (a *Agent) handleAgentEnd(raw []byte) {
 	var env agentEndEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		slog.Warn("omp agent_end decode failed", "agent_id", a.AgentID(), "error", err)
+	decodeErr := json.Unmarshal(raw, &env)
+	if decodeErr != nil {
+		slog.Warn("omp agent_end decode failed", "agent_id", a.AgentID(), "error", decodeErr)
 	}
+	yielded := decodeErr == nil && (env.Yielded != nil && *env.Yielded ||
+		env.Yielded == nil && (env.IsTerminal == nil || *env.IsTerminal))
 	endedAt := a.Clock().Now()
 	a.Mu.Lock()
 	a.rootConversationLocked().ttsrPending = false
@@ -343,6 +348,9 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 		a.Mu.Unlock()
 		// The run's own text is complete: its last message ended it.
 		a.flushGeneration(root, agent.MessageCompletionComplete)
+		if yielded {
+			a.yieldReplyOutput()
+		}
 		return
 	}
 	turn := a.turn
@@ -361,6 +369,9 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 		completion = agent.MessageCompletionInterrupted
 	}
 	a.flushGeneration(root, completion)
+	if yielded {
+		a.yieldReplyOutput()
+	}
 	a.persistIncompleteTools(root, completion)
 	a.ResetCumulativeOutput()
 
@@ -527,6 +538,7 @@ func (a *Agent) flushCompactionState(c *conversation) {
 
 // flushGeneration persists the streamed text that no message_end completed.
 func (a *Agent) flushGeneration(c *conversation, completion agent.MessageCompletion) {
+	a.noteUncommittedReply(c)
 	if err := providerkit.FlushGeneration(&c.generation, c.sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("omp persist partial generation", "agent_id", a.AgentID(), "error", err)
 	}
@@ -575,7 +587,7 @@ func (a *Agent) handleMessageEnd(c *conversation, raw []byte) {
 		}
 		content.Completion = a.messageTextCompletion(c, message.StopReason, message.Content)
 		a.persistThinking(c, message.Content)
-		if err := c.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
+		if err := a.persistOMPReplyText(c, content); err != nil {
 			slog.Error("omp persist message_end", "agent_id", a.AgentID(), "error", err)
 		}
 		providerkit.DiscardGenerationScopes(&c.generation, c.sink, c.generation.ScopeIDs())

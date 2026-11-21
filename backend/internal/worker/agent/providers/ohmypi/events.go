@@ -37,6 +37,8 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 		a.handleAgentStart()
 	case contracts.OhMyPiEventAgentEnd:
 		a.handleAgentEnd(line.Raw)
+	case "agent_pause":
+		a.observeOMPPause(root, line.Raw)
 	case contracts.OhMyPiEventMessageUpdate:
 		a.handleMessageUpdate(root, line.Raw)
 	case contracts.OhMyPiEventMessageEnd:
@@ -161,6 +163,9 @@ func (a *Agent) handlePromptFailure(id, message string) {
 	if a.IsStopped() {
 		return
 	}
+	if reply := a.takeReplyPrompt(id); reply != nil {
+		a.retireOMPReply(reply.receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_FAILED)
+	}
 	a.dropSteer(id)
 	a.steers.DropID(id)
 	a.steers.Settle(a.sink)
@@ -175,17 +180,15 @@ func (a *Agent) handlePromptFailure(id, message string) {
 	})
 }
 
-// handlePromptResult reads omp's report that a prompt it acknowledged started no
-// run. A local command resolves its steer echo, or releases the pending prompt.
+// handlePromptResult resolves a native prompt. A local command also resolves
+// its steer echo or releases the pending prompt.
 func (a *Agent) handlePromptResult(raw []byte) {
-	var result struct {
-		ID           string `json:"id"`
-		AgentInvoked *bool  `json:"agentInvoked"`
-	}
+	var result ompPromptResult
 	if err := json.Unmarshal(raw, &result); err != nil {
 		slog.Warn("omp prompt_result decode failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	a.resolveOMPReply(result)
 	if result.AgentInvoked == nil {
 		slog.Warn("omp prompt result has no invocation status", "agent_id", a.AgentID())
 		return

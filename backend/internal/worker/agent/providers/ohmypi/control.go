@@ -48,6 +48,7 @@ type dialogHeader struct {
 type pendingDialog struct {
 	header          dialogHeader
 	raw             []byte
+	replyReceipt    agent.NativeInputReceipt
 	ready           bool
 	published       bool
 	answering       bool
@@ -151,6 +152,9 @@ func (a *Agent) publishDialog(head dialogHeader, raw []byte) {
 	}
 	bypass := a.approvalMode == contracts.OhMyPiApprovalModeYolo && head.isToolApproval()
 	pending := &pendingDialog{header: head, raw: append([]byte(nil), raw...), ready: bypass, publicationDone: make(chan struct{})}
+	if reply := a.replyOutputLocked(); reply != nil {
+		pending.replyReceipt = reply.receipt
+	}
 	a.openDialogs[head.ID] = pending
 	a.Mu.Unlock()
 	if bypass {
@@ -174,9 +178,11 @@ func (a *Agent) publishRegisteredDialog(pending *pendingDialog) {
 	a.Mu.Unlock()
 	a.dialogDeadlines.Arm(a.Clock(), head.ID, head.deadline(), func() { a.withdrawDialog(head.ID) })
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
-		RequestID: head.ID,
-		Payload:   pending.raw,
-		SourceSeq: a.approvalSourceSeq(head),
+		RequestID:      head.ID,
+		Payload:        pending.raw,
+		SourceSeq:      a.approvalSourceSeq(head),
+		AgentSessionID: pending.replyReceipt.SessionID,
+		NativeTurnID:   pending.replyReceipt.TurnID,
 	})
 	a.Mu.Lock()
 	pending.ready = true

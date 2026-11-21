@@ -142,6 +142,10 @@ func (a *Agent) routeAskDialog(head dialogHeader) bool {
 			ID:        head.ID,
 			Questions: call.questions,
 		}
+		var receipt agent.NativeInputReceipt
+		if reply := a.replyOutputLocked(); reply != nil {
+			receipt = reply.receipt
+		}
 		a.Mu.Unlock()
 		payload, err := json.Marshal(request)
 		if err != nil {
@@ -153,7 +157,9 @@ func (a *Agent) routeAskDialog(head dialogHeader) bool {
 			a.handOffAsk(call)
 			return false
 		}
-		if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: head.ID, Payload: payload}); err != nil {
+		if err := a.sink.PublishControlRequest(agent.ControlRequest{
+			AgentSessionID: receipt.SessionID, NativeTurnID: receipt.TurnID, RequestID: head.ID, Payload: payload,
+		}); err != nil {
 			slog.Error("omp publish question request", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
 			a.cancelDialog(head.ID)
 		}

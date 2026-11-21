@@ -158,6 +158,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.persistIncompleteTools(root, agent.MessageCompletionInterrupted)
 	a.closeSubagents(subagentStatusForCompletion(agent.MessageCompletionInterrupted))
 	a.closeAllShells()
+	a.retireOpenReplies()
 	a.applyState(stateRaw)
 	a.Mu.Lock()
 	a.turn.clear()
