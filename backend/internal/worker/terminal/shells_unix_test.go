@@ -39,6 +39,31 @@ func TestListAvailableShellsDiscoversNushellAndElvish(t *testing.T) {
 	}
 }
 
+func TestListAvailableShellsDiscoversTheNushellAlias(t *testing.T) {
+	dir := t.TempDir()
+	sh := filepath.Join(dir, "sh")
+	nu := filepath.Join(dir, "nu")
+	alias := filepath.Join(dir, "nushell")
+	testutil.WriteExecutable(t, sh, "#!/bin/sh\nexit 0\n")
+	testutil.WriteExecutable(t, alias, "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", dir)
+	t.Setenv("LEAPMUX_DEFAULT_SHELL", "sh")
+
+	shells, defaultShell := newShellsResolver()()
+	assert.Equal(t, sh, defaultShell)
+	assert.Equal(t, []string{sh, alias}, shells)
+
+	testutil.WriteExecutable(t, nu, "#!/bin/sh\nexit 0\n")
+	shells, defaultShell = newShellsResolver()()
+	assert.Equal(t, sh, defaultShell)
+	assert.Equal(t, []string{sh, nu}, shells)
+
+	t.Setenv("LEAPMUX_DEFAULT_SHELL", "nushell")
+	shells, defaultShell = newShellsResolver()()
+	assert.Equal(t, alias, defaultShell)
+	assert.Equal(t, []string{alias, sh}, shells)
+}
+
 func TestStartRunsNushellAndElvishInteractively(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ shell, config, profile, command, wantProfile string }{

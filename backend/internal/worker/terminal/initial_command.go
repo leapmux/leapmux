@@ -54,12 +54,10 @@ func initialCommandDialect(shell string) string {
 		return ""
 	}
 	switch name {
-	case "bash", "zsh", "fish":
+	case "bash", "zsh", "fish", nushellExecutable:
 		return name
 	case "sh", "dash":
 		return "posix"
-	case "nu", "nushell":
-		return "nu"
 	default:
 		return ""
 	}
@@ -190,7 +188,7 @@ func (b *initialCommandBootstrap) unixStartup(shell string, env, args []string) 
 			return nil, nil, fmt.Errorf("write the shell startup hook: %w", err)
 		}
 		env = rememberStartupEnvironment(env, source)
-	case "nu":
+	case nushellExecutable:
 		path := filepath.Join(b.dir, "startup.nu")
 		if err := makeInitialCommandPipe(path); err != nil {
 			return nil, nil, fmt.Errorf("create the Nushell startup pipe: %w", err)

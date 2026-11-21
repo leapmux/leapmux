@@ -24,13 +24,16 @@ func computeShells() (shells []string, defaultShell string) {
 		shells = append(shells, defaultShell)
 	}
 
-	knownShells := []string{"sh", "bash", "zsh", "fish", "nu", "elvish", "pwsh", "powershell"}
+	knownShells := []string{"sh", "bash", "zsh", "fish", nushellExecutable, "elvish", "pwsh", "powershell"}
 	defaultBase := ShellBaseName(defaultShell)
 	for _, name := range knownShells {
 		if name == defaultBase {
 			continue
 		}
 		path, err := exec.LookPath(name)
+		if err != nil && name == nushellExecutable {
+			path, err = exec.LookPath(nushellExecutableAlias)
+		}
 		if err != nil {
 			continue
 		}
@@ -88,10 +91,9 @@ func resolveShellEnv(name string) string {
 // ListAvailableShells returns the shells available on the system and the
 // default shell.  Results are cached after the first call.
 //
-// Each well-known shell name is resolved via exec.LookPath which respects the
-// PATH environment variable.  Different names (e.g. "sh" vs "bash") are kept
-// as separate entries even if the underlying binary is the same, because
-// invoking as "sh" activates POSIX mode.
+// Each well-known shell name is resolved via exec.LookPath, which searches PATH.
+// Shells with different invocation modes get separate entries even when they
+// share a binary. For example, invoking Bash as sh activates POSIX mode.
 func ListAvailableShells() (shells []string, defaultShell string) {
 	return resolveShells()
 }

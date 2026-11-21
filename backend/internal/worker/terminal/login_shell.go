@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+const (
+	nushellExecutable      = "nu"
+	nushellExecutableAlias = "nushell"
+)
+
 var (
 	pwshPattern = regexp.MustCompile(`^(?:pwsh|powershell)(?:-preview)?$`)
 	// pwshCorePattern matches only PowerShell Core (pwsh 6+), excluding
@@ -30,10 +35,14 @@ func ShellBaseName(p string) string {
 		base = p[i+1:]
 	}
 	name := strings.TrimSuffix(strings.ToLower(base), ".exe")
-	if name == "bsd-csh" {
+	switch name {
+	case "bsd-csh":
 		return "csh"
+	case nushellExecutableAlias:
+		return nushellExecutable
+	default:
+		return name
 	}
-	return name
 }
 
 // LoginShellArgs returns the flags needed to start the given shell as an

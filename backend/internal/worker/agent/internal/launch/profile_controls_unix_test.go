@@ -227,18 +227,24 @@ func TestProfileCandidateNushellIgnoresShadowedCommandLookup(t *testing.T) {
 	const candidate = "leapmux-nu-native-peer"
 	path := filepath.Join(dir, candidate)
 	testutil.WriteExecutable(t, path, "#!/bin/sh\nprintf 'native peer\\n'\n")
-	require.Equal(t, ProbeYes, CheckBinary(t.Context(), shell, true, candidate))
-	result, status := ProgramPath(t.Context(), shell, true, candidate)
-	require.Equal(t, ProbeYes, status)
 	canonical, err := filepath.EvalSymlinks(path)
 	require.NoError(t, err)
-	assert.Equal(t, canonical, result)
-	cmd, marker, _ := wrapTestCommand(t, testutil.DeadlineContext(t), WrapSpec{
-		Shell: shell, LoginShell: true, WorkingDir: dir, Launch: ShellCommands(candidate),
-	})
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "%s", output)
-	assert.Equal(t, "\n"+marker+"\nnative peer\n", string(output))
+	alias := filepath.Join(t.TempDir(), "nushell")
+	require.NoError(t, os.Symlink(shell, alias))
+	for _, executable := range []string{shell, alias} {
+		t.Run(filepath.Base(executable), func(t *testing.T) {
+			require.Equal(t, ProbeYes, CheckBinary(t.Context(), executable, true, candidate))
+			result, status := ProgramPath(t.Context(), executable, true, candidate)
+			require.Equal(t, ProbeYes, status)
+			assert.Equal(t, canonical, result)
+			cmd, marker, _ := wrapTestCommand(t, testutil.DeadlineContext(t), WrapSpec{
+				Shell: executable, LoginShell: true, WorkingDir: dir, Launch: ShellCommands(candidate),
+			})
+			output, err := cmd.CombinedOutput()
+			require.NoError(t, err, "%s", output)
+			assert.Equal(t, "\n"+marker+"\nnative peer\n", string(output))
+		})
+	}
 }
 
 // A Nushell profile can define a command with the name of a builtin, and a

@@ -96,9 +96,9 @@ The shell list is per-Worker. Switching workspace while staying on the same Work
 ### How the Worker builds the list
 
 1. The Worker resolves its **default shell** (see below) and places it **first** in the list.
-2. It searches `PATH` for `sh`, `bash`, `zsh`, `fish`, `nu` (Nushell), `elvish`, `pwsh`, and `powershell`. It lists each command it finds once.
+2. It searches `PATH` for `sh`, `bash`, `zsh`, `fish`, `nu` (Nushell), `elvish`, `pwsh`, and `powershell`. For Nushell, it uses `nushell` when it finds no `nu`.
 
-Two names that resolve to the same binary (for example `sh` and `bash` on many systems) are kept as **separate** entries, because invoking a shell as `sh` activates its POSIX mode — the distinction is intentional.
+Shells with different invocation modes get separate entries even when they share a binary. For example, invoking Bash as `sh` activates POSIX mode.
 
 ### Default shell resolution
 
