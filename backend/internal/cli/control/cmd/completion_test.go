@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,13 +61,23 @@ func TestControlCompletionCompletesLocalWorkerPins(t *testing.T) {
 	const hub = "https://pins.example.invalid"
 	pins, err := control.NewPinStore(hub)
 	require.NoError(t, err)
-	require.NoError(t, pins.Verify("spare-worker", []byte("x25519"), []byte("mlkem"), []byte("slhdsa")))
+	commit, err := pins.Resolve(t.Context(), "spare-worker", []byte("x25519"), []byte("mlkem"), []byte("slhdsa"))
+	require.NoError(t, err)
+	require.NoError(t, commit(t.Context()))
 	for _, verb := range []string{"get", "remove"} {
 		out := runTree(t, NewCommand(), "", "__complete", "control", "worker", "pins", verb, "--hub", hub, "spare")
 		require.Equal(t, cli.ExitOK, out.Code, out.Stderr)
 		assert.Contains(t, out.Stdout, "spare-worker\n")
 		assert.NotContains(t, out.Stdout, "self\n")
 	}
+
+	host, err := control.HubHost(hub)
+	require.NoError(t, err)
+	path := filepath.Join(os.Getenv("LEAPMUX_CONTROL_CONFIG_DIR"), host, "pins.json")
+	require.NoError(t, os.WriteFile(path, []byte("{invalid"), 0o644))
+	out := runTree(t, NewCommand(), "", "__complete", "control", "worker", "pins", "get", "--hub", hub, "spare")
+	require.Equal(t, cli.ExitOK, out.Code, out.Stderr)
+	assert.NotContains(t, out.Stdout, "spare-worker")
 }
 
 func TestControlCompletionOmitsTheCallingAgentFromWaitTargets(t *testing.T) {

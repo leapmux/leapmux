@@ -18,9 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/controlenv"
 )
 
-// completionTimeout caps the hub calls that one completion makes. A shell
-// waits for the completion before it shows anything, so a slow hub must not
-// freeze the prompt.
+// completionTimeout limits the time a shell waits on Hub or pin-store reads.
 const completionTimeout = 2 * time.Second
 
 func registerScopeCompletions(cmd *cobra.Command) {
@@ -146,8 +144,14 @@ func completePinnedWorkers(cmd *cobra.Command, _ cli.ArgSpec, word string) ([]st
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), completionTimeout)
+	defer cancel()
+	entries, err := pins.List(ctx)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 	var ids []string
-	for _, pin := range pins.List() {
+	for _, pin := range entries {
 		if strings.HasPrefix(pin.WorkerID, word) {
 			ids = append(ids, pin.WorkerID)
 		}

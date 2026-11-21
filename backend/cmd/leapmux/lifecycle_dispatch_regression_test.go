@@ -24,9 +24,9 @@ func TestWorkerPinListForwardsItsArguments(t *testing.T) {
 	} {
 		store, err := crossworker.NewPinStore(directory)
 		require.NoError(t, err)
-		commit, err := store.Resolve(context.Background(), id, []byte{1}, []byte{2}, []byte{3})
+		commit, err := store.Resolve(t.Context(), id, []byte{1}, []byte{2}, []byte{3})
 		require.NoError(t, err)
-		require.NoError(t, commit(context.Background()))
+		require.NoError(t, commit(t.Context()))
 	}
 	for _, args := range [][]string{{"--data-dir", selected}, {"--data-dir=" + selected}} {
 		result := invokeLifecycleCLI(t, home, append([]string{"worker", "cross-worker-pins", "list", "--json"}, args...)...)

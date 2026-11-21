@@ -39,8 +39,11 @@ func TestCrossWorkerPins_GetAndRemove(t *testing.T) {
 	dataDir := t.TempDir()
 	store, err := crossworker.NewPinStore(dataDir)
 	require.NoError(t, err)
-	require.NoError(t, store.Verify("sibling-b", []byte{1}, []byte{2}, []byte{3}))
-	require.NoError(t, store.Verify("sibling-a", []byte{4}, []byte{5}, []byte{6}))
+	for _, workerID := range []string{"sibling-b", "sibling-a"} {
+		commit, err := store.Resolve(t.Context(), workerID, []byte{1}, []byte{2}, []byte{3})
+		require.NoError(t, err)
+		require.NoError(t, commit(t.Context()))
+	}
 	config := filepath.Join(dataDir, "absent-worker.yaml")
 	pins := func(args ...string) cliOutcome {
 		return runTestCLI(t, append(append([]string{"worker", "cross-worker-pins"}, args...), "--data-dir", dataDir, "--config", config)...)
@@ -80,6 +83,8 @@ func TestCrossWorkerPins_GetAndRemove(t *testing.T) {
 	assert.JSONEq(t, `{"data":{"removed":"sibling-a"}}`, o.stdout)
 	reopened, err := crossworker.NewPinStore(dataDir)
 	require.NoError(t, err)
-	assert.NotContains(t, reopened.List(), "sibling-a")
-	assert.Contains(t, reopened.List(), "sibling-b")
+	stored, err := reopened.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.NotContains(t, stored, "sibling-a")
+	assert.Contains(t, stored, "sibling-b")
 }

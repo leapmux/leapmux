@@ -213,7 +213,7 @@ func TestAdminNetworkService_ToleratesNoListenerSet(t *testing.T) {
 // when the set lists none, and nothing at all for a local-only set.
 func TestAdminNetworkService_TheFallbackSplitsTheConfiguredBindSet(t *testing.T) {
 	t.Setenv("LEAPMUX_HUB_LISTEN", "")
-	launcherConfig, _, err := config.LoadWithOptions(nil, config.LoadOptions{
+	launcherConfig, err := config.LoadWithOptions(nil, config.LoadOptions{
 		DefaultConfigFile: filepath.Join(t.TempDir(), "hub.yaml"),
 		DefaultListen:     "127.0.0.1:44321",
 		SoloMode:          true,
