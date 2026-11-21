@@ -70,4 +70,62 @@ test.describe('control CLI tab status', () => {
     await expect(tab.getByTestId('tab-status')).toHaveCount(0)
     await expect(leaf.getByTestId('tab-status')).toHaveCount(0)
   })
+
+  test('keeps independent status keys through reconnect and clear', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
+    const { workspaceId, agentId } = authenticatedWorkspace
+    const tab = tabById(page, agentId)
+    const leaf = sidebarLeaf(page, workspaceId, agentId)
+    await expect(tab).toBeVisible()
+
+    const set = async (key: string, text: string) => runCLI(cli, [
+      'tab',
+      'status',
+      'set',
+      agentId,
+      text,
+      '--key',
+      key,
+    ])
+    const clear = async (key: string) => runCLI(cli, [
+      'tab',
+      'status',
+      'clear',
+      agentId,
+      '--key',
+      key,
+    ])
+    const list = async () => runCLI(cli, [
+      'tab',
+      'status',
+      'list',
+      agentId,
+    ])
+
+    await set('build', 'Compiling the project')
+    await set('test', 'Running browser tests')
+    expect(await list()).toEqual({
+      id: agentId,
+      statuses: [
+        { key: 'test', text: 'Running browser tests', tone: 'neutral' },
+        { key: 'build', text: 'Compiling the project', tone: 'neutral' },
+      ],
+    })
+    await page.reload()
+    await waitForWorkspaceReady(page)
+    await expect(tab.getByTestId('tab-status-text')).toHaveText('Running browser tests')
+
+    await clear('test')
+    for (const row of [tab, leaf])
+      await expect(row.getByTestId('tab-status-text')).toHaveText('Compiling the project')
+    expect(await list()).toEqual({
+      id: agentId,
+      statuses: [
+        { key: 'build', text: 'Compiling the project', tone: 'neutral' },
+      ],
+    })
+    await clear('build')
+    await expect(tab.getByTestId('tab-status')).toHaveCount(0)
+    expect(await list()).toEqual({ id: agentId, statuses: [] })
+  })
 })

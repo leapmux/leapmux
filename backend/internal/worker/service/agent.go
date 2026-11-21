@@ -4327,14 +4327,12 @@ func callerReadsTabType(caller channel.Caller, tabType leapmuxv1.TabType) bool {
 	return !governed || caller.Allows(scope)
 }
 
-// tabViewEventVisible reports whether caller may see an event that acts on the
-// view of one tab of kind tabType: it needs workspace:read, as a notification
-// does, and the read scope of the tab's kind, as a TabRenamed does, because a
-// status text is the same kind of data as a title.
+// callerReadsTabView requires workspace:read and the read scope of the tab's
+// kind. A status text needs the same protection as the tab's title.
 //
 // The Worker always states the kind, so an event without one comes from a bug.
 // It fails closed instead of reading as a kind that no scope governs.
-func tabViewEventVisible(caller channel.Caller, tabType leapmuxv1.TabType) bool {
+func callerReadsTabView(caller channel.Caller, tabType leapmuxv1.TabType) bool {
 	return tabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED &&
 		caller.Allows(leapmuxv1.Scope_SCOPE_WORKSPACE_READ) &&
 		callerReadsTabType(caller, tabType)
@@ -4348,7 +4346,7 @@ func tabViewEventVisible(caller channel.Caller, tabType leapmuxv1.TabType) bool 
 // A notification, a reveal and a tab status act on the user's view of the
 // workspace, as the RPCs that send them (which take workspace:write) do, so
 // workspace:read governs all three. A reveal and a status also name one tab,
-// so the scope of its kind governs them too (see tabViewEventVisible).
+// so the scope of its kind governs them too (see callerReadsTabView).
 //
 // A payload this binary cannot parse fails closed. It cannot state its kind,
 // so it cannot state which scope governs it.
@@ -4357,9 +4355,9 @@ func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEven
 	case *leapmuxv1.WorkerPrivateEvent_UserNotification:
 		return caller.Allows(leapmuxv1.Scope_SCOPE_WORKSPACE_READ)
 	case *leapmuxv1.WorkerPrivateEvent_TabRevealCommand:
-		return tabViewEventVisible(caller, event.TabRevealCommand.GetTabType())
+		return callerReadsTabView(caller, event.TabRevealCommand.GetTabType())
 	case *leapmuxv1.WorkerPrivateEvent_TabStatusChanged:
-		return tabViewEventVisible(caller, event.TabStatusChanged.GetTabType())
+		return callerReadsTabView(caller, event.TabStatusChanged.GetTabType())
 	}
 	if renamed := evt.GetTabRenamed(); renamed != nil {
 		return callerReadsTabType(caller, renamed.GetTabType())

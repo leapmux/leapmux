@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -23,9 +24,14 @@ const tabStatusTextMaxBytes = 128
 // progress from 0 to 100.
 const tabStatusMaxProgress = 100
 
-// TabStatusStore holds the status that a process reported for each tab that
-// this Worker hosts: a short text, an optional progress and a tone, which the
-// tab shows beside its title.
+const (
+	defaultTabStatusKey  = "default"
+	tabStatusKeyMaxBytes = 64
+	tabStatusMaxKeys     = 32
+)
+
+// TabStatusStore holds the statuses that processes report for hosted tabs.
+// The last entry in each tab's list supplies the visible status.
 //
 // It lives in memory only, and that is the contract SetTabStatus states: a
 // status describes work that a running process reports, so it does not outlive
@@ -60,7 +66,7 @@ type TabStatusStore struct {
 // theirs.
 type ownerTabStatuses struct {
 	owner userid.UserID
-	tabs  map[ownedTabKey]*leapmuxv1.TabStatus
+	tabs  map[ownedTabKey][]*leapmuxv1.TabStatusEntry
 }
 
 // NewTabStatusStore returns an empty store that publishes its changes on
@@ -72,40 +78,78 @@ func NewTabStatusStore(events *PrivateEventsBus) *TabStatusStore {
 	}
 }
 
-// set stores status as the status of the tab that key identifies, and tells
-// owner's frontends. status must come from validTabStatus: the store keeps it,
-// and every event of the tab shares it, so nothing may change it afterwards.
+// set stores a status under one key and publishes the new visible status.
+// The store and its events share the validated status. It must stay immutable.
 //
 // An unminted owner stores nothing. No subscriber could read the status: the
 // bus refuses to register or publish to such an owner.
-func (s *TabStatusStore) set(key ownedTabKey, owner userid.UserID, status *leapmuxv1.TabStatus) {
+func (s *TabStatusStore) set(key ownedTabKey, owner userid.UserID, statusKey string, status *leapmuxv1.TabStatus) error {
 	if owner.IsZero() {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	statuses, ok := s.byOwner[owner.String()]
 	if !ok {
-		statuses = &ownerTabStatuses{owner: owner, tabs: make(map[ownedTabKey]*leapmuxv1.TabStatus)}
+		statuses = &ownerTabStatuses{owner: owner, tabs: make(map[ownedTabKey][]*leapmuxv1.TabStatusEntry)}
 		s.byOwner[owner.String()] = statuses
 	}
-	statuses.tabs[key] = status
+	entries := statuses.tabs[key]
+	if index := tabStatusEntryIndex(entries, statusKey); index >= 0 {
+		entries = slices.Delete(entries, index, index+1)
+	} else if len(entries) == tabStatusMaxKeys {
+		return fmt.Errorf("a tab can hold at most %d status keys", tabStatusMaxKeys)
+	}
+	statuses.tabs[key] = append(entries, &leapmuxv1.TabStatusEntry{Key: statusKey, Status: status})
 	s.events.PublishTabStatusChanged(owner, key.tabType, key.tabID, status)
+	return nil
 }
 
-// clear removes the status of the tab that key identifies at owner's request,
-// and tells owner's frontends.
+// clear removes one key and publishes the remaining visible status.
 //
 // It publishes even when no status is set. The bus drops an event for a slow
 // subscriber, so a frontend can still show a status that the store no longer
 // holds, and a repeated clear is how a script makes that frontend agree.
-func (s *TabStatusStore) clear(key ownedTabKey, owner userid.UserID) {
+func (s *TabStatusStore) clear(key ownedTabKey, owner userid.UserID, statusKey string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var entries []*leapmuxv1.TabStatusEntry
 	if statuses, ok := s.byOwner[owner.String()]; ok {
-		s.removeLocked(statuses, key)
+		entries = statuses.tabs[key]
+		if index := tabStatusEntryIndex(entries, statusKey); index >= 0 {
+			entries = slices.Delete(entries, index, index+1)
+			if len(entries) == 0 {
+				s.removeLocked(statuses, key)
+			} else {
+				statuses.tabs[key] = entries
+			}
+		}
 	}
-	s.events.PublishTabStatusChanged(owner, key.tabType, key.tabID, nil)
+	s.events.PublishTabStatusChanged(owner, key.tabType, key.tabID, latestTabStatus(entries))
+}
+
+func tabStatusEntryIndex(entries []*leapmuxv1.TabStatusEntry, statusKey string) int {
+	return slices.IndexFunc(entries, func(entry *leapmuxv1.TabStatusEntry) bool { return entry.GetKey() == statusKey })
+}
+
+func latestTabStatus(entries []*leapmuxv1.TabStatusEntry) *leapmuxv1.TabStatus {
+	if len(entries) == 0 {
+		return nil
+	}
+	return entries[len(entries)-1].GetStatus()
+}
+
+// list gives one owner's entries from most to least recently set.
+func (s *TabStatusStore) list(key ownedTabKey, owner userid.UserID) []*leapmuxv1.TabStatusEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	statuses := s.byOwner[owner.String()]
+	if statuses == nil {
+		return nil
+	}
+	entries := slices.Clone(statuses.tabs[key])
+	slices.Reverse(entries)
+	return entries
 }
 
 // forgetClosed removes the status of a tab that closed, and tells the owner's
@@ -141,8 +185,8 @@ func (s *TabStatusStore) get(key ownedTabKey) *leapmuxv1.TabStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, statuses := range s.byOwner {
-		if status, ok := statuses.tabs[key]; ok {
-			return status
+		if entries, ok := statuses.tabs[key]; ok {
+			return latestTabStatus(entries)
 		}
 	}
 	return nil
@@ -162,8 +206,8 @@ func (s *TabStatusStore) snapshotFor(owner userid.UserID) []*leapmuxv1.WorkerPri
 	var tabs []tabStatusSnapshotEntry
 	if statuses, ok := s.byOwner[owner.String()]; ok {
 		tabs = make([]tabStatusSnapshotEntry, 0, len(statuses.tabs))
-		for key, status := range statuses.tabs {
-			tabs = append(tabs, tabStatusSnapshotEntry{tabType: key.tabType, tabID: key.tabID, status: status})
+		for key, entries := range statuses.tabs {
+			tabs = append(tabs, tabStatusSnapshotEntry{tabType: key.tabType, tabID: key.tabID, status: latestTabStatus(entries)})
 		}
 	}
 	s.mu.Unlock()
@@ -183,6 +227,23 @@ type tabStatusSnapshotEntry struct {
 	tabType leapmuxv1.TabType
 	tabID   string
 	status  *leapmuxv1.TabStatus
+}
+
+func validTabStatusKey(requested *string) (string, error) {
+	if requested == nil {
+		return defaultTabStatusKey, nil
+	}
+	key := strings.TrimSpace(*requested)
+	if key == "" {
+		return "", errors.New("the status key is empty")
+	}
+	if len(key) > tabStatusKeyMaxBytes {
+		return "", fmt.Errorf("the status key exceeds %d bytes", tabStatusKeyMaxBytes)
+	}
+	if strings.ContainsFunc(key, unicode.IsControl) {
+		return "", errors.New("the status key contains a control character")
+	}
+	return key, nil
 }
 
 // validTabStatus checks a status that a caller sent and returns the status to

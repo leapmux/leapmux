@@ -35,6 +35,7 @@ func TestTabStatusSetOverIPC_SendsTheStatus(t *testing.T) {
 	data := runControl(t, "tab", "status", "set", id, "Migrating rows", "--progress", "40", "--tone", "warning").Data(t)
 	assert.Equal(t, map[string]any{
 		"id":     id,
+		"key":    "default",
 		"status": map[string]any{"text": "Migrating rows", "progress_percent": float64(40), "tone": "warning"},
 	}, data)
 
@@ -129,7 +130,43 @@ func TestTabStatusSetOverIPC_PrintsTheStatusAsText(t *testing.T) {
 
 	o := runControlText(t, "tab", "status", "set", "agent-2", "Running the tests", "--progress", "75")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-	assert.Equal(t, "id: agent-2  status: {text: \"Running the tests\", progress_percent: 75, tone: neutral}\n", o.Stdout)
+	assert.Equal(t, "id: agent-2  key: default  status: {text: \"Running the tests\", progress_percent: 75, tone: neutral}\n", o.Stdout)
+}
+
+func TestTabStatusKeysOverIPC_SetClearAndList(t *testing.T) {
+	w := &privateCommandWorker{answers: map[string]proto.Message{
+		leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure: &leapmuxv1.ListTabStatusesResponse{
+			Statuses: []*leapmuxv1.TabStatusEntry{
+				{Key: "tests", Status: &leapmuxv1.TabStatus{Text: "Running tests", ProgressPercent: uint32Ptr(0)}},
+				{Key: "build", Status: &leapmuxv1.TabStatus{Text: "Build ready", Tone: leapmuxv1.TabStatusTone_TAB_STATUS_TONE_SUCCESS}},
+			},
+		},
+	}}
+	startTabWorker(t, w, agentTab())
+
+	assert.Equal(t, "tests", runControl(t, "tab", "status", "set", "agent-2", "Running tests", "--key", "tests").Data(t)["key"])
+	data := runControl(t, "tab", "status", "list", "agent-2").Data(t)
+	assert.Equal(t, map[string]any{
+		"id": "agent-2",
+		"statuses": []any{
+			map[string]any{"key": "tests", "text": "Running tests", "progress_percent": float64(0), "tone": "neutral"},
+			map[string]any{"key": "build", "text": "Build ready", "tone": "success"},
+		},
+	}, data)
+	rendered := runControlText(t, "tab", "status", "list", "agent-2")
+	require.Equal(t, cli.ExitOK, rendered.Code)
+	assert.Contains(t, rendered.Stdout, "PROGRESS %")
+	assert.Contains(t, rendered.Stdout, "Running tests")
+	assert.Contains(t, rendered.Stdout, "Build ready")
+	assert.Equal(t, "tests", runControl(t, "tab", "status", "clear", "agent-2", "--key", "tests").Data(t)["key"])
+
+	calls := w.recorded()
+	require.Len(t, calls, 4)
+	assert.True(t, proto.Equal(&leapmuxv1.SetTabStatusRequest{
+		TabId: "agent-2", Key: new("tests"), Status: &leapmuxv1.TabStatus{Text: "Running tests"},
+	}, calls[0].request))
+	assert.True(t, proto.Equal(&leapmuxv1.ListTabStatusesRequest{TabId: "agent-2"}, calls[1].request))
+	assert.True(t, proto.Equal(&leapmuxv1.SetTabStatusRequest{TabId: "agent-2", Key: new("tests")}, calls[3].request))
 }
 
 // What the CLI can check, it refuses before it sends anything.

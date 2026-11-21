@@ -399,21 +399,24 @@ leapmux control tab reveal self
 
 ## `leapmux control tab status`
 
-Show or remove a short status beside a tab's title.
+Report and inspect status entries on a tab.
 
 ### `leapmux control tab status set`
 
 Show a short status beside a tab's title, in the tab bar and in the sidebar of
 every LeapMux window that you have open. A window that you open later shows it
-too. A new status replaces the old one.
+too. The most recently set status is visible.
+
+Give each reporter a --key to keep its status separate. Setting a key again
+replaces its previous status. Without --key, the command uses "default".
 
 --progress adds a progress ring, from 0 to 100. Without it, the status shows
 no progress. --tone colors the status: neutral (the default), success,
 warning or error.
 
-The status stays until "tab status clear" removes it, the tab closes, or the
-tab's Worker stops. The Worker refuses a text that is too long, and states the
-limit.
+The status stays until "tab status clear" removes its key, the tab closes, or
+the tab's Worker stops. Use "tab status list" to see all keys. The Worker
+reports its limits on the status text and keys when it refuses a request.
 
 This command changes state.
 
@@ -428,14 +431,15 @@ leapmux control tab status set <tab> <text> [flags]
 
 | Flag | Description |
 |---|---|
+| `--key string` | which status entry to change (default: default) |
 | `--progress int` | how far the work is, from 0 to 100 (default: no progress) |
 | `--tone string` | the color of the status (one of: neutral, success, warning, error; default: neutral) |
 
 ```sh
 leapmux control tab status set self "Running the tests"
 
-# Report how far the work is.
-leapmux control tab status set 87a19d5f "Migrating rows" --progress 40
+# Report progress for a separate task.
+leapmux control tab status set 87a19d5f "Migrating rows" --key migration --progress 40
 
 # Mark the tab when the work fails.
 leapmux control tab status set self "Tests failed" --tone error
@@ -443,7 +447,7 @@ leapmux control tab status set self "Tests failed" --tone error
 
 ### `leapmux control tab status clear`
 
-Remove the status of a tab.
+Remove one status entry from a tab.
 
 This command changes state.
 
@@ -455,9 +459,29 @@ leapmux control tab status clear <tab> [flags]
 |---|---|
 | `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
 
+| Flag | Description |
+|---|---|
+| `--key string` | which status entry to change (default: default) |
+
 ```sh
 leapmux control tab status clear self
-leapmux control tab status clear 87a19d5f
+leapmux control tab status clear 87a19d5f --key migration
+```
+
+### `leapmux control tab status list`
+
+List a tab's status entries, with the visible one first.
+
+```text
+leapmux control tab status list <tab> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;", or "self" for the tab that runs this command. |
+
+```sh
+leapmux control tab status list self
 ```
 
 ## `leapmux control agent`

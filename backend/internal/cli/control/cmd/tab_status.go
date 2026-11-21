@@ -15,15 +15,18 @@ import (
 // tabStatusSetLong is the help of `tab status set`.
 const tabStatusSetLong = `Show a short status beside a tab's title, in the tab bar and in the sidebar of
 every LeapMux window that you have open. A window that you open later shows it
-too. A new status replaces the old one.
+too. The most recently set status is visible.
+
+Give each reporter a --key to keep its status separate. Setting a key again
+replaces its previous status. Without --key, the command uses "default".
 
 --progress adds a progress ring, from 0 to 100. Without it, the status shows
 no progress. --tone colors the status: neutral (the default), success,
 warning or error.
 
-The status stays until "tab status clear" removes it, the tab closes, or the
-tab's Worker stops. The Worker refuses a text that is too long, and states the
-limit.`
+The status stays until "tab status clear" removes its key, the tab closes, or
+the tab's Worker stops. Use "tab status list" to see all keys. The Worker
+reports its limits on the status text and keys when it refuses a request.`
 
 // maxTabStatusProgress is the progress of finished work. TabStatus states its
 // progress from 0 to 100, so this bound is the meaning of a percentage rather
@@ -35,11 +38,9 @@ const maxTabStatusProgress = 100
 // is a choice that a caller makes, so it gets a word of its own.
 const neutralToneToken = "neutral"
 
-// newTabStatusCommand builds `tab status`, which sets and clears the status
-// that a tab shows beside its title. The tab's Worker keeps the status in
-// memory and replays it to each frontend that subscribes.
+// newTabStatusCommand builds the commands for a tab's status entries.
 func newTabStatusCommand() *cobra.Command {
-	return cli.Group("status", "Show or remove a short status beside a tab's title",
+	return cli.Group("status", "Report and inspect status entries on a tab",
 		cli.NewLeaf(cli.Leaf{
 			Use:     "set <tab> <text>",
 			Short:   "Show a status beside a tab's title, with an optional progress and tone",
@@ -50,10 +51,11 @@ func newTabStatusCommand() *cobra.Command {
 			},
 			Examples: []cli.Example{
 				{Command: `leapmux control tab status set self "Running the tests"`},
-				{Comment: "Report how far the work is.", Command: `leapmux control tab status set 87a19d5f "Migrating rows" --progress 40`},
+				{Comment: "Report progress for a separate task.", Command: `leapmux control tab status set 87a19d5f "Migrating rows" --key migration --progress 40`},
 				{Comment: "Mark the tab when the work fails.", Command: `leapmux control tab status set self "Tests failed" --tone error`},
 			},
 			Flags: func(fs *pflag.FlagSet) {
+				addTabStatusKeyFlag(fs)
 				fs.Int("progress", 0, "how far the work is, from 0 to 100 (default: no progress)")
 				fs.String("tone", neutralToneToken, "the color of the status")
 				cli.SetEnum(fs, "tone", tabStatusToneTokens()...)
@@ -63,16 +65,30 @@ func newTabStatusCommand() *cobra.Command {
 		}),
 		cli.NewLeaf(cli.Leaf{
 			Use:     "clear <tab>",
-			Short:   "Remove the status of a tab",
+			Short:   "Remove one status entry from a tab",
 			Mutates: true,
 			Examples: []cli.Example{
 				{Command: "leapmux control tab status clear self"},
-				{Command: "leapmux control tab status clear 87a19d5f"},
+				{Command: "leapmux control tab status clear 87a19d5f --key migration"},
 			},
+			Flags:    addTabStatusKeyFlag,
 			Complete: completeTargets,
 			Run:      runTabStatusClear,
 		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:   "list <tab>",
+			Short: "List a tab's status entries, with the visible one first",
+			Examples: []cli.Example{
+				{Command: "leapmux control tab status list self"},
+			},
+			Complete: completeTargets,
+			Run:      runTabStatusList,
+		}),
 	)
+}
+
+func addTabStatusKeyFlag(fs *pflag.FlagSet) {
+	fs.String("key", "", "which status entry to change (default: default)")
 }
 
 // tabStatusToneTokens lists the tones that --tone accepts: the neutral tone,
@@ -106,14 +122,21 @@ func tabStatusToneToken(tone leapmuxv1.TabStatusTone) string {
 // Status is null after a clear.
 type tabStatusResult struct {
 	ID     string        `json:"id"`
+	Key    string        `json:"key"`
 	Status *tabStatusRow `json:"status"`
 }
 
 // tabStatusRow is a tab's status in a result.
 type tabStatusRow struct {
-	Text            string  `json:"text"`
-	ProgressPercent *uint32 `json:"progress_percent,omitempty"`
-	Tone            string  `json:"tone"`
+	Key             string  `json:"key,omitempty" table:"KEY"`
+	Text            string  `json:"text" table:"STATUS"`
+	ProgressPercent *uint32 `json:"progress_percent,omitempty" table:"PROGRESS %"`
+	Tone            string  `json:"tone" table:"TONE"`
+}
+
+type tabStatusListResult struct {
+	ID       string         `json:"id"`
+	Statuses []tabStatusRow `json:"statuses"`
 }
 
 // runTabStatusSet builds the status from the command line, refusing what it
@@ -154,24 +177,59 @@ func runTabStatusClear(inv *cli.Invocation) (any, error) {
 // that hosts the tab, and returns the result: the tab and the status that the
 // Worker stored. A nil status clears it, and the result then states no status.
 func setTabStatus(inv *cli.Invocation, status *leapmuxv1.TabStatus) (tabStatusResult, error) {
-	s, err := openSession(inv)
+	s, got, err := openTabStatusSession(inv)
 	if err != nil {
 		return tabStatusResult{}, err
 	}
 	defer s.Close()
-	got, err := s.resolveTab(resolve.KindTab, inv.Arg("tab"), resolve.Need{WorkerID: true})
-	if err != nil {
-		return tabStatusResult{}, err
-	}
-	if err := maybePreflightWorker(s.ctx, s.c, got.WorkerID); err != nil {
-		return tabStatusResult{}, err
-	}
 	req := &leapmuxv1.SetTabStatusRequest{TabId: got.ID, Status: status}
+	if inv.Changed("key") {
+		req.Key = new(stringFlag(inv, "key"))
+	}
 	var resp leapmuxv1.SetTabStatusResponse
 	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, req, &resp); err != nil {
 		return tabStatusResult{}, err
 	}
-	return tabStatusResult{ID: got.ID, Status: tabStatusRowOf(resp.GetStatus())}, nil
+	return tabStatusResult{ID: got.ID, Key: resp.GetKey(), Status: tabStatusRowOf(resp.GetStatus())}, nil
+}
+
+func runTabStatusList(inv *cli.Invocation) (any, error) {
+	s, got, err := openTabStatusSession(inv)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	req := &leapmuxv1.ListTabStatusesRequest{TabId: got.ID}
+	var resp leapmuxv1.ListTabStatusesResponse
+	if err := callInnerRPC(s.ctx, s.c, got.WorkerID, leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, req, &resp); err != nil {
+		return nil, err
+	}
+	result := tabStatusListResult{ID: got.ID, Statuses: make([]tabStatusRow, 0, len(resp.GetStatuses()))}
+	for _, entry := range resp.GetStatuses() {
+		row := tabStatusRowOf(entry.GetStatus())
+		if row == nil || entry.GetKey() == "" {
+			return nil, cli.Newf(cli.CodeInternal, "the Worker returned an incomplete tab status entry")
+		}
+		row.Key = entry.GetKey()
+		result.Statuses = append(result.Statuses, *row)
+	}
+	return result, nil
+}
+
+func openTabStatusSession(inv *cli.Invocation) (*session, tabTarget, error) {
+	s, err := openSession(inv)
+	if err != nil {
+		return nil, tabTarget{}, err
+	}
+	got, err := s.resolveTab(resolve.KindTab, inv.Arg("tab"), resolve.Need{WorkerID: true})
+	if err == nil {
+		err = maybePreflightWorker(s.ctx, s.c, got.WorkerID)
+	}
+	if err != nil {
+		s.Close()
+		return nil, tabTarget{}, err
+	}
+	return s, got, nil
 }
 
 // tabStatusRowOf is the result row of a status that the Worker stored, or nil

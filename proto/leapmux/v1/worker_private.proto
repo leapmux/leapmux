@@ -76,13 +76,17 @@ service WorkerPrivateService {
     option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
   }
 
-  // SetTabStatus sets or clears the status of one tab that this worker hosts:
-  // a short text, with an optional progress and tone, that the tab shows
-  // beside its title. The Worker keeps it in memory until the tab closes or
-  // the Worker stops, and the bootstrap of WatchWorkerPrivateEvents replays
-  // each status that is set. Emits TabStatusChanged.
+  // SetTabStatus sets or clears one status key on a hosted tab. The tab
+  // shows the most recently set key that remains. The Worker keeps the
+  // entries in memory until the tab closes or the Worker stops.
   rpc SetTabStatus(SetTabStatusRequest) returns (SetTabStatusResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+
+  // ListTabStatuses reads the caller's status entries for one hosted tab.
+  // The caller needs the read scope of the tab's kind as well.
+  rpc ListTabStatuses(ListTabStatusesRequest) returns (ListTabStatusesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
   }
 }
 
@@ -287,18 +291,34 @@ message TabRevealCommand {
 
 message SetTabStatusRequest {
   string tab_id = 1;
-  // The new status, or unset to clear the status.
+  // The new status, or unset to clear this key.
   TabStatus status = 2;
+  // Omitting the key selects "default".
+  optional string key = 3;
 }
 
 // SetTabStatusResponse states the status that the Worker stored, or no status
 // after a clear.
 message SetTabStatusResponse {
   TabStatus status = 1;
+  string key = 2;
 }
 
-// TabStatus is what a tab shows beside its title while a process reports
-// work on it.
+message ListTabStatusesRequest {
+  string tab_id = 1;
+}
+
+message ListTabStatusesResponse {
+  // Ordered from most to least recently set. The first entry is visible.
+  repeated TabStatusEntry statuses = 1;
+}
+
+message TabStatusEntry {
+  string key = 1;
+  TabStatus status = 2;
+}
+
+// TabStatus describes work that one reporter tracks on a tab.
 message TabStatus {
   // A short text, such as "Running the tests". Required.
   string text = 1;
@@ -315,13 +335,13 @@ enum TabStatusTone {
   TAB_STATUS_TONE_ERROR = 3;
 }
 
-// TabStatusChanged reports the status of one tab. The bootstrap of
-// WatchWorkerPrivateEvents sends one for each tab whose status is set.
+// TabStatusChanged reports the visible status of one tab. The bootstrap of
+// WatchWorkerPrivateEvents sends one for each tab with status entries.
 message TabStatusChanged {
   string tab_id = 1;
   // The kind of the tab. The Worker sends the event only to a subscriber that
   // may read tabs of this kind, as it does for a TabRenamed.
   TabType tab_type = 2;
-  // Unset when the status was cleared.
+  // Unset when no status entries remain.
   TabStatus status = 3;
 }

@@ -393,6 +393,57 @@ func TestSetTabStatus_SetsAndClearsTheStatus(t *testing.T) {
 	assert.Nil(t, cleared.GetStatus(), "a cleared status is unset")
 }
 
+func TestListTabStatuses_RequiresTheOwnersTabReadScope(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t)
+	seedAgent(t, svc, "agent-1")
+	requireOK(t, setTabStatus(dispatcher, "agent-1", &leapmuxv1.TabStatus{Text: "Running"}))
+	request := &leapmuxv1.ListTabStatusesRequest{TabId: "agent-1"}
+	method := leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure
+
+	wrongOwner := newTestWriter()
+	dispatchAs(dispatcher, userid.MustNew("user-2"), method, request, wrongOwner)
+	requireRefused(t, wrongOwner, codes.PermissionDenied)
+	for _, scopes := range []string{"workspace:read", "agent:read", "workspace:read terminal:read"} {
+		missing := newTestWriter()
+		dispatchScoped(dispatcher, mustScopes(scopes), method, request, missing)
+		requireRefused(t, missing, codes.PermissionDenied)
+	}
+	allowed := newTestWriter()
+	dispatchScoped(dispatcher, mustScopes("workspace:read agent:read"), method, request, allowed)
+	answer := decodeResponse(t, allowed, &leapmuxv1.ListTabStatusesResponse{})
+	require.Len(t, answer.GetStatuses(), 1)
+	assert.Equal(t, defaultTabStatusKey, answer.GetStatuses()[0].GetKey())
+	assert.Equal(t, "Running", answer.GetStatuses()[0].GetStatus().GetText())
+}
+
+func TestSetTabStatus_ValidatesAndNormalizesTheKey(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t)
+	seedAgent(t, svc, "agent-1")
+	set := func(key string, status *leapmuxv1.TabStatus) *testResponseWriter {
+		w := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure,
+			&leapmuxv1.SetTabStatusRequest{TabId: "agent-1", Key: &key, Status: status}, w)
+		return w
+	}
+	status := &leapmuxv1.TabStatus{Text: "Checking the build"}
+	for _, key := range []string{"", "  ", strings.Repeat("a", tabStatusKeyMaxBytes+1), "build\x1bkey"} {
+		requireRefused(t, set(key, status), codes.InvalidArgument)
+		requireRefused(t, set(key, nil), codes.InvalidArgument)
+	}
+	scope := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1", "user-1")
+	owner := userid.MustNew("user-1")
+	require.Empty(t, svc.TabStatuses.list(scope, owner))
+	allowed := strings.Repeat("a", tabStatusKeyMaxBytes)
+	response := decodeResponse(t, set("  "+allowed+" ", status), &leapmuxv1.SetTabStatusResponse{})
+	assert.Equal(t, allowed, response.GetKey())
+	require.Len(t, svc.TabStatuses.list(scope, owner), 1)
+	cleared := decodeResponse(t, set(allowed, nil), &leapmuxv1.SetTabStatusResponse{})
+	assert.Equal(t, allowed, cleared.GetKey())
+	assert.Empty(t, svc.TabStatuses.list(scope, owner))
+}
+
 // A status without a progress keeps it unset, so the frontend draws no bar.
 // Progress 0 and 100 are set values, at both ends of the range.
 func TestSetTabStatus_KeepsTheProgressPresence(t *testing.T) {
@@ -926,14 +977,14 @@ func TestTabStatusStore_KeepsAnOwnerOnlyWhileItHoldsAStatus(t *testing.T) {
 	second := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "term-1", "user-1")
 	status := &leapmuxv1.TabStatus{Text: "Running"}
 
-	store.set(first, userid.UserID{}, status)
+	require.NoError(t, store.set(first, userid.UserID{}, defaultTabStatusKey, status))
 	assert.Nil(t, store.get(first), "an unminted owner stores nothing")
 	assert.Empty(t, store.byOwner)
 	assert.Nil(t, store.snapshotFor(userid.UserID{}), "an unminted owner owns nothing")
 
-	store.set(first, owner, status)
-	store.set(second, owner, status)
-	store.clear(first, owner)
+	require.NoError(t, store.set(first, owner, defaultTabStatusKey, status))
+	require.NoError(t, store.set(second, owner, defaultTabStatusKey, status))
+	store.clear(first, owner, defaultTabStatusKey)
 	assert.Nil(t, store.get(first))
 	assert.Same(t, status, store.get(second), "a clear removes one tab's status")
 	assert.Len(t, store.byOwner, 1, "the owner still holds a status")
@@ -941,9 +992,49 @@ func TestTabStatusStore_KeepsAnOwnerOnlyWhileItHoldsAStatus(t *testing.T) {
 	store.forgetClosed(second)
 	assert.Empty(t, store.byOwner, "the owner's last status took the entry with it")
 
-	store.set(first, owner, status)
-	store.clear(first, owner)
+	require.NoError(t, store.set(first, owner, defaultTabStatusKey, status))
+	store.clear(first, owner, defaultTabStatusKey)
 	assert.Empty(t, store.byOwner, "a clear of the last status takes the entry too")
+}
+
+func TestTabStatusStore_KeepsConcurrentKeysAndUpdatesAtTheLimit(t *testing.T) {
+	t.Parallel()
+	store := NewTabStatusStore(NewPrivateEventsBus())
+	owner := userid.MustNew("user-1")
+	tab := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1", "user-1")
+	begin := make(chan struct{})
+	var writers sync.WaitGroup
+	for i := range tabStatusMaxKeys {
+		writers.Go(func() {
+			<-begin
+			key := fmt.Sprintf("reporter-%d", i)
+			assert.NoError(t, store.set(tab, owner, key, &leapmuxv1.TabStatus{Text: key}))
+		})
+	}
+	close(begin)
+	writers.Wait()
+	entries := store.list(tab, owner)
+	require.Len(t, entries, tabStatusMaxKeys)
+	seen := make(map[string]bool)
+	for _, entry := range entries {
+		require.False(t, seen[entry.GetKey()])
+		assert.Equal(t, entry.GetKey(), entry.GetStatus().GetText())
+		seen[entry.GetKey()] = true
+	}
+	originalVisible := entries[0]
+	assert.ErrorContains(t, store.set(tab, owner, "extra", &leapmuxv1.TabStatus{Text: "Extra"}), "status keys")
+	assert.Same(t, originalVisible.GetStatus(), store.get(tab))
+	updatedKey := entries[len(entries)-1].GetKey()
+	replacement := &leapmuxv1.TabStatus{Text: "Done"}
+	require.NoError(t, store.set(tab, owner, updatedKey, replacement))
+	assert.Same(t, replacement, store.get(tab))
+	assert.Same(t, originalVisible, entries[0], "a later change cannot reorder the earlier list")
+	store.clear(tab, owner, updatedKey)
+	assert.Same(t, originalVisible.GetStatus(), store.get(tab))
+	require.NoError(t, store.set(tab, owner, "extra", &leapmuxv1.TabStatus{Text: "Extra"}))
+	store.forgetClosed(tab)
+	assert.Empty(t, store.list(tab, owner))
+	assert.Empty(t, store.snapshotFor(owner))
 }
 
 // Concurrent changes of one tab reach a subscriber in the order that the store
@@ -994,10 +1085,10 @@ func TestTabStatusStore_PublishesTheChangesOfOneTabInTheOrderThatItStoresThem(t 
 				<-begin
 				// One writer clears, so a round can also end without a status.
 				if writer == 0 {
-					store.clear(key, owner)
+					store.clear(key, owner, defaultTabStatusKey)
 					return
 				}
-				store.set(key, owner, &leapmuxv1.TabStatus{Text: fmt.Sprintf("round %d, writer %d", round, writer)})
+				assert.NoError(t, store.set(key, owner, defaultTabStatusKey, &leapmuxv1.TabStatus{Text: fmt.Sprintf("round %d, writer %d", round, writer)}))
 			})
 		}
 		wg.Go(func() {

@@ -51,6 +51,8 @@ func (w *privateCommandWorker) DispatchWith(_ context.Context, caller channel.Ca
 		in, reply = &leapmuxv1.RevealTabRequest{}, &leapmuxv1.RevealTabResponse{}
 	case leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure:
 		in, reply = &leapmuxv1.SetTabStatusRequest{}, &leapmuxv1.SetTabStatusResponse{}
+	case leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure:
+		in, reply = &leapmuxv1.ListTabStatusesRequest{}, &leapmuxv1.ListTabStatusesResponse{}
 	default:
 		_ = rw.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
 		return
@@ -75,7 +77,11 @@ func (w *privateCommandWorker) DispatchWith(_ context.Context, caller channel.Ca
 		case *leapmuxv1.NotifyRequest:
 			reply = &leapmuxv1.NotifyResponse{Title: got.GetTitle(), Body: got.GetBody()}
 		case *leapmuxv1.SetTabStatusRequest:
-			reply = &leapmuxv1.SetTabStatusResponse{Status: got.GetStatus()}
+			key := "default"
+			if got.Key != nil {
+				key = got.GetKey()
+			}
+			reply = &leapmuxv1.SetTabStatusResponse{Status: got.GetStatus(), Key: key}
 		}
 	}
 	writeProtoResponse(rw, reply)

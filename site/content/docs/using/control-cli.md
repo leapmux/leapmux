@@ -484,10 +484,12 @@ Three commands reach every LeapMux window that you have open, through the Worker
   - The Worker names the tab from the control token of the tab's socket, so a process cannot claim another tab. With `--worker`, the tab's own Worker relays the notification and states the tab. A notification sent from outside a tab names no tab.
   - The Worker refuses an empty title, a title over 256 bytes and a body over 4096 bytes with `invalid_argument`.
 - `tab reveal <tab>` brings a tab into view in each window: the window switches to the tab's workspace, and the tab becomes the active tab of its tile, as a click on the tab in the sidebar does. Nothing stores the reveal, and a window that does not know the tab yet ignores it. A tab that its Worker does not host, such as a closed one, fails with `not_found`.
-- `tab status set <tab> <text>` shows a short status beside the tab's title, in the tab bar and in the sidebar. `--progress N` adds a ring that fills from 0 to 100, and `--tone` colors the status: `neutral` (the default), `success`, `warning` or `error`. A new status replaces the old one whole, and `tab status clear <tab>` removes it.
-  - The Worker keeps the status in memory until you clear it, the tab closes, or the Worker stops. A window that you open later shows it too.
+- `tab status set <tab> <text>` shows a short status beside the tab's title, in the tab bar and in the sidebar. `--progress N` adds a ring that fills from 0 to 100. `--tone` accepts `neutral` (the default), `success`, `warning`, or `error`.
+  - Use `--key <key>` to report status for an independent task. A set replaces that key's previous status. Without `--key`, set and clear use the key `default`.
+  - `tab status list <tab>` lists every key with the visible status first. `tab status clear <tab> --key <key>` clears just that entry. The tab then shows the status of the most recently set key that remains.
+  - The Worker keeps up to 32 entries per tab in memory. Each key holds up to 64 bytes. The entries survive a window reconnect and expire when the tab closes or the Worker stops.
   - The text holds at most 128 bytes; the Worker refuses a longer one with `invalid_argument`. The tab bar cuts a long text, and the tooltip shows the whole text and the progress.
-- A window shows a reveal and a status only to a credential that may read tabs of that kind: `agent:read` for an agent tab, `terminal:read` for a terminal tab, beside `workspace:read`.
+- A window shows a reveal and a status only to a credential that may read tabs of that kind. The same rule applies to `tab status list`. The credential needs `workspace:read` and the tab kind's read scope, such as `agent:read` or `terminal:read`.
 
 ### Files and git
 

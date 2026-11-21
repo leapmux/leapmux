@@ -39,6 +39,7 @@ func registerWorkerPrivateCommandHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, dispatchPlain, svc.handleNotify)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, dispatchPlain, svc.handleRevealTab)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, dispatchPlain, svc.handleSetTabStatus)
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, dispatchPlain, svc.handleListTabStatuses)
 }
 
 // handleNotify relays a notification to every frontend that the caller has
@@ -89,8 +90,8 @@ func (svc *Service) handleRevealTab(ctx context.Context, caller channel.Caller, 
 	sendProtoResponse(sender, &leapmuxv1.RevealTabResponse{})
 }
 
-// handleSetTabStatus sets or clears the status of one tab that this Worker
-// hosts, and tells every frontend that the caller has open.
+// handleSetTabStatus changes one status key of a hosted tab and publishes its
+// visible status to the caller's frontends.
 //
 // The request is checked before the tab, so an invalid status fails the same
 // way whether or not the tab exists.
@@ -98,6 +99,11 @@ func (svc *Service) handleSetTabStatus(ctx context.Context, caller channel.Calle
 	tabID := r.GetTabId()
 	if tabID == "" {
 		sendInvalidArgument(sender, "tab_id is required")
+		return
+	}
+	statusKey, err := validTabStatusKey(r.Key)
+	if err != nil {
+		sendInvalidArgument(sender, err.Error())
 		return
 	}
 	// A status message that is present, even an empty one, asks for a SET,
@@ -118,11 +124,14 @@ func (svc *Service) handleSetTabStatus(ctx context.Context, caller channel.Calle
 		return
 	}
 	if status == nil {
-		svc.TabStatuses.clear(key, caller.UserID)
-		sendProtoResponse(sender, &leapmuxv1.SetTabStatusResponse{})
+		svc.TabStatuses.clear(key, caller.UserID, statusKey)
+		sendProtoResponse(sender, &leapmuxv1.SetTabStatusResponse{Key: statusKey})
 		return
 	}
-	svc.TabStatuses.set(key, caller.UserID, status)
+	if err := svc.TabStatuses.set(key, caller.UserID, statusKey, status); err != nil {
+		sendFailedPrecondition(sender, err.Error())
+		return
+	}
 	if svc.afterTabStatusSetFn != nil {
 		svc.afterTabStatusSetFn()
 	}
@@ -142,7 +151,25 @@ func (svc *Service) handleSetTabStatus(ctx context.Context, caller channel.Calle
 		// tab's own close clears it if the tab is gone.
 		slog.Warn("failed to read the tab again after its status was set", "tab_id", tabID, "error", err)
 	}
-	sendProtoResponse(sender, &leapmuxv1.SetTabStatusResponse{Status: status})
+	sendProtoResponse(sender, &leapmuxv1.SetTabStatusResponse{Status: status, Key: statusKey})
+}
+
+func (svc *Service) handleListTabStatuses(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListTabStatusesRequest, sender channel.ResponseWriter) {
+	tabID := r.GetTabId()
+	if tabID == "" {
+		sendInvalidArgument(sender, "tab_id is required")
+		return
+	}
+	key, err := svc.hostedTabKey(ctx, caller.UserID, tabID)
+	if err != nil {
+		sendHostedTabError(sender, tabID, err)
+		return
+	}
+	if !callerReadsTabView(caller, key.tabType) {
+		sendPermissionDenied(sender, "reading status entries requires the tab kind's read permission")
+		return
+	}
+	sendProtoResponse(sender, &leapmuxv1.ListTabStatusesResponse{Statuses: svc.TabStatuses.list(key, caller.UserID)})
 }
 
 // errTabNotHosted reports a tab that this Worker does not host for the caller:

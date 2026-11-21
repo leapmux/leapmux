@@ -364,6 +364,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, func() proto.Message {
 			return &leapmuxv1.SetTabStatusRequest{TabId: "agent-1", Status: &leapmuxv1.TabStatus{Text: "Running the tests"}}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, func() proto.Message {
+			return &leapmuxv1.ListTabStatusesRequest{TabId: "agent-1"}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, func() proto.Message {
 			return &leapmuxv1.RegisterTabPayloadRequest{Creation: &leapmuxv1.TabCreation{TabId: "tab-1"}, Payload: fileTabPayload("/tmp/x", "")}
 		}},
