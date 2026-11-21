@@ -10,7 +10,7 @@ require (
 	github.com/leapmux/leapmux v0.0.0-20260806144509-6b7d44fbd401
 	github.com/stretchr/testify v1.12.1
 	github.com/things-go/go-socks5 v0.1.4
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -20,7 +20,7 @@ replace github.com/leapmux/leapmux => ../../backend
 require (
 	connectrpc.com/connect/v2 v2.0.2 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/altcha-org/altcha-lib-go/v2 v2.4.1 // indirect
+	github.com/altcha-org/altcha-lib-go/v2 v2.5.0 // indirect
 	github.com/aymanbagabas/go-pty v0.2.3 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -35,7 +35,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.10.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.9 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-sql-driver/mysql v1.10.1 // indirect
+	github.com/go-sql-driver/mysql v1.10.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/webauthn v0.18.2 // indirect
 	github.com/go-webauthn/x v0.3.1 // indirect
