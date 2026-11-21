@@ -204,7 +204,7 @@ func (c *conversation) completeTextProgress(kind agent.AssembledMessageKind) {
 
 func (c *conversation) persistSelectedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
 	defer admission.release()
-	c.persistAssembledTextTo(admission.transcript(c.sink()), kind, messageID, text, completion)
+	c.persistAssembledTextTo(admission, kind, messageID, text, completion)
 }
 
 // persistAssembledText stores one assembled text segment.
@@ -216,7 +216,7 @@ func (c *conversation) persistSelectedTextTo(admission *acpTranscriptAdmission, 
 // column that holds the agent's own bytes -- and the interrupted path already used
 // this envelope, so the completed path had a second shape for the same content.
 func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
-	c.persistAssembledTextTo(c.sink(), kind, messageID, text, completion)
+	c.persistAssembledTextTo(nil, kind, messageID, text, completion)
 }
 
 func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) (agent.MessageContent, func() []byte, error) {
@@ -243,13 +243,13 @@ func (c *conversation) preparedAssembledText(kind agent.AssembledMessageKind, me
 	return agent.MessageContent{Original: raw}, prepare, nil
 }
 
-func (c *conversation) persistAssembledTextTo(writer agent.TranscriptServices, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+func (c *conversation) persistAssembledTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
 	if text == "" {
 		return
 	}
 	template, prepare, err := c.preparedAssembledText(kind, messageID, text, completion)
 	if err == nil {
-		err = agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, template, agent.SpanInfo{}, prepare)
+		err = agent.PersistPreparedMessage(admission.transcript(c.sink()), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, admission.tagReply(template), agent.SpanInfo{}, prepare)
 	}
 	if err != nil && !agent.OutputRetained(err) {
 		slog.Error("persist assembled ACP text", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "error", err)

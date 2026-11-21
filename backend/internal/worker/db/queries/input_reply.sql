@@ -170,12 +170,12 @@ SET native_turn_id = excluded.native_turn_id, reply_after_ordinal = excluded.rep
 WHERE (native_agent_inputs.native_turn_id = '' OR native_agent_inputs.native_turn_id = excluded.native_turn_id)
   AND (native_agent_inputs.reply_after_ordinal IS NULL OR native_agent_inputs.reply_after_ordinal = excluded.reply_after_ordinal);
 
--- name: BindNativeInputTurn :exec
+-- name: BindNativeInputTurn :execrows
 INSERT INTO native_agent_inputs (agent_id, agent_session_id, native_input_id, native_turn_id)
 VALUES (?, ?, ?, ?)
 ON CONFLICT (agent_id, agent_session_id, native_input_id) DO UPDATE
 SET native_turn_id = excluded.native_turn_id
-WHERE native_agent_inputs.native_turn_id = '';
+WHERE native_agent_inputs.native_turn_id = '' OR native_agent_inputs.native_turn_id = excluded.native_turn_id;
 
 -- name: RetireNativeInputTurn :exec
 INSERT INTO native_agent_inputs (agent_id, agent_session_id, native_input_id, retired_outcome)

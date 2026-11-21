@@ -17,13 +17,14 @@ func (s *agentOutputSink) BindNativeInputTurn(receipt agent.NativeInputReceipt, 
 	if receipt.SessionID == "" || receipt.InputID == "" || nativeTurnID == "" {
 		return errors.New("a native turn binding needs a session, input and turn")
 	}
-	err := s.h.queries.BindNativeInputTurn(bgCtx(), db.BindNativeInputTurnParams{
+	changed, err := s.h.queries.BindNativeInputTurn(bgCtx(), db.BindNativeInputTurnParams{
 		AgentID: s.agentID, AgentSessionID: receipt.SessionID, NativeInputID: receipt.InputID, NativeTurnID: nativeTurnID,
 	})
-	if err == nil {
-		s.publishNativeInputReplyChanged()
+	if err := expectNativeReplyWrite(changed, err); err != nil {
+		return err
 	}
-	return err
+	s.publishNativeInputReplyChanged()
+	return nil
 }
 
 func (s *agentOutputSink) RetireNativeInputTurn(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {

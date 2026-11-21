@@ -36,6 +36,7 @@ type outstandingControlRequest struct {
 	publicationErr   error
 	payload          []byte
 	sessionID        string
+	nativeTurnID     string
 	publishOnFailure bool
 }
 
@@ -43,6 +44,11 @@ type outstandingControlRequest struct {
 type PublishedControlRequest struct {
 	RequestID string
 	record    *outstandingControlRequest
+}
+
+type ControlRequestOwner struct {
+	SessionID string
+	TurnID    string
 }
 
 // PublishControlRequest registers one control request and publishes it to the reader,
@@ -61,12 +67,12 @@ func (b *JSONRPCProcess) PublishControlRequest(sink agent.ControlServices, conte
 // settings change that ran between the caller's first check and this registration then
 // still reaches the request.
 func (b *JSONRPCProcess) PublishControlRequestWithApproval(sink agent.ControlServices, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
-	return b.PublishSessionControlRequestWithApproval(sink, "", content, cancelAnswer, approveAnswer)
+	return b.PublishSessionControlRequestWithApproval(sink, ControlRequestOwner{}, content, cancelAnswer, approveAnswer)
 }
 
-// PublishSessionControlRequestWithApproval keeps the session identity with the approval record.
-func (b *JSONRPCProcess) PublishSessionControlRequestWithApproval(sink agent.ControlServices, sessionID string, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
-	return b.publishControlRequest(sink, sessionID, content, cancelAnswer, approveAnswer)
+// PublishSessionControlRequestWithApproval keeps the session and turn with the approval record.
+func (b *JSONRPCProcess) PublishSessionControlRequestWithApproval(sink agent.ControlServices, owner ControlRequestOwner, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
+	return b.publishControlRequest(sink, owner, content, cancelAnswer, approveAnswer)
 }
 
 // PublishControlRequestInSession registers one control request and publishes it to the
@@ -91,12 +97,12 @@ func (b *JSONRPCProcess) PublishSessionControlRequestWithApproval(sink agent.Con
 // announcement, Copilot raises native events keyed by session and request id, and the
 // Codex plan prompt is LeapMux's own and carries no id at all.
 func (b *JSONRPCProcess) PublishControlRequestInSession(sink agent.ControlServices, agentSessionID string, content []byte, cancelAnswer any) {
-	b.publishControlRequest(sink, agentSessionID, content, cancelAnswer, nil)
+	b.publishControlRequest(sink, ControlRequestOwner{SessionID: agentSessionID}, content, cancelAnswer, nil)
 }
 
 // publishControlRequest is the one registrar behind the exported publishers. It returns
 // the exact publication handle, or an empty handle when it registered nothing.
-func (b *JSONRPCProcess) publishControlRequest(sink agent.ControlServices, agentSessionID string, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
+func (b *JSONRPCProcess) publishControlRequest(sink agent.ControlServices, owner ControlRequestOwner, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
 	// The key that the Worker checks a stored request against reads the id with
 	// the same function (agent.JSONRPCControlRequestKey).
 	identity, valid := agent.JSONRPCControlRequestIdentity(content)
@@ -104,7 +110,7 @@ func (b *JSONRPCProcess) publishControlRequest(sink agent.ControlServices, agent
 		slog.Warn("cannot publish control request without a valid JSON-RPC ID", "agent_id", b.agentID)
 		return PublishedControlRequest{}
 	}
-	record := b.registerControl(identity, &outstandingControlRequest{payload: content, sessionID: agentSessionID, cancelAnswer: cancelAnswer, approveAnswer: approveAnswer})
+	record := b.registerControl(identity, &outstandingControlRequest{payload: content, sessionID: owner.SessionID, nativeTurnID: owner.TurnID, cancelAnswer: cancelAnswer, approveAnswer: approveAnswer})
 	if record == nil {
 		slog.Warn("duplicate live control request ID", "agent_id", b.agentID, "request_id", identity.Key)
 		return PublishedControlRequest{}
@@ -134,7 +140,7 @@ func (b *JSONRPCProcess) registerControl(identity agent.ControlRequestIdentity, 
 
 // publishRegisteredControl keeps publication and delivery ownership on the same record.
 func (b *JSONRPCProcess) publishRegisteredControl(sink agent.ControlServices, requestID string, record *outstandingControlRequest) bool {
-	err := sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.sessionID, RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload})
+	err := sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.sessionID, NativeTurnID: record.nativeTurnID, RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload})
 	b.outstandingMu.Lock()
 	// Only an unpublished request needs its original bytes for recovery.
 	record.payload = nil

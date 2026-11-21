@@ -70,7 +70,7 @@ func (b *Base) BeginAgentTurn() bool {
 		if !drained {
 			turn = b.markPromptBoundaryLocked()
 		}
-		target := b.openRootTranscriptLocked(sessionID, true, b.promptTarget)
+		target := b.openRootTranscriptLocked(sessionID, true, b.promptTarget, agent.NativeInputReceipt{})
 		b.rootTarget = target
 		if drained {
 			b.promptTarget = target
@@ -89,7 +89,7 @@ func (b *Base) BeginAgentTurn() bool {
 	b.Mu.Unlock()
 	turn := b.takeUnownedOutputLocked()
 	b.preparePriorTextLocked(&turn)
-	target := b.openRootTranscriptLocked(sessionID, true, nil)
+	target := b.openRootTranscriptLocked(sessionID, true, nil, agent.NativeInputReceipt{})
 	b.rootTarget, b.promptTarget = target, target
 	b.turnMu.Unlock()
 	b.persistUnownedText(turn)
@@ -128,7 +128,7 @@ func (b *Base) AdmitAgentTurn() bool {
 	b.Mu.Unlock()
 	turn := b.takeUnownedOutputLocked()
 	b.preparePriorTextLocked(&turn)
-	target := b.openRootTranscriptLocked(sessionID, true, nil)
+	target := b.openRootTranscriptLocked(sessionID, true, nil, agent.NativeInputReceipt{})
 	b.rootTarget, b.promptTarget = target, target
 	b.turnMu.Unlock()
 	b.persistUnownedText(turn)
@@ -212,7 +212,7 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 		textCompletion, incomplete = agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted
 	}
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agent.TranscriptServices, count int) {
-		b.persistPromptResponseTo(writer, frame, count, sessionID)
+		b.persistPromptResponseTo(writer, agent.MessageContent{Original: frame}, count, sessionID)
 	})
 	b.endTurn(sessionID)
 }
@@ -227,9 +227,9 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 //
 // An agent turn that is still queued behind a prompt of LeapMux's is dropped:
 // the work ended before its turn could begin. Its turn set a boundary on the
-// prompt's output (see BeginAgentTurn), and a turn that never runs takes
-// nothing after that boundary. So the boundary goes, and the prompt's end
-// stores the whole output, with the prompt's own count of finished tools. When
+// prompt's output (see BeginAgentTurn). Store the work's text as a separate
+// segment before restoring the prompt's output target. The prompt's end still
+// closes the remaining tools and keeps their count. When
 // the prompt's end already took its part of the output, the rest is the
 // work's, and this stores it. With no agent turn it does nothing.
 func (b *Base) EndAgentTurnWithoutRow() {
@@ -238,19 +238,24 @@ func (b *Base) EndAgentTurnWithoutRow() {
 	if b.agentTurnQueued {
 		b.agentTurnQueued = false
 		b.queuedAgentTurnEnd = nil
+		sessionID := b.sessionID
 		b.Mu.Unlock()
-		drained := !b.dropPromptBoundaryLocked()
-		var turn acpTurnSnapshot
-		if drained {
-			turn = b.drainTurnLocked()
-			b.Mu.Lock()
-			b.captureRootSnapshotLocked(&turn, false)
-			b.Mu.Unlock()
+		if b.dropPromptBoundaryLocked() {
+			text := b.takeBufferedTextLocked()
+			text.sessionID = sessionID
+			text.textProgressCompleted = true
+			b.reserveBufferedTextLocked(&text)
+			b.turnMu.Unlock()
+			b.completeBufferedTextProgress(text)
+			b.main().persistBufferedText(text, agent.MessageCompletionComplete)
+			return
 		}
+		turn := b.drainTurnLocked()
+		b.Mu.Lock()
+		b.captureRootSnapshotLocked(&turn, false)
+		b.Mu.Unlock()
 		b.turnMu.Unlock()
-		if drained {
-			b.storeWorkOutput(turn)
-		}
+		b.storeWorkOutput(turn)
 		return
 	}
 	active := b.agentTurnActive
@@ -439,7 +444,7 @@ func (b *Base) continueWithPromptForBatch(sessionID, content string, attachments
 	// after that turn and before this prompt.
 	turn := b.takeUnownedOutputLocked()
 	b.preparePriorTextLocked(&turn)
-	target := b.openRootTranscriptLocked(sessionID, false, nil)
+	target := b.openRootTranscriptLocked(sessionID, false, nil, agent.NativeInputReceipt{})
 	b.rootTarget, b.promptTarget = target, target
 	b.turnMu.Unlock()
 	b.persistUnownedText(turn)

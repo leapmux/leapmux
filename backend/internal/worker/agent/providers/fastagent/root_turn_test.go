@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -79,7 +80,9 @@ func TestFastagentRootTurnKeepsTheCompleteNativeConversationOrder(t *testing.T) 
 	a.WireTurnActiveForTest()
 	require.NoError(t, a.initializeRootArchive(false))
 	ready <- a
-	require.NoError(t, a.SendInput("Run the native command.", nil))
+	receipt, err := a.SendInputWithReceipt("Run the native command.", nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, receipt.TurnID)
 	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-beforeReply:
@@ -106,6 +109,10 @@ func TestFastagentRootTurnKeepsTheCompleteNativeConversationOrder(t *testing.T) 
 	for index, source := range expected {
 		assert.JSONEq(t, source, string(rows[index].Content), "row %d retains its unchanged native element", index)
 		assert.Equal(t, "session-1", rows[index].AgentSessionID)
+		assert.Equal(t, receipt.TurnID, rows[index].NativeTurnID)
+		assert.Equal(t, receipt.InputID, rows[index].NativeInputID)
 	}
 	assert.True(t, rows[6].TurnEnd)
+	assert.Equal(t, receipt.TurnID, rows[6].NativeTurnID)
+	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED, rows[6].InputTurnOutcome)
 }

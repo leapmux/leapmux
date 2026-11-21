@@ -1,15 +1,8 @@
 import type { TurnEnd } from '../../../model/divider'
+import { ACP_STOP_REASON } from '~/generated/contracts/acp-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { turnEndLabel } from '../../../turnEndLabel'
 import { unwrapACPResult } from '../resultWrapper'
-
-/**
- * The stop reason that means the reader cancelled the turn. Every other reason the
- * protocol defines describes a turn that ran to an end of its own, so it qualifies the
- * shared "Turn ended" rather than replacing it.
- */
-const ACP_STOP_CANCELLED = 'cancelled'
-const ACP_STOP_END_TURN = 'end_turn'
 
 /**
  * ACP result_divider model (turn completion). Null for a non-object message.
@@ -35,14 +28,14 @@ export function acpResultDivider(parsed: unknown): TurnEnd | null {
  * the same words there, so its divider reads the same as the divider of a prompt.
  */
 export function acpStopReasonDivider(reason: string): TurnEnd {
-  if (reason === ACP_STOP_CANCELLED) {
+  if (reason === ACP_STOP_REASON.Cancelled) {
     return {
       label: turnEndLabel('interrupted'),
     }
   }
   return {
     label: turnEndLabel('ended', {
-      qualifiers: [reason !== ACP_STOP_END_TURN && reason],
+      qualifiers: [reason !== ACP_STOP_REASON.EndTurn && reason],
     }),
   }
 }

@@ -1448,18 +1448,33 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 	if spanLines == "" {
 		spanLines = "[]"
 	}
+	receipt := result.NativeReceipt
+	if receipt.TurnID != "" {
+		if receipt.SessionID == "" || receipt.InputID == "" {
+			return AcceptedTranscript{}, errors.New("a dispatched turn requires a native session and input")
+		}
+		bound, err := db.New(tx).BindNativeInputTurn(ctx, db.BindNativeInputTurnParams{
+			AgentID: item.AgentID, AgentSessionID: receipt.SessionID, NativeInputID: receipt.InputID, NativeTurnID: receipt.TurnID,
+		})
+		if err != nil {
+			return AcceptedTranscript{}, fmt.Errorf("bind the accepted input to its native turn: %w", err)
+		}
+		if bound != 1 {
+			return AcceptedTranscript{}, errors.New("the accepted input already belongs to another native turn")
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages
 		(id, agent_id, seq, agent_session_id, native_input_id, source, content, content_compression, idempotency_key, depth, span_id,
 		 parent_span_id, span_type, span_lines, span_color, mark_type, created_at,
 		 supplemental_content, supplemental_content_compression)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, COALESCE(?, X''), ?)`,
-		item.ID, item.AgentID, seq, result.NativeReceipt.SessionID, result.NativeReceipt.InputID, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		item.ID, item.AgentID, seq, receipt.SessionID, receipt.InputID, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		compressed, compression, item.idempotencyKey, spanLines, workerdb.OptionalStorageEnum(mark), item.CreatedAt, supplementalContent, supplementalCompression); err != nil {
 		return AcceptedTranscript{}, err
 	}
 	return AcceptedTranscript{
-		ID: item.ID, AgentID: item.AgentID, AgentSessionID: result.NativeReceipt.SessionID, Seq: seq,
+		ID: item.ID, AgentID: item.AgentID, AgentSessionID: receipt.SessionID, Seq: seq,
 		Content: compressed, ContentCompression: compression,
 		SupplementalContent: supplementalContent, SupplementalContentCompression: supplementalCompression,
 		AgentProvider: provider, MarkType: mark, SpanLines: spanLines,

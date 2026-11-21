@@ -26,9 +26,11 @@ func TestSessionControlApprovalRetainsItsExplicitOwner(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	sink.UpdateSessionID("sink-session")
 	payload := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"method":"permission","params":{"sessionId":"native-payload"}}`)
-	handle := base.PublishSessionControlRequestWithApproval(sink, "child-session", payload, nil, map[string]any{"approved": true})
+	owner := ControlRequestOwner{SessionID: "explicit-session", TurnID: "native-turn"}
+	handle := base.PublishSessionControlRequestWithApproval(sink, owner, payload, nil, map[string]any{"approved": true})
 	require.NotEmpty(t, handle.RequestID)
-	assert.Equal(t, "child-session", sink.LastPublishedControl().AgentSessionID)
+	assert.Equal(t, owner.SessionID, sink.LastPublishedControl().AgentSessionID)
+	assert.Equal(t, owner.TurnID, sink.LastPublishedControl().NativeTurnID)
 	require.True(t, base.ApproveOutstandingControlRequest(sink, handle))
 	require.Eventually(t, func() bool { return !base.OutstandingControlForTest(handle.RequestID) }, 30*time.Second, time.Millisecond)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":9007199254740993,"result":{"approved":true}}`, output.String())
@@ -43,13 +45,18 @@ func TestUnpublishedSessionApprovalFailureRetainsItsOwnerAndOriginalPayload(t *t
 			sink := &agenttest.ControlSink{}
 			sink.UpdateSessionID("sink-session")
 			payload := []byte(` {"jsonrpc":"2.0","id":"007","method":"permission","params":{"future":9007199254740993}} `)
-			require.True(t, base.ApproveUnpublishedSessionControlRequest(sink, sessionID, payload, nil, map[string]any{"approved": true}))
+			owner := ControlRequestOwner{SessionID: sessionID}
+			if sessionID != "" {
+				owner.TurnID = "native-turn"
+			}
+			require.True(t, base.ApproveUnpublishedSessionControlRequest(sink, owner, payload, nil, map[string]any{"approved": true}))
 			require.Eventually(t, func() bool { return sink.PublishedControlCount() == 1 }, 30*time.Second, time.Millisecond)
 			want := sessionID
 			if want == "" {
 				want = "sink-session"
 			}
 			assert.Equal(t, want, sink.LastPublishedControl().AgentSessionID)
+			assert.Equal(t, owner.TurnID, sink.LastPublishedControl().NativeTurnID)
 			assert.Equal(t, payload, sink.LastPublishedControl().Payload)
 			assert.True(t, base.OutstandingControlForTest(sink.LastPublishedControl().RequestID))
 			assert.Empty(t, sink.CanceledControls())

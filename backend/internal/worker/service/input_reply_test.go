@@ -138,6 +138,42 @@ func TestRestoreStateRetiresAnAcceptedInputWithoutAnOutcome(t *testing.T) {
 	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, reply.GetOutcome())
 }
 
+func TestInputAcceptanceExposesAnAlreadyPublishedControlForTheBoundTurn(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher := setupInputQueueRPCService(t)
+	ctx := t.Context()
+	const agentID, inputID = "agent-1", "queued-acp-input"
+	receipt := agent.NativeInputReceipt{SessionID: "acp-session", InputID: "native-input", TurnID: "native-turn"}
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: agentID, AgentSessionID: receipt.SessionID}))
+	store := inputqueue.NewStore(svc.Output.db, nil)
+	_, err := store.Enqueue(ctx, inputqueue.NewItem{AgentID: agentID, ID: inputID, Text: "run the check", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, agentID, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	_, err = svc.Queries.StoreControlRequest(ctx, db.StoreControlRequestParams{
+		AgentID: agentID, AgentSessionID: receipt.SessionID, NativeTurnID: receipt.TurnID,
+		RequestID: "already-blocked", Payload: []byte(`{}`),
+	})
+	require.NoError(t, err)
+	readReply := func() *leapmuxv1.AgentInputTurnReply {
+		t.Helper()
+		writer := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure,
+			&leapmuxv1.ListAgentInputQueueRequest{AgentId: agentID, ReplyInputId: inputID}, writer)
+		require.Empty(t, writer.errors)
+		return decodeQueueResponse(t, writer, &leapmuxv1.ListAgentInputQueueResponse{}).GetInputReply()
+	}
+	assert.Nil(t, readReply())
+	row, _, err := store.Accept(ctx, *prepared, inputqueue.DispatchResult{StartsTurn: true, NativeReceipt: receipt})
+	require.NoError(t, err)
+	reply := readReply()
+	require.NotNil(t, reply)
+	assert.Equal(t, row.Seq, reply.GetAcceptedSeq())
+	assert.True(t, reply.GetWaitingForUser())
+	assert.Zero(t, reply.GetOutcome())
+}
+
 func TestCanonicalInputReplyUsesNativeOrderAndConsumingBoundaries(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := setupInputQueueRPCService(t)

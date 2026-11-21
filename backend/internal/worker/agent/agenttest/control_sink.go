@@ -12,6 +12,7 @@ type ControlRequestRecord struct {
 	// request: the one that the request states, else the session that the sink
 	// holds when it stores the request (see ControlSink.PublishControlRequest).
 	AgentSessionID string
+	NativeTurnID   string
 	RequestID      string
 	InstanceID     string
 	Payload        []byte
@@ -52,6 +53,7 @@ func (s *ControlSink) PublishControlRequest(request agent.ControlRequest) error 
 	}
 	s.publishedControls = append(s.publishedControls, ControlRequestRecord{
 		AgentSessionID: sessionID,
+		NativeTurnID:   request.NativeTurnID,
 		RequestID:      request.RequestID,
 		InstanceID:     request.InstanceID,
 		Payload:        append([]byte(nil), request.Payload...),

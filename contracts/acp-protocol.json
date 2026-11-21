@@ -52,6 +52,10 @@
   "roles": {
     "Result": "result"
   },
+  "stopReasons": {
+    "EndTurn": "end_turn",
+    "Cancelled": "cancelled"
+  },
   "supplementIdentity": {
     "SessionUpdate": "sessionUpdate",
     "ToolCallID": "toolCallId",

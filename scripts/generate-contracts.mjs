@@ -3073,6 +3073,13 @@ export const PROVIDER_PROTOCOLS = [
         doc: 'message `role` values',
       },
       {
+        key: 'stopReasons',
+        goTable: 'StopReason',
+        tsTable: 'STOP_REASON',
+        tsType: 'ACPStopReason',
+        doc: 'prompt stop reasons both the Worker and browser interpret',
+      },
+      {
         key: 'toolKinds',
         goTable: 'ToolKind',
         tsTable: 'TOOL_KIND',

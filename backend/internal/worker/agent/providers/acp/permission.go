@@ -42,29 +42,32 @@ func (b *Base) PublishSessionControlRequest(line *providerkit.ParsedLine, cancel
 		b.refuseControlRequest(line, sessionID, cancelAnswer)
 		return
 	}
+	owner := providerkit.ControlRequestOwner{SessionID: b.agentSessionOfControlRequest(sessionID)}
+	if cancelAnswer != nil || !b.hooks.AnswerlessControlsOutliveTurns {
+		owner.TurnID = b.rootControlTurnID(sessionID, line)
+	}
 	b.storeTextBeforeControlRequest(sessionID)
 	if b.hooks.ControlRequestObserver != nil {
 		b.hooks.ControlRequestObserver(line)
 	}
-	ownerSessionID := b.agentSessionOfControlRequest(sessionID)
 	var answer any
 	if line.Method == acpMethodSessionRequestPermission && b.hooks.WithBypassPermission != nil &&
 		b.hooks.PermissionAllowsBypass != nil && b.hooks.PermissionAllowsBypass(line) {
 		answer = permissionApprovalAnswer(line.Params)
 	}
 	if answer == nil {
-		publication := b.PublishSessionControlRequestWithApproval(b.sink, ownerSessionID, line.Raw, cancelAnswer, nil)
+		publication := b.PublishSessionControlRequestWithApproval(b.sink, owner, line.Raw, cancelAnswer, nil)
 		b.bindURLElicitation(line, publication)
 		return
 	}
 	queued := false
 	b.hooks.WithBypassPermission(func() {
-		queued = b.ApproveUnpublishedSessionControlRequest(b.sink, ownerSessionID, line.Raw, cancelAnswer, answer)
+		queued = b.ApproveUnpublishedSessionControlRequest(b.sink, owner, line.Raw, cancelAnswer, answer)
 	})
 	if queued {
 		return
 	}
-	publication := b.PublishSessionControlRequestWithApproval(b.sink, ownerSessionID, line.Raw, cancelAnswer, answer)
+	publication := b.PublishSessionControlRequestWithApproval(b.sink, owner, line.Raw, cancelAnswer, answer)
 	// A mode change can finish between the first check and request registration.
 	b.hooks.WithBypassPermission(func() { b.ApproveOutstandingControlRequest(b.sink, publication) })
 }

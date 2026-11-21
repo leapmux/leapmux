@@ -254,7 +254,7 @@ func (b *Base) persistFinishedTurn(frame json.RawMessage) {
 	textCompletion, incomplete := b.turnOutputCompletions()
 	turn := b.detachRootPrompt()
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
-		b.persistPromptResponseTo(writer, frame, count, turn.sessionID)
+		b.persistPromptResponseTo(writer, agentapi.MessageContent{Original: frame}, count, turn.sessionID)
 	})
 }
 
@@ -289,14 +289,14 @@ func (b *Base) finishFailedRootSnapshot(turn acpTurnSnapshot, err error, ending 
 	slog.Error("ACP prompt failed", "agent_id", b.AgentID(), "error", err)
 	b.finishRootSnapshot(turn, agentapi.MessageCompletionError, agentapi.MessageCompletionError, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
 		if !ending.NoteWritten {
-			if turn.endingAdmission == nil {
+			if !turn.endingAdmission.captured() {
 				b.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err)})
 			} else {
 				b.persistRootFailure(writer, err)
 			}
 		}
 		if len(ending.EndFrame) > 0 {
-			b.persistPromptResponseTo(writer, ending.EndFrame, count, turn.sessionID)
+			b.persistPromptResponseTo(writer, agentapi.MessageContent{Original: ending.EndFrame}, count, turn.sessionID)
 		}
 	})
 }
@@ -314,8 +314,10 @@ func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agentapi.MessageCo
 func (b *Base) finishACPTurnFor(turn acpTurnSnapshot, completion agentapi.MessageCompletion, reason RootTranscriptEnd) {
 	if turn.answeredPrompt != nil {
 		b.finishRootSnapshot(*turn.answeredPrompt, completion, completion, reason, nil)
+		b.retireAbandonedInputReply(turn.answeredPrompt.endingAdmission)
 	}
 	b.finishRootSnapshot(turn, completion, completion, reason, nil)
+	b.retireAbandonedInputReply(turn.endingAdmission)
 	b.sink.ReportProgress(agentapi.ResetProgress())
 }
 
@@ -1652,8 +1654,8 @@ func (b *Base) extractACPChunkText(content json.RawMessage, kind string) string 
 	return c.Text
 }
 
-func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, resp json.RawMessage, numToolUses int, sessionID string) {
-	if err := writer.PersistTurnEnd(agentapi.WithToolUseCount(agentapi.MessageContent{Original: resp}, numToolUses), agentapi.SpanInfo{}); err != nil && !agentapi.OutputRetained(err) {
+func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, content agentapi.MessageContent, numToolUses int, sessionID string) {
+	if err := writer.PersistTurnEnd(agentapi.WithToolUseCount(content, numToolUses), agentapi.SpanInfo{}); err != nil && !agentapi.OutputRetained(err) {
 		slog.Error("persist ACP prompt result", "agent_id", b.AgentID(), "error", err)
 	}
 	b.resetCompletedRootSpans(sessionID)

@@ -87,6 +87,7 @@ type rootTranscriptGroup struct {
 	inputPrepared           bool
 	inputDigest             [32]byte
 	inputErr                error
+	replyProved             bool
 }
 type rootTranscript struct {
 	group   *rootTranscriptGroup
@@ -290,6 +291,10 @@ func (position *rootCapturePosition) append(kind rootRecordKind, source leapmuxv
 	entry := &rootJournalEntry{order: position.order, row: position.rows, root: position.root, kind: kind, receipt: content.WriteReceipt}
 	position.rows++
 	group.entries = append(group.entries, entry)
+	if receipt := group.start.InputReceipt; kind == rootRecordTurnEnd && receipt.TurnID != "" &&
+		content.NativeTurnID == receipt.TurnID && content.NativeInputID == receipt.InputID && content.InputTurnOutcome != 0 {
+		group.replyProved = true
+	}
 	if kind != rootRecordMessage && kind != rootRecordTurnEnd {
 		group.eligible = false
 	}
@@ -509,6 +514,10 @@ func (group *rootTranscriptGroup) publish(live []*rootJournalEntry, eligible boo
 				if archiveErr == nil {
 					candidate := make([]*rootJournalEntry, 0, len(projection.rows)+1)
 					for _, row := range projection.rows {
+						if group.replyProved {
+							row.content.NativeInputID = group.start.InputReceipt.InputID
+							row.content.NativeTurnID = group.start.InputReceipt.TurnID
+						}
 						record := &rootRecord{kind: rootRecordMessage, source: row.source, content: row.content, span: row.span}
 						file, err := group.journal.Write(record)
 						if err != nil {

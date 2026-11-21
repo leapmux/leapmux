@@ -18,6 +18,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -1135,6 +1136,33 @@ func TestStoreReservesPositiveSequenceAndCommitsAfterAcceptance(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(ctx, `SELECT seq, span_lines FROM messages WHERE id = 'one'`).Scan(&seq, &spanLines))
 	assert.Equal(t, prepared.ReservedSeq, seq)
 	assert.JSONEq(t, `[{"span_id":"tool-1"}]`, spanLines)
+}
+
+func TestStoreAcceptKeepsTheQueueWhenTheNativeTurnConflicts(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	const agentID = "agent-1"
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, agentID, false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	queries := gendb.New(database)
+	bound, err := queries.BindNativeInputTurn(ctx, gendb.BindNativeInputTurnParams{
+		AgentID: agentID, AgentSessionID: "session", NativeInputID: "native-input", NativeTurnID: "owned-turn",
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, bound)
+	receipt := agent.NativeInputReceipt{SessionID: "session", InputID: "native-input", TurnID: "unrelated-turn"}
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, NativeReceipt: receipt})
+	require.ErrorContains(t, err, "another native turn")
+
+	receipt.TurnID = "owned-turn"
+	row, snapshot, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, NativeReceipt: receipt})
+	require.NoError(t, err)
+	assert.Equal(t, prepared.ReservedSeq, row.Seq)
+	assert.Empty(t, snapshot.Items)
 }
 
 func TestStoreAcceptTakesWriteIntentBeforeItsReads(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type RootTranscriptStart struct {
@@ -17,6 +18,7 @@ type RootTranscriptStart struct {
 	NativeModeID   string
 	AgentInitiated bool
 	Preceding      RootTranscript
+	InputReceipt   agent.NativeInputReceipt
 }
 
 type RootTranscriptEnd uint8
@@ -63,8 +65,11 @@ type PendingToolRequestWriter interface {
 }
 
 type acpTranscriptTarget struct {
-	sessionID         string
-	transcript        RootTranscript
+	sessionID    string
+	transcript   RootTranscript
+	inputReceipt agent.NativeInputReceipt
+	// turnMu protects receiptStarted. The receipt itself is immutable.
+	receiptStarted    bool
 	mu                sync.Mutex
 	admitted          int
 	sealed, finishing bool
@@ -73,26 +78,28 @@ type acpTranscriptTarget struct {
 }
 
 // The caller holds turnMu and has released Mu. The factory allocates only.
-func (b *Base) openRootTranscriptLocked(sessionID string, agentInitiated bool, preceding *acpTranscriptTarget) *acpTranscriptTarget {
-	if b.hooks.OpenRootTranscript == nil {
+func (b *Base) openRootTranscriptLocked(sessionID string, agentInitiated bool, preceding *acpTranscriptTarget, receipt agent.NativeInputReceipt) *acpTranscriptTarget {
+	var transcript RootTranscript
+	if b.hooks.OpenRootTranscript != nil {
+		var previous RootTranscript
+		if preceding != nil {
+			previous = preceding.transcript
+		}
+		b.Mu.Lock()
+		nativeMode := b.nativeModeID
+		b.Mu.Unlock()
+		transcript = b.hooks.OpenRootTranscript(RootTranscriptStart{
+			SessionID: sessionID, NativeModeID: nativeMode, AgentInitiated: agentInitiated, Preceding: previous, InputReceipt: receipt,
+		}, b.sink)
+	}
+	if transcript == nil && receipt.TurnID == "" {
 		return nil
 	}
-	var previous RootTranscript
-	if preceding != nil {
-		previous = preceding.transcript
-	}
-	b.Mu.Lock()
-	nativeMode := b.nativeModeID
-	b.Mu.Unlock()
-	transcript := b.hooks.OpenRootTranscript(RootTranscriptStart{SessionID: sessionID, NativeModeID: nativeMode, AgentInitiated: agentInitiated, Preceding: previous}, b.sink)
-	if transcript == nil {
-		return nil
-	}
-	return &acpTranscriptTarget{sessionID: sessionID, transcript: transcript, done: make(chan struct{})}
+	return &acpTranscriptTarget{sessionID: sessionID, transcript: transcript, inputReceipt: receipt, done: make(chan struct{})}
 }
 
 func (target *acpTranscriptTarget) prepare() error {
-	if target == nil {
+	if target == nil || target.transcript == nil {
 		return nil
 	}
 	return target.transcript.Prepare()
@@ -102,6 +109,7 @@ type acpTranscriptAdmission struct {
 	target  *acpTranscriptTarget
 	capture RootTranscriptCapture
 	writer  agent.TranscriptServices
+	receipt agent.NativeInputReceipt
 	once    sync.Once
 }
 
@@ -109,6 +117,16 @@ type acpTranscriptAdmission struct {
 func (target *acpTranscriptTarget) reserve() *acpTranscriptAdmission {
 	if target == nil {
 		return nil
+	}
+	var receipt agent.NativeInputReceipt
+	if target.receiptStarted {
+		receipt = target.inputReceipt
+	}
+	if target.transcript == nil {
+		if receipt.TurnID == "" {
+			return nil
+		}
+		return &acpTranscriptAdmission{receipt: receipt}
 	}
 	target.mu.Lock()
 	defer target.mu.Unlock()
@@ -120,18 +138,29 @@ func (target *acpTranscriptTarget) reserve() *acpTranscriptAdmission {
 		panic("ACP root transcript returned an invalid capture reservation")
 	}
 	target.admitted++
-	return &acpTranscriptAdmission{target: target, capture: capture, writer: capture.Writer()}
+	return &acpTranscriptAdmission{target: target, capture: capture, writer: capture.Writer(), receipt: receipt}
 }
 
 func (admission *acpTranscriptAdmission) transcript(fallback agent.TranscriptServices) agent.TranscriptServices {
-	if admission == nil {
+	if !admission.captured() {
 		return fallback
 	}
 	return admission.writer
 }
 
+func (admission *acpTranscriptAdmission) captured() bool {
+	return admission != nil && admission.capture != nil
+}
+
+func (admission *acpTranscriptAdmission) tagReply(content agent.MessageContent) agent.MessageContent {
+	if admission != nil && admission.receipt.TurnID != "" {
+		return tagInputReply(content, admission.receipt)
+	}
+	return content
+}
+
 func (admission *acpTranscriptAdmission) release() {
-	if admission == nil {
+	if !admission.captured() {
 		return
 	}
 	admission.once.Do(func() {
@@ -151,7 +180,7 @@ func (admission *acpTranscriptAdmission) release() {
 }
 
 func (target *acpTranscriptTarget) seal(completion RootTranscriptCompletion) {
-	if target == nil {
+	if target == nil || target.transcript == nil {
 		return
 	}
 	target.mu.Lock()
@@ -179,7 +208,7 @@ func (target *acpTranscriptTarget) finish() {
 }
 
 func (target *acpTranscriptTarget) waitForCaptureCompletion() {
-	if target != nil {
+	if target != nil && target.transcript != nil {
 		<-target.done
 	}
 }
@@ -232,7 +261,7 @@ func (b *Base) preparePriorTextLocked(turn *acpTurnSnapshot) {
 
 // Reserve text without a root transcript capture before later rows can enter the queue.
 func (b *Base) reserveBufferedTextLocked(turn *acpTurnSnapshot) {
-	if (turn.thoughtText == "" || turn.thoughtAdmission != nil) && (turn.assistantText == "" || turn.assistantAdmission != nil) {
+	if (turn.thoughtText == "" || turn.thoughtAdmission.captured()) && (turn.assistantText == "" || turn.assistantAdmission.captured()) {
 		return
 	}
 	batch, err := agent.ReserveCapturedTranscriptBatch(b.sink)
@@ -367,9 +396,10 @@ func (b *Base) persistRootFailure(writer agent.TranscriptServices, err error) {
 }
 
 type acpRootPromptRequest struct {
-	sessionID string
-	target    *acpTranscriptTarget
-	answered  *acpTurnSnapshot
+	sessionID      string
+	target         *acpTranscriptTarget
+	answered       *acpTurnSnapshot
+	beforeDispatch acpTurnSnapshot
 }
 
 func (b *Base) takeAnsweredPromptLocked() *acpTurnSnapshot {
@@ -416,6 +446,10 @@ func (b *Base) captureRootPromptResponse(request *acpRootPromptRequest) {
 	turn.textProgressCompleted = true
 	request.answered = &turn
 	b.turnMu.Unlock()
+	b.completeBufferedTextProgress(turn)
+}
+
+func (b *Base) completeBufferedTextProgress(turn acpTurnSnapshot) {
 	main := b.main()
 	if turn.thoughtText != "" {
 		main.completeTextProgress(agent.AssembledMessageKindReasoning)
@@ -430,11 +464,24 @@ func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTransc
 	b.turnMu.Lock()
 	b.rootPromptRequest = request
 	b.turnMu.Unlock()
-	observe := func(json.RawMessage) { b.observeRootPromptResponse(request) }
-	return b.sendPromptDetachedLocked(sessionID, content, attachments, target, observe, func(response json.RawMessage, err error) {
+	observation := providerkit.DetachedRequestObservation{
+		Response: func(json.RawMessage) { b.observeRootPromptResponse(request) },
+	}
+	if target != nil && target.inputReceipt.TurnID != "" {
+		observation.BeforeWrite = func() { b.startInputReply(request) }
+	}
+	err := b.sendPromptDetachedLocked(sessionID, content, attachments, target, observation, func(response json.RawMessage, err error) {
 		defer releaseOperation()
 		b.finishOwnedPromptRequest(sessionID, target, request, response, err)
 	})
+	if observation.BeforeWrite != nil {
+		b.turnMu.Lock()
+		preceding := request.beforeDispatch
+		request.beforeDispatch = acpTurnSnapshot{}
+		b.turnMu.Unlock()
+		b.persistUnownedText(preceding)
+	}
+	return err
 }
 
 func (b *Base) finishUnsentPrompt(sessionID string) {

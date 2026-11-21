@@ -73,10 +73,10 @@ func (c *conversation) persistBufferedText(turn acpTurnSnapshot, completion agen
 	if turn.textProgressCompleted {
 		persist = c.persistSelectedTextTo
 	}
-	if turn.thoughtText != "" && (turn.textBatch == nil || turn.thoughtAdmission != nil) {
+	if turn.thoughtText != "" && (turn.textBatch == nil || turn.thoughtAdmission.captured()) {
 		persist(turn.thoughtAdmission, agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, completion)
 	}
-	if turn.assistantText != "" && (turn.textBatch == nil || turn.assistantAdmission != nil) {
+	if turn.assistantText != "" && (turn.textBatch == nil || turn.assistantAdmission.captured()) {
 		persist(turn.assistantAdmission, agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, completion)
 	}
 	if turn.textBatch == nil {
@@ -88,7 +88,7 @@ func (c *conversation) persistBufferedText(turn acpTurnSnapshot, completion agen
 		const source = leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
 		var operations []agent.CapturedTranscriptOperation
 		appendText := func(kind agent.AssembledMessageKind, messageID, text string, admission *acpTranscriptAdmission) {
-			if text == "" || admission != nil {
+			if text == "" || admission.captured() {
 				return
 			}
 			template, prepare, err := c.preparedAssembledText(kind, messageID, text, completion)
@@ -97,6 +97,7 @@ func (c *conversation) persistBufferedText(turn acpTurnSnapshot, completion agen
 				return
 			}
 			template.AgentSessionID = turn.sessionID
+			template = admission.tagReply(template)
 			capture, present, err := agent.CapturePreparedTranscript(c.sink(), source, template, agent.SpanInfo{}, prepare)
 			if err != nil {
 				slog.Error("capture buffered ACP text", "agent_id", c.b.AgentID(), "error", err)

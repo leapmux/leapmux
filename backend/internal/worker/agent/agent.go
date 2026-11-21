@@ -68,11 +68,13 @@ type TurnState struct {
 	Steerable bool
 }
 
-// NativeInputReceipt identifies one ordinary input in the provider's session.
-// The Worker records it only when the provider acknowledges the send.
+// NativeInputReceipt identifies one dispatched input in the provider's session.
+// The Worker records it when it accepts the dispatch.
 type NativeInputReceipt struct {
 	SessionID string
 	InputID   string
+	// TurnID binds the input during acceptance when dispatch already identifies its turn.
+	TurnID string
 }
 
 // NativeReplyTurn describes a completed native turn in its canonical order.
