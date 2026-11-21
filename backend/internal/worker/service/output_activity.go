@@ -706,8 +706,16 @@ func (h *OutputHandler) AgentBusy(agentID, rootAgentID string) bool {
 // An agent blocked on a permission prompt is idle even mid-turn, because the
 // user is the one holding it up. Only then does running work count.
 func (h *OutputHandler) AgentActivitySnapshot(agentID, rootAgentID string) AgentActivity {
+	activity, _ := h.agentActivityWithRows(agentID, rootAgentID)
+	return activity
+}
+
+// agentActivityWithRows resolves rootAgentID, reads the root's background-task
+// rows once, and returns both the derived activity and the rows slice.
+func (h *OutputHandler) agentActivityWithRows(agentID, rootAgentID string) (AgentActivity, []bgtask.Item) {
 	rootAgentID = h.resolveRoot(agentID, rootAgentID)
-	return h.activitySnapshotFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID))
+	rows := h.backgroundTaskRows(rootAgentID)
+	return h.activitySnapshotFrom(agentID, rootAgentID, rows), rows
 }
 
 // AgentActivityPublished is the last state this Worker BROADCAST for agentID,

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema, RelayCloseSchema, RelayReadResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { deferred, settle } from '~/test-support/async'
+import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
 
@@ -2092,6 +2093,312 @@ describe('platformBridge startBrowserAuth', () => {
         'start_browser_auth',
         { kind: BrowserAuthKind.STEP_UP },
       ],
+    ])
+  })
+})
+
+describe('platformBridge inspectSoloBusyWork', () => {
+  let logs: ReturnType<typeof captureLoggerOutput>
+
+  beforeEach(() => {
+    logs = captureLoggerOutput()
+  })
+
+  afterEach(() => {
+    logs.restore()
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('returns empty busy work outside Tauri without invoking IPC', async () => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
+      agents: [],
+      terminals: [],
+    })
+    expect(logs.messages('warn', 'platformBridge')).toEqual([])
+  })
+
+  it('invokes inspect_solo_busy_work and normalizes full and partial payloads', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: string[] = []
+    let call = 0
+    mockIPC((cmd) => {
+      invoked.push(cmd)
+      call++
+      if (call === 1) {
+        return {
+          agents: [
+            {
+              tabId: 'agent-1',
+              title: 'Refactor auth',
+              activeBackgroundTasks: ['Run unit tests'],
+              activeChildAgents: ['Codebase reviewer'],
+            },
+          ],
+          terminals: [
+            {
+              tabId: 'term-1',
+              title: 'Dev server',
+              processes: [
+                { pid: 51234, name: 'node' },
+              ],
+              totalCount: 2,
+            },
+          ],
+        }
+      }
+      return {
+        agents: [
+          { tabId: 'agent-2', title: 'Partial agent' },
+        ],
+        terminals: [
+          { tabId: 'term-2', title: 'Partial terminal' },
+        ],
+      }
+    })
+
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
+      agents: [
+        {
+          tabId: 'agent-1',
+          title: 'Refactor auth',
+          activeBackgroundTasks: ['Run unit tests'],
+          activeChildAgents: ['Codebase reviewer'],
+        },
+      ],
+      terminals: [
+        {
+          tabId: 'term-1',
+          title: 'Dev server',
+          processes: [
+            { pid: 51234, name: 'node' },
+          ],
+          totalCount: 2,
+        },
+      ],
+    })
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
+      agents: [
+        {
+          tabId: 'agent-2',
+          title: 'Partial agent',
+          activeBackgroundTasks: [],
+          activeChildAgents: [],
+        },
+      ],
+      terminals: [
+        {
+          tabId: 'term-2',
+          title: 'Partial terminal',
+          processes: [],
+          totalCount: 0,
+        },
+      ],
+    })
+    expect(invoked).toEqual(['inspect_solo_busy_work', 'inspect_solo_busy_work'])
+  })
+
+  it('normalizes null, non-object, empty, and malformed busy-work payloads to safe defaults', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const responses: unknown[] = [
+      null,
+      'invalid',
+      {},
+      { agents: 'bad', terminals: 42 },
+      {
+        agents: [
+          null,
+          {
+            tabId: 123,
+            title: null,
+            activeBackgroundTasks: ['Task A', 99, null],
+            activeChildAgents: [false, 'Child B'],
+          },
+        ],
+        terminals: [
+          'not-an-object',
+          {
+            tabId: 'term-3',
+            title: 'Shell',
+            processes: [
+              null,
+              { pid: Number.NaN, name: 'proc-a' },
+              { pid: 77, name: 999 },
+            ],
+            totalCount: Number.POSITIVE_INFINITY,
+          },
+        ],
+      },
+    ]
+    let idx = 0
+    mockIPC(() => responses[idx++])
+
+    const empty = { agents: [], terminals: [] }
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual(empty)
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual(empty)
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual(empty)
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual(empty)
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
+      agents: [
+        {
+          tabId: '',
+          title: '',
+          activeBackgroundTasks: ['Task A'],
+          activeChildAgents: ['Child B'],
+        },
+      ],
+      terminals: [
+        {
+          tabId: 'term-3',
+          title: 'Shell',
+          processes: [
+            { pid: 0, name: 'proc-a' },
+            { pid: 77, name: '' },
+          ],
+          totalCount: 2,
+        },
+      ],
+    })
+  })
+
+  it('fails open with empty busy work when IPC throws', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    mockIPC(() => {
+      throw new Error('sidecar unavailable')
+    })
+
+    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
+      agents: [],
+      terminals: [],
+    })
+    expect(logs.messages('warn', 'platformBridge')).toEqual([
+      'inspect_solo_busy_work failed; proceeding fail-open',
+    ])
+  })
+})
+
+describe('platformBridge ackQuitConfirmation', () => {
+  let logs: ReturnType<typeof captureLoggerOutput>
+
+  beforeEach(() => {
+    logs = captureLoggerOutput()
+  })
+
+  afterEach(() => {
+    logs.restore()
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('returns false outside Tauri without invoking IPC', async () => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+
+    await expect(platformBridge.ackQuitConfirmation(1)).resolves.toBe(false)
+    expect(logs.messages('warn', 'platformBridge')).toEqual([])
+  })
+
+  it('forwards promptId and coerces strictly to boolean true', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: Array<[string, unknown]> = []
+    const responses: unknown[] = [true, false, null, 'true']
+    let idx = 0
+    mockIPC((cmd, args) => {
+      invoked.push([cmd, args])
+      return responses[idx++]
+    })
+
+    await expect(platformBridge.ackQuitConfirmation(1)).resolves.toBe(true)
+    await expect(platformBridge.ackQuitConfirmation(2)).resolves.toBe(false)
+    await expect(platformBridge.ackQuitConfirmation(3)).resolves.toBe(false)
+    await expect(platformBridge.ackQuitConfirmation(4)).resolves.toBe(false)
+
+    expect(invoked).toEqual([
+      [
+        'ack_quit_confirmation',
+        { promptId: 1 },
+      ],
+      [
+        'ack_quit_confirmation',
+        { promptId: 2 },
+      ],
+      [
+        'ack_quit_confirmation',
+        { promptId: 3 },
+      ],
+      [
+        'ack_quit_confirmation',
+        { promptId: 4 },
+      ],
+    ])
+  })
+
+  it('returns false without throwing when IPC throws', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    mockIPC(() => {
+      throw new Error('ack failed')
+    })
+
+    await expect(platformBridge.ackQuitConfirmation(7)).resolves.toBe(false)
+    expect(logs.messages('warn', 'platformBridge')).toEqual([
+      'ack_quit_confirmation failed',
+    ])
+  })
+})
+
+describe('platformBridge resolveQuitConfirmation', () => {
+  let logs: ReturnType<typeof captureLoggerOutput>
+
+  beforeEach(() => {
+    logs = captureLoggerOutput()
+  })
+
+  afterEach(() => {
+    logs.restore()
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('does nothing outside Tauri without invoking IPC', async () => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+
+    await expect(platformBridge.resolveQuitConfirmation(1, true)).resolves.toBeUndefined()
+    expect(logs.messages('warn', 'platformBridge')).toEqual([])
+  })
+
+  it('forwards promptId and confirm to resolve_quit_confirmation', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: Array<[string, unknown]> = []
+    mockIPC((cmd, args) => {
+      invoked.push([cmd, args])
+      return null
+    })
+
+    await expect(platformBridge.resolveQuitConfirmation(5, true)).resolves.toBeUndefined()
+    await expect(platformBridge.resolveQuitConfirmation(6, false)).resolves.toBeUndefined()
+
+    expect(invoked).toEqual([
+      [
+        'resolve_quit_confirmation',
+        { promptId: 5, confirm: true },
+      ],
+      [
+        'resolve_quit_confirmation',
+        { promptId: 6, confirm: false },
+      ],
+    ])
+  })
+
+  it('resolves without throwing when IPC throws', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    mockIPC(() => {
+      throw new Error('resolve failed')
+    })
+
+    await expect(platformBridge.resolveQuitConfirmation(5, false)).resolves.toBeUndefined()
+    expect(logs.messages('warn', 'platformBridge')).toEqual([
+      'resolve_quit_confirmation failed',
     ])
   })
 })

@@ -60,6 +60,7 @@ const ISOLATED_CONTEXT_SPECS = new Set([
   '027-tunnel-ui.spec.ts',
   '080-turn-end-sound-preferences.spec.ts',
   '161-watch-stream-continuity.spec.ts',
+  '426-desktop-solo-stop-confirm.spec.ts',
   // These install the Playwright clock, which no API removes from its context again.
   'codex/rate-limit-countdown.spec.ts',
   '047-chat-scroll-rail.spec.ts',

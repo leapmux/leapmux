@@ -112,19 +112,11 @@ describe('BusyTabCloseDialog', () => {
         activeRows: [
           {
             role: BackgroundTaskRole.TASK_OUTCOME,
-            rowKey: 'r1',
-            kind: 'subagent',
             title: 'Research the API',
-            activity: 'a',
-            status: 'running',
           },
           {
             role: BackgroundTaskRole.TASK_OUTCOME,
-            rowKey: 'r2',
-            kind: 'shell',
             title: 'npm test',
-            activity: 'a',
-            status: 'pending',
           },
         ],
       })
@@ -140,11 +132,7 @@ describe('BusyTabCloseDialog', () => {
         activeRows: [
           {
             role: BackgroundTaskRole.TASK_OUTCOME,
-            rowKey: 'r1',
-            kind: 'subagent',
             title: 'One',
-            activity: 'a',
-            status: 'running',
           },
         ],
       })
@@ -162,11 +150,7 @@ describe('BusyTabCloseDialog', () => {
         activeRows: [
           {
             role: BackgroundTaskRole.TASK_OUTCOME,
-            rowKey: 'r1',
-            kind: 'subagent',
             title: 'Research',
-            activity: 'a',
-            status: 'running',
           },
         ],
       })
@@ -210,22 +194,12 @@ describe('BusyTabCloseDialog activity roles', () => {
       kind: 'agent-work',
       activeRows: [
         {
-          rowKey: 'activity',
           role: BackgroundTaskRole.CHILD_ACTIVITY,
-          kind: 'subagent',
-          childAgentId: 'child',
           title: 'Child session',
-          activity: '',
-          status: 'running',
         },
         {
-          rowKey: 'task',
           role: BackgroundTaskRole.TASK_OUTCOME,
-          kind: 'subagent',
-          childAgentId: 'child',
           title: 'Coordinator task',
-          activity: '',
-          status: 'running',
         },
       ],
     })

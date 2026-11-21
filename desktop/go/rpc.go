@@ -16,6 +16,7 @@ import (
 
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/version"
+	"github.com/leapmux/leapmux/worker"
 )
 
 type RPCSession struct {
@@ -720,6 +721,19 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 	case *desktoppb.Request_CancelProxyHttp:
 		s.writeErrOrOK(id, s.proxyRequests.cancel(m.CancelProxyHttp.GetRequestId()))
 
+	case *desktoppb.Request_InspectSoloBusyWork:
+		busy, err := s.app.InspectSoloBusyWork(ctx)
+		if err != nil {
+			s.writeError(id, err)
+			return
+		}
+		s.writeResponse(&desktoppb.Response{
+			Id: id,
+			Result: &desktoppb.Response_InspectSoloBusyWork{
+				InspectSoloBusyWork: busyWorkToProto(busy),
+			},
+		})
+
 	default:
 		s.writeError(id, fmt.Errorf("unknown method: %T", req.Method))
 	}
@@ -805,5 +819,37 @@ func tunnelKeyMismatchToProto(m *TunnelKeyMismatch) *desktoppb.TunnelWorkerKeyMi
 	return &desktoppb.TunnelWorkerKeyMismatch{
 		ExpectedFingerprint:  m.ExpectedFingerprint,
 		PresentedFingerprint: m.PresentedFingerprint,
+	}
+}
+
+func busyWorkToProto(busy worker.BusyWorkSnapshot) *desktoppb.InspectSoloBusyWorkResponse {
+	agents := make([]*desktoppb.BusyAgentWork, len(busy.Agents))
+	for i, a := range busy.Agents {
+		agents[i] = &desktoppb.BusyAgentWork{
+			TabId:                 a.TabID,
+			Title:                 a.Title,
+			ActiveBackgroundTasks: a.ActiveBackgroundTasks,
+			ActiveChildAgents:     a.ActiveChildAgents,
+		}
+	}
+	terminals := make([]*desktoppb.BusyTerminalWork, len(busy.Terminals))
+	for i, t := range busy.Terminals {
+		procs := make([]*desktoppb.BusyTerminalProcess, len(t.Processes))
+		for j, p := range t.Processes {
+			procs[j] = &desktoppb.BusyTerminalProcess{
+				Pid:  p.PID,
+				Name: p.Name,
+			}
+		}
+		terminals[i] = &desktoppb.BusyTerminalWork{
+			TabId:      t.TabID,
+			Title:      t.Title,
+			Processes:  procs,
+			TotalCount: t.TotalCount,
+		}
+	}
+	return &desktoppb.InspectSoloBusyWorkResponse{
+		Agents:    agents,
+		Terminals: terminals,
 	}
 }

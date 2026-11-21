@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/quartz"
@@ -336,6 +337,10 @@ type Instance struct {
 	// finished. join waits for it so no report or teardown step can still be in
 	// flight after Stop returns.
 	watcherDone chan struct{}
+	// busyInspector holds the embedded local Worker's busy-work inspector once
+	// the Worker wires it, and clears when the Worker exits. Usable at its zero
+	// value for bare &Instance{} tests and before deferred dev-mode bring-up.
+	busyInspector atomic.Pointer[worker.BusyWorkInspector]
 }
 
 type workerStartupPhase uint8
@@ -485,6 +490,28 @@ func (i *Instance) LocalListenURL() string {
 // launcher prints it; this package prints nothing to the terminal.
 func (i *Instance) AccessURL() string {
 	return i.accessURL
+}
+
+func (i *Instance) setBusyInspector(fn worker.BusyWorkInspector) {
+	if fn == nil {
+		i.busyInspector.Store(nil)
+		return
+	}
+	i.busyInspector.Store(&fn)
+}
+
+// InspectBusyWork inspects the embedded local Worker for active agent or
+// terminal work. Returns an empty snapshot before the local Worker starts or
+// after it exits.
+func (i *Instance) InspectBusyWork(ctx context.Context) worker.BusyWorkSnapshot {
+	if i == nil {
+		return worker.BusyWorkSnapshot{}
+	}
+	inspector := i.busyInspector.Load()
+	if inspector == nil || *inspector == nil {
+		return worker.BusyWorkSnapshot{}
+	}
+	return (*inspector)(ctx)
 }
 
 // WaitDone closes when Wait's subject -- the Hub goroutine -- has
@@ -1018,6 +1045,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 			onExit:           func(cause error) { inst.workerExited(workerCtx, cause) },
 			onStarting:       inst.markWorkerStarting,
 			onConnection:     inst.updateWorkerConnection,
+			onBusyInspector:  inst.setBusyInspector,
 		})
 	}
 	// Hold a Worker-side token ACROSS bring-up. Without it a caller cancelling
@@ -1175,13 +1203,14 @@ type workerBringUp struct {
 	// TRANSFERS it into worker.Run when the worker goroutine launches;
 	// until then the Instance retains it, and the combined shutdown
 	// closes it. Paths derive from lease.Path().
-	workerLease  *lifecycle.DirectoryLease
-	hubCfg       *hubconfig.Config
-	listenURL    string
-	runWorker    func(ctx context.Context, cfg worker.RunConfig) error
-	onExit       func(error)
-	onStarting   func(lifecycle.RegistrationStatus)
-	onConnection func(worker.ConnectionState)
+	workerLease     *lifecycle.DirectoryLease
+	hubCfg          *hubconfig.Config
+	listenURL       string
+	runWorker       func(ctx context.Context, cfg worker.RunConfig) error
+	onExit          func(error)
+	onStarting      func(lifecycle.RegistrationStatus)
+	onConnection    func(worker.ConnectionState)
+	onBusyInspector func(worker.BusyWorkInspector)
 }
 
 // bringUpLocalWorker loads (or creates, then persists) the local worker's
@@ -1238,12 +1267,18 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 	go func() {
 		defer p.work.Done()
 		defer releaseDrained()
+		defer func() {
+			if p.onBusyInspector != nil {
+				p.onBusyInspector(nil)
+			}
+		}()
 		wErr := p.runWorker(ctx, worker.RunConfig{
-			Drained:          releaseDrained,
-			ShutdownDeadline: p.shutdownDeadline,
-			HubURL:           p.listenURL,
-			Directory:        p.workerLease,
-			OnReady:          func() { reportReady(true) },
+			Drained:             releaseDrained,
+			ShutdownDeadline:    p.shutdownDeadline,
+			HubURL:              p.listenURL,
+			Directory:           p.workerLease,
+			OnBusyWorkInspector: p.onBusyInspector,
+			OnReady:             func() { reportReady(true) },
 			OnConnectionState: func(state worker.ConnectionState) {
 				if p.onConnection != nil {
 					p.onConnection(state)
