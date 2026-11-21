@@ -31,22 +31,23 @@ func cookieFor(name, value string) *http.Cookie {
 	return &http.Cookie{Name: name, Value: value, Path: "/"}
 }
 
-// privateDir returns a t.TempDir with mode 0700, which MkdirAllPrivate
-// requires. t.TempDir on macOS creates 0755.
+// privateDir creates a directory with the native permissions the session store requires.
 func privateDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	require.NoError(t, os.Chmod(dir, 0o700))
+	dir := filepath.Join(t.TempDir(), "sessions")
+	require.NoError(t, useronly.Mkdir(dir))
+	require.NoError(t, useronly.VerifyDirectory(dir))
 	return dir
 }
 
 func TestSessionStoreSetCookiePersists(t *testing.T) {
-	dir := privateDir(t)
+	dir := filepath.Join(t.TempDir(), "sessions")
 	base := mustParse(t, "https://hub.example")
 	j := openPersistentJar(base, dir)
 
 	j.SetCookies(base, []*http.Cookie{cookieFor(testSessionCookieName, "abc123")})
 
+	require.NoError(t, useronly.VerifyDirectory(dir))
 	path := filepath.Join(dir, sessionFileName(base))
 	require.FileExists(t, path)
 	require.NoError(t, useronly.VerifyFile(path))
@@ -221,16 +222,18 @@ func TestSessionStoreExpiredCookieIgnored(t *testing.T) {
 	sf := sessionFile{
 		HubURL: base.String(),
 		Cookies: []persistedCookie{
-			{Name: "old", Value: "stale", Path: "/", Expires: &expired},
+			{Name: testSessionCookieName, Value: "stale", Path: "/", Expires: &expired},
+			{Name: testSessionCookieName, Value: "live", Path: "/current"},
 		},
 	}
 	data, err := json.Marshal(sf)
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(dir, 0o700))
 	require.NoError(t, atomicfile.WriteFile(path, data, 0o600))
 
 	j := openPersistentJar(base, dir)
-	assert.Empty(t, j.Cookies(base), "an expired cookie must not be sent")
+	cookies := j.Cookies(mustParse(t, "https://hub.example/current"))
+	require.Len(t, cookies, 1)
+	assert.Equal(t, "live", cookies[0].Value)
 }
 
 func TestSessionStoreWrongOriginIgnored(t *testing.T) {
@@ -244,8 +247,8 @@ func TestSessionStoreWrongOriginIgnored(t *testing.T) {
 	}
 	data, err := json.Marshal(sf)
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(dir, 0o700))
 	require.NoError(t, atomicfile.WriteFile(path, data, 0o600))
+	require.NoError(t, useronly.VerifyFile(path))
 
 	j := openPersistentJar(base, dir)
 	assert.Empty(t, j.Cookies(base), "a file for another origin must be ignored")
@@ -256,8 +259,8 @@ func TestSessionStoreUnparseableFileIgnored(t *testing.T) {
 	base := mustParse(t, "https://hub.example")
 	path := filepath.Join(dir, sessionFileName(base))
 
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-	require.NoError(t, os.WriteFile(path, []byte("not json"), 0o600))
+	require.NoError(t, atomicfile.WriteFile(path, []byte("not json"), 0o600))
+	require.NoError(t, useronly.VerifyFile(path))
 
 	j := openPersistentJar(base, dir)
 	assert.Empty(t, j.Cookies(base), "a corrupt file must leave the jar empty")
@@ -280,7 +283,6 @@ func TestSessionStoreWrongPermissionsIgnored(t *testing.T) {
 	}
 	data, err := json.Marshal(sf)
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(dir, 0o700))
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
 	j := openPersistentJar(base, dir)
@@ -293,7 +295,6 @@ func TestSessionStoreLeftoverTempFileCleaned(t *testing.T) {
 	path := filepath.Join(dir, sessionFileName(base))
 	tmpPath := path + ".tmp12345"
 
-	require.NoError(t, os.MkdirAll(dir, 0o700))
 	require.NoError(t, os.WriteFile(tmpPath, []byte("leftover"), 0o600))
 
 	openPersistentJar(base, dir)
@@ -507,10 +508,12 @@ func TestSessionStoreUnchangedCookieWithExpirySetOneWrite(t *testing.T) {
 	// rewrite changes these bytes even though the cookie values are the same.
 	data, err := json.Marshal(sf)
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(dir, 0o700))
 	require.NoError(t, atomicfile.WriteFile(path, data, 0o600))
 
 	j := openPersistentJar(base, dir)
+	cookies := j.Cookies(base)
+	require.Len(t, cookies, 1)
+	require.Equal(t, "abc123", cookies[0].Value)
 	j.SetCookies(base, []*http.Cookie{{Name: testSessionCookieName, Value: "abc123", Path: "/", Expires: expires}})
 
 	got, err := os.ReadFile(path)

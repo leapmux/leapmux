@@ -294,7 +294,7 @@ func loadRing(path string) (map[uint32][keySize]byte, [keySize]byte, bool, error
 	var pepper [keySize]byte
 	hasPepper := false
 
-	f, err := os.Open(path)
+	f, err := openKeyRing(path)
 	if err != nil {
 		return nil, pepper, false, fmt.Errorf("keystore: open %s: %w", path, err)
 	}

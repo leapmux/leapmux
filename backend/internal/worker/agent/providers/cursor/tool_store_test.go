@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -236,24 +237,39 @@ func newCursorReplayTranscript(t *testing.T, sink *agenttest.Sink) (*tooltranscr
 
 func TestCursorToolTranscriptEnrichesSessionReplay(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.Sink{}
-	// ACP startup binds the Worker sink before it dispatches buffered session updates.
-	sink.UpdateSessionID("resumed-session")
-	sessionUpdates := sink.SessionIDCount()
-	transcript, revealStore, original := newCursorReplayTranscript(t, sink)
-	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original}, agent.SpanInfo{SpanID: "search", Closing: true}))
-	assert.Empty(t, sink.Messages()[0].SupplementalContent)
-	assert.Equal(t, "resumed-session", sink.Messages()[0].AgentSessionID)
-	// Delay the store path until the transcript receives its session identity.
-	revealStore()
-	transcript.UpdateSessionID("resumed-session")
-	// The session update requests a supplement pass. Join the reader before inspecting its stored row.
-	transcript.WaitForSupplementsForTest()
-	assert.Equal(t, 1, sink.SessionIDCount()-sessionUpdates)
-	assert.Equal(t, original, sink.Messages()[0].Content)
-	assert.Equal(t, "resumed-session", sink.Messages()[0].AgentSessionID)
-	assert.NotEmpty(t, sink.Messages()[0].SupplementalContent)
-	assert.Empty(t, transcript.PendingSpanIDsForTest())
+	// The real SQLite read must finish before the interim pass expires.
+	// Virtual time makes this test independent of filesystem and runner load.
+	synctest.Test(t, func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		// ACP startup binds the Worker sink before it dispatches buffered session updates.
+		sink.UpdateSessionID("resumed-session")
+		sessionUpdates := sink.SessionIDCount()
+		transcript, revealStore, original := newCursorReplayTranscript(t, sink)
+		require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original}, agent.SpanInfo{SpanID: "search", Closing: true}))
+		messages := sink.Messages()
+		require.Len(t, messages, 1)
+		assert.Empty(t, messages[0].SupplementalContent)
+		assert.Equal(t, "resumed-session", messages[0].AgentSessionID)
+		// Delay the store path until the transcript receives its session identity.
+		revealStore()
+		transcript.UpdateSessionID("resumed-session")
+		// The session update requests a supplement pass. Join the reader before inspecting its stored row.
+		transcript.WaitForSupplementsForTest()
+		assert.Equal(t, 1, sink.SessionIDCount()-sessionUpdates)
+		messages = sink.Messages()
+		require.Len(t, messages, 1)
+		assert.Equal(t, original, messages[0].Content)
+		assert.Equal(t, "resumed-session", messages[0].AgentSessionID)
+		var supplement struct {
+			RawOutput struct {
+				Content []json.RawMessage `json:"content"`
+			} `json:"rawOutput"`
+		}
+		require.NoError(t, json.Unmarshal(messages[0].SupplementalContent, &supplement))
+		require.Len(t, supplement.RawOutput.Content, 1)
+		assert.JSONEq(t, `"sample.py:1:answer = 42"`, string(cursorContentField(t, supplement.RawOutput.Content[0], "result")))
+		assert.Empty(t, transcript.PendingSpanIDsForTest())
+	})
 }
 
 func TestCursorToolTranscriptDoesNotAdoptUnboundReplayRows(t *testing.T) {
