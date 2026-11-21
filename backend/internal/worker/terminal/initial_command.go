@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,7 +55,7 @@ func initialCommandDialect(shell string) string {
 		return ""
 	}
 	switch name {
-	case "bash", "zsh", "fish", nushellExecutable:
+	case "bash", "zsh", "fish", "elvish", nushellExecutable:
 		return name
 	case "sh", "dash":
 		return "posix"
@@ -110,28 +111,34 @@ func ReapInitialCommandLaunches(dataDir string) error {
 	if err != nil {
 		return err
 	}
+	var cleanupErr error
 	for _, entry := range entries {
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), initialCommandLaunchPrefix) {
-			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
-				return err
-			}
+			cleanupErr = errors.Join(cleanupErr, removeInitialCommandLaunch(filepath.Join(root, entry.Name())))
 		}
 	}
-	return nil
+	return cleanupErr
+}
+
+func removeInitialCommandLaunch(dir string) error {
+	linkErr := removeElvishStartupLink(dir)
+	return errors.Join(linkErr, os.RemoveAll(dir))
 }
 
 func (b *initialCommandBootstrap) close() {
 	if b.sourceWriter != nil {
 		_ = b.sourceWriter.Close()
 	}
-	_ = os.RemoveAll(b.dir)
+	if err := removeInitialCommandLaunch(b.dir); err != nil {
+		slog.Warn("Remove a terminal command handoff", "error", err)
+	}
 }
 
 func (b *initialCommandBootstrap) commandPath() string { return filepath.Join(b.dir, "command") }
 func (b *initialCommandBootstrap) ackPath() string     { return filepath.Join(b.dir, "acknowledged") }
 func (b *initialCommandBootstrap) requestPath() string { return filepath.Join(b.dir, "ready") }
 
-func (b *initialCommandBootstrap) launch(shell string, args, env []string) (string, []string, []string, error) {
+func (b *initialCommandBootstrap) launch(shell, workingDir string, args, env []string) (string, []string, []string, error) {
 	env = append(env,
 		"LEAPMUX_INITIAL_COMMAND_FILE="+b.commandPath(),
 		"LEAPMUX_INITIAL_COMMAND_ACK="+b.ackPath(),
@@ -142,7 +149,7 @@ func (b *initialCommandBootstrap) launch(shell string, args, env []string) (stri
 	if initialCommandDialect(shell) == "powershell" {
 		return shell, append(args, "-NoExit", "-Command", powerShellInitialCommand), env, nil
 	}
-	env, args, err := b.unixStartup(shell, env, args)
+	env, args, err := b.unixStartup(shell, workingDir, env, args)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -152,7 +159,7 @@ func (b *initialCommandBootstrap) launch(shell string, args, env []string) (stri
 	return "/bin/sh", append(launcher, args...), env, nil
 }
 
-func (b *initialCommandBootstrap) unixStartup(shell string, env, args []string) ([]string, []string, error) {
+func (b *initialCommandBootstrap) unixStartup(shell, workingDir string, env, args []string) ([]string, []string, error) {
 	switch initialCommandDialect(shell) {
 	case "bash":
 		source := filepath.Join(b.dir, "environment")
@@ -182,6 +189,12 @@ func (b *initialCommandBootstrap) unixStartup(shell string, env, args []string) 
 		env = append(env, "ZDOTDIR="+b.dir, "LEAPMUX_INITIAL_COMMAND_MANAGED_ZDOTDIR="+b.dir)
 	case "fish":
 		args = append(args, "-C", fishInitialCommand)
+	case "elvish":
+		source, err := b.elvishStartupSource(workingDir, env)
+		if err != nil {
+			return nil, nil, err
+		}
+		args = append(args, "-rc", source)
 	case "posix":
 		source := filepath.Join(b.dir, "environment")
 		if err := os.WriteFile(source, []byte(posixInitialStartup), 0o600); err != nil {

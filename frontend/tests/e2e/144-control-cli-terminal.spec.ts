@@ -135,6 +135,63 @@ test.describe('control CLI terminals', () => {
     await waitForTerminalText(page, 'INITIAL_42')
   })
 
+  test('runs startup commands in the original Elvish shell', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    test.skip(process.platform === 'win32', 'The Elvish startup handoff requires a Unix Worker.')
+    test.skip(spawnSync('elvish', ['-version'], { stdio: 'ignore' }).status !== 0, 'Elvish is unavailable on the test host.')
+
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
+    const opened = await runCLI(cli, [
+      'terminal',
+      'open',
+      '--workspace',
+      authenticatedWorkspace.workspaceId,
+      '--worker',
+      leapmuxServer.workerId,
+      '--shell',
+      'elvish',
+      '--command',
+      'var leapmux-startup-test = (* 6 7); echo ELVISH_INITIAL_$leapmux-startup-test',
+    ]) as OpenedTerminal
+    await expect(tabById(page, opened.id)).toBeVisible()
+    const wait = [
+      'terminal',
+      'wait',
+      opened.id,
+      '--timeout',
+      '20s',
+    ]
+    expect(await runCLI(cli, [...wait, '--regex', '^ELVISH_INITIAL_42$'])).toMatchObject({
+      reached: true,
+      line: 'ELVISH_INITIAL_42',
+    })
+    await runCLI(cli, [
+      'terminal',
+      'run',
+      opened.id,
+      'echo ELVISH_AFTER_$leapmux-startup-test',
+    ])
+    expect(await runCLI(cli, [...wait, '--regex', '^ELVISH_AFTER_42$'])).toMatchObject({
+      reached: true,
+      line: 'ELVISH_AFTER_42',
+    })
+    await tabById(page, opened.id).click()
+    await waitForTerminalText(page, 'ELVISH_AFTER_42')
+
+    expect(await runCLI(cli, [
+      'terminal',
+      'restart',
+      opened.id,
+      '--replace',
+      '--command',
+      'exit 23',
+    ])).toMatchObject({ id: opened.id })
+    expect(await runCLI(cli, [...wait, '--exit'])).toMatchObject({
+      reached: true,
+      status: 'exited',
+      exit_code: 23,
+    })
+  })
+
   test('replaces the running shell in the same terminal tab', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     const cli = await mintCLITokenForAdmin(leapmuxServer)
     const opened = await runCLI(cli, [

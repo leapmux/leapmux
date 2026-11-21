@@ -552,7 +552,7 @@ func startWithTerminalRegistration(
 			return nil, err
 		}
 		defer bootstrap.close()
-		program, args, env, err = bootstrap.launch(program, args, env)
+		program, args, env, err = bootstrap.launch(program, opts.WorkingDir, args, env)
 		if err != nil {
 			return nil, err
 		}
