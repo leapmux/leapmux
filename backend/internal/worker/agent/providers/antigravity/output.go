@@ -129,11 +129,23 @@ func isToolStep(step antigravityStep) bool {
 	}
 }
 
-func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigravityStep) {
-	text := step.PlannerResponse.ModifiedResponse
-	if text == "" {
-		text = step.PlannerResponse.Response
+func (response antigravityPlannerResponse) visibleContent() (text, thinking string) {
+	text = response.ModifiedResponse
+	if strings.TrimSpace(text) == "" {
+		text = response.Response
+		if strings.TrimSpace(text) == "" {
+			text = ""
+		}
 	}
+	thinking = response.Thinking
+	if strings.TrimSpace(thinking) == "" {
+		thinking = ""
+	}
+	return text, thinking
+}
+
+func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigravityStep) {
+	text, thinking := step.PlannerResponse.visibleContent()
 	scope := fmt.Sprintf("antigravity:%s:%d", state.id, index)
 	a.Mu.Lock()
 	if !a.cascadeCurrentLocked(state) || state.closed {
@@ -158,7 +170,7 @@ func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigr
 			state.sink.ReportProgress(agent.ModelTextProgress(scope, delta))
 		}
 	}
-	if text != "" || step.PlannerResponse.Thinking != "" {
+	if text != "" || thinking != "" {
 		if retryPending {
 			state.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved})
 		}
@@ -186,7 +198,15 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	}
 	a.Mu.Unlock()
 
+	splitPlannerResponse := false
 	switch step.Type {
+	case contracts.AntigravityStepTypePlannerResponse:
+		text, thinking := step.PlannerResponse.visibleContent()
+		if text == "" && thinking == "" {
+			a.finalizeStep(state, index, step, spanID)
+			return nil
+		}
+		splitPlannerResponse = text != "" && thinking != ""
 	case contracts.AntigravityStepTypeUserInput:
 		if state.parent == nil || slices.Contains(step.UserInput.Tags, antigravityQueueInputTag) {
 			a.consumeStep(state, index)
@@ -224,11 +244,7 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 		IdempotencyKey: fmt.Sprintf("antigravity:%s:%d", state.id, index),
 	}
 	contents := []agent.MessageContent{content}
-	text := step.PlannerResponse.ModifiedResponse
-	if text == "" {
-		text = step.PlannerResponse.Response
-	}
-	if step.Type == contracts.AntigravityStepTypePlannerResponse && text != "" && step.PlannerResponse.Thinking != "" {
+	if splitPlannerResponse {
 		thinkingRaw, splitErr := plannerThinkingOnly(cleaned)
 		if splitErr != nil {
 			slog.Error("antigravity split planner thinking", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", splitErr)
@@ -247,6 +263,11 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 		slog.Error("antigravity persist step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
 		return err
 	}
+	a.finalizeStep(state, index, step, spanID)
+	return nil
+}
+
+func (a *Agent) finalizeStep(state *cascadeState, index int, step antigravityStep, spanID string) {
 	a.consumeStep(state, index)
 	if spanID != "" {
 		state.sink.CloseSpan(spanID)
@@ -264,7 +285,6 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	if state.parent == nil && step.Status == contracts.AntigravityStepStatusDone {
 		a.recordPlanStep(state, step)
 	}
-	return nil
 }
 
 func (a *Agent) consumeStep(state *cascadeState, index int) {

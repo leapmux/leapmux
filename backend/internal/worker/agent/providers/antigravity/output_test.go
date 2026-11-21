@@ -171,6 +171,50 @@ func TestAntigravityPlannerThinkingAndTextPersistAsSeparateRows(t *testing.T) {
 	assert.Equal(t, "private reasoning", text.PlannerResponse.Thinking)
 }
 
+func TestAntigravityConsumesTextlessPlannerStepsWithoutStoringRows(t *testing.T) {
+	a, sink := testAgent(t)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{
+		plannerStep(contracts.AntigravityStepStatusRunning, "a provisional reply"),
+	}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1, 2}, []json.RawMessage{
+		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"toolCalls":[{"name":"read_file"}],"stopReason":"STOP"},"metadata":{"modelUsage":{"inputTokens":"23","outputTokens":"5"}}}`),
+		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"modifiedResponse":"  ","response":"\n","thinking":"\t"}}`),
+		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE"}`),
+	}))
+	assert.Empty(t, transcriptMessages(sink))
+	assert.Contains(t, sink.ProgressUpdates(), agent.CompleteModelProgress("antigravity:cascade:0"))
+	a.Mu.Lock()
+	assert.Equal(t, 3, a.firstOpenIndexLocked(a.root))
+	assert.Empty(t, a.root.steps[0].raw)
+	a.Mu.Unlock()
+
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{3}, []json.RawMessage{
+		plannerStep(contracts.AntigravityStepStatusRunning, " \t"),
+	}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	divider := rows[0]
+	require.True(t, divider.TurnEnd)
+	assert.JSONEq(t, `{"name":"antigravity_turn_end","num_tool_uses":0,"metadata":{"modelUsage":{"inputTokens":23,"outputTokens":5}}}`, string(divider.Content))
+}
+
+func TestAntigravityStoresOnlyNonblankPlannerContent(t *testing.T) {
+	for _, planner := range []string{
+		`{"modifiedResponse":" ","response":"  answer","thinking":"\t"}`,
+		`{"modifiedResponse":" ","thinking":"  reasoning"}`,
+	} {
+		t.Run(planner, func(t *testing.T) {
+			a, sink := testAgent(t)
+			raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":` + planner + `}`)
+			feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{raw}))
+			rows := transcriptMessages(sink)
+			require.Len(t, rows, 1)
+			assert.JSONEq(t, string(raw), string(rows[0].Content))
+		})
+	}
+}
+
 func TestAntigravityChildUserInputPersistsWithoutRootDuplication(t *testing.T) {
 	a, sink := testAgent(t)
 	child := newCascadeState("child", a.sink, 0, false)

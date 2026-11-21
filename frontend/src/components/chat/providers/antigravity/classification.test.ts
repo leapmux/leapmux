@@ -32,21 +32,6 @@ describe('classifyAntigravityMessage', () => {
     })
   })
 
-  it.each([
-    {
-      toolCalls: [
-        { name: 'read_file' },
-      ],
-      stopReason: 'STOP',
-    },
-    { modifiedResponse: '   ', response: '\n', thinking: '\t' },
-  ])('hides a planner frame without visible text: %j', (plannerResponse) => {
-    expect(classifyAntigravityMessage(input({
-      type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
-      plannerResponse,
-    })).kind).toBe('hidden')
-  })
-
   it('classifies steps, interactions and turn ends', () => {
     expect(classifyAntigravityMessage(input({ name: ANTIGRAVITY_FRAME.TurnEnd })).kind).toBe('result_divider')
     expect(classifyAntigravityMessage(input({ name: ANTIGRAVITY_FRAME.Interaction, modelRequest: {} })).kind).toBe('notification')

@@ -87,6 +87,12 @@ type antigravityErrorDetails struct {
 	Details           string `json:"details"`
 }
 
+type antigravityPlannerResponse struct {
+	Response         string `json:"response"`
+	ModifiedResponse string `json:"modifiedResponse"`
+	Thinking         string `json:"thinking"`
+}
+
 type antigravityStep struct {
 	Type     string `json:"type"`
 	Status   string `json:"status"`
@@ -98,13 +104,9 @@ type antigravityStep struct {
 		} `json:"toolCall"`
 		ModelUsage map[string]string `json:"modelUsage"`
 	} `json:"metadata"`
-	RequestedInteraction json.RawMessage `json:"requestedInteraction"`
-	PlannerResponse      struct {
-		Response         string `json:"response"`
-		ModifiedResponse string `json:"modifiedResponse"`
-		Thinking         string `json:"thinking"`
-	} `json:"plannerResponse"`
-	UserInput struct {
+	RequestedInteraction json.RawMessage            `json:"requestedInteraction"`
+	PlannerResponse      antigravityPlannerResponse `json:"plannerResponse"`
+	UserInput            struct {
 		Tags []string `json:"tags"`
 	} `json:"userInput"`
 	SystemMessage struct {

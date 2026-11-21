@@ -26,11 +26,9 @@ export function classifyAntigravityMessage(input: ClassificationInput): MessageC
     switch (step.type) {
       case ANTIGRAVITY_STEP_TYPE.PlannerResponse: {
         const { text, thinking } = antigravityPlannerContent(parent)
-        if (text)
-          return { kind: 'assistant_text' }
-        if (thinking)
-          return { kind: 'assistant_thinking' }
-        return { kind: 'hidden' }
+        return !text && thinking
+          ? { kind: 'assistant_thinking' }
+          : { kind: 'assistant_text' }
       }
       case ANTIGRAVITY_STEP_TYPE.UserInput:
         return { kind: 'user_content' }
