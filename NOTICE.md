@@ -11,7 +11,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [connectrpc.com/connect/v2 v2.0.2](#connectrpccomconnectv2-v202)
 - [dario.cat/mergo v1.0.2](#dariocatmergo-v102)
 - [filippo.io/edwards25519 v1.2.0](#filippoioedwards25519-v120)
-- [github.com/altcha-org/altcha-lib-go/v2 v2.4.1](#githubcomaltcha-orgaltcha-lib-gov2-v241)
+- [github.com/altcha-org/altcha-lib-go/v2 v2.5.0](#githubcomaltcha-orgaltcha-lib-gov2-v250)
 - [github.com/aymanbagabas/go-pty v0.2.3](#githubcomaymanbagabasgo-pty-v023)
 - [github.com/aymerick/douceur v0.2.0](#githubcomaymerickdouceur-v020)
 - [github.com/Azure/go-ansiterm v0.0.0-20261013165250-51075c6ea6bc](#githubcomazurego-ansiterm-v000-20261013165250-51075c6ea6bc)
@@ -42,7 +42,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/go-logr/logr v1.4.4](#githubcomgo-logrlogr-v144)
 - [github.com/go-logr/stdr v1.2.2](#githubcomgo-logrstdr-v122)
 - [github.com/go-ole/go-ole v1.3.0](#githubcomgo-olego-ole-v130)
-- [github.com/go-sql-driver/mysql v1.10.1](#githubcomgo-sql-drivermysql-v1101)
+- [github.com/go-sql-driver/mysql v1.10.2](#githubcomgo-sql-drivermysql-v1102)
 - [github.com/go-viper/mapstructure/v2 v2.5.0](#githubcomgo-vipermapstructurev2-v250)
 - [github.com/go-webauthn/webauthn v0.18.2](#githubcomgo-webauthnwebauthn-v0182)
 - [github.com/go-webauthn/x v0.3.1](#githubcomgo-webauthnx-v031)
@@ -118,13 +118,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [go4.org/netipx v0.0.0-20260823151212-3075585bcbeb](#go4orgnetipx-v000-20260823151212-3075585bcbeb)
 - [golang.org/x/crypto v0.59.0](#golangorgxcrypto-v0590)
 - [golang.org/x/mod v0.43.0](#golangorgxmod-v0430)
-- [golang.org/x/net v0.62.0](#golangorgxnet-v0620)
+- [golang.org/x/net v0.63.0](#golangorgxnet-v0630)
 - [golang.org/x/oauth2 v0.38.0](#golangorgxoauth2-v0380)
 - [golang.org/x/sync v0.25.0](#golangorgxsync-v0250)
 - [golang.org/x/sys v0.50.0](#golangorgxsys-v0500)
 - [golang.org/x/term v0.48.0](#golangorgxterm-v0480)
 - [golang.org/x/text v0.44.0](#golangorgxtext-v0440)
-- [golang.org/x/tools v0.52.0](#golangorgxtools-v0520)
+- [golang.org/x/tools v0.53.0](#golangorgxtools-v0530)
 - [google.golang.org/grpc v1.85.0](#googlegolangorggrpc-v1850)
 - [google.golang.org/protobuf v1.36.12](#googlegolangorgprotobuf-v13612)
 - [modernc.org/libc v1.80.2](#moderncorglibc-v1802)
@@ -1027,7 +1027,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/altcha-org/altcha-lib-go/v2 v2.4.1
+### github.com/altcha-org/altcha-lib-go/v2 v2.5.0
 
 ```
 MIT License
@@ -3954,7 +3954,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/go-sql-driver/mysql v1.10.1
+### github.com/go-sql-driver/mysql v1.10.2
 
 ```
 Mozilla Public License Version 2.0
@@ -11465,7 +11465,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/net v0.62.0
+### golang.org/x/net v0.63.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11657,7 +11657,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/tools v0.52.0
+### golang.org/x/tools v0.53.0
 
 ```
 Copyright 2009 The Go Authors.
