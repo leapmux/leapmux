@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { DirectoryRevealRequest } from './directoryReveal'
 import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import type { SyncLocalKey } from '~/lib/browserStorage'
@@ -12,7 +13,7 @@ import FileIcon from 'lucide-solid/icons/file'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import List from 'lucide-solid/icons/list'
 import LocateFixed from 'lucide-solid/icons/locate-fixed'
-import { createEffect, createMemo, createSignal, createUniqueId, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show, untrack } from 'solid-js'
 import { FilterTabBar } from '~/components/common/FilterTabBar'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
@@ -20,6 +21,7 @@ import { RefreshButton } from '~/components/common/RefreshButton'
 import { PREFIX_FILES_SHOW_HIDDEN, PREFIX_FILES_SORT_ORDER } from '~/lib/browserStorage'
 import { createPersistedSignal, persistedBoolean } from '~/lib/createPersistedSignal'
 import { DEFAULT_FILE_SORT_ORDER, makeFileComparator, parseFileSortOrder } from '~/lib/fileSort'
+import { normalizeSeparators, relativeUnder, split } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { fileEntryToDiffStats, isUntrackedDirEntry } from '~/stores/repoGit.store'
 import { warningText } from '~/styles/shared.css'
@@ -66,6 +68,10 @@ export interface FilesSectionProps {
   enabled?: boolean
   /** Ref callback for imperative actions (collapse all). */
   ref?: (handle: FilesSectionHandle) => void
+  /** Imperative request to expand, focus, and visually cue a directory row. */
+  directoryReveal?: DirectoryRevealRequest | undefined
+  /** Called once DirectoryTree handles or cancels a directory reveal request. */
+  onDirectoryRevealHandled?: ((nonce: number) => void) | undefined
 }
 
 export interface FilesSectionHeaderActionsProps {
@@ -292,6 +298,37 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
       : {}
   }
 
+  // Prepare FilesSection state before DirectoryTree processes a reveal:
+  // leave flat-list mode, clear a git filter that excludes the target, and
+  // enable hidden entries when any relative path segment starts with '.'.
+  createEffect(on(
+    () => props.directoryReveal,
+    (req) => {
+      if (!req)
+        return
+      if (untrack(flatListMode))
+        setFlatListMode(false)
+
+      const visibleFn = untrack(isVisible)
+      if (visibleFn && !visibleFn(req.path) && !(req.canonicalPath && visibleFn(req.canonicalPath)))
+        setActiveFilter('all')
+
+      if (!untrack(showHiddenFiles)) {
+        const root = untrack(treeRoot)
+        if (root) {
+          const flavor = props.flavor
+          const normRoot = normalizeSeparators(root, flavor)
+          const rel = relativeUnder(normalizeSeparators(req.path, flavor), normRoot, flavor)
+            ?? (req.canonicalPath
+              ? relativeUnder(normalizeSeparators(req.canonicalPath, flavor), normRoot, flavor)
+              : null)
+          if (rel && split(rel, flavor).some(segment => segment.startsWith('.')))
+            setShowHiddenFiles(true)
+        }
+      }
+    },
+  ))
+
   return (
     // `data-working-dir` carries the tab's own dir, which is empty until the
     // tab hydrates -- unlike the tree below, which roots at the worker's home
@@ -359,6 +396,10 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
                     {...(props.enabled !== undefined
                       ? { enabled: props.enabled }
                       : {})}
+                    directoryReveal={props.directoryReveal}
+                    onDirectoryRevealHandled={props.onDirectoryRevealHandled}
+                    onRevealHiddenRequired={() => setShowHiddenFiles(true)}
+                    onClearFilterRequired={() => setActiveFilter('all')}
                     ref={(h) => { treeHandle = h }}
                   />
                 )}

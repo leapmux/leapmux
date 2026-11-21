@@ -75,6 +75,9 @@ const STATIC_PASSTHROUGHS = new Set([
   'getTileOrderForWorkspace',
   'tabItemOps',
   'branchActions',
+  'onDirectoryRevealHandled',
+  'onExpandSectionRef',
+  'onActivateLocalLink',
 ])
 
 /** Counts every reactive read so a test can assert the build performed none. */
@@ -168,6 +171,13 @@ function trackedOpts() {
     // identities, and two `undefined`s compare equal without proving anything.
     branchActions: stubBranchRefActions(),
     workspaceStartActions: { onNewAgentAt: noop, onNewTerminalAt: noop },
+    get directoryReveal() {
+      reads.push('directoryReveal')
+      return undefined
+    },
+    onDirectoryRevealHandled: noop,
+    onExpandSectionRef: noop,
+    onActivateLocalLink: noop,
   } as unknown as SidebarElementsOpts
   return { opts, reads }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   basename,
+  cleanPath,
   detectFlavor,
   extname,
   filesystemRoot,
@@ -14,6 +15,7 @@ import {
   pathEq,
   relativeUnder,
   relativizePath,
+  resolvePath,
   split,
   tildify,
   toPosixSeparators,
@@ -147,6 +149,74 @@ describe('join', () => {
   it('keeps the leading separator for a volume-less win32 root', () => {
     expect(join(['\\', 'foo'], 'win32')).toBe('\\foo')
     expect(join(['C:\\', 'Users', 'alice'], 'win32')).toBe('C:\\Users\\alice')
+  })
+})
+
+describe('cleanPath', () => {
+  it('returns an empty string for empty input', () => {
+    expect(cleanPath('')).toBe('')
+    expect(cleanPath('', 'posix')).toBe('')
+    expect(cleanPath('', 'win32')).toBe('')
+  })
+
+  it('collapses dot and parent segments on posix', () => {
+    expect(cleanPath('/a/b/../c', 'posix')).toBe('/a/c')
+    expect(cleanPath('/a/./b/', 'posix')).toBe('/a/b')
+    expect(cleanPath('/../../a', 'posix')).toBe('/a')
+    expect(cleanPath('a/..', 'posix')).toBe('.')
+    expect(cleanPath('./', 'posix')).toBe('.')
+    expect(cleanPath('../a/../b', 'posix')).toBe('../b')
+    expect(cleanPath('/', 'posix')).toBe('/')
+    expect(cleanPath('///', 'posix')).toBe('/')
+  })
+
+  it('preserves backslashes inside posix filenames', () => {
+    expect(cleanPath('/a/weird\\name/../b', 'posix')).toBe('/a/b')
+    expect(cleanPath('/a/weird\\name', 'posix')).toBe('/a/weird\\name')
+  })
+
+  it('normalizes separators and clamps parent segments on win32 drives and UNC shares', () => {
+    expect(cleanPath('C:/a/b/../c/', 'win32')).toBe('C:\\a\\c')
+    expect(cleanPath('C:\\..\\..\\a', 'win32')).toBe('C:\\a')
+    expect(cleanPath('C:\\', 'win32')).toBe('C:\\')
+    expect(cleanPath('C:/', 'win32')).toBe('C:\\')
+    expect(cleanPath('\\\\srv\\share\\a\\..\\b', 'win32')).toBe('\\\\srv\\share\\b')
+    expect(cleanPath('\\\\srv\\share\\..\\b', 'win32')).toBe('\\\\srv\\share\\b')
+    expect(cleanPath('\\\\srv\\share', 'win32')).toBe('\\\\srv\\share\\')
+    expect(cleanPath('\\..\\a', 'win32')).toBe('\\a')
+    expect(cleanPath('a\\..', 'win32')).toBe('.')
+  })
+})
+
+describe('resolvePath', () => {
+  it('resolves relative targets against an absolute base with zero remaining parent segments', () => {
+    expect(resolvePath('/repo/docs', '../README.md', 'posix')).toBe('/repo/README.md')
+    expect(resolvePath('/repo/docs', '../../../../etc/hosts', 'posix')).toBe('/etc/hosts')
+    expect(resolvePath('C:\\repo\\docs', '..\\..\\other\\a.ts', 'win32')).toBe('C:\\other\\a.ts')
+    expect(resolvePath('C:\\repo', '../../../Windows/win.ini', 'win32')).toBe('C:\\Windows\\win.ini')
+  })
+
+  it('returns cleaned absolute targets independently of baseDir', () => {
+    expect(resolvePath('/repo', '/etc/./hosts', 'posix')).toBe('/etc/hosts')
+    expect(resolvePath('C:\\repo', 'D:/work/../out.txt', 'win32')).toBe('D:\\out.txt')
+  })
+
+  it('attaches the base volume to volume-less rooted win32 targets', () => {
+    expect(resolvePath('C:\\repo\\sub', '/foo/bar/../baz', 'win32')).toBe('C:\\foo\\baz')
+    expect(resolvePath('C:\\repo', '/', 'win32')).toBe('C:\\')
+    expect(resolvePath('', '/foo', 'win32')).toBe('\\foo')
+  })
+
+  it('handles empty targets and empty baseDir cleanly', () => {
+    expect(resolvePath('/repo/./sub/', '', 'posix')).toBe('/repo/sub')
+    expect(resolvePath('', '', 'posix')).toBe('')
+    expect(resolvePath('', './a/../b', 'posix')).toBe('b')
+  })
+
+  it('preserves leading and trailing backslashes in posix filenames', () => {
+    expect(resolvePath('/repo', '\\weird.txt', 'posix')).toBe('/repo/\\weird.txt')
+    expect(resolvePath('/repo/dir\\', 'file.txt', 'posix')).toBe('/repo/dir\\/file.txt')
+    expect(resolvePath('\\', 'a.txt', 'posix')).toBe('\\/a.txt')
   })
 })
 

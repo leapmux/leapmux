@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
+import { LOCAL_LINK_ATTRIBUTE, LOCAL_LINKS_ACTIVE_ATTRIBUTE } from '~/lib/localLinks'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
 import { GoalObjective } from './GoalObjective'
@@ -182,6 +184,45 @@ describe('GoalObjective', () => {
       vi.advanceTimersByTime(HOVER_DELAY_MS)
 
       expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    })
+
+    it('keeps local links interactive in the main objective while opting the overflow hover tooltip out', async () => {
+      const onActivate = vi.fn()
+      const { getByTestId } = render(() => (
+        <MarkdownLocalLinkProvider
+          value={{
+            workerId: 'w-1',
+            baseDir: '/repo',
+            workingDir: '/repo',
+            homeDir: '/home/alice',
+            flavor: 'posix',
+            onActivate,
+          }}
+        >
+          <GoalObjective objective="review [design doc](./docs/design.md) thoroughly" />
+        </MarkdownLocalLinkProvider>
+      ))
+      await settleWorkerReplies()
+
+      const box = getByTestId('goal-objective')
+      const mainLink = box.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./docs/design.md"]`) as HTMLElement
+      expect(box.querySelector(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}]`)).not.toBeNull()
+      expect(mainLink.getAttribute('role')).toBe('button')
+      expect(mainLink.getAttribute('tabindex')).toBe('0')
+
+      statesLayout(box, 200, 84)
+      triggerResizeObserversSync()
+
+      fireEvent.mouseEnter(box)
+      vi.advanceTimersByTime(HOVER_DELAY_MS)
+      await settleWorkerReplies()
+
+      const tip = screen.getByRole('tooltip', { hidden: true })
+      expect(tip.querySelector(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}]`)).toBeNull()
+      const tipLink = tip.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./docs/design.md"]`) as HTMLElement
+      expect(tipLink).not.toBeNull()
+      expect(tipLink.getAttribute('role')).toBeNull()
+      expect(tipLink.getAttribute('tabindex')).toBeNull()
     })
   })
 })

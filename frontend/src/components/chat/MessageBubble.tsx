@@ -28,6 +28,7 @@ import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatErrorMessage } from '~/lib/errors'
 import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 import { prettifyJson } from '~/lib/jsonFormat'
+import { LOCAL_IMAGE_ATTRIBUTE } from '~/lib/localLinks'
 import { createLogger } from '~/lib/logger'
 import { messageSpanIdentity } from '~/lib/messageSpan'
 import { formatChatQuote } from '~/lib/quoteUtils'
@@ -813,18 +814,18 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // contentRef re-injects after the swap and after an expand-collapse change,
     // regardless of timing.
     //
-    // But IGNORE mutations the copy buttons cause themselves -- the IconButton swapping its
-    // Copy<->Check icon (and title) when clicked is a subtree mutation. Re-injecting on
-    // that would dispose the button mid-click, wiping its transient "Copied" checkmark and
-    // churning every button in the bubble on each copy. Re-inject only when a mutation
-    // touches something OUTSIDE the copy-button chrome.
+    // But IGNORE mutations caused by the copy buttons themselves (swapping the
+    // Copy<->Check icon on click) and by local Markdown image hydration
+    // (`[data-local-image]` swapping its fallback span for an `<img>` or error
+    // text). Re-injecting on those would dispose sibling copy buttons mid-click
+    // or churn every `<pre>` copy button when an image finishes loading.
     const onMutations = (records: MutationRecord[]) => {
       for (const r of records) {
         const node = r.target
         const asEl = node instanceof Element
           ? node
           : node.parentElement
-        if (!asEl?.closest('.copy-code-button')) {
+        if (!asEl?.closest(`.copy-code-button, [${LOCAL_IMAGE_ATTRIBUTE}]`)) {
           schedule()
           return
         }

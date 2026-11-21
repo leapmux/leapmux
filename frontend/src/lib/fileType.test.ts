@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectFileViewMode, isBinaryContent, isImageExtension, isLikelyBinaryExtension, isMarkdownExtension, isSvgExtension } from '~/lib/fileType'
+import { detectFileViewMode, isBinaryContent, isImageExtension, isLikelyBinaryExtension, isMarkdownExtension, isSvgExtension, sniffImageMime } from '~/lib/fileType'
 
 describe('isImageExtension', () => {
   const imageExts = [
@@ -35,6 +35,45 @@ describe('isImageExtension', () => {
   it('handles paths with directories', () => {
     expect(isImageExtension('/home/user/images/photo.png')).toBe(true)
     expect(isImageExtension('/home/user/code/main.go')).toBe(false)
+  })
+})
+
+describe('sniffImageMime', () => {
+  const ascii = (text: string) => new TextEncoder().encode(text)
+
+  it('identifies PNG, JPEG, GIF87a, GIF89a, WebP, and AVIF from magic bytes regardless of extension', () => {
+    const pngBytes = new Uint8Array([
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+    ])
+    const jpegBytes = new Uint8Array([
+      0xFF,
+      0xD8,
+      0xFF,
+      0xE0,
+    ])
+    expect(sniffImageMime('noext', pngBytes)).toBe('image/png')
+    expect(sniffImageMime('wrong.txt', jpegBytes)).toBe('image/jpeg')
+    expect(sniffImageMime('wrong.jpg', ascii('GIF87a....'))).toBe('image/gif')
+    expect(sniffImageMime('wrong.jpg', ascii('GIF89a....'))).toBe('image/gif')
+    expect(sniffImageMime('noext', ascii('RIFF1234WEBP'))).toBe('image/webp')
+    expect(sniffImageMime('noext', ascii('\0\0\0\x18ftypavif'))).toBe('image/avif')
+    expect(sniffImageMime('noext', ascii('\0\0\0\x18ftypmif1avis'))).toBe('image/avif')
+  })
+
+  it('falls back to the file extension for empty or short buffers', () => {
+    expect(sniffImageMime('icon.svg', new Uint8Array(0))).toBe('image/svg+xml')
+    expect(sniffImageMime('icon.svg', ascii('<svg></svg>'))).toBe('image/svg+xml')
+    expect(sniffImageMime('photo.bmp', new Uint8Array([0x42, 0x4D]))).toBe('image/bmp')
+    expect(sniffImageMime('favicon.ico', new Uint8Array([0x00, 0x00, 0x01, 0x00]))).toBe('image/x-icon')
+    expect(sniffImageMime('unknown', new Uint8Array([0x01, 0x02]))).toBe('application/octet-stream')
+    expect(sniffImageMime('unknown', ascii('RIFF1234'))).toBe('application/octet-stream')
   })
 })
 

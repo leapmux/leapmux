@@ -6,6 +6,7 @@ import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { CliPathStatus } from '~/api/platformBridge'
 import type { SetGoalState } from '~/components/shell/AppShellDialogs'
+import type { DirectoryRevealRequest } from '~/components/tree/directoryReveal'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { WorkspaceStartActions, WorkspaceStartAt } from '~/components/workspace/workspaceStartActions'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
@@ -21,9 +22,11 @@ import { useLocation, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
+import { workerFile } from '~/api/workerRpc'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { BootSplash } from '~/components/common/BootSplash'
+import { showWarnToast, showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import { TunnelResetRecovery } from '~/components/common/TunnelResetRecovery'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
@@ -33,7 +36,7 @@ import { usePreferences } from '~/context/PreferencesContext'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
-import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
+import { SectionType, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import { createDialogState } from '~/hooks/createDialogState'
 import { createLinkConfirm } from '~/hooks/createLinkConfirm'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -45,7 +48,7 @@ import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { assertNever } from '~/lib/assertNever'
 import { BOOT_PHASE_READY, BOOT_SPLASH_ENTER_MS, setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
-import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, localStorageGet, onStorageAccountChange, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge } from '~/lib/crdt'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { attachDismissSoftKeyboardOnTap } from '~/lib/dismissSoftKeyboardOnTap'
@@ -89,6 +92,7 @@ import { followActiveTabSelection } from './fileTreeSelection'
 import { FloatingWindowLayer } from './FloatingWindowLayer'
 import { GridPopoverHostProvider } from './GridPopoverHost'
 import { handleBranchChanged } from './handleBranchChanged'
+import { createLocalLinkActivator } from './localLinkActivation'
 import { createMobileOverlayState, MobileLayout } from './MobileLayout'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import { openSubagentTab } from './openSubagentTab'
@@ -886,6 +890,17 @@ export const AppShell: Component = () => {
   // registers its impl via `.set(fn)`; readers invoke via `ref()?.()`.
   const toggleLeftSidebarRef = createImperativeRef<() => void>()
   const toggleRightSidebarRef = createImperativeRef<() => void>()
+  const expandLeftSidebarRef = createImperativeRef<() => void>()
+  const expandRightSidebarRef = createImperativeRef<() => void>()
+  const [directoryReveal, setDirectoryReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+  let directoryRevealNonce = 0
+  const expandSectionBySide = new Map<Sidebar, (sectionId: string) => void>()
+  const registerExpandSection = (side: Sidebar, fn: ((sectionId: string) => void) | undefined) => {
+    if (fn)
+      expandSectionBySide.set(side, fn)
+    else
+      expandSectionBySide.delete(side)
+  }
   const focusEditorRef = createImperativeRef<() => void>()
   const getScrollStateRef = createImperativeRef<() => SavedViewportScroll | undefined>()
   const forceScrollToBottomRef = createImperativeRef<() => void>()
@@ -1505,6 +1520,79 @@ export const AppShell: Component = () => {
     getWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
   })
 
+  const localLinkActivator = createLocalLinkActivator({
+    statFile: (workerId, req) => workerFile.statFile(workerId, req),
+    openFile: (path, at) => {
+      if (isMobileLayout())
+        mobileOverlayState.closeAll()
+      tabOps.handleFileOpen(path, undefined, at)
+    },
+    revealDirectory: ({ path, canonicalPath }) => {
+      const filesSection = sectionStore.state.sections.find(s => s.sectionType === SectionType.FILES)
+      if (!filesSection) {
+        showWarnToast('Files section is not available')
+        return
+      }
+      const side = filesSection.sidebar === Sidebar.LEFT
+        ? 'left'
+        : 'right'
+      if (isMobileLayout()) {
+        mobileOverlayState.openDrawer(side)
+      }
+      else {
+        ;(side === 'left'
+          ? expandLeftSidebarRef()
+          : expandRightSidebarRef())?.()
+      }
+      expandSectionBySide.get(filesSection.sidebar)?.(filesSection.id)
+      setFileTreePath(path)
+      setDirectoryReveal({
+        path,
+        ...(canonicalPath
+          ? { canonicalPath }
+          : {}),
+        nonce: ++directoryRevealNonce,
+      })
+    },
+    showWarning: (message, cause) => {
+      if (cause !== undefined)
+        showWarnToastWithLoggedCause(message, cause)
+      else
+        showWarnToast(message)
+    },
+  })
+
+  onCleanup(onStorageAccountChange(() => {
+    localLinkActivator.cancelPending()
+    localLinkActivator.clearCanonicalRootCache()
+    setDirectoryReveal(undefined)
+  }))
+
+  // Cancel any in-flight stat or pending reveal on workspace change; watch the
+  // scalar workspace id (never `activeWorkspace()`, whose row identity swaps on
+  // background workspace-list refreshes).
+  createEffect(on(
+    () => workspace.activeWorkspaceId(),
+    () => {
+      localLinkActivator.cancelPending()
+      setDirectoryReveal(undefined)
+    },
+    { defer: true },
+  ))
+
+  const handleActivateLocalLink = (
+    rawHref: string,
+    source: Parameters<typeof localLinkActivator.activate>[1],
+  ) => {
+    void localLinkActivator.activate(rawHref, source)
+  }
+
+  const handleDirectoryRevealHandled = (nonce: number) => {
+    setDirectoryReveal(prev => (prev?.nonce === nonce
+      ? undefined
+      : prev))
+  }
+
   const tileRenderer = createTileRenderer({
     agentComposerActionStates,
     mruEditorDeps,
@@ -1560,6 +1648,7 @@ export const AppShell: Component = () => {
     onOpenBackgroundTask,
     onGoalAction: runGoalAction,
     onOpenChatImage: tabOps.handleChatImageOpen,
+    onActivateLocalLink: handleActivateLocalLink,
     branch: {
       actions: branchActions,
       isWorkerKnownOnline: workerId => isWorkerKnownOnline(workerSection.workers(), workerId),
@@ -1708,6 +1797,10 @@ export const AppShell: Component = () => {
     // a position-only sort.
     getTileOrderForWorkspace: (wsId: string) => layoutStore.tileOrderFor(wsId),
     branchActions,
+    get directoryReveal() { return directoryReveal() },
+    onDirectoryRevealHandled: handleDirectoryRevealHandled,
+    onExpandSectionRef: registerExpandSection,
+    onActivateLocalLink: handleActivateLocalLink,
   })
 
   // Refresh git status only when workerId or workingDir actually changes
@@ -1806,6 +1899,8 @@ export const AppShell: Component = () => {
         <DesktopLayout
           setToggleLeftSidebar={fn => toggleLeftSidebarRef.set(fn)}
           setToggleRightSidebar={fn => toggleRightSidebarRef.set(fn)}
+          setExpandLeftSidebar={fn => expandLeftSidebarRef.set(fn)}
+          setExpandRightSidebar={fn => expandRightSidebarRef.set(fn)}
           setLeftSidebarVisible={setLeftSidebarVisible}
           setRightSidebarVisible={setRightSidebarVisible}
           layoutStore={layoutStore}

@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { keyframes, style } from '@vanilla-extract/css'
 
 export {
   chevron,
@@ -10,6 +10,35 @@ export {
   node,
   nodeSelected,
 } from './sharedTree.css'
+
+/** Duration of the temporary visual cue shown on a revealed directory row. */
+export const REVEAL_CUE_DURATION_MS = 1400
+
+const revealCuePulse = keyframes({
+  '0%': {
+    backgroundColor: 'color-mix(in srgb, var(--primary) 22%, transparent)',
+    boxShadow: 'inset 0 0 0 1.5px var(--primary)',
+  },
+  '45%': {
+    backgroundColor: 'color-mix(in srgb, var(--primary) 16%, transparent)',
+    boxShadow: 'inset 0 0 0 1.5px var(--primary)',
+  },
+  '100%': {
+    backgroundColor: 'transparent',
+    boxShadow: 'inset 0 0 0 1.5px transparent',
+  },
+})
+
+export const nodeRevealCue = style({
+  'animation': `${revealCuePulse} ${REVEAL_CUE_DURATION_MS}ms ease-out`,
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      animation: 'none',
+      backgroundColor: 'color-mix(in srgb, var(--primary) 14%, transparent)',
+      boxShadow: 'inset 0 0 0 1.5px var(--primary)',
+    },
+  },
+})
 
 // One sizing rule, because both parents are flex columns: the sidebar's
 // `treeContent` and the dialog's `treeContainer`. `flex: 1` claims whatever the

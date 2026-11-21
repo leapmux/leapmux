@@ -1,6 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { NewTabTarget } from './AppShellDialogs'
 import type { CloseFlow } from './closeFlow'
+import type { LocalLinkActivationSource } from './localLinkActivation'
 import type { createMobileOverlayState } from './MobileLayout'
 import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import type { BusyTab } from './tabBusyProbe'
@@ -10,11 +11,13 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { AgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import type { AgentLifecycleProps, ChatRailProps } from '~/components/chat/ChatView'
+import type { MarkdownLocalLinkContextValue } from '~/components/chat/markdownLocalLinks'
 import type { BranchMenuActions, BranchRefActions } from '~/components/workspace/branchActions'
 import type { AgentInputProcessRecovery, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
+import type { PathFlavor } from '~/lib/paths'
 import type { UntrustedLinkConfirm } from '~/lib/untrustedLinks'
 import type { InputRecoveryTarget } from '~/models/agentInputRecovery'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
@@ -43,6 +46,7 @@ import { AgentInputRecoveryDialog } from '~/components/chat/AgentInputRecoveryDi
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
+import { MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
 import { createMessageContextResolver } from '~/components/chat/messageContextResolver'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { readWorkerImage, readWorkerImageSize } from '~/components/chat/readWorkerImage'
@@ -56,7 +60,7 @@ import { AgentInputQueuePauseReason, AgentStatus } from '~/generated/proto/leapm
 import { GitFileStatusCode, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createStableKeys } from '~/lib/keyedRows'
-import { parentDirectory, relativizePath } from '~/lib/paths'
+import { flavorFromOs, parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { hasGoalSurface } from '~/stores/chatGoal'
@@ -227,6 +231,8 @@ interface TileRendererOpts {
      */
     isWorkerKnownOnline?: (workerId: string) => boolean
   }
+  /** Activate a local Markdown link or standalone local image clicked inside a tab pane. */
+  onActivateLocalLink?: (rawHref: string, source: LocalLinkActivationSource) => void
 }
 
 export function createTileRenderer(opts: TileRendererOpts) {
@@ -313,6 +319,43 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const tab = getActiveTabForTile(tileId)
     if (tab)
       selection.setActive(tab)
+  }
+
+  /**
+   * Build a stable object with reactive getters for `MarkdownLocalLinkProvider`
+   * so tab metadata updates propagate without remounting keyed `<For>` panes.
+   */
+  const buildLocalLinkContext = (spec: {
+    workerId: () => string
+    baseDir: (flavor: PathFlavor) => string
+    workingDir: () => string
+    homeDir: () => string
+    activateSource?: () => void
+  }): MarkdownLocalLinkContextValue | undefined => {
+    const onActivateLocalLink = opts.onActivateLocalLink
+    if (!onActivateLocalLink)
+      return undefined
+    const flavor = () => flavorFromOs(workerInfoStore.getOs(spec.workerId()))
+    return {
+      get workerId() { return spec.workerId() },
+      get baseDir() { return spec.baseDir(flavor()) },
+      get workingDir() { return spec.workingDir() },
+      get homeDir() { return spec.homeDir() },
+      get flavor() { return flavor() },
+      onActivate: (rawHref: string) => {
+        const currentFlavor = flavor()
+        onActivateLocalLink(rawHref, {
+          workerId: spec.workerId(),
+          baseDir: spec.baseDir(currentFlavor),
+          workingDir: spec.workingDir(),
+          homeDir: spec.homeDir(),
+          flavor: currentFlavor,
+          ...(spec.activateSource
+            ? { activateSource: spec.activateSource }
+            : {}),
+        })
+      },
+    }
   }
 
   // Main-layout strategy: close the tile. Its per-tile selection entry is
@@ -871,6 +914,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
         ? t
         : null
     }
+    const terminalLocalLinkContext = buildLocalLinkContext({
+      workerId: () => terminalTab()?.workerId ?? '',
+      baseDir: () => terminalTab()?.workingDir ?? '',
+      workingDir: () => terminalTab()?.workingDir ?? '',
+      homeDir: () => workerInfoStore.getHomeDir(terminalTab()?.workerId ?? ''),
+      activateSource: () => {
+        activateTile(tileId)
+        const current = terminalTab()
+        if (current)
+          selection.setActive(current)
+      },
+    })
     const fileTab = () => {
       const t = tab()
       return t?.type === TabType.FILE
@@ -1112,6 +1167,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
               if (tab)
                 mruEditorDeps.activate(tab)
             }
+            const agentLocalLinkContext = buildLocalLinkContext({
+              workerId: () => agent()?.workerId ?? '',
+              baseDir: () => agent()?.workingDir ?? '',
+              workingDir: () => agent()?.workingDir ?? '',
+              homeDir: () => workerInfoStore.getHomeDir(agent()?.workerId ?? ''),
+              activateSource: () => {
+                activateTile(tileId)
+                const current = agent()
+                if (current)
+                  selection.setActive(current)
+              },
+            })
             let releaseViewportReader: (() => void) | undefined
             onCleanup(() => {
               releaseViewportReader?.()
@@ -1125,59 +1192,61 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   when={agent()}
                   fallback={<div class={styles.placeholder}>Agent not found.</div>}
                 >
-                  <ChatView
-                    agentId={agentId}
-                    isChildTranscript={isSubagentTab(agent())}
-                    messages={chatStore.getMessages(agentId)}
-                    messageVersion={chatStore.getMessageVersion(agentId)}
-                    tabActive={agentTab()?.id === agentId}
-                    {...optionalProp('workingDir', agent()?.workingDir)}
-                    homeDir={workerInfoStore.getHomeDir(agent()?.workerId ?? '')}
-                    pagination={{
-                      hasOlderMessages: chatStore.hasOlderMessages(agentId),
-                      fetchingOlder: chatStore.isFetchingOlder(agentId),
-                      onLoadOlderMessages: purpose => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId, purpose),
-                      onTrimOldMessages: minKeep => chatStore.trimOldestToViewport(agentId, minKeep),
-                      hasNewerMessages: chatStore.hasNewerMessages(agentId),
-                      fetchingNewer: chatStore.isFetchingNewer(agentId),
-                      onSetLandingRefillPages: pages => chatStore.landingRefillPages.set(agentId, pages),
-                      atWindowCeiling: chatStore.atWindowCeiling(agentId),
-                      onLoadNewerMessages: purpose => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId, purpose),
-                      onJumpToLatest: signal => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId, signal),
-                      onJumpToOldest: signal => chatStore.jumpToOldestMessages(agent()?.workerId ?? '', agentId, signal),
-                      onJumpToSeq: (seq, signal) => chatStore.jumpToMessagesAroundSeq(agent()?.workerId ?? '', agentId, seq, signal),
-                    }}
-                    landingRefillPages={chatStore.landingRefillPages.get(agentId)}
-                    rail={railProps()}
-                    {...optionalProp('savedViewportScroll', chatStore.viewportScroll.get(agentId))}
-                    onClearSavedViewportScroll={() => chatStore.viewportScroll.clear(agentId)}
-                    // Unmount save (tile split/merge, workspace switch): keep the
-                    // reading position for the remount's restoreOnMount. The store gates
-                    // the write on the agent's chat window still being live, so an
-                    // agent-close unmount (which reaps the store first) can't leak an
-                    // entry back for a dead agent, while a workspace switch-away (which
-                    // only scopes the tab out) still saves. See saveViewportScrollForRemount.
-                    onSaveViewportScroll={state => chatStore.saveViewportScrollForRemount(agentId, state)}
-                    onViewportChange={(height, followRequested) => chatStore.reportViewport(agentId, height, followRequested)}
-                    onScrollApiReady={(api) => {
-                      releaseViewportReader?.()
-                      releaseViewportReader = chatStore.registerViewportReader(agentId, api.readHistoryIntent)
-                      agentScrollStates.set(agentId, api.getScrollState)
-                      agentScrollToBottoms.set(agentId, api.forceScrollToBottom)
-                      chatHandlers.set(agentId, { pageScroll: api.pageScroll })
-                      if (agentTab()?.id === agentId) {
-                        getScrollStateRef.set(api.getScrollState)
-                        forceScrollToBottomRef.set(api.forceScrollToBottom)
-                      }
-                    }}
-                    {...optionalProp('messageContext', messages())}
-                    // Archived workspaces keep the transcript read-only: the
-                    // quote/reply hooks stay omitted rather than undefined.
-                    {...(isActiveWorkspaceArchived()
-                      ? {}
-                      : { onQuote: quoteIntoComposer, onReply: quoteIntoComposer })}
-                    agentLifecycle={agentLifecycle}
-                  />
+                  <MarkdownLocalLinkProvider value={agentLocalLinkContext}>
+                    <ChatView
+                      agentId={agentId}
+                      isChildTranscript={isSubagentTab(agent())}
+                      messages={chatStore.getMessages(agentId)}
+                      messageVersion={chatStore.getMessageVersion(agentId)}
+                      tabActive={agentTab()?.id === agentId}
+                      {...optionalProp('workingDir', agent()?.workingDir)}
+                      homeDir={workerInfoStore.getHomeDir(agent()?.workerId ?? '')}
+                      pagination={{
+                        hasOlderMessages: chatStore.hasOlderMessages(agentId),
+                        fetchingOlder: chatStore.isFetchingOlder(agentId),
+                        onLoadOlderMessages: purpose => chatStore.loadOlderMessages(agent()?.workerId ?? '', agentId, purpose),
+                        onTrimOldMessages: minKeep => chatStore.trimOldestToViewport(agentId, minKeep),
+                        hasNewerMessages: chatStore.hasNewerMessages(agentId),
+                        fetchingNewer: chatStore.isFetchingNewer(agentId),
+                        onSetLandingRefillPages: pages => chatStore.landingRefillPages.set(agentId, pages),
+                        atWindowCeiling: chatStore.atWindowCeiling(agentId),
+                        onLoadNewerMessages: purpose => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId, purpose),
+                        onJumpToLatest: signal => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId, signal),
+                        onJumpToOldest: signal => chatStore.jumpToOldestMessages(agent()?.workerId ?? '', agentId, signal),
+                        onJumpToSeq: (seq, signal) => chatStore.jumpToMessagesAroundSeq(agent()?.workerId ?? '', agentId, seq, signal),
+                      }}
+                      landingRefillPages={chatStore.landingRefillPages.get(agentId)}
+                      rail={railProps()}
+                      {...optionalProp('savedViewportScroll', chatStore.viewportScroll.get(agentId))}
+                      onClearSavedViewportScroll={() => chatStore.viewportScroll.clear(agentId)}
+                      // Unmount save (tile split/merge, workspace switch): keep the
+                      // reading position for the remount's restoreOnMount. The store gates
+                      // the write on the agent's chat window still being live, so an
+                      // agent-close unmount (which reaps the store first) can't leak an
+                      // entry back for a dead agent, while a workspace switch-away (which
+                      // only scopes the tab out) still saves. See saveViewportScrollForRemount.
+                      onSaveViewportScroll={state => chatStore.saveViewportScrollForRemount(agentId, state)}
+                      onViewportChange={(height, followRequested) => chatStore.reportViewport(agentId, height, followRequested)}
+                      onScrollApiReady={(api) => {
+                        releaseViewportReader?.()
+                        releaseViewportReader = chatStore.registerViewportReader(agentId, api.readHistoryIntent)
+                        agentScrollStates.set(agentId, api.getScrollState)
+                        agentScrollToBottoms.set(agentId, api.forceScrollToBottom)
+                        chatHandlers.set(agentId, { pageScroll: api.pageScroll })
+                        if (agentTab()?.id === agentId) {
+                          getScrollStateRef.set(api.getScrollState)
+                          forceScrollToBottomRef.set(api.forceScrollToBottom)
+                        }
+                      }}
+                      {...optionalProp('messageContext', messages())}
+                      // Archived workspaces keep the transcript read-only: the
+                      // quote/reply hooks stay omitted rather than undefined.
+                      {...(isActiveWorkspaceArchived()
+                        ? {}
+                        : { onQuote: quoteIntoComposer, onReply: quoteIntoComposer })}
+                      agentLifecycle={agentLifecycle}
+                    />
+                  </MarkdownLocalLinkProvider>
                 </Show>
               </div>
             )
@@ -1185,12 +1254,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
         </For>
 
         <Show when={hasTerminals()}>
-          <TileTerminalPane
-            terminals={tileTerminals()}
-            activeTerminalId={terminalTab()?.id ?? null}
-            visible={!!terminalTab()}
-            tileFocused={layoutStore.focusedTileId() === tileId}
-          />
+          <MarkdownLocalLinkProvider value={terminalLocalLinkContext}>
+            <TileTerminalPane
+              terminals={tileTerminals()}
+              activeTerminalId={terminalTab()?.id ?? null}
+              visible={!!terminalTab()}
+              tileFocused={layoutStore.focusedTileId() === tileId}
+            />
+          </MarkdownLocalLinkProvider>
         </Show>
 
         <For each={tileFileTabIds()}>
@@ -1218,6 +1289,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // fallback `getCurrentTabContext` already writes for FILE tabs.
             const fileRootPath = () => ft()?.workingDir || parentDirectory(filePath())
             const fileHomeDir = () => workerInfoStore.getHomeDir(ft()?.workerId ?? '')
+            const fileLocalLinkContext = buildLocalLinkContext({
+              workerId: () => ft()?.workerId ?? '',
+              baseDir: flavor => parentDirectory(filePath(), flavor),
+              workingDir: fileRootPath,
+              homeDir: fileHomeDir,
+              activateSource: () => {
+                activateTile(tileId)
+                const current = ft()
+                if (current)
+                  selection.setActive(current)
+              },
+            })
             // Single lookup shared by `gitFileStatus` and
             // `hasStagedAndUnstaged` so both props read from one memo
             // cell instead of walking the file-status map on every
@@ -1232,36 +1315,38 @@ export function createTileRenderer(opts: TileRendererOpts) {
             })
             return (
               <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: fileTab()?.id !== fileTabId }}>
-                <FileViewer
-                  workerId={ft()?.workerId ?? ''}
-                  filePath={filePath()}
-                  rootPath={fileRootPath()}
-                  homeDir={fileHomeDir()}
-                  {...optionalProp('displayMode', ft()?.displayMode)}
-                  onDisplayModeChange={mode => metadata.patch(fileTabId, { displayMode: mode })}
-                  {...(isActiveWorkspaceArchived()
-                    ? {}
-                    : {
-                        onQuote: (text: string, startLine?: number, endLine?: number) => {
-                          if (startLine != null && endLine != null) {
-                            insertIntoMruAgentEditor(mruEditorDeps, formatFileQuote(fileRelPath(), startLine, endLine, text))
-                          }
-                        },
-                      })}
-                  {...(isActiveWorkspaceArchived()
-                    ? {}
-                    : {
-                        onMention: () => {
-                          insertIntoMruAgentEditor(mruEditorDeps, formatFileMention(fileRelPath()), 'inline')
-                        },
-                      })}
-                  {...optionalProp('fileViewMode', ft()?.fileViewMode)}
-                  {...optionalProp('fileDiffBase', ft()?.fileDiffBase)}
-                  {...optionalProp('gitFileStatus', gitEntry())}
-                  hasStagedAndUnstaged={hasStagedAndUnstaged()}
-                  onFileViewModeChange={mode => metadata.patch(fileTabId, { fileViewMode: mode })}
-                  onFileDiffBaseChange={base => metadata.patch(fileTabId, { fileDiffBase: base })}
-                />
+                <MarkdownLocalLinkProvider value={fileLocalLinkContext}>
+                  <FileViewer
+                    workerId={ft()?.workerId ?? ''}
+                    filePath={filePath()}
+                    rootPath={fileRootPath()}
+                    homeDir={fileHomeDir()}
+                    {...optionalProp('displayMode', ft()?.displayMode)}
+                    onDisplayModeChange={mode => metadata.patch(fileTabId, { displayMode: mode })}
+                    {...(isActiveWorkspaceArchived()
+                      ? {}
+                      : {
+                          onQuote: (text: string, startLine?: number, endLine?: number) => {
+                            if (startLine != null && endLine != null) {
+                              insertIntoMruAgentEditor(mruEditorDeps, formatFileQuote(fileRelPath(), startLine, endLine, text))
+                            }
+                          },
+                        })}
+                    {...(isActiveWorkspaceArchived()
+                      ? {}
+                      : {
+                          onMention: () => {
+                            insertIntoMruAgentEditor(mruEditorDeps, formatFileMention(fileRelPath()), 'inline')
+                          },
+                        })}
+                    {...optionalProp('fileViewMode', ft()?.fileViewMode)}
+                    {...optionalProp('fileDiffBase', ft()?.fileDiffBase)}
+                    {...optionalProp('gitFileStatus', gitEntry())}
+                    hasStagedAndUnstaged={hasStagedAndUnstaged()}
+                    onFileViewModeChange={mode => metadata.patch(fileTabId, { fileViewMode: mode })}
+                    onFileDiffBaseChange={base => metadata.patch(fileTabId, { fileDiffBase: base })}
+                  />
+                </MarkdownLocalLinkProvider>
               </div>
             )
           }}
@@ -1430,6 +1515,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
         : undefined
     }
     const focusedAgentTab = () => view.getAgentTab(agentId())
+    const editorLocalLinkContext = buildLocalLinkContext({
+      workerId: () => focusedAgentTab()?.workerId ?? '',
+      baseDir: () => focusedAgentTab()?.workingDir ?? '',
+      workingDir: () => focusedAgentTab()?.workingDir ?? '',
+      homeDir: () => workerInfoStore.getHomeDir(focusedAgentTab()?.workerId ?? ''),
+    })
     // The panel's optional props take no explicit undefined, so each
     // maybe-undefined value omits its key instead.
     const editorOptionalProps = () => {
@@ -1455,43 +1546,45 @@ export function createTileRenderer(opts: TileRendererOpts) {
       }
     }
     return (
-      <AgentEditorPanel
-        suppressAutoFocus={isTabEditing}
-        agentId={agentId()}
-        actionStateStore={opts.agentComposerActionStates}
-        {...editorOptionalProps()}
-        {...optionalProp('messageContext', messageContext(focusedAgentTab()?.workerId ?? '', agentId()))}
-        queueClientId={opts.clientId()}
-        repoGitStore={repoGitStore}
-        onSendMessage={queueOps.sendMessage}
-        onRetryPendingSend={queueOps.retryPendingMessage}
-        onSendControlFeedback={queueOps.sendControlFeedback}
-        onBeginQueueEdit={queueOps.beginQueueEdit}
-        onUpdateQueueItem={queueOps.updateQueueItem}
-        onCancelQueueEdit={queueOps.cancelQueueEdit}
-        onDeleteQueueItem={queueOps.deleteQueueItem}
-        onMoveQueueItem={queueOps.moveQueueItem}
-        onRetryQueueItem={queueOps.retryQueueItem}
-        onSteerQueueItem={queueOps.steerQueueItem}
-        onPreemptQueueItem={queueOps.preemptQueueItem}
-        onSetQueuePaused={queueOps.setQueuePaused}
-        onRecoverInputProcess={recovery => requestInputRecovery(agentId(), recovery)}
-        addFilesRef={(fn) => { addFilesRef.set(fn) }}
-        addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
-        triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
-        focusRef={(fn) => { focusEditorRef.set(fn) }}
-        onControlResponse={agentOps.handleControlResponse}
-        onQuestionsOpenChange={open => controlStore.setQuestionsOpen(agentId(), open)}
-        onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
-        onInterrupt={() => agentOps.handleInterrupt(agentId())}
-        onRetryTurn={(turnId, model) => agentOps.handleRetryTurn(agentId(), turnId, model)}
-        onDismissPromptSuggestion={() => chatStore.clearPromptSuggestion(agentId())}
-        canInterrupt={agentTabSupportsInterrupt(focusedAgentTab())}
-        settingsLoading={settingsLoading.loading()}
-        branchWorkerId={branchAction().workerId ?? ''}
-        {...optionalProp('branchDisabledReason', branchDisabledReason())}
-        containerHeight={props.containerHeight}
-      />
+      <MarkdownLocalLinkProvider value={editorLocalLinkContext}>
+        <AgentEditorPanel
+          suppressAutoFocus={isTabEditing}
+          agentId={agentId()}
+          actionStateStore={opts.agentComposerActionStates}
+          {...editorOptionalProps()}
+          {...optionalProp('messageContext', messageContext(focusedAgentTab()?.workerId ?? '', agentId()))}
+          queueClientId={opts.clientId()}
+          repoGitStore={repoGitStore}
+          onSendMessage={queueOps.sendMessage}
+          onRetryPendingSend={queueOps.retryPendingMessage}
+          onSendControlFeedback={queueOps.sendControlFeedback}
+          onBeginQueueEdit={queueOps.beginQueueEdit}
+          onUpdateQueueItem={queueOps.updateQueueItem}
+          onCancelQueueEdit={queueOps.cancelQueueEdit}
+          onDeleteQueueItem={queueOps.deleteQueueItem}
+          onMoveQueueItem={queueOps.moveQueueItem}
+          onRetryQueueItem={queueOps.retryQueueItem}
+          onSteerQueueItem={queueOps.steerQueueItem}
+          onPreemptQueueItem={queueOps.preemptQueueItem}
+          onSetQueuePaused={queueOps.setQueuePaused}
+          onRecoverInputProcess={recovery => requestInputRecovery(agentId(), recovery)}
+          addFilesRef={(fn) => { addFilesRef.set(fn) }}
+          addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
+          triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
+          focusRef={(fn) => { focusEditorRef.set(fn) }}
+          onControlResponse={agentOps.handleControlResponse}
+          onQuestionsOpenChange={open => controlStore.setQuestionsOpen(agentId(), open)}
+          onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
+          onInterrupt={() => agentOps.handleInterrupt(agentId())}
+          onRetryTurn={(turnId, model) => agentOps.handleRetryTurn(agentId(), turnId, model)}
+          onDismissPromptSuggestion={() => chatStore.clearPromptSuggestion(agentId())}
+          canInterrupt={agentTabSupportsInterrupt(focusedAgentTab())}
+          settingsLoading={settingsLoading.loading()}
+          branchWorkerId={branchAction().workerId ?? ''}
+          {...optionalProp('branchDisabledReason', branchDisabledReason())}
+          containerHeight={props.containerHeight}
+        />
+      </MarkdownLocalLinkProvider>
     )
   }
 
