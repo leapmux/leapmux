@@ -55,7 +55,7 @@ require (
 	github.com/bep/golocales v0.3.0 // indirect
 	github.com/bep/goportabletext v0.2.0 // indirect
 	github.com/bep/helpers v0.12.0 // indirect
-	github.com/bep/imagemeta v1.1.1 // indirect
+	github.com/bep/imagemeta v1.1.2 // indirect
 	github.com/bep/lazycache v0.9.0 // indirect
 	github.com/bep/logg v0.4.0 // indirect
 	github.com/bep/mclib v1.20401.20400 // indirect
@@ -93,9 +93,10 @@ require (
 	github.com/gohugoio/go-radix v1.2.0 // indirect
 	github.com/gohugoio/hashstructure v1.1.0 // indirect
 	github.com/gohugoio/httpcache v0.9.0 // indirect
-	github.com/gohugoio/hugo v0.170.0 // indirect
+	github.com/gohugoio/hugo v0.170.1 // indirect
 	github.com/gohugoio/hugo-goldmark-extensions/extras v0.7.0 // indirect
 	github.com/gohugoio/hugo-goldmark-extensions/passthrough v0.6.0 // indirect
+	github.com/gohugoio/qr v0.1.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
@@ -184,7 +185,6 @@ require (
 	google.golang.org/grpc v1.85.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	howett.net/plist v1.0.1 // indirect
-	rsc.io/qr v0.2.0 // indirect
 	software.sslmate.com/src/go-pkcs12 v0.7.4 // indirect
 )
 
