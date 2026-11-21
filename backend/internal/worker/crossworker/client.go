@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/tunnel"
@@ -42,7 +43,7 @@ type DelegationProvider interface {
 // All hub calls (GetWorkerHandshakeParams, OpenChannel, /ws/channel)
 // authenticate with a delegation token obtained via DelegationProvider.
 type Client struct {
-	Pins       *PinStore
+	Pins       *tofupins.Store
 	Delegation DelegationProvider
 	endpoint   *hubtransport.Endpoint
 	// The two lanes an open needs, built ONCE. Every other consumer of the lane
@@ -77,7 +78,7 @@ type channelOpen struct {
 }
 
 // New returns a ready-to-use Client.
-func New(lifetimeCtx context.Context, endpoint *hubtransport.Endpoint, pins *PinStore, dp DelegationProvider) *Client {
+func New(lifetimeCtx context.Context, endpoint *hubtransport.Endpoint, pins *tofupins.Store, dp DelegationProvider) *Client {
 	if lifetimeCtx == nil {
 		panic("crossworker.New: lifetime context is required")
 	}
@@ -231,10 +232,14 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, user
 	if err != nil {
 		return nil, fmt.Errorf("delegation token: %w", err)
 	}
+	var pinStore tunnel.KeyPinStore
+	if c.Pins != nil {
+		pinStore = c.Pins
+	}
 	openOpts := &tunnel.OpenChannelOptions{
 		LifetimeContext: c.ctx,
 		BearerToken:     bearer,
-		KeyPin:          c.Pins,
+		KeyPin:          pinStore,
 		// Both clients come from the endpoint. Left nil, tunnel.OpenChannel
 		// falls back to http.DefaultClient, which knows nothing about a
 		// `unix:`/`npipe:` hub -- so a cross-worker call on a socket hub could

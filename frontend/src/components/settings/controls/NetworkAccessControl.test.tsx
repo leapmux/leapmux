@@ -51,11 +51,12 @@ function listenStatus(overrides: Record<string, unknown> = {}) {
         ],
       },
     ],
-    defaultAddress: '127.0.0.1:4327',
+    baseTcpAddresses: ['127.0.0.1:4327'],
     configured: [] as string[],
     bound: [
       { address: '127.0.0.1:4327', source: 'listen', error: '' },
     ],
+    localIpcAddresses: [] as string[],
     ...overrides,
   }
 }
@@ -138,6 +139,8 @@ describe('NetworkAccessControl', () => {
     render(() => <NetworkAccessControl binding={fakeBinding(undefined)} />)
 
     expect(await screen.findByText('The hub did not report its listeners.')).toBeInTheDocument()
+    expect(screen.queryByText('No TCP listeners')).toBeNull()
+    expect(screen.queryByText('Local access')).toBeNull()
   })
 
   it('seeds its rows from the stored addresses', async () => {
@@ -171,6 +174,90 @@ describe('NetworkAccessControl', () => {
     expect(screen.queryAllByTestId('network-address-row')).toHaveLength(0)
   })
 
+  // The seed is the FIRST TCP base's port: it is the primary address, and
+  // publishing the hub on the port it already answers on is the common case.
+  it('seeds the port from the first TCP base', async () => {
+    mockGetListenStatus.mockResolvedValue(listenStatus({
+      baseTcpAddresses: ['127.0.0.1:9000', '127.0.0.1:9001'],
+      bound: [
+        { address: '127.0.0.1:9000', source: 'listen', error: '' },
+        { address: '127.0.0.1:9001', source: 'listen', error: '' },
+      ],
+    }))
+    render(() => <NetworkAccessControl binding={fakeBinding(undefined)} />)
+    await screen.findByText('+ Add address')
+
+    fireEvent.click(screen.getByText('+ Add address'))
+    expect(screen.getByLabelText('Port')).toHaveValue('9000')
+  })
+
+  // A hub with no TCP base still seeds something a client can connect to.
+  it('seeds the default port when the report holds no TCP base', async () => {
+    mockGetListenStatus.mockResolvedValue(listenStatus({
+      baseTcpAddresses: [],
+      bound: [],
+      localIpcAddresses: ['npipe:leapmux-hub'],
+    }))
+    render(() => <NetworkAccessControl binding={fakeBinding(undefined)} />)
+    await screen.findByText('+ Add address')
+
+    fireEvent.click(screen.getByText('+ Add address'))
+    expect(screen.getByLabelText('Port')).toHaveValue('4327')
+  })
+
+  // The local endpoints are a read-only inventory of startup: plain
+  // selectable text an operator copies for a local CLI, never editable rows.
+  it('lists the local endpoints in a read-only Local access list', async () => {
+    mockGetListenStatus.mockResolvedValue(listenStatus({
+      localIpcAddresses: ['unix:/path/to/leapmux.sock', 'npipe:leapmux-hub'],
+    }))
+    render(() => <NetworkAccessControl binding={fakeBinding(undefined)} />)
+
+    expect(await screen.findByText('Local access')).toBeInTheDocument()
+    expect(screen.getByText('unix:/path/to/leapmux.sock')).toBeInTheDocument()
+    expect(screen.getByText('npipe:leapmux-hub')).toBeInTheDocument()
+    expect(screen.queryAllByTestId('network-address-row')).toHaveLength(0)
+  })
+
+  it('shows no Local access list when the report carries no local endpoints', async () => {
+    render(() => <NetworkAccessControl binding={fakeBinding(undefined)} />)
+
+    expect(await screen.findByText('TCP listeners')).toBeInTheDocument()
+    expect(screen.queryByText('Local access')).toBeNull()
+  })
+
+  // A local-only hub answers somewhere -- on its local sockets -- so the TCP
+  // list says "No TCP listeners" and the local inventory is what shows where.
+  it('says there are no TCP listeners only for a successful empty TCP report', async () => {
+    mockGetListenStatus.mockResolvedValue(listenStatus({
+      baseTcpAddresses: [],
+      bound: [],
+      localIpcAddresses: ['npipe:leapmux-hub'],
+    }))
+    render(() => <NetworkAccessControl binding={fakeBinding(undefined)} />)
+
+    expect(await screen.findByText('No TCP listeners')).toBeInTheDocument()
+    expect(screen.getByText('npipe:leapmux-hub')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeInTheDocument()
+  })
+
+  // An empty report and a failed read must not be rendered before the answer
+  // arrives: "No TCP listeners" while loading would read as a hub that answers
+  // nowhere.
+  it('shows neither an empty report nor local endpoints while the read is in flight', async () => {
+    let finishRead: (status: ReturnType<typeof listenStatus>) => void = () => {}
+    mockGetListenStatus.mockReturnValue(new Promise((resolve) => {
+      finishRead = resolve
+    }))
+    render(() => <NetworkAccessControl binding={fakeBinding(undefined)} />)
+
+    expect(screen.queryByText('No TCP listeners')).toBeNull()
+    expect(screen.queryByText('Local access')).toBeNull()
+
+    finishRead(listenStatus())
+    expect(await screen.findByText('127.0.0.1:4327')).toBeInTheDocument()
+  })
+
   // The port is what a client connects to, so a value no client could use must
   // not reach the hub.
   it('refuses to apply a port outside 1-65535', async () => {
@@ -193,6 +280,17 @@ describe('NetworkAccessControl', () => {
       target: { value: '8080' },
     })
     expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
+  })
+
+  it('refuses duplicate editable addresses after canonicalization', async () => {
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['127.0.0.1:4327', '127.0.0.1:04327'],
+      })}
+      />
+    ))
+
+    expect(await screen.findByRole('button', { name: 'Apply' })).toBeDisabled()
   })
 
   // Publishing an address without a password would put the whole app behind
@@ -345,7 +443,7 @@ describe('NetworkAccessControl', () => {
     expect(screen.queryByText(/Set the password below first/)).toBeNull()
   })
 
-  // Without the note, "Serving now" shows 127.0.0.1:4327 before Apply and only
+  // Without the note, "TCP listeners" shows 127.0.0.1:4327 before Apply and only
   // *:4327 after, which reads as an address that disappeared.
   it('states which address a wildcard will absorb', async () => {
     render(() => (
@@ -358,13 +456,35 @@ describe('NetworkAccessControl', () => {
     expect(await screen.findByText('127.0.0.1:4327 merges into *:4327.')).toBeInTheDocument()
   })
 
+  // The merge input is the WHOLE ordered base list, so a fold is stated for a
+  // secondary -listen address and the first base that stands alone says
+  // nothing.
+  it('states a fold for a secondary TCP base, not only the first', async () => {
+    mockGetListenStatus.mockResolvedValue(listenStatus({
+      baseTcpAddresses: ['127.0.0.1:4327', '127.0.0.1:9000'],
+      bound: [
+        { address: '127.0.0.1:4327', source: 'listen', error: '' },
+        { address: '127.0.0.1:9000', source: 'listen', error: '' },
+      ],
+    }))
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['*:9000'],
+      })}
+      />
+    ))
+
+    expect(await screen.findByText('127.0.0.1:9000 merges into *:9000.')).toBeInTheDocument()
+    expect(screen.queryByText(/127\.0\.0\.1:4327 merges into/)).toBeNull()
+  })
+
   // The other direction: -listen is an ordinary entry in the merge, so a
   // wildcard THERE absorbs the row. Matching a row's host against `*` reported
   // only the first direction, and this apply showed no note at all before it
   // produced one address where the operator had asked for two.
   it('states when the -listen address absorbs a row', async () => {
     mockGetListenStatus.mockResolvedValue(listenStatus({
-      defaultAddress: '*:4327',
+      baseTcpAddresses: ['*:4327'],
       bound: [
         { address: '*:4327', source: 'listen', error: '' },
       ],

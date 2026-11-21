@@ -1,12 +1,14 @@
-// Package sessioncookie owns the two HTTP cookie names that authenticate a
-// LeapMux Hub session.
+// Package sessioncookie exposes the generated HTTP cookie names that
+// authenticate a LeapMux Hub session.
 package sessioncookie
+
+import "github.com/leapmux/leapmux/generated/contracts"
 
 const (
 	// Name is the session cookie used without TLS.
-	Name = "leapmux-session"
+	Name = contracts.SessionCookieName
 	// SecureName is the __Host-prefixed session cookie used with TLS.
-	SecureName = "__Host-leapmux-session"
+	SecureName = contracts.SecureSessionCookieName
 )
 
 // IsName reports whether name is one of the two Hub session cookie spellings.

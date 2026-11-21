@@ -1,29 +1,91 @@
 import type { Component } from 'solid-js'
-import type { TunnelInfo } from '~/api/platformBridge'
-import { createMemo, createSignal, Show } from 'solid-js'
+import type { TunnelConfig, TunnelInfo, TunnelKeyMismatch } from '~/api/platformBridge'
+import type { TunnelKeyApproval } from '~/api/workerRpc'
+import type { WorkerTrustScope } from '~/context/AuthContext'
+import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
+import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
+import { TunnelKeyApprovalExpiredError, TunnelKeyPinMissingError } from '~/api/workerRpc'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Dialog } from '~/components/common/Dialog'
 import { Spinner } from '~/components/common/Spinner'
+import { useAuth } from '~/context/AuthContext'
 import { useTunnel } from '~/context/TunnelContext'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
+import { formatErrorMessage } from '~/lib/errors'
 import { isLoopbackAddress, isValidPort, normalizeBindAddr } from '~/lib/ipAddress'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './AddTunnelDialog.css'
+import { trustWorkerOnFirstContact, verifyWorkerKey, WorkerKeyPinMissingError, WorkerKeyPinPresentError } from './verifyWorkerKey'
+
+export interface AddTunnelTarget {
+  worker: Worker
+  scope: WorkerTrustScope
+  replacement?: { config: TunnelConfig } & (
+    | { approval: TunnelKeyApproval, firstContactRequired?: never }
+    | { approval?: never, firstContactRequired: true }
+  )
+}
 
 interface AddTunnelDialogProps {
-  workerId: string
+  target: AddTunnelTarget
   onClose: () => void
   onCreated: (tunnel: TunnelInfo) => void
 }
 
+type FormTrust
+  = | { kind: 'ordinary' }
+    | { kind: 'needsReview' }
+    | { kind: 'needsFirstContact' }
+    | { kind: 'approved', approval: TunnelKeyApproval }
+
 export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
+  const auth = useAuth()
   const tunnelStore = useTunnel()
-  const [tunnelType, setTunnelType] = createSignal<'port_forward' | 'socks5'>('port_forward')
-  const [targetAddr, setTargetAddr] = createSignal('127.0.0.1')
-  const [targetPort, setTargetPort] = createSignal('')
-  const [bindAddr, setBindAddr] = createSignal('127.0.0.1')
-  const [bindPort, setBindPort] = createSignal('')
-  const { submitting, error, run } = useDialogSubmit()
+  const target = untrack(() => props.target)
+  const scope = target.scope
+  const workerId = target.worker.id
+  const original = target.replacement?.config
+  const [tunnelType, setTunnelType] = createSignal<TunnelConfig['type']>(original?.type ?? 'port_forward')
+  const [targetAddr, setTargetAddr] = createSignal(original?.targetAddr ?? '127.0.0.1')
+  const [targetPort, setTargetPort] = createSignal(original?.targetPort
+    ? String(original.targetPort)
+    : '')
+  const [bindAddr, setBindAddr] = createSignal(original?.bindAddr ?? '127.0.0.1')
+  const [bindPort, setBindPort] = createSignal(original
+    ? String(original.bindPort)
+    : '')
+  const [trust, setTrust] = createSignal<FormTrust>(target.replacement?.firstContactRequired
+    ? { kind: 'needsFirstContact' }
+    : target.replacement?.approval
+      ? { kind: 'approved', approval: target.replacement.approval }
+      : { kind: 'ordinary' })
+  const [submissionError, setSubmissionError] = createSignal<string | null>(null)
+  const [mismatch, setMismatch] = createSignal<TunnelKeyMismatch | null>(null)
+  const [verifying, setVerifying] = createSignal(false)
+  let disposed = false
+  const reviewLifetime = new AbortController()
+
+  const identityIsLive = () => !disposed && auth.workerTrustScope() === scope && !scope.signal.aborted
+  const { submitting, formHandler } = useDialogSubmit({
+    onError: (err) => {
+      if (!identityIsLive())
+        return
+      if (err instanceof TunnelKeyPinMissingError)
+        setTrust({ kind: 'needsFirstContact' })
+      else if (err instanceof TunnelKeyApprovalExpiredError)
+        setTrust({ kind: 'needsReview' })
+      setSubmissionError(formatErrorMessage(err, 'Could not create the tunnel. Adjust the fields and try again.'))
+    },
+  })
+
+  onCleanup(() => {
+    disposed = true
+    reviewLifetime.abort()
+  })
+  createEffect(() => {
+    if (!identityIsLive())
+      props.onClose()
+  })
 
   const targetPortError = createMemo(() => {
     const v = targetPort().trim()
@@ -68,43 +130,83 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
   })
 
   const isDisabled = createMemo(() => {
-    if (submitting.loading())
+    if (submitting.loading() || verifying() || trust().kind === 'needsReview' || trust().kind === 'needsFirstContact')
       return true
     if (bindAddrError() || bindPortError())
       return true
-    if (tunnelType() === 'port_forward') {
-      if (!targetPort().trim() || targetPortError() || targetAddrError())
-        return true
-    }
-    return false
+    return tunnelType() === 'port_forward' && (!targetPort().trim() || Boolean(targetPortError() || targetAddrError()))
   })
 
-  const handleSubmit = (e: Event) => {
-    e.preventDefault()
-    void run(async () => {
-      const effectiveBindPort = bindPort().trim()
-        ? Number(bindPort())
-        : tunnelType() === 'socks5'
-          ? 1080
-          : Number(targetPort())
-      const tunnel = await tunnelStore!.add({
-        workerId: props.workerId,
-        type: tunnelType(),
-        targetAddr: tunnelType() === 'port_forward'
-          ? targetAddr().trim()
-          : '',
-        targetPort: tunnelType() === 'port_forward'
-          ? Number(targetPort())
-          : 0,
-        // Normalized, not raw: the validator strips a `[::1]` bracket pair, so the
-        // submitted value must too or the sidecar's net.ParseIP rejects what the
-        // dialog just called valid.
-        bindAddr: normalizeBindAddr(bindAddr()),
-        bindPort: effectiveBindPort,
-      })
-      props.onCreated(tunnel)
-    })
+  const handleVerify = async () => {
+    const currentTrust = trust()
+    if (!identityIsLive() || verifying()
+      || (currentTrust.kind !== 'needsReview' && currentTrust.kind !== 'needsFirstContact')) {
+      return
+    }
+    setVerifying(true)
+    setSubmissionError(null)
+    try {
+      const approval = currentTrust.kind === 'needsFirstContact'
+        ? await trustWorkerOnFirstContact(workerId, scope, reviewLifetime.signal)
+        : await verifyWorkerKey(workerId, scope, reviewLifetime.signal)
+      if (!identityIsLive())
+        return
+      setTrust({ kind: 'approved', approval })
+      setMismatch(null)
+    }
+    catch (err) {
+      if (identityIsLive()) {
+        if (err instanceof WorkerKeyPinMissingError)
+          setTrust({ kind: 'needsFirstContact' })
+        else if (err instanceof WorkerKeyPinPresentError)
+          setTrust({ kind: 'needsReview' })
+        setSubmissionError(formatErrorMessage(err, 'Could not verify the Worker key.'))
+      }
+    }
+    finally {
+      if (identityIsLive())
+        setVerifying(false)
+    }
   }
+
+  const handleSubmit = formHandler(isDisabled, async () => {
+    if (!identityIsLive() || !tunnelStore)
+      return
+    const currentTrust = trust()
+    if (currentTrust.kind === 'needsReview' || currentTrust.kind === 'needsFirstContact')
+      return
+
+    setSubmissionError(null)
+    const portForward = tunnelType() === 'port_forward'
+    const effectiveBindPort = bindPort().trim()
+      ? Number(bindPort())
+      : portForward
+        ? Number(targetPort())
+        : 1080
+    const result = await tunnelStore.add({
+      workerId,
+      type: tunnelType(),
+      targetAddr: portForward
+        ? targetAddr().trim()
+        : '',
+      targetPort: portForward
+        ? Number(targetPort())
+        : 0,
+      // Submit the same address the validator sees after stripping brackets.
+      bindAddr: normalizeBindAddr(bindAddr()),
+      bindPort: effectiveBindPort,
+    }, scope, currentTrust.kind === 'approved'
+      ? currentTrust.approval
+      : undefined)
+    if (!identityIsLive())
+      return
+    if (result.kind === 'workerKeyMismatch') {
+      setMismatch(result.keyMismatch)
+      setTrust({ kind: 'needsReview' })
+      return
+    }
+    props.onCreated(result.info)
+  })
 
   return (
     <Dialog title="Add tunnel" busy={submitting.loading()} data-testid="add-tunnel-dialog" onClose={() => props.onClose()}>
@@ -196,8 +298,64 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
           </div>
         </div>
 
-        <Show when={error()}>
-          <div class={errorText}>{error()}</div>
+        <Show when={mismatch()}>
+          {m => (
+            <div class={styles.keyMismatch} role="alert" data-testid="tunnel-key-mismatch">
+              <p>
+                The Hub reported a different Worker key.
+              </p>
+              <p>
+                <strong>Expected:</strong>
+                {' '}
+                <code data-testid="tunnel-expected-fingerprint">{m().expectedFingerprint}</code>
+              </p>
+              <p>
+                <strong>Presented:</strong>
+                {' '}
+                <code data-testid="tunnel-presented-fingerprint">{m().presentedFingerprint}</code>
+              </p>
+              <p>
+                Compare the presented fingerprint with the one the Worker logs when it starts.
+              </p>
+            </div>
+          )}
+        </Show>
+
+        <Show when={submissionError()}>
+          <div class={errorText} role="alert" data-testid="tunnel-create-error">{submissionError()}</div>
+        </Show>
+
+        <Show when={trust().kind === 'needsReview'}>
+          <div class={styles.trustRow}>
+            <button
+              type="button"
+              class="outline"
+              disabled={verifying()}
+              onClick={handleVerify}
+              data-testid="tunnel-verify-key"
+            >
+              <Show when={verifying()}><Spinner /></Show>
+              Verify Worker key
+            </button>
+          </div>
+        </Show>
+
+        <Show when={trust().kind === 'needsFirstContact'}>
+          <div class={styles.trustRow}>
+            <p>
+              The stored Worker key was removed. Establish trust deliberately for the key in the Hub's first announcement. Create remains a separate action after the proof.
+            </p>
+            <button
+              type="button"
+              class="outline"
+              disabled={verifying()}
+              onClick={handleVerify}
+              data-testid="tunnel-trust-first-contact"
+            >
+              <Show when={verifying()}><Spinner /></Show>
+              Trust Worker on first contact
+            </button>
+          </div>
         </Show>
 
         <footer class={actionsFooter}>

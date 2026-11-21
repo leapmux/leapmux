@@ -56,7 +56,7 @@ func testEndpointFor(t *testing.T, url string) *hubtransport.Endpoint {
 // The pool map must be initialized so the first cache lookup doesn't
 // nil-deref.
 func TestNew_ConstructsUsableClient(t *testing.T) {
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{})
+	c := New(context.Background(), testEndpoint(t), nil, &stubDelegationProvider{})
 	require.NotNil(t, c)
 	assert.NotNil(t, c.channels, "channels map must be initialized — Client mutex assumes it")
 
@@ -69,7 +69,7 @@ func TestNew_ConstructsUsableClient(t *testing.T) {
 
 func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 	lifetime, cancel := context.WithCancel(context.Background())
-	c := New(lifetime, testEndpoint(t), &PinStore{}, &stubDelegationProvider{})
+	c := New(lifetime, testEndpoint(t), nil, &stubDelegationProvider{})
 	cancel()
 	select {
 	case <-c.ctx.Done():
@@ -85,14 +85,14 @@ func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 // targetWorkerID, but a future refactor that drops one path could
 // silently start opening unscoped channels.
 func TestChannelFor_RejectsEmptyTarget(t *testing.T) {
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
+	c := New(context.Background(), testEndpoint(t), nil, &stubDelegationProvider{bearer: "x"})
 	_, err := c.channelFor(context.Background(), "", userid.MustNew("user-1"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "target_worker_id required")
 }
 
 func TestChannelFor_RejectsEmptyUser(t *testing.T) {
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
+	c := New(context.Background(), testEndpoint(t), nil, &stubDelegationProvider{bearer: "x"})
 	_, err := c.channelFor(context.Background(), "worker-B", userid.UserID{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "user_id required")
@@ -105,7 +105,7 @@ func TestChannelFor_RejectsEmptyUser(t *testing.T) {
 // in the pool.
 func TestChannelFor_PropagatesDelegationError(t *testing.T) {
 	dp := &stubDelegationProvider{err: errors.New("mint refused: tab gone")}
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, dp)
+	c := New(context.Background(), testEndpoint(t), nil, dp)
 
 	_, err := c.channelFor(context.Background(), "worker-B", userid.MustNew("user-1"))
 	require.Error(t, err)
@@ -134,7 +134,7 @@ func TestChannelFor_PropagatesDelegationError(t *testing.T) {
 // the pool relies on, which the existing fake covers via
 // PropagatesDelegationError.
 func TestChannelFor_PoolKeyComposition(t *testing.T) {
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
+	c := New(context.Background(), testEndpoint(t), nil, &stubDelegationProvider{bearer: "x"})
 	// Manually seed pool entries to verify key independence: worker AND user
 	// must each contribute, so two users on one worker (and one user across two
 	// workers) never share a Noise session. There is no third axis -- a
@@ -156,7 +156,7 @@ func TestChannelFor_PoolKeyComposition(t *testing.T) {
 // reaches the caller intact instead of being swallowed by the
 // pool layer.
 func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
+	c := New(context.Background(), testEndpoint(t), nil, &stubDelegationProvider{err: errors.New("mint denied")})
 	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("payload"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
@@ -166,7 +166,7 @@ func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 // streaming path. Both go through channelFor, but the streaming
 // version's onMsg callback shouldn't swallow the upstream error.
 func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
+	c := New(context.Background(), testEndpoint(t), nil, &stubDelegationProvider{err: errors.New("mint denied")})
 	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
@@ -176,7 +176,7 @@ func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
 // with no user is rejected before any network I/O, because the user IS the
 // delegation bearer's identity and an unminted one would mint as nobody.
 func TestCallInner_RequiresUserID(t *testing.T) {
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
+	c := New(context.Background(), testEndpoint(t), nil, &stubDelegationProvider{bearer: "x"})
 	_, err := c.CallInner(context.Background(), "worker-B", userid.UserID{}, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("p"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "user_id required")
@@ -217,7 +217,7 @@ func TestChannelFor_SingleFlightsConcurrentOpens(t *testing.T) {
 		release: make(chan struct{}),
 		err:     errors.New("mint done"),
 	}
-	c := New(context.Background(), testEndpoint(t), &PinStore{}, dp)
+	c := New(context.Background(), testEndpoint(t), nil, dp)
 	defer c.Close()
 
 	const callers = 8
@@ -304,7 +304,7 @@ func TestOpenChannel_ReachesAHubOverASocket(t *testing.T) {
 
 	socketURL := hubtransporttest.NewSocketServer(t, "crossworker", mux)
 
-	c := New(context.Background(), testEndpointFor(t, socketURL), &PinStore{}, &stubDelegationProvider{bearer: "delegation-bearer"})
+	c := New(context.Background(), testEndpointFor(t, socketURL), nil, &stubDelegationProvider{bearer: "delegation-bearer"})
 	t.Cleanup(c.Close)
 
 	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("payload"))

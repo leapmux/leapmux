@@ -1,5 +1,6 @@
 import type { DescService, MessageInitShape } from '@bufbuild/protobuf'
-import type { ChannelTransport } from '~/lib/channel'
+import type { WorkerTrustScope } from '~/context/AuthContext'
+import type { ChannelManagerOpts, ChannelTransport } from '~/lib/channel'
 import { create, getOption } from '@bufbuild/protobuf'
 import { Code } from '@connectrpc/connect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,7 +15,9 @@ import { WorkerTerminalService } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import { WorkerTabService } from '~/generated/proto/leapmux/v1/worker_tab_pb'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { ChannelError } from '~/lib/channelError'
+import { deferred } from '~/test-support/async'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 // The retry lives inside `callWorker`, which is private — so these drive it
@@ -27,7 +30,20 @@ const seams = vi.hoisted(() => ({
   channelTransport: undefined as unknown,
   channelOpts: undefined as unknown,
   unary: vi.fn(),
+  readPin: vi.fn<typeof import('~/lib/keyPinStore')['readWorkerKeyPin']>(),
+  ordinaryOpen: vi.fn(),
+  reviewOpen: vi.fn(),
+  firstContactOpen: vi.fn(),
 }))
+
+function trustScope(userId: string, generation: number, signal = new AbortController().signal): WorkerTrustScope {
+  return {
+    userId,
+    storageAccount: storageAccountFor(TEST_HUB, userId),
+    generation,
+    signal,
+  }
+}
 
 vi.mock('~/lib/channel', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/channel')>()
@@ -35,14 +51,26 @@ vi.mock('~/lib/channel', async (importOriginal) => {
     ...actual,
     ChannelManager: class {
       callWorker = callWorkerMock
+      openChannel = seams.ordinaryOpen
+      openChannelForKeyReview = seams.reviewOpen
+      openChannelForFirstContactReview = seams.firstContactOpen
       setConfirmKeyPin = () => () => {}
-      constructor(transport: unknown, opts: unknown) {
+      readonly captureOpenScope: () => ReturnType<InstanceType<typeof actual.ChannelManager>['captureOpenScope']>
+
+      constructor(transport: ChannelTransport, opts: ChannelManagerOpts) {
+        const manager = new actual.ChannelManager(transport, { ...opts, installWakeListener: false })
+        this.captureOpenScope = () => manager.captureOpenScope()
         seams.channelTransport = transport
         seams.channelOpts = opts
       }
     },
   }
 })
+
+vi.mock('~/lib/keyPinStore', async importOriginal => ({
+  ...await importOriginal<typeof import('~/lib/keyPinStore')>(),
+  readWorkerKeyPin: seams.readPin,
+}))
 
 vi.mock('~/api/transport', () => ({
   transport: { unary: seams.unary },
@@ -76,6 +104,10 @@ function unavailable() {
 
 beforeEach(() => {
   callWorkerMock.mockReset()
+  seams.readPin.mockReset()
+  seams.ordinaryOpen.mockReset()
+  seams.reviewOpen.mockReset()
+  seams.firstContactOpen.mockReset()
   vi.useRealTimers()
 })
 
@@ -99,6 +131,29 @@ describe('callWorker retries an Unavailable reply', () => {
       providers: [1],
     })
     expect(callWorkerMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry the original request after its identity retires during backoff', async () => {
+    vi.useFakeTimers()
+    const { workerAgent, setExpectedUserId } = await import('./workerRpc')
+    const outgoing = new AbortController()
+    let scope = trustScope('user-a', 1, outgoing.signal)
+    const dispose = setExpectedUserId(() => scope)
+    try {
+      callWorkerMock.mockRejectedValueOnce(unavailable()).mockResolvedValueOnce({})
+      const call = workerAgent.listAvailableProviders('worker')
+      const outcome = call.then(() => 'returned', (err: unknown) => err)
+      await vi.advanceTimersByTimeAsync(0)
+
+      outgoing.abort()
+      scope = trustScope('user-b', 2)
+      await vi.advanceTimersByTimeAsync(200)
+      expect(await outcome).toMatchObject({ name: 'AbortError' })
+      expect(callWorkerMock).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      dispose()
+    }
   })
 
   it('gives up after the budget and rejects with the last error', async () => {
@@ -209,9 +264,12 @@ describe('worker service clients', () => {
         const call = client[method.localName]
         if (method.methodKind !== 'unary')
           continue
-        callWorkerMock.mockReset().mockResolvedValue({})
+        callWorkerMock.mockReset()
+        seams.readPin.mockReset()
+        seams.ordinaryOpen.mockReset()
+        seams.reviewOpen.mockReset().mockResolvedValue({})
         await (call as (workerId: string, req: object) => Promise<unknown>)('w-1', {})
-        expect(callWorkerMock, `${name}.${method.localName}`).toHaveBeenCalledExactlyOnceWith('w-1', method, {}, undefined)
+        expect(callWorkerMock, `${name}.${method.localName}`).toHaveBeenCalledExactlyOnceWith('w-1', method, {}, undefined, expect.anything())
         routed.push(method.localName)
       }
     }
@@ -260,7 +318,7 @@ describe('worker service clients', () => {
 
     await statFile('w-1', { path: '/repo' })
 
-    expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerFileService.method.statFile, { path: '/repo' }, undefined)
+    expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerFileService.method.statFile, { path: '/repo' }, undefined, expect.anything())
   })
 
   // Each method is an own property, so a test can spread a client into a mock.
@@ -279,7 +337,7 @@ describe('worker service clients', () => {
 
     await workerTab.closeTab('w-1', request)
 
-    expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerTabService.method.closeTab, request, undefined)
+    expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerTabService.method.closeTab, request, undefined, expect.anything())
   })
 
   it('returns the response of callWorker', async () => {
@@ -299,7 +357,7 @@ describe('worker service clients', () => {
 
     await workerAgent.openAgent('w-1', {})
 
-    expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerAgentService.method.openAgent, {}, undefined)
+    expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerAgentService.method.openAgent, {}, undefined, expect.anything())
     expect((seams.channelOpts as { rpcTimeoutFn: () => number }).rpcTimeoutFn()).toBe(30_000)
   })
 
@@ -320,7 +378,7 @@ describe('worker service clients', () => {
 
     await workerFile.statFile('w-1', { path: '/repo' }, { signal, timeoutMs: 5_000 })
 
-    expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerFileService.method.statFile, { path: '/repo' }, { signal, timeoutMs: 5_000 })
+    expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerFileService.method.statFile, { path: '/repo' }, { signal, timeoutMs: 5_000 }, expect.anything())
   })
 
   it('sends an empty request for a method whose request has no field', async () => {
@@ -340,30 +398,35 @@ describe('worker service clients', () => {
         WorkerSystemService.method.getWorkerSystemInfo,
         {},
         undefined,
+        expect.anything(),
       ],
       [
         'w-1',
         WorkerFileService.method.listFilesystemRoots,
         {},
         undefined,
+        expect.anything(),
       ],
       [
         'w-1',
         WorkerTerminalService.method.listAvailableShells,
         {},
         undefined,
+        expect.anything(),
       ],
       [
         'w-1',
         WorkerAgentService.method.listAvailableProviders,
         {},
         { signal },
+        expect.anything(),
       ],
       [
         'w-1',
         WorkerAgentService.method.listAvailableProviders,
         {},
         { signal },
+        expect.anything(),
       ],
     ])
   })
@@ -401,7 +464,7 @@ describe('worker service clients', () => {
       // @ts-expect-error StatFileRequest has fields, so the request is required.
       await workerFile.statFile('w-1')
 
-      expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerFileService.method.statFile, {}, undefined)
+      expect(callWorkerMock).toHaveBeenCalledWith('w-1', WorkerFileService.method.statFile, {}, undefined, expect.anything())
     })
 
     it('types the response from the descriptor', async () => {
@@ -526,7 +589,6 @@ describe('the browser channel transport', () => {
     }
   }
 })
-
 describe('BrowserChannelTransport createWebSocket', () => {
   beforeEach(() => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
@@ -551,5 +613,136 @@ describe('BrowserChannelTransport createWebSocket', () => {
     const socket = (seams.channelTransport as ChannelTransport).createWebSocket()
 
     expect(socket).toBeInstanceOf(TauriRelayWebSocket)
+  })
+})
+
+describe('resolveTunnelTrust', () => {
+  const workerId = 'worker'
+  const savedPin = {
+    pin: { publicKeyHex: 'committed', firstSeen: 1000 },
+    removalRevision: 0,
+  }
+
+  it('opens an ordinary browser channel and independently reads the committed pin on first contact', async () => {
+    const { resolveTunnelTrust, setExpectedUserId } = await import('./workerRpc')
+    const scope = trustScope('account', 1)
+    const dispose = setExpectedUserId(() => scope)
+    const proof = deferred<string>()
+    const entered = deferred<void>()
+    seams.readPin.mockResolvedValueOnce({ pin: null, removalRevision: 0 }).mockResolvedValueOnce(savedPin)
+    seams.ordinaryOpen.mockImplementationOnce(() => {
+      entered.resolve()
+      return proof.promise
+    })
+    try {
+      const trust = resolveTunnelTrust(workerId, scope)
+      await entered.promise
+      expect(seams.readPin).toHaveBeenCalledTimes(1)
+      proof.resolve('channel-id')
+      await expect(trust).resolves.toBe('committed')
+      expect(seams.ordinaryOpen).toHaveBeenCalledExactlyOnceWith(workerId)
+      expect(seams.readPin.mock.calls).toEqual([
+        [
+          workerId,
+          { accountId: scope.storageAccount, signal: scope.signal },
+        ],
+        [
+          workerId,
+          { accountId: scope.storageAccount, signal: scope.signal },
+        ],
+      ])
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('refuses failed pin reads and proof without a durable pin', async () => {
+    const { resolveTunnelTrust, setExpectedUserId } = await import('./workerRpc')
+    const scope = trustScope('account', 1)
+    const dispose = setExpectedUserId(() => scope)
+    try {
+      seams.readPin.mockRejectedValueOnce(new Error('storage failed'))
+      await expect(resolveTunnelTrust(workerId, scope)).rejects.toThrow('storage failed')
+      expect(seams.ordinaryOpen).not.toHaveBeenCalled()
+
+      seams.readPin.mockResolvedValue({ pin: null, removalRevision: 0 })
+      seams.ordinaryOpen.mockResolvedValueOnce('channel-id')
+      await expect(resolveTunnelTrust(workerId, scope)).rejects.toThrow('verified Worker key')
+      expect(seams.ordinaryOpen).toHaveBeenCalledOnce()
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it.each([
+    {
+      snapshot: { pin: null, removalRevision: 1 },
+      message: 'approved Worker key was removed',
+    },
+    {
+      snapshot: {
+        pin: { publicKeyHex: 'committed', firstSeen: 3000 },
+        removalRevision: 1,
+      },
+      message: 'Verify the Worker key again',
+    },
+    {
+      snapshot: {
+        pin: { publicKeyHex: 'replacement', firstSeen: 1000 },
+        removalRevision: 0,
+      },
+      message: 'Verify the Worker key again',
+    },
+  ])('refuses an approved pin that was removed or replaced, without first contact', async ({ snapshot, message }) => {
+    const { refreshWorkerTrustForTunnel, resolveTunnelTrust, setExpectedUserId } = await import('./workerRpc')
+    const scope = trustScope('account', 2)
+    const dispose = setExpectedUserId(() => scope)
+    try {
+      seams.reviewOpen.mockResolvedValueOnce({ publicKeyHex: 'committed', scope, pinSnapshot: savedPin })
+      const approval = await refreshWorkerTrustForTunnel(workerId, scope)
+      expect(approval).toEqual({
+        workerId,
+        expectedUserId: 'account',
+        identityGeneration: 2,
+        publicKeyHex: 'committed',
+        pinSnapshot: savedPin,
+      })
+      expect(seams.reviewOpen).toHaveBeenCalledExactlyOnceWith(workerId, undefined)
+      seams.readPin.mockResolvedValueOnce(savedPin).mockResolvedValueOnce(snapshot)
+      await expect(resolveTunnelTrust(workerId, scope, approval)).resolves.toBe('committed')
+      await expect(resolveTunnelTrust(workerId, scope, approval)).rejects.toThrow(message)
+      expect(seams.ordinaryOpen).not.toHaveBeenCalled()
+    }
+    finally {
+      dispose()
+    }
+  })
+})
+
+describe('establishWorkerTrustForTunnel', () => {
+  it('returns the exact pin snapshot committed by deliberate first contact', async () => {
+    const { establishWorkerTrustForTunnel, setExpectedUserId } = await import('./workerRpc')
+    const scope = trustScope('account', 3)
+    const dispose = setExpectedUserId(() => scope)
+    const pinSnapshot = {
+      pin: { publicKeyHex: 'committed', firstSeen: 1000 },
+      removalRevision: 4,
+    }
+    seams.firstContactOpen.mockResolvedValueOnce({ publicKeyHex: 'committed', scope, pinSnapshot })
+    try {
+      await expect(establishWorkerTrustForTunnel('worker', scope)).resolves.toEqual({
+        workerId: 'worker',
+        expectedUserId: 'account',
+        identityGeneration: 3,
+        publicKeyHex: 'committed',
+        pinSnapshot,
+      })
+      expect(seams.firstContactOpen).toHaveBeenCalledExactlyOnceWith('worker', undefined)
+    }
+    finally {
+      dispose()
+    }
   })
 })

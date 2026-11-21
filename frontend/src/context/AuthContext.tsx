@@ -4,10 +4,11 @@ import type { ParentComponent } from 'solid-js'
 import type { EmailVerificationStatus, GetCurrentUserResponse, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { StorageAccount } from '~/lib/browserStorage'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
+import type { WorkerTrustScope } from '~/lib/workerTrustScope'
 import { create } from '@bufbuild/protobuf'
 import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack, useContext } from 'solid-js'
+import { createMemo, createSignal, onCleanup, onMount, untrack, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { platformBridge } from '~/api/platformBridge'
 import { advanceAuthSessionEpoch, loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
@@ -114,6 +115,23 @@ export interface AuthLoginResult {
  */
 export type UserAdoption = (user: User | undefined, verification?: EmailVerificationStatus) => Promise<void>
 
+/**
+ * One adopted identity's LIFETIME, as the scope a worker trust decision
+ * captures.
+ *
+ * Distinct from the `authGeneration` write fence, which moves on every local
+ * write. This scope advances only when the document adopts a different
+ * identity: a sign-out, a sign-in (including a sign-in as the same user, which
+ * is a new lifetime), or an adopted user id that changed. A same-user refresh,
+ * an elevation window and a verification cooldown leave it alone.
+ *
+ * A consumer captures one `WorkerTrustScope` before it acts and revalidates
+ * `generation` (and `signal.aborted`) after every wait: a scope that retired
+ * mid-operation cancelled its `signal` and must not have its decision
+ * published into the successor's world.
+ */
+export type { WorkerTrustScope } from '~/lib/workerTrustScope'
+
 export interface AuthState {
   user: () => User | null
   /** The hydrated browser-storage identity published with `user`. */
@@ -122,6 +140,8 @@ export interface AuthState {
   onAccountEnd: (listener: (account: StorageAccount) => void) => () => void
   loading: () => boolean
   error: () => string | null
+  tunnelResetError: () => string | null
+  retryTunnelReset: () => Promise<void>
   /**
    * When the hub accepts another request for a verification email; undefined
    * when no cooldown is known.
@@ -235,6 +255,12 @@ export interface AuthState {
   reloadUser: () => Promise<boolean>
   refreshUser: () => Promise<void>
   isAuthenticated: () => boolean
+  /**
+   * The current identity-lifetime scope, from one snapshot: the adopted user
+   * ID, the identity generation and the cancellation signal together. See
+   * {@link WorkerTrustScope} for what advances it and what must not.
+   */
+  workerTrustScope: () => WorkerTrustScope
 }
 
 const AuthContext = createStableContext<AuthState>('context/AuthContext')
@@ -362,6 +388,48 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   /**
+   * The identity-lifetime scope: a distinct counter from `authGeneration`,
+   * which is a write fence over the ACCOUNT STATE. This one marks IDENTITY
+   * LIFETIMES only -- see {@link WorkerTrustScope}. `setUser` is the single
+   * writer: it retires the previous scope before the storage namespace moves
+   * or the identity signal publishes, and installs the successor in the same
+   * synchronous step.
+   */
+  let trustGeneration = 0
+  let trustController = new AbortController()
+  const initialTrustScope: WorkerTrustScope = {
+    userId: null,
+    storageAccount: null,
+    generation: 0,
+    signal: trustController.signal,
+  }
+  const [trustScope, setTrustScopeSignal] = createSignal<WorkerTrustScope>(initialTrustScope)
+  const [tunnelResetError, setTunnelResetError] = createSignal<string | null>(null)
+  onCleanup(platformBridge.setTunnelTrustScope(() => untrack(trustScope)))
+  onCleanup(platformBridge.onTunnelResetStatusChange((failure) => {
+    setTunnelResetError(failure === null
+      ? null
+      : formatErrorMessage(failure, 'Desktop tunnel cleanup did not finish.'))
+  }))
+
+  /** Abort the live scope's signal. Its decisions are now cancellations. */
+  const retireWorkerTrustScope = () => {
+    trustController.abort()
+  }
+
+  /** Install the next lifetime. The caller retires the previous scope first. */
+  const installWorkerTrustScope = (userId: string | null, account: StorageAccount | null) => {
+    trustGeneration++
+    trustController = new AbortController()
+    setTrustScopeSignal({
+      userId,
+      storageAccount: account,
+      generation: trustGeneration,
+      signal: trustController.signal,
+    })
+  }
+
+  /**
    * The one writer of the identity, and the one place the storage namespace
    * moves with it.
    *
@@ -370,6 +438,14 @@ export const AuthProvider: ParentComponent = (props) => {
    * An effect would be too late: `AuthGuard`'s `Show` is a render effect, and a
    * render effect runs ahead of a user effect in the same flush, so `AppShell`
    * could mount and read the previous account's tab state.
+   *
+   * The identity-lifetime scope moves in the same step: the previous scope
+   * retires BEFORE the namespace switches or the identity publishes, and the
+   * successor installs before the signal notifies. `opts.identityTransition`
+   * marks the calls that are an identity CHANGE whatever the user IDs say --
+   * a sign-out and a sign-in, including a sign-in as the same user -- because
+   * each is a new lifetime. Everything else advances the scope only when the
+   * adopted user ID actually differs.
    *
    * ASYNCHRONOUS, and only for a non-null user. The synchronous storage tier is
    * an in-memory mirror of an IndexedDB-backed store, so the rows have to be
@@ -396,7 +472,7 @@ export const AuthProvider: ParentComponent = (props) => {
    * of a User the app cannot key anything by, and it routes to `/login` -- with
    * the fault recorded, because a hub that answers this way has a real bug.
    */
-  const setUser = async (next: User | null): Promise<boolean> => {
+  const setUser = async (next: User | null, opts: { identityTransition?: boolean } = {}): Promise<boolean> => {
     const generation = ++authGeneration
     const outgoingAccount = identity()?.storageAccount ?? null
     if (next && !next.id) {
@@ -404,6 +480,14 @@ export const AuthProvider: ParentComponent = (props) => {
       next = null
     }
     let account: StorageAccount | null = null
+    // A flagged adoption of a USER is a new lifetime whatever the ids say -- a
+    // sign-in as the same user (a bookmarked `/login` over a live session)
+    // starts one. A flagged adoption of nobody is a sign-out, which is already
+    // an id change when there was somebody to sign out, and a no-op when there
+    // was not. Everything else advances only when the adopted user changed.
+    const nextId = next?.id ?? null
+    const advanceScope = nextId !== trustScope().userId
+      || (opts.identityTransition === true && next !== null)
     if (next) {
       account = storageAccountFor(hubOrigin(), next.id)
       const prepared = await prepareStorageAccount(account)
@@ -415,8 +499,25 @@ export const AuthProvider: ParentComponent = (props) => {
         return false
       if (!prepared.commit())
         return false
-      setStorageAccount(account)
     }
+    // The scope retires BEFORE the namespace moves or the identity publishes,
+    // so a decision captured under it sees the cancellation rather than the
+    // successor's namespace.
+    if (advanceScope) {
+      const outgoing = trustScope()
+      if (outgoing.userId) {
+        // Install the native reset barrier before any successor can list or
+        // mutate tunnels. Auth can still finish if the sidecar refuses reset.
+        void platformBridge.resetTunnels(outgoing).catch((err: unknown) => {
+          log.warn('Failed to reset desktop tunnels on identity change', err)
+        })
+      }
+      retireWorkerTrustScope()
+      if (outgoing.userId)
+        channelManager.closeAll()
+    }
+    if (next && account)
+      setStorageAccount(account)
     if (!next && outgoingAccount) {
       for (const listener of [...accountEndListeners]) {
         try {
@@ -427,60 +528,20 @@ export const AuthProvider: ParentComponent = (props) => {
         }
       }
     }
+    if (advanceScope)
+      installWorkerTrustScope(nextId, account)
     setIdentity(next && account
       ? { user: next, storageAccount: account }
       : null)
     return true
   }
 
-  /**
-   * Drop every pooled E2EE channel on an identity change.
-   *
-   * Channels are pooled per worker for up to an hour and carry the identity the Hub
-   * authenticated them as at OPEN time, and `channelManager` is a module-level
-   * singleton that outlives this provider. So without this, logging out and back in as
-   * someone else keeps serving the previous user's channels: every worker RPC the new
-   * user's page issues runs on the worker AS THE OLD USER, for the rest of the
-   * channels' hour. getOrOpenChannel also re-checks the identity before reusing a
-   * pooled channel; that is the fallback check, this is the eager release -- it also
-   * frees the shared WebSocket, which the logged-out user must not hold open.
-   *
-   * On the desktop this also resets the SIDECAR's tunnels. In distributed mode the Go
-   * sidecar pools its own E2EE channels and runs tunnel listeners bound to the
-   * connection (not the browser session), and it authenticates to the Hub purely by
-   * the proxy's cookie jar -- it has no user identity to key an eager close on. So
-   * without resetTunnels, a user switch would leave the previous user's tunnels
-   * relaying (and their cached channels reusable) under the old identity until the Hub
-   * revokes the session. resetTunnels is a no-op off the desktop and best-effort: a
-   * failure must not break the logout flow, but it must not pass silently either.
-   */
-  const closePooledChannels = () => {
-    channelManager.closeAll()
-    platformBridge.resetTunnels().catch((err) => {
-      log.warn('failed to reset sidecar tunnels on identity change', {
-        error: String(err),
-      })
-    })
-  }
-
-  // Drive the eager release off the `user` signal itself, so EVERY identity
-  // transition -- logout, an auth error, a login over a live session, and any future
-  // setUser path (setAuth, refreshUser, an impersonation seed) -- releases by
-  // construction rather than each transition site remembering to call it. Fires only
-  // when a PREVIOUS authenticated user changes to a different id or to logout: the
-  // initial null -> first-user restore (prev falsy) and a same-user refresh
-  // (prev.id === next id) must not close and reopen the pool, and must not fire a
-  // spurious resetTunnels.
-  createEffect(on(user, (u, prev) => {
-    if (prev && prev.id !== (u?.id ?? ''))
-      closePooledChannels()
-  }, { defer: true }))
-
   const clearAuthUser = () => {
     advanceAuthSessionEpoch()
     // No await: the null branch takes none, so the signal still moves in this
-    // turn. See `setUser`.
-    void setUser(null)
+    // turn. See `setUser`. A sign-out is an identity transition: the scope the
+    // previous identity held retires even when nobody adopts the successor.
+    void setUser(null, { identityTransition: true })
     // A recovery reads the account of a session, and this session has ended.
     setSignInRecovery(null)
     setVerificationResendAvailableAt(undefined)
@@ -492,6 +553,10 @@ export const AuthProvider: ParentComponent = (props) => {
     // Reset the phase so any BootSplash during the next bootstrap does not
     // show a finished checklist left over from the previous shell session.
     setBootPhase('initializing')
+  }
+
+  const retryTunnelReset = async () => {
+    await platformBridge.retryTunnelReset()
   }
 
   /**
@@ -613,8 +678,11 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const adoptSignedInUser = async (u: User): Promise<boolean> => {
     // See `adoptCurrentUser`: nothing below may run for an identity a newer one
-    // superseded during the hydration await.
-    if (!await setUser(u))
+    // superseded during the hydration await. A sign-in is an identity
+    // transition even when the user id is the one already adopted -- a
+    // bookmarked `/login` over a live session starts a NEW lifetime -- so the
+    // scope advances and the previous one retires.
+    if (!await setUser(u, { identityTransition: true }))
       return false
     setElevationExpiresAt(undefined)
     enterShell()
@@ -693,8 +761,8 @@ export const AuthProvider: ParentComponent = (props) => {
    *
    * Without an account, the sign-in still SUCCEEDED: the session cookie now
    * belongs to an account this page cannot read yet. The identity transition
-   * happens at once -- the previous identity, its elevation and, through the
-   * `user` effect, its pooled channels go -- and sign-in recovery starts.
+   * happens at once -- `setUser` releases the previous identity's pooled
+   * channels and elevation -- and sign-in recovery starts.
    * `SignInRecoveryGate` replaces every route while the account read runs, and
    * recovery owns the navigation that follows.
    */
@@ -726,7 +794,9 @@ export const AuthProvider: ParentComponent = (props) => {
       // below, as a report without one does.
     }
     setElevationExpiresAt(undefined)
-    void setUser(null)
+    // The identity transition happens at once -- the previous identity and its
+    // lifetime scope go -- and sign-in recovery starts.
+    void setUser(null, { identityTransition: true })
     setVerificationResendAvailableAt(verification?.nextResendAvailableAt)
     setBootstrapError(null)
     setSignInRecovery({
@@ -968,9 +1038,8 @@ export const AuthProvider: ParentComponent = (props) => {
     try {
       const resp = await attempt()
       advanceAuthSessionEpoch()
-      // Through adoptSignInReport: setUser drives the eager release of the
-      // previous user's pooled channels through the createEffect above,
-      // rather than leaving them to the lazy per-request identity check
+      // Through adoptSignInReport: setUser eagerly releases the previous
+      // user's pooled channels rather than leaving them to the per-request check
       // (which evicts one channel per request while the shared WebSocket
       // stays held for the old user) -- and it clears the elevation the
       // previous identity held.
@@ -1064,6 +1133,8 @@ export const AuthProvider: ParentComponent = (props) => {
     onAccountEnd,
     loading,
     error,
+    tunnelResetError,
+    retryTunnelReset,
     verificationResendAvailableAt,
     elevationExpiresAt,
     elevateWithPassword,
@@ -1083,6 +1154,7 @@ export const AuthProvider: ParentComponent = (props) => {
     bootstrapError,
     retryBootstrap,
     isAuthenticated: () => user() !== null,
+    workerTrustScope: () => trustScope(),
   }
 
   return (

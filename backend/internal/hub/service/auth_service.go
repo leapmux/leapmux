@@ -116,15 +116,11 @@ func NewAuthService(deps AuthServiceDeps) *AuthService {
 		captchaSvc = disabledCaptcha{}
 	}
 	// A nil reporter is a hub with no listener set to ask, so it answers from
-	// the primary TCP address --listen gave; see ConfiguredListen for why that
-	// default is stated once rather than at each read.
+	// the configured bind set; see ConfiguredListen for why that default is
+	// stated once rather than at each read.
 	listen := deps.Listen
 	if listen == nil {
-		configured := ""
-		if deps.Config != nil {
-			configured = deps.Config.PrimaryTCPListen()
-		}
-		listen = ConfiguredListen{Listen: configured}
+		listen = configuredListenFrom(deps.Config)
 	}
 	return &AuthService{sessionHasher: deps.SessionHasher, store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc, listen: listen, soloGate: deps.SoloGate}
 }

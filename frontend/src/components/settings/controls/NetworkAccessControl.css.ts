@@ -35,10 +35,11 @@ export const servingRow = style({
   fontSize: 'var(--text-7)',
 })
 
-/** The address itself, in the font a copied command is read in. */
+/** The address itself, in the font a copied command is read in, kept selectable so an operator can copy it. */
 export const servingAddress = style({
   fontFamily: 'var(--font-mono)',
   color: 'var(--foreground)',
+  userSelect: 'text',
 })
 
 /** Why the hub serves an address: from -listen, an extra, or both merged. */

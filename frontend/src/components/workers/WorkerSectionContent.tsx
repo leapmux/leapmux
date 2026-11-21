@@ -1,21 +1,28 @@
 import type { Component } from 'solid-js'
+import type { AddTunnelTarget } from './AddTunnelDialog'
 import type { TunnelInfo } from '~/api/platformBridge'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import ArrowBigRightDash from 'lucide-solid/icons/arrow-big-right-dash'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ChevronsLeftRightEllipsis from 'lucide-solid/icons/chevrons-left-right-ellipsis'
-import { createMemo, createSignal, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
+import { Spinner } from '~/components/common/Spinner'
 import { StatusDot } from '~/components/common/StatusDot'
 import * as shared from '~/components/tree/sharedTree.css'
 import { actionSlot, actionSlotResting, sidebarActions } from '~/components/tree/sidebarActions.css'
 import * as listStyles from '~/components/workspace/workspaceList.css'
+import { useAuth } from '~/context/AuthContext'
 import { useTunnel } from '~/context/TunnelContext'
+import { formatErrorMessage } from '~/lib/errors'
+import { errorText } from '~/styles/shared.css'
 import { TunnelContextMenu } from './TunnelContextMenu'
+import { verifyWorkerKey, WorkerKeyPinMissingError } from './verifyWorkerKey'
 import { WorkerContextMenu } from './WorkerContextMenu'
 import * as styles from './workerSection.css'
 
@@ -23,7 +30,7 @@ export interface WorkerSectionContentProps {
   workers: Worker[]
   workerInfo: (id: string) => WorkerInfo | null
   channelStatus: (id: string) => ChannelStatus
-  onAddTunnel: (worker: Worker) => void
+  onAddTunnel: (target: AddTunnelTarget) => void
   onDeregister: (worker: Worker) => void
 }
 
@@ -38,11 +45,63 @@ const statusLabel: Record<ChannelStatus, string> = {
   disconnected: 'Disconnected',
 }
 
+type DeleteSelection = { kind: 'one', tunnel: TunnelInfo } | { kind: 'all', workerId: string }
+type DeleteTarget = DeleteSelection & { scope: WorkerTrustScope }
+interface TunnelReview {
+  id: string
+  scope: WorkerTrustScope
+}
+
 export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props) => {
+  const auth = useAuth()
   const tunnel = useTunnel()
   const [collapsedIds, setCollapsedIds] = createSignal<Set<string>>(new Set())
-  const [deleteTunnelTarget, setDeleteTunnelTarget] = createSignal<TunnelInfo | null>(null)
-  const [deleteAllTunnelsWorkerId, setDeleteAllTunnelsWorkerId] = createSignal<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = createSignal<DeleteTarget | null>(null)
+  const [deleteError, setDeleteError] = createSignal<string | null>(null)
+  const [deleting, setDeleting] = createSignal(false)
+  const [review, setReview] = createSignal<TunnelReview | null>(null)
+  const [verifyError, setVerifyError] = createSignal<(TunnelReview & { message: string }) | null>(null)
+  let reviewLifetime: AbortController | undefined
+  let disposed = false
+  onCleanup(() => {
+    disposed = true
+    reviewLifetime?.abort()
+  })
+
+  function identityIsLive(scope: WorkerTrustScope): boolean {
+    return !disposed && auth.workerTrustScope() === scope && !scope.signal.aborted
+  }
+
+  function closeDelete(target: DeleteTarget): void {
+    if (deleteTarget() !== target)
+      return
+    setDeleteTarget(null)
+    setDeleteError(null)
+    setDeleting(false)
+  }
+
+  function openDelete(selection: DeleteSelection): void {
+    const scope = auth.workerTrustScope()
+    if (!scope.userId || !identityIsLive(scope) || deleting())
+      return
+    setDeleteError(null)
+    setDeleteTarget({ ...selection, scope })
+  }
+
+  createEffect(() => {
+    const target = deleteTarget()
+    if (target && !identityIsLive(target.scope))
+      closeDelete(target)
+    const activeReview = review()
+    if (activeReview && (!identityIsLive(activeReview.scope)
+      || !tunnel?.tunnels().some(row => row.id === activeReview.id && row.keyMismatch))) {
+      reviewLifetime?.abort()
+      setReview(null)
+    }
+    const failure = verifyError()
+    if (failure && !identityIsLive(failure.scope))
+      setVerifyError(null)
+  })
 
   function isExpanded(id: string): boolean {
     return !collapsedIds().has(id)
@@ -63,6 +122,100 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
     return t.type === 'socks5'
       ? `SOCKS5 ${t.bindAddr}:${t.bindPort}`
       : `${t.bindAddr}:${t.bindPort} \u2192 ${t.targetAddr}:${t.targetPort}`
+  }
+
+  async function confirmDelete(target: DeleteTarget): Promise<void> {
+    if (deleteTarget() !== target || !identityIsLive(target.scope) || deleting() || !tunnel)
+      return
+    const isCurrent = () => identityIsLive(target.scope) && deleteTarget() === target
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      if (target.kind === 'one')
+        await tunnel.remove(target.tunnel.id, target.scope)
+      else
+        await tunnel.removeAllForWorker(target.workerId, target.scope)
+      if (isCurrent())
+        closeDelete(target)
+    }
+    catch (err) {
+      if (isCurrent())
+        setDeleteError(formatErrorMessage(err, 'Could not delete the desktop tunnels. Try again.'))
+    }
+    finally {
+      if (isCurrent())
+        setDeleting(false)
+    }
+  }
+
+  async function verify(worker: Worker, stopped: TunnelInfo): Promise<void> {
+    const scope = auth.workerTrustScope()
+    if (!scope.userId || !identityIsLive(scope) || review())
+      return
+    const verification = { id: stopped.id, scope }
+    reviewLifetime?.abort()
+    const lifetime = new AbortController()
+    reviewLifetime = lifetime
+    setReview(verification)
+    setVerifyError(null)
+    try {
+      const approval = await verifyWorkerKey(worker.id, scope, lifetime.signal)
+      if (!identityIsLive(scope)
+        || !tunnel?.tunnels().some(row => row.id === stopped.id && row.keyMismatch)) {
+        return
+      }
+      const { type, targetAddr, targetPort, bindAddr, bindPort } = stopped
+      props.onAddTunnel({
+        worker,
+        scope,
+        replacement: {
+          config: {
+            workerId: worker.id,
+            type,
+            targetAddr,
+            targetPort,
+            bindAddr,
+            bindPort,
+          },
+          approval,
+        },
+      })
+    }
+    catch (err) {
+      if (err instanceof WorkerKeyPinMissingError && identityIsLive(scope)
+        && tunnel?.tunnels().some(row => row.id === stopped.id && row.keyMismatch)) {
+        const { type, targetAddr, targetPort, bindAddr, bindPort } = stopped
+        props.onAddTunnel({
+          worker,
+          scope,
+          replacement: {
+            config: {
+              workerId: worker.id,
+              type,
+              targetAddr,
+              targetPort,
+              bindAddr,
+              bindPort,
+            },
+            firstContactRequired: true,
+          },
+        })
+        return
+      }
+      if (identityIsLive(scope)
+        && tunnel?.tunnels().some(row => row.id === stopped.id && row.keyMismatch)) {
+        setVerifyError({
+          ...verification,
+          message: formatErrorMessage(err, 'Could not verify the Worker key.'),
+        })
+      }
+    }
+    finally {
+      if (reviewLifetime === lifetime)
+        reviewLifetime = undefined
+      if (!disposed && review() === verification)
+        setReview(null)
+    }
   }
 
   return (
@@ -116,8 +269,12 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                         autoRegistered={worker.autoRegistered}
                         online={worker.online}
                         hasTunnels={workerTunnels().length > 0}
-                        onAddTunnel={() => props.onAddTunnel(worker)}
-                        onDeleteAllTunnels={() => setDeleteAllTunnelsWorkerId(worker.id)}
+                        onAddTunnel={() => {
+                          const scope = auth.workerTrustScope()
+                          if (scope.userId && identityIsLive(scope))
+                            props.onAddTunnel({ worker, scope })
+                        }}
+                        onDeleteAllTunnels={() => openDelete({ kind: 'all', workerId: worker.id })}
                         onDeregister={() => props.onDeregister(worker)}
                       />
                     </div>
@@ -134,18 +291,71 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                           const label = tunnelLabel(t)
                           const [tunnelRowEl, setTunnelRowEl] = createContextMenuAnchor()
                           return (
-                            <div ref={setTunnelRowEl} class={`${shared.node} ${styles.tunnelItem}`}>
-                              {t.type === 'socks5'
-                                ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
-                                : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
-                              <ClippedText text={label} class={listStyles.itemTitle} />
-                              <div class={sidebarActions}>
-                                <TunnelContextMenu
-                                  contextMenuFor={tunnelRowEl}
-                                  onDelete={() => setDeleteTunnelTarget(t)}
-                                />
+                            <>
+                              <div ref={setTunnelRowEl} class={`${shared.node} ${styles.tunnelItem}`}>
+                                {t.type === 'socks5'
+                                  ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
+                                  : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
+                                <ClippedText text={label} class={listStyles.itemTitle} />
+                                <div class={sidebarActions}>
+                                  <TunnelContextMenu
+                                    contextMenuFor={tunnelRowEl}
+                                    onDelete={() => openDelete({ kind: 'one', tunnel: t })}
+                                  />
+                                </div>
                               </div>
-                            </div>
+                              {/* A stopped row keeps its place in the list so the
+                                  mismatch that stopped it stays recoverable: the
+                                  reason, both fingerprints, and the two ways out. */}
+                              <Show when={t.keyMismatch}>
+                                {mismatch => (
+                                  <div class={styles.tunnelStopped} data-testid="tunnel-stopped">
+                                    <div class={styles.tunnelStoppedReason} data-testid="tunnel-stopped-reason">
+                                      Stopped. The Hub reported a different Worker key.
+                                    </div>
+                                    <div class={styles.tunnelFingerprints}>
+                                      <div>
+                                        <strong>Expected</strong>
+                                        {' '}
+                                        <code data-testid="tunnel-expected-fingerprint">{mismatch().expectedFingerprint}</code>
+                                      </div>
+                                      <div>
+                                        <strong>Presented</strong>
+                                        {' '}
+                                        <code data-testid="tunnel-presented-fingerprint">{mismatch().presentedFingerprint}</code>
+                                      </div>
+                                    </div>
+                                    <Show when={verifyError()?.id === t.id && verifyError()?.message}>
+                                      {message => (
+                                        <div class={errorText} role="alert" data-testid="tunnel-verify-error">{message()}</div>
+                                      )}
+                                    </Show>
+                                    <div>Compare the presented fingerprint with the one the Worker logs when it starts.</div>
+                                    <div class={styles.tunnelStoppedActions}>
+                                      <button
+                                        type="button"
+                                        class="outline"
+                                        disabled={review() !== null}
+                                        onClick={() => void verify(worker, t)}
+                                        data-testid="tunnel-verify-key"
+                                      >
+                                        <Show when={review()?.id === t.id}><Spinner /></Show>
+                                        Verify Worker key
+                                      </button>
+                                      <button
+                                        type="button"
+                                        class="outline"
+                                        data-variant="danger"
+                                        onClick={() => openDelete({ kind: 'one', tunnel: t })}
+                                        data-testid="tunnel-remove"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </Show>
+                            </>
                           )
                         }}
                       </For>
@@ -158,44 +368,37 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
         </For>
       </Show>
 
-      <Show when={deleteTunnelTarget()}>
+      <Show when={deleteTarget()} keyed>
         {target => (
           <ConfirmDialog
-            title="Delete tunnel"
+            title={target.kind === 'one'
+              ? 'Delete tunnel'
+              : 'Delete all tunnels'}
             danger
-            confirmLabel="Delete"
-            onConfirm={() => {
-              tunnel!.remove(target().id).catch(() => {})
-              setDeleteTunnelTarget(null)
-            }}
-            onCancel={() => setDeleteTunnelTarget(null)}
+            busy={deleting()}
+            confirmLabel={target.kind === 'one'
+              ? 'Delete'
+              : 'Delete all'}
+            confirmTestId={target.kind === 'one'
+              ? 'confirm-delete-tunnel'
+              : 'confirm-delete-all-tunnels'}
+            onConfirm={() => void confirmDelete(target)}
+            onCancel={() => closeDelete(target)}
           >
             <p>
-              {'Delete tunnel '}
-              <strong>{tunnelLabel(target())}</strong>
+              {target.kind === 'one'
+                ? 'Delete tunnel '
+                : 'Delete all tunnels for Worker '}
+              <strong>
+                {target.kind === 'one'
+                  ? tunnelLabel(target.tunnel)
+                  : props.workerInfo(target.workerId)?.name ?? target.workerId}
+              </strong>
               ?
             </p>
-          </ConfirmDialog>
-        )}
-      </Show>
-
-      <Show when={deleteAllTunnelsWorkerId()}>
-        {workerId => (
-          <ConfirmDialog
-            title="Delete all tunnels"
-            danger
-            confirmLabel="Delete all"
-            onConfirm={() => {
-              tunnel!.removeAllForWorker(workerId()).catch(() => {})
-              setDeleteAllTunnelsWorkerId(null)
-            }}
-            onCancel={() => setDeleteAllTunnelsWorkerId(null)}
-          >
-            <p>
-              {'Delete all tunnels for worker '}
-              <strong>{props.workerInfo(workerId())?.name ?? workerId()}</strong>
-              ?
-            </p>
+            <Show when={deleteError()}>
+              <p class={errorText} role="alert" data-testid="tunnel-delete-error">{deleteError()}</p>
+            </Show>
           </ConfirmDialog>
         )}
       </Show>

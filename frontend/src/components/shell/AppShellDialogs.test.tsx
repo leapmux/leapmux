@@ -448,8 +448,7 @@ describe('AppShellDialogs branch dialogs', () => {
   // the two slots where a stale read would strand a promise forever: the
   // workspace confirms resolve a `new Promise` that AppShell awaits with no
   // timeout, and keyPinConfirm's resolve controls every later key-pin prompt
-  // through KeyPinStore's confirm chain. Both call resolve NEXT TO their
-  // close, so before keyed they were correct only by statement order.
+  // through KeyPinStore's confirm chain.
   it.each([
     ['confirmDeleteWs', true],
     ['confirmDeleteWs', false],
@@ -480,7 +479,7 @@ describe('AppShellDialogs branch dialogs', () => {
 
   it('resolves the keyPinConfirm decision, so the confirm chain is not stranded', async () => {
     const { dialogs } = renderDialogs()
-    const resolve = vi.fn()
+    const resolve = vi.fn(() => dialogs.keyPinConfirm.close())
     dialogs.keyPinConfirm.open({
       workerId: 'w1',
       expectedFingerprint: 'aa:bb',
@@ -490,7 +489,7 @@ describe('AppShellDialogs branch dialogs', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Reject/i }))
 
-    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(resolve).toHaveBeenCalledExactlyOnceWith('reject')
     expect(dialogs.keyPinConfirm.value()).toBeNull()
   })
 

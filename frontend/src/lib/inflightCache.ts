@@ -10,6 +10,8 @@
 export interface InflightCache<K, V> {
   /** Returns the in-flight promise for `key`, invoking `factory` only if none exists. */
   run: (key: K, factory: () => Promise<V>) => Promise<V>
+  /** Get the current flight without starting one. */
+  get: (key: K) => Promise<V> | undefined
   /** Is there currently an in-flight operation for `key`? */
   has: (key: K) => boolean
   /** Drop every tracked entry. Does NOT cancel in-flight work; pending factories keep running. */
@@ -23,16 +25,37 @@ export function createInflightCache<K, V>(): InflightCache<K, V> {
       const existing = pending.get(key)
       if (existing)
         return existing
-      const promise = (async () => {
+      let resolve!: (value: V | PromiseLike<V>) => void
+      let reject!: (reason?: unknown) => void
+      const promise = new Promise<V>((res, rej) => {
+        resolve = res
+        reject = rej
+      })
+      // Record the flight BEFORE invoking the factory. A factory that throws
+      // synchronously completes inside the block below before `run` returns; if
+      // the record were set afterwards, that early cleanup would find nothing to
+      // delete and the settled entry would stay stuck, handing the stale error
+      // to every later caller instead of letting one start a fresh flight.
+      pending.set(key, promise)
+      void (async () => {
         try {
-          return await factory()
+          resolve(await factory())
+        }
+        catch (error) {
+          reject(error)
         }
         finally {
-          pending.delete(key)
+          // Remove the settled entry only if this flight still owns its slot: a
+          // clear() plus a replacement flight must survive this completion.
+          if (pending.get(key) === promise) {
+            pending.delete(key)
+          }
         }
       })()
-      pending.set(key, promise)
       return promise
+    },
+    get(key) {
+      return pending.get(key)
     },
     has(key) {
       return pending.has(key)

@@ -10,8 +10,9 @@
  * THREE THINGS LIVE HERE.
  *
  * The DATABASE: one table keyed by the whole composed storage key, with an index
- * on the expiration so the sweep can select what to delete without reading a
- * single value.
+ * on expiration so the sweep can select candidates by key. `updateKvTransaction`
+ * runs a caller's read-modify-write in one transaction when the rows require
+ * an immediate commit.
  *
  * The WRITE-BEHIND QUEUE. The gateway's synchronous accessors cannot await a
  * commit, so a write updates the caller's view immediately and lands here to be
@@ -27,8 +28,9 @@
  */
 import type { Table } from 'dexie'
 import type Dexie from 'dexie'
+import type { IdbConnection } from './idb'
 import { tryCreateBroadcastChannel } from './broadcastChannel'
-import { createIdbConnection, isIndexedDbAvailable } from './idb'
+import { createIdbConnection, IDB_TRUST_DATABASE_NAME, isIndexedDbAvailable } from './idb'
 import { randomUUID } from './idGenerator'
 import { createLogger } from './logger'
 
@@ -66,6 +68,7 @@ const STORES = {
 }
 
 const connection = createIdbConnection<KvDb>(DB_NAME, STORES)
+const trustConnection = createIdbConnection<KvDb>(IDB_TRUST_DATABASE_NAME, STORES, { onSchemaMismatch: 'reject' })
 
 /**
  * Whether the environment reported that it has no IndexedDB at all, or an open
@@ -76,10 +79,10 @@ let loggedUnavailable = false
 
 /** The database, or null when persistence cannot work here. Never rejects. */
 async function openKv(): Promise<KvDb | null> {
-  if (!isIndexedDbAvailable())
-    return null
   try {
-    return await connection.open()
+    return isIndexedDbAvailable()
+      ? await connection.open()
+      : null
   }
   catch (err) {
     reportUnavailable(err)
@@ -102,8 +105,8 @@ function reportUnavailable(err: unknown): void {
  * A read that answers EMPTY rather than rejecting.
  *
  * Every read here is a cache lookup whose miss is already a defined outcome, and
- * the failures it can meet are not the caller's to handle: a peer tab's schema
- * repair closes the connection mid-read, and a quota or a corrupt profile fails
+ * the failures it can meet are not the caller's to handle: a version change
+ * closes the connection mid-read, and a quota or a corrupt profile fails
  * the open. Rejecting would push a rejection into `loadDraft` and its
  * neighbours, none of which can do anything but treat it as a miss anyway.
  */
@@ -146,6 +149,106 @@ export async function readKvRow(key: string): Promise<KvRow | undefined> {
 }
 
 // ---------------------------------------------------------------------------
+// Strict transactions
+// ---------------------------------------------------------------------------
+
+/** Row access inside one strict transaction. */
+export interface KvRowTransaction {
+  get: (key: string) => Promise<KvRow | undefined>
+  put: (row: KvRow) => Promise<void>
+  delete: (key: string) => Promise<void>
+}
+
+/**
+ * Run `body` as ONE read-write transaction over the rows it lists.
+ *
+ * Strict where `readOrEmpty` is forgiving: an unavailable database, a failed
+ * open and a failed request all REJECT, because the callers here decide trust
+ * and must not read a failure as an empty store. A `get` that finds no row
+ * resolves undefined, which is a confirmed absence and not a failure -- the
+ * distinction those callers draw.
+ *
+ * The body may await only this transaction's own `get` / `put` / `delete`.
+ * Dexie commits a transaction while its promise chain leaves the database, so
+ * an unrelated await between two row operations loses the transaction -- and
+ * with it the atomicity the caller asked for.
+ *
+ * A thrown error aborts the transaction and propagates: nothing the body wrote
+ * survives, which is what makes a compare-and-swap check inside `body` a real
+ * check rather than a hopeful one.
+ */
+export async function updateKvTransaction<T>(body: (tx: KvRowTransaction) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  return updateTransaction(connection, body, signal)
+}
+
+/** Strict transaction in the authoritative Worker-trust database. */
+export async function updateTrustTransaction<T>(body: (tx: KvRowTransaction) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  return updateTransaction(trustConnection, body, signal)
+}
+
+/** Direct trust-row access for corruption and schema tests only. */
+export async function writeTrustRowForTests(row: KvRow): Promise<void> {
+  await updateTrustTransaction(async tx => tx.put(row))
+}
+
+export async function readTrustRowForTests(key: string): Promise<KvRow | undefined> {
+  return updateTrustTransaction(async tx => tx.get(key))
+}
+
+async function updateTransaction<T>(
+  target: IdbConnection<KvDb>,
+  body: (tx: KvRowTransaction) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted()
+  let abort: (() => void) | undefined
+  try {
+    if (!isIndexedDbAvailable())
+      throw new Error('Browser storage is unavailable.')
+    const db = await target.open()
+    signal?.throwIfAborted()
+    return await db.transaction('rw', db[TABLE], async (transaction) => {
+      signal?.throwIfAborted()
+      const nativeTransaction = transaction.idbtrans
+      abort = () => {
+        try {
+          nativeTransaction.abort()
+        }
+        catch (err) {
+          // IndexedDB may enter commit before Dexie receives its completion
+          // event. Let the native outcome settle Dexie's transaction.
+          if (!(err instanceof DOMException) || err.name !== 'InvalidStateError')
+            throw err
+        }
+      }
+      signal?.addEventListener('abort', abort, { once: true })
+      const tx: KvRowTransaction = {
+        get: key => db[TABLE].get(key),
+        async put(row) {
+          signal?.throwIfAborted()
+          await db[TABLE].put(row)
+        },
+        async delete(key) {
+          signal?.throwIfAborted()
+          await db[TABLE].delete(key)
+        },
+      }
+      const result = await body(tx)
+      signal?.throwIfAborted()
+      return result
+    })
+  }
+  catch (err) {
+    signal?.throwIfAborted()
+    throw err
+  }
+  finally {
+    if (abort)
+      signal?.removeEventListener('abort', abort)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The write-behind queue
 // ---------------------------------------------------------------------------
 
@@ -157,9 +260,8 @@ export async function readKvRow(key: string): Promise<KvRow | undefined> {
  * The one caller that acts on it (`persistedSeq`, whose mark wedges a relay if
  * it does not survive the reload) reaches through `.durable`.
  *
- * `durable` NEVER REJECTS. A refused write is not something a caller can act on
- * -- a draft, a layout snapshot or a key pin has nowhere else to go -- so it
- * resolves false and is reported here.
+ * `durable` never rejects. A refused write resolves false and the queue reports
+ * the failure.
  */
 export interface StorageWrite {
   readonly durable: Promise<boolean>
@@ -463,8 +565,8 @@ export async function flushKvWrites(): Promise<void> {
  * `isRegistered` rejects. Resolves the keys that were deleted, so the gateway
  * can drop them from its mirror and tell the other tabs.
  *
- * Expiry comes straight off the index and reads NO value: the walk that judged a
- * 40 KB row-height blob used to have to fetch it first.
+ * The expiration index lists candidates by key. The sweep reads a row's value
+ * only when its policy requires validation before deletion.
  *
  * THE REGISTRATION PASS IS NOT ON THE HOURLY CADENCE, because it cannot be
  * bounded the way expiry can. Its predicate is a property of the KEY, and a
@@ -476,37 +578,93 @@ export async function flushKvWrites(): Promise<void> {
  * needs. What it looks for only changes when a deploy changes the registry, so
  * the gateway runs it ONCE per page and leaves the hourly timer on the
  * index-bounded expiry arm.
+ *
+ * `isExemptFromExpiry` shields a row the expiry branch must never take even when
+ * its expiration has passed. The gateway keeps exactly one such row -- the key
+ * pin removal revision, which is nonexpiring by policy -- so a corrupted or
+ * foreign expiration on it cannot reset a revision that pending pin commits
+ * validate against. `expiryValidatorForKey` selects rows whose value must pass
+ * validation before expiry can delete it. Other expiry candidates require only
+ * their primary keys.
  */
 export async function sweepKv(
   now: number,
   isRegistered: (key: string) => boolean,
-  opts: { checkRegistrations: boolean },
+  opts: {
+    checkRegistrations: boolean
+    isExemptFromExpiry?: (key: string) => boolean
+    expiryValidatorForKey?: (key: string) => ((row: KvRow) => boolean) | undefined
+  },
 ): Promise<string[]> {
-  const db = await openKv()
+  return sweepConnection(connection, now, isRegistered, opts, false)
+}
+
+/** Sweep authoritative trust rows without sharing a transaction with preferences. */
+export async function sweepTrustKv(
+  now: number,
+  isRegistered: (key: string) => boolean,
+  opts: {
+    checkRegistrations: boolean
+    isExemptFromExpiry?: (key: string) => boolean
+    expiryValidatorForKey?: (key: string) => ((row: KvRow) => boolean) | undefined
+  },
+): Promise<string[]> {
+  return sweepConnection(trustConnection, now, isRegistered, opts, true)
+}
+
+async function sweepConnection(
+  target: IdbConnection<KvDb>,
+  now: number,
+  isRegistered: (key: string) => boolean,
+  opts: {
+    checkRegistrations: boolean
+    isExemptFromExpiry?: (key: string) => boolean
+    expiryValidatorForKey?: (key: string) => ((row: KvRow) => boolean) | undefined
+  },
+  strict: boolean,
+): Promise<string[]> {
+  let db: KvDb | null
+  try {
+    db = isIndexedDbAvailable()
+      ? await target.open()
+      : null
+  }
+  catch (err) {
+    if (strict)
+      throw err
+    reportUnavailable(err)
+    return []
+  }
   if (!db)
     return []
   const deleted: string[] = []
   try {
     await db.transaction('rw', db[TABLE], async () => {
-      const expired = await db[TABLE].where(EXPIRES_INDEX).below(now).primaryKeys()
-      const unregistered = opts.checkRegistrations
-        ? (await db[TABLE].toCollection().primaryKeys()).filter(key => !isRegistered(key))
-        : []
-      // A key can be in both lists; the set is what makes the delete and the
-      // reported result idempotent.
-      const victims = [
-        ...new Set([
-          ...expired,
-          ...unregistered,
-        ]),
-      ]
-      if (victims.length === 0)
+      const table = db[TABLE]
+      const expired = await table.where(EXPIRES_INDEX).below(now).primaryKeys()
+      const victims = new Set(opts.checkRegistrations
+        ? (await table.toCollection().primaryKeys()).filter(key => !isRegistered(key))
+        : [])
+      for (const key of expired) {
+        if (opts.isExemptFromExpiry?.(key))
+          continue
+        const validate = opts.expiryValidatorForKey?.(key)
+        if (validate !== undefined) {
+          const row = await table.get(key)
+          if (row === undefined || !validate(row))
+            continue
+        }
+        victims.add(key)
+      }
+      if (victims.size === 0)
         return
-      await db[TABLE].bulkDelete(victims)
+      await table.bulkDelete([...victims])
       deleted.push(...victims)
     })
   }
   catch (err) {
+    if (strict)
+      throw err
     log.warn('browser storage sweep failed; the rows are left for the next attempt', err)
     return []
   }
@@ -519,10 +677,20 @@ export async function sweepKv(
 
 const CHANNEL_NAME = 'leapmux:browser-storage'
 
+/**
+ * A key-only change: the identified row changed, and the receiver must re-read it
+ * rather than trust a value in the message.
+ *
+ * For the pin rows, whose values never travel on the channel: a hint identifies the
+ * stored key and carries no pin bytes. See `publishKvInvalidations`.
+ */
+export interface KeyInvalidationChange { readonly k: string, readonly invalidate: true }
+
 /** One committed change, as another tab receives it. */
 export type StorageChange
   = | { readonly k: string, readonly v: unknown, readonly e: number }
     | { readonly k: string, readonly removed: true }
+    | KeyInvalidationChange
 
 /**
  * One tab's committed change set.
@@ -578,8 +746,14 @@ if (channel !== null) {
     const message = event.data
     if (!message || message.from === instanceId)
       return
-    for (const listener of broadcastListeners)
-      listener(message.changes)
+    for (const listener of broadcastListeners) {
+      try {
+        listener(message.changes)
+      }
+      catch (err) {
+        log.warn('browser storage broadcast listener failed', err)
+      }
+    }
   }
 }
 
@@ -608,6 +782,23 @@ export function publishKvRemovals(keys: readonly string[]): void {
   channel?.postMessage({
     from: instanceId,
     changes: keys.map(k => ({ k, removed: true as const })),
+  } satisfies StorageBroadcast)
+}
+
+/**
+ * Tell the other tabs that some rows changed and must be re-read.
+ *
+ * The key-only counterpart of `publishKvRemovals`, for rows whose values never
+ * travel on the channel -- the pin rows carry key material, so a receiver gets
+ * the stored key and reads the state itself. Published AFTER the transaction
+ * committed, like every other publish.
+ */
+export function publishKvInvalidations(keys: readonly string[]): void {
+  if (keys.length === 0)
+    return
+  channel?.postMessage({
+    from: instanceId,
+    changes: keys.map(k => ({ k, invalidate: true as const })),
   } satisfies StorageBroadcast)
 }
 
@@ -675,4 +866,5 @@ export function resetKvForTests(): void {
   flushInFlight = null
   loggedUnavailable = false
   connection.reset()
+  trustConnection.reset()
 }

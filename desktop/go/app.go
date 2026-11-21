@@ -94,9 +94,23 @@ func NewApp(binaryHash string) *App {
 		binaryHash:       binaryHash,
 		browserAuthClock: quartz.NewReal(),
 	}
+	// A mismatch transition stops a tunnel inside the manager; the hint that
+	// tells the webview to re-read the tunnel list rides the app's event sink.
+	app.tunnels.onChanged = app.emitTunnelsChanged
 	app.startSolo = app.defaultStartSolo
 	app.startup()
 	return app
+}
+
+// emitTunnelsChanged publishes the TunnelsChangedEvent hint: a native tunnel
+// status changed (a tunnel stopped with a Worker key mismatch). It carries no
+// data -- the webview re-reads the tunnel list to learn what changed.
+func (a *App) emitTunnelsChanged() {
+	a.EmitEvent(&desktoppb.Event{
+		Payload: &desktoppb.Event_TunnelsChanged{
+			TunnelsChanged: &desktoppb.TunnelsChangedEvent{},
+		},
+	})
 }
 
 func (a *App) startup() {
@@ -626,7 +640,6 @@ func (a *App) finishDisconnect(connection *desktopConnection) {
 	// Wait for the loopback listener only after releasing lifecycleMu.
 	defer func() { ceremony.closeListener() }()
 	a.lifecycleMu.Lock()
-	defer a.lifecycleMu.Unlock()
 
 	if a.browserAuth != nil && a.browserAuth.connection == connection {
 		ceremony = a.detachBrowserAuthLocked()
@@ -647,6 +660,11 @@ func (a *App) finishDisconnect(connection *desktopConnection) {
 	// freeze every lifecycle reader for relayDrainTimeout (see wsRelay.detach).
 	_ = closeChannelRelayOn(connection)
 	_ = closeUserEventsRelayOn(connection)
+	a.lifecycleMu.Unlock()
+
+	// The transition gate keeps a successor connection from committing while
+	// this cleanup runs. Keep lifecycle readers available while tunnel opens,
+	// listeners, and owned connections finish retiring.
 	a.tunnels.CloseAll()
 }
 
@@ -914,6 +932,18 @@ func (a *App) CreateTunnel(requestCtx context.Context, config TunnelConfig) (*Tu
 		return nil, fmt.Errorf("not connected")
 	}
 	config.HubURL = connection.proxy.baseURL
+	if (config.HubCookieHeader == "") != (config.HubCookieOrigin == "") {
+		unlock()
+		return nil, fmt.Errorf("the Hub cookie and its source origin must be supplied together")
+	}
+	if config.HubCookieHeader != "" {
+		cookieOrigin, parseErr := url.Parse(config.HubCookieOrigin)
+		if parseErr != nil || !sameHubOrigin(cookieOrigin, connection.proxy.base) {
+			unlock()
+			return nil, fmt.Errorf("the Hub cookie source does not match the current connection")
+		}
+		config.channelOptions, config.credentialKey = connection.proxy.tunnelChannelOptions(config.HubCookieHeader)
+	}
 	lifetimeCtx := connection.ctx
 	// The returned unlock, not a bare RUnlock: mixing the two here is what
 	// acquireLifecycleRLock's doc says the helper exists to prevent, and a
@@ -937,17 +967,20 @@ func (a *App) applyProxyToTunnels(proxy *HubProxy) {
 	})
 }
 
-func (a *App) DeleteTunnel(tunnelID string) error {
+func (a *App) DeleteTunnel(tunnelID string, channelEpoch string, expectedUserID string) error {
 	done, err := a.beginOperation()
 	if err != nil {
 		return err
 	}
 	defer done()
-	return a.tunnels.DeleteTunnel(tunnelID)
+	return a.tunnels.DeleteTunnel(tunnelID, channelEpoch, expectedUserID)
 }
 
-func (a *App) ListTunnels() []TunnelInfo {
-	return a.tunnels.ListTunnels()
+// ListTunnels reports the current channel epoch and the tunnels owned by
+// expectedUserID from one manager snapshot. See TunnelManager.ListTunnels for
+// the ownership and snapshot rules.
+func (a *App) ListTunnels(expectedUserID string) (string, []TunnelInfo, error) {
+	return a.tunnels.ListTunnels(expectedUserID)
 }
 
 // ResetTunnels tears down every tunnel and invalidates the pooled E2EE channels
@@ -956,16 +989,19 @@ func (a *App) ListTunnels() []TunnelInfo {
 // authenticates to the Hub purely by the proxy's cookie jar and has no user
 // identity of its own, so a distributed-mode user switch would otherwise leave
 // the previous user's tunnels relaying (and their cached channels reusable)
-// under the old identity until the Hub revokes the session. CloseAll is
-// idempotent -- a no-op when there are no tunnels (e.g. solo mode, where logout
-// never happens) -- so this needs no connection guard beyond the shutdown gate.
-func (a *App) ResetTunnels() error {
+// under the old identity until the Hub revokes the session.
+//
+// channelEpoch is the epoch the caller read from its tunnel listing. A replay
+// waits for that epoch's cleanup and leaves the successor unchanged. Reset
+// finishes the cleanup even if the caller has disconnected, so a replay can
+// recover from an uncertain acknowledgment.
+func (a *App) ResetTunnels(channelEpoch string) error {
 	done, err := a.beginOperation()
 	if err != nil {
 		return err
 	}
 	defer done()
-	a.tunnels.CloseAll()
+	a.tunnels.ResetTunnels(channelEpoch)
 	return nil
 }
 

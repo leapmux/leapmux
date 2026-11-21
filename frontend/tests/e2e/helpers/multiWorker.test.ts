@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
 import { startMultiWorkerHarness } from './multiWorker'
 import { spawnTestProcess } from './processRegistry'
-import { findFreePort, hubUrlFromStateJson, resolvedHubTCPFromStateJson, waitForHubStart } from './server'
+import { findFreePort, startedHubFromStateJson, waitForHubStart } from './server'
 import { reportStartupFailure } from './serverOutput'
 
 let root: string
@@ -59,10 +59,7 @@ beforeEach(() => {
     const state = states.get(proc.pid ?? -1)
     if (!state)
       throw new Error('The Hub has no bound port or state file.')
-    return {
-      hubUrl: hubUrlFromStateJson(state),
-      listen: resolvedHubTCPFromStateJson(state),
-    }
+    return startedHubFromStateJson(state)
   })
   vi.mocked(spawnTestProcess).mockReset().mockImplementation((_command, args) => {
     // The registration command is a silent, untracked child: it exits

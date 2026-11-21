@@ -9,6 +9,8 @@ import {
   isWrappedValue,
   KEY_CHANNEL_RELAY_SEQ,
   KEY_CLIENT_ID,
+  KEY_KEY_PINS,
+  KEY_KEY_PINS_REMOVAL_REVISION,
   LOCAL_KEY_SPECS,
   localStorageGet,
   localStorageSet,
@@ -23,8 +25,9 @@ import {
   storedKeyFor,
   TEST_HUB,
 } from '~/lib/browserStorage'
-import { enqueueKvPut, readKvRow } from '~/lib/browserStorageDb'
+import { enqueueKvPut, readKvRow, readTrustRowForTests, writeTrustRowForTests } from '~/lib/browserStorageDb'
 import { TEST_ACCOUNT, TEST_USER_ID } from '~/test-support/crdtBridge'
+import { testKeyPinHex } from '~/test-support/keyPins'
 import { useTestStorage } from '~/test-support/persistentStorage'
 
 // The sweep works over IndexedDB now, so it needs a database to sweep.
@@ -148,6 +151,12 @@ describe('storageCleanup', () => {
       expect(getTtlForKey('theme')).toBeNull()
       // The stored form is not a logical name.
       expect(getTtlForKey('leapmux:browser-prefs')).toBeNull()
+    })
+
+    // The odd row out: the pin removal revision never expires, so its
+    // registered TTL says so rather than borrowing the pin map's year.
+    it('reports the key pin removal revision row as nonexpiring', async () => {
+      expect(getTtlForKey('key-pins-removal-revision')).toBe(Number.POSITIVE_INFINITY)
     })
   })
 
@@ -317,10 +326,36 @@ describe('storageCleanup', () => {
     })
 
     it('keeps a registered row that has not expired', async () => {
-      localStorageSet('key-pins', { w1: 'pin' })
+      localStorageSet('preferred-external-app', 'vscode')
       await flushStorageWrites()
       await runCleanup()
-      expect(await readKvRow(storedKeyFor('key-pins')!)).toBeDefined()
+      expect(await readKvRow(storedKeyFor('preferred-external-app')!)).toBeDefined()
+    })
+
+    // The two pin rows carry DIFFERENT expiry policies, and the sweep is where
+    // they are enforced: the map expires like every other row, while the
+    // removal revision is exempt however stale its stored expiration looks --
+    // losing it would reset a counter that pending pin commits validate
+    // against.
+    it('expires a pin map and keeps the removal revision beside it', async () => {
+      const mapKey = accountStorageKey(ACCOUNT, 'key-pins')
+      const revisionKey = accountStorageKey(ACCOUNT, 'key-pins-removal-revision')
+      await writeTrustRowForTests({
+        k: mapKey,
+        v: {
+          w1: {
+            publicKeyHex: testKeyPinHex('aa'),
+            firstSeen: 1,
+          },
+        },
+        e: Date.now() - DAY_MS,
+      })
+      await writeTrustRowForTests({ k: revisionKey, v: 7, e: Date.now() - DAY_MS })
+
+      await runCleanup()
+
+      expect(await readTrustRowForTests(mapKey)).toBeUndefined()
+      expect((await readTrustRowForTests(revisionKey))?.v).toBe(7)
     })
 
     // The migration, such as it is: the move to scoped keys retires every flat
@@ -420,14 +455,29 @@ describe('storageCleanup', () => {
         .map(([name, spec]) => (spec.match === 'prefix'
           ? `${name}sample`
           : name))
-      for (const name of names)
-        await seedRow(storedKeyFor(name)!, 'sample')
+      for (const name of names) {
+        const stored = storedKeyFor(name)!
+        if (name === KEY_KEY_PINS) {
+          await writeTrustRowForTests({ k: stored, v: {}, e: Date.now() + YEAR_MS })
+        }
+        else if (name === KEY_KEY_PINS_REMOVAL_REVISION) {
+          await writeTrustRowForTests({ k: stored, v: 0, e: Number.POSITIVE_INFINITY })
+        }
+        else {
+          await seedRow(stored, 'sample')
+        }
+      }
 
       await runCleanup()
 
       expect(names.length).toBeGreaterThan(0)
-      for (const name of names)
-        expect(await readKvRow(storedKeyFor(name)!), name).toBeDefined()
+      for (const name of names) {
+        const stored = storedKeyFor(name)!
+        const row = name === KEY_KEY_PINS || name === KEY_KEY_PINS_REMOVAL_REVISION
+          ? await readTrustRowForTests(stored)
+          : await readKvRow(stored)
+        expect(row, name).toBeDefined()
+      }
     })
 
     it('deletes unwrapped copies of every registered localStorage key', async () => {

@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -156,11 +157,11 @@ func TestHandleResetTunnelsAcksOK(t *testing.T) {
 	var output bytes.Buffer
 	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
 
-	before := app.tunnels.currentRevision()
+	before := app.tunnels.currentEpoch()
 	session.handleRequest(context.Background(), &desktoppb.Request{
 		Id: 1,
 		Method: &desktoppb.Request_ResetTunnels{
-			ResetTunnels: &desktoppb.ResetTunnelsRequest{},
+			ResetTunnels: &desktoppb.ResetTunnelsRequest{ChannelEpoch: before},
 		},
 	}, nil)
 	frame, err := ReadFrame(&output)
@@ -168,8 +169,80 @@ func TestHandleResetTunnelsAcksOK(t *testing.T) {
 	response := frame.GetResponse()
 	require.Empty(t, response.GetError())
 	require.True(t, response.GetBoolValue().GetValue(), "a successful reset acks with the shared void-method OK")
-	require.Greater(t, app.tunnels.currentRevision(), before,
+	require.NotEqual(t, before, app.tunnels.currentEpoch(),
 		"the dispatch arm must actually route to App.ResetTunnels")
+	successor := app.tunnels.currentEpoch()
+
+	// A replay that specifies the epoch the reset above retired is a REPLAY: it acks OK
+	// without touching the successor state.
+	session.handleRequest(context.Background(), &desktoppb.Request{
+		Id: 2,
+		Method: &desktoppb.Request_ResetTunnels{
+			ResetTunnels: &desktoppb.ResetTunnelsRequest{ChannelEpoch: before},
+		},
+	}, nil)
+	frame, err = ReadFrame(&output)
+	require.NoError(t, err)
+	response = frame.GetResponse()
+	require.Empty(t, response.GetError())
+	require.True(t, response.GetBoolValue().GetValue(), "a replay of a retired epoch acks OK")
+	require.Equal(t, successor, app.tunnels.currentEpoch(),
+		"a replay must not rotate the successor epoch")
+}
+
+func TestHandleOldCreateTunnelCannotReachChannelOrBindAfterReset(t *testing.T) {
+	app := &App{ctx: t.Context(), tunnels: NewTunnelManager()}
+	connection := installTestConnection(app, mustNewProxy(t, "http://localhost"), nil, "")
+	t.Cleanup(connection.stop)
+	epoch := app.tunnels.currentEpoch()
+	app.tunnels.pool.openCh = func(_ context.Context, _, _ string, _ *tunnelpkg.OpenChannelOptions) (*managedChannel, error) {
+		t.Error("a stale RPC create opened a channel")
+		return nil, errors.New("unexpected channel open")
+	}
+	app.tunnels.listen = func(_, _ string) (net.Listener, error) {
+		t.Error("a stale RPC create bound a listener")
+		return nil, errors.New("unexpected listener bind")
+	}
+
+	var output bytes.Buffer
+	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+	received, dispatch := make(chan struct{}), make(chan struct{})
+	request := &desktoppb.Request{
+		Id: 1,
+		Method: &desktoppb.Request_CreateTunnel{
+			CreateTunnel: &desktoppb.CreateTunnelRequest{Config: &desktoppb.TunnelConfig{
+				WorkerId: "worker", Type: tunnelTypeSocks5, BindPort: 18082,
+				ExpectedUserId: testTunnelOwner, ExpectedWorkerKeysHex: testExpectedWorkerKeysHex,
+				ChannelEpoch: epoch,
+			}},
+		},
+	}
+	created := make(chan struct{})
+	go func() {
+		defer close(created)
+		close(received)
+		<-dispatch
+		session.handleRequest(t.Context(), request, nil)
+	}()
+	<-received
+	session.handleRequest(t.Context(), &desktoppb.Request{
+		Id: 2,
+		Method: &desktoppb.Request_ResetTunnels{
+			ResetTunnels: &desktoppb.ResetTunnelsRequest{ChannelEpoch: epoch},
+		},
+	}, nil)
+	close(dispatch)
+	<-created
+
+	reset, err := ReadFrame(&output)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, reset.GetResponse().GetId())
+	require.True(t, reset.GetResponse().GetBoolValue().GetValue())
+	create, err := ReadFrame(&output)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, create.GetResponse().GetId())
+	assert.Contains(t, create.GetResponse().GetError(), "stale channel epoch")
+	assert.Empty(t, listTunnelRows(t, app.tunnels, testTunnelOwner))
 }
 
 // The ListTunnels dispatch arm must map the manager's listing through
@@ -189,6 +262,7 @@ func TestHandleListTunnelsMapsTunnelInfos(t *testing.T) {
 			BindAddr: "127.0.0.1", BindPort: ln.Addr().(*net.TCPAddr).Port,
 			TargetAddr: "10.0.0.9", TargetPort: 8080,
 		},
+		expect:   channelExpectation{userID: testTunnelOwner},
 		listener: ln,
 		cancel:   cancel,
 	}
@@ -198,7 +272,53 @@ func TestHandleListTunnelsMapsTunnelInfos(t *testing.T) {
 	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
 	session.handleRequest(context.Background(), &desktoppb.Request{
 		Id:     7,
-		Method: &desktoppb.Request_ListTunnels{ListTunnels: &desktoppb.ListTunnelsRequest{}},
+		Method: &desktoppb.Request_ListTunnels{ListTunnels: &desktoppb.ListTunnelsRequest{ExpectedUserId: testTunnelOwner}},
+	}, nil)
+
+	frame, err := ReadFrame(&output)
+	require.NoError(t, err)
+	resp := frame.GetResponse()
+	require.Empty(t, resp.GetError())
+	assert.NotEmpty(t, resp.GetListTunnels().GetChannelEpoch(), "the listing reports the current channel epoch")
+	tunnels := resp.GetListTunnels().GetTunnels()
+	require.Len(t, tunnels, 1)
+	assert.Equal(t, "t-1", tunnels[0].GetId())
+	assert.Equal(t, "w1", tunnels[0].GetWorkerId())
+	assert.Equal(t, "10.0.0.9", tunnels[0].GetTargetAddr())
+	assert.Equal(t, int32(8080), tunnels[0].GetTargetPort())
+	assert.Nil(t, tunnels[0].GetKeyMismatch(), "an active row carries no mismatch detail")
+}
+
+// A stopped row keeps reporting its Worker key mismatch through the listing,
+// and a listing is scoped to the owner's rows -- the same type the create
+// result carries.
+func TestHandleListTunnelsReportsStoppedKeyMismatchRows(t *testing.T) {
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	app.tunnels.mu.Lock()
+	app.tunnels.tunnels["t-stopped"] = &tunnel{
+		info: TunnelInfo{
+			ID: "t-stopped", WorkerID: "w1", Type: "port_forward",
+			BindAddr: "127.0.0.1", BindPort: 1234,
+			KeyMismatch: &TunnelKeyMismatch{
+				ExpectedFingerprint:  "able-arch-bird-clay",
+				PresentedFingerprint: "fern-golf-harp-iris",
+			},
+		},
+		expect: channelExpectation{userID: testTunnelOwner},
+		state:  tunnelStoppingForMismatch,
+	}
+	app.tunnels.tunnels["t-other-owner"] = &tunnel{
+		info:   TunnelInfo{ID: "t-other-owner", WorkerID: "w2", Type: "port_forward"},
+		expect: channelExpectation{userID: "user-b"},
+	}
+	app.tunnels.mu.Unlock()
+
+	var output bytes.Buffer
+	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+	session.handleRequest(context.Background(), &desktoppb.Request{
+		Id:     9,
+		Method: &desktoppb.Request_ListTunnels{ListTunnels: &desktoppb.ListTunnelsRequest{ExpectedUserId: testTunnelOwner}},
 	}, nil)
 
 	frame, err := ReadFrame(&output)
@@ -206,11 +326,20 @@ func TestHandleListTunnelsMapsTunnelInfos(t *testing.T) {
 	resp := frame.GetResponse()
 	require.Empty(t, resp.GetError())
 	tunnels := resp.GetListTunnels().GetTunnels()
-	require.Len(t, tunnels, 1)
-	assert.Equal(t, "t-1", tunnels[0].GetId())
-	assert.Equal(t, "w1", tunnels[0].GetWorkerId())
-	assert.Equal(t, "10.0.0.9", tunnels[0].GetTargetAddr())
-	assert.Equal(t, int32(8080), tunnels[0].GetTargetPort())
+	require.Len(t, tunnels, 1, "a listing only reports the requesting owner's rows")
+	require.NotNil(t, tunnels[0].GetKeyMismatch())
+	assert.Equal(t, "able-arch-bird-clay", tunnels[0].GetKeyMismatch().GetExpectedFingerprint())
+	assert.Equal(t, "fern-golf-harp-iris", tunnels[0].GetKeyMismatch().GetPresentedFingerprint())
+
+	// A listing that specifies no user is refused rather than answered for one owner.
+	output.Reset()
+	session.handleRequest(context.Background(), &desktoppb.Request{
+		Id:     10,
+		Method: &desktoppb.Request_ListTunnels{ListTunnels: &desktoppb.ListTunnelsRequest{}},
+	}, nil)
+	frame, err = ReadFrame(&output)
+	require.NoError(t, err)
+	assert.Contains(t, frame.GetResponse().GetError(), "expectedUserId is required")
 }
 
 // The ListExternalApps dispatch arm must map the registry's listing through
@@ -996,6 +1125,9 @@ func TestRPCSessionDisconnectCancelsTunnelHandshake(t *testing.T) {
 				Config: &desktoppb.TunnelConfig{
 					WorkerId: "worker", Type: tunnelTypePortForward,
 					TargetAddr: "127.0.0.1", TargetPort: 80,
+					ExpectedUserId:        testTunnelOwner,
+					ExpectedWorkerKeysHex: testExpectedWorkerKeysHex,
+					ChannelEpoch:          app.tunnels.currentEpoch(),
 				},
 			}},
 		}},

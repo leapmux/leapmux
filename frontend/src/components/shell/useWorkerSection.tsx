@@ -1,13 +1,17 @@
 import type { Component } from 'solid-js'
 import type { KeyPinConfirmState } from './AppShellDialogs'
+import type { AddTunnelTarget } from '~/components/workers/AddTunnelDialog'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import { equals } from '@bufbuild/protobuf'
-import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
+import { createEffect, createSignal, onCleanup, Show, untrack } from 'solid-js'
+import { isTunnelAvailable, platformBridge } from '~/api/platformBridge'
 import { channelManager, setConfirmKeyPin } from '~/api/workerRpc'
 import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
+import { TAURI_EVENT_TUNNELS_CHANGED } from '~/generated/contracts/desktop'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createIdentityCache } from '~/lib/identityCache'
 import { listAllWorkers } from '~/lib/listAllWorkers'
@@ -18,13 +22,17 @@ import { workerInfoStore } from '~/stores/workerInfo.store'
 
 const log = createLogger('workerSection')
 
+// Recover a missed native hint while a visible sidebar shows an active tunnel.
+const TUNNEL_REFRESH_INTERVAL_MS = 30_000
+
 /**
  * The worker registry: the list, its refresh triggers, and the three dialogs
  * that mutate it.
  *
  * Lifted out of `AppShell` because it shares nothing with the rest of that
- * component — no tabs, no layout, no projection, no CRDT. Its only input is the
- * authenticated user id. Leaving it inline meant a change to how workers are
+ * component — no tabs, no layout, no projection, no CRDT. It receives the user
+ * ID for the registry and the identity lifetime for tunnels. Leaving it inline
+ * meant a change to how workers are
  * listed landed in the same 1300-line file that owns the CRDT bootstrap, the
  * tab join, git-status orchestration and routing policy.
  *
@@ -35,6 +43,7 @@ const log = createLogger('workerSection')
  */
 export interface UseWorkerSectionOpts {
   getUserId: () => string
+  workerTrustScope: () => WorkerTrustScope
   /**
    * Where a TOFU key-pin mismatch is surfaced. Owned by the caller because it
    * lives in the shared `dialogs` record every AppShell dialog is threaded
@@ -56,7 +65,7 @@ export interface WorkerSection {
   workerInfoFn: typeof workerInfoStore.workerInfo
   channelStatusFn: ReturnType<typeof createWorkerChannelStatusStore>['getStatus']
   tunnelStore: ReturnType<typeof createTunnelStore>
-  openAddTunnel: (worker: Worker) => void
+  openAddTunnel: (target: AddTunnelTarget) => void
   openWorkerSettings: (worker: Worker) => void
   openRegisterWorker: () => void
   Dialogs: Component
@@ -66,9 +75,9 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
   const workerChannelStatusStore = createWorkerChannelStatusStore(channelManager)
   const [workers, setWorkers] = createSignal<Worker[]>([])
   const [deregisterTarget, setDeregisterTarget] = createSignal<Worker | null>(null)
-  const [addTunnelTarget, setAddTunnelTarget] = createSignal<Worker | null>(null)
+  const [addTunnelTarget, setAddTunnelTarget] = createSignal<AddTunnelTarget | null>(null)
   const [showRegisterWorker, setShowRegisterWorker] = createSignal(false)
-  const tunnelStore = createTunnelStore()
+  const tunnelStore = createTunnelStore(opts.workerTrustScope)
 
   // listAllWorkers() returns freshly-deserialized objects on every call.
   // Stabilize identity by id so the sidebar's <For> doesn't unmount and
@@ -132,27 +141,109 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
     refetchWorkers()
   })
 
-  // Register the E2EE channel callback (a module-level singleton in workerRpc).
-  //
-  // `setConfirmKeyPin` is a module-level singleton that outlives this owner,
-  // and AppShell really does remount inside one page lifetime — logging out
-  // navigates to /login client-side and logging back in navigates to /, which
-  // unmounts and remounts it through AuthGuard. So the registration is undone
-  // on dispose: a retained one leaves the singleton holding a closure over the
-  // DEAD mount's dialog. A TOFU mismatch in
-  // the gap between unmount and remount would open a dialog nothing renders, so
-  // its `resolve` is never called — and `KeyPinStore.resolve` awaits that with
-  // no timeout while `enqueueConfirm` queues every later prompt behind it. One
-  // mismatch would deadlock key-pinning for the rest of the page. Restoring the
-  // fail-closed default makes that window reject instead of hang.
-  onCleanup(setConfirmKeyPin((workerId, expectedFingerprint, actualFingerprint) =>
-    new Promise((resolve) => {
-      opts.keyPinConfirmDialog.open({
+  if (isTunnelAvailable()) {
+    const [registered, setRegistered] = createSignal(false)
+    const [visible, setVisible] = createSignal(document.visibilityState === 'visible')
+    let disposed = false
+    let unlisten: (() => void) | undefined
+
+    function refreshTunnels(scope: WorkerTrustScope, mode: 'coalesce' | 'invalidate' = 'coalesce'): void {
+      if (disposed || !scope.userId || scope.signal.aborted)
+        return
+      void tunnelStore.refresh(scope, mode).catch((err: unknown) => {
+        if (!disposed && !scope.signal.aborted)
+          log.warn('Failed to list the tunnels', err)
+      })
+    }
+
+    // The hint carries no rows. Wait until its listener is attached before
+    // reading the initial snapshot, then invalidate a list already in flight.
+    void platformBridge.onEvent(TAURI_EVENT_TUNNELS_CHANGED, () => {
+      untrack(() => {
+        if (registered())
+          refreshTunnels(opts.workerTrustScope(), 'invalidate')
+      })
+    }).then((disposeListener) => {
+      if (disposed)
+        disposeListener()
+      else
+        unlisten = disposeListener
+    }).catch((err: unknown) => {
+      if (!disposed)
+        log.warn('Failed to listen for tunnel changes', err)
+    }).finally(() => {
+      if (!disposed)
+        setRegistered(true)
+    })
+
+    createEffect(() => {
+      const scope = opts.workerTrustScope()
+      if (registered())
+        refreshTunnels(scope)
+    })
+
+    const onVisibilityChange = () => {
+      setVisible(document.visibilityState === 'visible')
+      if (registered() && visible())
+        refreshTunnels(opts.workerTrustScope(), 'invalidate')
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    createEffect(() => {
+      if (!registered() || !visible() || !tunnelStore.tunnels().some(tunnel => !tunnel.keyMismatch))
+        return
+      const timer = window.setInterval(() => {
+        refreshTunnels(opts.workerTrustScope())
+      }, TUNNEL_REFRESH_INTERVAL_MS)
+      onCleanup(() => window.clearInterval(timer))
+    })
+
+    onCleanup(() => {
+      disposed = true
+      unlisten?.()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    })
+  }
+
+  createEffect(() => {
+    const scope = opts.workerTrustScope()
+    const target = addTunnelTarget()
+    if (target && (target.scope !== scope || target.scope.signal.aborted))
+      setAddTunnelTarget(null)
+  })
+
+  const closeAddTunnel = (target: AddTunnelTarget): void => {
+    if (addTunnelTarget() === target)
+      setAddTunnelTarget(null)
+  }
+
+  // The singleton registration retires with this owner and aborts its prompt.
+  onCleanup(setConfirmKeyPin((workerId, expectedFingerprint, actualFingerprint, signal) =>
+    new Promise((resolve, reject) => {
+      signal.throwIfAborted()
+      const dialog = opts.keyPinConfirmDialog
+      let state: KeyPinConfirmState
+      const close = () => {
+        if (dialog.value() === state)
+          dialog.close()
+      }
+      const abort = () => {
+        close()
+        reject(signal.reason)
+      }
+      state = {
         workerId,
         expectedFingerprint,
         actualFingerprint,
-        resolve,
-      })
+        resolve: (decision) => {
+          if (signal.aborted || dialog.value() !== state)
+            return
+          signal.removeEventListener('abort', abort)
+          close()
+          resolve(decision)
+        },
+      }
+      signal.addEventListener('abort', abort, { once: true })
+      dialog.open(state)
     }),
   ))
 
@@ -182,12 +273,12 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
         )}
       </Show>
 
-      <Show when={addTunnelTarget()}>
+      <Show when={addTunnelTarget()} keyed>
         {target => (
           <AddTunnelDialog
-            workerId={target().id}
-            onClose={() => setAddTunnelTarget(null)}
-            onCreated={() => setAddTunnelTarget(null)}
+            target={target}
+            onClose={() => closeAddTunnel(target)}
+            onCreated={() => closeAddTunnel(target)}
           />
         )}
       </Show>
@@ -204,7 +295,10 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
     workerInfoFn: workerInfoStore.workerInfo,
     channelStatusFn: workerChannelStatusStore.getStatus,
     tunnelStore,
-    openAddTunnel: setAddTunnelTarget,
+    openAddTunnel: (target) => {
+      if (target.scope === opts.workerTrustScope() && !target.scope.signal.aborted)
+        setAddTunnelTarget(target)
+    },
     openWorkerSettings: setDeregisterTarget,
     openRegisterWorker: () => setShowRegisterWorker(true),
     Dialogs,

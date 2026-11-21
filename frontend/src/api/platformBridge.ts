@@ -1,3 +1,4 @@
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
 import { fromBinary } from '@bufbuild/protobuf'
@@ -22,6 +23,7 @@ import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
 import { isMac } from '~/lib/shortcuts/platform'
+import { currentWorkerTrustScope, setWorkerTrustScopeReader } from '~/lib/workerTrustScope'
 
 export type PlatformMode = 'web' | 'tauri-desktop-solo' | 'tauri-desktop-distributed' | 'tauri-mobile-distributed'
 
@@ -210,6 +212,19 @@ export function decodeProxyResponse(bytes: ArrayBuffer | Uint8Array): ProxyHttpR
   }
 }
 
+/**
+ * The Worker keys the Hub announced differ from the expectation the caller
+ * pinned. The two fingerprints are the human-comparison form of the key sets
+ * (the same four-word fingerprint the Worker logs); the Worker's log is the
+ * comparison source. Mirrors TunnelWorkerKeyMismatch in
+ * proto/leapmux/desktop/v1/frame.proto.
+ */
+export interface TunnelKeyMismatch {
+  expectedFingerprint: string
+  presentedFingerprint: string
+}
+
+/** Editable fields for a new tunnel. The bridge supplies trust and the native epoch. */
 export interface TunnelConfig {
   workerId: string
   type: 'port_forward' | 'socks5'
@@ -219,14 +234,26 @@ export interface TunnelConfig {
   bindPort: number
 }
 
-export interface TunnelInfo {
+export interface TunnelInfo extends TunnelConfig {
   id: string
-  workerId: string
-  type: 'port_forward' | 'socks5'
-  bindAddr: string
-  bindPort: number
-  targetAddr: string
-  targetPort: number
+  /** Set only on a stopped row: the Worker key mismatch that stopped the tunnel. */
+  keyMismatch?: TunnelKeyMismatch
+}
+
+/**
+ * A create's outcome: the created row, or the Worker key mismatch that
+ * refused it. A mismatch is a RESULT, not a failure — it carries the two
+ * fingerprints the caller compares and acts on. Any other refusal rejects.
+ * Mirrors the CreateTunnelResponse oneof.
+ */
+export type CreateTunnelResult
+  = | { kind: 'created', info: TunnelInfo }
+    | { kind: 'workerKeyMismatch', keyMismatch: TunnelKeyMismatch }
+
+/** One tunnel listing: the rows and the channel epoch they were read under. */
+export interface ListTunnelsResult {
+  tunnels: TunnelInfo[]
+  channelEpoch: string
 }
 
 /**
@@ -985,6 +1012,187 @@ export function observeWindowMode(onChange: (mode: WindowMode) => void): () => v
   }
 }
 
+type TauriInvoke = typeof import('@tauri-apps/api/core')['invoke']
+
+interface TunnelReset {
+  outgoingUserId: string
+  channelEpoch: string | undefined
+  attempt: Promise<void>
+  failed: boolean
+}
+
+interface ScopedTunnelReads {
+  scope: WorkerTrustScope
+  inFlight: Promise<ListTunnelsResult> | undefined
+  channelEpoch: string | undefined
+}
+
+let scopedTunnelReads: ScopedTunnelReads | undefined
+let pendingTunnelReset: TunnelReset | undefined
+let tunnelResetFailure: unknown | null = null
+const tunnelResetListeners = new Set<(failure: unknown | null) => void>()
+
+function deliverTunnelResetStatus(listener: (failure: unknown | null) => void, failure: unknown | null): void {
+  try {
+    listener(failure)
+  }
+  catch (err) {
+    log.warn('desktop tunnel reset status listener failed', err)
+  }
+}
+
+function publishTunnelResetFailure(failure: unknown | null): void {
+  tunnelResetFailure = failure
+  for (const listener of tunnelResetListeners)
+    deliverTunnelResetStatus(listener, failure)
+}
+
+function onTunnelResetStatusChange(listener: (failure: unknown | null) => void): () => void {
+  tunnelResetListeners.add(listener)
+  deliverTunnelResetStatus(listener, tunnelResetFailure)
+  return () => tunnelResetListeners.delete(listener)
+}
+
+function setTunnelTrustScope(readScope: () => WorkerTrustScope): () => void {
+  const dispose = setWorkerTrustScopeReader(readScope)
+  return () => {
+    dispose()
+    scopedTunnelReads = undefined
+  }
+}
+
+function requireTunnelAccount(scope: WorkerTrustScope): string {
+  scope.signal.throwIfAborted()
+  if (!scope.userId || scope !== currentWorkerTrustScope())
+    throw new Error('The account changed. Open the tunnel action again.')
+  return scope.userId
+}
+
+async function invokeTunnel<T>(invoke: TauriInvoke, command: string, args: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, args)
+  }
+  catch (cause) {
+    if (typeof cause === 'string' && cause)
+      throw new Error(cause)
+    throw cause
+  }
+}
+
+async function readNativeTunnels(invoke: TauriInvoke, expectedUserId: string): Promise<ListTunnelsResult> {
+  const result = await invokeTunnel<ListTunnelsResult>(invoke, 'list_tunnels', { expectedUserId })
+  if (!result?.channelEpoch || !Array.isArray(result.tunnels))
+    throw new Error('Could not read the desktop tunnel session. Try again.')
+  return result
+}
+
+async function readScopedTunnels(invoke: TauriInvoke, scope: WorkerTrustScope): Promise<ListTunnelsResult> {
+  const expectedUserId = requireTunnelAccount(scope)
+  const reads = scopedTunnelReads?.scope === scope
+    ? scopedTunnelReads
+    : (scopedTunnelReads = { scope, inFlight: undefined, channelEpoch: undefined })
+  const precedingRead = reads.inFlight
+  // Native epochs are opaque and native handlers can run in a different order
+  // from dispatch. Finish the preceding native read before taking this snapshot.
+  const read = (async () => {
+    if (precedingRead) {
+      await precedingRead.catch(() => undefined)
+      requireTunnelAccount(scope)
+    }
+    reads.channelEpoch = undefined
+    return readNativeTunnels(invoke, expectedUserId)
+  })()
+  reads.inFlight = read
+
+  let result: ListTunnelsResult
+  try {
+    result = await read
+  }
+  finally {
+    if (reads.inFlight === read)
+      reads.inFlight = undefined
+    requireTunnelAccount(scope)
+  }
+  reads.channelEpoch = result.channelEpoch
+  return result
+}
+
+async function performTunnelReset(reset: TunnelReset): Promise<void> {
+  try {
+    const { invoke } = await loadTauriCore()
+    // This read belongs to the retired account. It bypasses the barrier and
+    // contributes only the epoch to the reset. A retry reuses that epoch.
+    reset.channelEpoch ??= (await readNativeTunnels(invoke, reset.outgoingUserId)).channelEpoch
+    await invokeTunnel<void>(invoke, 'reset_tunnels', { channelEpoch: reset.channelEpoch })
+    pendingTunnelReset = undefined
+    publishTunnelResetFailure(null)
+  }
+  catch (cause) {
+    reset.failed = true
+    const failure = new Error('Retry the tunnel action to finish the desktop tunnel reset.', { cause })
+    publishTunnelResetFailure(failure)
+    throw failure
+  }
+}
+
+async function resetTunnels(outgoing: WorkerTrustScope): Promise<void> {
+  if (!isTauriApp() || !outgoing.userId)
+    return
+  // While a reset blocks admission, an intervening identity cannot own a
+  // tunnel in the successor epoch. Every transition during that wait shares
+  // the original reset and its captured epoch.
+  if (pendingTunnelReset) {
+    await waitForTunnelReset(false)
+    return
+  }
+  const reset: TunnelReset = {
+    outgoingUserId: outgoing.userId,
+    // An outstanding read can have observed a newer epoch. Take a private
+    // snapshot without waiting for a retired account's list queue.
+    channelEpoch: scopedTunnelReads?.scope === outgoing && !scopedTunnelReads.inFlight
+      ? scopedTunnelReads.channelEpoch
+      : undefined,
+    failed: false,
+    attempt: Promise.resolve(),
+  }
+  scopedTunnelReads = undefined
+  pendingTunnelReset = reset
+  reset.attempt = performTunnelReset(reset)
+  await reset.attempt
+}
+
+async function waitForTunnelReset(explicit: boolean): Promise<void> {
+  const reset = pendingTunnelReset
+  if (!reset)
+    return
+  if (reset.failed && explicit) {
+    reset.failed = false
+    reset.attempt = performTunnelReset(reset)
+  }
+  await reset.attempt
+}
+
+async function retryTunnelReset(): Promise<void> {
+  await waitForTunnelReset(true)
+}
+
+async function mutateTunnels<T>(
+  scope: WorkerTrustScope,
+  mutate: (invoke: TauriInvoke, listing: ListTunnelsResult) => Promise<T>,
+): Promise<T> {
+  requireTunnelAccount(scope)
+  try {
+    await waitForTunnelReset(true)
+    const { invoke } = await loadTauriCore()
+    const listing = await readScopedTunnels(invoke, scope)
+    requireTunnelAccount(scope)
+    return await mutate(invoke, listing)
+  }
+  finally {
+    requireTunnelAccount(scope)
+  }
+}
+
 export const platformBridge = {
   getCapabilities,
   getRuntimeState,
@@ -1135,22 +1343,59 @@ export const platformBridge = {
     await tauriInvoke('switch_mode')
     await refreshRuntimeState()
   },
-  async createTunnel(config: TunnelConfig): Promise<TunnelInfo> {
-    return tauriInvoke('create_tunnel', { config })
+  setTunnelTrustScope,
+  onTunnelResetStatusChange,
+  resetTunnels,
+  retryTunnelReset,
+  createTunnel(config: TunnelConfig, scope: WorkerTrustScope, resolveTrust: () => Promise<string>): Promise<CreateTunnelResult> {
+    return mutateTunnels(scope, async (invoke, { channelEpoch }) => {
+      const expectedWorkerKeysHex = await resolveTrust()
+      const expectedUserId = requireTunnelAccount(scope)
+      if (!expectedWorkerKeysHex)
+        throw new Error('Could not read a verified Worker key. Try again.')
+      return invokeTunnel<CreateTunnelResult>(invoke, 'create_tunnel', {
+        config: {
+          ...config,
+          expectedWorkerKeysHex,
+          expectedUserId,
+          channelEpoch,
+        },
+      })
+    })
   },
-  async deleteTunnel(tunnelId: string): Promise<void> {
-    await tauriInvoke('delete_tunnel', { tunnelId })
+  deleteTunnel(tunnelId: string, scope: WorkerTrustScope): Promise<void> {
+    return mutateTunnels(scope, async (invoke, { channelEpoch }) => {
+      await invokeTunnel<void>(invoke, 'delete_tunnel', {
+        tunnelId,
+        channelEpoch,
+        expectedUserId: requireTunnelAccount(scope),
+      })
+    })
   },
-  async resetTunnels(): Promise<void> {
-    // No-op off the desktop: tunnels only exist in the two desktop modes, so
-    // there is no sidecar to reset in the browser. Guarding here keeps callers
-    // (AuthContext logout / auth-error) mode-agnostic.
+  deleteTunnels(workerId: string, scope: WorkerTrustScope): Promise<PromiseSettledResult<void>[]> {
+    return mutateTunnels(scope, (invoke, { tunnels, channelEpoch }) => {
+      const expectedUserId = requireTunnelAccount(scope)
+      return Promise.allSettled(tunnels
+        .filter(tunnel => tunnel.workerId === workerId)
+        .map(tunnel => invokeTunnel<void>(invoke, 'delete_tunnel', {
+          tunnelId: tunnel.id,
+          channelEpoch,
+          expectedUserId,
+        })))
+    })
+  },
+  async listTunnels(scope: WorkerTrustScope): Promise<ListTunnelsResult> {
     if (!isTauriApp())
-      return
-    await tauriInvoke('reset_tunnels')
-  },
-  async listTunnels(): Promise<TunnelInfo[]> {
-    return (await tauriInvoke<TunnelInfo[]>('list_tunnels')) ?? []
+      return { tunnels: [], channelEpoch: '' }
+    requireTunnelAccount(scope)
+    try {
+      await waitForTunnelReset(false)
+      const { invoke } = await loadTauriCore()
+      return await readScopedTunnels(invoke, scope)
+    }
+    finally {
+      requireTunnelAccount(scope)
+    }
   },
   async listExternalApps(refresh = false): Promise<ExternalApp[]> {
     if (!isTauriApp())

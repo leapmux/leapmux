@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { covers, mergeNotes, newRow, parseAddress, portOf, rowFromAddress, rowIsLoopback, splitAddress, toAddress } from './networkAddress'
+import { covers, mergeNotes, newRow, parseAddress, portOf, rowFromAddress, rowIsLoopback, rowsRepeatAddress, splitAddress, toAddress } from './networkAddress'
 
 describe('splitAddress', () => {
   it('splits a canonical host and port', () => {
@@ -133,37 +133,38 @@ describe('covers (testdata/listen_merge_conformance.json)', () => {
 
 describe('mergeNotes', () => {
   const rows = (...addresses: string[]) => addresses.map(rowFromAddress)
-  const notes = (defaultAddress: string, ...addresses: string[]) =>
-    mergeNotes(defaultAddress, rows(...addresses)).map(n => `${n.absorbed} -> ${n.into}`)
+  const notes = (baseAddresses: string[], ...addresses: string[]) =>
+    mergeNotes(baseAddresses, rows(...addresses)).map(n => `${n.absorbed} -> ${n.into}`)
 
   it('says nothing while every address stands on its own', () => {
-    expect(notes('127.0.0.1:4327', '192.168.1.24:4327', '[::1]:9000')).toEqual([])
+    expect(notes(['127.0.0.1:4327'], '192.168.1.24:4327', '[::1]:9000')).toEqual([])
   })
 
   it('folds the -listen address into a wildcard row that covers it', () => {
-    expect(notes('127.0.0.1:4327', '*:4327')).toEqual(['127.0.0.1:4327 -> *:4327'])
+    expect(notes(['127.0.0.1:4327'], '*:4327')).toEqual(['127.0.0.1:4327 -> *:4327'])
+    expect(notes(['127.0.0.1:4327'], '*:04327')).toEqual(['127.0.0.1:4327 -> *:04327'])
   })
 
   // The direction the panel never reported: -listen is an ordinary entry, and a
   // wildcard there absorbs the row. The operator saw no note, then one address
   // where they expected two.
   it('folds a row into the -listen address that covers it', () => {
-    expect(notes('*:4327', '127.0.0.1:4327')).toEqual(['127.0.0.1:4327 -> *:4327'])
+    expect(notes(['*:4327'], '127.0.0.1:4327')).toEqual(['127.0.0.1:4327 -> *:4327'])
   })
 
   // The other half the `host === '*'` test missed: 0.0.0.0 is a wildcard the
   // interface menu can produce, and it covers every IPv4 address.
   it('folds into a wildcard the panel does not spell with a star', () => {
-    expect(notes('127.0.0.1:4327', '0.0.0.0:4327')).toEqual(['127.0.0.1:4327 -> 0.0.0.0:4327'])
-    expect(notes('[::1]:4327', '[::]:4327')).toEqual(['[::1]:4327 -> [::]:4327'])
+    expect(notes(['127.0.0.1:4327'], '0.0.0.0:4327')).toEqual(['127.0.0.1:4327 -> 0.0.0.0:4327'])
+    expect(notes(['[::1]:4327'], '[::]:4327')).toEqual(['[::1]:4327 -> [::]:4327'])
   })
 
   it('leaves a different port alone, because it is a different socket', () => {
-    expect(notes('127.0.0.1:4327', '*:8080')).toEqual([])
+    expect(notes(['127.0.0.1:4327'], '*:8080')).toEqual([])
   })
 
   it('folds every covered address, not only the first', () => {
-    expect(notes('127.0.0.1:4327', '*:4327', '192.168.1.24:4327', '[::1]:4327')).toEqual([
+    expect(notes(['127.0.0.1:4327'], '*:4327', '192.168.1.24:4327', '[::1]:4327')).toEqual([
       '127.0.0.1:4327 -> *:4327',
       '192.168.1.24:4327 -> *:4327',
       '[::1]:4327 -> *:4327',
@@ -173,27 +174,55 @@ describe('mergeNotes', () => {
   // The chain: the third address folds into what the hub BINDS, not into the
   // 0.0.0.0 row that is itself absorbed.
   it('names the final absorber, never an intermediate one', () => {
-    expect(notes('', '0.0.0.0:4327', '*:4327', '127.0.0.1:4327')).toEqual([
+    expect(notes([], '0.0.0.0:4327', '*:4327', '127.0.0.1:4327')).toEqual([
       '0.0.0.0:4327 -> *:4327',
       '127.0.0.1:4327 -> *:4327',
     ])
   })
 
   it('reports a duplicated row as absorbed by the earlier one', () => {
-    expect(notes('', '127.0.0.1:4327', '127.0.0.1:4327')).toEqual(['127.0.0.1:4327 -> 127.0.0.1:4327'])
+    expect(notes([], '127.0.0.1:4327', '127.0.0.1:4327')).toEqual(['127.0.0.1:4327 -> 127.0.0.1:4327'])
+  })
+
+  it('recognizes duplicate editable addresses after canonicalization', () => {
+    expect(rowsRepeatAddress(rows('127.0.0.1:4327', '127.0.0.1:04327'))).toBe(true)
+    expect(rowsRepeatAddress(rows('127.0.0.1:4327', '127.0.0.2:4327'))).toBe(false)
   })
 
   it('works with no -listen address to report', () => {
-    expect(notes('', '*:4327', '127.0.0.1:4327')).toEqual(['127.0.0.1:4327 -> *:4327'])
+    expect(notes([], '*:4327', '127.0.0.1:4327')).toEqual(['127.0.0.1:4327 -> *:4327'])
   })
 
   // Two half-typed rows both carry no port. Comparing those ports for equality
   // would make each cover the other, and the panel would promise a fold between
   // two addresses that do not exist yet.
   it('ignores a row whose port is not a port', () => {
-    expect(mergeNotes('127.0.0.1:4327', [
+    expect(mergeNotes(['127.0.0.1:4327'], [
       newRow('*', ''),
       newRow('*', '99999'),
     ])).toEqual([])
+  })
+
+  // The bases are the WHOLE ordered TCP list, so a fold is reported for a
+  // secondary -listen address exactly as for the first, in both directions.
+  it('folds a secondary -listen address into a row that covers it', () => {
+    expect(notes(['127.0.0.1:4327', '127.0.0.1:9000'], '*:9000')).toEqual([
+      '127.0.0.1:9000 -> *:9000',
+    ])
+  })
+
+  it('folds a row into a secondary -listen address that covers it', () => {
+    expect(notes(['127.0.0.1:4327', '*:9000'], '127.0.0.1:9000')).toEqual([
+      '127.0.0.1:9000 -> *:9000',
+    ])
+  })
+
+  // Two identical port-zero requests resolve to two ports, so the bases never
+  // repeat -- but a duplicated configured base deserves the same note a
+  // duplicated row gets: the earlier entry absorbs the later one.
+  it('reports a duplicated base as absorbed by the earlier one', () => {
+    expect(notes(['127.0.0.1:4327', '127.0.0.1:4327'])).toEqual([
+      '127.0.0.1:4327 -> 127.0.0.1:4327',
+    ])
   })
 })

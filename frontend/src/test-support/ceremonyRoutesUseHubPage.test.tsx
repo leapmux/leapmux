@@ -74,6 +74,11 @@ vi.mock('~/api/platformBridge', () => ({
   desktopHub: () => ({ kind: 'remote', url: 'https://hub.example' }),
   openExternalUrl: vi.fn(async () => {}),
   platformBridge: {
+    setTunnelTrustScope: vi.fn(() => vi.fn()),
+    onTunnelResetStatusChange: vi.fn((listener: (failure: unknown | null) => void) => {
+      listener(null)
+      return vi.fn()
+    }),
     startBrowserAuth: vi.fn(),
     cancelBrowserAuth: vi.fn(),
     switchMode: vi.fn(),

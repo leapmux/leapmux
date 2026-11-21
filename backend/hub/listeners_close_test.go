@@ -49,7 +49,7 @@ func TestListenerOwnershipDoesNotRaceHTTPShutdown(t *testing.T) {
 	addr, err := listenset.Parse(raw.Addr().String())
 	require.NoError(t, err)
 	server := &http.Server{ReadHeaderTimeout: 5 * time.Second}
-	set := newListenerSet([]baseBinding{{ln: ln, addr: addr}}, make(chan error, 1))
+	set := newListenerSet([]baseBinding{{ln: ln, resolved: resolvePort(addr, ln)}}, make(chan error, 1))
 	set.setServer(server)
 	t.Cleanup(func() {
 		release()

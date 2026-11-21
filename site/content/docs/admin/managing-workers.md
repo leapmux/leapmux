@@ -247,7 +247,7 @@ leapmux worker deregister
 
 ## Tunnels (desktop app)
 
-A **tunnel** gives you local access to a service the Worker can reach — a dev server, a database, or any TCP endpoint on the Worker's machine or private network. The traffic uses the Worker's existing end-to-end-encrypted channel. While the Hub only relays ciphertext, it cannot read the tunneled traffic. In remote-Hub mode a tunnel uses the same Hub session as the rest of the desktop app. Signing out ends the tunnels. The desktop app's tunnels keep no key pin. In remote-Hub mode, a Hub that substitutes a Worker key can read tunneled traffic.
+A **tunnel** gives you local access to a service the Worker can reach — a dev server, a database, or any TCP endpoint on the Worker's machine or private network. The traffic uses the Worker's existing end-to-end-encrypted channel. While the Hub only relays ciphertext, it cannot read the tunneled traffic. In remote-Hub mode a tunnel uses the same Hub session as the rest of the desktop app, and signing out ends the tunnels. A tunnel keeps no pin of its own. It carries the Worker key the desktop app already trusts as its admission expectation, so a Hub that substitutes a Worker key stops the tunnel instead of reading it. See [Tunnel key trust](#tunnel-key-trust) below.
 
 Tunnels are a **desktop-app feature**. They are available in both solo and distributed desktop modes, but not in a plain browser (the browser cannot open the local listening sockets a tunnel needs). You manage them from a Worker's sidebar context menu, where — **when tunnels are available and you own the Worker** — these items appear:
 
@@ -277,9 +277,22 @@ So a port-forward needs a `targetAddr` and `targetPort` (the service the Worker 
 
 In both cases you can override `bindAddr`/`bindPort` if the default port is taken. The bind address must be loopback, because the tunnel listener is unauthenticated. The dialog reports the IP and port the tunnel actually bound to once it is running.
 
+### Tunnel key trust
+
+A tunnel uses the account’s browser pin for the Worker. Browser channels use the same record, listed under **Preferences → Advanced → Trusted worker keys**.
+
+- **First contact.** If the account has no pin, **Create** opens a browser channel using the key the Hub presents. The browser verifies that the peer holds the corresponding private keys and that the session responds before recording the composite public key. This first verified session establishes which key the account trusts. Compare the fingerprint with the Worker log over a trusted channel on first use if you can.
+- **Shared trust.** Each new tunnel uses the stored browser pin. If you removed the pin, the next standard creation must verify a new browser session. An existing tunnel keeps the key it started with.
+- **Mismatch on reconnect.** When the Hub reports a key that differs from the one the tunnel started with, the tunnel stops. Its row shows the expected and presented fingerprints.
+- **Exact-key confirmation before recreation.** Select **Verify Worker key** on the stopped row or in the **Add tunnel** dialog. When the browser shows *Worker public key changed*, compare the presented fingerprint with the one in the Worker log before accepting. The stopped row opens a prefilled form after verification. Select **Create** to submit it. If the pin disappears, the form preserves its fields and offers **Trust Worker on first contact**. This action proves and records the Hub's next Worker announcement. If another tab records a pin first, the form returns to **Verify Worker key**. Creation always requires a separate **Create** submission after either proof.
+
+{{< callout type="warning" >}}
+Every key mismatch is a serious signal. Do not accept a changed key to make it work. Reject it, and confirm the fingerprint with whoever runs the Worker. See [Security & Threat Model](/docs/admin/security/#tunnel-key-trust) for the reasoning.
+{{< /callout >}}
+
 ## TOFU key pinning
 
-LeapMux end-to-end encrypts Frontend↔Worker traffic. A Hub that only relays it cannot read the content. The Hub is still trusted for identity and Frontend code. **TOFU (trust on first use) static-key pinning** detects a Hub substituting a Worker key in a channel your browser opens. Pinning does not stop a Hub opening its own channel or serving modified Frontend code.
+LeapMux end-to-end encrypts Frontend↔Worker traffic. A Hub that only relays it cannot read the content. The Hub is still trusted for identity and Frontend code. **TOFU (trust on first use) static-key pinning** detects a Hub substituting a different Worker key after the browser records a pin. Pinning does not stop a Hub opening its own channel or serving modified Frontend code.
 
 [Security & Threat Model](/docs/admin/security/) covers that protection's scope, the composite keypair, and the fingerprint scheme. This section explains the three pin stores and how to reset a pin in each.
 
@@ -312,13 +325,13 @@ Later connection (key changed):
    └─────────────────────────────────────┘
 ```
 
-There are three independent pin stores, depending on *who* is connecting. The desktop app's tunnels keep no pin. The
+There are three independent pin stores, depending on *who* is connecting. The desktop app's tunnels keep none of their own: they admit the browser's pin (see [Tunnel key trust](#tunnel-key-trust)). The
 browser store is per account: two people who sign in to LeapMux from the same
 browser pin workers independently, and neither sees the other's pins.
 
 | Client | Pin store | How to reset a pin |
 | --- | --- | --- |
-| **Your browser** (Frontend) | IndexedDB (database `leapmux-kv`, key `leapmux:u:<your-user-id>:key-pins`, kept about one year and refreshed on use) | Accept the in-app *Worker public key changed* dialog, or remove the pin under **Preferences → Advanced → Trusted worker keys**. |
+| **Your browser** (Frontend) | IndexedDB (strict database `leapmux-trust`, key `leapmux:u:<your-user-id>:key-pins`, kept about one year and refreshed on use) | Accept the in-app *Worker public key changed* dialog, or remove the pin under **Preferences → Advanced → Trusted worker keys**. |
 | **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux worker cross-worker-pins remove --target-worker-id=<id>` |
 | **The `leapmux control` CLI** | `<config-dir>/<hub-host>/pins.json` | `leapmux control worker pins remove --worker-id=<id>` |
 

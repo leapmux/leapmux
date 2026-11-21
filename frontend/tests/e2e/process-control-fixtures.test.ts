@@ -250,7 +250,12 @@ describe('initial process fixture port ownership', () => {
     startup.root = mkdtempSync(join(scratch, 'process-fixture-startup-'))
     children = []
     vi.mocked(findFreePort).mockResolvedValue(12345)
-    vi.mocked(waitForHubStart).mockResolvedValue({ hubUrl: 'http://localhost:24680', listen: '127.0.0.1:24680' })
+    vi.mocked(waitForHubStart).mockResolvedValue({
+      hubUrl: 'http://localhost:24680',
+      listen: '127.0.0.1:24680',
+      tcp: ['127.0.0.1:24680'],
+      local: ['unix:/run/hub.sock'],
+    })
     vi.mocked(waitForNewOnlineWorkerViaAPI).mockResolvedValue('assigned-worker')
     vi.mocked(spawnTestProcess).mockImplementation((_command, args) => {
       // The registration command is its own short-lived process.

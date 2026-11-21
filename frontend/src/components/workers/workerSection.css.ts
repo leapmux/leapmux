@@ -35,3 +35,31 @@ export const tunnelIcon = style({
   flexShrink: 0,
   color: 'var(--muted-foreground)',
 })
+
+/**
+ * The detail block under a stopped tunnel row: why it stopped, both key
+ * fingerprints, and the two ways out. It sits in the row's own indent so it
+ * reads as part of that tunnel rather than as a sibling row.
+ */
+export const tunnelStopped = style({
+  paddingLeft: '20px',
+  paddingBottom: 'var(--space-2)',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-2)',
+})
+
+export const tunnelStoppedReason = style({
+  color: 'var(--danger)',
+})
+
+export const tunnelFingerprints = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
+})
+
+export const tunnelStoppedActions = style({
+  display: 'flex',
+  gap: 'var(--space-2)',
+})

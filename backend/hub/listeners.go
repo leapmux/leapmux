@@ -143,8 +143,8 @@ type listenerSet struct {
 // it stands for. The two travel together so the set cannot register an address
 // against the wrong listener.
 type baseBinding struct {
-	ln   net.Listener
-	addr listenset.Addr
+	ln       net.Listener
+	resolved listenset.Addr
 }
 
 // newListenerSet builds the set around the already-bound base listeners.
@@ -167,9 +167,8 @@ func newListenerSet(bound []baseBinding, serveErr chan<- error) *listenerSet {
 	}
 	s.bases = make([]listenset.Addr, 0, len(bound))
 	for _, b := range bound {
-		resolved := resolvePort(b.addr, b.ln)
-		s.bases = append(s.bases, resolved)
-		s.active[resolved.String()] = &boundListener{ln: &ownedListener{Listener: b.ln}, addr: resolved, source: SourceListen}
+		s.bases = append(s.bases, b.resolved)
+		s.active[b.resolved.String()] = &boundListener{ln: &ownedListener{Listener: b.ln}, addr: b.resolved, source: SourceListen}
 	}
 	return s
 }
@@ -599,6 +598,22 @@ func (s *listenerSet) Bound() []listenset.Bound {
 	return out
 }
 
+// BaseTCPAddresses reports the addresses --listen specifies, in bind order, each
+// with the port its own listener resolved to. It is the full TCP merge input
+// an extra address folds into, read from the base list built at startup and
+// never rewritten: a reconfiguration merges the bases away in the LIVE report
+// (see Bound) but cannot take them out of the wanted set, and this is the
+// wanted set in the DIAL form a client connects to.
+func (s *listenerSet) BaseTCPAddresses() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.bases))
+	for _, b := range s.bases {
+		out = append(out, b.DialAddr())
+	}
+	return out
+}
+
 // PrimaryListenAddr is the address a browser-facing URL should give: the
 // first --listen address that is still bound, else the first extra the hub
 // bound. With several --listen addresses the first in configuration order is
@@ -700,9 +715,24 @@ type listenReporter struct {
 	// default filled in when it named none), for a hub with nothing bound.
 	// The first is the primary; see Config.PrimaryTCPListen.
 	configured []string
+	// local is the local IPC URLs the hub opened at startup, in bind order.
+	// A local bind failure fails startup, so every URL here is one the hub
+	// answers on.
+	local []string
 }
 
 func (r listenReporter) Bound() []listenset.Bound { return r.set.Bound() }
+
+// BaseTCPAddresses reports the merge input in bind order with resolved ports,
+// straight from the set's base list.
+func (r listenReporter) BaseTCPAddresses() []string { return r.set.BaseTCPAddresses() }
+
+// LocalIPCAddresses reports the startup local endpoints. The lists are
+// INDEPENDENT: the TCP bases and the local endpoints are separate answers,
+// and each call hands out its own copy of what is an immutable startup record.
+func (r listenReporter) LocalIPCAddresses() []string {
+	return append([]string(nil), r.local...)
+}
 
 func (r listenReporter) PrimaryListenAddr() string {
 	if addr := r.set.PrimaryListenAddr(); addr != "" {

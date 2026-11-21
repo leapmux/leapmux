@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { deferred } from '~/test-support/async'
 import { createInflightCache } from './inflightCache'
 
 describe('createInflightCache', () => {
@@ -47,6 +48,22 @@ describe('createInflightCache', () => {
     expect(cache.has('k')).toBe(false)
   })
 
+  it('preserves a synchronous factory throw and lets a retry run immediately', async () => {
+    const cache = createInflightCache<string, number>()
+    const err = new Error('sync boom')
+    // The factory throws before it returns any promise, so the flight settles
+    // inside run() itself. The original error must still surface, the entry
+    // must not stay stuck on that settled promise, and a retry must invoke the
+    // factory again at once rather than replaying the stale rejection.
+    await expect(cache.run('k', () => {
+      throw err
+    })).rejects.toBe(err)
+    expect(cache.has('k')).toBe(false)
+    const factory = vi.fn(async () => 5)
+    await expect(cache.run('k', factory)).resolves.toBe(5)
+    expect(factory).toHaveBeenCalledTimes(1)
+  })
+
   it('exposes has() for callers that want a pre-check', async () => {
     const cache = createInflightCache<string, number>()
     expect(cache.has('k')).toBe(false)
@@ -82,12 +99,18 @@ describe('createInflightCache', () => {
 
     // A second caller after clear() starts a fresh factory invocation even
     // though the first is still in flight.
-    const factory = vi.fn(async () => 8)
+    const replacementResult = deferred<number>()
+    const factory = vi.fn(() => replacementResult.promise)
     const p2 = cache.run('k', factory)
     expect(factory).toHaveBeenCalledTimes(1)
 
     release()
     await expect(p).resolves.toBe(7)
-    await expect(p2).resolves.toBe(8)
+    const unexpectedFactory = vi.fn(async () => 9)
+    const third = cache.run('k', unexpectedFactory)
+    expect(third).toBe(p2)
+    expect(unexpectedFactory).not.toHaveBeenCalled()
+    replacementResult.resolve(8)
+    await expect(third).resolves.toBe(8)
   })
 })

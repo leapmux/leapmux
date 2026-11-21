@@ -1,12 +1,17 @@
 import type { StorageBroadcast, StorageChange } from '~/lib/browserStorageDb'
-import { IDBFactory } from 'fake-indexeddb'
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   accountStorageKey,
+  discardCorruptKeyPinMap,
   flushStorageWrites,
   hydrateStorageAccount,
   KEY_BROWSER_PREFS,
   KEY_CHANNEL_RELAY_SEQ,
+  KEY_KEY_PINS,
+  KEY_KEY_PINS_REMOVAL_REVISION,
+  KeyPinMissingReviewError,
+  LOCAL_KEY_SPECS,
   localStorageGet,
   localStorageLoad,
   localStorageRemove,
@@ -14,19 +19,25 @@ import {
   localStorageStore,
   localStorageStoreMany,
   mirrorEntryForTests,
+  onKeyPinsInvalidated,
   onStorageChanged,
   PREFIX_EDITOR_DRAFT,
   PREFIX_FILES_SHOW_HIDDEN,
+  readKeyPinState,
   resetBrowserStorageForTests,
   resetStorageAccountForTests,
+  runCleanup,
   setStorageAccount,
   setStorageAccountForTests,
   storageAccountFor,
   storedKeyFor,
   TEST_HUB,
+  updateKeyPinState,
 } from '~/lib/browserStorage'
-import { enqueueKvPut, kvInstanceIdForTests, peekKvPending, readKvRow } from '~/lib/browserStorageDb'
+import { enqueueKvPut, kvInstanceIdForTests, peekKvPending, readKvRow, readTrustRowForTests, writeTrustRowForTests } from '~/lib/browserStorageDb'
+import { IDB_NATIVE_SCHEMA_VERSION, IDB_TRUST_DATABASE_NAME } from '~/lib/idb'
 import { TEST_ACCOUNT, TEST_USER_ID } from '~/test-support/crdtBridge'
+import { seedKeyPin, testKeyPinHex } from '~/test-support/keyPins'
 
 // The IndexedDB half of the storage gateway: what the mirror loads, what the
 // write queue commits, what a refused write reports, and what crosses to
@@ -72,6 +83,13 @@ afterEach(() => {
   resetBrowserStorageForTests()
   vi.unstubAllGlobals()
 })
+
+function idbRequestResult<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
 
 describe('hydrateStorageAccount', () => {
   it('loads the account\'s stored rows into the mirror', async () => {
@@ -821,6 +839,150 @@ describe('cross-tab changes', () => {
 
     expect(heard).toEqual([null])
   })
+
+  // The pin rows carry key material, so their values never travel on the
+  // channel: a committed change publishes a key-only hint and the receiver
+  // re-reads. The hint identifies the stored row and nothing else.
+  it('broadcasts key-only invalidation hints after both a pin write and a removal', async () => {
+    const { seen, drain, stop } = recordPublished()
+
+    await seedKeyPin('w-hint', {
+      publicKeyHex: testKeyPinHex('aa'),
+      firstSeen: 1,
+    })
+    await updateKeyPinState({ kind: 'remove', workerId: 'w-hint' })
+    await drain()
+    stop()
+
+    const broadcast = {
+      from: kvInstanceIdForTests(),
+      changes: [
+        {
+          k: storedKeyFor(KEY_KEY_PINS),
+          invalidate: true,
+        },
+      ],
+    }
+    expect(seen).toEqual([broadcast, broadcast])
+  })
+
+  it('delivers a pin hint from another tab and ignores another account\'s', async () => {
+    const hints: string[] = []
+    const stop = onKeyPinsInvalidated(change => hints.push(change.k))
+
+    await announce([
+      {
+        k: storedKeyFor(KEY_KEY_PINS)!,
+        invalidate: true,
+      },
+    ])
+    expect(hints).toEqual([
+      storedKeyFor(KEY_KEY_PINS)!,
+    ])
+
+    hints.length = 0
+    await announce([
+      {
+        k: accountStorageKey('someone-else', KEY_KEY_PINS),
+        invalidate: true,
+      },
+    ])
+    expect(hints).toEqual([])
+    stop()
+  })
+
+  // The sweep's expiry of a pin map is a committed change like any other, and
+  // takes the pin notification path -- including toward this tab's own
+  // subscribers, since this tab is the one sweeping.
+  it('routes a swept pin map through the pin notification path', async () => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    await writeTrustRowForTests({
+      k: mapKey,
+      v: {
+        w1: {
+          publicKeyHex: testKeyPinHex('aa'),
+          firstSeen: 1,
+        },
+      },
+      e: Date.now() - 1000,
+    })
+    await writeTrustRowForTests({ k: revisionKey, v: 7, e: Date.now() - 1000 })
+
+    const hints: string[] = []
+    const stopHint = onKeyPinsInvalidated(change => hints.push(change.k))
+    const { seen, drain, stop } = recordPublished()
+
+    await runCleanup()
+    await drain()
+    stopHint()
+    stop()
+
+    // Both delivery paths: this tab's subscribers and the broadcast.
+    expect(hints).toEqual([mapKey])
+    expect(seen).toEqual([
+      {
+        from: kvInstanceIdForTests(),
+        changes: [
+          { k: mapKey, invalidate: true },
+        ],
+      },
+    ])
+    // Inspect the physical rows before a gateway read can expire the map itself.
+    const db = await idbRequestResult(indexedDB.open(IDB_TRUST_DATABASE_NAME))
+    try {
+      const store = db.transaction('entries', 'readonly').objectStore('entries')
+      const [map, revision] = await Promise.all([
+        idbRequestResult(store.get(mapKey)),
+        idbRequestResult(store.get(revisionKey)),
+      ])
+      expect(map).toBeUndefined()
+      expect(revision).toMatchObject({ v: 7 })
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  it('finishes preference cleanup when the strict trust database is malformed', async () => {
+    const stored = storedKeyFor(SYNC_KEY)!
+    localStorageSet(SYNC_KEY, 'cached')
+    await flushStorageWrites()
+    enqueueKvPut({ k: stored, v: 'cached', e: Date.now() - 1 }, { publish: false })
+    await flushStorageWrites()
+    expect(mirrorEntryForTests(stored)?.v).toBe('cached')
+
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(IDB_TRUST_DATABASE_NAME, IDB_NATIVE_SCHEMA_VERSION)
+      request.onerror = () => reject(request.error)
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('wrong-store')
+      }
+      request.onsuccess = () => {
+        request.result.close()
+        resolve()
+      }
+    })
+
+    const { seen, drain, stop } = recordPublished()
+    try {
+      await expect(runCleanup()).resolves.toBeUndefined()
+      await drain()
+      expect(await readKvRow(stored)).toBeUndefined()
+      expect(mirrorEntryForTests(stored)).toBeUndefined()
+      expect(seen).toEqual([
+        {
+          from: kvInstanceIdForTests(),
+          changes: [
+            { k: stored, removed: true },
+          ],
+        },
+      ])
+    }
+    finally {
+      stop()
+    }
+  })
 })
 
 describe('localStorageStoreMany', () => {
@@ -900,5 +1062,702 @@ describe('localStorageStoreMany', () => {
     setStorageAccountForTests(TEST_USER_ID)
     expect(await localStorageLoad(first)).toBeUndefined()
     expect(await localStorageLoad(second)).toBeUndefined()
+  })
+})
+
+// The pin gateway: the two pin rows, their expiry policies, and the strict
+// transactional access that makes a pin decision durable or refused.
+describe('the pin gateway', () => {
+  const firstContact = {
+    kind: 'record',
+    workerId: WORKER,
+    pin: {
+      publicKeyHex: testKeyPinHex('aa'),
+      firstSeen: 1,
+    },
+    expectRevision: 0,
+    expectPin: null,
+  } as const
+
+  it('treats missing pin rows as confirmed empty state', async () => {
+    expect(await readKeyPinState()).toEqual({ pins: {}, removalRevision: 0 })
+  })
+
+  it('treats an inherited property as an absent worker ID', async () => {
+    const workerId = 'constructor'
+    await updateKeyPinState({ ...firstContact, workerId })
+    expect((await readKeyPinState()).pins[workerId]).toEqual(firstContact.pin)
+    await updateKeyPinState({ kind: 'remove', workerId })
+    expect(await readKeyPinState()).toEqual({ pins: {}, removalRevision: 1 })
+  })
+
+  it('uses the captured namespace for a deferred pin decision', async () => {
+    setStorageAccountForTests(OTHER)
+    await updateKeyPinState(firstContact, { accountId: ACCOUNT })
+
+    expect(await readKeyPinState()).toEqual({ pins: {}, removalRevision: 0 })
+    expect((await readKeyPinState({ accountId: ACCOUNT })).pins[WORKER]).toEqual(firstContact.pin)
+  })
+
+  it.each(['get', 'put'] as const)('rolls back when the opening retires on a live %s request', async (method) => {
+    const controller = new AbortController()
+    const retirement = new Error('the opening retired')
+    const original = IDBObjectStore.prototype[method]
+    const request = vi.spyOn(IDBObjectStore.prototype, method).mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<typeof original>
+    ) {
+      const result = Reflect.apply(original, this, args) as IDBRequest
+      result.addEventListener('success', () => controller.abort(retirement), { once: true })
+      return result
+    })
+    try {
+      await expect(updateKeyPinState(firstContact, { signal: controller.signal })).rejects.toThrow('the opening retired')
+    }
+    finally {
+      request.mockRestore()
+    }
+    expect(await readKeyPinState()).toEqual({ pins: {}, removalRevision: 0 })
+  })
+
+  it('rolls back the pin deletion and revision write when retirement aborts a live transaction', async () => {
+    await updateKeyPinState(firstContact)
+    const before = await readKeyPinState()
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    const controller = new AbortController()
+    const retirement = new Error('the opening retired after both mutations')
+    const originalPut = IDBObjectStore.prototype.put
+    const txAborted = vi.fn()
+    const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = originalPut.apply(this, args)
+      if (args[0]?.k === revisionKey) {
+        this.transaction.addEventListener('abort', txAborted, { once: true })
+        request.addEventListener('success', () => controller.abort(retirement), { once: true })
+      }
+      return request
+    })
+    const invalidation = vi.fn()
+    const stop = onKeyPinsInvalidated(invalidation)
+    try {
+      await expect(updateKeyPinState({ kind: 'removeAll' }, { signal: controller.signal })).rejects.toThrow(retirement)
+      expect(await readKeyPinState()).toEqual(before)
+      expect(txAborted).toHaveBeenCalledOnce()
+      expect(invalidation).not.toHaveBeenCalled()
+    }
+    finally {
+      put.mockRestore()
+      stop()
+    }
+  })
+
+  it('keeps a committed pin when the opening retires afterward', async () => {
+    const controller = new AbortController()
+    await updateKeyPinState(firstContact, { signal: controller.signal })
+    controller.abort()
+
+    expect((await readKeyPinState()).pins[WORKER]).toEqual(firstContact.pin)
+  })
+
+  it('keeps the committed pin and publishes its hint when retirement precedes Dexie completion', async () => {
+    const controller = new AbortController()
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    const revision = { k: revisionKey, v: 7, e: Number.POSITIVE_INFINITY }
+    await writeTrustRowForTests(revision)
+    const invalidation = vi.fn()
+    const stop = onKeyPinsInvalidated(invalidation)
+    const originalPut = IDBObjectStore.prototype.put
+    const retired = vi.fn()
+    const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (args[0]?.k === mapKey) {
+        const tx = this.transaction
+        const oncomplete = tx.oncomplete
+        tx.oncomplete = (event) => {
+          retired()
+          controller.abort(new Error('the opening retired at native completion'))
+          oncomplete?.call(tx, event)
+        }
+      }
+      return originalPut.apply(this, args)
+    })
+
+    try {
+      await expect(updateKeyPinState({ ...firstContact, expectRevision: revision.v }, { signal: controller.signal }))
+        .resolves
+        .toEqual({
+          pins: { [WORKER]: firstContact.pin },
+          removalRevision: revision.v,
+        })
+      expect(retired).toHaveBeenCalledOnce()
+      expect(await readKeyPinState()).toEqual({
+        pins: { [WORKER]: firstContact.pin },
+        removalRevision: revision.v,
+      })
+      expect(await readTrustRowForTests(revisionKey)).toEqual(revision)
+      expect(invalidation).toHaveBeenCalledExactlyOnceWith({ k: mapKey, invalidate: true })
+    }
+    finally {
+      put.mockRestore()
+      stop()
+    }
+  })
+
+  it.each([
+    {
+      description: 'an empty key',
+      record: { publicKeyHex: '' },
+    },
+    {
+      description: 'a shortened key',
+      record: { publicKeyHex: 'aa' },
+    },
+    {
+      description: 'a key with an extra byte',
+      record: { publicKeyHex: `${testKeyPinHex('aa')}aa` },
+    },
+    {
+      description: 'an uppercase key',
+      record: {
+        publicKeyHex: testKeyPinHex('AA'),
+      },
+    },
+    {
+      description: 'a nonhex key of the correct length',
+      record: {
+        publicKeyHex: testKeyPinHex('gg'),
+      },
+    },
+    {
+      description: 'a key ending in a newline',
+      record: { publicKeyHex: `${testKeyPinHex('aa').slice(1)}\n` },
+    },
+    {
+      description: 'a fractional timestamp',
+      record: { firstSeen: 1.25 },
+    },
+    {
+      description: 'an unrepresentable timestamp',
+      record: { firstSeen: 8_640_000_000_000_001 },
+    },
+    {
+      description: 'a nonfinite timestamp',
+      record: { firstSeen: Number.POSITIVE_INFINITY },
+    },
+  ])('refuses $description on write and keeps an expired corrupt row visible', async ({ record }) => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const otherMapKey = accountStorageKey(OTHER, KEY_KEY_PINS)
+    const pin = {
+      ...firstContact.pin,
+      ...record,
+    }
+    const invalidation = vi.fn()
+    const stop = onKeyPinsInvalidated(invalidation)
+    try {
+      await expect(updateKeyPinState({ ...firstContact, pin })).rejects.toThrow(/invalid pin record/)
+      expect(await readTrustRowForTests(mapKey)).toBeUndefined()
+      expect(invalidation).not.toHaveBeenCalled()
+
+      const expiration = Date.now() - 1
+      const corrupt = {
+        k: mapKey,
+        v: { [WORKER]: pin },
+        e: expiration,
+      }
+      const valid = {
+        k: otherMapKey,
+        v: { [WORKER]: firstContact.pin },
+        e: expiration,
+      }
+      await Promise.all([
+        writeTrustRowForTests(corrupt),
+        writeTrustRowForTests(valid),
+      ])
+
+      await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
+      await expect(updateKeyPinState({ kind: 'removeAll' })).rejects.toThrow(/corrupt/)
+      await runCleanup()
+      expect(await readTrustRowForTests(otherMapKey)).toBeUndefined()
+      expect(await readTrustRowForTests(mapKey)).toEqual(corrupt)
+      await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
+      expect(invalidation).not.toHaveBeenCalled()
+    }
+    finally {
+      stop()
+    }
+  })
+
+  it.each([0, -8_640_000_000_000_000, 8_640_000_000_000_000])('accepts the representable timestamp %s', async (firstSeen) => {
+    const pin = { ...firstContact.pin, firstSeen }
+    await updateKeyPinState({ ...firstContact, pin })
+    expect((await readKeyPinState()).pins[WORKER]).toEqual(pin)
+  })
+
+  it('discards a still-corrupt account pin map and advances its valid revision', async () => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    await writeTrustRowForTests({ k: mapKey, v: 'corrupt', e: Date.now() + 60_000 })
+    await writeTrustRowForTests({ k: revisionKey, v: 6, e: Number.POSITIVE_INFINITY })
+
+    await discardCorruptKeyPinMap()
+    await expect(readKeyPinState()).resolves.toEqual({ pins: {}, removalRevision: 7 })
+    expect(await readTrustRowForTests(mapKey)).toBeUndefined()
+  })
+
+  it('preserves a corrupt pin map when its identity scope has retired', async () => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    const corrupt = { k: mapKey, v: 'corrupt', e: Date.now() + 60_000 }
+    const revision = { k: revisionKey, v: 6, e: Number.POSITIVE_INFINITY }
+    await Promise.all([
+      writeTrustRowForTests(corrupt),
+      writeTrustRowForTests(revision),
+    ])
+    const lifetime = new AbortController()
+    lifetime.abort()
+
+    await expect(discardCorruptKeyPinMap({ accountId: ACCOUNT, signal: lifetime.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(await readTrustRowForTests(mapKey)).toEqual(corrupt)
+    expect(await readTrustRowForTests(revisionKey)).toEqual(revision)
+  })
+
+  it('rolls back corrupt-map discard when the identity retires during its reads', async () => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    const corrupt = { k: mapKey, v: 'corrupt', e: Date.now() + 60_000 }
+    const revision = { k: revisionKey, v: 6, e: Number.POSITIVE_INFINITY }
+    await Promise.all([
+      writeTrustRowForTests(corrupt),
+      writeTrustRowForTests(revision),
+    ])
+    const lifetime = new AbortController()
+    const retired = new Error('the account retired during discard')
+    const originalGet = IDBObjectStore.prototype.get
+    const get = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = originalGet.apply(this, args)
+      if (args[0] === mapKey)
+        request.addEventListener('success', () => lifetime.abort(retired), { once: true })
+      return request
+    })
+    try {
+      await expect(discardCorruptKeyPinMap({ accountId: ACCOUNT, signal: lifetime.signal })).rejects.toThrow(retired)
+    }
+    finally {
+      get.mockRestore()
+    }
+    expect(await readTrustRowForTests(mapKey)).toEqual(corrupt)
+    expect(await readTrustRowForTests(revisionKey)).toEqual(revision)
+  })
+
+  it.each([
+    'read',
+    'revalidate',
+    'refresh',
+    'record',
+  ] as const)(
+    'uses the clock after both native reads for %s',
+    async (operation) => {
+      const initialTime = Date.now()
+      const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+      const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+      const pin = { ...firstContact.pin, firstSeen: initialTime }
+      const expiration = initialTime + (operation === 'refresh'
+        ? 3
+        : 1)
+      const read = vi.fn()
+      const now = vi.spyOn(Date, 'now').mockReturnValue(initialTime)
+      const originalGet = IDBObjectStore.prototype.get
+      if (operation !== 'record') {
+        await writeTrustRowForTests({
+          k: mapKey,
+          v: { [WORKER]: pin },
+          e: expiration,
+        })
+      }
+      const diskRead = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+        const request = originalGet.apply(this, args)
+        if (args[0] === mapKey || args[0] === revisionKey) {
+          request.addEventListener('success', () => {
+            read(args[0])
+            if (read.mock.calls.length === 2)
+              now.mockReturnValue(initialTime + 2)
+          }, { once: true })
+        }
+        return request
+      })
+
+      try {
+        if (operation === 'read') {
+          await expect(readKeyPinState()).resolves.toEqual({ pins: {}, removalRevision: 0 })
+        }
+        else if (operation === 'revalidate') {
+          await expect(updateKeyPinState({
+            kind: 'revalidate',
+            workerId: WORKER,
+            expectRevision: 0,
+            expectPin: pin,
+          })).rejects.toBeInstanceOf(KeyPinMissingReviewError)
+        }
+        else if (operation === 'refresh') {
+          await expect(readKeyPinState()).resolves.toEqual({
+            pins: { [WORKER]: pin },
+            removalRevision: 0,
+          })
+        }
+        else {
+          await updateKeyPinState({ ...firstContact, pin })
+        }
+        expect(read.mock.calls).toEqual([
+          [mapKey],
+          [revisionKey],
+        ])
+      }
+      finally {
+        diskRead.mockRestore()
+        now.mockRestore()
+      }
+      if (operation === 'revalidate') {
+        expect(await readTrustRowForTests(mapKey)).toEqual({
+          k: mapKey,
+          v: { [WORKER]: pin },
+          e: expiration,
+        })
+      }
+      else if (operation === 'record' || operation === 'refresh') {
+        expect((await readTrustRowForTests(mapKey))?.e).toBe(initialTime + 2 + LOCAL_KEY_SPECS[KEY_KEY_PINS].ttlMs)
+      }
+      else {
+        expect(await readTrustRowForTests(mapKey)).toBeUndefined()
+      }
+    },
+  )
+
+  it('rejects a stored pin map that does not parse instead of reading it as empty', async () => {
+    await writeTrustRowForTests({
+      k: accountStorageKey(ACCOUNT, KEY_KEY_PINS),
+      v: 'nonsense',
+      e: Date.now() + 60_000,
+    })
+    await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
+  })
+
+  it('rejects a stored pin map holding a record that does not parse', async () => {
+    await writeTrustRowForTests({
+      k: accountStorageKey(ACCOUNT, KEY_KEY_PINS),
+      v: { w1: 'pin' },
+      e: Date.now() + 60_000,
+    })
+    await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
+  })
+
+  it.each([
+    {
+      description: 'a Map',
+      v: new Map(),
+      expiration: (now: number) => now + 60_000,
+    },
+    {
+      description: 'a Date',
+      v: new Date(1),
+      expiration: (now: number) => now + 60_000,
+    },
+    {
+      description: 'an expired invalid map',
+      v: 'not a map',
+      expiration: (now: number) => now - 1,
+    },
+    ...[
+      undefined,
+      '0',
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ].map(expiration => ({
+      description: `an invalid expiration (${expiration})`,
+      v: {
+        w1: {
+          publicKeyHex: testKeyPinHex('aa'),
+          firstSeen: 1,
+        },
+      },
+      expiration: () => expiration,
+    })),
+  ])('rejects $description before and after the expiry sweep', async ({ v, expiration }) => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    await writeTrustRowForTests({
+      k: mapKey,
+      v,
+      e: expiration(Date.now()) as number,
+    })
+
+    await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
+    await runCleanup()
+    await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
+  })
+
+  it.each([
+    [
+      1,
+      { name: 'AbortError' },
+    ],
+    [
+      10,
+      { name: 'AbortError' },
+    ],
+    [
+      11,
+      { message: `IndexedDB schema does not match the declaration for ${IDB_TRUST_DATABASE_NAME}.` },
+    ],
+  ] as const)('leaves pin rows intact when hydration opens an incoherent database at native version %i', async (version, refusal) => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const row = {
+      k: mapKey,
+      v: {
+        w1: {
+          publicKeyHex: testKeyPinHex('aa'),
+          firstSeen: 1,
+        },
+      },
+      e: Date.now() + 60_000,
+    }
+    const request = indexedDB.open(IDB_TRUST_DATABASE_NAME, version)
+    request.onupgradeneeded = () => {
+      const db = request.result
+      const store = db.createObjectStore('entries', { keyPath: 'k' })
+      if (version !== 10)
+        store.createIndex('e', 'e')
+      if (version === 1)
+        db.createObjectStore('extra')
+      store.put(row)
+    }
+    const seedDb = await idbRequestResult(request)
+    seedDb.close()
+
+    await expect(hydrateStorageAccount(OTHER)).resolves.toBeUndefined()
+    setStorageAccount(OTHER)
+    expect(await localStorageLoad(ASYNC_KEY)).toBeUndefined()
+    await expect(readKeyPinState({ accountId: ACCOUNT })).rejects.toMatchObject(refusal)
+    await expect(updateKeyPinState(firstContact, { accountId: ACCOUNT })).rejects.toMatchObject(refusal)
+
+    const db = await idbRequestResult(indexedDB.open(IDB_TRUST_DATABASE_NAME))
+    try {
+      expect(db.version).toBe(version)
+      expect(db.objectStoreNames.contains('extra')).toBe(version === 1)
+      const store = db.transaction('entries', 'readonly').objectStore('entries')
+      expect(store.indexNames.contains('e')).toBe(version !== 10)
+      expect(await idbRequestResult(store.get(mapKey))).toEqual(row)
+    }
+    finally {
+      db.close()
+    }
+  })
+
+  it('repairs the preferences database without changing strict trust rows', async () => {
+    await updateKeyPinState(firstContact)
+    const request = indexedDB.open('leapmux-kv', 1)
+    request.onupgradeneeded = () => request.result.createObjectStore('wrong')
+    const broken = await idbRequestResult(request)
+    broken.close()
+
+    setStorageAccountForTests(OTHER)
+    await hydrateStorageAccount(ACCOUNT)
+    setStorageAccount(ACCOUNT)
+    expect((await readKeyPinState()).pins[WORKER]).toEqual(firstContact.pin)
+    const repaired = await idbRequestResult(indexedDB.open('leapmux-kv'))
+    try {
+      expect(Array.from(repaired.objectStoreNames)).toEqual(['entries'])
+    }
+    finally {
+      repaired.close()
+    }
+  })
+
+  it('rejects a stored removal revision that does not parse', async () => {
+    await writeTrustRowForTests({
+      k: accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION),
+      v: -1,
+      e: Number.POSITIVE_INFINITY,
+    })
+    await expect(readKeyPinState()).rejects.toThrow(/corrupt/)
+  })
+
+  it('rejects a read and a write when storage is unavailable', async () => {
+    await seedKeyPin('w1', {
+      publicKeyHex: testKeyPinHex('aa'),
+      firstSeen: 1,
+    })
+    vi.unstubAllGlobals()
+    await expect(readKeyPinState()).rejects.toThrow('Browser storage is unavailable.')
+    await expect(updateKeyPinState({ kind: 'removeAll' })).rejects.toThrow('Browser storage is unavailable.')
+  })
+
+  it('refuses a commit whose removal revision moved and writes nothing', async () => {
+    await seedKeyPin('w1', {
+      publicKeyHex: testKeyPinHex('aa'),
+      firstSeen: 1,
+    })
+    const before = await readKeyPinState()
+    await expect(updateKeyPinState({
+      kind: 'record',
+      workerId: 'w2',
+      pin: {
+        publicKeyHex: testKeyPinHex('bb'),
+        firstSeen: 2,
+      },
+      expectRevision: before.removalRevision + 1,
+      expectPin: null,
+    })).rejects.toThrow(/revision changed/)
+    expect(await readKeyPinState()).toEqual(before)
+  })
+
+  it('refuses a commit whose observed pin changed and writes nothing', async () => {
+    await seedKeyPin('w1', {
+      publicKeyHex: testKeyPinHex('aa'),
+      firstSeen: 1,
+    })
+    const before = await readKeyPinState()
+    await expect(updateKeyPinState({
+      kind: 'revalidate',
+      workerId: 'w1',
+      expectRevision: before.removalRevision,
+      expectPin: {
+        publicKeyHex: testKeyPinHex('aa'),
+        firstSeen: 2,
+      },
+    })).rejects.toThrow(/changed since the decision/)
+    expect(await readKeyPinState()).toEqual(before)
+  })
+
+  it('keeps the first firstSeen when two first contacts carry the same key', async () => {
+    await updateKeyPinState({
+      kind: 'record',
+      workerId: 'w1',
+      pin: {
+        publicKeyHex: testKeyPinHex('aa'),
+        firstSeen: 1000,
+      },
+      expectRevision: 0,
+      expectPin: null,
+    })
+    await updateKeyPinState({
+      kind: 'record',
+      workerId: 'w1',
+      pin: {
+        publicKeyHex: testKeyPinHex('aa'),
+        firstSeen: 2000,
+      },
+      expectRevision: 0,
+      expectPin: null,
+    })
+    expect((await readKeyPinState()).pins.w1).toEqual({
+      publicKeyHex: testKeyPinHex('aa'),
+      firstSeen: 1000,
+    })
+  })
+
+  it('refuses a first contact that finds a different key installed', async () => {
+    await updateKeyPinState({
+      kind: 'record',
+      workerId: 'w1',
+      pin: {
+        publicKeyHex: testKeyPinHex('aa'),
+        firstSeen: 1,
+      },
+      expectRevision: 0,
+      expectPin: null,
+    })
+    await expect(updateKeyPinState({
+      kind: 'record',
+      workerId: 'w1',
+      pin: {
+        publicKeyHex: testKeyPinHex('bb'),
+        firstSeen: 2,
+      },
+      expectRevision: 0,
+      expectPin: null,
+    })).rejects.toThrow(/different key/)
+  })
+
+  it('refuses a removal that would overflow the removal revision', async () => {
+    await writeTrustRowForTests({
+      k: accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION),
+      v: Number.MAX_SAFE_INTEGER,
+      e: Number.POSITIVE_INFINITY,
+    })
+    await seedKeyPin('w1', {
+      publicKeyHex: testKeyPinHex('aa'),
+      firstSeen: 1,
+    })
+    await expect(updateKeyPinState({ kind: 'remove', workerId: 'w1' })).rejects.toThrow(/maximum/)
+    await expect(updateKeyPinState({ kind: 'remove', workerId: 'absent' })).rejects.toThrow(/maximum/)
+    await expect(updateKeyPinState({ kind: 'removeAll' })).rejects.toThrow(/maximum/)
+    const state = await readKeyPinState()
+    expect(state.removalRevision).toBe(Number.MAX_SAFE_INTEGER)
+    expect(state.pins.w1).toBeDefined()
+  })
+
+  it('treats an expired pin map as confirmed absence and notices the expiry', async () => {
+    const mapKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS)
+    const revisionKey = accountStorageKey(ACCOUNT, KEY_KEY_PINS_REMOVAL_REVISION)
+    await writeTrustRowForTests({
+      k: mapKey,
+      v: {
+        w1: {
+          publicKeyHex: testKeyPinHex('aa'),
+          firstSeen: 1,
+        },
+      },
+      e: Date.now() - 1000,
+    })
+    await writeTrustRowForTests({ k: revisionKey, v: 3, e: Number.POSITIVE_INFINITY })
+
+    const hints: string[] = []
+    const stop = onKeyPinsInvalidated(change => hints.push(change.k))
+    expect(await readKeyPinState()).toEqual({ pins: {}, removalRevision: 3 })
+    stop()
+
+    expect(await readTrustRowForTests(mapKey)).toBeUndefined()
+    expect(hints).toEqual([mapKey])
+  })
+
+  it('delivers same-tab hints with no pin bytes on writes and removals', async () => {
+    const seen: Array<{ k: string, invalidate: true }> = []
+    const stop = onKeyPinsInvalidated(change => seen.push(change))
+    await seedKeyPin('w1', {
+      publicKeyHex: testKeyPinHex('aa'),
+      firstSeen: 1,
+    })
+    await updateKeyPinState({ kind: 'remove', workerId: 'w1' })
+    stop()
+
+    const mapKey = storedKeyFor(KEY_KEY_PINS)!
+    // `toEqual` on the exact shape is the "no pin bytes" assertion: a hint that
+    // carried a value would not match.
+    expect(seen).toEqual([
+      { k: mapKey, invalidate: true },
+      { k: mapKey, invalidate: true },
+    ])
+  })
+
+  it('keeps a committed pin update successful when one observer throws', async () => {
+    const refusal = new Error('observer failed')
+    const stopFailure = onKeyPinsInvalidated(() => {
+      throw refusal
+    })
+    const seen: string[] = []
+    const stopHealthy = onKeyPinsInvalidated(change => seen.push(change.k))
+    try {
+      await expect(updateKeyPinState(firstContact)).resolves.toMatchObject({
+        pins: { [WORKER]: firstContact.pin },
+        removalRevision: 0,
+      })
+      expect(seen).toEqual([
+        storedKeyFor(KEY_KEY_PINS),
+      ])
+      expect((await readKeyPinState()).pins[WORKER]).toEqual(firstContact.pin)
+    }
+    finally {
+      stopHealthy()
+      stopFailure()
+    }
   })
 })

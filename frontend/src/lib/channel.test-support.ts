@@ -7,9 +7,10 @@ import type { InProcessSessionHost } from './channelSessionInProcess'
 import type { KeyPinConfirmFn } from './keyPinStore'
 import type { HandshakeState, Session } from './noise'
 import type { HybridHandshakeState } from './noise-hybrid'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
-import { afterEach, beforeEach, expect, vi } from 'vitest'
+import { afterEach, expect, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE, MLKEM_PUBLIC_KEY_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import {
   ChannelMessageFlags,
@@ -21,8 +22,11 @@ import {
   RekeyAckSchema,
   RekeyRejectSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { deferred } from '~/test-support/async'
 import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
 import { makeIdentitySession } from '~/test-support/identitySession'
+import { testWorkerKeyBundle } from '~/test-support/keyPins'
+import { storageAccountFor, TEST_HUB } from './browserStorage'
 import { ChannelManager } from './channel'
 import { frameAssociatedData, frameBytes, unframeBytes } from './channelFraming'
 import { createInProcessSessionHost } from './channelSessionInProcess'
@@ -40,10 +44,12 @@ export function acceptingKeyPins(confirmKeyPin?: KeyPinConfirmFn): KeyPinStore {
 
 // Isolate TOFU pins across suites: managers that omit keyPins use the fail-closed
 // default store, and a leftover pin from another test would reject opens that used
-// to auto-accept via transport.confirmKeyPin.
-beforeEach(() => {
-  clearAllKeyPins()
-})
+// to auto-accept via transport.confirmKeyPin. The isolation IS the per-test
+// database `useTestStorage()` installs: every file that opens channels calls it,
+// and each test then starts from an empty pin store. A clear here would be both
+// redundant and misordered -- a module-level `beforeEach` registers before the
+// test file's own, so it would run before `useTestStorage` stubs the database
+// the strict pin gateway then refuses to live without.
 
 export { clearAllKeyPins }
 
@@ -100,6 +106,7 @@ let latestFailure: ((message: string) => void) | undefined
 /** The options of a test manager: the endpoint options of its in-process session host in place of the spawn. */
 export type TestChannelManagerOpts = Omit<ChannelManagerOpts, 'spawnSessionWorker'> & {
   session?: ChannelSessionEndpointOptions
+  expectedUserId?: () => string | undefined
 }
 
 /**
@@ -108,11 +115,31 @@ export type TestChannelManagerOpts = Omit<ChannelManagerOpts, 'spawnSessionWorke
  * terminates it.
  */
 export function newTestChannelManager(transport: ChannelTransport, opts: TestChannelManagerOpts = {}): ChannelManager {
-  const { session, ...managerOpts } = opts
+  const { session, expectedUserId, ...managerOpts } = opts
+  let scope: WorkerTrustScope | undefined
+  let lifetime: AbortController | undefined
+  let generation = 0
+  const readTestScope = () => {
+    const userId = expectedUserId?.()
+    if (userId !== scope?.userId) {
+      lifetime?.abort()
+      lifetime = new AbortController()
+      scope = userId === undefined
+        ? undefined
+        : {
+            userId,
+            storageAccount: storageAccountFor(TEST_HUB, userId),
+            generation: ++generation,
+            signal: lifetime.signal,
+          }
+    }
+    return scope
+  }
   const host = createInProcessSessionHost(session)
   const record: TestSessionHost = { host, ports: [] }
   hosts.add(record)
   const manager = new ChannelManager(transport, {
+    workerTrustScope: readTestScope,
     ...managerOpts,
     spawnSessionWorker: () => {
       const port = host.spawn()
@@ -241,6 +268,23 @@ export function decodeWireMessage(buf: ArrayBuffer) {
 }
 
 /**
+ * `decodeWireMessage`, answering null for anything that is not yet a complete
+ * framed message. For a waiter that must see a frame the client has not sent
+ * yet -- the pin decision's IndexedDB commit follows the open-time Ping, and a
+ * session settle can observe neither the wire frame nor the later commit.
+ */
+function tryDecodeWireMessage(buf: ArrayBuffer | undefined): ReturnType<typeof decodeWireMessage> | null {
+  if (buf === undefined)
+    return null
+  try {
+    return decodeWireMessage(buf)
+  }
+  catch {
+    return null
+  }
+}
+
+/**
  * A channel's private per-request registries on the main thread.
  *
  * Tests assert on their contents because a leak here has no public surface: a stranded
@@ -318,6 +362,19 @@ export class MockWebSocket {
   simulateOpen() {
     this.readyState = MockWebSocket.OPEN
     this.emit('open')
+  }
+
+  /** Wait until at least one 'open' listener is registered (the relay reached ensureWebSocket). */
+  async waitForOpenListener(rounds = MAX_SETTLE_ROUNDS): Promise<void> {
+    // Already open: the relay consumed the listener and the socket is live.
+    if (this.readyState === MockWebSocket.OPEN)
+      return
+    for (let i = 0; i < rounds; i++) {
+      if ((this.listeners.get('open')?.size ?? 0) > 0)
+        return
+      await yieldToEventLoop()
+    }
+    throw new Error('no open listener registered on the mock WebSocket')
   }
 
   simulateMessage(data: ArrayBuffer) {
@@ -442,7 +499,10 @@ export class ChannelManagerTestHarness {
   mgr!: ChannelManager
 
   setup(): void {
-    clearAllKeyPins()
+    // No pin clear here: `useTestStorage` gives each test a fresh database, so
+    // there are no leftover pins to clear. The pins a test's OWN earlier opens
+    // wrote stay -- they belong to this test's state, and a matching pin
+    // revalidates cleanly.
     sessions.clear()
     this.mockWs = new MockWebSocket()
     this.transport = createMockTransport(this.mockWs)
@@ -466,6 +526,8 @@ export class ChannelManagerTestHarness {
     return settleChannelSessions()
   }
 
+  private answeredPings = new WeakMap<MockWebSocket, Set<string>>()
+
   /**
    * Answer the open-time Ping. openChannel round-trips a no-op Ping to prove the
    * E2EE session decrypts in both directions before it resolves, so a test worker
@@ -474,7 +536,26 @@ export class ChannelManagerTestHarness {
    */
   async simulatePingAccept(ws: MockWebSocket = this.mockWs, sessionMap = sessions) {
     await settleChannelSessions()
-    const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
+    // The pin read precedes the handshake. Wait for the Ping frame because
+    // settling the session worker cannot observe IndexedDB requests.
+    const answered = this.answeredPings.get(ws) ?? new Set<string>()
+    this.answeredPings.set(ws, answered)
+    let sentMsg: ReturnType<typeof decodeWireMessage> | null = null
+    let inspected = 0
+    for (let round = 0; round < MAX_SETTLE_ROUNDS && sentMsg === null; round++) {
+      for (; inspected < ws.sent.length; inspected++) {
+        const frame = tryDecodeWireMessage(ws.sent[inspected])
+        if (frame?.correlationId === BigInt(FIRST_REQUEST_ID) && !answered.has(frame.channelId)) {
+          sentMsg = frame
+          break
+        }
+      }
+      if (sentMsg === null)
+        await yieldToEventLoop()
+    }
+    if (sentMsg === null)
+      throw new Error('the open-time Ping never reached the wire')
+    answered.add(sentMsg.channelId)
     const pair = sessionMap.get(sentMsg.channelId)!
     const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(frameAssociatedData(sentMsg.channelId, sentMsg.correlationId, sentMsg.flags), sentMsg.ciphertext))
     expect(inner.kind.case).toBe('request')
@@ -554,13 +635,18 @@ export class ChannelManagerTestHarness {
 
   async openTestChannel(workerId = 'w1'): Promise<string> {
     const openPromise = this.mgr.openChannel(workerId)
-    // Let the open run its handshake in the session worker, until
-    // ensureWebSocket() registers the 'open' listener.
-    await settleChannelSessions()
+    // Observe the open failure during both fixture waits. An early pin or
+    // handshake error can precede the socket listener and Ping frame.
+    const openFailure = openPromise.then(() => new Promise<never>(() => {}))
+    await Promise.race([
+      this.mockWs.waitForOpenListener(),
+      openFailure,
+    ])
     this.mockWs.simulateOpen()
-    await settleChannelSessions()
-    // The open completes once the worker answers the session-verifying Ping.
-    await this.simulatePingAccept()
+    await Promise.race([
+      this.simulatePingAccept(),
+      openFailure,
+    ])
     return openPromise
   }
 
@@ -642,6 +728,8 @@ export class AutoOpenMockWebSocket extends EventTarget {
   readyState = AutoOpenMockWebSocket.CONNECTING
   binaryType = 'arraybuffer'
 
+  private firstRequests = new Map<string, ReturnType<typeof deferred<void>>>()
+
   constructor() {
     super()
     queueMicrotask(() => {
@@ -662,8 +750,26 @@ export class AutoOpenMockWebSocket extends EventTarget {
     this.readyState = AutoOpenMockWebSocket.CLOSED
   }
 
-  send(_data: unknown) {
-    // no-op in tests
+  send(data: ArrayBuffer | Uint8Array) {
+    const wire = ArrayBuffer.isView(data)
+      ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+      : data
+    const frame = decodeWireMessage(wire)
+    if (frame.correlationId === BigInt(FIRST_REQUEST_ID))
+      this.firstRequest(frame.channelId).resolve()
+  }
+
+  waitForFirstRequest(channelId: string): Promise<void> {
+    return this.firstRequest(channelId).promise
+  }
+
+  private firstRequest(channelId: string): ReturnType<typeof deferred<void>> {
+    let request = this.firstRequests.get(channelId)
+    if (request === undefined) {
+      request = deferred<void>()
+      this.firstRequests.set(channelId, request)
+    }
+    return request
   }
 }
 
@@ -697,6 +803,7 @@ async function simulatePingResponseOnWs(
   channelId: string,
   response: MessageInitShape<typeof InnerRpcResponseSchema>,
 ): Promise<void> {
+  await ws.waitForFirstRequest(channelId)
   const resp = create(InnerRpcResponseSchema, response)
   const envelope = create(InnerMessageSchema, {
     kind: { case: 'response', value: resp },
@@ -711,11 +818,7 @@ async function simulatePingResponseOnWs(
 export function makeMockTransport(onCreateWs: () => AutoOpenMockWebSocket): ChannelTransport {
   return {
     getWorkerHandshakeParams: vi.fn().mockResolvedValue({
-      keys: {
-        x25519PublicKey: new Uint8Array(32),
-        mlkemPublicKey: new Uint8Array(0),
-        slhdsaPublicKey: new Uint8Array(0),
-      } satisfies WorkerKeyBundle,
+      keys: testWorkerKeyBundle(),
       encryptionMode: EncryptionMode.CLASSIC,
     }),
     openChannel: vi.fn().mockResolvedValue({
@@ -766,7 +869,7 @@ export function makeCountingTransport(onCreateWs: () => AutoOpenMockWebSocket, u
 
 export function makeIdentityCipherManager(
   transport: ChannelTransport,
-  opts?: { expectedUserId?: () => string | undefined, keyPins?: KeyPinStore },
+  opts?: Pick<TestChannelManagerOpts, 'expectedUserId' | 'keyPins' | 'workerTrustScope'>,
 ): ChannelManager {
   return newTestChannelManager(transport, {
     session: {

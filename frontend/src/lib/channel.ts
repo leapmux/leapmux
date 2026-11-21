@@ -1,3 +1,5 @@
+import type { DescMessage, DescMethodServerStreaming, DescMethodUnary, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
+import type { OpeningChannel } from './channelOpen'
 /**
  * Encrypted channel manager for E2EE communication with Workers.
  *
@@ -31,16 +33,18 @@
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
-import type { DescMessage, DescMethodServerStreaming, DescMethodUnary, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
-import type { OpeningChannel } from './channelOpen'
+import type { ChannelOpenMode, ChannelOpenScope } from './channelPool'
 import type { ChannelSocket } from './channelRelay'
 import type { StreamAction } from './channelRpc'
 import type { SessionWorkerPort } from './channelSessionClient'
+import type { WorkerKeyPinSnapshot } from './keyPinStore'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import type { FatalCloseInfo } from './wsCloseCodes'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
+import { storageAccountId } from './browserStorage'
 import { abortError, ChannelError, channelNotOpenError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelOpen } from './channelOpen'
@@ -60,6 +64,13 @@ export type { ChannelSocket } from './channelRelay'
 export type { KeyPinDecision } from './keyPinStore'
 export { clearAllKeyPins, clearKeyPin, KeyPinRejectedError, KeyPinStore } from './keyPinStore'
 export type { WorkerKeyBundle } from './workerKeyBundle'
+
+function sameWorkerTrustScope(first: WorkerTrustScope | undefined, second: WorkerTrustScope | undefined): boolean {
+  return first?.signal === second?.signal
+    && first?.userId === second?.userId
+    && first?.storageAccount === second?.storageAccount
+    && first?.generation === second?.generation
+}
 
 const log = createLogger('channel')
 
@@ -161,24 +172,8 @@ export interface ChannelManagerOpts {
    * the current frontend-multiplied deadline from `loadTimeouts()`.
    */
   rpcTimeoutFn?: () => number
-  /**
-   * The identity this page believes it is authenticated as, resolved lazily on
-   * every open. When it returns a value that disagrees with the identity the Hub
-   * authenticated the open as, the open fails.
-   *
-   * This is a CROSS-CHECK, not a source of identity: the Hub's answer is always
-   * authoritative and is never overridden by this. What it catches is the two
-   * silently diverging — a tab rendered as user A whose shared cookie jar has since
-   * been re-authenticated as B (a logout/login in another tab, an impersonation
-   * switch, an admin "view as") opens a channel the Hub authenticates as B, and A's
-   * UI then drives B's session on every worker B can reach. Comparing is not
-   * asserting: a stale local id can still never speak for the channel, the open just
-   * fails loudly instead of proceeding on a disagreement the page cannot see.
-   *
-   * Returns undefined when the page has no expectation (before auth resolves), which
-   * skips the check.
-   */
-  expectedUserId?: () => string | undefined
+  /** The page's adopted identity and cancellation signal from one auth snapshot. */
+  workerTrustScope?: () => WorkerTrustScope | undefined
   /**
    * Install document visibility / pageshow wake listeners that force a rekey /
    * hard-ceiling check after OS suspend. Default true when `document` exists.
@@ -211,7 +206,9 @@ export class ChannelManager {
   private testPayloadBudget: number | undefined
   private testReassembledCeiling: number | undefined
   private rpcTimeoutFn: () => number
-  private expectedUserIdFn: () => string | undefined
+  private workerTrustScope: () => WorkerTrustScope | undefined
+  private lastOpenScope: ChannelOpenScope | undefined
+  private recoverablePoolGeneration: number | undefined
   private keyPins: KeyPinStore
 
   private stateListeners = new Set<() => void>()
@@ -231,7 +228,7 @@ export class ChannelManager {
     this.testPayloadBudget = opts.testPayloadBudget
     this.testReassembledCeiling = opts.testReassembledCeiling
     this.rpcTimeoutFn = opts.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
-    this.expectedUserIdFn = opts.expectedUserId ?? (() => undefined)
+    this.workerTrustScope = opts.workerTrustScope ?? (() => undefined)
     this.keyPins = opts.keyPins ?? new KeyPinStore({
       confirmKeyPin: async () => 'reject',
     })
@@ -271,7 +268,6 @@ export class ChannelManager {
       session: this.sessionClient,
       relay: this.relay,
       pool: this.pool,
-      expectedUserId: () => this.expectedUserIdFn(),
       ...(this.testPayloadBudget !== undefined
         ? { testPayloadBudget: this.testPayloadBudget }
         : {}),
@@ -279,7 +275,7 @@ export class ChannelManager {
         ? { testReassembledCeiling: this.testReassembledCeiling }
         : {}),
       verifySession: ch => this.verifySession(ch),
-      evictGhost: (channelId, reason) => this.evictGhost(channelId, reason),
+      evictGhost: (ch, reason) => this.retire(ch, reason, 'error'),
       notifyStateChange: () => this.notifyStateChange(),
     })
 
@@ -382,7 +378,7 @@ export class ChannelManager {
    * mid-rekey or a minute past the age cap is still "connected" for indicator purposes.
    */
   hasOpenChannel(workerId: string): boolean {
-    return this.pool.hasOpenChannel(workerId, this.expectedUserIdFn())
+    return this.pool.hasOpenChannel(workerId, this.captureOpenScope())
   }
 
   private notifyStateChange(): void {
@@ -413,14 +409,110 @@ export class ChannelManager {
    * verified channel (callers that need force-reopen after a key change use this).
    */
   async openChannel(workerId: string): Promise<string> {
-    return this.pool.dedupeOpen(workerId, () => this.openChannelUncached(workerId))
+    const scope = this.captureOpenScope()
+    const channelId = await this.openScopedChannel(workerId, scope, 'ordinary')
+    return this.verifiedChannel(channelId, scope).channelId
   }
 
-  /**
-   * Open path without pool reuse / single-flight — only called as the factory
-   * inside ChannelPool.getOrOpenChannel (which already owns the dedup lock).
-   */
-  private async openChannelUncached(workerId: string): Promise<string> {
+  /** Verify the current announcement through a fresh open for a user-initiated review. */
+  async openChannelForKeyReview(workerId: string, operationSignal?: AbortSignal): Promise<{ publicKeyHex: string, scope: WorkerTrustScope, pinSnapshot: WorkerKeyPinSnapshot }> {
+    return this.openChannelForReview(workerId, 'review', operationSignal)
+  }
+
+  /** Establish trust through a deliberate first-contact review of an unpinned Worker. */
+  async openChannelForFirstContactReview(workerId: string, operationSignal?: AbortSignal): Promise<{ publicKeyHex: string, scope: WorkerTrustScope, pinSnapshot: WorkerKeyPinSnapshot }> {
+    return this.openChannelForReview(workerId, 'first-contact-review', operationSignal)
+  }
+
+  private async openChannelForReview(
+    workerId: string,
+    mode: 'review' | 'first-contact-review',
+    operationSignal?: AbortSignal,
+  ): Promise<{ publicKeyHex: string, scope: WorkerTrustScope, pinSnapshot: WorkerKeyPinSnapshot }> {
+    const captured = this.captureOpenScope()
+    const identity = captured.identity
+    if (identity === undefined || identity.userId === null)
+      throw new ChannelError('client', 'Sign in to review the Worker key.')
+    const scope: ChannelOpenScope = operationSignal === undefined
+      ? captured
+      : {
+          ...captured,
+
+          signal: AbortSignal.any([captured.signal, operationSignal]),
+
+          assertCurrent: () => {
+            captured.assertCurrent()
+            operationSignal.throwIfAborted()
+          },
+        }
+    const channelId = await this.openScopedChannel(workerId, scope, mode)
+    const channel = this.verifiedChannel(channelId, scope)
+    if (channel.committedPin === undefined)
+      throw new ChannelError('client', 'The reviewed Worker key has no committed pin state.')
+    const candidates = [
+      ...this.pool.entries(),
+    ]
+    for (const [candidateId, candidate] of candidates) {
+      if (candidateId !== channelId
+        && candidate.workerId === workerId
+        && candidate.userId === channel.userId) {
+        void this.closeChannel(candidateId)
+      }
+    }
+    return {
+      publicKeyHex: channel.publicKeyHex,
+      scope: identity,
+      pinSnapshot: channel.committedPin,
+    }
+  }
+
+  /** Capture the identity and pool lifetime before a call can wait or retry. */
+  captureOpenScope(): ChannelOpenScope {
+    const identity = this.workerTrustScope()
+    const accountId = identity === undefined
+      ? storageAccountId()
+      : identity.storageAccount
+    const poolGeneration = this.pool.closeGeneration
+    const previous = this.lastOpenScope
+    if (previous !== undefined && sameWorkerTrustScope(previous.identity, identity) && previous.accountId === accountId && previous.poolGeneration === poolGeneration)
+      return previous
+    const signal = identity === undefined
+      ? this.pool.closeSignal
+      : AbortSignal.any([this.pool.closeSignal, identity.signal])
+    const scope: ChannelOpenScope = {
+      identity,
+      accountId,
+      poolGeneration,
+      signal,
+      assertCurrent: () => {
+        signal.throwIfAborted()
+        if (!sameWorkerTrustScope(this.workerTrustScope(), identity)
+          || (identity === undefined && storageAccountId() !== accountId)) {
+          throw new ChannelError('transport', 'open channel: Worker trust scope changed')
+        }
+        if (identity?.userId === null)
+          throw new ChannelError('client', 'Sign in to open a Worker channel.')
+        if (identity?.userId === '')
+          throw new ChannelError('client', 'The authenticated user ID is empty.')
+      },
+    }
+    this.lastOpenScope = scope
+    return scope
+  }
+
+  private verifiedChannel(channelId: string, scope: ChannelOpenScope): ActiveChannel {
+    scope.assertCurrent()
+    const ch = this.pool.get(channelId)
+    if (ch?.state !== 'verified' || ch.scope !== scope)
+      throw channelNotOpenError()
+    return ch
+  }
+
+  private openScopedChannel(workerId: string, scope: ChannelOpenScope, mode: ChannelOpenMode): Promise<string> {
+    return this.pool.dedupeOpen(workerId, scope, () => this.openChannelUncached(workerId, scope, mode), mode)
+  }
+
+  private async openChannelUncached(workerId: string, scope: ChannelOpenScope, mode: ChannelOpenMode): Promise<string> {
     // Fail before the Hub round-trip, not just before the dial. The open path
     // is openChannel RPC -> WS dial -> closeChannel rollback, so a latch that
     // only guarded the dial would still let every retry cost the hub two RPCs.
@@ -431,42 +523,19 @@ export class ChannelManager {
     if (fatal) {
       throw fatalCloseError(fatal)
     }
-    return this.open.openUncached(workerId)
+    return this.open.openUncached(workerId, scope, mode)
   }
 
-  /**
-   * Round-trip Ping to prove the E2EE session before marking the channel verified.
-   * On failure the channel is evicted here so it never leaves this method verified.
-   *
-   * Ping is WorkerSystemService.Ping, a no-op that proves the session decrypts in
-   * both directions. Its procedure comes from the generated descriptor, as the
-   * worker's registration takes it from the generated Go constant.
-   */
+  /** Round-trip WorkerSystemService.Ping to prove that both sides can decrypt. */
   private async verifySession(channel: ActiveChannel): Promise<void> {
     try {
-      await this.call(channel.channelId, procedureOf(WorkerSystemService.method.ping), new Uint8Array())
+      await this.call(channel.channelId, procedureOf(WorkerSystemService.method.ping), new Uint8Array(), undefined, channel.scope.signal)
     }
     catch (err) {
-      const failure = err instanceof ChannelError
+      throw err instanceof ChannelError
         ? err
         : new ChannelError('transport', `verify channel session: ${formatErrorMessage(err)}`)
-      this.evictGhost(channel.channelId, failure)
-      throw failure
     }
-    channel.state = 'verified'
-  }
-
-  /**
-   * Remove a stranded channel from the pool and fail every request that slipped
-   * onto it, once. It is the single teardown for a channel that entered
-   * the pool but must not be served: the ping-failure and post-verification
-   * failure paths of openChannel both route through here so they cannot drift.
-   */
-  private evictGhost(channelId: string, err: ChannelError): void {
-    const ghost = this.pool.get(channelId)
-    if (!ghost)
-      return
-    this.retire(ghost, err, 'error')
   }
 
   /**
@@ -478,6 +547,7 @@ export class ChannelManager {
   private retire(ch: ActiveChannel, reason: ChannelError, termination: 'end' | 'error'): void {
     ch.state = 'closed'
     this.pool.delete(ch.channelId)
+    ch.retirement.abort(reason)
     this.sessionClient.close(ch.channelId)
     this.rpc.drainChannel(ch, reason, termination)
   }
@@ -499,13 +569,7 @@ export class ChannelManager {
 
     this.notifyStateChange()
 
-    // Tell the Hub to clean up.
-    try {
-      await this.transport.closeChannel(channelId)
-    }
-    catch {
-      // Best effort.
-    }
+    await ch.closeOnHub()
   }
 
   /**
@@ -535,6 +599,12 @@ export class ChannelManager {
     // Register and send synchronously. A send while a rekey is due waits in the
     // session worker until the rekey settles (see ChannelSession.send), and an
     // abort while it waits releases the id, so the request never reaches the wire.
+    try {
+      ch.scope.assertCurrent()
+    }
+    catch (err) {
+      return Promise.reject(err)
+    }
     return this.rpc.call(ch, method, payload, timeoutMs, signal)
   }
 
@@ -553,6 +623,7 @@ export class ChannelManager {
       throw channelNotOpenError()
     }
 
+    ch.scope.assertCurrent()
     const procedure = procedureOf(method)
     const encode = (msg: MessageInitShape<I>): Uint8Array => toBinary(method.input, create(method.input, msg))
     // Registers the listener and sends the opening request. A send while a
@@ -569,6 +640,8 @@ export class ChannelManager {
           return
         throw channelNotOpenError()
       }
+      if (!cancel)
+        live.scope.assertCurrent()
       const err = this.rpc.sendOnStream(live, handle.requestId, action)
       if (err && !cancel)
         throw err
@@ -613,13 +686,29 @@ export class ChannelManager {
   }
 
   /** Get an open channel for a worker, or open a new one. */
-  async getOrOpenChannel(workerId: string): Promise<string> {
-    return this.pool.getOrOpenChannel(workerId, {
-      openChannel: id => this.openChannelUncached(id),
-      closeChannel: id => this.closeChannel(id),
-      ensureReady: ch => this.sessionClient.ensureReady(ch.channelId),
-      expectedUserId: () => this.expectedUserIdFn(),
-    })
+  async getOrOpenChannel(workerId: string, scope = this.captureOpenScope()): Promise<string> {
+    for (;;) {
+      try {
+        const channelId = await this.pool.getOrOpenChannel(workerId, scope, {
+          openChannel: id => this.openChannelUncached(id, scope, 'ordinary'),
+          closeChannel: id => this.closeChannel(id),
+          ensureReady: ch => this.sessionClient.ensureReady(ch.channelId),
+        })
+        return this.verifiedChannel(channelId, scope).channelId
+      }
+      catch (err) {
+        if (!this.canRecoverTransportScope(scope))
+          throw err
+        scope = this.captureOpenScope()
+      }
+    }
+  }
+
+  private canRecoverTransportScope(scope: ChannelOpenScope): boolean {
+    return scope.poolGeneration === this.recoverablePoolGeneration
+      && scope.poolGeneration !== this.pool.closeGeneration
+      && sameWorkerTrustScope(scope.identity, this.workerTrustScope())
+      && !scope.identity?.signal.aborted
   }
 
   /** Check if a channel is open. */
@@ -642,7 +731,7 @@ export class ChannelManager {
    * on.
    */
   hasOpenChannelForWorker(workerId: string): boolean {
-    return this.pool.hasOpenChannelForWorker(workerId)
+    return this.hasOpenChannel(workerId)
   }
 
   /**
@@ -652,6 +741,7 @@ export class ChannelManager {
   closeAll(): void {
     // First, invalidate every in-flight open (see closeGeneration): the
     // snapshot below cannot see a channel that has not registered yet.
+    this.recoverablePoolGeneration = undefined
     this.pool.bumpCloseGeneration()
     // Snapshot the ids before iterating: closeChannel deletes from the pool,
     // and a listener it notifies could in principle open a channel mid-loop. ES
@@ -677,6 +767,7 @@ export class ChannelManager {
     method: DescMethodUnary<I, O>,
     req: MessageInitShape<I>,
     opts?: { timeoutMs?: number, signal?: AbortSignal },
+    scope = this.captureOpenScope(),
   ): Promise<MessageShape<O>> {
     const procedure = procedureOf(method)
     const reqSchema = method.input
@@ -684,7 +775,7 @@ export class ChannelManager {
     if (opts?.signal?.aborted) {
       throw abortError(opts.signal, procedure)
     }
-    const channelId = await this.getOrOpenChannel(workerId)
+    const channelId = await this.getOrOpenChannel(workerId, scope)
     // Re-check after the (potentially async) channel-open: a long
     // handshake gives the caller plenty of time to abort. Skipping
     // this check would still get caught by call()'s pre-check, but
@@ -702,7 +793,11 @@ export class ChannelManager {
     const payload = toBinary(reqSchema, msg)
     let responsePayload
     try {
-      responsePayload = await this.call(channelId, procedure, payload, opts?.timeoutMs, opts?.signal)
+      const accountSignal = scope.identity?.signal ?? scope.signal
+      const signal = opts?.signal === undefined
+        ? accountSignal
+        : AbortSignal.any([opts.signal, accountSignal])
+      responsePayload = await this.call(channelId, procedure, payload, opts?.timeoutMs, signal)
     }
     catch (err) {
       log.debug('callWorker error', {
@@ -711,6 +806,7 @@ export class ChannelManager {
       })
       throw err
     }
+    scope.assertCurrent()
     const result = fromBinary(respSchema, responsePayload)
     if (log.isDebug()) {
       log.debug('callWorker response', {
@@ -770,7 +866,8 @@ export class ChannelManager {
    * handshakes lived in that worker. The next open starts a fresh worker.
    */
   private handleWorkerLost(err: ChannelError): void {
-    this.pool.bumpCloseGeneration()
+    this.recoverablePoolGeneration = this.pool.closeGeneration
+    this.pool.bumpCloseGeneration(err)
     for (const channelId of [
       ...this.pool.keys(),
     ])
@@ -815,7 +912,8 @@ export class ChannelManager {
     // Defer close so trySend does not re-enter the RPC mux on the same stack.
     // Failure teardowns must terminate streams with error, not orderly end.
     queueMicrotask(() => {
-      void this.closeChannel(ch.channelId, { streamTermination: 'error', reason })
+      if (this.pool.get(ch.channelId) === ch)
+        void this.closeChannel(ch.channelId, { streamTermination: 'error', reason })
     })
   }
 
@@ -828,6 +926,12 @@ export class ChannelManager {
     const reason = fatal
       ? fatalCloseError(fatal)
       : new ChannelError('transport', 'channel disconnected')
+    // A close with no successor dial retires the generation before listeners
+    // can start another open. A successor dial may still serve unregistered opens.
+    if (!successorDialing) {
+      this.recoverablePoolGeneration = undefined
+      this.pool.bumpCloseGeneration(reason)
+    }
     for (const channelId of [
       ...this.pool.keys(),
     ]) {
@@ -837,12 +941,6 @@ export class ChannelManager {
       this.retire(ch, reason, 'error')
     }
 
-    if (!successorDialing) {
-      // Same fence as closeAll: in-flight openChannel factories must not
-      // register after the transport died (FOOTGUNS-2).
-      this.pool.bumpCloseGeneration()
-      this.pool.clearOpening()
-    }
     this.notifyStateChange()
   }
 }

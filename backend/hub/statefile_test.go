@@ -70,6 +70,60 @@ func TestServer_EphemeralTCPPortAllowsTheBrowserPasskeyOrigin(t *testing.T) {
 		"the passkey origin must use the assigned port, not the configured port zero")
 }
 
+// Two identical port-zero requests bind two sockets, and each occurrence must
+// keep the port its own listener resolved to. The first assigned port is the
+// primary. A report keyed by the raw request string overwrote the first
+// resolution with the second and reported that port twice.
+func TestServer_StateFileKeepsARepeatEphemeralRequestApart(t *testing.T) {
+	srv := startTestServer(t, &config.Config{Listen: []string{"127.0.0.1:0", "127.0.0.1:0"}})
+
+	var got hubState
+	raw, err := os.ReadFile(stateFilePath(srv.cfg.DataDir))
+	require.NoError(t, err, "a hub that serves must have written its state file")
+	require.NoError(t, json.Unmarshal(raw, &got))
+
+	require.Len(t, got.Listen, 3, "the bind set is two TCP requests and the local URL")
+	first, second := got.Listen[0], got.Listen[1]
+	assert.NotEqual(t, first, second, "each occurrence keeps its own assigned port")
+	assert.Equal(t, srv.PrimaryListenAddr(), first,
+		"the first assigned TCP port is the browser-facing primary")
+	assert.Equal(t, first, srv.cfg.PrimaryTCPListen(), "browser services use the first assigned address")
+	var ports [2]string
+	for i, addr := range got.Listen[:2] {
+		host, port, err := net.SplitHostPort(addr)
+		require.NoError(t, err)
+		assert.Equal(t, "127.0.0.1", host)
+		assert.NotEqual(t, "0", port, "the chosen port must replace the request for one")
+		ports[i] = port
+	}
+	rp, err := webauthn.RPConfigFromSettings(srv.settings.Snapshot(t.Context()), srv.cfg.PrimaryTCPListen())
+	require.NoError(t, err)
+	assert.True(t, rp.AllowsOrigin("http://localhost:"+ports[0]))
+	assert.False(t, rp.AllowsOrigin("http://localhost:"+ports[1]))
+	assert.Equal(t, srv.localListenURLs[0], got.Listen[2], "a local entry stays its URL")
+}
+
+// The same per-occurrence rule with a local URL between the two requests: the
+// resolutions keep the original bind order and the IPC URL keeps its own
+// position rather than moving to the end.
+func TestServer_StateFileKeepsTheBindOrderOfAMixedSet(t *testing.T) {
+	mixed := locallistentest.UniqueListenURL(t, "lmx-mixed")
+	// startTestServer appends its own local URL, so the bind set is
+	// [tcp, mixed, tcp, local].
+	srv := startTestServer(t, &config.Config{Listen: []string{"127.0.0.1:0", mixed, "127.0.0.1:0"}})
+
+	var got hubState
+	raw, err := os.ReadFile(stateFilePath(srv.cfg.DataDir))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &got))
+
+	require.Len(t, got.Listen, 4)
+	assert.NotEqual(t, got.Listen[0], got.Listen[2], "each occurrence keeps its own assigned port")
+	assert.Equal(t, srv.PrimaryListenAddr(), got.Listen[0], "the first assigned TCP port is primary")
+	assert.Equal(t, mixed, got.Listen[1], "a local entry stays at its original position")
+	assert.Equal(t, srv.localListenURLs[1], got.Listen[3], "the appended local URL closes the list")
+}
+
 // A clean shutdown removes the state file: after the listeners are released it
 // would claim a hub that is not running.
 func TestServer_StateFileRemovedOnCleanShutdown(t *testing.T) {

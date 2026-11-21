@@ -1,3 +1,4 @@
+import type { StorageAccount } from './browserStorage'
 /**
  * Frontend E2EE channel pool: the channels Map, per-worker open dedup,
  * closeGeneration fence, identity cross-check helpers, and getOrOpenChannel
@@ -10,19 +11,39 @@
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
+import type { WorkerTrustScope } from '~/context/AuthContext'
+import { ChannelError } from './channelError'
 import { createInflightCache } from './inflightCache'
 import { createLogger } from './logger'
 
 const log = createLogger('channel')
 
+export interface ChannelOpenScope {
+  identity: WorkerTrustScope | undefined
+  accountId: StorageAccount | null
+  signal: AbortSignal
+  poolGeneration: number
+  assertCurrent: () => void
+}
+
+export type ChannelOpenMode = 'ordinary' | 'review' | 'first-contact-review'
+
+function createWorkerOpenFlights() {
+  return {
+    ordinary: createInflightCache<string, string>(),
+    review: createInflightCache<string, string>(),
+    firstContactReview: createInflightCache<string, string>(),
+  }
+}
+
 /**
- * The slice of an ActiveChannel the pool cares about for reuse / identity /
- * observability gates.
+ * The channel fields the pool uses for reuse and reporting.
  */
 export interface PooledChannel {
   channelId: string
   workerId: string
   userId: string
+  scope: ChannelOpenScope
   state: 'opening' | 'verified' | 'closed'
 }
 
@@ -35,7 +56,6 @@ export interface ChannelPoolGetOrOpenDeps<T extends PooledChannel> {
    * closes the channel too.
    */
   ensureReady: (ch: T) => Promise<void>
-  expectedUserId: () => string | undefined
 }
 
 /**
@@ -43,17 +63,21 @@ export interface ChannelPoolGetOrOpenDeps<T extends PooledChannel> {
  */
 export class ChannelPool<T extends PooledChannel = PooledChannel> {
   private channels = new Map<string, T>()
-  /** In-flight openChannel promises per worker, for deduplication. */
-  private openingChannels = createInflightCache<string, string>()
+  private openingChannels = new WeakMap<ChannelOpenScope, ReturnType<typeof createWorkerOpenFlights>>()
   /**
    * Bumped by closeAll so an open that was parked on an await when closeAll
    * snapshotted `channels` cannot register afterward and slip past the close.
    * Private + getter so callers cannot corrupt the fence by assignment.
    */
   private _closeGeneration = 0
+  private closeController = new AbortController()
 
   get closeGeneration(): number {
     return this._closeGeneration
+  }
+
+  get closeSignal(): AbortSignal {
+    return this.closeController.signal
   }
 
   get(channelId: string): T | undefined {
@@ -94,7 +118,7 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
   }
 
   clearOpening(): void {
-    this.openingChannels.clear()
+    this.openingChannels = new WeakMap()
   }
 
   /**
@@ -104,14 +128,47 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
    * allowing a forced reopen (e.g. after the user accepts a changed key) when a verified
    * channel already exists.
    */
-  dedupeOpen(workerId: string, factory: () => Promise<string>): Promise<string> {
-    return this.openingChannels.run(workerId, factory)
+  dedupeOpen(
+    workerId: string,
+    scope: ChannelOpenScope,
+    factory: () => Promise<string>,
+    mode: ChannelOpenMode = 'ordinary',
+  ): Promise<string> {
+    scope.assertCurrent()
+    let flights = this.openingChannels.get(scope)
+    if (flights === undefined) {
+      flights = createWorkerOpenFlights()
+      this.openingChannels.set(scope, flights)
+    }
+    // Different policies serialize but never share a result. Each one must
+    // read trust again after the preceding policy finishes. Calls with the
+    // same policy still share one flight.
+    const flightMode = mode === 'first-contact-review'
+      ? 'firstContactReview'
+      : mode
+    const previous = Object.entries(flights)
+      .filter(([candidate]) => candidate !== flightMode)
+      .map(([, cache]) => cache.get(workerId))
+      .filter((flight): flight is Promise<string> => flight !== undefined)
+    return flights[flightMode].run(workerId, async () => {
+      if (previous.length > 0) {
+        await Promise.all(previous.map(flight => flight.catch(() => undefined)))
+        scope.assertCurrent()
+      }
+      return factory()
+    })
   }
 
-  /** Bump the close fence; returns the new generation. */
-  bumpCloseGeneration(): number {
-    this._closeGeneration++
-    return this._closeGeneration
+  /** Retire the current generation before allowing successor opens. */
+  bumpCloseGeneration(
+    reason = new ChannelError('transport', 'open channel: superseded by a concurrent closeAll'),
+  ): number {
+    const previous = this.closeController
+    this.closeController = new AbortController()
+    const generation = ++this._closeGeneration
+    this.clearOpening()
+    previous.abort(reason)
+    return generation
   }
 
   /**
@@ -127,13 +184,8 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
     return expected !== undefined && expected !== actual
   }
 
-  /**
-   * Whether a verified pooled channel must be closed and reopened for identity
-   * drift. Age uses in-band rekey until the hard ceiling, then close (see
-   * ChannelPoolGetOrOpenDeps.ensureReady).
-   */
-  identityDrift(ch: T, expectedUserId: string | undefined): boolean {
-    return this.identityMismatch(expectedUserId, ch.userId)
+  private canReuse(ch: T, scope: ChannelOpenScope): boolean {
+    return ch.scope === scope && !this.identityMismatch(scope.identity?.userId ?? undefined, ch.userId)
   }
 
   /** Check if a channel is open (present and not mid-teardown). */
@@ -142,38 +194,30 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
     return ch !== undefined && ch.state !== 'closed'
   }
 
-  /**
-   * Whether a usable channel to this worker already exists for indicator /
-   * subscription-retire callers. Mirrors getOrOpenChannel's reuse test,
-   * `verified` included; also skips identity-drifted channels.
-   */
-  hasOpenChannel(workerId: string, expectedUserId: string | undefined): boolean {
+  /** Check whether the current scope has a verified channel to the Worker. */
+  hasOpenChannel(workerId: string, scope: ChannelOpenScope): boolean {
+    if (scope.signal.aborted)
+      return false
     for (const ch of this.channels.values()) {
-      if (ch.workerId === workerId && ch.state === 'verified'
-        && !this.identityMismatch(expectedUserId, ch.userId)) {
+      if (ch.workerId === workerId && ch.state === 'verified' && this.canReuse(ch, scope)) {
         return true
       }
     }
     return false
   }
 
-  /**
-   * Whether a verified channel to this worker exists (no identity check).
-   * For callers that only have something to say IF a channel is already up.
-   */
-  hasOpenChannelForWorker(workerId: string): boolean {
-    for (const ch of this.channels.values()) {
-      if (ch.workerId === workerId && ch.state === 'verified')
-        return true
-    }
-    return false
-  }
-
   /** Get an open channel for a worker, or open a new one via deps.openChannel. */
-  async getOrOpenChannel(workerId: string, deps: ChannelPoolGetOrOpenDeps<T>): Promise<string> {
+  async getOrOpenChannel(workerId: string, scope: ChannelOpenScope, deps: ChannelPoolGetOrOpenDeps<T>): Promise<string> {
     // After any await (close / ensureReady), re-scan: a concurrent open may have
     // registered another verified channel for this worker while we were parked.
     for (;;) {
+      scope.assertCurrent()
+      const pending = this.openingChannels.get(scope)?.ordinary.get(workerId)
+      if (pending !== undefined) {
+        const channelId = await pending
+        scope.assertCurrent()
+        return channelId
+      }
       let rescan = false
       for (const [channelId, ch] of this.channels) {
         // `state === 'verified'` and not merely "not closed": an open in progress has
@@ -183,7 +227,7 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
         // racer waits for the ping instead of being handed the channel the ping might
         // yet reject.
         if (ch.workerId === workerId && ch.state === 'verified') {
-          if (this.identityDrift(ch, deps.expectedUserId())) {
+          if (!this.canReuse(ch, scope)) {
             log.debug('reopening pooled channel after identity drift', { channel_id: channelId, worker_id: workerId })
             await deps.closeChannel(channelId)
             rescan = true
@@ -193,6 +237,7 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
             await deps.ensureReady(ch)
           }
           catch (err) {
+            scope.assertCurrent()
             // The session ended (the hard ceiling, an Ack timeout, a dead session
             // worker), which closes the channel; fall through to reopen rather
             // than surfacing a rotation error to the caller. Close a channel that
@@ -204,8 +249,8 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
             rescan = true
             break
           }
-          // The channel may have closed while ensureReady waited.
-          if (!this.channels.has(channelId) || this.channels.get(channelId)?.state !== 'verified') {
+          scope.assertCurrent()
+          if (this.channels.get(channelId) !== ch || ch.state !== 'verified' || this.openingChannels.get(scope)?.ordinary.has(workerId)) {
             rescan = true
             break
           }
@@ -214,7 +259,9 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
       }
       if (rescan)
         continue
-      return this.openingChannels.run(workerId, () => deps.openChannel(workerId))
+      const channelId = await this.dedupeOpen(workerId, scope, () => deps.openChannel(workerId))
+      scope.assertCurrent()
+      return channelId
     }
   }
 }

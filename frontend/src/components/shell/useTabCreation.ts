@@ -23,7 +23,7 @@ import { resolveSettingsTabFields } from '~/hooks/agentEvents'
 import { onStorageAccountChange } from '~/lib/browserStorage'
 import { ChannelError } from '~/lib/channelError'
 import { cmpStr, hlcIsZero } from '~/lib/crdt'
-import { randomUUID } from '~/lib/idGenerator'
+import { generateId } from '~/lib/crdt/ops'
 import { basename } from '~/lib/paths'
 import { tabPayloadView } from '~/lib/tabPayload'
 import { parseTabKey, planOptimisticRepoGit, protoToAgentTabFields, tabKey, withoutLiveStatusFields } from '~/stores/tab.helpers'
@@ -560,7 +560,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
   function prepareAttempt({ operation, origin, frame, presentation, placement, prepare }: AttemptPreparation): PreparedTabCreation {
     if (operation.stage.kind === 'tab_pending')
       return operation.stage.prepared
-    const tabId = randomUUID()
+    const tabId = generateId()
     try {
       const context: CreationContext = {
         operation,

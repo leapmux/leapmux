@@ -467,9 +467,9 @@ LeapMux pins each Worker's key on first connection (trust-on-first-use). The `wo
 | --- | --- | --- |
 | `worker pins list` | `--hub` | Every pinned Worker (sorted by id) |
 | `worker pins show` | `--worker-id` (defaults to `$LEAPMUX_CONTROL_WORKER_ID`) | One recorded pin; `not_found` if none |
-| `worker pins remove` | `--worker-id` | Removes the pin. The next channel attempt automatically records a replacement without confirmation. Emits `{removed_worker_id}` |
+| `worker pins remove` | `--worker-id` | Removes the pin. The next verified channel records a replacement. Emits `{removed_worker_id}` |
 
-A key mismatch aborts the CLI connection. Before removing a pin, compare the error's presented fingerprint with the Worker's `key_fingerprint` in its `worker initialized` startup log through a trusted, independent channel. Remove the pin only after they match. The CLI does not ask for confirmation before it records the replacement key. See [Managing Workers](/docs/admin/managing-workers/) for fingerprint verification.
+A key mismatch aborts the CLI connection. Before removing a pin, compare the error's presented fingerprint with the Worker's `key_fingerprint` in its `worker initialized` startup log through a trusted, independent channel. Remove the pin only after they match. The replacement key is recorded only after the channel proves its session (an encrypted round trip), so a failed handshake never installs a pin. See [Managing Workers](/docs/admin/managing-workers/) for fingerprint verification.
 
 Pins are stored at `<ConfigDir>/<hub-host>/pins.json` with mode `0644` (they are not secrets). For the Worker registration and approval lifecycle, see [Managing Workers](/docs/admin/managing-workers/).
 

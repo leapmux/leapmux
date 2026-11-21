@@ -1170,6 +1170,77 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 	}
 }
 
+func TestOpenChannel_UnboundDeadlineUsesWorkerTeardownAndRespectsFirstBind(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		bindBefore bool
+	}{
+		{name: "unbound expiry", bindBefore: false},
+		{name: "first bind", bindBefore: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := setupDirectOpenChannelEnv(t)
+			env.sent = make(chan *leapmuxv1.ConnectResponse, 4)
+			conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+				return &leapmuxv1.ChannelOpenResponse{
+					ChannelId:        open.GetChannelId(),
+					HandshakePayload: []byte("worker-handshake"),
+					MaxMessageSize:   open.GetMaxMessageSize(),
+				}
+			}))
+			requireWorkerConnectionRegistration(t, env.worker, conn)
+
+			const relayID = "existing-relay"
+			env.channels.BindUser(env.user.ID, relayID, func(*leapmuxv1.ChannelMessage) error { return nil }, nil)
+			var expire func()
+			channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{}).
+				WithUnboundSchedulerForTest(func(channelID string, delay time.Duration, onExpire func(channelmgr.ClosedChannel)) bool {
+					assert.Equal(t, 30*time.Second, delay)
+					expire = func() {
+						closed := env.channels.CloseByIDIf(channelID, func(info channelmgr.ChannelInfo) bool {
+							return info.ConnID == ""
+						})
+						for _, item := range closed {
+							onExpire(item)
+						}
+					}
+					return true
+				})
+			ctx := auth.WithUser(testutil.DeadlineContext(t), &auth.UserInfo{
+				ID: userid.MustNew(env.user.ID), Username: env.user.Username,
+			})
+			resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
+				WorkerId: env.workerID, HandshakePayload: []byte("handshake"),
+			})
+			require.NoError(t, err)
+			require.NotNil(t, expire)
+			initial := <-env.sent
+			require.NotNil(t, initial.GetChannelOpen())
+
+			if tc.bindBefore {
+				_, ok, bindErr := env.channels.UseAuthorizedChannel(resp.GetChannelId(), relayID, nil, nil)
+				require.NoError(t, bindErr)
+				require.True(t, ok)
+			}
+			expire()
+
+			if tc.bindBefore {
+				assert.True(t, env.channels.Exists(resp.GetChannelId()))
+				env.channels.CloseByID(resp.GetChannelId())
+				return
+			}
+			assert.False(t, env.channels.Exists(resp.GetChannelId()))
+			select {
+			case message := <-env.sent:
+				require.NotNil(t, message.GetChannelClose())
+				assert.Equal(t, resp.GetChannelId(), message.GetChannelClose().GetChannelId())
+			case <-ctx.Done():
+				t.Fatal("unbound expiry did not notify the owning Worker: ", ctx.Err())
+			}
+		})
+	}
+}
+
 func TestCloseChannelsByBearer_DoesNotBlockOnWorkerSend(t *testing.T) {
 	t.Parallel()
 

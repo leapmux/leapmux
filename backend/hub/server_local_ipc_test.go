@@ -38,14 +38,23 @@ func localIPCClient(t *testing.T, srv *Server) leapmuxv1connect.AdminSettingsSer
 // goroutine; a request on the second is what proves more than one runs.
 func localIPCClientAt(t *testing.T, srv *Server, i int) leapmuxv1connect.AdminSettingsServiceClient {
 	t.Helper()
+	return leapmuxv1connect.NewAdminSettingsServiceClient(
+		connect.NewClient(connecthttp.NewTransport(localIPCHTTPClient(t, srv, i), locallisten.LocalConnectURL, connecthttp.WithReadMaxBytes(0))))
+}
+
+// localIPCHTTPClient is the HTTP client that reaches one local listener by
+// position. Every local RPC client builds on it, so a test that speaks a
+// second service over the same socket uses the transport the indexed client
+// established rather than a second spelling of it.
+func localIPCHTTPClient(t *testing.T, srv *Server, i int) *http.Client {
+	t.Helper()
 	require.Less(t, i, len(srv.localListenURLs), "no local listener at that index")
 	dial, err := locallisten.Dialer(srv.localListenURLs[i])
 	require.NoError(t, err)
-	httpClient := &http.Client{
+	return &http.Client{
 		Transport: &http.Transport{DialContext: locallisten.HTTPDialContext(dial)},
 		Timeout:   10 * time.Second,
 	}
-	return leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, locallisten.LocalConnectURL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // tcpClient dials one of the hub's TCP addresses, with keep-alives off so no
@@ -189,6 +198,18 @@ func TestServer_EveryLocalSocketAnswers(t *testing.T) {
 		require.NoError(t, listSettings(localIPCClientAt(t, srv, i)),
 			"the listener for %s must answer", url)
 	}
+
+	// The status RPC over the same transport is what a local CLI discovery
+	// path reads, and it must report the startup endpoints: every
+	// successfully opened local URL, in bind order.
+	status := leapmuxv1connect.NewAdminNetworkServiceClient(
+		connect.NewClient(connecthttp.NewTransport(localIPCHTTPClient(t, srv, 0), locallisten.LocalConnectURL, connecthttp.WithReadMaxBytes(0))))
+	resp, err := status.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, srv.localListenURLs, resp.GetLocalIpcAddresses(),
+		"the returned local URLs match the successfully opened list in order")
+	assert.Equal(t, []string{srv.PrimaryListenAddr()}, resp.GetBaseTcpAddresses(),
+		"the TCP bases carry the assigned port")
 }
 
 // The credential-free mark must cover EVERY local listener, not only the

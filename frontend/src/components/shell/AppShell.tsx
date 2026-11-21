@@ -21,10 +21,10 @@ import { useLocation, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
-import { setExpectedUserId } from '~/api/workerRpc'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { BootSplash } from '~/components/common/BootSplash'
+import { TunnelResetRecovery } from '~/components/common/TunnelResetRecovery'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { focusedTerminalId, setTerminalScreenSink, writeToFocusedTerminal } from '~/components/terminal/TerminalView'
@@ -147,6 +147,7 @@ export const AppShell: Component = () => {
   const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
   const workerSection = useWorkerSection({
     getUserId: () => userId(),
+    workerTrustScope: auth.workerTrustScope,
     keyPinConfirmDialog,
   })
 
@@ -318,13 +319,6 @@ export const AppShell: Component = () => {
   // show its dialog. `null` keeps the dialog unmounted (ok / unavailable /
   // not-yet-checked / non-macOS).
   const [cliPathInfo, setCliPathInfo] = createSignal<(CliPathStatus & { state: 'missing' | 'mismatch' }) | null>(null)
-
-  // Tell the channel manager who this page thinks it is, so an open the Hub
-  // authenticates as someone else fails instead of silently driving that user's
-  // session with this page's UI. Read lazily: it must reflect the CURRENT user, not
-  // whoever was signed in when the shell mounted — which is the whole divergence
-  // this catches.
-  setExpectedUserId(() => auth.user()?.id)
 
   // Every untrusted anchor the app renders, wherever it lands. `document.body`
   // rather than a chat container, because a dialog and a tooltip portal out of
@@ -1893,6 +1887,7 @@ export const AppShell: Component = () => {
   return (
     <AvailableProvidersContext.Provider value={agentOps.providerStore}>
       <TunnelProvider store={workerSection.tunnelStore}>
+        <TunnelResetRecovery />
         {/*
         Rendered unconditionally. There used to be a "workspace not found" case
         here, for a URL identifying a workspace the user does not own. No URL identifies

@@ -4,12 +4,16 @@ import (
 	"context"
 	"flag"
 	"os"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
+
+// pinOpTimeout limits pin-store file transactions (list, show, remove).
+const pinOpTimeout = 10 * time.Second
 
 // RunWorkerGet prints metadata for a single worker. The resolver
 // derives --worker-id from --tab-id when only the tab anchor is
@@ -153,7 +157,13 @@ func RunWorkerPinsList(rawCtx any, args []string) error {
 	if err != nil {
 		return err
 	}
-	return control.EmitData(pins.List())
+	ctx, cancel := context.WithTimeout(context.Background(), pinOpTimeout)
+	defer cancel()
+	list, err := pins.List(ctx)
+	if err != nil {
+		return control.EmitErrorWith("pins_list_failed", err)
+	}
+	return control.EmitData(list)
 }
 
 // RunWorkerPinsShow surfaces a single recorded pin (--worker-id required).
@@ -172,7 +182,13 @@ func RunWorkerPinsShow(rawCtx any, args []string) error {
 	if workerID == "" {
 		return control.EmitError("invalid_request", "--worker-id is required")
 	}
-	for _, p := range pins.List() {
+	ctx, cancel := context.WithTimeout(context.Background(), pinOpTimeout)
+	defer cancel()
+	list, err := pins.List(ctx)
+	if err != nil {
+		return control.EmitErrorWith("pins_list_failed", err)
+	}
+	for _, p := range list {
 		if p.WorkerID == workerID {
 			return control.EmitData(p)
 		}
@@ -180,8 +196,8 @@ func RunWorkerPinsShow(rawCtx any, args []string) error {
 	return control.EmitError("not_found", "no pin recorded for worker_id="+workerID)
 }
 
-// RunWorkerPinsRemove drops a pin so the next connection to that
-// worker triggers a fresh TOFU prompt.
+// RunWorkerPinsRemove drops a pin so the next verified channel to that
+// worker records a fresh TOFU pin.
 func RunWorkerPinsRemove(rawCtx any, args []string) error {
 	var workerID string
 	hub, err := parseHubOnly(rawCtx, args, func(fs *flag.FlagSet) {
@@ -197,7 +213,9 @@ func RunWorkerPinsRemove(rawCtx any, args []string) error {
 	if workerID == "" {
 		return control.EmitError("invalid_request", "--worker-id is required")
 	}
-	if err := pins.Remove(workerID); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), pinOpTimeout)
+	defer cancel()
+	if err := pins.Remove(ctx, workerID); err != nil {
 		return control.EmitErrorWith("pins_remove_failed", err)
 	}
 	return control.EmitData(map[string]string{"removed_worker_id": workerID})

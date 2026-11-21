@@ -28,12 +28,10 @@ vi.mock('./server', async (importOriginal) => {
     waitForHubStart: async (statePath: string, proc: ChildProcess, browserHost?: string) => {
       state.onReadiness?.(proc)
       const raw = await actual.waitForHubStateFile(statePath, proc)
-      const hubUrl = actual.hubUrlFromStateJson(raw, browserHost)
+      const started = actual.startedHubFromStateJson(raw, browserHost)
+      const { hubUrl } = started
       state.waitedURL = hubUrl
-      return {
-        hubUrl,
-        listen: actual.resolvedHubTCPFromStateJson(raw),
-      }
+      return started
     },
   }
 })

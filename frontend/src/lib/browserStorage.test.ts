@@ -2,7 +2,7 @@ import type { AsyncLocalKey, StorageAccount, SyncLocalKey } from '~/lib/browserS
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
-import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, hydrateStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, parseStoredKey, PREFIX_EDITOR_DRAFT, resetBrowserStorageForTests, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccount, setStorageAccountForTests, storageAccountFor, storageAccountId, storageAccountUserId, storedKeyFor, TEST_HUB } from '~/lib/browserStorage'
+import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, hydrateStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_MRU_AGENT_PROVIDERS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, parseStoredKey, PREFIX_EDITOR_DRAFT, resetBrowserStorageForTests, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccount, setStorageAccountForTests, storageAccountFor, storageAccountId, storageAccountUserId, storedKeyFor, TEST_HUB } from '~/lib/browserStorage'
 import { TEST_ACCOUNT, TEST_USER_ID } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 
@@ -161,21 +161,37 @@ describe('browserStorage', () => {
     })
 
     it('throws when an asynchronous accessor is given a synchronous key', async () => {
-      await expect(localStorageLoad('key-pins' as unknown as AsyncLocalKey))
+      await expect(localStorageLoad('mru-agent-providers' as unknown as AsyncLocalKey))
         .rejects
         .toThrow(/localStorageGet/)
+    })
+
+    // The pin rows are a family of their own: the gateway that validates and
+    // commits them (readKeyPinState / updateKeyPinState) is the only accessor,
+    // and the generic tiers refuse the names at compile time and at runtime.
+    it('refuses the pin rows in both generic tiers', async () => {
+      expect(() => localStorageGet('key-pins' as unknown as SyncLocalKey))
+        .toThrow(/key pins/)
+      expect(() => localStorageSet('key-pins' as unknown as SyncLocalKey, {}))
+        .toThrow(/key pins/)
+      await expect(localStorageLoad('key-pins' as unknown as AsyncLocalKey))
+        .rejects
+        .toThrow(/key pins/)
+      await expect(localStorageLoad('key-pins-removal-revision' as unknown as AsyncLocalKey))
+        .rejects
+        .toThrow(/key pins/)
     })
   })
 
   describe('localStorageRemove', () => {
     it('removes the key', () => {
-      localStorageSet('key-pins', { w: 'pin' })
-      localStorageRemove('key-pins')
-      expect(localStorageGet('key-pins')).toBeUndefined()
+      localStorageSet('preferred-external-app', 'vscode')
+      localStorageRemove('preferred-external-app')
+      expect(localStorageGet('preferred-external-app')).toBeUndefined()
     })
 
     it('does not throw for a registered but absent key', () => {
-      expect(() => localStorageRemove('key-pins')).not.toThrow()
+      expect(() => localStorageRemove('preferred-external-app')).not.toThrow()
     })
 
     // It used to skip validation entirely. It cannot any more: composing the
@@ -577,25 +593,25 @@ describe('browserStorage', () => {
 // write has validated anything.
 describe('the synchronous tier hands out private copies', () => {
   it('does not let a caller mutate the mirror through what it read', () => {
-    localStorageSet(KEY_KEY_PINS, {
-      'w-1': { publicKeyHex: 'aa', firstSeen: 1 },
+    localStorageSet(KEY_MRU_AGENT_PROVIDERS, {
+      'w-1': { providerId: 'aa', usedAt: 1 },
     })
 
-    const pins = localStorageGet<Record<string, unknown>>(KEY_KEY_PINS)!
-    delete pins['w-1']
-    pins['w-2'] = { publicKeyHex: 'bb', firstSeen: 2 }
+    const mru = localStorageGet<Record<string, unknown>>(KEY_MRU_AGENT_PROVIDERS)!
+    delete mru['w-1']
+    mru['w-2'] = { providerId: 'bb', usedAt: 2 }
 
     // The store still holds what was written, because the caller mutated a copy.
-    expect(localStorageGet(KEY_KEY_PINS)).toEqual({
-      'w-1': { publicKeyHex: 'aa', firstSeen: 1 },
+    expect(localStorageGet(KEY_MRU_AGENT_PROVIDERS)).toEqual({
+      'w-1': { providerId: 'aa', usedAt: 1 },
     })
   })
 
   it('gives each read its own copy', () => {
-    localStorageSet(KEY_KEY_PINS, {
-      'w-1': { publicKeyHex: 'aa', firstSeen: 1 },
+    localStorageSet(KEY_MRU_AGENT_PROVIDERS, {
+      'w-1': { providerId: 'aa', usedAt: 1 },
     })
-    expect(localStorageGet(KEY_KEY_PINS)).not.toBe(localStorageGet(KEY_KEY_PINS))
+    expect(localStorageGet(KEY_MRU_AGENT_PROVIDERS)).not.toBe(localStorageGet(KEY_MRU_AGENT_PROVIDERS))
   })
 
   // The whole point of the batch: one document, stored once at the end. A batch

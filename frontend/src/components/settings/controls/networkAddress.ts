@@ -5,8 +5,8 @@
  * The hub's `internal/hub/listenset` owns both and is the enforcement point.
  * This mirrors them so the panel can tell the operator, BEFORE Apply, which of
  * the addresses they typed will fold into another one — without the preview,
- * an address they asked for is simply absent from "Serving now" a second later
- * and reads as one the hub dropped.
+ * an address they asked for is simply absent from "TCP listeners" a second
+ * later and reads as one the hub dropped.
  *
  * A mirror nobody checks stops matching silently, so the merge rule is pinned
  * by `testdata/listen_merge_conformance.json`, which both suites replay.
@@ -124,11 +124,14 @@ export function toAddress(row: AddressRow): string {
  */
 export function parseAddress(address: string): ParsedAddress {
   const { host, port } = splitAddress(address)
+  const canonicalPort = isValidPort(port)
+    ? String(Number(port.trim()))
+    : port
   if (host === '' || host === ANY_HOST) {
     return {
       kind: 'any',
       host: '',
-      port,
+      port: canonicalPort,
       bytes: null,
       zone: '',
     }
@@ -153,7 +156,7 @@ export function parseAddress(address: string): ParsedAddress {
         ? 'any-ipv4'
         : 'ip',
       host: literal,
-      port,
+      port: canonicalPort,
       bytes: v4,
       zone,
     }
@@ -161,13 +164,13 @@ export function parseAddress(address: string): ParsedAddress {
 
   const v6 = parseIPv6(literal)
   if (v6) {
-    if (isUnspecified(v6)) {
+    if (zone === '' && isUnspecified(v6)) {
       return {
         kind: mappedIPv4(v6)
           ? 'any-ipv4'
           : 'any-ipv6',
         host: literal,
-        port,
+        port: canonicalPort,
         bytes: v6,
         zone,
       }
@@ -175,7 +178,7 @@ export function parseAddress(address: string): ParsedAddress {
     return {
       kind: 'ip',
       host: literal,
-      port,
+      port: canonicalPort,
       bytes: v6,
       zone,
     }
@@ -185,7 +188,7 @@ export function parseAddress(address: string): ParsedAddress {
   return {
     kind: 'host',
     host: literal.toLowerCase(),
-    port,
+    port: canonicalPort,
     bytes: null,
     zone,
   }
@@ -264,6 +267,14 @@ export function covers(a: ParsedAddress, b: ParsedAddress): boolean {
   }
 }
 
+/** Whether two editable rows become the same configured extra address. */
+export function rowsRepeatAddress(rows: AddressRow[]): boolean {
+  const parsed = rows.map(row => parseAddress(toAddress(row)))
+  return parsed.some((address, index) => parsed
+    .slice(0, index)
+    .some(previous => covers(address, previous) && covers(previous, address)))
+}
+
 /**
  * Whether a row states an address only this machine can reach.
  *
@@ -298,11 +309,12 @@ export interface MergeNote {
  * Every fold the hub will perform on this list, so the panel can state it
  * BEFORE Apply.
  *
- * The `-listen` address takes part as an ordinary entry, in both directions: a
- * wildcard row absorbs it, and it absorbs a row that it already covers. Only
+ * The `-listen` addresses take part as ordinary entries, in both directions: a
+ * wildcard row absorbs one, and one absorbs a row that it already covers. Only
  * the second half was reported before, and only for a literal `*` row, so an
  * operator who typed `0.0.0.0:4327` beside a `-listen` of `127.0.0.1:4327` saw
- * no note and then one address where they expected two.
+ * no note and then one address where they expected two. The bases are the
+ * WHOLE ordered list, so every `-listen` entry folds, not only the first.
  *
  * An entry folds into the FINAL absorber, never an intermediate one. With
  * `0.0.0.0:4327`, `*:4327` and `127.0.0.1:4327` on the list, the third folds
@@ -312,11 +324,9 @@ export interface MergeNote {
  * Two identical addresses cover each other, so the EARLIER one wins and the
  * later one reads as absorbed. That is the note a duplicated row deserves.
  */
-export function mergeNotes(defaultAddress: string, rows: AddressRow[]): MergeNote[] {
+export function mergeNotes(baseAddresses: string[], rows: AddressRow[]): MergeNote[] {
   const addresses = [
-    ...(defaultAddress === ''
-      ? []
-      : [defaultAddress]),
+    ...baseAddresses,
     ...rows.map(toAddress),
   ]
   // A half-typed row has no port to compare, and every one of them would then

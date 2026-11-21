@@ -583,14 +583,34 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 			return
 		}
 		info, err := s.app.CreateTunnel(ctx, TunnelConfig{
-			WorkerID:   cfg.WorkerId,
-			Type:       cfg.Type,
-			TargetAddr: cfg.TargetAddr,
-			TargetPort: int(cfg.TargetPort),
-			BindAddr:   cfg.BindAddr,
-			BindPort:   int(cfg.BindPort),
+			WorkerID:              cfg.WorkerId,
+			Type:                  cfg.Type,
+			TargetAddr:            cfg.TargetAddr,
+			TargetPort:            int(cfg.TargetPort),
+			BindAddr:              cfg.BindAddr,
+			BindPort:              int(cfg.BindPort),
+			ExpectedUserID:        cfg.ExpectedUserId,
+			ExpectedWorkerKeysHex: cfg.ExpectedWorkerKeysHex,
+			ChannelEpoch:          cfg.ChannelEpoch,
+			HubCookieHeader:       cfg.HubCookieHeader,
+			HubCookieOrigin:       cfg.HubCookieOrigin,
 		})
 		if err != nil {
+			// A typed Worker key mismatch is a RESULT, not an error response:
+			// it carries the two fingerprints the caller compares and acts on.
+			if mismatch := keyMismatchOf(err); mismatch != nil {
+				s.writeResponse(&desktoppb.Response{
+					Id: id,
+					Result: &desktoppb.Response_CreateTunnel{
+						CreateTunnel: &desktoppb.CreateTunnelResponse{
+							Result: &desktoppb.CreateTunnelResponse_KeyMismatch{
+								KeyMismatch: tunnelKeyMismatchToProto(mismatch),
+							},
+						},
+					},
+				})
+				return
+			}
 			s.writeError(id, err)
 			return
 		}
@@ -598,23 +618,35 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 			Id: id,
 			Result: &desktoppb.Response_CreateTunnel{
 				CreateTunnel: &desktoppb.CreateTunnelResponse{
-					Info: tunnelInfoToProto(info),
+					Result: &desktoppb.CreateTunnelResponse_Info{
+						Info: tunnelInfoToProto(info),
+					},
 				},
 			},
 		})
 
 	case *desktoppb.Request_DeleteTunnel:
-		s.writeErrOrOK(id, s.app.DeleteTunnel(m.DeleteTunnel.TunnelId))
+		s.writeErrOrOK(id, s.app.DeleteTunnel(
+			m.DeleteTunnel.TunnelId,
+			m.DeleteTunnel.ChannelEpoch,
+			m.DeleteTunnel.ExpectedUserId,
+		))
 
 	case *desktoppb.Request_ResetTunnels:
-		s.writeErrOrOK(id, s.app.ResetTunnels())
+		s.writeErrOrOK(id, s.app.ResetTunnels(m.ResetTunnels.ChannelEpoch))
 
 	case *desktoppb.Request_ListTunnels:
+		epoch, tunnels, err := s.app.ListTunnels(m.ListTunnels.GetExpectedUserId())
+		if err != nil {
+			s.writeError(id, err)
+			return
+		}
 		s.writeResponse(&desktoppb.Response{
 			Id: id,
 			Result: &desktoppb.Response_ListTunnels{
 				ListTunnels: &desktoppb.ListTunnelsResponse{
-					Tunnels: tunnelInfosToProto(s.app.ListTunnels()),
+					Tunnels:      tunnelInfosToProto(tunnels),
+					ChannelEpoch: epoch,
 				},
 			},
 		})
@@ -751,7 +783,7 @@ func externalAppsToProto(apps []ExternalApp) []*desktoppb.ExternalApp {
 }
 
 func tunnelInfoToProto(info *TunnelInfo) *desktoppb.TunnelInfo {
-	return &desktoppb.TunnelInfo{
+	out := &desktoppb.TunnelInfo{
 		Id:         info.ID,
 		WorkerId:   info.WorkerID,
 		Type:       info.Type,
@@ -759,5 +791,19 @@ func tunnelInfoToProto(info *TunnelInfo) *desktoppb.TunnelInfo {
 		BindPort:   int32(info.BindPort),
 		TargetAddr: info.TargetAddr,
 		TargetPort: int32(info.TargetPort),
+	}
+	if info.KeyMismatch != nil {
+		out.KeyMismatch = tunnelKeyMismatchToProto(info.KeyMismatch)
+	}
+	return out
+}
+
+// tunnelKeyMismatchToProto maps the mismatch detail both a create result and a
+// stopped list row carry; the one conversion to the wire type keeps the two
+// shapes from drifting.
+func tunnelKeyMismatchToProto(m *TunnelKeyMismatch) *desktoppb.TunnelWorkerKeyMismatch {
+	return &desktoppb.TunnelWorkerKeyMismatch{
+		ExpectedFingerprint:  m.ExpectedFingerprint,
+		PresentedFingerprint: m.PresentedFingerprint,
 	}
 }

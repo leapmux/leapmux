@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
 
@@ -22,12 +25,14 @@ func TestWorkerPinListForwardsItsArguments(t *testing.T) {
 	} {
 		store, err := crossworker.NewPinStore(directory)
 		require.NoError(t, err)
-		require.NoError(t, store.Verify(id, []byte{1}, []byte{2}, []byte{3}))
+		commit, err := store.Resolve(context.Background(), id, []byte{1}, []byte{2}, []byte{3})
+		require.NoError(t, err)
+		require.NoError(t, commit(context.Background()))
 	}
 	for _, args := range [][]string{{"--data-dir", selected}, {"--data-dir=" + selected}} {
 		result := invokeLifecycleCLI(t, home, append([]string{"worker", "cross-worker-pins", "list"}, args...)...)
 		require.Zero(t, result.exitCode, result.stderr)
-		var pins map[string]crossworker.PinEntry
+		var pins map[string]tofupins.Entry
 		require.NoError(t, json.Unmarshal([]byte(result.stdout), &pins))
 		require.Contains(t, pins, "selected-worker")
 		assert.NotContains(t, pins, "default-worker")
@@ -36,6 +41,54 @@ func TestWorkerPinListForwardsItsArguments(t *testing.T) {
 	result := invokeLifecycleCLI(t, home, "worker", "cross-worker-pins", "list", "--unknown-option")
 	assert.Equal(t, 1, result.exitCode)
 	assert.Contains(t, result.stderr, "flag provided but not defined")
+}
+
+func TestWorkerPinRemoveUpdatesAnExistingHandle(t *testing.T) {
+	home, workerDir := t.TempDir(), t.TempDir()
+	store, err := crossworker.NewPinStore(workerDir)
+	require.NoError(t, err)
+	for _, workerID := range []string{"worker-to-remove", "worker-to-keep"} {
+		commit, err := store.Resolve(t.Context(), workerID, []byte{1}, []byte{2}, []byte{3})
+		require.NoError(t, err)
+		require.NoError(t, commit(t.Context()))
+	}
+	before, err := store.Snapshot(t.Context())
+	require.NoError(t, err)
+	require.Len(t, before, 2)
+	waitingCommit, err := store.Resolve(t.Context(), "worker-to-remove", []byte{1}, []byte{2}, []byte{3})
+	require.NoError(t, err)
+
+	result := invokeLifecycleCLI(t, home, "worker", "cross-worker-pins", "remove",
+		"--data-dir="+workerDir, "--target-worker-id=worker-to-remove")
+	require.Zero(t, result.exitCode, result.stderr)
+	assert.JSONEq(t, `{"removed_target_worker_id":"worker-to-remove"}`, result.stdout)
+	require.ErrorContains(t, waitingCommit(t.Context()), "removal revision changed")
+	after, err := store.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, map[string]tofupins.Entry{"worker-to-keep": before["worker-to-keep"]}, after)
+}
+
+func TestWorkerPinListAndShowDistinguishReadErrorsFromMissingPins(t *testing.T) {
+	home, workerDir := t.TempDir(), t.TempDir()
+	path := filepath.Join(workerDir, "cross_worker_pins.json")
+	require.NoError(t, os.WriteFile(path, []byte("{invalid"), 0o600))
+	list := []string{"worker", "cross-worker-pins", "list", "--data-dir=" + workerDir}
+	show := []string{"worker", "cross-worker-pins", "show", "--data-dir=" + workerDir, "--target-worker-id=missing"}
+	for _, args := range [][]string{list, show} {
+		result := invokeLifecycleCLI(t, home, args...)
+		assert.Equal(t, 1, result.exitCode)
+		assert.Empty(t, result.stdout)
+		assert.Contains(t, result.stderr, "parse pins")
+	}
+
+	require.NoError(t, os.WriteFile(path, []byte(`{"pins":{}}`), 0o600))
+	result := invokeLifecycleCLI(t, home, list...)
+	require.Zero(t, result.exitCode, result.stderr)
+	assert.JSONEq(t, "{}", result.stdout)
+	result = invokeLifecycleCLI(t, home, show...)
+	assert.Equal(t, 1, result.exitCode)
+	assert.Empty(t, result.stdout)
+	assert.Contains(t, result.stderr, "no pin recorded")
 }
 
 func TestMissingModeVerbDiagnosticEndsWithANewline(t *testing.T) {

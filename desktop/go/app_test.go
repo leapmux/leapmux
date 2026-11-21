@@ -728,16 +728,63 @@ func TestResetTunnelsBumpsChannelEpochAndKeepsConnection(t *testing.T) {
 	app.connection = &desktopConnection{ctx: connectionCtx, stop: connectionStop, hubURL: "https://hub.example"}
 	app.lifecycleMu.Unlock()
 
-	before := app.tunnels.currentRevision()
-	require.NoError(t, app.ResetTunnels())
+	before := app.tunnels.currentEpoch()
+	require.NoError(t, app.ResetTunnels(before))
 
-	assert.Greater(t, app.tunnels.currentRevision(), before,
+	assert.NotEqual(t, before, app.tunnels.currentEpoch(),
 		"ResetTunnels must rotate the channel epoch so no cached channel survives the identity change")
-	assert.Empty(t, app.ListTunnels(), "no tunnel may survive the reset")
+	assert.Empty(t, listTunnelRows(t, app.tunnels, testTunnelOwner), "no tunnel may survive the reset")
 	app.lifecycleMu.RLock()
 	defer app.lifecycleMu.RUnlock()
 	require.NotNil(t, app.connection, "ResetTunnels must not drop the sidecar<->Hub connection")
 	assert.NoError(t, app.connection.ctx.Err(), "the connection lifetime must survive the reset")
+}
+
+// TestResetTunnelsReplayOfRetiredEpochIsANoOp pins the reset's fencing: a
+// request that specifies an epoch an earlier reset already retired is a replay of that
+// reset. It must succeed WITHOUT touching the successor state, so a late
+// identity-change teardown can never clear the next identity's tunnels and a
+// retry after an uncertain delivery is harmless.
+func TestResetTunnelsReplayOfRetiredEpochIsANoOp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	retired := app.tunnels.currentEpoch()
+	require.NoError(t, app.ResetTunnels(retired))
+	successor := app.tunnels.currentEpoch()
+	require.NotEqual(t, retired, successor)
+
+	require.NoError(t, app.ResetTunnels(retired),
+		"a replay of a retired epoch succeeds")
+	assert.Equal(t, successor, app.tunnels.currentEpoch(),
+		"a replay must not rotate the successor epoch")
+}
+
+func TestCreateTunnelRejectsCookieFromPreviousHubOrigin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(hub.Close)
+	proxy := mustNewProxy(t, hub.URL)
+	app := NewApp("")
+	installTestConnection(app, proxy, nil, hub.URL)
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	_, err := app.CreateTunnel(t.Context(), TunnelConfig{
+		WorkerID:        "worker",
+		Type:            tunnelTypeSocks5,
+		BindAddr:        "127.0.0.1",
+		ExpectedUserID:  testTunnelOwner,
+		ChannelEpoch:    app.tunnels.currentEpoch(),
+		HubCookieHeader: "leapmux-session=old-session",
+		HubCookieOrigin: "https://previous.example",
+	})
+	require.ErrorContains(t, err, "cookie source does not match")
+	assert.Zero(t, requests.Load(), "the current Hub must not receive a credential from another origin")
 }
 
 // TestResetTunnelsRejectedDuringShutdown confirms the reset rides the same
@@ -748,7 +795,7 @@ func TestResetTunnelsRejectedDuringShutdown(t *testing.T) {
 	app := NewApp("")
 	require.NoError(t, app.Shutdown())
 
-	err := app.ResetTunnels()
+	err := app.ResetTunnels(app.tunnels.currentEpoch())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shutting down")
 }

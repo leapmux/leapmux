@@ -165,6 +165,52 @@ test.describe('Network access', () => {
     await expect(reopened.locator('[data-setting-id="trusted_proxy_ranges"]')
       .getByLabel('Trusted proxy selector')).toHaveValue('cloudfront')
   })
+
+  // Two -listen requests: the primary `127.0.0.1:0` and the empty-port spelling
+  // `127.0.0.1:`, which net.Listen reads as port zero. The two resolve to
+  // distinct ports, so the state file carries two TCP addresses and the panel
+  // previews the merge for the secondary address.
+  test.describe('with a secondary -listen bind', () => {
+    test.use({ soloExtraListen: '127.0.0.1:' })
+
+    test('merges the secondary listener into a wildcard and keeps the local URL visible', async ({ page, soloServer: solo }) => {
+      expect(solo.tcp.length, 'the startup state file carries two TCP addresses').toBe(2)
+      const secondaryTcp = solo.tcp[1]!
+      const secondaryPort = secondaryTcp.slice(secondaryTcp.lastIndexOf(':') + 1)
+      expect(secondaryPort, 'the secondary bind resolved to a port').toMatch(/^\d+$/)
+      const wildcardTcp = `*:${secondaryPort}`
+      const localUrl = solo.local[0]
+      expect(localUrl, 'the startup state file carries a local IPC endpoint').toBeTruthy()
+
+      await page.goto(`${solo.hubUrl}/`)
+      await completeSoloPasswordSetup(page)
+      const dialog = await openSettingsAt(page, 'admin-network')
+      const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
+      await expect(row).toBeVisible()
+
+      // Both base addresses are listed read-only.
+      await expect(row.getByText(solo.tcp[0]!, { exact: true })).toBeVisible()
+      await expect(row.getByText(secondaryTcp, { exact: true })).toBeVisible()
+
+      await row.getByRole('button', { name: '+ Add address' }).click()
+      await row.getByLabel('Port').fill(secondaryPort)
+      await expect(row.getByText(`${secondaryTcp} merges into ${wildcardTcp}.`)).toBeVisible()
+
+      await expect(row.getByText('Local access')).toBeVisible()
+      await expect(row.getByText(localUrl!, { exact: true })).toBeVisible()
+
+      await row.getByRole('button', { name: 'Apply' }).click()
+      await expect(row.getByText('Network access updated.')).toBeVisible()
+
+      const wildcardListener = row.getByRole('listitem').filter({
+        has: page.getByText(wildcardTcp, { exact: true }),
+      })
+      await expect(wildcardListener.getByText('from -listen, merged', { exact: true })).toBeVisible()
+      await expect(row.getByText(secondaryTcp, { exact: true })).toHaveCount(0)
+      expect(await accepts(Number(secondaryPort))).toBe(true)
+      await expect(row.getByText(localUrl!, { exact: true })).toBeVisible()
+    })
+  })
 })
 
 /**

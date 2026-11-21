@@ -3,6 +3,7 @@ import type { KeyPinDecision } from './keyPinStore'
 import type { HandshakeState, Session } from './noise'
 import type { HybridHandshakeState } from './noise-hybrid'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
+import { IDBObjectStore } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_MAX_MESSAGE_SIZE,
@@ -18,8 +19,13 @@ import {
 } from '~/generated/proto/leapmux/v1/channel_pb'
 import { WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
+import { deferred, settle } from '~/test-support/async'
 import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
-import { KEY_KEY_PINS, localStorageGet } from './browserStorage'
+import { seedKeyPin, testKeyPinHex, testWorkerKeyBundle } from '~/test-support/keyPins'
+import { useTestStorage } from '~/test-support/persistentStorage'
+import * as browserStorage from './browserStorage'
+import { accountStorageKey, KEY_KEY_PINS, KEY_KEY_PINS_REMOVAL_REVISION, readKeyPinState, setStorageAccountForTests, storageAccountFor, storageAccountId, TEST_HUB } from './browserStorage'
+import { readTrustRowForTests, writeTrustRowForTests } from './browserStorageDb'
 import { ChannelError } from './channel'
 import {
   acceptingKeyPins,
@@ -44,9 +50,14 @@ import {
   waitForPendingChannel,
 } from './channel.test-support'
 import { frameAssociatedData } from './channelFraming'
-import { KeyPinStore } from './keyPinStore'
+import { keyFingerprintHex } from './fingerprint'
+import { KeyPinMissingReviewError, KeyPinPresentFirstContactError, KeyPinRejectedError, KeyPinStore } from './keyPinStore'
 import { maxReassembledMessageSize } from './reassembler'
 import { procedureOf } from './rpcProcedure'
+
+// The pin decisions these opens make commit through the pin gateway, which
+// needs somewhere to persist them.
+useTestStorage()
 
 describe('ChannelManager openChannel', () => {
   const h = new ChannelManagerTestHarness()
@@ -60,12 +71,83 @@ describe('ChannelManager openChannel', () => {
     expect(channelInternals(h.mgr, channelId).workerId).toBe('w1')
   })
 
+  it('reports an early open failure while the fixture waits for a socket', async () => {
+    const lookupFailure = new Error('handshake lookup failed')
+    const socketWait = deferred<void>()
+    const waitForSocket = vi.spyOn(h.mockWs, 'waitForOpenListener').mockReturnValue(socketWait.promise)
+    vi.spyOn(h.transport, 'getWorkerHandshakeParams').mockRejectedValueOnce(lookupFailure)
+    const outcome = h.openTestChannel('w1').then(() => 'opened', (err: unknown) => err)
+
+    try {
+      const resultBeforeSocket = await Promise.race([
+        outcome,
+        settle().then(() => 'still waiting'),
+      ])
+      expect(waitForSocket).toHaveBeenCalledOnce()
+      expect(resultBeforeSocket).toMatchObject({ message: lookupFailure.message })
+    }
+    finally {
+      socketWait.reject(new Error('fixture socket was never opened'))
+      await outcome
+    }
+  })
+
+  it('reports the open failure while the fixture waits for Ping', async () => {
+    const pingWaitStarted = deferred<void>()
+    const pingWait = deferred<void>()
+    vi.spyOn(h, 'simulatePingAccept').mockImplementationOnce(() => {
+      pingWaitStarted.resolve()
+      return pingWait.promise
+    })
+    const outcome = h.openTestChannel('w1').then(() => 'opened', (err: unknown) => err)
+    try {
+      await pingWaitStarted.promise
+      h.mockWs.simulateClose()
+      await expect(outcome).resolves.toMatchObject({ message: 'channel disconnected' })
+    }
+    finally {
+      pingWait.resolve()
+    }
+  })
+
+  it('refuses a corrupt stored pin before prompting, handshaking, or opening a Hub channel', async () => {
+    const accountId = storageAccountId()!
+    const workerId = 'w-corrupt'
+    const row = {
+      k: accountStorageKey(accountId, KEY_KEY_PINS),
+      v: {
+        [workerId]: { publicKeyHex: 'aa', firstSeen: 1 },
+      },
+      e: Date.now() + 60_000,
+    }
+    await writeTrustRowForTests(row)
+    const confirm = vi.fn().mockRejectedValue(new Error('must not prompt'))
+    const handshake1 = vi.fn(mockHandshake1)
+    const open = vi.spyOn(h.transport, 'openChannel')
+    const manager = newTestChannelManager(h.transport, {
+      keyPins: acceptingKeyPins(confirm),
+      session: { handshake1, handshake2: mockHandshake2 },
+    })
+
+    try {
+      await expect(manager.openChannel(workerId)).rejects.toThrow(/stored key pin map is corrupt/i)
+      expect(confirm).not.toHaveBeenCalled()
+      expect(handshake1).not.toHaveBeenCalled()
+      expect(open).not.toHaveBeenCalled()
+      expect(await readTrustRowForTests(row.k)).toEqual(row)
+    }
+    finally {
+      manager.closeAll()
+    }
+  })
+
   // The open proves the session with WorkerSystemService.Ping. The worker
   // registers that handler under this exact procedure, so a different string
   // fails every open with a timeout.
   it('proves the session with the ping procedure the worker registers', async () => {
     const openPromise = h.mgr.openChannel('w1')
     await h.settle()
+    await h.mockWs.waitForOpenListener()
     h.mockWs.simulateOpen()
     await h.settle()
 
@@ -87,11 +169,7 @@ describe('ChannelManager openChannel', () => {
       },
     })
     // Seed a pin so resolve takes the mismatch path and hits confirmKeyPin.
-    ;(await acceptingKeyPins().resolve('w-pin-err', {
-      x25519PublicKey: new Uint8Array(32).fill(1),
-      mlkemPublicKey: new Uint8Array(0),
-      slhdsaPublicKey: new Uint8Array(0),
-    }))()
+    await (await acceptingKeyPins().resolve('w-pin-err', testWorkerKeyBundle(1))).commit()
     const boomMgr = newTestChannelManager(createMockTransport(new MockWebSocket()), {
       session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       keyPins: pins,
@@ -113,11 +191,7 @@ describe('ChannelManager openChannel', () => {
     const pins = new KeyPinStore({
       confirmKeyPin: async () => 'reject',
     })
-    ;(await acceptingKeyPins().resolve('w-pin-rej', {
-      x25519PublicKey: new Uint8Array(32).fill(1),
-      mlkemPublicKey: new Uint8Array(0),
-      slhdsaPublicKey: new Uint8Array(0),
-    }))()
+    await (await acceptingKeyPins().resolve('w-pin-rej', testWorkerKeyBundle(1))).commit()
     const rejectMgr = newTestChannelManager(createMockTransport(new MockWebSocket()), {
       session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       keyPins: pins,
@@ -140,6 +214,95 @@ describe('ChannelManager openChannel', () => {
     expect(ch1).not.toBe(ch2)
     expect(h.mgr.isOpen(ch1)).toBe(true)
     expect(h.mgr.isOpen(ch2)).toBe(true)
+  })
+
+  it.each(['identity', 'pool generation'] as const)('rolls back an encrypted Ping held across retirement of the %s', async (retire) => {
+    const owner = 'hub-authenticated-user'
+    const successor = 'successor-user'
+    const ownerAccount = storageAccountFor(TEST_HUB, owner)
+    const successorAccount = storageAccountFor(TEST_HUB, successor)
+    const workerId = 'w-held-ping'
+    const lifetime = new AbortController()
+    let identity = {
+      userId: owner,
+      storageAccount: ownerAccount,
+      generation: 1,
+      signal: lifetime.signal,
+    }
+    setStorageAccountForTests(owner)
+    await seedKeyPin('unrelated-worker', {
+      publicKeyHex: testKeyPinHex('11'),
+      firstSeen: 1,
+    })
+    const before = await readKeyPinState()
+    const send = h.mockWs.send.bind(h.mockWs)
+    const ping = deferred<ReturnType<typeof decodeWireMessage>>()
+    vi.spyOn(h.mockWs, 'send').mockImplementation((bytes) => {
+      send(bytes)
+      ping.resolve(decodeWireMessage(h.mockWs.sent.at(-1)!))
+    })
+    const close = vi.spyOn(h.transport, 'closeChannel')
+    const invalidation = vi.fn()
+    const off = browserStorage.onKeyPinsInvalidated(invalidation)
+    const manager = newTestChannelManager(h.transport, {
+      workerTrustScope: () => identity,
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2, idleRekeyIntervalMs: 0 },
+    })
+
+    try {
+      const open = manager.openChannel(workerId)
+      const pooled = manager.getOrOpenChannel(workerId)
+      const outcomes = Promise.allSettled([open, pooled])
+      await h.mockWs.waitForOpenListener()
+      h.mockWs.simulateOpen()
+
+      const frame = await ping.promise
+      const associatedData = frameAssociatedData(frame.channelId, frame.correlationId, frame.flags)
+      const responder = sessions.get(frame.channelId)!.responder
+      const request = fromBinary(InnerMessageSchema, responder.receive.decrypt(associatedData, frame.ciphertext))
+      expect(request.kind).toMatchObject({
+        case: 'request',
+        value: {
+          method: procedureOf(WorkerSystemService.method.ping),
+          payload: new Uint8Array(),
+        },
+      })
+      expect(manager.hasOpenChannel(workerId)).toBe(false)
+      expect(await readKeyPinState()).toEqual(before)
+
+      if (retire === 'identity') {
+        lifetime.abort()
+        setStorageAccountForTests(successor)
+        identity = {
+          userId: successor,
+          storageAccount: successorAccount,
+          generation: 2,
+          signal: new AbortController().signal,
+        }
+      }
+      else {
+        manager.closeAll()
+        expect(identity.signal.aborted).toBe(false)
+      }
+      await h.sendResponseFromWorker(frame.channelId, Number(frame.correlationId), new Uint8Array())
+
+      for (const outcome of await outcomes) {
+        expect(outcome).toMatchObject({
+          status: 'rejected',
+          reason: expect.any(ChannelError),
+        })
+      }
+      expect(manager.isOpen(frame.channelId)).toBe(false)
+      expect(manager.hasOpenChannel(workerId)).toBe(false)
+      expect(close).toHaveBeenCalledExactlyOnceWith(frame.channelId)
+      expect(invalidation).not.toHaveBeenCalled()
+      expect(await readKeyPinState({ accountId: ownerAccount })).toEqual(before)
+      expect(await readKeyPinState({ accountId: successorAccount })).toEqual({ pins: {}, removalRevision: 0 })
+    }
+    finally {
+      off()
+      manager.closeAll()
+    }
   })
 
   // A failed open must tell the Hub to drop the channel it already registered.
@@ -169,6 +332,7 @@ describe('ChannelManager openChannel', () => {
         `RPC call '${procedureOf(WorkerSystemService.method.ping)}' timed out`,
       )
       await h.settle()
+      await brokenWs.waitForOpenListener()
       brokenWs.simulateOpen()
       await h.settle()
       // The worker never answers the ping.
@@ -324,6 +488,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = customMgr.openChannel('w1')
       await h.settle()
+      await customWs.waitForOpenListener()
       customWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(customWs)
@@ -346,6 +511,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = floorMgr.openChannel('w1')
       await h.settle()
+      await floorWs.waitForOpenListener()
       floorWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(floorWs)
@@ -369,6 +535,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = omitMgr.openChannel('w1')
       await h.settle()
+      await omitWs.waitForOpenListener()
       omitWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(omitWs)
@@ -393,6 +560,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = ceilMgr.openChannel('w1')
       await h.settle()
+      await ceilWs.waitForOpenListener()
       ceilWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(ceilWs)
@@ -491,11 +659,8 @@ describe('ChannelManager openChannel', () => {
     }
   })
 
-  // A throw AFTER the channel entered the pool as verified (today only a
-  // hypothetical commitPin failure -- browserStorage swallows write errors -- but
-  // the exit must stay safe if that ever changes) must evict the channel as well
-  // as roll the Hub registration back: a verified ghost left in the pool would be
-  // served by getOrOpenChannel for up to an hour while every RPC on it times out.
+  // A failed pin write after Ping must evict the opening record and roll back
+  // the Hub registration before any caller can use the session.
   it('evicts the pooled channel when a post-verification step throws', async () => {
     const ws = new MockWebSocket()
     const base = createMockTransport(ws)
@@ -508,16 +673,14 @@ describe('ChannelManager openChannel', () => {
     }
     const throwingMgr = newTestChannelManager(transport, {
       session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
-      keyPins: {
-        resolve: async () => () => {
-          throw new Error('pin store rejected the write')
-        },
-      } as unknown as KeyPinStore,
+      keyPins: acceptingKeyPins(),
     })
+    const commit = vi.spyOn(browserStorage, 'updateKeyPinState').mockRejectedValueOnce(new Error('pin store rejected the write'))
     try {
       const openPromise = throwingMgr.openChannel('w1')
       const rejected = expect(openPromise).rejects.toThrow(/pin store rejected the write/)
       await h.settle()
+      await ws.waitForOpenListener()
       ws.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(ws)
@@ -527,6 +690,7 @@ describe('ChannelManager openChannel', () => {
       expect(closed).toHaveLength(1)
     }
     finally {
+      commit.mockRestore()
       throwingMgr.closeAll()
     }
   })
@@ -547,6 +711,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = brokenMgr.openChannel('w1')
       await h.settle()
+      await brokenWs.waitForOpenListener()
       brokenWs.simulateOpen()
       await h.settle()
       // The worker never answers the ping: the session is dead in at least one
@@ -626,7 +791,7 @@ describe('ChannelManager openChannel', () => {
       expectedUserId: () => '',
     })
     try {
-      await expect(mgr.openChannel('w1')).rejects.toThrow(/authenticated this channel as hub-authenticated-user/)
+      await expect(mgr.openChannel('w1')).rejects.toThrow('The authenticated user ID is empty.')
       expect(emptyWs.sent).toHaveLength(0)
     }
     finally {
@@ -645,6 +810,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = mgr.openChannel('w1')
       await h.settle()
+      await h.mockWs.waitForOpenListener()
       h.mockWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept()
@@ -665,6 +831,7 @@ describe('ChannelManager openChannel', () => {
     try {
       const openPromise = mgr.openChannel('w1')
       await h.settle()
+      await h.mockWs.waitForOpenListener()
       h.mockWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept()
@@ -687,11 +854,7 @@ describe('ChannelManager encryption modes', () => {
     const classicTransport: ChannelTransport = {
       async getWorkerHandshakeParams(_workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
         return {
-          keys: {
-            x25519PublicKey: new Uint8Array(32),
-            mlkemPublicKey: new Uint8Array(0),
-            slhdsaPublicKey: new Uint8Array(0),
-          },
+          keys: testWorkerKeyBundle(),
           encryptionMode: EncryptionMode.CLASSIC,
         }
       },
@@ -740,7 +903,7 @@ describe('ChannelManager encryption modes', () => {
 
     const openPromise = classicMgr.openChannel('w-classic')
     await h.settle()
-    classicWs.readyState = MockWebSocket.OPEN
+    await classicWs.waitForOpenListener()
     classicWs.simulateOpen()
     await h.settle()
     await h.simulatePingAccept(classicWs, classicSessions)
@@ -772,6 +935,16 @@ describe('ChannelManager encryption modes', () => {
     classicMgr.closeAll()
   })
 })
+
+function makeOpenTransport(userId?: () => string) {
+  const socket = deferred<AutoOpenMockWebSocket>()
+  const transport = makeCountingTransport(() => {
+    const ws = new AutoOpenMockWebSocket()
+    socket.resolve(ws)
+    return ws
+  }, userId)
+  return { socket, transport }
+}
 
 describe('ChannelManager open-time verification', () => {
   // The whole point of the open-time Ping is that a session broken in either direction
@@ -813,6 +986,166 @@ describe('ChannelManager open-time verification', () => {
       expect(transport.openChannel).toHaveBeenCalledTimes(1)
     }
     finally {
+      cm.closeAll()
+    }
+  })
+
+  it('keeps a pooled caller waiting after Ping while the pin commit is pending', async () => {
+    const { socket, transport } = makeOpenTransport()
+    const cm = makeIdentityCipherManager(transport)
+    const commitStarted = deferred<void>()
+    const releaseCommit = deferred<void>()
+    const update = browserStorage.updateKeyPinState
+    const pinCommit = vi.spyOn(browserStorage, 'updateKeyPinState').mockImplementationOnce(async (change, options) => {
+      commitStarted.resolve()
+      await releaseCommit.promise
+      return update(change, options)
+    })
+    try {
+      const open = cm.openChannel('worker-1')
+      const racerResult = vi.fn()
+      await waitForPendingChannel(cm, 'ch-1')
+      await simulatePingAcceptOnWs(await socket.promise, 'ch-1')
+      await commitStarted.promise
+      const racer = cm.getOrOpenChannel('worker-1').then(racerResult)
+      await settleChannelSessions()
+      const stateWhileCommitting = channelInternals(cm, 'ch-1').state
+      const pooledWhileCommitting = cm.hasOpenChannel('worker-1')
+      const resultsWhileCommitting = [...racerResult.mock.calls]
+      releaseCommit.resolve()
+      await Promise.all([open, racer])
+
+      expect(stateWhileCommitting).toBe('opening')
+      expect(pooledWhileCommitting).toBe(false)
+      expect(resultsWhileCommitting).toEqual([])
+      expect(racerResult).toHaveBeenCalledExactlyOnceWith('ch-1')
+      expect(transport.openChannel).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      releaseCommit.resolve()
+      pinCommit.mockRestore()
+      cm.closeAll()
+    }
+  })
+
+  it('does not resolve a pin or open a Hub channel after a held lookup outlives closeAll', async () => {
+    const transport = makeCountingTransport(() => new AutoOpenMockWebSocket())
+    const params = await transport.getWorkerHandshakeParams('worker-1')
+    const lookup = deferred<typeof params>()
+    transport.getWorkerHandshakeParams = vi.fn(() => lookup.promise)
+    const keyPins = acceptingKeyPins()
+    const resolvePin = vi.spyOn(keyPins, 'resolve')
+    const cm = makeIdentityCipherManager(transport, { keyPins })
+    try {
+      const open = cm.openChannel('worker-1')
+      const rejected = expect(open).rejects.toThrow(/superseded/)
+      expect(transport.getWorkerHandshakeParams).toHaveBeenCalledExactlyOnceWith('worker-1')
+      cm.closeAll()
+      lookup.resolve(params)
+      await rejected
+      expect(resolvePin).not.toHaveBeenCalled()
+      expect(transport.openChannel).not.toHaveBeenCalled()
+    }
+    finally {
+      cm.closeAll()
+    }
+  })
+
+  it.each(['removal', 'replacement'] as const)('rejects a joined pin decision after %s during Ping', async (change) => {
+    const { socket, transport } = makeOpenTransport()
+    const keyPins = acceptingKeyPins()
+    const cm = makeIdentityCipherManager(transport, { keyPins })
+    const workerId = 'worker-1'
+    await seedKeyPin(workerId, {
+      publicKeyHex: testKeyPinHex(change === 'removal'
+        ? '00'
+        : '01'),
+      firstSeen: 1,
+    })
+    try {
+      const original = cm.openChannel(workerId)
+      await waitForPendingChannel(cm, 'ch-1')
+      const raced = cm.getOrOpenChannel(workerId)
+      const outcomes = Promise.allSettled([original, raced])
+      if (change === 'removal') {
+        await browserStorage.updateKeyPinState({ kind: 'remove', workerId })
+      }
+      else {
+        await seedKeyPin(workerId, {
+          publicKeyHex: testKeyPinHex('02'),
+          firstSeen: 2,
+        })
+      }
+      await simulatePingAcceptOnWs(await socket.promise, 'ch-1')
+
+      for (const outcome of await outcomes) {
+        expect(outcome).toMatchObject({
+          status: 'rejected',
+          reason: expect.objectContaining({
+            name: 'ChannelError',
+            source: 'client',
+            message: expect.stringContaining(change === 'removal'
+              ? 'no stored key to review'
+              : 'changed since the decision'),
+          }),
+        })
+      }
+      expect(cm.hasOpenChannel(workerId)).toBe(false)
+      expect(transport.closeChannel).toHaveBeenCalledExactlyOnceWith('ch-1')
+      expect((await readKeyPinState()).pins[workerId]?.publicKeyHex).toBe(change === 'removal'
+        ? undefined
+        : testKeyPinHex('02'))
+    }
+    finally {
+      cm.closeAll()
+    }
+  })
+
+  it('aborts the pin transaction when its opening record closes during IndexedDB reads', async () => {
+    const { socket, transport } = makeOpenTransport()
+    const cm = makeIdentityCipherManager(transport)
+    const open = cm.openChannel('worker-1')
+    const outcome = open.then(() => 'opened', (err: unknown) => err)
+    await waitForPendingChannel(cm, 'ch-1')
+    const get = IDBObjectStore.prototype.get
+    const retire = vi.fn(() => void cm.closeChannel('ch-1'))
+    const heldRead = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, key) {
+      const request = get.call(this, key)
+      if (typeof key === 'string' && key.endsWith(':key-pins-removal-revision'))
+        request.addEventListener('success', retire, { once: true })
+      return request
+    })
+    try {
+      await simulatePingAcceptOnWs(await socket.promise, 'ch-1')
+      expect(await outcome).toBeInstanceOf(ChannelError)
+      expect(retire).toHaveBeenCalledOnce()
+      expect(cm.isOpen('ch-1')).toBe(false)
+      expect(transport.closeChannel).toHaveBeenCalledExactlyOnceWith('ch-1')
+    }
+    finally {
+      heldRead.mockRestore()
+      cm.closeAll()
+    }
+    expect((await readKeyPinState()).pins).toEqual({})
+  })
+
+  it('keeps the committed pin if its opening record closes before handout', async () => {
+    const { socket, transport } = makeOpenTransport()
+    const cm = makeIdentityCipherManager(transport)
+    const retire = vi.fn(() => void cm.closeChannel('ch-1'))
+    const off = browserStorage.onKeyPinsInvalidated(retire)
+    try {
+      const open = cm.openChannel('worker-1')
+      const outcome = open.then(() => 'opened', (err: unknown) => err)
+      await waitForPendingChannel(cm, 'ch-1')
+      await simulatePingAcceptOnWs(await socket.promise, 'ch-1')
+      expect(await outcome).toBeInstanceOf(ChannelError)
+      expect(retire).toHaveBeenCalledOnce()
+      expect(cm.isOpen('ch-1')).toBe(false)
+      expect((await readKeyPinState()).pins['worker-1']?.publicKeyHex).toBe(testKeyPinHex('00'))
+    }
+    finally {
+      off()
       cm.closeAll()
     }
   })
@@ -901,23 +1234,19 @@ describe('ChannelManager open-time verification', () => {
 })
 
 describe('ChannelManager key pinning across concurrent opens', () => {
-  beforeEach(() => {
-    clearAllKeyPins()
+  beforeEach(async () => {
+    await clearAllKeyPins()
   })
 
-  afterEach(() => {
-    clearAllKeyPins()
+  afterEach(async () => {
+    await clearAllKeyPins()
   })
 
   /** A transport whose worker keys are per-worker and mutable, so a key can be rotated mid-test. */
   function makeKeyedTransport(onCreateWs: () => AutoOpenMockWebSocket, keyByWorker: Map<string, number>): ChannelTransport {
     const transport = makeCountingTransport(onCreateWs)
     transport.getWorkerHandshakeParams = vi.fn().mockImplementation(async (workerId: string) => ({
-      keys: {
-        x25519PublicKey: new Uint8Array(32).fill(keyByWorker.get(workerId)!),
-        mlkemPublicKey: new Uint8Array(0),
-        slhdsaPublicKey: new Uint8Array(0),
-      } satisfies WorkerKeyBundle,
+      keys: testWorkerKeyBundle(keyByWorker.get(workerId)!),
       encryptionMode: EncryptionMode.CLASSIC,
     }))
     return transport
@@ -944,7 +1273,7 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       await simulatePingAcceptOnWs(ws!, 'ch-2')
       await Promise.all([p1, p2])
 
-      expect(Object.keys(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).sort()).toEqual(['w1', 'w2'])
+      expect(Object.keys((await readKeyPinState()).pins).sort()).toEqual(['w1', 'w2'])
     }
     finally {
       cm.closeAll()
@@ -987,9 +1316,9 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       await p3
 
       expect(confirmKeyPin).toHaveBeenCalledOnce()
-      expect(confirmKeyPin).toHaveBeenCalledWith('w1', expect.any(String), expect.any(String))
+      expect(confirmKeyPin).toHaveBeenCalledWith('w1', expect.any(String), expect.any(String), expect.any(AbortSignal))
       // The accepted key replaced the old pin, and w2's is still there.
-      expect(Object.keys(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).sort()).toEqual(['w1', 'w2'])
+      expect(Object.keys((await readKeyPinState()).pins).sort()).toEqual(['w1', 'w2'])
     }
     finally {
       cm.closeAll()
@@ -1013,10 +1342,455 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       await simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
       await rejected
 
-      expect(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).toEqual({})
+      expect((await readKeyPinState()).pins).toEqual({})
     }
     finally {
       cm.closeAll()
+    }
+  })
+})
+
+describe('ChannelManager openChannelForKeyReview', () => {
+  function setup() {
+    const userId = 'user-1'
+    setStorageAccountForTests(userId)
+    let lifetime = new AbortController()
+    let identity = {
+      userId,
+      storageAccount: storageAccountFor(TEST_HUB, userId),
+      generation: 1,
+      signal: lifetime.signal,
+    }
+    const retireIdentity = (nextUserId = userId) => {
+      lifetime.abort()
+      lifetime = new AbortController()
+      setStorageAccountForTests(nextUserId)
+      identity = {
+        userId: nextUserId,
+        storageAccount: storageAccountFor(TEST_HUB, nextUserId),
+        generation: identity.generation + 1,
+        signal: lifetime.signal,
+      }
+    }
+    const { socket, transport } = makeOpenTransport(() => identity.userId)
+    const confirmKeyPin = vi.fn()
+    const keyPins = acceptingKeyPins(confirmKeyPin)
+    const cm = makeIdentityCipherManager(transport, {
+      keyPins,
+      workerTrustScope: () => identity,
+    })
+    const params = (byte: number) => ({
+      keys: testWorkerKeyBundle(byte),
+      encryptionMode: EncryptionMode.CLASSIC,
+    })
+    return {
+      cm,
+      transport,
+      socket,
+      confirmKeyPin,
+      keyPins,
+      identity: () => identity,
+      retireIdentity,
+      params,
+    }
+  }
+
+  it('serializes review behind an ordinary open and approves only the freshly proven key', async () => {
+    const h = setup()
+    const ordinaryLookup = deferred<ReturnType<typeof h.params>>()
+    const lookup = vi.mocked(h.transport.getWorkerHandshakeParams)
+    lookup.mockReturnValueOnce(ordinaryLookup.promise).mockResolvedValue(h.params(3))
+    h.confirmKeyPin.mockResolvedValueOnce('reject').mockResolvedValueOnce('accept')
+    const oldKey = testKeyPinHex('01')
+    const verified = testKeyPinHex('03')
+    await seedKeyPin('worker', { publicKeyHex: oldKey, firstSeen: 1 })
+    try {
+      const ordinary = h.cm.openChannel('worker')
+      const rejected = expect(ordinary).rejects.toThrow('Worker public key rejected by user')
+      const firstReview = h.cm.openChannelForKeyReview('worker')
+      const secondReview = h.cm.openChannelForKeyReview('worker')
+      expect(lookup).toHaveBeenCalledExactlyOnceWith('worker')
+      ordinaryLookup.resolve(h.params(2))
+      await rejected
+
+      await waitForPendingChannel(h.cm, 'ch-1')
+      expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(oldKey)
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(Promise.all([firstReview, secondReview])).resolves.toEqual([
+        {
+          publicKeyHex: verified,
+          scope: h.identity(),
+          pinSnapshot: {
+            pin: expect.objectContaining({ publicKeyHex: verified }),
+            removalRevision: 0,
+          },
+        },
+        {
+          publicKeyHex: verified,
+          scope: h.identity(),
+          pinSnapshot: {
+            pin: expect.objectContaining({ publicKeyHex: verified }),
+            removalRevision: 0,
+          },
+        },
+      ])
+      expect(lookup).toHaveBeenCalledTimes(2)
+      expect(h.confirmKeyPin).toHaveBeenNthCalledWith(
+        2,
+        'worker',
+        keyFingerprintHex(oldKey),
+        keyFingerprintHex(verified),
+        expect.any(AbortSignal),
+      )
+      expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(verified)
+
+      lookup.mockResolvedValue(h.params(4))
+      await expect(h.cm.openChannel('worker')).rejects.toThrow('Worker public key rejected by user')
+      expect(h.confirmKeyPin).toHaveBeenCalledTimes(2)
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('preserves the explicit rejection and lets the next review prompt again', async () => {
+    const h = setup()
+    const previous = testKeyPinHex('01')
+    const candidate = testKeyPinHex('02')
+    await seedKeyPin('worker', { publicKeyHex: previous, firstSeen: 1 })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    h.confirmKeyPin.mockResolvedValueOnce('reject').mockResolvedValueOnce('accept')
+    try {
+      await expect(h.cm.openChannelForKeyReview('worker')).rejects.toBeInstanceOf(KeyPinRejectedError)
+      expect(h.transport.openChannel).not.toHaveBeenCalled()
+      expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(previous)
+
+      const next = h.cm.openChannelForKeyReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(next).resolves.toEqual({
+        publicKeyHex: candidate,
+        scope: h.identity(),
+        pinSnapshot: {
+          pin: expect.objectContaining({ publicKeyHex: candidate }),
+          removalRevision: 0,
+        },
+      })
+      expect(h.confirmKeyPin).toHaveBeenCalledTimes(2)
+      expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(candidate)
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('requires an existing pin when reviewing a key', async () => {
+    const h = setup()
+    try {
+      await expect(h.cm.openChannelForKeyReview('worker')).rejects.toBeInstanceOf(KeyPinMissingReviewError)
+      expect(h.transport.openChannel).not.toHaveBeenCalled()
+      expect(h.confirmKeyPin).not.toHaveBeenCalled()
+      expect((await readKeyPinState()).pins).toEqual({})
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('reports a pin removed after review proof but before commit', async () => {
+    const h = setup()
+    await seedKeyPin('worker', {
+      publicKeyHex: testKeyPinHex('02'),
+      firstSeen: 1,
+    })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    const resolve = h.keyPins.resolve.bind(h.keyPins)
+    vi.spyOn(h.keyPins, 'resolve').mockImplementationOnce(async (...args) => {
+      const decision = await resolve(...args)
+      return {
+        ...decision,
+        commit: async () => {
+          await writeTrustRowForTests({
+            k: accountStorageKey(h.identity().storageAccount!, KEY_KEY_PINS),
+            v: {},
+            e: Date.now() + 60_000,
+          })
+          return decision.commit()
+        },
+      }
+    })
+
+    try {
+      const review = h.cm.openChannelForKeyReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(review).rejects.toBeInstanceOf(KeyPinMissingReviewError)
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('reports a changed-key pin removed after acceptance but before commit', async () => {
+    const h = setup()
+    await seedKeyPin('worker', {
+      publicKeyHex: testKeyPinHex('01'),
+      firstSeen: 1,
+    })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    h.confirmKeyPin.mockResolvedValueOnce('accept')
+
+    try {
+      const review = h.cm.openChannelForKeyReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await Promise.all([
+        writeTrustRowForTests({
+          k: accountStorageKey(h.identity().storageAccount!, KEY_KEY_PINS),
+          v: {},
+          e: Date.now() + 60_000,
+        }),
+        writeTrustRowForTests({
+          k: accountStorageKey(h.identity().storageAccount!, KEY_KEY_PINS_REMOVAL_REVISION),
+          v: 1,
+          e: Number.POSITIVE_INFINITY,
+        }),
+      ])
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+
+      await expect(review).rejects.toBeInstanceOf(KeyPinMissingReviewError)
+      expect((await readKeyPinState()).pins).toEqual({})
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it.each([2, 3])('rejects a concurrent key %i during deliberate first-contact commit', async (keyByte) => {
+    const h = setup()
+    const candidate = testKeyPinHex('02')
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    const resolve = h.keyPins.resolve.bind(h.keyPins)
+    vi.spyOn(h.keyPins, 'resolve').mockImplementationOnce(async (...args) => {
+      const decision = await resolve(...args)
+      return {
+        ...decision,
+        commit: async () => {
+          await writeTrustRowForTests({
+            k: accountStorageKey(h.identity().storageAccount!, KEY_KEY_PINS),
+            v: {
+              worker: {
+                publicKeyHex: testKeyPinHex(keyByte.toString(16).padStart(2, '0')),
+                firstSeen: 7,
+              },
+            },
+            e: Date.now() + 60_000,
+          })
+          return decision.commit()
+        },
+      }
+    })
+
+    try {
+      const review = h.cm.openChannelForFirstContactReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(review).rejects.toBeInstanceOf(KeyPinPresentFirstContactError)
+      expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(keyByte === 2
+        ? candidate
+        : testKeyPinHex('03'))
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('does not share an existing-key review with deliberate first contact', async () => {
+    const h = setup()
+    await seedKeyPin('worker', {
+      publicKeyHex: testKeyPinHex('02'),
+      firstSeen: 1,
+    })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    try {
+      const review = h.cm.openChannelForKeyReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      const firstContact = h.cm.openChannelForFirstContactReview('worker')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(review).resolves.toMatchObject({
+        publicKeyHex: testKeyPinHex('02'),
+      })
+      await expect(firstContact).rejects.toBeInstanceOf(KeyPinPresentFirstContactError)
+      expect(h.transport.openChannel).toHaveBeenCalledOnce()
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('does not share deliberate first contact with an existing-key review', async () => {
+    const h = setup()
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    try {
+      const firstContact = h.cm.openChannelForFirstContactReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      const review = h.cm.openChannelForKeyReview('worker')
+      const ws = await h.socket.promise
+      await simulatePingAcceptOnWs(ws, 'ch-1')
+      await expect(firstContact).resolves.toMatchObject({
+        publicKeyHex: testKeyPinHex('02'),
+      })
+
+      await waitForPendingChannel(h.cm, 'ch-2')
+      await simulatePingAcceptOnWs(ws, 'ch-2')
+      await expect(review).resolves.toMatchObject({
+        publicKeyHex: testKeyPinHex('02'),
+      })
+      expect(h.transport.openChannel).toHaveBeenCalledTimes(2)
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('commits deliberate first-contact review only while the Worker stays unpinned', async () => {
+    const h = setup()
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    try {
+      const review = h.cm.openChannelForFirstContactReview('worker')
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await expect(review).resolves.toMatchObject({
+        publicKeyHex: testKeyPinHex('02'),
+        pinSnapshot: {
+          pin: expect.objectContaining({
+            publicKeyHex: testKeyPinHex('02'),
+          }),
+          removalRevision: 0,
+        },
+      })
+      expect(h.confirmKeyPin).not.toHaveBeenCalled()
+      expect((await readKeyPinState()).pins.worker?.publicKeyHex).toBe(testKeyPinHex('02'))
+
+      await expect(h.cm.openChannelForFirstContactReview('worker')).rejects.toThrow('recorded before first-contact review')
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it('reports the reviewed pin transaction even if the same key is reinstalled before return', async () => {
+    const h = setup()
+    const workerId = 'worker'
+    const publicKeyHex = testKeyPinHex('02')
+    await seedKeyPin(workerId, {
+      publicKeyHex: testKeyPinHex('01'),
+      firstSeen: 1,
+    })
+    vi.mocked(h.transport.getWorkerHandshakeParams).mockResolvedValue(h.params(2))
+    h.confirmKeyPin.mockResolvedValueOnce('accept')
+    const committed = deferred<void>()
+    const release = deferred<void>()
+    const resolve = h.keyPins.resolve.bind(h.keyPins)
+    vi.spyOn(h.keyPins, 'resolve').mockImplementationOnce(async (...args) => {
+      const decision = await resolve(...args)
+      return {
+        ...decision,
+        commit: async () => {
+          const result = await decision.commit()
+          committed.resolve()
+          await release.promise
+          return result
+        },
+      }
+    })
+
+    try {
+      const review = h.cm.openChannelForKeyReview(workerId)
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(await h.socket.promise, 'ch-1')
+      await committed.promise
+      const { pins, removalRevision } = await readKeyPinState()
+      expect(pins[workerId]?.publicKeyHex).toBe(publicKeyHex)
+
+      const { updateKeyPinState } = await import('./browserStorage')
+      await updateKeyPinState({ kind: 'remove', workerId })
+      await seedKeyPin(workerId, { publicKeyHex, firstSeen: 2 })
+      expect((await readKeyPinState()).removalRevision).toBe(removalRevision + 1)
+
+      release.resolve()
+      await expect(review).resolves.toMatchObject({
+        pinSnapshot: { pin: pins[workerId], removalRevision },
+      })
+    }
+    finally {
+      release.resolve()
+      h.cm.closeAll()
+    }
+  })
+
+  it('retires held ordinary and review opens when the relay closes', async () => {
+    const h = setup()
+    const lookup = vi.mocked(h.transport.getWorkerHandshakeParams)
+    lookup.mockResolvedValueOnce(h.params(1))
+    try {
+      const active = h.cm.openChannel('bootstrap')
+      const ws = await h.socket.promise
+      await waitForPendingChannel(h.cm, 'ch-1')
+      await simulatePingAcceptOnWs(ws, 'ch-1')
+      await active
+
+      const held = deferred<ReturnType<typeof h.params>>()
+      lookup.mockReturnValueOnce(held.promise)
+      const resolve = vi.spyOn(h.keyPins, 'resolve')
+      const ordinary = h.cm.openChannel('worker')
+      const review = h.cm.openChannelForKeyReview('worker')
+      const outcomes = Promise.allSettled([ordinary, review])
+      ws.simulateClose()
+      held.resolve(h.params(2))
+
+      for (const outcome of await outcomes) {
+        expect(outcome).toMatchObject({
+          status: 'rejected',
+          reason: expect.objectContaining({ message: 'channel disconnected' }),
+        })
+      }
+      expect(lookup).toHaveBeenCalledTimes(2)
+      expect(resolve).not.toHaveBeenCalled()
+      expect(h.transport.openChannel).toHaveBeenCalledTimes(1)
+    }
+    finally {
+      h.cm.closeAll()
+    }
+  })
+
+  it.each(['same-user sign-in', 'account switch', 'closeAll'] as const)('rejects held ordinary and review opens after %s', async (transition) => {
+    const h = setup()
+    const held = deferred<ReturnType<typeof h.params>>()
+    const lookup = vi.mocked(h.transport.getWorkerHandshakeParams)
+    lookup.mockReturnValueOnce(held.promise)
+    const resolve = vi.spyOn(h.keyPins, 'resolve')
+    try {
+      const ordinary = h.cm.openChannel('worker')
+      const review = h.cm.openChannelForKeyReview('worker')
+      const outcome = Promise.allSettled([ordinary, review])
+      expect(lookup).toHaveBeenCalledExactlyOnceWith('worker')
+      if (transition === 'closeAll') {
+        h.cm.closeAll()
+      }
+      else {
+        h.retireIdentity(transition === 'account switch'
+          ? 'user-2'
+          : 'user-1')
+      }
+
+      held.resolve(h.params(2))
+      expect((await outcome).map(result => result.status)).toEqual(['rejected', 'rejected'])
+      expect(lookup).toHaveBeenCalledExactlyOnceWith('worker')
+      expect(resolve).not.toHaveBeenCalled()
+      expect(h.transport.openChannel).not.toHaveBeenCalled()
+    }
+    finally {
+      h.cm.closeAll()
     }
   })
 })

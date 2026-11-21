@@ -4,8 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE } from '~/generated/contracts/wire'
 import { InnerMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { WatchEventsRequestSchema } from '~/generated/proto/leapmux/v1/watch_pb'
+import { deferred } from '~/test-support/async'
 import { blankClassicHandshakeState } from '~/test-support/channelSessionDoubles'
 import { makeIdentitySession } from '~/test-support/identitySession'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { WorkerWatchService } from '../generated/proto/leapmux/v1/watch_pb'
 import {
   acceptingKeyPins,
@@ -25,11 +27,14 @@ import {
   newTestChannelManager,
   sessions,
   sessionStateOf,
-  settleChannelSessions,
   simulatePingAcceptOnWs,
   waitForPendingChannel,
 } from './channel.test-support'
 import { frameAssociatedData } from './channelFraming'
+
+// The pin decisions these opens make commit through the pin gateway, which
+// needs somewhere to persist them.
+useTestStorage()
 
 describe('ChannelManager getOrOpenChannel', () => {
   const h = new ChannelManagerTestHarness()
@@ -208,9 +213,8 @@ describe('ChannelManager getOrOpenChannel', () => {
     // Age past the hard ceiling while waiting for Reject (slow peer).
     agePastHardCeiling(sessionStateOf(ch1))
     await h.simulateRekeyReject()
-    // The reject ends ch1's session, and the pool then opens a new channel,
-    // whose verification Ping is on the wire once the sessions settle.
-    expect(decodeWireMessage(h.mockWs.sent.at(-1)!).channelId).not.toBe(ch1)
+    // The reject ends the old session. Wait for the reopen's Ping after the
+    // new open reads the pin from IndexedDB.
     await h.simulatePingAccept()
     const ch2 = await reusePromise
     expect(ch2).not.toBe(ch1)
@@ -355,6 +359,7 @@ describe('ChannelManager getOrOpenChannel', () => {
       // Open the pooled channel as user-a (expectation matches).
       const openPromise = driftMgr.openChannel('w1')
       await h.settle()
+      await driftWs.waitForOpenListener()
       driftWs.simulateOpen()
       await h.settle()
       await h.simulatePingAccept(driftWs)
@@ -388,10 +393,11 @@ describe('ChannelManager getOrOpenChannel', () => {
 // ---------------------------------------------------------------------------
 describe('ChannelManager getOrOpenChannel deduplication', () => {
   it('should return the same channel for concurrent calls to the same worker', async () => {
-    let ws: AutoOpenMockWebSocket | null = null
+    const socket = deferred<AutoOpenMockWebSocket>()
     let channelCounter = 0
     const transport = makeMockTransport(() => {
-      ws = new AutoOpenMockWebSocket()
+      const ws = new AutoOpenMockWebSocket()
+      socket.resolve(ws)
       return ws
     })
     // Each openChannel call gets a unique channel ID so we can detect duplicates.
@@ -418,10 +424,10 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
     const p1 = cm.getOrOpenChannel('worker-1')
     const p2 = cm.getOrOpenChannel('worker-1')
 
-    // Let the handshake + WebSocket open progress.
-    await settleChannelSessions()
+    // Let the handshake + pin read + WebSocket open progress.
+    const ws = await socket.promise
     // The single deduplicated open still verifies its session with a Ping.
-    await simulatePingAcceptOnWs(ws!, 'ch-1')
+    await simulatePingAcceptOnWs(ws, 'ch-1')
 
     const [ch1, ch2] = await Promise.all([p1, p2])
 
@@ -433,10 +439,11 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
   })
 
   it('should open separate channels for different workers', async () => {
-    let ws: AutoOpenMockWebSocket | null = null
+    const socket = deferred<AutoOpenMockWebSocket>()
     let channelCounter = 0
     const transport = makeMockTransport(() => {
-      ws = new AutoOpenMockWebSocket()
+      const ws = new AutoOpenMockWebSocket()
+      socket.resolve(ws)
       return ws
     })
     transport.openChannel = vi.fn().mockImplementation(async () => ({
@@ -462,10 +469,10 @@ describe('ChannelManager getOrOpenChannel deduplication', () => {
     const p1 = cm.getOrOpenChannel('worker-1')
     const p2 = cm.getOrOpenChannel('worker-2')
 
-    await settleChannelSessions()
+    const ws = await socket.promise
     // Each open verifies its own session with a Ping.
-    await simulatePingAcceptOnWs(ws!, 'ch-1')
-    await simulatePingAcceptOnWs(ws!, 'ch-2')
+    await simulatePingAcceptOnWs(ws, 'ch-1')
+    await simulatePingAcceptOnWs(ws, 'ch-2')
 
     const [ch1, ch2] = await Promise.all([p1, p2])
 

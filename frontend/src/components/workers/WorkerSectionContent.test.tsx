@@ -1,19 +1,27 @@
-/// <reference types="vitest/globals" />
 import type { TunnelInfo } from '~/api/platformBridge'
+/// <reference types="vitest/globals" />
+import type { TunnelKeyApproval } from '~/api/workerRpc'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
+import type { TunnelStore } from '~/stores/tunnel.store'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import { create } from '@bufbuild/protobuf'
-import { render, screen } from '@solidjs/testing-library'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { isTunnelAvailable, platformBridge } from '~/api/platformBridge'
 import { actionSlot, actionSlotResting } from '~/components/tree/sidebarActions.css'
 import * as listStyles from '~/components/workspace/workspaceList.css'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { clippedText } from '~/styles/shared.css'
+import { deferred, settle } from '~/test-support/async'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
+import { testTunnelKeyApproval as approve } from '~/test-support/workerTrust'
+import { WorkerKeyPinMissingError } from './verifyWorkerKey'
 import { WorkerSectionContent } from './WorkerSectionContent'
 
 /** A port-forward tunnel, whose label is the one that carries the arrow. */
@@ -39,9 +47,37 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
       ...actual.platformBridge,
       createTunnel: vi.fn(),
       deleteTunnel: vi.fn(),
+      deleteTunnels: vi.fn(),
       listTunnels: vi.fn(),
     },
   }
+})
+
+// The verify button's one action: the browser channel path that resolves the
+// Worker key pin. Mocked so a test sees the call without opening a channel.
+const verifyWorkerKey = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal) => Promise<TunnelKeyApproval>>())
+vi.mock('./verifyWorkerKey', async importOriginal => ({
+  ...await importOriginal<typeof import('./verifyWorkerKey')>(),
+  verifyWorkerKey,
+}))
+
+const authState = vi.hoisted(() => ({
+  setUserId: undefined as undefined | ((id: string | undefined) => void),
+  scope: undefined as undefined | (() => WorkerTrustScope),
+}))
+vi.mock('~/context/AuthContext', async () => {
+  const { createTestWorkerTrustState } = await import('~/test-support/workerTrust')
+  const state = createTestWorkerTrustState()
+  authState.scope = state.scope
+  authState.setUserId = state.setUserId
+  return {
+    useAuth: () => ({ workerTrustScope: state.scope }),
+  }
+})
+
+beforeEach(() => {
+  authState.setUserId?.('user-1')
+  vi.mocked(isTunnelAvailable).mockReturnValue(false)
 })
 
 function makeWorker(id: string, registeredBy = 'user-1'): Worker {
@@ -62,6 +98,9 @@ const defaultWorkerInfo: WorkerInfo = {
 function renderSection(opts?: {
   workers?: Worker[]
   tunnels?: TunnelInfo[]
+  store?: TunnelStore
+  remove?: TunnelStore['remove']
+  removeAllForWorker?: TunnelStore['removeAllForWorker']
 }) {
   const workers = opts?.workers ?? [
     makeWorker('w1'),
@@ -70,7 +109,7 @@ function renderSection(opts?: {
   const onDeregister = vi.fn()
 
   // Create a tunnel store and pre-populate with test tunnels via the signal directly.
-  const tunnelStore = createTunnelStore()
+  const tunnelStore = opts?.store ?? createTunnelStore(authState.scope!)
   if (opts?.tunnels?.length) {
     // Access internal signal to set test data without calling the API.
     const tunnels = opts.tunnels
@@ -80,6 +119,12 @@ function renderSection(opts?: {
     Object.defineProperty(tunnelStore, 'tunnelsForWorker', {
       value: (workerId: string) => tunnels.filter(t => t.workerId === workerId),
     })
+  }
+  if (opts?.remove) {
+    Object.defineProperty(tunnelStore, 'remove', { value: opts.remove })
+  }
+  if (opts?.removeAllForWorker) {
+    Object.defineProperty(tunnelStore, 'removeAllForWorker', { value: opts.removeAllForWorker })
   }
 
   const { container } = render(() => (
@@ -323,7 +368,7 @@ describe('WorkerSectionContent', () => {
   })
 
   it('shows dash when workerInfo is null', () => {
-    const tunnelStore = createTunnelStore()
+    const tunnelStore = createTunnelStore(authState.scope!)
     render(() => (
       <TunnelProvider store={tunnelStore}>
         <WorkerSectionContent
@@ -338,5 +383,377 @@ describe('WorkerSectionContent', () => {
       </TunnelProvider>
     ))
     expect(screen.getByText('\u2014')).toBeInTheDocument()
+  })
+})
+
+/** A port-forward tunnel the Worker key mismatch stopped: the row keeps its place. */
+function stoppedTunnel(): TunnelInfo {
+  return {
+    ...portForward(),
+    keyMismatch: {
+      expectedFingerprint: 'deep-idea-obey-tack',
+      presentedFingerprint: 'calm-lion-fern-arch',
+    },
+  }
+}
+
+describe('WorkerSectionContent stopped tunnel rows', () => {
+  beforeEach(() => {
+    verifyWorkerKey.mockReset()
+    verifyWorkerKey.mockImplementation(async (_id, scope) => approve(scope))
+  })
+
+  it('shows the reason and both fingerprints on a stopped row', () => {
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    expect(screen.getByTestId('tunnel-stopped')).toBeInTheDocument()
+    expect(screen.getByTestId('tunnel-stopped-reason')).toHaveTextContent(/The Hub reported a different Worker key/)
+    expect(screen.getByTestId('tunnel-expected-fingerprint')).toHaveTextContent('deep-idea-obey-tack')
+    expect(screen.getByTestId('tunnel-presented-fingerprint')).toHaveTextContent('calm-lion-fern-arch')
+  })
+
+  it('keeps the row label so the tunnel is still identified', () => {
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    expect(screen.getByText(/127\.0\.0\.1:3000 \u2192 10\.0\.0\.1:8080/)).toBeInTheDocument()
+  })
+
+  it('shows no stopped block on a live row', () => {
+    renderSection({
+      tunnels: [
+        portForward(),
+      ],
+    })
+    expect(screen.queryByTestId('tunnel-stopped')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tunnel-verify-key')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tunnel-remove')).not.toBeInTheDocument()
+  })
+
+  it('shows verify and remove buttons on a stopped row', () => {
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    expect(screen.getByTestId('tunnel-verify-key')).toBeInTheDocument()
+    expect(screen.getByTestId('tunnel-remove')).toBeInTheDocument()
+  })
+
+  it('launches the replacement with the original config and exact approval', async () => {
+    const worker = makeWorker('w1')
+    const { onAddTunnel } = renderSection({
+      workers: [worker],
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+
+    const scope = authState.scope!()
+    await vi.waitFor(() => expect(onAddTunnel).toHaveBeenCalledOnce())
+    expect(verifyWorkerKey).toHaveBeenCalledExactlyOnceWith('w1', scope, expect.any(AbortSignal))
+    expect(onAddTunnel).toHaveBeenCalledExactlyOnceWith({
+      worker,
+      scope,
+      replacement: {
+        config: {
+          workerId: 'w1',
+          type: 'port_forward',
+          bindAddr: '127.0.0.1',
+          bindPort: 3000,
+          targetAddr: '10.0.0.1',
+          targetPort: 8080,
+        },
+        approval: approve(scope),
+      },
+    })
+  })
+
+  it('preserves the stopped-row config when its pin was removed', async () => {
+    const worker = makeWorker('w1')
+    verifyWorkerKey.mockRejectedValueOnce(new WorkerKeyPinMissingError())
+    const { onAddTunnel } = renderSection({
+      workers: [worker],
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+
+    const scope = authState.scope!()
+    await vi.waitFor(() => expect(onAddTunnel).toHaveBeenCalledExactlyOnceWith({
+      worker,
+      scope,
+      replacement: {
+        config: {
+          workerId: 'w1',
+          type: 'port_forward',
+          bindAddr: '127.0.0.1',
+          bindPort: 3000,
+          targetAddr: '10.0.0.1',
+          targetPort: 8080,
+        },
+        firstContactRequired: true,
+      },
+    }))
+  })
+
+  it('ignores review completion after a new scope adopts the same Worker', async () => {
+    const review = deferred<TunnelKeyApproval>()
+    verifyWorkerKey.mockReturnValueOnce(review.promise)
+    const { onAddTunnel } = renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    const outgoing = authState.scope!()
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+    authState.setUserId?.('user-2')
+    review.resolve(approve(outgoing))
+    await settle()
+
+    expect(onAddTunnel).not.toHaveBeenCalled()
+    expect(screen.getByTestId('tunnel-verify-key')).toBeEnabled()
+  })
+
+  it('aborts review when the stopped row disappears', async () => {
+    const [rows, setRows] = createSignal<TunnelInfo[]>([
+      stoppedTunnel(),
+    ])
+    const store = createTunnelStore(authState.scope!)
+    Object.defineProperty(store, 'tunnels', { value: rows })
+    Object.defineProperty(store, 'tunnelsForWorker', {
+      value: (workerId: string) => rows().filter(tunnel => tunnel.workerId === workerId),
+    })
+    const review = deferred<TunnelKeyApproval>()
+    let signal: AbortSignal | undefined
+    verifyWorkerKey.mockImplementationOnce((_workerId, _scope, operationSignal) => {
+      signal = operationSignal
+      return review.promise
+    })
+    const { onAddTunnel } = renderSection({ store })
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+    expect(signal?.aborted).toBe(false)
+
+    setRows([])
+    await settle()
+    expect(signal?.aborted).toBe(true)
+    review.resolve(approve(authState.scope!()))
+    await settle()
+    expect(onAddTunnel).not.toHaveBeenCalled()
+  })
+
+  it('shows the verification failure beside the row that asked for it', async () => {
+    verifyWorkerKey.mockRejectedValueOnce(new Error('The changed Worker key was rejected.'))
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    fireEvent.click(screen.getByTestId('tunnel-verify-key'))
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('tunnel-verify-error')).toHaveTextContent('The changed Worker key was rejected.')
+    })
+  })
+
+  // Two stopped rows show their own blocks at once. A failure of one must not
+  // appear in the other's block.
+  it('keeps a verification failure off a sibling stopped row', async () => {
+    const other: TunnelInfo = {
+      ...stoppedTunnel(),
+      id: 't2',
+      bindPort: 4000,
+    }
+    verifyWorkerKey.mockRejectedValueOnce(new Error('the channel did not open'))
+    const { container } = renderSection({
+      tunnels: [
+        stoppedTunnel(),
+        other,
+      ],
+    })
+
+    const blocks = [
+      ...container.querySelectorAll('[data-testid="tunnel-stopped"]'),
+    ]
+    expect(blocks).toHaveLength(2)
+    const firstVerify = blocks[0]!.querySelector<HTMLButtonElement>('[data-testid="tunnel-verify-key"]')!
+    fireEvent.click(firstVerify)
+
+    await vi.waitFor(() => {
+      expect(blocks[0]!.querySelector('[data-testid="tunnel-verify-error"]')).toBeTruthy()
+    })
+    expect(blocks[1]!.querySelector('[data-testid="tunnel-verify-error"]')).toBeNull()
+  })
+
+  it('opens the delete confirmation from the remove button', async () => {
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+    })
+    fireEvent.click(screen.getByTestId('tunnel-remove'))
+    expect(screen.getByText('Delete tunnel')).toBeInTheDocument()
+  })
+})
+
+describe('WorkerSectionContent delete confirmation', () => {
+  // The confirmation stays mounted across the removal: closing it on the click
+  // and swallowing the outcome is what this asserts against.
+  it('stays mounted and shows the error inline when the removal fails', async () => {
+    const remove = vi.fn().mockRejectedValue(new Error('tunnel not found'))
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+      remove,
+    })
+
+    fireEvent.click(screen.getByTestId('tunnel-remove'))
+    const confirm = screen.getByTestId('confirm-delete-tunnel')
+    fireEvent.click(confirm) // arm
+    fireEvent.click(confirm) // confirm
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('tunnel-delete-error')).toHaveTextContent('tunnel not found')
+    })
+    // Still there, so the reason is readable and the removal can be retried.
+    expect(screen.getByText('Delete tunnel')).toBeInTheDocument()
+    expect(remove).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes once the removal succeeds', async () => {
+    const remove = vi.fn().mockResolvedValue(undefined)
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+      remove,
+    })
+
+    fireEvent.click(screen.getByTestId('tunnel-remove'))
+    const confirm = screen.getByTestId('confirm-delete-tunnel')
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Delete tunnel')).not.toBeInTheDocument()
+    })
+    expect(remove).toHaveBeenCalledWith('t1', authState.scope!())
+    expect(screen.queryByTestId('tunnel-delete-error')).not.toBeInTheDocument()
+  })
+
+  it('drops the error when the confirmation is cancelled', async () => {
+    const remove = vi.fn().mockRejectedValue(new Error('tunnel not found'))
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+      remove,
+    })
+
+    fireEvent.click(screen.getByTestId('tunnel-remove'))
+    const confirm = screen.getByTestId('confirm-delete-tunnel')
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('tunnel-delete-error')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText('Cancel'))
+    expect(screen.queryByText('Delete tunnel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tunnel-delete-error')).not.toBeInTheDocument()
+  })
+
+  it('dismisses an outgoing bulk confirmation without deleting the successor rows for the same Worker', async () => {
+    vi.mocked(isTunnelAvailable).mockReturnValue(true)
+    vi.mocked(platformBridge.listTunnels)
+      .mockResolvedValueOnce({
+        tunnels: [
+          stoppedTunnel(),
+        ],
+        channelEpoch: 'outgoing',
+      })
+      .mockResolvedValueOnce({
+        tunnels: [
+          {
+            ...portForward(),
+            id: 'successor',
+            bindPort: 8000,
+          },
+        ],
+        channelEpoch: 'successor',
+      })
+    const store = createTunnelStore(authState.scope!)
+    await store.refresh(authState.scope!())
+    const { container } = renderSection({ store })
+    container.querySelector<HTMLElement>(`.${actionSlot} button`)!.click()
+    fireEvent.click(screen.getByText('Delete all tunnels...'))
+    const outgoingConfirm = screen.getByTestId('confirm-delete-all-tunnels')
+    fireEvent.click(outgoingConfirm)
+
+    authState.setUserId?.('user-2')
+    await store.refresh(authState.scope!())
+    expect(screen.getByText(/127\.0\.0\.1:8000/)).toBeInTheDocument()
+    expect(screen.queryByTestId('confirm-delete-all-tunnels')).not.toBeInTheDocument()
+    fireEvent.click(outgoingConfirm)
+    expect(platformBridge.deleteTunnels).not.toHaveBeenCalled()
+    expect(platformBridge.deleteTunnel).not.toHaveBeenCalled()
+  })
+
+  it('keeps the bulk confirmation open after a partial deletion', async () => {
+    vi.mocked(isTunnelAvailable).mockReturnValue(true)
+    const removeAllForWorker = vi.fn().mockRejectedValue(new Error('One tunnel could not be deleted. Try again to delete it.'))
+    const { container } = renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+      removeAllForWorker,
+    })
+    container.querySelector<HTMLElement>(`.${actionSlot} button`)!.click()
+    fireEvent.click(screen.getByText('Delete all tunnels...'))
+    const confirm = screen.getByTestId('confirm-delete-all-tunnels')
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+
+    expect(await screen.findByTestId('tunnel-delete-error')).toHaveTextContent('One tunnel could not be deleted')
+    expect(confirm).toBeEnabled()
+    expect(removeAllForWorker).toHaveBeenCalledExactlyOnceWith('w1', authState.scope!())
+  })
+
+  it('refuses a second confirm while the removal is in flight', async () => {
+    let resolveRemove: (value: unknown) => void = () => {}
+    const remove = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveRemove = resolve
+    }))
+    renderSection({
+      tunnels: [
+        stoppedTunnel(),
+      ],
+      remove,
+    })
+
+    fireEvent.click(screen.getByTestId('tunnel-remove'))
+    const confirm = screen.getByTestId('confirm-delete-tunnel')
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+    await vi.waitFor(() => {
+      expect(remove).toHaveBeenCalledTimes(1)
+    })
+
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+    expect(remove).toHaveBeenCalledTimes(1)
+
+    resolveRemove(undefined)
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Delete tunnel')).not.toBeInTheDocument()
+    })
   })
 })

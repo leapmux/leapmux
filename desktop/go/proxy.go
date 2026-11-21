@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -18,9 +19,26 @@ import (
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport"
+	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 	"github.com/leapmux/leapmux/util/ctxutil"
 	"golang.org/x/net/idna"
 )
+
+type fixedCookieTransport struct {
+	base   http.RoundTripper
+	origin *url.URL
+	header string
+}
+
+func (t fixedCookieTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if !sameHubOrigin(request.URL, t.origin) {
+		return nil, fmt.Errorf("refuse Hub cookie outside %s", t.origin.Redacted())
+	}
+	cloned := request.Clone(request.Context())
+	cloned.Header = request.Header.Clone()
+	cloned.Header.Set("Cookie", t.header)
+	return t.base.RoundTrip(cloned)
+}
 
 // ProxyResponse is the response metadata returned from ProxyHTTP.
 // The response body is returned separately as raw bytes.
@@ -240,6 +258,30 @@ func (p *HubProxy) closeIdleConnections() {
 	if p.wsClient != nil {
 		p.wsClient.CloseIdleConnections()
 	}
+}
+
+// tunnelChannelOptions gives one authenticated webview session private Hub
+// clients. The clients share the origin-pinned transports, but never mutate or
+// consult the proxy's process-wide cookie jar.
+func (p *HubProxy) tunnelChannelOptions(cookieHeader string) (*tunnelpkg.OpenChannelOptions, [sha256.Size]byte) {
+	clone := func(source *http.Client) *http.Client {
+		client := *source
+		base := source.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		client.Transport = fixedCookieTransport{
+			base:   base,
+			origin: p.base,
+			header: cookieHeader,
+		}
+		client.Jar = nil
+		return &client
+	}
+	return &tunnelpkg.OpenChannelOptions{
+		HTTPClient:          clone(p.client),
+		WebSocketHTTPClient: clone(p.wsClient),
+	}, sha256.Sum256([]byte(cookieHeader))
 }
 
 // mustParseURL parses raw, returning nil on error. newProxyForEndpoint feeds a

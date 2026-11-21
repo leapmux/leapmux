@@ -9,6 +9,7 @@
     "_readme",
     "envVars",
     "devFrontendUrl",
+    "sessionCookies",
     "tauriEvents",
     "ipcHeaders",
     "windowBehavior",
@@ -34,15 +35,25 @@
       "pattern": "^https?://[^\\s]+$",
       "description": "Vite/Bun DEV origin for the debug webview and the sidecar DevProxy. Must match tauri.conf.json build.devUrl. Emitted to Go and Rust only."
     },
+    "sessionCookies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plain", "secure"],
+      "properties": {
+        "plain": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "secure": { "type": "string", "pattern": "^__Host-[A-Za-z0-9_-]+$" }
+      }
+    },
     "tauriEvents": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sidecarLog", "browserAuthResult", "menuShowAbout", "menuShowPreferences"],
+      "required": ["sidecarLog", "browserAuthResult", "menuShowAbout", "menuShowPreferences", "tunnelsChanged"],
       "properties": {
         "sidecarLog": { "$ref": "#/$defs/tauriEvent" },
         "browserAuthResult": { "$ref": "#/$defs/tauriEvent" },
         "menuShowAbout": { "$ref": "#/$defs/tauriEvent" },
-        "menuShowPreferences": { "$ref": "#/$defs/tauriEvent" }
+        "menuShowPreferences": { "$ref": "#/$defs/tauriEvent" },
+        "tunnelsChanged": { "$ref": "#/$defs/tauriEvent" }
       }
     },
     "ipcHeaders": {

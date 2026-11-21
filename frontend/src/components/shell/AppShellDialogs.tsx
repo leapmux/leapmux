@@ -525,10 +525,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             workerId={state.workerId}
             expectedFingerprint={state.expectedFingerprint}
             actualFingerprint={state.actualFingerprint}
-            resolve={(decision) => {
-              state.resolve(decision)
-              props.dialogs.keyPinConfirm.close()
-            }}
+            resolve={state.resolve}
           />
         )}
       </Show>

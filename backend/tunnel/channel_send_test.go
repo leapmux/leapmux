@@ -2,6 +2,8 @@ package tunnel
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -33,6 +35,11 @@ type recordedFrame struct {
 // with a recorder that decrypts every frame in arrival order. Wire-order ==
 // nonce-order is asserted by construction: one reorder makes Decrypt fail.
 func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) {
+	t.Helper()
+	return pairedSendChannelWithClient(t, nil)
+}
+
+func pairedSendChannelWithClient(t *testing.T, httpClient *http.Client) (ch *Channel, frames <-chan recordedFrame) {
 	t.Helper()
 
 	key, err := noiseutil.GenerateCompositeKeypair()
@@ -69,7 +76,9 @@ func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) 
 	}))
 	t.Cleanup(srv.Close)
 
-	client, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], nil)
+	client, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], &websocket.DialOptions{
+		HTTPClient: httpClient,
+	})
 	require.NoError(t, err)
 	client.SetReadLimit(channelwire.WSReadLimit)
 	t.Cleanup(func() { _ = client.CloseNow() })
@@ -266,6 +275,82 @@ func TestChannelSendWriteFailureCancelsChannel(t *testing.T) {
 	_, err := ch.SendRPCNoWait(context.Background(), "Doomed", []byte("x"), RPCHandlers{})
 	require.Error(t, err)
 	assert.True(t, ch.Closed(), "a write failure must cancel the channel")
+}
+
+type stalledFrameSocket struct {
+	io.ReadWriteCloser
+	writing chan struct{}
+	closed  chan struct{}
+}
+
+func (s *stalledFrameSocket) Write([]byte) (int, error) {
+	close(s.writing)
+	<-s.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (s *stalledFrameSocket) Close() error {
+	close(s.closed)
+	return s.ReadWriteCloser.Close()
+}
+
+type stalledFrameTransport struct {
+	writing chan struct{}
+	closed  chan struct{}
+}
+
+func (transport stalledFrameTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := http.DefaultTransport.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	socket, ok := response.Body.(io.ReadWriteCloser)
+	if !ok {
+		return nil, errors.Join(errors.New("the test relay did not upgrade the WebSocket"), response.Body.Close())
+	}
+	response.Body = &stalledFrameSocket{
+		ReadWriteCloser: socket,
+		writing:         transport.writing,
+		closed:          transport.closed,
+	}
+	return response, nil
+}
+
+func TestTunnelDialReleasesAStalledFrame(t *testing.T) {
+	writing := make(chan struct{})
+	socketClosed := make(chan struct{})
+	ch, _ := pairedSendChannelWithClient(t, &http.Client{
+		Transport: stalledFrameTransport{writing: writing, closed: socketClosed},
+	})
+	dialCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		conn, err := DialTunnelContext(dialCtx, ch, "example.test", 443)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		result <- err
+	}()
+
+	deadline, cancelDeadline := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancelDeadline()
+	select {
+	case <-writing:
+	case <-deadline.Done():
+		t.Fatal("the tunnel dial did not reach the frame write")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		require.ErrorContains(t, err, "send")
+		assert.True(t, ch.Closed(), "a stalled frame must retire the shared channel")
+		ch.mu.Lock()
+		assert.Empty(t, ch.streamCbs, "the failed dial must unregister its stream")
+		ch.mu.Unlock()
+	case <-deadline.Done():
+		t.Fatal("the stalled frame kept the canceled tunnel dial from returning")
+	}
 }
 
 // deliverResponse must drop an orphaned partial reassembly when it retires the

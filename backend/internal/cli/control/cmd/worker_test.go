@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +26,80 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	"github.com/leapmux/leapmux/util/version"
 )
+
+func TestRunWorkerPinsRemoveUpdatesAnExistingHandle(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	const hub = "http://127.0.0.1:4327"
+	pins, err := control.NewPinStore(hub)
+	require.NoError(t, err)
+	for _, workerID := range []string{"worker-to-remove", "worker-to-keep"} {
+		commit, err := pins.Resolve(t.Context(), workerID, []byte{1}, []byte{2}, []byte{3})
+		require.NoError(t, err)
+		require.NoError(t, commit(t.Context()))
+	}
+	before, err := pins.List(t.Context())
+	require.NoError(t, err)
+	require.Len(t, before, 2)
+	require.Equal(t, "worker-to-keep", before[0].WorkerID)
+	waitingCommit, err := pins.Resolve(t.Context(), "worker-to-remove", []byte{1}, []byte{2}, []byte{3})
+	require.NoError(t, err)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunWorkerPinsRemove(fakeCmdCtx{}, []string{"--hub=" + hub, "--worker-id=worker-to-remove"}))
+	})
+	var reply struct {
+		Data map[string]string `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(out, &reply))
+	assert.Equal(t, map[string]string{"removed_worker_id": "worker-to-remove"}, reply.Data)
+	require.ErrorContains(t, waitingCommit(t.Context()), "removal revision changed")
+	after, err := pins.List(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, before[:1], after)
+}
+
+func TestRunWorkerPinsListAndShowDistinguishReadErrorsFromMissingPins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+	const hub = "http://127.0.0.1:4327"
+	_, err := control.NewPinStore(hub)
+	require.NoError(t, err)
+	host, err := control.HubHost(hub)
+	require.NoError(t, err)
+	path := filepath.Join(dir, host, "pins.json")
+	require.NoError(t, os.WriteFile(path, []byte("{invalid"), 0o644))
+
+	assertPinFailure := func(handler func(any, []string) error, args []string, code, detail string) {
+		t.Helper()
+		out := withCapturedStdout(t, func() {
+			require.Error(t, handler(fakeCmdCtx{}, args))
+		})
+		var reply struct {
+			Data  json.RawMessage   `json:"data"`
+			Error map[string]string `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal(out, &reply))
+		assert.Empty(t, reply.Data)
+		assert.Equal(t, code, reply.Error["code"])
+		assert.Contains(t, reply.Error["message"], detail)
+	}
+
+	listArgs := []string{"--hub=" + hub}
+	showArgs := []string{"--hub=" + hub, "--worker-id=missing"}
+	assertPinFailure(RunWorkerPinsList, listArgs, "pins_list_failed", "parse pins")
+	assertPinFailure(RunWorkerPinsShow, showArgs, "pins_list_failed", "parse pins")
+
+	require.NoError(t, os.WriteFile(path, []byte(`{"pins":{}}`), 0o644))
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunWorkerPinsList(fakeCmdCtx{}, listArgs))
+	})
+	var reply struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(out, &reply))
+	assert.JSONEq(t, "[]", string(reply.Data))
+	assertPinFailure(RunWorkerPinsShow, showArgs, "not_found", "no pin recorded")
+}
 
 // TestRunWorkerListReadsEveryPage pins that `worker list` prints the workers
 // of every page. The hub answers one page per call, so a single call printed

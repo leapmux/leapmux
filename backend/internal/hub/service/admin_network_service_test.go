@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -30,6 +31,11 @@ import (
 type fakeListenReporter struct {
 	bound   []listenset.Bound
 	primary string
+	// baseTCP and local are the two INDEPENDENT endpoint lists the status RPC
+	// reports: the TCP merge input in bind order, and the local IPC URLs a
+	// co-located CLI discovers. Neither is derivable from the other.
+	baseTCP []string
+	local   []string
 }
 
 func tcpCtx(ip string) context.Context {
@@ -43,6 +49,12 @@ func ipcCtxForTest() context.Context {
 
 func (f fakeListenReporter) Bound() []listenset.Bound  { return f.bound }
 func (f fakeListenReporter) PrimaryListenAddr() string { return f.primary }
+func (f fakeListenReporter) BaseTCPAddresses() []string {
+	return append([]string(nil), f.baseTCP...)
+}
+func (f fakeListenReporter) LocalIPCAddresses() []string {
+	return append([]string(nil), f.local...)
+}
 
 func newNetworkService(t *testing.T, cfg *config.Config, listen service.ListenReporter) (*service.AdminNetworkService, store.Store, *settings.Manager) {
 	t.Helper()
@@ -56,6 +68,8 @@ func newNetworkService(t *testing.T, cfg *config.Config, listen service.ListenRe
 
 func TestAdminNetworkService_ReportsTheLiveListeners(t *testing.T) {
 	listen := fakeListenReporter{
+		baseTCP: []string{"127.0.0.1:4327"},
+		local:   []string{"unix:/tmp/hub.sock"},
 		bound: []listenset.Bound{
 			{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceMerged},
 			{Addr: listenset.MustParse("192.168.1.24:8080"), Source: listenset.SourceExtra, Err: "address already in use"},
@@ -69,8 +83,10 @@ func TestAdminNetworkService_ReportsTheLiveListeners(t *testing.T) {
 	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
 
-	assert.Equal(t, "127.0.0.1:4327", resp.GetDefaultAddress(),
+	assert.Equal(t, []string{"127.0.0.1:4327"}, resp.GetBaseTcpAddresses(),
 		"-listen is reported read-only: it is a command-line option, never a setting")
+	assert.Equal(t, []string{"unix:/tmp/hub.sock"}, resp.GetLocalIpcAddresses(),
+		"the local endpoints are startup facts, reported beside the TCP bases")
 	assert.Equal(t, []string{"*:4327", "192.168.1.24:8080"}, resp.GetConfigured())
 
 	require.Len(t, resp.GetBound(), 2)
@@ -84,6 +100,44 @@ func TestAdminNetworkService_ReportsTheLiveListeners(t *testing.T) {
 	// the panel prints the operating system's reason beside it.
 	assert.Equal(t, "192.168.1.24:8080", resp.GetBound()[1].GetAddress())
 	assert.Equal(t, "address already in use", resp.GetBound()[1].GetError())
+}
+
+// The two endpoint lists are INDEPENDENT answers, one per call: the TCP merge
+// input carries every -listen base in bind order, and the local list carries
+// the startup endpoints. Neither folds into the other, and a caller cannot
+// rewrite the reporter's record by mutating what it was handed.
+func TestAdminNetworkService_ReportsIndependentTCPAndLocalLists(t *testing.T) {
+	listen := fakeListenReporter{
+		baseTCP: []string{"127.0.0.1:4327", "127.0.0.1:9000"},
+		local:   []string{"unix:/tmp/hub.sock", "npipe:leapmux-hub"},
+	}
+	svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true}, listen)
+
+	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"127.0.0.1:4327", "127.0.0.1:9000"}, resp.GetBaseTcpAddresses(),
+		"the full merge input, in bind order")
+	assert.Equal(t, []string{"unix:/tmp/hub.sock", "npipe:leapmux-hub"}, resp.GetLocalIpcAddresses())
+
+	resp.BaseTcpAddresses[0] = "rewritten"
+	resp.LocalIpcAddresses[0] = "rewritten"
+	second, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"127.0.0.1:4327", "127.0.0.1:9000"}, second.GetBaseTcpAddresses())
+	assert.Equal(t, []string{"unix:/tmp/hub.sock", "npipe:leapmux-hub"}, second.GetLocalIpcAddresses())
+}
+
+// A hub that binds no TCP address reports an empty TCP list and keeps its
+// local endpoints: the desktop's ordinary state, not a failure.
+func TestAdminNetworkService_ALocalOnlyHubReportsNoTCPBases(t *testing.T) {
+	listen := fakeListenReporter{local: []string{"npipe:leapmux-hub"}}
+	svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true, Listen: []string{"npipe:leapmux-hub"}}, listen)
+
+	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
+	require.NoError(t, err)
+	assert.Empty(t, resp.GetBaseTcpAddresses())
+	assert.Empty(t, resp.GetBound())
+	assert.Equal(t, []string{"npipe:leapmux-hub"}, resp.GetLocalIpcAddresses())
 }
 
 // The stored list is echoed CANONICALLY, so the picker matches an entry
@@ -141,14 +195,66 @@ func stripZone(ip string) string {
 }
 
 // A hub with no listener set yet (the window before Serve) must answer rather
-// than panic: the dialog can be opened at any moment.
+// than panic: the dialog can be opened at any moment. The base list then comes
+// from the configured bind set, with no local endpoints to report.
 func TestAdminNetworkService_ToleratesNoListenerSet(t *testing.T) {
 	svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true, Listen: []string{"127.0.0.1:4327"}}, nil)
 
 	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, resp.GetBound())
-	assert.Equal(t, "127.0.0.1:4327", resp.GetDefaultAddress())
+	assert.Equal(t, []string{"127.0.0.1:4327"}, resp.GetBaseTcpAddresses())
+	assert.Empty(t, resp.GetLocalIpcAddresses(),
+		"a reporter with no live sockets knows no endpoint a client can dial")
+}
+
+// The fallback without live sockets reports the configured TCP bind set as
+// the merge input: the explicit list in bind order, the launcher's default
+// when the set lists none, and nothing at all for a local-only set.
+func TestAdminNetworkService_TheFallbackSplitsTheConfiguredBindSet(t *testing.T) {
+	t.Setenv("LEAPMUX_HUB_LISTEN", "")
+	launcherConfig, _, err := config.LoadWithOptions(nil, config.LoadOptions{
+		DefaultConfigFile: filepath.Join(t.TempDir(), "hub.yaml"),
+		DefaultListen:     "127.0.0.1:44321",
+		SoloMode:          true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, launcherConfig.Listen, "the launcher default applies to an empty configured bind set")
+
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+		want []string
+	}{
+		{
+			name: "an explicit list keeps its order",
+			cfg:  &config.Config{SoloMode: true, Listen: []string{":8080", "unix:/x", ":9090"}},
+			want: []string{":8080", ":9090"},
+		},
+		{
+			name: "an empty list takes the built-in TCP default",
+			cfg:  &config.Config{SoloMode: true},
+			want: []string{":4327"},
+		},
+		{
+			name: "an empty list takes the launcher's TCP default",
+			cfg:  launcherConfig,
+			want: []string{"127.0.0.1:44321"},
+		},
+		{
+			name: "a local-only list reports no TCP address",
+			cfg:  &config.Config{SoloMode: true, Listen: []string{"unix:/x"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := newNetworkService(t, tc.cfg, nil)
+
+			resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, resp.GetBaseTcpAddresses())
+			assert.Empty(t, resp.GetLocalIpcAddresses())
+		})
+	}
 }
 
 // A machine whose interfaces cannot be read is an internal failure, not an

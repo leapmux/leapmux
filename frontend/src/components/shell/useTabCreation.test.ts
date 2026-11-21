@@ -131,6 +131,8 @@ function sentAgent(index = 0): OpenAgentRequest {
   return mockOpenAgent.mock.calls[index]![1] as OpenAgentRequest
 }
 
+const ID_FORMAT = /^[A-Z0-9]{48}$/i
+
 function holdAgentRetry(failure: 'transport' | 'definitive') {
   const held = deferred<unknown>()
   const requests: Array<{ tabId: string, bytes: Uint8Array }> = []
@@ -151,10 +153,15 @@ function holdAgentRetry(failure: 'transport' | 'definitive') {
     expectRetryIdentity() {
       expect(mockOpenAgent).toHaveBeenCalledTimes(2)
       const [first, second] = requests
-      if (failure === 'transport')
+      expect(first!.tabId).toMatch(ID_FORMAT)
+      expect(second!.tabId).toMatch(ID_FORMAT)
+      if (failure === 'transport') {
+        expect(second!.tabId).toBe(first!.tabId)
         expect(second!.bytes).toEqual(first!.bytes)
-      else
+      }
+      else {
         expect(second!.tabId).not.toBe(first!.tabId)
+      }
     },
   }
 }
@@ -476,6 +483,37 @@ describe('useTabCreation retry identity', () => {
     expect(await s.coordinator.openWorkspace(input)).toBe(true)
     expect(mockCreateWorkspace).toHaveBeenCalledOnce()
     expect(sentAgent(1)).toEqual(original)
+  })
+})
+
+describe('useTabCreation tab ID format', () => {
+  for (const kind of ['agent', 'terminal', 'file', 'image'] as const) {
+    it(`mints a 48-character alphanumeric ${kind} creation tab ID`, async () => {
+      const s = setup()
+      mockFor(kind).mockReturnValue(new Promise(() => {}))
+      void openKind(s, kind)
+      await settle()
+      const creation = sentCreation(kind)
+      expect(creation.tabId).toMatch(ID_FORMAT)
+    })
+  }
+
+  it('shares the prepared request and tab ID across a concurrent join', async () => {
+    const s = setup()
+    const held = deferred<unknown>()
+    mockOpenAgent.mockReturnValueOnce(held.promise)
+    const first = s.coordinator.openAgent({ ...s.origin, request: s.request })
+    await settle()
+    const second = s.coordinator.openAgent({ ...s.origin, request: s.request })
+    await settle()
+    expect(mockOpenAgent).toHaveBeenCalledOnce()
+    const id = sentCreation('agent').tabId
+    expect(id).toMatch(ID_FORMAT)
+    s.publisher.publish(TabType.AGENT, id, { workerId: 'worker' })
+    held.resolve(s.agentReply(sentAgent(), true))
+    expect(await first).toBe(true)
+    expect(await second).toBe(true)
+    expect(sentCreation('agent').tabId).toBe(id)
   })
 })
 

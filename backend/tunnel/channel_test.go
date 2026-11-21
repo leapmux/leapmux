@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -27,6 +29,7 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/tofupins"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
@@ -104,16 +107,22 @@ func workerKeysOf(t *testing.T, key *noiseutil.CompositeKeypair) *leapmuxv1.Work
 	return keys
 }
 
-// channelServiceServer serves service over Connect on an httptest server.
-// Connect v2 registers the service on a connect.Server and mounts it on a
-// mux, instead of returning one mount path and handler.
-func channelServiceServer(t *testing.T, service leapmuxv1connect.ChannelServiceHandler) *httptest.Server {
-	t.Helper()
+// channelServiceMux serves service over Connect on a mux, which a caller may
+// add its own routes to before serving (the channel relay, for one). Connect v2
+// registers the service on a connect.Server and mounts it on a mux, instead of
+// returning one mount path and handler.
+func channelServiceMux(service leapmuxv1connect.ChannelServiceHandler) *http.ServeMux {
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer()
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, service)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
-	server := httptest.NewServer(mux)
+	return mux
+}
+
+// channelServiceServer serves service over Connect on an httptest server.
+func channelServiceServer(t *testing.T, service leapmuxv1connect.ChannelServiceHandler) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(channelServiceMux(service))
 	t.Cleanup(server.Close)
 	return server
 }
@@ -230,21 +239,108 @@ func (s *pinnedKeysChannelService) OpenChannel(context.Context, *leapmuxv1.OpenC
 	return nil, connect.NewError(connect.CodeUnavailable, "the test stops after the pin check")
 }
 
-// recordingKeyPin records the keys that OpenChannel asks it to verify, and
-// answers with err.
+// recordingKeyPin records the keys that OpenChannel asks it to resolve, and
+// answers with err. A resolved pin returns a commit that publishes the way a
+// durable store's commit does: it writes only under a live context, and a
+// written pin stands even if cancellation lands before the commit returns.
+// beforeWrite and afterWrite hold the commit at that edge of the write until
+// the test releases the hold or the commit context dies, so a test lands its
+// cancellation or peer close at a known point.
 type recordingKeyPin struct {
-	err                   error
+	err       error
+	commitErr error
+
+	mu                    sync.Mutex
 	workerID              string
 	x25519, mlkem, slhdsa []byte
+	commitCalled          bool
+	pinPublished          bool
+
+	commitStarted chan struct{} // closes when the commit body begins
+	publishedNow  chan struct{} // closes once the commit has published the pin
+	beforeWrite   chan struct{} // holds the commit before the write
+	afterWrite    chan struct{} // holds the commit after the write
 }
 
-func (p *recordingKeyPin) Verify(workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) error {
+func (p *recordingKeyPin) Resolve(_ context.Context, workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (func(context.Context) error, error) {
+	p.mu.Lock()
 	p.workerID, p.x25519, p.mlkem, p.slhdsa = workerID, publicKey, mlkemPublicKey, slhdsaPublicKey
-	return p.err
+	refuse := p.err
+	p.mu.Unlock()
+	if refuse != nil {
+		return nil, refuse
+	}
+	return p.commit, nil
+}
+
+// commit is the publication a resolved pin defers until a passed Ping.
+func (p *recordingKeyPin) commit(commitCtx context.Context) error {
+	p.mu.Lock()
+	p.commitCalled = true
+	started, published := p.commitStarted, p.publishedNow
+	before, after := p.beforeWrite, p.afterWrite
+	commitErr := p.commitErr
+	p.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if before != nil {
+		holdOrCancel(commitCtx, before)
+	}
+	// A store writes only under a live context: cancellation that lands before
+	// the write persists nothing.
+	if err := commitCtx.Err(); err != nil {
+		return err
+	}
+	if commitErr != nil {
+		return commitErr
+	}
+	p.mu.Lock()
+	p.pinPublished = true
+	p.mu.Unlock()
+	if published != nil {
+		close(published)
+	}
+	if after != nil {
+		holdOrCancel(commitCtx, after)
+	}
+	return nil
+}
+
+// holdOrCancel holds on hold until the test releases it or commitCtx dies: a
+// commit whose context is canceled stops waiting.
+func holdOrCancel(commitCtx context.Context, hold <-chan struct{}) {
+	select {
+	case <-hold:
+	case <-commitCtx.Done():
+	}
+}
+
+// resolved reports the keys Resolve recorded, whatever the answer was.
+func (p *recordingKeyPin) resolved() (workerID string, x25519, mlkem, slhdsa []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.workerID, p.x25519, p.mlkem, p.slhdsa
+}
+
+// wasCommitted reports whether the commit ran.
+func (p *recordingKeyPin) wasCommitted() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.commitCalled
+}
+
+// wasPublished reports whether the commit published the pin.
+func (p *recordingKeyPin) wasPublished() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pinPublished
 }
 
 // The TOFU pin checks each key of the worker's key set in its own position. A
-// mismatch aborts the open before the hub registers a channel.
+// mismatch aborts the open before the hub registers a channel. A match resolves
+// eagerly and defers its commit until a passed Ping proves the session, so a
+// handshake or Ping failure records no pin.
 func TestOpenChannelVerifiesEachWorkerKeyAgainstThePin(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
@@ -260,15 +356,39 @@ func TestOpenChannelVerifiesEachWorkerKeyAgainstThePin(t *testing.T) {
 			KeyPin:          pin,
 		})
 		require.Error(t, err, "the fake refuses OpenChannel")
-		assert.Equal(t, "worker-1", pin.workerID)
-		assert.Equal(t, keys.GetX25519(), pin.x25519)
-		assert.Equal(t, keys.GetMlkem(), pin.mlkem)
-		assert.Equal(t, keys.GetSlhdsa(), pin.slhdsa)
+		workerID, x25519, mlkem, slhdsa := pin.resolved()
+		assert.Equal(t, "worker-1", workerID)
+		assert.Equal(t, keys.GetX25519(), x25519)
+		assert.Equal(t, keys.GetMlkem(), mlkem)
+		assert.Equal(t, keys.GetSlhdsa(), slhdsa)
+		assert.False(t, pin.wasCommitted(),
+			"the commit waits for a passed Ping, and this open stops before one")
 		select {
 		case <-service.openCalled:
 		default:
 			t.Fatal("a pin that matches must let the open reach the hub")
 		}
+	})
+
+	t.Run("a matching pin commits its publication after a passed Ping", func(t *testing.T) {
+		hub, hubURL := startPinFlowHub(t)
+		pin := &recordingKeyPin{}
+		results := startOpenChannel(testutil.DeadlineContext(t), testutil.DeadlineContext(t), hubURL, pin)
+
+		hub.awaitRelay(t)
+		correlationID, request := hub.readRequest(t)
+		require.Equal(t, leapmuxv1connect.WorkerSystemServicePingProcedure, request.GetMethod())
+		assert.False(t, pin.wasCommitted(), "the commit runs only after the Ping proves the session")
+		assert.False(t, pin.wasPublished())
+		hub.answerPing(t, correlationID)
+
+		got := awaitOpen(t, results)
+		require.NoError(t, got.err)
+		require.NotNil(t, got.ch)
+		t.Cleanup(got.ch.Close)
+		assert.True(t, pin.wasCommitted())
+		assert.True(t, pin.wasPublished())
+		assert.Empty(t, hub.closedChannelID(), "a handed-out channel rolls nothing back")
 	})
 
 	t.Run("a mismatch aborts before the hub opens a channel", func(t *testing.T) {
@@ -286,6 +406,46 @@ func TestOpenChannelVerifiesEachWorkerKeyAgainstThePin(t *testing.T) {
 			t.Fatal("a mismatched pin must stop the open before the hub registers a channel")
 		default:
 		}
+	})
+
+	t.Run("a handshake failure resolves eagerly but never commits", func(t *testing.T) {
+		service := &rollbackChannelService{keys: keys}
+		server := channelServiceServer(t, service)
+		path := filepath.Join(t.TempDir(), "pins.json")
+		pins, err := tofupins.Open(tofupins.Options{Path: path, DirMode: 0o700, FileMode: 0o600})
+		require.NoError(t, err)
+
+		ch, err := OpenChannel(t.Context(), server.URL, "worker-1", &OpenChannelOptions{
+			LifetimeContext: t.Context(),
+			KeyPin:          pins,
+		})
+		require.ErrorContains(t, err, "handshake2")
+		assert.Nil(t, ch)
+		assert.NoFileExists(t, path)
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		assert.Equal(t, "registered-channel", service.closedChannel)
+	})
+
+	t.Run("a Ping failure records no pin", func(t *testing.T) {
+		hub, hubURL := startPinFlowHub(t)
+		pin := &recordingKeyPin{}
+		results := startOpenChannel(testutil.DeadlineContext(t), testutil.DeadlineContext(t), hubURL, pin)
+
+		hub.awaitRelay(t)
+		correlationID, request := hub.readRequest(t)
+		require.Equal(t, leapmuxv1connect.WorkerSystemServicePingProcedure, request.GetMethod())
+		assert.False(t, pin.wasCommitted(), "the commit runs only after the Ping proves the session")
+		hub.refusePing(t, correlationID)
+
+		got := awaitOpen(t, results)
+		require.Error(t, got.err)
+		assert.Nil(t, got.ch)
+		assert.Contains(t, got.err.Error(), "verify channel session")
+		assert.False(t, pin.wasCommitted(), "a Ping failure must never commit the pin")
+		assert.False(t, pin.wasPublished())
+		assert.Equal(t, pinHubChannelID, hub.closedChannelID(),
+			"the failed open still rolls the registration back")
 	})
 }
 
@@ -330,7 +490,8 @@ func TestOpenChannelRefusesAnIncompleteKeySetBeforeThePin(t *testing.T) {
 				_, err := OpenChannel(context.Background(), server.URL, "worker-1", opts)
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErr)
-				assert.Empty(t, pin.workerID, "the pin store must never see an incomplete key set")
+				workerID, _, _, _ := pin.resolved()
+				assert.Empty(t, workerID, "the pin store must never see an incomplete key set")
 				select {
 				case <-service.openCalled:
 					t.Fatal("an incomplete key set must stop the open before the hub registers a channel")
@@ -339,6 +500,453 @@ func TestOpenChannelRefusesAnIncompleteKeySetBeforeThePin(t *testing.T) {
 			})
 		}
 	}
+}
+
+const (
+	pinHubWorkerID  = "worker-1"
+	pinHubChannelID = "pin-hub-channel"
+)
+
+// pinFlowHub is a fake Hub that completes a real classical Noise handshake and
+// relays the channel WebSocket, so an open runs through its Ping and its pin
+// commit. The test drives the peer end of the relay itself with readRequest and
+// writeMessage.
+type pinFlowHub struct {
+	leapmuxv1connect.UnimplementedChannelServiceHandler
+
+	key  *noiseutil.CompositeKeypair
+	keys *leapmuxv1.WorkerPublicKeys
+
+	mu            sync.Mutex
+	closedChannel string
+	peerSession   *noiseutil.Session
+	peerWS        *websocket.Conn
+
+	wsAccepted chan struct{}
+}
+
+// startPinFlowHub serves a pinFlowHub over Connect and its channel relay route,
+// and returns the hub with its URL.
+func startPinFlowHub(t *testing.T) (*pinFlowHub, string) {
+	t.Helper()
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	hub := &pinFlowHub{
+		key:        key,
+		keys:       workerKeysOf(t, key),
+		wsAccepted: make(chan struct{}),
+	}
+	done := make(chan struct{})
+	mux := channelServiceMux(hub)
+	mux.HandleFunc(contracts.WSRouteChannel, func(w http.ResponseWriter, r *http.Request) {
+		hub.serveRelay(w, r, done)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(func() {
+		// Release the parked relay handler before the server waits on it.
+		close(done)
+		hub.mu.Lock()
+		peer := hub.peerWS
+		hub.mu.Unlock()
+		if peer != nil {
+			_ = peer.CloseNow()
+		}
+		server.Close()
+	})
+	return hub, server.URL
+}
+
+func (h *pinFlowHub) GetWorkerHandshakeParams(context.Context, *leapmuxv1.GetWorkerHandshakeParamsRequest) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
+	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
+		Keys:           h.keys,
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+	}, nil
+}
+
+func (h *pinFlowHub) OpenChannel(_ context.Context, req *leapmuxv1.OpenChannelRequest) (*leapmuxv1.OpenChannelResponse, error) {
+	msg2, session, err := noiseutil.ClassicalResponderHandshake(h.key, pinHubWorkerID, req.GetHandshakePayload())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+	}
+	h.mu.Lock()
+	h.peerSession = session
+	h.mu.Unlock()
+	return &leapmuxv1.OpenChannelResponse{
+		ChannelId:        pinHubChannelID,
+		HandshakePayload: msg2,
+		UserId:           "authenticated-user",
+		MaxMessageSize:   uint64(contracts.MaxMessageSize),
+	}, nil
+}
+
+func (h *pinFlowHub) CloseChannel(_ context.Context, req *leapmuxv1.CloseChannelRequest) (*leapmuxv1.CloseChannelResponse, error) {
+	h.mu.Lock()
+	h.closedChannel = req.GetChannelId()
+	h.mu.Unlock()
+	return &leapmuxv1.CloseChannelResponse{}, nil
+}
+
+// serveRelay accepts the open's channel WebSocket and holds it until the test
+// ends. The test itself reads and writes the peer end.
+func (h *pinFlowHub) serveRelay(w http.ResponseWriter, r *http.Request, done <-chan struct{}) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols: []string{contracts.WSSubprotocolChannelRelay},
+	})
+	if err != nil {
+		return
+	}
+	conn.SetReadLimit(channelwire.WSReadLimit)
+	h.mu.Lock()
+	h.peerWS = conn
+	h.mu.Unlock()
+	close(h.wsAccepted)
+	<-done
+}
+
+// awaitRelay waits for the open's channel WebSocket to reach the relay.
+func (h *pinFlowHub) awaitRelay(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.wsAccepted:
+	case <-time.After(eventWaitLimit):
+		t.Fatal("the open never reached the channel relay")
+	}
+}
+
+// closedChannelID reports the channel id the hub's rollback close carried, if
+// any.
+func (h *pinFlowHub) closedChannelID() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.closedChannel
+}
+
+// readRequest reads the next inner RPC request off the relay and returns its
+// correlation id.
+func (h *pinFlowHub) readRequest(t *testing.T) (uint64, *leapmuxv1.InnerRpcRequest) {
+	t.Helper()
+	h.mu.Lock()
+	session, ws := h.peerSession, h.peerWS
+	h.mu.Unlock()
+	require.NotNil(t, session, "the relay must hold the responder session")
+	return readPeerRequest(t, session, ws)
+}
+
+// writeMessage sends one inner message to the open's client on correlationID.
+func (h *pinFlowHub) writeMessage(t *testing.T, correlationID uint64, envelope *leapmuxv1.InnerMessage) {
+	t.Helper()
+	h.mu.Lock()
+	session, ws := h.peerSession, h.peerWS
+	h.mu.Unlock()
+	plaintext, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	frame, err := channelwire.SealChannelMessage(session, pinHubChannelID, correlationID, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, plaintext)
+	require.NoError(t, err)
+	require.NoError(t, channelwire.WriteChannelMessage(testutil.DeadlineContext(t), ws, frame))
+}
+
+// answerPing completes the open's session verification.
+func (h *pinFlowHub) answerPing(t *testing.T, correlationID uint64) {
+	t.Helper()
+	h.writeMessage(t, correlationID, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Response{Response: channelwire.NewPayloadResponse(nil)},
+	})
+}
+
+// refusePing fails the open's session verification in band.
+func (h *pinFlowHub) refusePing(t *testing.T, correlationID uint64) {
+	t.Helper()
+	h.writeMessage(t, correlationID, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Response{Response: channelwire.NewErrorResponse(13, "ping refused")},
+	})
+}
+
+// closePeer closes only the channel WebSocket from the peer side, leaving both
+// open contexts alive.
+func (h *pinFlowHub) closePeer(t *testing.T) {
+	t.Helper()
+	h.mu.Lock()
+	ws := h.peerWS
+	h.mu.Unlock()
+	require.NotNil(t, ws)
+	_ = ws.CloseNow()
+}
+
+// openResult carries what one OpenChannel attempt returned.
+type openResult struct {
+	ch  *Channel
+	err error
+}
+
+// startOpenChannel runs OpenChannel against hubURL on its own goroutine, so a
+// test can drive the peer end while the open runs.
+func startOpenChannel(openCtx, lifetimeCtx context.Context, hubURL string, pin KeyPinStore) <-chan openResult {
+	results := make(chan openResult, 1)
+	go func() {
+		ch, err := OpenChannel(openCtx, hubURL, pinHubWorkerID, &OpenChannelOptions{
+			LifetimeContext: lifetimeCtx,
+			KeyPin:          pin,
+		})
+		results <- openResult{ch: ch, err: err}
+	}()
+	return results
+}
+
+// awaitOpen waits for a startOpenChannel attempt within the event budget.
+func awaitOpen(t *testing.T, results <-chan openResult) openResult {
+	t.Helper()
+	select {
+	case got := <-results:
+		return got
+	case <-time.After(eventWaitLimit):
+		t.Fatal("OpenChannel never returned")
+		return openResult{}
+	}
+}
+
+// awaitSignal waits for a pin sync point the open must reach within the event
+// budget.
+func awaitSignal(t *testing.T, reached <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-reached:
+	case <-time.After(eventWaitLimit):
+		t.Fatalf("%s never happened", what)
+	}
+}
+
+// Pin publication is an independent outcome of the open. The commit runs only
+// after a passed Ping. A failed commit refuses the open. Cancellation that
+// prevents handout preserves an already published pin.
+func TestOpenChannelPinPublicationIsIndependentOfHandout(t *testing.T) {
+	t.Run("a commit failure refuses the channel", func(t *testing.T) {
+		hub, hubURL := startPinFlowHub(t)
+		pin := &recordingKeyPin{commitErr: errors.New("pin store unavailable")}
+		results := startOpenChannel(testutil.DeadlineContext(t), testutil.DeadlineContext(t), hubURL, pin)
+
+		hub.awaitRelay(t)
+		correlationID, request := hub.readRequest(t)
+		require.Equal(t, leapmuxv1connect.WorkerSystemServicePingProcedure, request.GetMethod())
+		hub.answerPing(t, correlationID)
+
+		got := awaitOpen(t, results)
+		require.Error(t, got.err, "a commit failure refuses the channel")
+		assert.Nil(t, got.ch, "no channel is handed out on commit failure")
+		assert.True(t, pin.wasCommitted())
+		assert.False(t, pin.wasPublished(), "the failed commit persisted nothing")
+		assert.NotEmpty(t, hub.closedChannelID(), "the channel registration is rolled back")
+	})
+
+	t.Run("cancellation before the write persists no pin", func(t *testing.T) {
+		for name, cancelCase := range map[string]func(cancelOpen, cancelLifetime context.CancelFunc){
+			"the open context":     func(cancelOpen, _ context.CancelFunc) { cancelOpen() },
+			"the lifetime context": func(_ context.CancelFunc, cancelLifetime context.CancelFunc) { cancelLifetime() },
+			"both contexts":        func(cancelOpen, cancelLifetime context.CancelFunc) { cancelOpen(); cancelLifetime() },
+		} {
+			t.Run(name, func(t *testing.T) {
+				hub, hubURL := startPinFlowHub(t)
+				pin := &recordingKeyPin{
+					commitStarted: make(chan struct{}),
+					beforeWrite:   make(chan struct{}),
+				}
+				openCtx, cancelOpen := context.WithCancel(testutil.DeadlineContext(t))
+				defer cancelOpen()
+				lifetimeCtx, cancelLifetime := context.WithCancel(testutil.DeadlineContext(t))
+				defer cancelLifetime()
+				results := startOpenChannel(openCtx, lifetimeCtx, hubURL, pin)
+
+				hub.awaitRelay(t)
+				correlationID, request := hub.readRequest(t)
+				require.Equal(t, leapmuxv1connect.WorkerSystemServicePingProcedure, request.GetMethod())
+				hub.answerPing(t, correlationID)
+				awaitSignal(t, pin.commitStarted, "the pin commit")
+				cancelCase(cancelOpen, cancelLifetime)
+
+				got := awaitOpen(t, results)
+				require.Error(t, got.err)
+				assert.Nil(t, got.ch)
+				assert.ErrorIs(t, got.err, context.Canceled)
+				assert.False(t, pin.wasPublished(),
+					"cancellation that lands before the write persists nothing")
+				assert.Equal(t, pinHubChannelID, hub.closedChannelID(),
+					"the aborted open rolls the registration back")
+			})
+		}
+	})
+
+	t.Run("cancellation after the write leaves the published pin", func(t *testing.T) {
+		hub, hubURL := startPinFlowHub(t)
+		pin := &recordingKeyPin{
+			publishedNow: make(chan struct{}),
+			afterWrite:   make(chan struct{}),
+		}
+		openCtx, cancelOpen := context.WithCancel(testutil.DeadlineContext(t))
+		defer cancelOpen()
+		lifetimeCtx, cancelLifetime := context.WithCancel(testutil.DeadlineContext(t))
+		defer cancelLifetime()
+		results := startOpenChannel(openCtx, lifetimeCtx, hubURL, pin)
+
+		hub.awaitRelay(t)
+		correlationID, request := hub.readRequest(t)
+		require.Equal(t, leapmuxv1connect.WorkerSystemServicePingProcedure, request.GetMethod())
+		hub.answerPing(t, correlationID)
+		awaitSignal(t, pin.publishedNow, "the pin publication")
+		cancelOpen()
+		cancelLifetime()
+
+		got := awaitOpen(t, results)
+		require.Error(t, got.err)
+		assert.Nil(t, got.ch)
+		assert.ErrorIs(t, got.err, context.Canceled)
+		assert.True(t, pin.wasPublished(),
+			"a published pin survives cancellation that prevents the handout")
+		assert.Equal(t, pinHubChannelID, hub.closedChannelID(),
+			"the aborted open rolls the registration back")
+	})
+}
+
+func TestOpenChannelRejectsPinPublicationWhenThePeerClosesBeforeTheWrite(t *testing.T) {
+	hub, hubURL := startPinFlowHub(t)
+	pin := &recordingKeyPin{
+		commitStarted: make(chan struct{}),
+		beforeWrite:   make(chan struct{}),
+	}
+	ctx := testutil.DeadlineContext(t)
+	results := startOpenChannel(ctx, ctx, hubURL, pin)
+
+	hub.awaitRelay(t)
+	correlationID, request := hub.readRequest(t)
+	require.Equal(t, leapmuxv1connect.WorkerSystemServicePingProcedure, request.GetMethod())
+	hub.answerPing(t, correlationID)
+	awaitSignal(t, pin.commitStarted, "the pin commit")
+	hub.closePeer(t)
+
+	got := awaitOpen(t, results)
+	require.ErrorIs(t, got.err, context.Canceled)
+	assert.ErrorContains(t, got.err, "commit worker key pin")
+	assert.Nil(t, got.ch)
+	assert.False(t, pin.wasPublished())
+	assert.NoError(t, ctx.Err(), "only the relay should have closed")
+	assert.Equal(t, pinHubChannelID, hub.closedChannelID())
+}
+
+type heldRelayClose struct {
+	io.ReadWriteCloser
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func (h *heldRelayClose) Close() error {
+	close(h.started)
+	<-h.release
+	defer close(h.finished)
+	return h.ReadWriteCloser.Close()
+}
+
+type heldRelayCloseTransport struct {
+	started, release, finished chan struct{}
+}
+
+func (h heldRelayCloseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := http.DefaultTransport.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	socket, ok := response.Body.(io.ReadWriteCloser)
+	if !ok {
+		_ = response.Body.Close()
+		return nil, errors.New("WebSocket upgrade did not return a duplex transport")
+	}
+	response.Body = &heldRelayClose{ReadWriteCloser: socket, started: h.started, release: h.release, finished: h.finished}
+	return response, nil
+}
+
+func TestChannelCloseDoneWaitsForTheRelayTransport(t *testing.T) {
+	hub, hubURL := startPinFlowHub(t)
+	ctx := testutil.DeadlineContext(t)
+	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseClose := sync.OnceFunc(func() { close(release) })
+	defer releaseClose()
+	client := &http.Client{Transport: heldRelayCloseTransport{started: started, release: release, finished: finished}}
+	results := make(chan openResult, 1)
+	go func() {
+		channel, err := OpenChannel(ctx, hubURL, pinHubWorkerID, &OpenChannelOptions{
+			LifetimeContext:     ctx,
+			WebSocketHTTPClient: client,
+		})
+		results <- openResult{ch: channel, err: err}
+	}()
+	hub.awaitRelay(t)
+	correlationID, _ := hub.readRequest(t)
+	hub.answerPing(t, correlationID)
+	got := awaitOpen(t, results)
+	require.NoError(t, got.err)
+	require.NotNil(t, got.ch)
+
+	// A graceful close from the peer makes the WebSocket reader start
+	// releasing the transport before the Channel's first Close call.
+	hub.mu.Lock()
+	peer := hub.peerWS
+	hub.mu.Unlock()
+	peerDone := make(chan struct{})
+	go func() {
+		defer close(peerDone)
+		_ = peer.Close(websocket.StatusNormalClosure, "")
+	}()
+	awaitSignal(t, started, "the relay transport close")
+
+	closeReturned := make(chan struct{})
+	go func() {
+		defer close(closeReturned)
+		got.ch.Close()
+		got.ch.Close()
+	}()
+	awaitSignal(t, closeReturned, "the Channel.Close calls")
+	assert.True(t, got.ch.Closed())
+	awaitSignal(t, got.ch.Context().Done(), "channel cancellation")
+	select {
+	case <-got.ch.CloseDone():
+		t.Error("CloseDone signaled before the WebSocket transport closed")
+	default:
+	}
+
+	releaseClose()
+	awaitSignal(t, got.ch.CloseDone(), "channel close completion")
+	select {
+	case <-finished:
+	default:
+		t.Error("channel close completion preceded release of the WebSocket transport")
+	}
+	awaitSignal(t, peerDone, "the peer close")
+}
+
+// A pin the commit already published stands even when the channel dies before
+// the handout: the open fails and rolls its registration back, but it never
+// discards the pin. The peer closes only the channel; both open contexts stay
+// alive.
+func TestOpenChannelKeepsAPublishedPinWhenThePeerClosesTheChannel(t *testing.T) {
+	hub, hubURL := startPinFlowHub(t)
+	pin := &recordingKeyPin{
+		publishedNow: make(chan struct{}),
+		afterWrite:   make(chan struct{}),
+	}
+	results := startOpenChannel(testutil.DeadlineContext(t), testutil.DeadlineContext(t), hubURL, pin)
+
+	hub.awaitRelay(t)
+	correlationID, request := hub.readRequest(t)
+	require.Equal(t, leapmuxv1connect.WorkerSystemServicePingProcedure, request.GetMethod())
+	hub.answerPing(t, correlationID)
+	awaitSignal(t, pin.publishedNow, "the pin publication")
+	hub.closePeer(t)
+
+	got := awaitOpen(t, results)
+	require.Error(t, got.err)
+	assert.Nil(t, got.ch)
+	assert.Contains(t, got.err.Error(), "channel closed before handout")
+	assert.True(t, pin.wasPublished(), "a pin the commit published is not discarded")
+	assert.Equal(t, pinHubChannelID, hub.closedChannelID(),
+		"the failed open rolls the registration back")
 }
 
 func TestOpenChannelRollsBackRegisteredChannelAfterHandshakeFailure(t *testing.T) {

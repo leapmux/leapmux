@@ -1,5 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { KEY_KEY_PINS, KEY_KEY_PINS_REMOVAL_REVISION, parseStoredKey } from '../../../src/lib/browserStorage'
+import { IDB_NATIVE_SCHEMA_VERSION, IDB_TRUST_DATABASE_NAME } from '../../../src/lib/idb'
 
 /**
  * The browser-storage databases, as an E2E spec reaches them.
@@ -11,13 +13,9 @@ import { expect } from '@playwright/test'
  * one place to land. Another database of the app, the render cache, is not
  * here: `clearStoredRenders` (chatScrollStability.ts) empties it.
  *
- * Every helper opens with NO VERSION. A versionless open attaches to whatever
- * version exists, so the harness can never trigger the app's own schema repair
- * -- and it never has to be kept in step with what Dexie stores by hand. On a
- * database the app has not created yet, the readers of `leapmux-kv` create an
- * empty one, which reads as "nothing stored" and is the right answer for a spec
- * that has not signed in. `databaseStores` and `countRows` probe any database,
- * so they undo such a creation.
+ * Key-value reads open the current version and abort creation if the database
+ * is absent. A seed can initialize the database at the app's declared native
+ * version. `databaseStores` and `countRows` probe other databases as well.
  *
  * The composed key comes from the app's own `accountStorageKey`, never spelled
  * out here: a literal is what went stale the moment the layout changed.
@@ -25,6 +23,14 @@ import { expect } from '@playwright/test'
 
 const DB_NAME = 'leapmux-kv'
 const TABLE = 'entries'
+
+function databaseForStoredKey(storedKey: string): string {
+  const parsed = parseStoredKey(storedKey)
+  return parsed?.scope === 'account'
+    && (parsed.name === KEY_KEY_PINS || parsed.name === KEY_KEY_PINS_REMOVAL_REVISION)
+    ? IDB_TRUST_DATABASE_NAME
+    : DB_NAME
+}
 
 /** One stored row, as the gateway writes it. */
 export interface StoredEntry {
@@ -38,6 +44,7 @@ export async function readEntry(page: Page, storedKey: string): Promise<StoredEn
   return page.evaluate(([dbName, table, key]) => new Promise<StoredEntry | null>((resolve) => {
     const request = indexedDB.open(dbName)
     request.onerror = () => resolve(null)
+    request.onupgradeneeded = () => request.transaction?.abort()
     request.onsuccess = () => {
       const db = request.result
       if (!db.objectStoreNames.contains(table)) {
@@ -58,42 +65,60 @@ export async function readEntry(page: Page, storedKey: string): Promise<StoredEn
           : { v: row.v, e: row.e })
       }
     }
-  }), [DB_NAME, TABLE, storedKey] as const)
+  }), [
+    databaseForStoredKey(storedKey),
+    TABLE,
+    storedKey,
+  ] as const)
 }
 
 /**
  * Replace the row at `storedKey`.
  *
- * The store must already exist, which it does once the app has opened the
- * database. A spec that seeds before the first load navigates, seeds, and
- * reloads -- IndexedDB is durable across a navigation, so no init script is
- * needed to make the value survive one.
+ * Create the declared store when seeding an unopened database. The helper
+ * refuses a version change to an existing database.
  */
 export async function writeEntry(page: Page, storedKey: string, value: unknown, expiresAt: number): Promise<void> {
-  await page.evaluate(([dbName, table, key, v, e]) => new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open(dbName)
-    request.onerror = () => reject(new Error(`could not open ${dbName}`))
-    request.onupgradeneeded = () => {
-      // Only reached when the app has never opened the database. Build the
-      // minimum the app's own declaration builds, so its schema check finds a
-      // matching shape rather than deleting the seed.
+  await page.evaluate(([dbName, version, table, key, v, e]) => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open(dbName, version)
+    request.onerror = () => reject(request.error ?? new Error(`Could not open ${dbName}.`))
+    request.onblocked = () => reject(new Error(`The open of ${dbName} is blocked.`))
+    request.onupgradeneeded = (event) => {
+      if (event.oldVersion !== 0) {
+        request.transaction?.abort()
+        return
+      }
       request.result.createObjectStore(table, { keyPath: 'k' }).createIndex('e', 'e')
     }
     request.onsuccess = () => {
       const db = request.result
-      const tx = db.transaction(table, 'readwrite')
-      tx.objectStore(table).put({ k: key, v, e })
+      if (!db.objectStoreNames.contains(table)) {
+        db.close()
+        reject(new Error(`The database ${dbName} has no object store ${table}.`))
+        return
+      }
+      let tx: IDBTransaction
+      try {
+        tx = db.transaction(table, 'readwrite')
+        tx.objectStore(table).put({ k: key, v, e })
+      }
+      catch (err) {
+        db.close()
+        reject(err)
+        return
+      }
       tx.oncomplete = () => {
         db.close()
         resolve()
       }
-      tx.onerror = () => {
+      tx.onabort = () => {
         db.close()
-        reject(new Error(`could not write ${key}`))
+        reject(tx.error ?? new Error(`Could not write ${key}.`))
       }
     }
   }), [
-    DB_NAME,
+    databaseForStoredKey(storedKey),
+    IDB_NATIVE_SCHEMA_VERSION,
     TABLE,
     storedKey,
     value,
@@ -103,9 +128,21 @@ export async function writeEntry(page: Page, storedKey: string, value: unknown, 
 
 /** Every stored key, sorted. For a spec asserting which keys exist at all. */
 export async function storageKeys(page: Page): Promise<string[]> {
-  return page.evaluate(([dbName, table]) => new Promise<string[]>((resolve) => {
-    const request = indexedDB.open(dbName)
+  const [ordinary, trust] = await Promise.all([
+    storageKeysFromDatabase(page, DB_NAME),
+    storageKeysFromDatabase(page, IDB_TRUST_DATABASE_NAME),
+  ])
+  return [
+    ...ordinary,
+    ...trust,
+  ].sort()
+}
+
+async function storageKeysFromDatabase(page: Page, dbName: string): Promise<string[]> {
+  return page.evaluate(([name, table]) => new Promise<string[]>((resolve) => {
+    const request = indexedDB.open(name)
     request.onerror = () => resolve([])
+    request.onupgradeneeded = () => request.transaction?.abort()
     request.onsuccess = () => {
       const db = request.result
       if (!db.objectStoreNames.contains(table)) {
@@ -123,26 +160,49 @@ export async function storageKeys(page: Page): Promise<string[]> {
         resolve((keys.result as string[]).slice().sort())
       }
     }
-  }), [DB_NAME, TABLE] as const)
+  }), [dbName, TABLE] as const)
 }
 
 /**
  * Delete the row at each key of `storedKeys` in one transaction, and resolve the number of rows that it deleted. A
  * key that holds no row deletes nothing and does not count.
  *
- * Rejects when the database holds no object store `entries`, also when the database did not exist and the open
- * created it empty. `storageKeys` reads such a database as empty, so a caller that lists the keys and then deletes
- * them would otherwise delete nothing and report no failure.
+ * Rejects when the database or its `entries` store is absent. In that case a
+ * zero count would hide that the caller never reached the store it meant to clean.
  */
 export async function deleteEntries(page: Page, storedKeys: readonly string[]): Promise<number> {
+  if (storedKeys.length === 0)
+    return deleteEntriesFromDatabase(page, DB_NAME, [])
+  const groups = new Map<string, string[]>()
+  for (const key of storedKeys) {
+    const database = databaseForStoredKey(key)
+    const keys = groups.get(database) ?? []
+    keys.push(key)
+    groups.set(database, keys)
+  }
+  let deleted = 0
+  for (const [database, keys] of groups)
+    deleted += await deleteEntriesFromDatabase(page, database, keys)
+  return deleted
+}
+
+async function deleteEntriesFromDatabase(page: Page, dbName: string, storedKeys: readonly string[]): Promise<number> {
   return page.evaluate(([dbName, table, keys]) => new Promise<number>((resolve, reject) => {
     const request = indexedDB.open(dbName)
-    request.onerror = () => reject(new Error(`could not open ${dbName}`))
+    let missingDatabase = false
+    const missingStore = () => new Error(`the database ${dbName} has no object store ${table}`)
+    request.onerror = () => reject(missingDatabase
+      ? missingStore()
+      : new Error(`could not open ${dbName}`))
+    request.onupgradeneeded = () => {
+      missingDatabase = true
+      request.transaction?.abort()
+    }
     request.onsuccess = () => {
       const db = request.result
       if (!db.objectStoreNames.contains(table)) {
         db.close()
-        reject(new Error(`the database ${dbName} has no object store ${table}`))
+        reject(missingStore())
         return
       }
       let deleted = 0
@@ -167,46 +227,36 @@ export async function deleteEntries(page: Page, storedKeys: readonly string[]): 
         reject(new Error(`could not delete from ${table}`))
       }
     }
-  }), [DB_NAME, TABLE, storedKeys] as const)
+  }), [dbName, TABLE, storedKeys] as const)
 }
 
 /** Delete the whole database, so a spec can prove nothing in it holds a session. */
 export async function deleteStorageDatabase(page: Page): Promise<void> {
-  await page.evaluate(dbName => new Promise<void>((resolve) => {
-    const request = indexedDB.deleteDatabase(dbName)
-    request.onsuccess = () => resolve()
-    request.onerror = () => resolve()
-    request.onblocked = () => resolve()
-  }), DB_NAME)
+  for (const database of [DB_NAME, IDB_TRUST_DATABASE_NAME]) {
+    await page.evaluate(dbName => new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(dbName)
+      request.onsuccess = () => resolve()
+      request.onerror = () => reject(request.error ?? new Error(`could not delete ${dbName}`))
+      request.onblocked = () => reject(new Error(`deleting ${dbName} is blocked by an open connection`))
+    }), database)
+  }
 }
 
 /**
  * The object stores `dbName` holds, sorted, or null when the database does not
  * exist.
  *
- * Versionless like the readers above, so the probe can never trigger the app's
- * schema repair. It tells "absent" from "empty" by `onupgradeneeded`: that fires
- * only when the open CREATED the database, which means it was not there.
+ * Open without a version and abort creation when the database is absent.
  */
 export async function databaseStores(page: Page, dbName: string): Promise<string[] | null> {
   return page.evaluate(name => new Promise<string[] | null>((resolve) => {
     const request = indexedDB.open(name)
-    let created = false
     request.onerror = () => resolve(null)
-    request.onupgradeneeded = () => {
-      created = true
-    }
+    request.onupgradeneeded = () => request.transaction?.abort()
     request.onsuccess = () => {
       const db = request.result
       const stores = Array.from(db.objectStoreNames).sort()
       db.close()
-      if (created) {
-        // Undo the probe's own creation, so a later assertion still sees the
-        // database as absent.
-        indexedDB.deleteDatabase(name)
-        resolve(null)
-        return
-      }
       resolve(stores)
     }
   }), dbName)

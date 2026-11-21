@@ -914,10 +914,15 @@ describe('clearStoredRowHeights', () => {
     await clearStoredRowHeights(page)
 
     expect(events).toEqual([
+      // One inventory read for preferences and one for strict trust.
+      'evaluate',
       'evaluate',
       `route ${blank}`,
       `goto ${blank}`,
       `unroute ${blank}`,
+      // Inventory both databases again on the empty page, then delete the
+      // matching preference rows in one transaction.
+      'evaluate',
       'evaluate',
       'evaluate',
     ])
@@ -939,7 +944,11 @@ describe('clearStoredRowHeights', () => {
 
     await clearStoredRowHeights(page)
 
-    expect(events.slice(0, 3)).toEqual([
+    expect(events.slice(0, 5)).toEqual([
+      // The first two-database inventory starts before the delayed write.
+      // The next inventory observes it before navigation may begin.
+      'evaluate',
+      'evaluate',
       'evaluate',
       'evaluate',
       `route ${blank}`,

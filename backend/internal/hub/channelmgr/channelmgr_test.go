@@ -12,6 +12,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 var noopSender = func(*leapmuxv1.ChannelMessage) error { return nil }
@@ -41,6 +42,67 @@ func TestRegisterAndExists(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "w1", info.WorkerID)
 	assert.Equal(t, "u1", info.UserID)
+}
+
+func TestScheduleUnboundExpiryClosesAnUnboundChannel(t *testing.T) {
+	m := New(0)
+	require.True(t, m.RegisterWithAuthInfo("opening", "worker", "user", AuthInfo{}, nil))
+	expired := make(chan ClosedChannel, 1)
+	require.True(t, m.ScheduleUnboundExpiry("opening", 0, func(closed ClosedChannel) {
+		expired <- closed
+	}))
+
+	select {
+	case closed := <-expired:
+		assert.Equal(t, "opening", closed.ChannelID)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the unbound channel did not expire")
+	}
+	assert.False(t, m.Exists("opening"))
+}
+
+func TestFirstAuthorizedBindCancelsUnboundExpiry(t *testing.T) {
+	m := New(0)
+	require.True(t, m.RegisterWithAuthInfo("opening", "worker", "user", AuthInfo{}, nil))
+	m.BindUser("user", "conn", noopSender, nil)
+	require.True(t, m.ScheduleUnboundExpiry("opening", time.Hour, func(ClosedChannel) {
+		t.Error("a bound channel must not expire as unbound")
+	}))
+	_, ok, err := m.UseAuthorizedChannel("opening", "conn", nil, nil)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	m.mu.RLock()
+	timer := m.channels["opening"].unboundTimer
+	m.mu.RUnlock()
+	assert.Nil(t, timer)
+	m.CloseByID("opening")
+}
+
+func TestDuplicateUnboundExpiryDoesNotLeaveAnEarlierTimer(t *testing.T) {
+	m := New(0)
+	require.True(t, m.RegisterWithAuthInfo("opening", "worker", "user", AuthInfo{}, nil))
+	expired := make(chan ClosedChannel, 1)
+	require.True(t, m.ScheduleUnboundExpiry("opening", time.Hour, func(closed ClosedChannel) {
+		expired <- closed
+	}))
+	m.mu.RLock()
+	first := m.channels["opening"].unboundTimer
+	m.mu.RUnlock()
+	require.True(t, m.ScheduleUnboundExpiry("opening", 0, func(closed ClosedChannel) {
+		expired <- closed
+	}))
+
+	m.mu.RLock()
+	second := m.channels["opening"].unboundTimer
+	m.mu.RUnlock()
+	assert.Same(t, first, second, "a duplicate schedule must not replace the original deadline")
+	m.CloseByID("opening")
+	select {
+	case closed := <-expired:
+		t.Fatalf("closing the channel must stop its unbound timer: %+v", closed)
+	default:
+	}
 }
 
 // TestRegisterWithAuthInfo_RejectsDuplicateID ensures a second register for the

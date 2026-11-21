@@ -153,11 +153,11 @@ agent_startup_timeout: 5m
 
 ## Listen addresses
 
-LeapMux uses two kinds of listen addresses.
+LeapMux uses TCP addresses for browsers and remote callers, and local interprocess communication (IPC) endpoints for clients on the same machine. The CLI can use a Unix socket or a Windows named pipe. In the Network access panel, **TCP listeners** reports the live TCP bind results and **Local access** lists the local endpoints the Hub opened at startup. Both lists are read-only and appear above the **Additional addresses** editor.
 
 ### TCP listen (`listen`)
 
-The TCP address the Hub's HTTP server binds. Formats:
+The TCP addresses the Hub's HTTP server binds. The flag repeats (`--listen 127.0.0.1:4327 --listen 127.0.0.1:9000`) and every entry keeps the port its own listener is assigned. Formats:
 
 - `:4327` — all interfaces, port 4327.
 - `127.0.0.1:4327` — loopback only.
@@ -178,12 +178,12 @@ Before the `solo` account has a password, a TCP caller can only set the first pa
 
 ### Network access
 
-Solo mode serves additional addresses beside the one `-listen` gives it. Open **Preferences → Administration → Network access**, pick an interface and a port for each address you want, and apply. The Hub binds them straight away and binds them again on every later start; they are stored in the Hub's database as the `extra_listen_addresses` setting, so `leapmux control admin settings` reaches them too.
+Solo mode serves additional addresses beside the addresses `-listen` gives it. Open **Preferences → Administration → Network access**. Under **Additional addresses**, pick an interface and a port for each TCP address you want, then select **Apply**. The Hub binds the addresses immediately and on every later start. The Hub stores them as the `extra_listen_addresses` setting, which you can also edit with `leapmux control admin settings`.
 
 Two things follow from adding one:
 
 - **Every network address then asks for a sign-in as `solo`**, `127.0.0.1` included. The panel asks you to set that password before it will publish an address. The desktop app's local socket is the only transport that never asks. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the rule in full.
-- **Overlapping addresses merge.** Ask for every interface on the port `-listen` already uses and the Hub serves one socket rather than two: `-listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. The panel says so, and lists what is serving with the reason for each entry.
+- **Overlapping addresses merge.** Ask for every interface on the port `-listen` already uses and the Hub serves one socket rather than two: `-listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. Every `-listen` address takes part, so a secondary one folds too. The panel says so before you apply, and **TCP listeners** lists what is serving with the reason for each entry.
 
 An address that cannot be bound — a VPN that is down, a port another program holds — does not stop the Hub. It stays configured, the rest are served, and the panel reports the operating system's own reason beside it.
 

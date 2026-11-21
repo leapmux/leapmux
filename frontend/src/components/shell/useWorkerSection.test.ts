@@ -1,11 +1,18 @@
+import type { KeyPinConfirmState } from './AppShellDialogs'
+import type { TunnelInfo } from '~/api/platformBridge'
 /// <reference types="vitest/globals" />
+import type { WorkerTrustScope } from '~/context/AuthContext'
+import type { KeyPinConfirmFn } from '~/lib/keyPinStore'
 import { create } from '@bufbuild/protobuf'
 import { timestampFromMs } from '@bufbuild/protobuf/wkt'
-import { createComponent, createRoot, createSignal } from 'solid-js'
+import { createComponent, createMemo, createRoot, createSignal } from 'solid-js'
 import { render } from 'solid-js/web'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createDialogState } from '~/hooks/createDialogState'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
+import { createTunnelStore } from '~/stores/tunnel.store'
+import { deferred } from '~/test-support/async'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { useWorkerSection } from './useWorkerSection'
 
@@ -44,11 +51,43 @@ vi.mock('~/stores/workerChannelStatus.store', () => ({
     getStatus: vi.fn(),
   }),
 }))
+const mockTunnelRows = vi.fn(() => [] as Array<{ keyMismatch?: object }>)
+const mockTunnelRefresh = vi.fn()
+const mockOnEvent = vi.fn()
+const mockListTunnels = vi.fn()
+vi.mock('~/api/platformBridge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/platformBridge')>()
+  return {
+    ...actual,
+    isTunnelAvailable: () => true,
+    platformBridge: {
+      ...actual.platformBridge,
+      onEvent: (...a: unknown[]) => mockOnEvent(...a),
+      listTunnels: (...a: unknown[]) => mockListTunnels(...a),
+    },
+  }
+})
 vi.mock('~/stores/tunnel.store', () => ({
-  createTunnelStore: () => ({
-    tunnels: vi.fn(),
-  }),
+  createTunnelStore: vi.fn(() => ({
+    tunnels: () => mockTunnelRows(),
+    tunnelsForWorker: vi.fn(() => []),
+    refresh: (...a: unknown[]) => mockTunnelRefresh(...a),
+    add: vi.fn(),
+    remove: vi.fn(),
+    removeAllForWorker: vi.fn(),
+  })),
 }))
+
+function trustScope(userId: string): WorkerTrustScope {
+  return {
+    userId: userId || null,
+    storageAccount: userId
+      ? storageAccountFor(TEST_HUB, userId)
+      : null,
+    generation: 1,
+    signal: new AbortController().signal,
+  }
+}
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
@@ -72,6 +111,13 @@ beforeEach(() => {
   mockFetchWorkerInfo.mockReset()
   mockSetConfirmKeyPin.mockReset()
   mockUnregisterKeyPin.mockReset()
+  mockTunnelRows.mockReset()
+  mockTunnelRows.mockReturnValue([])
+  mockTunnelRefresh.mockReset()
+  mockTunnelRefresh.mockResolvedValue(undefined)
+  mockListTunnels.mockReset()
+  mockOnEvent.mockReset()
+  mockOnEvent.mockResolvedValue(() => {})
 })
 
 /**
@@ -81,8 +127,10 @@ beforeEach(() => {
  */
 describe('useWorkerSection', () => {
   function mount(getUserId: () => string = () => 'u1') {
+    const scope = createMemo(() => trustScope(getUserId()))
     return useWorkerSection({
       getUserId,
+      workerTrustScope: scope,
       keyPinConfirmDialog: createDialogState(),
     })
   }
@@ -95,6 +143,167 @@ describe('useWorkerSection', () => {
       expect(s.workers().map(w => w.id)).toEqual(['w1'])
       dispose()
     })
+  })
+
+  // The tunnel list is the sidecar's, and it answers only the rows one
+  // identity owns — so the listing specifies that identity, and it is read as
+  // soon as the identity is known.
+  it('lists the tunnels for the identity', async () => {
+    await createRoot(async (dispose) => {
+      mount(() => 'u9')
+      await flush()
+      expect(mockTunnelRefresh).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u9' }), 'coalesce')
+      dispose()
+    })
+  })
+
+  it('waits for native listener registration before reading the first snapshot', async () => {
+    const registration = deferred<() => void>()
+    mockOnEvent.mockReturnValue(registration.promise)
+    await createRoot(async (dispose) => {
+      mount()
+      await flush()
+      try {
+        expect(mockTunnelRefresh).not.toHaveBeenCalled()
+      }
+      finally {
+        dispose()
+        registration.resolve(() => {})
+      }
+    })
+  })
+
+  // The native hint carries no tunnel data: re-reading the list is how the
+  // page learns that a tunnel stopped on a Worker key mismatch.
+  it('re-reads the tunnels when the sidecar announces a change', async () => {
+    await createRoot(async (dispose) => {
+      let announce: (() => void) | undefined
+      mockOnEvent.mockImplementation((_event: string, handler: () => void) => {
+        announce = handler
+        return Promise.resolve(() => {})
+      })
+      mount()
+      await flush()
+      mockTunnelRefresh.mockClear()
+
+      announce?.()
+      expect(mockTunnelRefresh).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1' }), 'invalidate')
+      dispose()
+    })
+  })
+
+  it('disposes a native listener that registers after the shell is gone', async () => {
+    const registration = deferred<() => void>()
+    const unlisten = vi.fn()
+    mockOnEvent.mockReturnValue(registration.promise)
+    const dispose = createRoot((dispose) => {
+      mount()
+      return dispose
+    })
+    dispose()
+    registration.resolve(unlisten)
+    await flush()
+
+    expect(unlisten).toHaveBeenCalledOnce()
+    expect(mockTunnelRefresh).not.toHaveBeenCalled()
+  })
+
+  it('refreshes on return to view and polls only while visible with an active tunnel', async () => {
+    vi.useFakeTimers()
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    mockTunnelRows.mockReturnValue([{}])
+    const unlisten = vi.fn()
+    mockOnEvent.mockResolvedValue(unlisten)
+    const dispose = createRoot((dispose) => {
+      mount()
+      return dispose
+    })
+
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockTunnelRefresh).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(29_999)
+      expect(mockTunnelRefresh).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(mockTunnelRefresh).toHaveBeenCalledTimes(2)
+
+      visibility.mockReturnValue('hidden')
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(mockTunnelRefresh).toHaveBeenCalledTimes(2)
+
+      visibility.mockReturnValue('visible')
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(mockTunnelRefresh).toHaveBeenLastCalledWith(expect.any(Object), 'invalidate')
+      expect(mockTunnelRefresh).toHaveBeenCalledTimes(3)
+
+      mockTunnelRows.mockReturnValue([
+        { keyMismatch: {} },
+      ])
+      visibility.mockReturnValue('hidden')
+      document.dispatchEvent(new Event('visibilitychange'))
+      visibility.mockReturnValue('visible')
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(mockTunnelRefresh).toHaveBeenCalledTimes(4)
+    }
+    finally {
+      dispose()
+      visibility.mockRestore()
+      vi.useRealTimers()
+    }
+    expect(unlisten).toHaveBeenCalledOnce()
+  })
+
+  it('publishes stopped status after a poll when a native hint is lost', async () => {
+    const actual = await vi.importActual<typeof import('~/stores/tunnel.store')>('~/stores/tunnel.store')
+    vi.mocked(createTunnelStore).mockImplementationOnce(actual.createTunnelStore)
+    const live: TunnelInfo = {
+      id: 'tunnel',
+      workerId: 'w1',
+      type: 'socks5',
+      bindAddr: '127.0.0.1',
+      bindPort: 1080,
+      targetAddr: '',
+      targetPort: 0,
+    }
+    const stopped = {
+      ...live,
+      keyMismatch: { expectedFingerprint: 'expected', presentedFingerprint: 'presented' },
+    }
+    mockListTunnels
+      .mockResolvedValueOnce({
+        tunnels: [live],
+        channelEpoch: 'epoch',
+      })
+      .mockResolvedValueOnce({
+        tunnels: [stopped],
+        channelEpoch: 'epoch',
+      })
+    vi.useFakeTimers()
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    try {
+      await createRoot(async (dispose) => {
+        try {
+          const section = mount()
+          await vi.advanceTimersByTimeAsync(0)
+          expect(section.tunnelStore.tunnels()).toEqual([live])
+
+          await vi.advanceTimersByTimeAsync(30_000)
+          expect(mockListTunnels).toHaveBeenCalledTimes(2)
+          expect(section.tunnelStore.tunnels()).toEqual([stopped])
+          await vi.advanceTimersByTimeAsync(60_000)
+          expect(mockListTunnels).toHaveBeenCalledTimes(2)
+        }
+        finally {
+          dispose()
+        }
+      })
+    }
+    finally {
+      visibility.mockRestore()
+      vi.useRealTimers()
+    }
   })
 
   // The hub answers one page per call. A sidebar that read only the first page
@@ -314,6 +523,47 @@ describe('useWorkerSection', () => {
 
       expect(mockUnregisterKeyPin, 'the registration must not outlive the mount').toHaveBeenCalledTimes(1)
     })
+  })
+
+  it('retires a displayed key confirmation with its owner and preserves the next dialog', async () => {
+    const dialog = createDialogState<KeyPinConfirmState>()
+    const outgoing = new AbortController()
+    const successor = new AbortController()
+    mockUnregisterKeyPin.mockImplementationOnce(() => outgoing.abort())
+    const mountPrompt = () => createRoot((dispose) => {
+      useWorkerSection({
+        getUserId: () => 'u1',
+        workerTrustScope: () => trustScope('u1'),
+        keyPinConfirmDialog: dialog,
+      })
+      return dispose
+    })
+
+    const disposeFirst = mountPrompt()
+    const first = mockSetConfirmKeyPin.mock.lastCall![0] as KeyPinConfirmFn
+    const stale = first('worker', 'first', 'second', outgoing.signal)
+    const cancelled = expect(stale).rejects.toMatchObject({ name: 'AbortError' })
+    const outgoingDialog = dialog.value()!
+    expect(outgoingDialog.workerId).toBe('worker')
+
+    disposeFirst()
+    await cancelled
+    expect(dialog.value()).toBeNull()
+
+    const disposeSecond = mountPrompt()
+    try {
+      const second = mockSetConfirmKeyPin.mock.lastCall![0] as KeyPinConfirmFn
+      const pending = second('worker', 'first', 'third', successor.signal)
+      const current = dialog.value()!
+      outgoingDialog.resolve('accept')
+      expect(dialog.value()).toBe(current)
+      current.resolve('reject')
+      await expect(pending).resolves.toBe('reject')
+      expect(dialog.value()).toBeNull()
+    }
+    finally {
+      disposeSecond()
+    }
   })
 
   // The queued fetch must survive a failure of the fetch it waited behind:

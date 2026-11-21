@@ -1,9 +1,12 @@
+import type { TunnelConfig } from './platformBridge'
+import type { WorkerTrustScope } from '~/context/AuthContext'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema, RelayCloseSchema, RelayReadResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { deferred, settle } from '~/test-support/async'
 import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
@@ -660,34 +663,498 @@ describe('cliInstallSymlink', () => {
   })
 })
 
-describe('resetTunnels', () => {
+describe('platformBridge tunnel operations', () => {
+  const config: TunnelConfig = {
+    workerId: 'worker',
+    type: 'port_forward',
+    targetAddr: '127.0.0.1',
+    targetPort: 3000,
+    bindAddr: '127.0.0.1',
+    bindPort: 3010,
+  }
+  const info = { ...config, id: 'tunnel' }
+  const list = {
+    tunnels: [info],
+    channelEpoch: 'outgoing-epoch',
+  }
+  let dispose: () => void
+  let scope: WorkerTrustScope
+  let account: AbortController
+
+  function adopt(userId: string): WorkerTrustScope {
+    account.abort()
+    account = new AbortController()
+    scope = {
+      userId,
+      storageAccount: storageAccountFor(TEST_HUB, userId),
+      signal: account.signal,
+      generation: scope.generation + 1,
+    }
+    return scope
+  }
+
   beforeEach(() => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    account = new AbortController()
+    scope = {
+      userId: 'outgoing',
+      storageAccount: storageAccountFor(TEST_HUB, 'outgoing'),
+      signal: account.signal,
+      generation: 1,
+    }
+    dispose = platformBridge.setTunnelTrustScope(() => scope)
   })
 
   afterEach(() => {
+    dispose()
     clearMocks()
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
-  it('invokes the sidecar reset_tunnels command on desktop', async () => {
-    let invoked = 0
-    mockIPC((cmd) => {
-      if (cmd === 'reset_tunnels') {
-        invoked++
+  it('resets the epoch returned by the sidecar for the outgoing account', async () => {
+    const calls: unknown[] = []
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args])
+      if (cmd === 'list_tunnels')
+        return list
+      if (cmd === 'reset_tunnels')
         return undefined
-      }
       throw new Error(`unmocked: ${cmd}`)
     })
-    await platformBridge.resetTunnels()
-    expect(invoked).toBe(1)
+    await platformBridge.resetTunnels(scope)
+    expect(calls).toEqual([
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'reset_tunnels',
+        { channelEpoch: 'outgoing-epoch' },
+      ],
+    ])
   })
 
-  it('is a no-op off the desktop (no sidecar to reset)', async () => {
+  it('blocks all operations during reset and coalesces explicit retries of its exact epoch', async () => {
+    const firstReset = deferred<void>()
+    const retryReset = deferred<void>()
+    const resetStarted = deferred<void>()
+    const retryStarted = deferred<void>()
+    const calls: Array<[string, unknown]> = []
+    let resets = 0
+    const resetStatuses: Array<unknown | null> = []
+    const stopThrowingStatus = platformBridge.onTunnelResetStatusChange((status) => {
+      if (status === null)
+        throw new Error('observer failed on reset success')
+    })
+    const stopResetStatus = platformBridge.onTunnelResetStatusChange(status => resetStatuses.push(status))
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args])
+      switch (cmd) {
+        case 'list_tunnels':
+          return {
+            ...list,
+            channelEpoch: resets < 2
+              ? 'outgoing-epoch'
+              : 'successor-epoch',
+          }
+        case 'reset_tunnels':
+          resets++
+          if (resets === 1) {
+            resetStarted.resolve()
+            return firstReset.promise
+          }
+          retryStarted.resolve()
+          return retryReset.promise
+        case 'create_tunnel':
+          return { kind: 'created', info }
+        case 'delete_tunnel':
+          return undefined
+        default:
+          throw new Error(`unmocked: ${cmd}`)
+      }
+    })
+
+    const reset = expect(platformBridge.resetTunnels(scope)).rejects.toMatchObject({
+      cause: expect.objectContaining({ message: 'reply lost' }),
+    })
+    adopt('outgoing')
+    const blockedList = expect(platformBridge.listTunnels(scope)).rejects.toThrow('finish the desktop tunnel reset')
+    const blockedCreate = expect(platformBridge.createTunnel(config, scope, async () => 'key')).rejects.toThrow('finish the desktop tunnel reset')
+    const blockedDelete = expect(platformBridge.deleteTunnel('tunnel', scope)).rejects.toThrow('finish the desktop tunnel reset')
+    await resetStarted.promise
+    expect(calls.map(([cmd]) => cmd)).toEqual(['list_tunnels', 'reset_tunnels'])
+    firstReset.reject(new Error('reply lost'))
+    await Promise.all([
+      reset,
+      blockedList,
+      blockedCreate,
+      blockedDelete,
+    ])
+
+    await expect(platformBridge.listTunnels(scope)).rejects.toThrow('finish the desktop tunnel reset')
+    expect(resets).toBe(1)
+    const create = platformBridge.createTunnel(config, scope, async () => 'key')
+    const remove = platformBridge.deleteTunnel('tunnel', scope)
+    await retryStarted.promise
+    expect(calls).toEqual([
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'reset_tunnels',
+        { channelEpoch: 'outgoing-epoch' },
+      ],
+      [
+        'reset_tunnels',
+        { channelEpoch: 'outgoing-epoch' },
+      ],
+    ])
+    retryReset.resolve()
+    await expect(create).resolves.toEqual({ kind: 'created', info })
+    await remove
+    stopThrowingStatus()
+    stopResetStatus()
+    expect(resetStatuses).toHaveLength(3)
+    expect(resetStatuses[0]).toBeNull()
+    expect(resetStatuses[1]).toBeInstanceOf(Error)
+    expect(resetStatuses[2]).toBeNull()
+    expect(calls).toContainEqual([
+      'create_tunnel',
+      {
+        config: {
+          ...config,
+          expectedWorkerKeysHex: 'key',
+          expectedUserId: 'outgoing',
+          channelEpoch: 'successor-epoch',
+        },
+      },
+    ])
+    expect(calls).toContainEqual([
+      'delete_tunnel',
+      { tunnelId: 'tunnel', channelEpoch: 'successor-epoch', expectedUserId: 'outgoing' },
+    ])
+    expect(resets).toBe(2)
+  })
+
+  it('retries the outgoing list only if reset failed before capturing an epoch', async () => {
+    const calls: Array<[string, unknown]> = []
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args])
+      if (cmd === 'list_tunnels') {
+        if (calls.length === 1)
+          throw new Error('desktop unavailable')
+        return list
+      }
+      return undefined
+    })
+    await expect(platformBridge.resetTunnels(scope)).rejects.toMatchObject({
+      cause: expect.objectContaining({ message: 'desktop unavailable' }),
+    })
+    adopt('successor')
+    await platformBridge.retryTunnelReset()
+    await platformBridge.deleteTunnel('tunnel', scope)
+    expect(calls).toEqual([
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'reset_tunnels',
+        { channelEpoch: 'outgoing-epoch' },
+      ],
+      [
+        'list_tunnels',
+        { expectedUserId: 'successor' },
+      ],
+      [
+        'delete_tunnel',
+        { tunnelId: 'tunnel', channelEpoch: 'outgoing-epoch', expectedUserId: 'successor' },
+      ],
+    ])
+  })
+
+  it.each(['reply', 'rejection'] as const)('refuses a native list %s overtaken by account retirement', async (outcome) => {
+    const nativeListing = deferred<typeof list>()
+    const entered = deferred<void>()
+    const nativeFailure = new Error('native list failed')
+    let retireAfterScopeCheck = false
+    dispose()
+    dispose = platformBridge.setTunnelTrustScope(() => {
+      const checked = scope
+      if (retireAfterScopeCheck) {
+        retireAfterScopeCheck = false
+        queueMicrotask(() => adopt('outgoing'))
+      }
+      return checked
+    })
+    mockIPC(() => {
+      entered.resolve()
+      return nativeListing.promise.finally(() => {
+        retireAfterScopeCheck = true
+      })
+    })
+
+    const originalScope = scope
+    const listing = expect(platformBridge.listTunnels(originalScope)).rejects.toMatchObject({ name: 'AbortError' })
+    await entered.promise
+    if (outcome === 'reply')
+      nativeListing.resolve(list)
+    else
+      nativeListing.reject(nativeFailure)
+    await listing
+    expect(originalScope.signal.aborted).toBe(true)
+  })
+
+  it('serializes native snapshots without holding a later list across create trust', async () => {
+    const heldListing = deferred<typeof list>()
+    const firstReadStarted = deferred<void>()
+    const trustStarted = deferred<void>()
+    const trust = deferred<string>()
+    const currentListing = { ...list, channelEpoch: 'replacement-epoch' }
+    const calls: Array<[string, unknown]> = []
+    let listings = 0
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args])
+      if (cmd === 'list_tunnels') {
+        if (listings++ === 0) {
+          firstReadStarted.resolve()
+          return heldListing.promise
+        }
+        return currentListing
+      }
+      if (cmd === 'create_tunnel')
+        return { kind: 'created', info }
+      return undefined
+    })
+
+    const first = platformBridge.listTunnels(scope).catch((cause: unknown) => cause)
+    await firstReadStarted.promise
+    const create = platformBridge.createTunnel(config, scope, () => {
+      trustStarted.resolve()
+      return trust.promise
+    })
+    await settle()
+    const beforeReply = [...calls]
+    heldListing.resolve(list)
+    const firstResult = await first
+    await trustStarted.promise
+    await expect(platformBridge.listTunnels(scope)).resolves.toEqual(currentListing)
+    trust.resolve('key')
+    await expect(create).resolves.toEqual({ kind: 'created', info })
+    await platformBridge.resetTunnels(scope)
+
+    expect(firstResult).toEqual(list)
+    expect(beforeReply).toEqual([
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+    ])
+    expect(calls).toEqual([
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'create_tunnel',
+        {
+          config: expect.objectContaining({ channelEpoch: 'replacement-epoch' }),
+        },
+      ],
+      [
+        'reset_tunnels',
+        { channelEpoch: 'replacement-epoch' },
+      ],
+    ])
+  })
+
+  it('lets reset and the successor proceed while a retired native list is held', async () => {
+    const heldListing = deferred<typeof list>()
+    const oldReadStarted = deferred<void>()
+    const calls: Array<[string, unknown]> = []
+    let outgoingReads = 0
+    let nativeEpoch = list.channelEpoch
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args])
+      switch (cmd) {
+        case 'list_tunnels': {
+          const { expectedUserId } = args as { expectedUserId: string }
+          if (expectedUserId === 'outgoing' && ++outgoingReads === 2) {
+            oldReadStarted.resolve()
+            return heldListing.promise
+          }
+          return {
+            tunnels: expectedUserId === 'outgoing'
+              ? [info]
+              : [],
+            channelEpoch: nativeEpoch,
+          }
+        }
+        case 'reset_tunnels':
+          if ((args as { channelEpoch: string }).channelEpoch === nativeEpoch)
+            nativeEpoch = 'successor-epoch'
+          return undefined
+        default:
+          throw new Error(`unmocked: ${cmd}`)
+      }
+    })
+
+    await expect(platformBridge.listTunnels(scope)).resolves.toEqual(list)
+    const oldListing = platformBridge.listTunnels(scope).catch((err: unknown) => err)
+    await oldReadStarted.promise
+    const queuedListing = platformBridge.listTunnels(scope).catch((err: unknown) => err)
+    await settle()
+    nativeEpoch = 'replacement-epoch'
+    const reset = platformBridge.resetTunnels(scope)
+    adopt('successor')
+    const successorListing = platformBridge.listTunnels(scope)
+    await reset
+    const successorResult = await successorListing
+    heldListing.resolve(list)
+    const [oldResult, queuedResult] = await Promise.all([oldListing, queuedListing])
+    await platformBridge.resetTunnels(scope)
+
+    expect(successorResult).toEqual({ tunnels: [], channelEpoch: 'successor-epoch' })
+    expect(oldResult).toMatchObject({ name: 'AbortError' })
+    expect(queuedResult).toMatchObject({ name: 'AbortError' })
+    expect(calls).toEqual([
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'list_tunnels',
+        { expectedUserId: 'outgoing' },
+      ],
+      [
+        'reset_tunnels',
+        { channelEpoch: 'replacement-epoch' },
+      ],
+      [
+        'list_tunnels',
+        { expectedUserId: 'successor' },
+      ],
+      [
+        'reset_tunnels',
+        { channelEpoch: 'successor-epoch' },
+      ],
+    ])
+  })
+
+  it('preserves a live native list failure and starts the next scoped read', async () => {
+    const heldListing = deferred<typeof list>()
+    const firstReadStarted = deferred<void>()
+    const nativeFailure = new Error('native list failed')
+    let calls = 0
+    mockIPC(() => {
+      if (++calls === 1) {
+        firstReadStarted.resolve()
+        return heldListing.promise
+      }
+      return list
+    })
+
+    const first = expect(platformBridge.listTunnels(scope)).rejects.toBe(nativeFailure)
+    await firstReadStarted.promise
+    const next = platformBridge.listTunnels(scope)
+    heldListing.reject(nativeFailure)
+    await first
+    await expect(next).resolves.toEqual(list)
+    expect(calls).toBe(2)
+  })
+
+  it('resolves trust after the epoch lookup and refuses dispatch when trust changes', async () => {
+    const epoch = deferred<typeof list>()
+    const entered = deferred<void>()
+    const invocations: string[] = []
+    mockIPC((cmd) => {
+      invocations.push(cmd)
+      entered.resolve()
+      return epoch.promise
+    })
+    let approved = true
+    const resolveTrust = vi.fn(async () => {
+      if (!approved)
+        throw new Error('verify the Worker key again')
+      return 'approved-key'
+    })
+    const create = expect(platformBridge.createTunnel(config, scope, resolveTrust)).rejects.toThrow('verify the Worker key again')
+    await entered.promise
+    expect(resolveTrust).not.toHaveBeenCalled()
+    approved = false
+    epoch.resolve(list)
+    await create
+    expect(invocations).toEqual(['list_tunnels'])
+  })
+
+  it('refuses create if the epoch lookup outlives its identity, including same-user adoption', async () => {
+    const epoch = deferred<typeof list>()
+    const entered = deferred<void>()
+    const invocations: string[] = []
+    mockIPC((cmd) => {
+      invocations.push(cmd)
+      entered.resolve()
+      return epoch.promise
+    })
+    const resolveTrust = vi.fn(async () => 'approved-key')
+    const create = expect(platformBridge.createTunnel(config, scope, resolveTrust)).rejects.toMatchObject({ name: 'AbortError' })
+    await entered.promise
+    adopt('outgoing')
+    epoch.resolve(list)
+    await create
+    expect(resolveTrust).not.toHaveBeenCalled()
+    expect(invocations).toEqual(['list_tunnels'])
+  })
+
+  it('refuses native create when the final resolver returns no trust', async () => {
+    const invocations: string[] = []
+    mockIPC((cmd) => {
+      invocations.push(cmd)
+      return list
+    })
+    await expect(platformBridge.createTunnel(config, scope, async () => '')).rejects.toThrow('verified Worker key')
+    expect(invocations).toEqual(['list_tunnels'])
+  })
+
+  it('replays deletion natively and derives bulk targets from the scoped list', async () => {
+    const invocations: string[] = []
+    const args: unknown[] = []
+    mockIPC((cmd, value) => {
+      invocations.push(cmd)
+      args.push(value)
+      return { ...list, tunnels: [] }
+    })
+    await platformBridge.deleteTunnel('removed', scope)
+    await expect(platformBridge.deleteTunnels('w1', scope)).resolves.toEqual([])
+    expect(invocations).toEqual(['list_tunnels', 'delete_tunnel', 'list_tunnels'])
+    expect(args[1]).toEqual({
+      tunnelId: 'removed',
+      channelEpoch: list.channelEpoch,
+      expectedUserId: scope.userId,
+    })
+  })
+
+  it('keeps browser reset and list free of native invocations', async () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
-    // No mockIPC handler is installed, so any invoke would throw: resolving
-    // cleanly proves the web path never reaches the IPC layer.
-    await expect(platformBridge.resetTunnels()).resolves.toBeUndefined()
+    await expect(platformBridge.resetTunnels(scope)).resolves.toBeUndefined()
+    await expect(platformBridge.listTunnels(scope)).resolves.toEqual({ tunnels: [], channelEpoch: '' })
   })
 })
 

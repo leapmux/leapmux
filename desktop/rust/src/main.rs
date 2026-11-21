@@ -391,6 +391,13 @@ struct BuildInfoResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct TunnelKeyMismatchResponse {
+    expected_fingerprint: String,
+    presented_fingerprint: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TunnelInfoResponse {
     id: String,
     worker_id: String,
@@ -399,6 +406,31 @@ struct TunnelInfoResponse {
     bind_port: i32,
     target_addr: String,
     target_port: i32,
+    /// Set only on a stopped row: the Worker key mismatch that stopped the tunnel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_mismatch: Option<TunnelKeyMismatchResponse>,
+}
+
+/// A create's outcome: the created row, or the Worker key mismatch that
+/// refused it. Mirrors the CreateTunnelResponse oneof.
+#[derive(Serialize)]
+#[serde(tag = "kind")]
+enum CreateTunnelOutcome {
+    #[serde(rename = "created")]
+    Info { info: TunnelInfoResponse },
+    #[serde(rename = "workerKeyMismatch")]
+    KeyMismatch {
+        #[serde(rename = "keyMismatch")]
+        key_mismatch: TunnelKeyMismatchResponse,
+    },
+}
+
+/// One tunnel listing: the rows and the channel epoch they were read under.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListTunnelsResult {
+    tunnels: Vec<TunnelInfoResponse>,
+    channel_epoch: String,
 }
 
 #[derive(Deserialize)]
@@ -410,6 +442,13 @@ struct TunnelConfigInput {
     target_port: i32,
     bind_addr: String,
     bind_port: i32,
+    expected_worker_keys_hex: String,
+    expected_user_id: String,
+    channel_epoch: String,
+    #[serde(skip)]
+    hub_cookie_header: String,
+    #[serde(skip)]
+    hub_cookie_origin: String,
 }
 
 // --- Sidecar process ---
@@ -862,7 +901,15 @@ fn handle_sidecar_event(app_handle: &AppHandle, event: proto::Event) {
             });
             let _ = app_handle.emit(contracts_generated::EVENT_SIDECAR_LOG, payload);
         }
+        proto::event::Payload::TunnelsChanged(_) => {
+            let (name, payload) = tunnels_changed_event_for_webview();
+            let _ = app_handle.emit(name, payload);
+        }
     }
+}
+
+fn tunnels_changed_event_for_webview() -> (&'static str, serde_json::Value) {
+    (contracts_generated::EVENT_TUNNELS_CHANGED, json!(null))
 }
 
 // --- Static helpers ---
@@ -1696,36 +1743,132 @@ async fn close_userevents_relay(
     Ok(())
 }
 
+fn create_tunnel_request(config: TunnelConfigInput) -> proto::request::Method {
+    proto::request::Method::CreateTunnel(proto::CreateTunnelRequest {
+        config: Some(proto::TunnelConfig {
+            worker_id: config.worker_id,
+            r#type: config.r#type,
+            target_addr: config.target_addr,
+            target_port: config.target_port,
+            bind_addr: config.bind_addr,
+            bind_port: config.bind_port,
+            expected_worker_keys_hex: config.expected_worker_keys_hex,
+            expected_user_id: config.expected_user_id,
+            channel_epoch: config.channel_epoch,
+            hub_cookie_header: config.hub_cookie_header,
+            hub_cookie_origin: config.hub_cookie_origin,
+        }),
+    })
+}
+
+async fn distributed_tunnel_cookie_header(
+    shell: &DesktopShell,
+    window: &WebviewWindow,
+) -> Result<(String, String), String> {
+    let runtime = shell.runtime_state();
+    if runtime.shell_mode != ShellMode::Distributed {
+        return Ok((String::new(), String::new()));
+    }
+    if !runtime.connected {
+        return Err("the distributed desktop is not connected".to_string());
+    }
+    let hub_url = Url::parse(&runtime.hub_url).map_err(|err| format!("parse Hub URL: {err}"))?;
+    let page_url = window
+        .url()
+        .map_err(|err| format!("read webview URL: {err}"))?;
+    require_same_hub_origin(&page_url, &hub_url)?;
+    let hub_origin = hub_url.origin().ascii_serialization();
+    let window = window.clone();
+    let cookies = tokio::task::spawn_blocking(move || window.cookies_for_url(hub_url))
+        .await
+        .map_err(|err| format!("read Hub cookies task: {err}"))?
+        .map_err(|err| format!("read Hub cookies: {err}"))?;
+    let pairs = cookies
+        .into_iter()
+        .map(|cookie| (cookie.name().to_string(), cookie.value().to_string()))
+        .collect::<Vec<_>>();
+    let header = format_cookie_header(&pairs);
+    if header.is_empty() {
+        return Err("the authenticated Hub session cookie is missing".to_string());
+    }
+    Ok((header, hub_origin))
+}
+
+fn require_same_hub_origin(page_url: &Url, hub_url: &Url) -> Result<(), String> {
+    if page_url.origin() != hub_url.origin() {
+        return Err("the webview origin does not match the connected Hub".to_string());
+    }
+    Ok(())
+}
+
+fn format_cookie_header(cookies: &[(String, String)]) -> String {
+    cookies
+        .iter()
+        .filter(|(name, value)| {
+            !value.is_empty()
+                && (name == contracts_generated::SESSION_COOKIE_NAME
+                    || name == contracts_generated::SECURE_SESSION_COOKIE_NAME)
+        })
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn delete_tunnel_request(
+    tunnel_id: String,
+    channel_epoch: String,
+    expected_user_id: String,
+) -> proto::request::Method {
+    proto::request::Method::DeleteTunnel(proto::DeleteTunnelRequest {
+        tunnel_id,
+        channel_epoch,
+        expected_user_id,
+    })
+}
+
+fn reset_tunnels_request(channel_epoch: String) -> proto::request::Method {
+    proto::request::Method::ResetTunnels(proto::ResetTunnelsRequest { channel_epoch })
+}
+
+fn list_tunnels_request(expected_user_id: String) -> proto::request::Method {
+    proto::request::Method::ListTunnels(proto::ListTunnelsRequest { expected_user_id })
+}
+
 #[tauri::command]
 async fn create_tunnel(
     shell: State<'_, Arc<DesktopShell>>,
+    window: WebviewWindow,
     config: TunnelConfigInput,
-) -> Result<TunnelInfoResponse, String> {
-    let cfg = proto::TunnelConfig {
-        worker_id: config.worker_id,
-        r#type: config.r#type,
-        target_addr: config.target_addr,
-        target_port: config.target_port,
-        bind_addr: config.bind_addr,
-        bind_port: config.bind_port,
-    };
-
+) -> Result<CreateTunnelOutcome, String> {
+    let mut config = config;
+    let (cookie_header, cookie_origin) = distributed_tunnel_cookie_header(&shell, &window).await?;
+    config.hub_cookie_header = cookie_header;
+    config.hub_cookie_origin = cookie_origin;
     let resp = check_response(
         shell
-            .send_request_async(proto::request::Method::CreateTunnel(
-                proto::CreateTunnelRequest { config: Some(cfg) },
-            ))
+            .send_request_async(create_tunnel_request(config))
             .await?,
     )?;
+    create_tunnel_outcome(resp.result)
+}
 
-    match resp.result {
-        Some(proto::response::Result::CreateTunnel(r)) => {
-            if let Some(info) = r.info {
-                Ok(proto_to_tunnel_info(&info))
-            } else {
-                Err("missing tunnel info in response".to_string())
+fn create_tunnel_outcome(
+    result: Option<proto::response::Result>,
+) -> Result<CreateTunnelOutcome, String> {
+    match result {
+        Some(proto::response::Result::CreateTunnel(r)) => match r.result {
+            Some(proto::create_tunnel_response::Result::Info(info)) => {
+                Ok(CreateTunnelOutcome::Info {
+                    info: proto_to_tunnel_info(info),
+                })
             }
-        }
+            Some(proto::create_tunnel_response::Result::KeyMismatch(m)) => {
+                Ok(CreateTunnelOutcome::KeyMismatch {
+                    key_mismatch: proto_to_tunnel_mismatch(m),
+                })
+            }
+            None => Err("missing result in create_tunnel response".to_string()),
+        },
         _ => Err("unexpected response for create_tunnel".to_string()),
     }
 }
@@ -1734,11 +1877,15 @@ async fn create_tunnel(
 async fn delete_tunnel(
     shell: State<'_, Arc<DesktopShell>>,
     tunnel_id: String,
+    channel_epoch: String,
+    expected_user_id: String,
 ) -> Result<(), String> {
     check_response(
         shell
-            .send_request_async(proto::request::Method::DeleteTunnel(
-                proto::DeleteTunnelRequest { tunnel_id },
+            .send_request_async(delete_tunnel_request(
+                tunnel_id,
+                channel_epoch,
+                expected_user_id,
             ))
             .await?,
     )?;
@@ -1746,12 +1893,13 @@ async fn delete_tunnel(
 }
 
 #[tauri::command]
-async fn reset_tunnels(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String> {
+async fn reset_tunnels(
+    shell: State<'_, Arc<DesktopShell>>,
+    channel_epoch: String,
+) -> Result<(), String> {
     check_response(
         shell
-            .send_request_async(proto::request::Method::ResetTunnels(
-                proto::ResetTunnelsRequest {},
-            ))
+            .send_request_async(reset_tunnels_request(channel_epoch))
             .await?,
     )?;
     Ok(())
@@ -1760,31 +1908,45 @@ async fn reset_tunnels(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String
 #[tauri::command]
 async fn list_tunnels(
     shell: State<'_, Arc<DesktopShell>>,
-) -> Result<Vec<TunnelInfoResponse>, String> {
+    expected_user_id: String,
+) -> Result<ListTunnelsResult, String> {
     let resp = check_response(
         shell
-            .send_request_async(proto::request::Method::ListTunnels(
-                proto::ListTunnelsRequest {},
-            ))
+            .send_request_async(list_tunnels_request(expected_user_id))
             .await?,
     )?;
-    match resp.result {
-        Some(proto::response::Result::ListTunnels(r)) => {
-            Ok(r.tunnels.iter().map(proto_to_tunnel_info).collect())
-        }
+    list_tunnels_result(resp.result)
+}
+
+fn list_tunnels_result(
+    result: Option<proto::response::Result>,
+) -> Result<ListTunnelsResult, String> {
+    match result {
+        Some(proto::response::Result::ListTunnels(r)) => Ok(ListTunnelsResult {
+            tunnels: r.tunnels.into_iter().map(proto_to_tunnel_info).collect(),
+            channel_epoch: r.channel_epoch,
+        }),
         _ => Err("unexpected response for list_tunnels".to_string()),
     }
 }
 
-fn proto_to_tunnel_info(info: &proto::TunnelInfo) -> TunnelInfoResponse {
+fn proto_to_tunnel_info(info: proto::TunnelInfo) -> TunnelInfoResponse {
     TunnelInfoResponse {
-        id: info.id.clone(),
-        worker_id: info.worker_id.clone(),
-        r#type: info.r#type.clone(),
-        bind_addr: info.bind_addr.clone(),
+        id: info.id,
+        worker_id: info.worker_id,
+        r#type: info.r#type,
+        bind_addr: info.bind_addr,
         bind_port: info.bind_port,
-        target_addr: info.target_addr.clone(),
+        target_addr: info.target_addr,
         target_port: info.target_port,
+        key_mismatch: info.key_mismatch.map(proto_to_tunnel_mismatch),
+    }
+}
+
+fn proto_to_tunnel_mismatch(mismatch: proto::TunnelWorkerKeyMismatch) -> TunnelKeyMismatchResponse {
+    TunnelKeyMismatchResponse {
+        expected_fingerprint: mismatch.expected_fingerprint,
+        presented_fingerprint: mismatch.presented_fingerprint,
     }
 }
 
@@ -3206,6 +3368,189 @@ mod tests {
             })
         );
         assert_eq!(json["build_info"]["version"], "");
+    }
+
+    #[test]
+    fn tunnel_requests_preserve_trust_and_epoch_from_the_webview() {
+        let mut config: TunnelConfigInput = serde_json::from_value(json!({
+            "workerId": "worker-a",
+            "type": "port_forward",
+            "targetAddr": "target",
+            "targetPort": 3000,
+            "bindAddr": "127.0.0.1",
+            "bindPort": 3001,
+            "expectedWorkerKeysHex": "010203",
+            "expectedUserId": "user-a",
+            "channelEpoch": "epoch-a",
+            "hubCookieHeader": "attacker-controlled",
+            "hubCookieOrigin": "https://attacker.example"
+        }))
+        .expect("deserialize the webview configuration");
+        assert!(config.hub_cookie_header.is_empty());
+        assert!(config.hub_cookie_origin.is_empty());
+        config.hub_cookie_header = "leapmux-session=native".to_string();
+        config.hub_cookie_origin = "https://hub.example.com".to_string();
+
+        assert_eq!(
+            create_tunnel_request(config),
+            proto::request::Method::CreateTunnel(proto::CreateTunnelRequest {
+                config: Some(proto::TunnelConfig {
+                    worker_id: "worker-a".into(),
+                    r#type: "port_forward".into(),
+                    target_addr: "target".into(),
+                    target_port: 3000,
+                    bind_addr: "127.0.0.1".into(),
+                    bind_port: 3001,
+                    expected_worker_keys_hex: "010203".into(),
+                    expected_user_id: "user-a".into(),
+                    channel_epoch: "epoch-a".into(),
+                    hub_cookie_header: "leapmux-session=native".into(),
+                    hub_cookie_origin: "https://hub.example.com".into(),
+                }),
+            })
+        );
+        assert_eq!(
+            list_tunnels_request("user-a".into()),
+            proto::request::Method::ListTunnels(proto::ListTunnelsRequest {
+                expected_user_id: "user-a".into(),
+            })
+        );
+        assert_eq!(
+            delete_tunnel_request("tunnel-a".into(), "epoch-a".into(), "user-a".into(),),
+            proto::request::Method::DeleteTunnel(proto::DeleteTunnelRequest {
+                tunnel_id: "tunnel-a".into(),
+                channel_epoch: "epoch-a".into(),
+                expected_user_id: "user-a".into(),
+            })
+        );
+        assert_eq!(
+            reset_tunnels_request("epoch-a".into()),
+            proto::request::Method::ResetTunnels(proto::ResetTunnelsRequest {
+                channel_epoch: "epoch-a".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn distributed_tunnel_credentials_require_the_connected_hub_origin() {
+        let hub = Url::parse("https://hub.example.com:8443/base").unwrap();
+        let same = Url::parse("https://hub.example.com:8443/workspace").unwrap();
+        let other_port = Url::parse("https://hub.example.com/workspace").unwrap();
+        let other_scheme = Url::parse("http://hub.example.com:8443/workspace").unwrap();
+        require_same_hub_origin(&same, &hub).unwrap();
+        assert!(require_same_hub_origin(&other_port, &hub).is_err());
+        assert!(require_same_hub_origin(&other_scheme, &hub).is_err());
+    }
+
+    #[test]
+    fn distributed_tunnel_cookie_header_keeps_only_nonempty_cookies() {
+        assert_eq!(
+            format_cookie_header(&[
+                ("leapmux-session".into(), "token".into()),
+                ("empty".into(), String::new()),
+                ("preference".into(), "value".into()),
+            ]),
+            "leapmux-session=token"
+        );
+    }
+
+    fn tunnel_info() -> proto::TunnelInfo {
+        proto::TunnelInfo {
+            id: "tunnel-a".into(),
+            worker_id: "worker-a".into(),
+            r#type: "port_forward".into(),
+            bind_addr: "127.0.0.1".into(),
+            bind_port: 3001,
+            target_addr: "target".into(),
+            target_port: 3000,
+            key_mismatch: None,
+        }
+    }
+
+    fn tunnel_mismatch() -> proto::TunnelWorkerKeyMismatch {
+        proto::TunnelWorkerKeyMismatch {
+            expected_fingerprint: "able-arch-bird-clay".into(),
+            presented_fingerprint: "fern-golf-harp-iris".into(),
+        }
+    }
+
+    fn tunnel_info_json() -> serde_json::Value {
+        json!({
+            "id": "tunnel-a",
+            "workerId": "worker-a",
+            "type": "port_forward",
+            "bindAddr": "127.0.0.1",
+            "bindPort": 3001,
+            "targetAddr": "target",
+            "targetPort": 3000
+        })
+    }
+
+    fn tunnel_mismatch_json() -> serde_json::Value {
+        json!({
+            "expectedFingerprint": "able-arch-bird-clay",
+            "presentedFingerprint": "fern-golf-harp-iris"
+        })
+    }
+
+    #[test]
+    fn create_tunnel_maps_the_sidecar_results_to_webview_outcomes() {
+        for (result, json) in [
+            (
+                proto::create_tunnel_response::Result::Info(tunnel_info()),
+                json!({"kind": "created", "info": tunnel_info_json()}),
+            ),
+            (
+                proto::create_tunnel_response::Result::KeyMismatch(tunnel_mismatch()),
+                json!({"kind": "workerKeyMismatch", "keyMismatch": tunnel_mismatch_json()}),
+            ),
+        ] {
+            let result = create_tunnel_outcome(Some(proto::response::Result::CreateTunnel(
+                proto::CreateTunnelResponse {
+                    result: Some(result),
+                },
+            )))
+            .expect("map the sidecar result");
+            assert_eq!(
+                serde_json::to_value(result).expect("serialize the webview outcome"),
+                json
+            );
+        }
+        assert!(
+            create_tunnel_outcome(Some(proto::response::Result::CreateTunnel(
+                proto::CreateTunnelResponse { result: None },
+            )))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn list_tunnels_maps_the_epoch_and_stopped_details() {
+        let result = list_tunnels_result(Some(proto::response::Result::ListTunnels(
+            proto::ListTunnelsResponse {
+                channel_epoch: "epoch-a".into(),
+                tunnels: vec![proto::TunnelInfo {
+                    key_mismatch: Some(tunnel_mismatch()),
+                    ..tunnel_info()
+                }],
+            },
+        )))
+        .expect("map the sidecar listing");
+        let mut stopped = tunnel_info_json();
+        stopped["keyMismatch"] = tunnel_mismatch_json();
+        assert_eq!(
+            serde_json::to_value(result).expect("serialize the webview listing"),
+            json!({"channelEpoch": "epoch-a", "tunnels": [stopped]})
+        );
+        assert!(list_tunnels_result(None).is_err());
+    }
+
+    #[test]
+    fn tunnel_change_events_use_the_generated_name_and_null_payload() {
+        let (name, payload) = tunnels_changed_event_for_webview();
+        assert_eq!(name, contracts_generated::EVENT_TUNNELS_CHANGED);
+        assert_eq!(name, "tunnel:changed");
+        assert_eq!(payload, serde_json::Value::Null);
     }
 
     #[cfg(target_os = "macos")]

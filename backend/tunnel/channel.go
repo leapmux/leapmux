@@ -24,6 +24,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/util/ctxutil"
 )
 
 // sessionVerifyTimeout bounds the open-time Ping round trip (see OpenChannel). It
@@ -32,6 +33,10 @@ import (
 // hang on a worker whose session is wedged. The browser's channelSession keeps the
 // same budget as its REKEY_TIMEOUT_MS; both are generated from contracts/wire.json.
 const sessionVerifyTimeout = contracts.SessionVerifyTimeout
+
+// The channel retires if a frame cannot finish writing within this limit.
+// The budget belongs to the transport and also applies to rekey frames.
+const channelFrameWriteTimeout = 10 * time.Second
 
 // Channel manages a single E2EE channel from the desktop app to a Worker
 // via the Hub's WebSocket relay.
@@ -73,6 +78,11 @@ type Channel struct {
 	streamCbs  map[uint64]*streamCallback
 	reassembly map[uint64]*channelwire.ChunkBuffer
 	closed     atomic.Bool
+
+	// The first Close caller signals closeFinished. The receiver also has
+	// to return, since a WebSocket read can initiate transport close itself.
+	closeFinished chan struct{}
+	closeDone     chan struct{}
 
 	// rekey holds the in-band-rekey state machine (fresh key-agreement material,
 	// multi-waiter broadcast, policy fields, watchdog disarm signal). See
@@ -306,11 +316,16 @@ type OpenChannelOptions struct {
 // persistence (CLI: ~/.config/leapmux/control/<hub-host>/pins.json;
 // worker: <datadir>/cross_worker_pins.json).
 type KeyPinStore interface {
-	// Verify is called with the worker's freshly-fetched public keys.
-	// On first contact (no pin yet) the implementation records the
-	// pin (TOFU) and returns nil. On a mismatch it returns a non-nil
-	// error and OpenChannel aborts.
-	Verify(workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) error
+	// Resolve checks the presented keys against the durable pin and
+	// returns a commit function that publishes the result after the
+	// channel proves the session (after Ping). On first contact the
+	// commit records the pin. On a match the commit bumps LastUsedAt.
+	// On a mismatch Resolve returns an error and OpenChannel aborts.
+	//
+	// Only a stateless immutable pin policy may return a nil commit.
+	// A matching stateful resolve returns a revalidation callback even
+	// inside a timestamp throttle.
+	Resolve(ctx context.Context, workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (commit func(context.Context) error, err error)
 }
 
 // OpenChannel opens a new E2EE channel to the specified worker via Hub.
@@ -417,18 +432,20 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		return nil, fmt.Errorf("get worker handshake params: the hub announced an unusable key set: %w", err)
 	}
 
-	// TOFU key pinning — abort if the hub returns keys that don't match
-	// the recorded pin. First contact records the pin.
+	// TOFU key pinning — resolve the pin decision now, commit it after
+	// Ping proves the session. On first contact the commit records the
+	// pin. On a mismatch Resolve returns an error and we abort.
 	//
-	// The pin is recorded here, before any handshake proves the keys. When the
-	// hub announces keys that the worker does not hold, the handshake below
-	// fails and the pin stays, so every later open fails with a mismatch until
-	// the user removes the pin. https://github.com/leapmux/leapmux/issues/661
+	// The commit runs only after the encrypted Ping, so a handshake or
+	// Ping failure records no pin. https://github.com/leapmux/leapmux/issues/661
+	var pinCommit func(context.Context) error
 	if pinStore != nil {
 		keys := paramsResp.GetKeys()
-		if err := pinStore.Verify(workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa()); err != nil {
+		commit, err := pinStore.Resolve(ctx, workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa())
+		if err != nil {
 			return nil, fmt.Errorf("worker key pin: %w", err)
 		}
+		pinCommit = commit
 	}
 
 	// 2. Perform Noise_NK handshake (message 1).
@@ -516,7 +533,8 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	}
 	wsConn.SetReadLimit(channelwire.WSReadLimit)
 
-	if err := checkOpenCanceled(ctx, lifetimeCtx, func() { _ = wsConn.CloseNow() }); err != nil {
+	if err := checkOpenCanceled(ctx, lifetimeCtx); err != nil {
+		_ = wsConn.CloseNow()
 		return nil, err
 	}
 	chCtx, chCancel := context.WithCancel(lifetimeCtx)
@@ -531,6 +549,8 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		pending:        make(map[uint64]chan<- *leapmuxv1.InnerRpcResponse),
 		streamCbs:      make(map[uint64]*streamCallback),
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
+		closeFinished:  make(chan struct{}),
+		closeDone:      make(chan struct{}),
 		rekey: rekeyController{
 			lastRekeyAt: time.Now(),
 			// Retain the worker's static ML-KEM key so a later in-band rekey can
@@ -547,8 +567,18 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// ChannelOpenRequest.user_id), so there is no identity to claim over the channel --
 	// and with no claim there is no reserved correlation id and no pre-recvLoop
 	// pending[0] registration.
-	go ch.recvLoop()
+	go func() {
+		ch.recvLoop()
+		<-ch.closeFinished
+		close(ch.closeDone)
+	}()
 	sessionNeedsZero = false
+	defer func() {
+		if rollback {
+			ch.Close()
+			<-ch.CloseDone()
+		}
+	}()
 	go ch.rekeyIdleLoop()
 
 	// 7. Prove the session works end to end before handing the channel out.
@@ -571,12 +601,37 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	pingCtx, cancelPing := context.WithTimeout(ctx, sessionVerifyTimeout)
 	defer cancelPing()
 	if _, err := ch.CallRPC(pingCtx, leapmuxv1connect.WorkerSystemServicePingProcedure, nil); err != nil {
-		ch.Close()
 		return nil, fmt.Errorf("verify channel session: %w", err)
 	}
 
-	if err := checkOpenCanceled(ctx, lifetimeCtx, ch.Close); err != nil {
+	// Pin publication is an independent outcome once Ping has proved the
+	// session. A handshake or Ping failure records no pin.
+	// https://github.com/leapmux/leapmux/issues/661
+	if pinCommit != nil {
+		if err := checkOpenCanceled(ctx, lifetimeCtx); err != nil {
+			return nil, err
+		}
+		if ch.Closed() {
+			return nil, errors.New("open channel: channel closed during pin commit")
+		}
+		commitCtx, cancelCommit := ctxutil.WithLinkedCancel(ctx, ch.Context())
+		commitErr := pinCommit(commitCtx)
+		cancelCommit()
+		// A commit failure (a removal or replacement of the pin during the
+		// open, or a read/write failure) refuses the channel: the trust
+		// decision is no longer valid. A committed pin survives concurrent
+		// cancellation that prevents channel handout.
+		// https://github.com/leapmux/leapmux/issues/661
+		if commitErr != nil {
+			return nil, fmt.Errorf("commit worker key pin: %w", commitErr)
+		}
+	}
+
+	if err := checkOpenCanceled(ctx, lifetimeCtx); err != nil {
 		return nil, err
+	}
+	if ch.Closed() {
+		return nil, errors.New("open channel: channel closed before handout")
 	}
 
 	slog.Info("tunnel E2EE channel opened", "channel_id", channelID, "worker_id", workerID)
@@ -584,22 +639,12 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	return ch, nil
 }
 
-// checkOpenCanceled aborts an in-flight OpenChannel when either the caller's
-// open context or the channel's lifetime context has been canceled, running
-// cleanup (tear down whatever the open has built so far) before reporting the
-// cancellation. OpenChannel runs it after each blocking step; one helper keeps
-// the pair of contexts -- and the order they are consulted in -- from drifting
-// between the exits.
-func checkOpenCanceled(ctx, lifetimeCtx context.Context, cleanup func()) error {
+// checkOpenCanceled checks the operation and lifetime contexts in order.
+func checkOpenCanceled(ctx, lifetimeCtx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		cleanup()
 		return err
 	}
-	if err := lifetimeCtx.Err(); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
+	return lifetimeCtx.Err()
 }
 
 func rollbackRegisteredChannel(client leapmuxv1connect.ChannelServiceClient, opts *OpenChannelOptions, channelID string) {
@@ -634,9 +679,13 @@ func (ch *Channel) Closed() bool {
 // The contract that follows, and that EVERY waiter must honour: a pending response
 // channel is never closed and never receives nil, so a bare `<-respCh` after Close
 // blocks forever. Every wait MUST also select on ch.Context().Done(), which Close
-// cancels. That is the only wake-up Close provides.
+// cancels. That is the only wake-up Close provides to pending calls. Duplicate
+// calls return immediately. Use CloseDone to wait for transport release.
 func (ch *Channel) Close() {
 	if ch.closed.CompareAndSwap(false, true) {
+		if ch.closeFinished != nil {
+			defer close(ch.closeFinished)
+		}
 		ch.cancel()
 		_ = ch.ws.CloseNow()
 
@@ -653,6 +702,12 @@ func (ch *Channel) Close() {
 			stream.stop()
 		}
 	}
+}
+
+// CloseDone returns a channel that closes after the relay is released and
+// close cleanup finishes. Context().Done() signals loss of usability earlier.
+func (ch *Channel) CloseDone() <-chan struct{} {
+	return ch.closeDone
 }
 
 // CallRPC sends a unary inner RPC and waits for the response. An error that
@@ -986,7 +1041,9 @@ func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *
 			if err != nil {
 				return fmt.Errorf("encrypt inner message: %w", err)
 			}
-			return channelwire.WriteChannelMessage(ch.ctx, ch.ws, frame)
+			writeCtx, cancelWrite := context.WithTimeout(ch.ctx, channelFrameWriteTimeout)
+			defer cancelWrite()
+			return channelwire.WriteChannelMessage(writeCtx, ch.ws, frame)
 		}); err != nil {
 		// An encrypt failure (nonce exhaustion) abandons this message BETWEEN
 		// chunks and a write failure means the transport is broken: either way

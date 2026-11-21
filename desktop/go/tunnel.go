@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,13 +52,30 @@ var channelOpenTimeout = tunnelpkg.DefaultChannelOpenTimeout
 // injected from the authenticated desktop connection, never accepted from the
 // frontend request.
 type TunnelConfig struct {
-	WorkerID   string
-	Type       string // "port_forward" or "socks5"
-	TargetAddr string // port_forward only
-	TargetPort int    // port_forward only
-	BindAddr   string
-	BindPort   int
-	HubURL     string
+	WorkerID        string
+	Type            string // "port_forward" or "socks5"
+	TargetAddr      string // port_forward only
+	TargetPort      int    // port_forward only
+	BindAddr        string
+	BindPort        int
+	HubURL          string
+	HubCookieHeader string
+	HubCookieOrigin string
+	// The Worker identity this tunnel admits: the user every channel must
+	// authenticate as and the exact Worker keys the Hub must announce (the
+	// composite hex NewExpectedWorkerKeyPin decodes). Both come from the
+	// request; a create that omits either, or carries an unusable
+	// expectation, fails before a listener is bound or a channel opened.
+	ExpectedUserID        string
+	ExpectedWorkerKeysHex string
+	expectedWorkerKeyPin  tunnelpkg.KeyPinStore
+	channelOptions        *tunnelpkg.OpenChannelOptions
+	credentialKey         [32]byte
+	// ChannelEpoch is the channel epoch the caller read from a tunnel
+	// listing. The create is admitted against that exact epoch: a submission
+	// fenced on a listing that a reset has since invalidated is refused before
+	// a listener is bound or a channel opened.
+	ChannelEpoch string
 }
 
 // validateAndNormalize checks the config's required fields and fills in the
@@ -94,6 +114,20 @@ func (cfg *TunnelConfig) validateAndNormalize() error {
 	if cfg.BindPort < 1 || cfg.BindPort > 65535 {
 		return fmt.Errorf("bindPort must be 1-65535")
 	}
+	if cfg.ExpectedUserID == "" {
+		return fmt.Errorf("expectedUserId is required")
+	}
+	if cfg.ExpectedWorkerKeysHex == "" {
+		return fmt.Errorf("expectedWorkerKeysHex is required")
+	}
+	pin, err := tunnelpkg.NewExpectedWorkerKeyPin(cfg.ExpectedWorkerKeysHex)
+	if err != nil {
+		return err
+	}
+	cfg.expectedWorkerKeyPin = pin
+	if cfg.ChannelEpoch == "" {
+		return fmt.Errorf("channelEpoch is required")
+	}
 	return nil
 }
 
@@ -106,17 +140,62 @@ type TunnelInfo struct {
 	BindPort   int    `json:"bindPort"`
 	TargetAddr string `json:"targetAddr"`
 	TargetPort int    `json:"targetPort"`
+	// KeyMismatch is set only on a stopped row: the Worker key mismatch that
+	// stopped the tunnel. The record survives (until delete or reset) so a
+	// hint delivered early or lost still recovers through a listing.
+	KeyMismatch *TunnelKeyMismatch `json:"keyMismatch,omitempty"`
 }
 
-// tunnel represents a single active tunnel.
+// TunnelKeyMismatch is the Worker key mismatch that refused a create or
+// stopped a tunnel: the fingerprints of the expected key set and of the set
+// the Hub announced. The fingerprints are the human-comparison form (the same
+// four-word fingerprint the Worker logs); the Worker's log is the comparison
+// source.
+type TunnelKeyMismatch struct {
+	ExpectedFingerprint  string `json:"expectedFingerprint"`
+	PresentedFingerprint string `json:"presentedFingerprint"`
+}
+
+// keyMismatchOf returns the Worker key mismatch err reports, or nil when err
+// is an ordinary failure. It is the one conversion from the tunnel package's
+// typed mismatch to the wire-shaped detail both the create result and a
+// stopped list row carry.
+func keyMismatchOf(err error) *TunnelKeyMismatch {
+	var mismatch *tunnelpkg.WorkerKeyMismatchError
+	if !errors.As(err, &mismatch) {
+		return nil
+	}
+	return &TunnelKeyMismatch{
+		ExpectedFingerprint:  mismatch.ExpectedFingerprint,
+		PresentedFingerprint: mismatch.PresentedFingerprint,
+	}
+}
+
+type tunnelState uint8
+
+const (
+	tunnelLive tunnelState = iota
+	tunnelStoppingForMismatch
+	tunnelRemoving
+)
+
+// tunnel holds the listener, owned sockets, and immutable admission identity
+// for one tunnel. The manager lock protects state and info.KeyMismatch.
 type tunnel struct {
+	info          TunnelInfo
+	state         tunnelState
+	hubURL        string
+	listener      net.Listener
+	cancel        context.CancelFunc
+	expect        channelExpectation
+	admittedEpoch string
+
+	// mu serializes handoff admission, connection ownership, and retirement.
 	mu          sync.Mutex
-	info        TunnelInfo
-	hubURL      string // Hub URL the E2EE channel is keyed on (for per-connection re-resolution)
-	listener    net.Listener
-	cancel      context.CancelFunc
-	connections map[net.Conn]struct{}
-	closed      bool
+	retiring    bool
+	connections map[*ownedTunnelConn]struct{}
+	handoffs    sync.WaitGroup
+	closeDone   chan struct{}
 }
 
 // tunnelListener adapts a tunnel's listener for go-socks5's Server.Serve: it
@@ -131,6 +210,11 @@ type tunnelListener struct {
 }
 
 func (l tunnelListener) Accept() (net.Conn, error) {
+	if !l.tunnel.beginHandoff() {
+		return nil, net.ErrClosed
+	}
+	defer l.tunnel.handoffs.Done()
+
 	conn, err := acceptWithRetry(l.ctx, l.Listener, l.tunnel.info.ID)
 	if err != nil {
 		return nil, err
@@ -183,17 +267,21 @@ func acceptWithRetry(ctx context.Context, ln net.Listener, tunnelID string) (net
 
 type ownedTunnelConn struct {
 	net.Conn
-	tunnel *tunnel
-	once   sync.Once
+	tunnel    *tunnel
+	closing   atomic.Bool
+	closeDone chan struct{}
+	closeErr  error
 }
 
 func (c *ownedTunnelConn) Close() error {
-	var err error
-	c.once.Do(func() {
-		c.tunnel.removeConnection(c.Conn)
-		err = c.Conn.Close()
-	})
-	return err
+	if c.closing.CompareAndSwap(false, true) {
+		c.closeErr = c.Conn.Close()
+		c.tunnel.removeConnection(c)
+		close(c.closeDone)
+	} else {
+		<-c.closeDone
+	}
+	return c.closeErr
 }
 
 // CloseWrite half-closes the underlying connection when it supports it. The
@@ -211,16 +299,25 @@ type dialTunnelFunc func(context.Context, *managedChannel, string, uint32) (net.
 
 // TunnelManager manages all active tunnels for the desktop app.
 type TunnelManager struct {
-	mu      sync.Mutex
-	tunnels map[string]*tunnel
-	pool    *channelPool
-	dial    dialTunnelFunc
+	mu             sync.Mutex
+	tunnels        map[string]*tunnel
+	retiringEpochs map[string]chan struct{}
+	latestReset    <-chan struct{}
+	pool           *channelPool
+	dial           dialTunnelFunc
+	listen         func(network, address string) (net.Listener, error)
+	// onChanged publishes a native tunnel status change (a mismatch
+	// transition) so the webview re-reads the tunnel list. Set by NewApp
+	// before any tunnel exists; nil in a bare manager (tests).
+	onChanged func()
 }
 
 // NewTunnelManager creates a new TunnelManager.
 func NewTunnelManager() *TunnelManager {
 	return &TunnelManager{
-		tunnels: make(map[string]*tunnel),
+		tunnels:        make(map[string]*tunnel),
+		retiringEpochs: make(map[string]chan struct{}),
+		listen:         net.Listen,
 		pool: newChannelPool(func(
 			ctx context.Context,
 			hubURL, workerID string,
@@ -233,25 +330,22 @@ func NewTunnelManager() *TunnelManager {
 			return wrapChannel(ch), nil
 		}),
 		dial: func(ctx context.Context, ch *managedChannel, targetAddr string, targetPort uint32) (net.Conn, error) {
-			return tunnelpkg.DialTunnelContext(ctx, ch.channel, targetAddr, targetPort)
+			return ch.transport.DialTunnelContext(ctx, targetAddr, targetPort)
 		},
 	}
 }
 
-// SetChannelOptions sets transport options for opening E2EE channels.
-// Holds TunnelManager.mu so CreateTunnel's revision check + tunnel insert
-// cannot race a concurrent identity reset (pool.reset only takes pool.mu).
+// SetChannelOptions retires the current tunnels and replaces the transport
+// options. A tunnel admitted under the previous epoch cannot reuse them.
 func (m *TunnelManager) SetChannelOptions(opts *tunnelpkg.OpenChannelOptions) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pool.setOptions(opts)
+	m.resetTunnelEpoch(nil, func() *channelEpoch { return m.pool.setOptions(opts) })
 }
 
-// currentRevision returns the pool's invalidation epoch revision. Tests and
-// CreateTunnel capture it before awaiting an open so a concurrent reset can
-// fence registration.
-func (m *TunnelManager) currentRevision() uint64 {
-	return m.pool.currentRevision()
+// currentEpoch returns the pool's invalidation epoch id -- the value
+// ListTunnels reports as channel_epoch. Tests and CreateTunnel capture it
+// before awaiting an open so a concurrent reset can fence registration.
+func (m *TunnelManager) currentEpoch() string {
+	return m.pool.currentEpoch()
 }
 
 // CreateTunnel creates and starts a new tunnel.
@@ -262,25 +356,48 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 	if lifetimeCtx == nil {
 		return nil, fmt.Errorf("lifetime context is required")
 	}
-	revision := m.pool.currentRevision()
-
 	if err := cfg.validateAndNormalize(); err != nil {
 		return nil, err
 	}
+	admittedEpoch := cfg.ChannelEpoch
+	if err := m.awaitAdmission(operationCtx, lifetimeCtx, admittedEpoch); err != nil {
+		return nil, err
+	}
+	expect := channelExpectation{
+		userID:         cfg.ExpectedUserID,
+		keysHex:        cfg.ExpectedWorkerKeysHex,
+		pin:            cfg.expectedWorkerKeyPin,
+		channelOptions: cfg.channelOptions,
+		credentialKey:  cfg.credentialKey,
+	}
 
 	// Ensure we have an E2EE channel to the worker.
-	opened, err := m.pool.getOrOpen(operationCtx, revision, cfg.HubURL, cfg.WorkerID)
+	opened, err := m.pool.getOrOpen(operationCtx, admittedEpoch, cfg.HubURL, cfg.WorkerID, expect)
 	if err != nil {
 		slog.Error("failed to open channel to worker", "worker_id", cfg.WorkerID, "error", err)
 		return nil, fmt.Errorf("open channel to worker: %w", err)
 	}
 
-	// Create TCP listener.
-	bindAddr := net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.BindPort))
-	listener, err := net.Listen("tcp", bindAddr)
+	// Bind and register under the same lock as epoch rotation. Reset must
+	// either capture the listener or prevent the old create from binding.
+	bindAddr := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.BindPort))
+	m.mu.Lock()
+	if err := m.checkAdmissionLocked(operationCtx, lifetimeCtx, admittedEpoch); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	listener, err := m.listen("tcp", bindAddr)
 	if err != nil {
+		m.mu.Unlock()
 		slog.Error("failed to bind tunnel listener", "bind_addr", bindAddr, "error", err)
 		return nil, fmt.Errorf("bind %s: %w", bindAddr, err)
+	}
+	if err := m.checkAdmissionLocked(operationCtx, lifetimeCtx, admittedEpoch); err != nil {
+		// Cancellation can race the numeric bind. Close the unregistered
+		// listener before allowing reset or another create to proceed.
+		_ = listener.Close()
+		m.mu.Unlock()
+		return nil, err
 	}
 
 	actualAddr := listener.Addr().(*net.TCPAddr)
@@ -297,28 +414,12 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 
 	ctx, cancel := context.WithCancel(lifetimeCtx)
 	t := &tunnel{
-		info:        info,
-		hubURL:      cfg.HubURL,
-		listener:    listener,
-		cancel:      cancel,
-		connections: make(map[net.Conn]struct{}),
-	}
-
-	m.mu.Lock()
-	// A cancelled operation/lifetime, or an epoch reset that raced this create,
-	// means the tunnel must not be registered -- undo the listener + lifetime.
-	startErr := operationCtx.Err()
-	if startErr == nil {
-		startErr = lifetimeCtx.Err()
-	}
-	if startErr == nil && revision != m.pool.currentRevision() {
-		startErr = fmt.Errorf("tunnel manager reset while creating tunnel")
-	}
-	if startErr != nil {
-		m.mu.Unlock()
-		cancel()
-		_ = listener.Close()
-		return nil, startErr
+		info:          info,
+		hubURL:        cfg.HubURL,
+		listener:      listener,
+		cancel:        cancel,
+		expect:        expect,
+		admittedEpoch: admittedEpoch,
 	}
 	m.tunnels[tunnelID] = t
 	m.mu.Unlock()
@@ -334,7 +435,45 @@ func (m *TunnelManager) CreateTunnel(operationCtx, lifetimeCtx context.Context, 
 		"bind", actualAddr.String(),
 		"target", fmt.Sprintf("%s:%d", cfg.TargetAddr, cfg.TargetPort),
 	)
+	if m.onChanged != nil {
+		m.onChanged()
+	}
 	return &info, nil
+}
+
+// awaitAdmission waits for any older epoch to finish cleanup. The lock
+// protects the epoch check and the snapshot of the pending cleanup.
+func (m *TunnelManager) awaitAdmission(operationCtx, lifetimeCtx context.Context, epoch string) error {
+	for {
+		m.mu.Lock()
+		err := m.checkAdmissionLocked(operationCtx, lifetimeCtx, epoch)
+		pending := m.latestReset
+		m.mu.Unlock()
+
+		if err != nil || pending == nil {
+			return err
+		}
+		select {
+		case <-operationCtx.Done():
+			return operationCtx.Err()
+		case <-lifetimeCtx.Done():
+			return lifetimeCtx.Err()
+		case <-pending:
+		}
+	}
+}
+
+func (m *TunnelManager) checkAdmissionLocked(operationCtx, lifetimeCtx context.Context, epoch string) error {
+	if err := operationCtx.Err(); err != nil {
+		return err
+	}
+	if err := lifetimeCtx.Err(); err != nil {
+		return err
+	}
+	if epoch != m.pool.currentEpoch() {
+		return fmt.Errorf("stale channel epoch: the tunnel listing has been reset")
+	}
+	return nil
 }
 
 // defaultTunnelBindAddr is where a tunnel listens when the caller names no
@@ -367,48 +506,124 @@ func validateTunnelBindAddr(bindAddr string) error {
 }
 
 // DeleteTunnel stops and removes a tunnel.
-func (m *TunnelManager) DeleteTunnel(tunnelID string) error {
+//
+// channelEpoch is the epoch the caller's listing reported. A delete fenced on
+// a listing a reset has since invalidated is refused before the lookup: the
+// caller's row set is stale and it must re-read before mutating.
+func (m *TunnelManager) DeleteTunnel(tunnelID string, channelEpoch string, expectedUsers ...string) error {
 	m.mu.Lock()
+	if channelEpoch != m.pool.currentEpoch() {
+		m.mu.Unlock()
+		return fmt.Errorf("stale channel epoch: the tunnel listing has been reset")
+	}
 	t, ok := m.tunnels[tunnelID]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("tunnel not found: %s", tunnelID)
+		return nil
 	}
-	delete(m.tunnels, tunnelID)
+	if len(expectedUsers) > 0 {
+		expectedUser := expectedUsers[0]
+		if expectedUser == "" {
+			m.mu.Unlock()
+			return fmt.Errorf("expectedUserId is required")
+		}
+		if t.expect.userID != expectedUser {
+			m.mu.Unlock()
+			return fmt.Errorf("tunnel does not belong to the expected user")
+		}
+	}
+	if t.state != tunnelRemoving {
+		t.state = tunnelRemoving
+		t.stopAdmission()
+	}
 	m.mu.Unlock()
 
-	t.close()
+	m.closeAndRemove(t)
 	slog.Info("tunnel deleted", "tunnel_id", tunnelID)
 	return nil
 }
 
-// ListTunnels returns info about all active tunnels.
-func (m *TunnelManager) ListTunnels() []TunnelInfo {
+// ListTunnels returns the current channel epoch and the tunnels owned by
+// expectedUser -- active rows and stopped rows alike -- from one manager
+// snapshot. The epoch and the rows are read under one lock (every epoch
+// rotation holds it too), so a caller can fence its next mutation against
+// exactly the listing it saw.
+//
+// The owner is the expected user a create was admitted under; a listing that
+// specifies no user is refused rather than silently answered for one owner.
+func (m *TunnelManager) ListTunnels(expectedUser string) (string, []TunnelInfo, error) {
+	if expectedUser == "" {
+		return "", nil, fmt.Errorf("expectedUserId is required")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := make([]TunnelInfo, 0, len(m.tunnels))
 	for _, t := range m.tunnels {
+		if t.expect.userID != expectedUser || t.state == tunnelRemoving {
+			continue
+		}
 		result = append(result, t.info)
 	}
-	return result
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return m.pool.currentEpoch(), result, nil
 }
 
-// CloseAll closes all tunnels and channels.
+// CloseAll retires the current epoch and joins all earlier cleanup.
 func (m *TunnelManager) CloseAll() {
+	m.resetTunnelEpoch(nil, m.pool.rotate)
+}
+
+// ResetTunnels retires the requested epoch. A replay joins any cleanup still
+// running for that epoch and leaves the successor unchanged.
+func (m *TunnelManager) ResetTunnels(channelEpoch string) {
+	m.resetTunnelEpoch(&channelEpoch, m.pool.rotate)
+}
+
+// resetTunnelEpoch rotates the pool, detaches the tunnel records, and
+// publishes the shared cleanup completion under the same manager lock.
+func (m *TunnelManager) resetTunnelEpoch(expectedEpoch *string, rotate func() *channelEpoch) {
 	m.mu.Lock()
+	epoch := m.pool.currentEpoch()
+	if expectedEpoch != nil && *expectedEpoch != epoch {
+		done := m.retiringEpochs[*expectedEpoch]
+		m.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return
+	}
+
+	// Every reset joins its predecessor. Waiting for the latest reset also
+	// waits for every earlier one.
+	predecessor := m.latestReset
+	done := make(chan struct{})
+	m.latestReset = done
+	m.retiringEpochs[epoch] = done
 	tunnels := m.tunnels
 	m.tunnels = make(map[string]*tunnel)
-	// Reset the pool while holding m.mu so CreateTunnel cannot pass its
-	// revision check and insert between the map clear and the epoch bump.
-	m.pool.reset()
+	for _, t := range tunnels {
+		t.stopAdmission()
+	}
+	retired := rotate()
 	m.mu.Unlock()
 
+	var cleanup sync.WaitGroup
 	for _, t := range tunnels {
-		t.close()
+		cleanup.Go(t.close)
 	}
-	// Only when there was something to close. CloseAll runs on every disconnect
-	// and every shutdown, so an unconditional line announces a non-event on the
-	// overwhelmingly common path where no tunnel was ever created.
+	retired.close()
+	cleanup.Wait()
+	if predecessor != nil {
+		<-predecessor
+	}
+
+	m.mu.Lock()
+	delete(m.retiringEpochs, epoch)
+	if m.latestReset == done {
+		m.latestReset = nil
+	}
+	close(done)
+	m.mu.Unlock()
 	if len(tunnels) > 0 {
 		slog.Info("all tunnels closed", "count", len(tunnels))
 	}
@@ -429,22 +644,7 @@ func (m *TunnelManager) serveSocks5(ctx context.Context, t *tunnel, ch *managedC
 		port := uint32(p)
 		dialCtx, cancelDial := ctxutil.WithLinkedCancel(ctx, requestCtx)
 		defer cancelDial()
-		live, err := m.pool.live(dialCtx, ch, t.hubURL, t.info.WorkerID)
-		if err != nil {
-			return nil, err
-		}
-		openCtx, cancelOpen := context.WithTimeout(dialCtx, dialTunnelOpenTimeout)
-		target, err := m.dial(openCtx, live, host, port)
-		cancelOpen()
-		if err != nil {
-			return nil, err
-		}
-		owned, ok := t.ownConnection(target)
-		if !ok {
-			_ = target.Close()
-			return nil, net.ErrClosed
-		}
-		return owned, nil
+		return m.dialTunnelTarget(dialCtx, t, ch, host, port)
 	})
 
 	// Serve returns only when the listener is finished. On a clean teardown the
@@ -502,74 +702,86 @@ func backoffAfterTemporaryAccept(delay time.Duration, cancel <-chan struct{}) (n
 	}
 }
 
-// failTunnel tears a tunnel down and evicts it from the manager after its
-// listener died for good.
-//
-// A dead accept loop must not leave the tunnel registered: ListTunnels would keep
-// reporting it, the UI would keep showing it active, and every new local
-// connection would be refused with nothing to explain why. Removing it makes the
-// death observable -- the tunnel disappears -- instead of silently inert.
+// failTunnel evicts a tunnel whose listener stopped. A late accept
+// failure cannot remove a row whose mismatch or deletion already claimed it.
 func (m *TunnelManager) failTunnel(t *tunnel, reason error) {
+	if !m.retireLiveTunnel(t, tunnelRemoving) {
+		return
+	}
 	slog.Error("tunnel listener failed; removing the tunnel",
 		"tunnel_id", t.info.ID, "error", reason)
-	if err := m.DeleteTunnel(t.info.ID); err != nil {
-		// Already gone (a concurrent DeleteTunnel/CloseAll): nothing to reclaim.
-		slog.Debug("tunnel already removed", "tunnel_id", t.info.ID, "error", err)
+	m.closeAndRemove(t)
+	if m.onChanged != nil {
+		m.onChanged()
+	}
+}
+
+func (m *TunnelManager) retireLiveTunnel(t *tunnel, state tunnelState) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tunnels[t.info.ID] != t || t.state != tunnelLive || !t.stopAdmission() {
+		return false
+	}
+	t.state = state
+	return true
+}
+
+func (m *TunnelManager) closeAndRemove(t *tunnel) {
+	t.close()
+	m.mu.Lock()
+	if m.tunnels[t.info.ID] == t {
+		delete(m.tunnels, t.info.ID)
+	}
+	m.mu.Unlock()
+}
+
+// stopWithKeyMismatch retains the stopped row so a missed change hint can
+// recover through the next list. Delete and reset can supersede the transition
+// while it waits for cleanup.
+func (m *TunnelManager) stopWithKeyMismatch(t *tunnel, mismatch *TunnelKeyMismatch) {
+	if !m.retireLiveTunnel(t, tunnelStoppingForMismatch) {
+		return
+	}
+	t.close()
+
+	m.mu.Lock()
+	if m.tunnels[t.info.ID] != t || t.state != tunnelStoppingForMismatch {
+		m.mu.Unlock()
+		return
+	}
+	t.info.KeyMismatch = mismatch
+	m.mu.Unlock()
+
+	slog.Error("tunnel stopped: the hub announced unexpected worker keys",
+		"tunnel_id", t.info.ID,
+		"expected_fingerprint", mismatch.ExpectedFingerprint,
+		"presented_fingerprint", mismatch.PresentedFingerprint)
+	if m.onChanged != nil {
+		m.onChanged()
 	}
 }
 
 // acceptPortForward accepts TCP connections and forwards them to a fixed target.
 func (m *TunnelManager) acceptPortForward(ctx context.Context, t *tunnel, ch *managedChannel) {
+	listener := tunnelListener{Listener: t.listener, tunnel: t, ctx: ctx}
 	for {
-		// acceptWithRetry absorbs transient failures (an fd spike), so an error here
-		// means the listener is done for. It does not own the connection: that is
-		// handlePortForward's job, which is why this loop calls the listener directly
-		// rather than going through tunnelListener.
-		conn, err := acceptWithRetry(ctx, t.listener, t.info.ID)
+		conn, err := listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				return
+			if ctx.Err() == nil {
+				m.failTunnel(t, err)
 			}
-			// Fail the tunnel so it stops reporting healthy.
-			m.failTunnel(t, err)
 			return
 		}
-		// handlePortForward owns the connection (tracks it and wraps it for
-		// CloseWrite); if the tunnel is closing it closes the conn and returns.
 		go m.handlePortForward(ctx, conn, t, ch)
 	}
 }
 
-// handlePortForward handles a single port-forward TCP connection.
-func (m *TunnelManager) handlePortForward(ctx context.Context, conn net.Conn, t *tunnel, ch *managedChannel) {
-	// Own both ends so teardown (t.close) can hard-close them and so each side
-	// supports CloseWrite: the local end forwards to *net.TCPConn, and the
-	// tunneled remote Conn forwards to its CloseWrite, which sends a close_write
-	// frame the worker applies to the target -- so the port-forward copy
-	// propagates a half-close in each direction. ownedTunnelConn.Close removes
-	// the conn from tracking and closes it.
-	local, ok := t.ownConnection(conn)
-	if !ok {
-		_ = conn.Close()
-		return
-	}
+// handlePortForward relays a local connection already owned by its tunnel.
+func (m *TunnelManager) handlePortForward(ctx context.Context, local net.Conn, t *tunnel, ch *managedChannel) {
 	defer func() { _ = local.Close() }()
-
-	live, err := m.pool.live(ctx, ch, t.hubURL, t.info.WorkerID)
-	if err != nil {
-		slog.Error("resolve tunnel channel failed", "tunnel_id", t.info.ID, "error", err)
-		return
-	}
-	dialCtx, cancelDial := context.WithTimeout(ctx, dialTunnelOpenTimeout)
-	target, err := m.dial(dialCtx, live, t.info.TargetAddr, uint32(t.info.TargetPort))
-	cancelDial()
+	remote, err := m.dialTunnelTarget(ctx, t, ch, t.info.TargetAddr, uint32(t.info.TargetPort))
 	if err != nil {
 		slog.Error("dial tunnel failed", "tunnel_id", t.info.ID, "error", err)
-		return
-	}
-	remote, ok := t.ownConnection(target)
-	if !ok {
-		_ = target.Close()
 		return
 	}
 	defer func() { _ = remote.Close() }()
@@ -629,26 +841,78 @@ func (m *TunnelManager) handlePortForward(ctx context.Context, conn net.Conn, t 
 	<-copyDone
 }
 
-func (t *tunnel) addConnection(conn net.Conn) bool {
+func (m *TunnelManager) dialTunnelTarget(ctx context.Context, t *tunnel, ch *managedChannel, host string, port uint32) (net.Conn, error) {
+	live, err := m.pool.live(ctx, ch, t.admittedEpoch, t.hubURL, t.info.WorkerID, t.expect)
+	if err != nil {
+		// Claim a mismatch before starting a target handoff. Its cleanup
+		// must be able to wait for all outstanding handoffs.
+		if mismatch := keyMismatchOf(err); mismatch != nil {
+			m.stopWithKeyMismatch(t, mismatch)
+		}
+		return nil, fmt.Errorf("resolve tunnel channel: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !t.beginHandoff() {
+		return nil, net.ErrClosed
+	}
+	defer t.handoffs.Done()
+
+	openCtx, cancelOpen := context.WithTimeout(ctx, dialTunnelOpenTimeout)
+	target, err := m.dial(openCtx, live, host, port)
+	cancelOpen()
+	if err != nil {
+		if target != nil {
+			_ = target.Close()
+		}
+		return nil, err
+	}
+	owned, ok := t.ownConnection(target)
+	if !ok {
+		_ = target.Close()
+		return nil, net.ErrClosed
+	}
+	return owned, nil
+}
+
+// beginHandoff reserves ownership for an accept or dial whose socket has
+// yet to be registered. Retirement waits for every reservation to finish.
+func (t *tunnel) beginHandoff() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed {
+	if t.retiring {
 		return false
 	}
-	// connections is created in CreateTunnel and only nilled by close(), which
-	// sets closed first -- so a live tunnel always has a non-nil map here.
-	t.connections[conn] = struct{}{}
+	t.handoffs.Add(1)
 	return true
 }
 
-func (t *tunnel) ownConnection(conn net.Conn) (net.Conn, bool) {
-	if !t.addConnection(conn) {
-		return nil, false
+func (t *tunnel) stopAdmission() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.retiring {
+		return false
 	}
-	return &ownedTunnelConn{Conn: conn, tunnel: t}, true
+	t.retiring = true
+	return true
 }
 
-func (t *tunnel) removeConnection(conn net.Conn) {
+func (t *tunnel) ownConnection(conn net.Conn) (*ownedTunnelConn, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.retiring {
+		return nil, false
+	}
+	if t.connections == nil {
+		t.connections = make(map[*ownedTunnelConn]struct{})
+	}
+	owned := &ownedTunnelConn{Conn: conn, tunnel: t, closeDone: make(chan struct{})}
+	t.connections[owned] = struct{}{}
+	return owned, true
+}
+
+func (t *tunnel) removeConnection(conn *ownedTunnelConn) {
 	t.mu.Lock()
 	delete(t.connections, conn)
 	t.mu.Unlock()
@@ -671,35 +935,32 @@ func tryCloseWrite(conn net.Conn) error {
 }
 
 func (t *tunnel) close() {
-	// Cancel BEFORE flipping `closed`, not after unlocking. cancel is idempotent
-	// and needs no lock, and the order is what the serve loops read: once closed is
-	// set, tunnelListener.Accept rejects a freshly accepted conn (ownConnection
-	// fails) with net.ErrClosed, go-socks5's Serve returns on it, and serveSocks5
-	// decides between "clean teardown" and "the listener died" by testing
-	// ctx.Err(). Cancelling afterwards left a window where ctx.Err() was still nil,
-	// so an ordinary user-initiated DeleteTunnel logged a spurious "tunnel listener
-	// failed" ERROR and sent operators hunting a failure that never happened.
-	if t.cancel != nil {
-		t.cancel()
-	}
-
 	t.mu.Lock()
-	if t.closed {
+	if done := t.closeDone; done != nil {
 		t.mu.Unlock()
+		<-done
 		return
 	}
-	t.closed = true
-	connections := make([]net.Conn, 0, len(t.connections))
+	t.retiring = true
+	done := make(chan struct{})
+	t.closeDone = done
+	connections := make([]*ownedTunnelConn, 0, len(t.connections))
 	for conn := range t.connections {
 		connections = append(connections, conn)
 	}
-	t.connections = nil
 	t.mu.Unlock()
 
+	if t.cancel != nil {
+		t.cancel()
+	}
 	if t.listener != nil {
 		_ = t.listener.Close()
 	}
 	for _, conn := range connections {
 		_ = conn.Close()
 	}
+	// A pending accept or dial either registered before retirement or
+	// closes its socket before it gives up the reservation.
+	t.handoffs.Wait()
+	close(done)
 }

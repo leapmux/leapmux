@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process'
 import type { AddressInfo } from 'node:net'
 import type { E2EGlobalState } from '../global-setup'
 import { readFileSync } from 'node:fs'
-import { createServer } from 'node:net'
+import { createServer, isIPv6 } from 'node:net'
 import { join } from 'node:path'
 import process from 'node:process'
 import { E2E_BROWSER_HOST, fetchHub } from './hubTransport'
@@ -91,6 +91,10 @@ export function findFreePort(): Promise<number> {
 
 /** Wait for a successful HTTP response within the startup deadline. */
 export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
+  return waitForHttpReady(url, timeoutMs)
+}
+
+function waitForHttpReady(url: string, timeoutMs: number, proc?: ChildProcess): Promise<void> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
     return Promise.reject(new RangeError('The startup deadline must fit a positive Node timer delay'))
   return new Promise((resolve, reject) => {
@@ -102,6 +106,15 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
       finish(new Error(`Server at ${url} did not start within ${timeoutMs}ms`, { cause: lastError }))
     }, timeoutMs)
 
+    const onError = (error: Error) => finish(error)
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      finish(new Error(`The hub at ${url} exited before startup completed: code=${code ?? 'none'} signal=${signal ?? 'none'}`))
+    }
+    proc?.once('error', onError)
+    proc?.once('exit', onExit)
+    if (proc && (proc.exitCode !== null || proc.signalCode !== null))
+      onExit(proc.exitCode, proc.signalCode)
+
     function finish(error?: Error) {
       if (finished)
         return
@@ -110,6 +123,8 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
       clearTimeout(retry)
       // Stop requests that never return headers. Cancellation releases the body after a successful response.
       controller.abort()
+      proc?.removeListener('error', onError)
+      proc?.removeListener('exit', onExit)
       if (error)
         reject(error)
       else
@@ -122,6 +137,8 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
         if (finished)
           return
         if (response.ok) {
+          if (proc !== undefined)
+            await response.body?.cancel()
           finish()
           return
         }
@@ -138,21 +155,56 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
   })
 }
 
-/** Read the one resolved TCP address from the hub's state file. */
-export function resolvedHubTCPFromStateJson(raw: string): string {
+/** The ordered listen endpoints a hub's state file lists. */
+export interface ResolvedListenAddresses {
+  /** TCP addresses in bind order, each carrying the port its listener resolved to. */
+  tcp: string[]
+  /** Local IPC endpoint URLs in bind order (`unix:`, `npipe:`). */
+  local: string[]
+}
+
+/**
+ * Read the resolved bind set from the hub's state file: the TCP addresses and the local IPC endpoint URLs, each in bind
+ * order. Two identical port-zero requests resolve to two ports, so the answer is per request occurrence rather than per
+ * spelling.
+ */
+export function resolvedHubListenAddresses(raw: string): ResolvedListenAddresses {
   const state = JSON.parse(raw) as { listen?: unknown } | null
   const listen = state?.listen
   if (!Array.isArray(listen) || !listen.every(entry => typeof entry === 'string'))
-    throw new Error('expected one TCP address in the hub state file\'s listen list')
-  const tcp = listen.filter(entry => !entry.startsWith('unix:') && !entry.startsWith('npipe:'))
-  const entry = tcp[0]
-  if (tcp.length !== 1 || entry === undefined)
-    throw new Error(`expected one TCP address in the hub state file's listen list, got ${JSON.stringify(listen)}`)
-  const separator = entry.lastIndexOf(':')
-  const portText = entry.slice(separator + 1)
-  const port = Number(portText)
-  if (separator < 0 || !/^\d+$/.test(portText) || !Number.isInteger(port) || port < 1 || port > 65535)
-    throw new Error(`the TCP address ${entry} names no usable port`)
+    throw new Error('expected a listen list of address strings in the hub state file')
+  const tcp: string[] = []
+  const local: string[] = []
+  for (const entry of listen) {
+    const localPrefix = /^(?:unix|npipe):/.exec(entry)?.[0]
+    if (localPrefix !== undefined) {
+      if (entry.length === localPrefix.length)
+        throw new Error(`local IPC address ${entry} has no target`)
+      local.push(entry)
+      continue
+    }
+    const separator = entry.lastIndexOf(':')
+    const portText = entry.slice(separator + 1)
+    const port = Number(portText)
+    if (separator < 0 || !/^\d+$/.test(portText) || !Number.isInteger(port) || port < 1 || port > 65535)
+      throw new Error(`the TCP address ${entry} has no usable port`)
+    const host = entry.slice(0, separator)
+    const bracketedIPv6 = /^\[([^%[\]]+)(?:%[^[\]]+)?\]$/.exec(host)?.[1]
+    const validHost = bracketedIPv6 === undefined
+      ? !/[:[\]\s]/.test(host)
+      : isIPv6(bracketedIPv6)
+    if (!validHost)
+      throw new Error(`invalid TCP address ${entry} in the hub state file`)
+    tcp.push(entry)
+  }
+  return { tcp, local }
+}
+
+/** Read the primary (first) resolved TCP address from the hub's state file. */
+export function resolvedHubTCPFromStateJson(raw: string): string {
+  const entry = resolvedHubListenAddresses(raw).tcp[0]
+  if (entry === undefined)
+    throw new Error('expected at least one TCP address in the hub state file\'s listen list')
   return entry
 }
 
@@ -160,6 +212,20 @@ export function resolvedHubTCPFromStateJson(raw: string): string {
 export function hubUrlFromStateJson(raw: string, browserHost = E2E_BROWSER_HOST): string {
   const entry = resolvedHubTCPFromStateJson(raw)
   return `http://${browserHost}:${entry.slice(entry.lastIndexOf(':') + 1)}`
+}
+
+/** Parse one state-file snapshot into the complete result a started Hub exposes. */
+export function startedHubFromStateJson(raw: string, browserHost = E2E_BROWSER_HOST): StartedHub {
+  const { tcp, local } = resolvedHubListenAddresses(raw)
+  const listen = tcp[0]
+  if (listen === undefined)
+    throw new Error('expected at least one TCP address in the hub state file\'s listen list')
+  return {
+    hubUrl: `http://${browserHost}:${listen.slice(listen.lastIndexOf(':') + 1)}`,
+    listen,
+    tcp,
+    local,
+  }
 }
 
 /** Read the hub's state file once it appears, or fail when the process exits. */
@@ -209,9 +275,10 @@ export function waitForHubStateFile(statePath: string, proc: ChildProcess, timeo
   })
 }
 
-/** The addresses of a hub that started: the URL that a browser reaches, and the one TCP address that the hub bound. */
-export interface StartedHub {
+/** The addresses of a hub that started: the URL that a browser reaches, the primary TCP address, and the resolved endpoints in bind order. */
+export interface StartedHub extends ResolvedListenAddresses {
   hubUrl: string
+  /** The primary (first) resolved TCP address: what a browser connects to. */
   listen: string
 }
 
@@ -219,69 +286,17 @@ export interface StartedHub {
  * Wait for a spawned hub to write its state file and to answer HTTP, or fail when its process exits.
  * A hub that listens on port 0 gets its port from the operating system, and the state file is the only record of it.
  * `browserHost` replaces the bound host in `hubUrl`, so the URL matches the domain of the session cookies.
+ * The browser URL follows the FIRST TCP address; the full ordered endpoints stay on the result.
  */
 export async function waitForHubStart(statePath: string, proc: ChildProcess, browserHost = E2E_BROWSER_HOST): Promise<StartedHub> {
   const state = await waitForHubStateFile(statePath, proc)
-  const listen = resolvedHubTCPFromStateJson(state)
-  const hubUrl = hubUrlFromStateJson(state, browserHost)
+  const result = startedHubFromStateJson(state, browserHost)
+  const { hubUrl } = result
   await waitForHubReady(hubUrl, proc)
-  return { hubUrl, listen }
+  return result
 }
 
 /** Wait until the hub responds or its process exits. */
 export function waitForHubReady(url: string, proc: ChildProcess, timeoutMs = 30_000): Promise<void> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
-    return Promise.reject(new RangeError('The startup deadline must fit a positive Node timer delay'))
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController()
-    let finished = false
-    let retry: ReturnType<typeof setTimeout> | undefined
-    let lastError: unknown
-    const deadline = setTimeout(() => finish(new Error(`Server at ${url} did not start within ${timeoutMs}ms`, { cause: lastError })), timeoutMs)
-
-    const onError = (error: Error) => finish(error)
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      finish(new Error(`The hub at ${url} exited before startup completed: code=${code ?? 'none'} signal=${signal ?? 'none'}`))
-    }
-    proc.once('error', onError)
-    proc.once('exit', onExit)
-    if (proc.exitCode !== null || proc.signalCode !== null)
-      onExit(proc.exitCode, proc.signalCode)
-
-    function finish(error?: Error) {
-      if (finished)
-        return
-      finished = true
-      clearTimeout(deadline)
-      clearTimeout(retry)
-      controller.abort()
-      proc.removeListener('error', onError)
-      proc.removeListener('exit', onExit)
-      if (error)
-        reject(error)
-      else
-        resolve()
-    }
-
-    async function check() {
-      try {
-        const response = await fetchHub(url, { signal: controller.signal })
-        if (finished)
-          return
-        if (response.ok) {
-          await response.body?.cancel()
-          finish()
-          return
-        }
-        await response.body?.cancel()
-        lastError = new Error(`Startup request returned HTTP ${response.status}`)
-      }
-      catch (error) {
-        lastError = error
-      }
-      if (!finished)
-        retry = setTimeout(check, 25)
-    }
-    void check()
-  })
+  return waitForHttpReady(url, timeoutMs, proc)
 }
