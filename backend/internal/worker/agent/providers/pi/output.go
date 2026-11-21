@@ -197,6 +197,9 @@ func handlePiOutput(a *Agent, line *providerkit.ParsedLine) {
 func handlePiOutputObserved(a *Agent, line *providerkit.ParsedLine, observedAt time.Time) {
 	slog.Debug("pi HandleOutput", "agent_id", a.AgentID(), "type", line.Type, "len", len(line.Raw))
 
+	if line.Type == contracts.PiEventResponse && a.handlePiReplyResponse(line) {
+		return
+	}
 	switch line.Type {
 	case contracts.PiEventAgentStart:
 		a.handlePiAgentStartObserved(observedAt)
@@ -308,6 +311,9 @@ func (a *Agent) handlePiAgentStartObserved(startedAt time.Time) {
 		a.turnStartedAt = startedAt
 		a.interruptRequests = nil
 		a.turnGeneration++
+		if run := a.replyRun; run != nil {
+			run.started = run.receipt.SessionID == a.sessionHandleLocked()
+		}
 	}
 	a.Mu.Unlock()
 	a.PublishTurnActive()
@@ -444,7 +450,7 @@ func (a *Agent) handlePiMessageEnd(raw []byte) {
 	// Update child status from the nested custom message before persisting it.
 	piApplySubagentNotification(a.sink, raw)
 	a.persistPiThinking(raw)
-	if err := a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
+	if err := a.persistPiReplyRow(content, agent.SpanInfo{}); err != nil {
 		slog.Error("pi persist message_end", "agent_id", a.AgentID(), "error", err)
 		if !agent.OutputRetained(err) {
 			return
@@ -599,6 +605,15 @@ func (a *Agent) handlePiMessageUpdate(raw []byte) {
 }
 
 func (a *Agent) flushPiGeneration(completion agent.MessageCompletion) {
+	for _, scopeID := range a.generationBuffer.ScopeIDs() {
+		kind, text, open := a.generationBuffer.ScopeSnapshot(scopeID)
+		if open && kind == agent.AssembledMessageKindText && strings.TrimSpace(text) != "" {
+			// The transcript can retain this prefix, but Pi never committed
+			// it as a message_end in the reply.
+			a.noteUnfinishedPiReplyText()
+			break
+		}
+	}
 	if err := providerkit.FlushGeneration(&a.generationBuffer, a.sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("pi failed to persist partial generation", "agent_id", a.AgentID(), "error", err)
 	}
@@ -652,7 +667,11 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 	// providerkit.OpenToolSpanWithParent records the type for both root and nested calls.
 	// Closing messages from Claude and Agent Client Protocol (ACP) providers read that recorded type.
 	spawns := env.ToolName == contracts.PiToolAgent || env.ToolName == contracts.PiToolSubagentWorkflow
-	if err := providerkit.OpenToolSpanWithParent(a.orderedSink(), agent.MessageContent{Original: raw}, env.ToolCallID, env.ToolName, parentSpanID, spawns); err != nil {
+	content := agent.MessageContent{Original: raw}
+	reply, item := a.preparePiReplyRow(&content)
+	err := providerkit.OpenToolSpanWithParent(a.orderedSink(), content, env.ToolCallID, env.ToolName, parentSpanID, spawns)
+	a.recordPiReplyRow(reply, item, err)
+	if err != nil {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.AgentID(), "error", err)
 	}
 	if env.ToolName == contracts.PiToolAgent {
@@ -836,7 +855,7 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 	a.ClearCumulativeOutput(env.ToolCallID)
 	a.sink.ReportProgress(agent.CompleteOutputProgress(env.ToolCallID))
 
-	if err := a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{
+	if err := a.persistPiReplyRow(agent.MessageContent{Original: raw}, agent.SpanInfo{
 		SpanID:   env.ToolCallID,
 		SpanType: env.ToolName,
 		Closing:  true,
@@ -1036,7 +1055,7 @@ func (a *Agent) handlePiEntryAppended(raw []byte) {
 		if json.Unmarshal(event.Entry.Display, &display) != nil || !display {
 			return
 		}
-		if err := a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
+		if err := a.persistPiReplyRow(agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
 			slog.Error("persist Pi session entry", "agent_id", a.AgentID(), "error", err)
 		}
 	case contracts.PiEntryTypeCompaction:
@@ -1137,7 +1156,11 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 		// deadline passes. The deadline is armed BEFORE the publish, so an answer
 		// that the reader sends at once finds it to disarm.
 		a.dialogDeadlines.Arm(a.Clock(), head.ID, head.deadline(), func() { a.withdrawTimedOutPiDialog(head.ID) })
-		if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: head.ID, Payload: raw, SourceSeq: a.piControlSourceSeq(question)}); err != nil {
+		receipt := a.piReplyControlReceipt()
+		if err := a.sink.PublishControlRequest(agent.ControlRequest{
+			AgentSessionID: receipt.SessionID, NativeTurnID: receipt.TurnID, RequestID: head.ID,
+			Payload: raw, SourceSeq: a.piControlSourceSeq(question),
+		}); err != nil {
 			a.dialogDeadlines.Disarm(head.ID)
 			a.forgetOpenDialog(head.ID)
 			slog.Error("publish pi control request", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
