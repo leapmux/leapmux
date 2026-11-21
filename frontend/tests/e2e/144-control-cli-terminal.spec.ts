@@ -229,6 +229,43 @@ test.describe('control CLI terminals', () => {
     await waitForTerminalText(page, 'YASH_STATE_43')
   })
 
+  test('keeps startup command state in the original Xonsh shell', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    test.skip(process.platform === 'win32', 'The Xonsh startup handoff requires a Unix Worker.')
+    test.skip(spawnSync('xonsh', ['--version'], { stdio: 'ignore' }).status !== 0, 'Xonsh is unavailable on the test host.')
+
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
+    const opened = await runCLI(cli, [
+      'terminal',
+      'open',
+      '--workspace',
+      authenticatedWorkspace.workspaceId,
+      '--worker',
+      leapmuxServer.workerId,
+      '--shell',
+      'xonsh',
+      '--command',
+      'leapmux_value = 6 * 7\ndef leapmux_startup_function():\n    return leapmux_value\nprint("XONSH_STATE_" + str(leapmux_startup_function()))',
+    ]) as OpenedTerminal
+    const wait = [
+      'terminal',
+      'wait',
+      opened.id,
+      '--timeout',
+      '20s',
+    ]
+    expect(await runCLI(cli, [...wait, '--regex', '^XONSH_STATE_42$'])).toMatchObject({ reached: true, line: 'XONSH_STATE_42' })
+    await runCLI(cli, [
+      'terminal',
+      'run',
+      opened.id,
+      'leapmux_value += 1; print("XONSH_STATE_" + str(leapmux_startup_function()))',
+    ])
+    expect(await runCLI(cli, [...wait, '--regex', '^XONSH_STATE_43$'])).toMatchObject({ reached: true, line: 'XONSH_STATE_43' })
+    await expect(tabById(page, opened.id)).toBeVisible()
+    await tabById(page, opened.id).click()
+    await waitForTerminalText(page, 'XONSH_STATE_43')
+  })
+
   test('replaces the running shell in the same terminal tab', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     const cli = await mintCLITokenForAdmin(leapmuxServer)
     const opened = await runCLI(cli, [

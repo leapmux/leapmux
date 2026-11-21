@@ -1275,10 +1275,11 @@ Open a new terminal in a new tab. Without --workspace and --tile, the new
 tab opens beside the tab that runs leapmux.
 
 --command runs a command in the original interactive shell after its startup
-files run. Use Bash, zsh, fish, sh, Dash, Elvish, Nushell, or Yash on Unix.
-PowerShell also works. If Elvish has a startup file, its directory must
-allow the Worker to create a temporary link. The Worker reports a startup
-failure if the shell cannot acknowledge the handoff.
+files run. On Unix, use Bash, zsh, fish, sh, Dash, Elvish, Nushell, Xonsh,
+or Yash. PowerShell also works.
+If Elvish has a startup file, its directory must allow the Worker to create
+a temporary link. The Worker reports a startup failure if the shell cannot
+acknowledge the handoff.
 A restart of the terminal does not run it again. If the Worker stops after
 claiming the command, recovery reports an unverified outcome without running
 it again. The command is the value of --command, or "-" to read it from stdin.

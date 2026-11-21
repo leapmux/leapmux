@@ -55,7 +55,7 @@ func initialCommandDialect(shell string) string {
 		return ""
 	}
 	switch name {
-	case "bash", "zsh", "fish", "elvish", "yash", nushellExecutable:
+	case "bash", "zsh", "fish", "elvish", "xonsh", "yash", nushellExecutable:
 		return name
 	case "sh", "dash":
 		return "posix"
@@ -207,6 +207,12 @@ func (b *initialCommandBootstrap) unixStartup(shell, workingDir string, env, arg
 			return nil, nil, fmt.Errorf("write the Yash startup profile: %w", err)
 		}
 		args = append(args, "--profile="+source, "--norcfile")
+	case "xonsh":
+		source := filepath.Join(b.dir, "startup.py")
+		if err := os.WriteFile(source, []byte(xonshInitialStartup), 0o600); err != nil {
+			return nil, nil, fmt.Errorf("write the Xonsh startup file: %w", err)
+		}
+		args = append(args, "--no-script-cache", "--rc", source)
 	case nushellExecutable:
 		path := filepath.Join(b.dir, "startup.nu")
 		if err := makeInitialCommandPipe(path); err != nil {
