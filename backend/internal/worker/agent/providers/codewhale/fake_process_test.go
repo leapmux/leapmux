@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
@@ -77,20 +80,26 @@ func installFakeCodewhale(t *testing.T, scenario string) (record string) {
 func readLaunchRecords(t *testing.T, path string) []fakeLaunchRecord {
 	t.Helper()
 	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
+	require.NoError(t, err)
 	var records []fakeLaunchRecord
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if line == "" {
 			continue
 		}
 		var record fakeLaunchRecord
-		if json.Unmarshal([]byte(line), &record) == nil {
-			records = append(records, record)
-		}
+		require.NoError(t, json.Unmarshal([]byte(line), &record))
+		records = append(records, record)
 	}
 	return records
+}
+
+func appendLaunchRecord(path string, record fakeLaunchRecord) error {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	writeErr := json.NewEncoder(file).Encode(record)
+	return errors.Join(writeErr, file.Close())
 }
 
 // TestHelperCodewhaleRuntime is the fake process. It returns at once in the test
@@ -124,11 +133,9 @@ func runFakeRuntimeProcess(args []string) int {
 		Verbosity:   os.Getenv("CODEWHALE_VERBOSITY"),
 	}
 	if path := os.Getenv(fakeProcessRecordEnv); path != "" {
-		if encoded, err := json.Marshal(record); err == nil {
-			if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-				_, _ = f.Write(append(encoded, '\n'))
-				_ = f.Close()
-			}
+		if err := appendLaunchRecord(path, record); err != nil {
+			fmt.Fprintln(os.Stderr, "Cannot record the fake Codewhale launch:", err)
+			return 2
 		}
 	}
 	port := ""

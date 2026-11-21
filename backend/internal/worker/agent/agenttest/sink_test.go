@@ -15,6 +15,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSink_LatestTurnStateUsesThePublicationSequence(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	state, published := sink.LatestTurnState()
+	assert.False(t, published)
+	assert.Equal(t, agent.TurnState{}, state)
+
+	steerable := agent.TurnState{Active: true, Steerable: true}
+	sink.SetTurnState(steerable, 1)
+	sink.SetTurnState(agent.TurnState{}, 3)
+	sink.SetTurnState(agent.TurnState{Active: true}, 2)
+	sink.SetTurnState(steerable, 3)
+	state, published = sink.LatestTurnState()
+	require.True(t, published)
+	assert.Equal(t, agent.TurnState{}, state, "late or duplicate publishes cannot supersede the accepted turn end")
+	assert.Equal(t, []bool{true, false, true, true}, sink.TurnActives(), "the publication history records arrivals in order")
+
+	sink.SetTurnState(steerable, 4)
+	state, published = sink.LatestTurnState()
+	require.True(t, published)
+	assert.Equal(t, steerable, state)
+}
+
 func TestSink_MessageKeyReadsKeepExactSessionsAndCommittedPositions(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}

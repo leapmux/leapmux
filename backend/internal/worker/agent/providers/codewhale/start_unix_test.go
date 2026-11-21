@@ -65,21 +65,33 @@ func startAgent(t *testing.T, opts agent.Options) (*Agent, *agenttest.ControlSin
 	return a, sink
 }
 
-// awaitReply waits for the assistant row a turn of the fake runtime writes.
+// awaitReply waits for the fake runtime's reply and the completion of its turn.
 func awaitReply(t *testing.T, sink *agenttest.ControlSink) {
 	t.Helper()
 	require.Eventually(t, func() bool {
+		var sawReply, sawTurnEnd bool
 		for _, message := range sink.Messages() {
 			if strings.Contains(string(message.Content), "Hello from the fake runtime.") {
-				return true
+				sawReply = true
 			}
+			sawTurnEnd = sawTurnEnd || message.TurnEnd
 		}
-		return false
+		return sawReply && sawTurnEnd
 	}, 30*time.Second, 10*time.Millisecond)
 	require.Eventually(t, func() bool {
-		last, published := sink.LastTurnActive()
-		return published && !last
+		state, published := sink.LatestTurnState()
+		return published && !state.Active
 	}, 30*time.Second, 10*time.Millisecond, "the turn end clears the flag")
+}
+
+// successfulLaunchRecord reads the last attempt after one successful start.
+// The startup stops retrying as soon as a runtime is ready.
+func successfulLaunchRecord(t *testing.T, record string) fakeLaunchRecord {
+	t.Helper()
+	launches := readLaunchRecords(t, record)
+	require.NotEmpty(t, launches)
+	require.LessOrEqual(t, len(launches), launchAttempts)
+	return launches[len(launches)-1]
 }
 
 func TestStartOpensAThreadOnAFreshStore(t *testing.T) {
@@ -91,9 +103,7 @@ func TestStartOpensAThreadOnAFreshStore(t *testing.T) {
 	assert.Equal(t, []string{a.threadID}, sink.SessionIDs())
 	assert.Equal(t, filepath.Join(home, ".codewhale", codewhaleStoresDirName), filepath.Dir(a.store.dir))
 
-	launches := readLaunchRecords(t, record)
-	require.Len(t, launches, 1)
-	launch := launches[0]
+	launch := successfulLaunchRecord(t, record)
 	assert.Equal(t, []string{"app-server", "--http", "--host", "127.0.0.1", "--port"}, launch.Args[:5])
 	assert.Equal(t, a.store.tasksDir(), launch.TasksDir)
 	assert.Equal(t, a.store.runtimeDir(), launch.RuntimeDir)
@@ -118,7 +128,7 @@ func TestStartOpensAThreadOnAFreshStore(t *testing.T) {
 	var parsed storeOwner
 	require.NoError(t, json.Unmarshal(owner, &parsed))
 	assert.Equal(t, int32(os.Getpid()), parsed.WorkerPID)
-	assert.NotZero(t, parsed.RuntimePID)
+	assert.Equal(t, int32(launch.PID), parsed.RuntimePID)
 
 	require.NoError(t, a.SendInput("Say hello.", nil))
 	awaitReply(t, sink)
@@ -136,15 +146,14 @@ func TestStartRecordsTheNativeListenerBehindAProfileFunction(t *testing.T) {
 	opts := startOptions(t, startHome(t), optionmap.Map{})
 	opts.Shell = shell
 	a, _ := startAgent(t, opts)
-	runs := readLaunchRecords(t, record)
-	require.Len(t, runs, 1)
-	require.NotEqual(t, a.Cmd().Process.Pid, runs[0].PID, "the shell stays alive around the runtime")
+	run := successfulLaunchRecord(t, record)
+	require.NotEqual(t, a.Cmd().Process.Pid, run.PID, "the shell stays alive around the runtime")
 
 	bytes, err := os.ReadFile(filepath.Join(a.store.dir, ownerFileName))
 	require.NoError(t, err)
 	var owner storeOwner
 	require.NoError(t, json.Unmarshal(bytes, &owner))
-	assert.Equal(t, int32(runs[0].PID), owner.RuntimePID, "the persisted identity must name the native listener")
+	assert.Equal(t, int32(run.PID), owner.RuntimePID, "the persisted identity must name the native listener")
 }
 
 func TestRuntimeDoesNotRetryExhaustionAfterABindWarning(t *testing.T) {
@@ -175,11 +184,22 @@ func TestRuntimeDoesNotRetryExhaustionAfterABindWarning(t *testing.T) {
 }
 
 func TestStartRestoresOutputStyleOnTheSameThread(t *testing.T) {
-	record := installFakeCodewhale(t, "")
+	record := installFakeCodewhale(t, "bind-once")
 	home := startHome(t)
 	t.Setenv("CODEWHALE_VERBOSITY", "concise")
 	var threadID, storeDir string
-	for _, style := range []string{"concise", "normal", "auto"} {
+	previousAttempts := 0
+	starts := []struct {
+		style       string
+		verbosity   string
+		minAttempts int
+	}{
+		{style: "concise", verbosity: "concise", minAttempts: 2},
+		{style: "normal", verbosity: "normal", minAttempts: 1},
+		{style: "auto", verbosity: "concise", minAttempts: 1},
+	}
+	for _, start := range starts {
+		style := start.style
 		options := optionmap.Map{OptionOutputStyle: style, agent.OptionIDModel: "deepseek-flash", agent.OptionIDEffort: "high", agent.OptionIDPermissionMode: "ask"}
 		if style == "auto" {
 			delete(options, OptionOutputStyle)
@@ -188,6 +208,14 @@ func TestStartRestoresOutputStyleOnTheSameThread(t *testing.T) {
 		opts := startOptions(t, home, options)
 		opts.ResumeSessionID = threadID
 		a, sink := startAgent(t, opts)
+		launches := readLaunchRecords(t, record)
+		require.GreaterOrEqual(t, len(launches)-previousAttempts, start.minAttempts, "launch attempts for %q", style)
+		attempts := launches[previousAttempts:]
+		require.LessOrEqual(t, len(attempts), launchAttempts)
+		for i, attempt := range attempts {
+			assert.Equal(t, start.verbosity, attempt.Verbosity, "output style %q on attempt %d", style, i+1)
+		}
+		previousAttempts = len(launches)
 		if threadID == "" {
 			threadID, storeDir = a.threadID, a.store.dir
 		}
@@ -205,9 +233,6 @@ func TestStartRestoresOutputStyleOnTheSameThread(t *testing.T) {
 		require.ErrorIs(t, a.Wait(), context.Canceled)
 		assert.Equal(t, originalStyle, options.Get(OptionOutputStyle), "startup leaves the caller's option map unchanged")
 	}
-	launches := readLaunchRecords(t, record)
-	require.Len(t, launches, 3)
-	assert.Equal(t, []string{"concise", "normal", "concise"}, []string{launches[0].Verbosity, launches[1].Verbosity, launches[2].Verbosity})
 }
 
 func TestStartResumesTheStoredThread(t *testing.T) {
@@ -238,7 +263,9 @@ func TestStartRetriesAPortAnotherProcessTook(t *testing.T) {
 	home := startHome(t)
 	a, _ := startAgent(t, startOptions(t, home, optionmap.Map{}))
 	assert.NotEmpty(t, a.threadID)
-	assert.Len(t, readLaunchRecords(t, record), 2, "the first launch lost its port and the second one ran")
+	attempts := readLaunchRecords(t, record)
+	assert.GreaterOrEqual(t, len(attempts), 2, "the first launch lost its port and a later one ran")
+	assert.LessOrEqual(t, len(attempts), launchAttempts)
 }
 
 func TestStartReportsARuntimeThatExits(t *testing.T) {

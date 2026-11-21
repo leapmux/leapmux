@@ -706,6 +706,23 @@ func (s *Sink) TurnStates() []agent.TurnState {
 	return slices.Clone(s.turnStates)
 }
 
+// LatestTurnState returns the state with the highest publication sequence.
+// Publishers can arrive out of order. The first state at a sequence wins.
+func (s *Sink) LatestTurnState() (agent.TurnState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.turnSeqs) == 0 {
+		return agent.TurnState{}, false
+	}
+	latest := 0
+	for i, sequence := range s.turnSeqs {
+		if sequence > s.turnSeqs[latest] {
+			latest = i
+		}
+	}
+	return s.turnStates[latest], true
+}
+
 // LastTurnActive returns the last published turn state and whether any state exists.
 // A missing publish differs from an incorrect value.
 // A provider that never publishes a clear leaves the previous active flag in place.
