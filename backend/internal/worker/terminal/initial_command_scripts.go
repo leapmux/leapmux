@@ -130,6 +130,18 @@ eval "$__leapmux_command"
 set -e __leapmux_command
 `
 
+// Deliver this statement to the parser in a single atomic pipe write. Nushell
+// resolves its relative source next to the enclosing source file.
+const nushellInitialSource = "source './command'\n"
+
+// Nushell also resolves the file at execution time. Acknowledge from inside
+// the sourced file so the Worker can remove it after that lookup completes.
+const nushellInitialPrelude = `
+if $nu.pid != ($env.LEAPMUX_INITIAL_COMMAND_PID | %into int) { %exit 1 }
+$"($nu.pid) ($env.LEAPMUX_INITIAL_COMMAND_NONCE)" | %save --raw $env.LEAPMUX_INITIAL_COMMAND_ACK
+%hide-env -i LEAPMUX_INITIAL_COMMAND_FILE LEAPMUX_INITIAL_COMMAND_READY LEAPMUX_INITIAL_COMMAND_ACK LEAPMUX_INITIAL_COMMAND_NONCE LEAPMUX_INITIAL_COMMAND_PID LEAPMUX_INITIAL_COMMAND_PARENT
+`
+
 const powerShellInitialCommand = `
 if (-not [IO.File]::Exists($env:LEAPMUX_INITIAL_COMMAND_READY)) {
   [IO.File]::WriteAllText($env:LEAPMUX_INITIAL_COMMAND_READY, "$PID $env:LEAPMUX_INITIAL_COMMAND_NONCE")

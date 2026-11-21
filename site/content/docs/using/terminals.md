@@ -81,7 +81,7 @@ leapmux control terminal open \
 
 `--shell` is optional — leaving it empty uses the Worker's default shell. `--start-dir` defaults to the working directory. See [`terminal open`](/docs/reference/control-commands/#leapmux-control-terminal-open) for the full flag set, including the placement flags.
 
-`--command` runs a command line in the new shell once the shell is ready: `leapmux control terminal open --dir /home/me/project --command 'make test'`. The Worker pastes the command and presses Enter when the shell's line editor turns on bracketed paste, or after a short wait for a shell that never does. A restart of the terminal does not run the command again.
+The original interactive shell evaluates `--command` after its startup files run. For example, use `leapmux control terminal open --dir /home/me/project --command 'make test'`. The Worker releases the command when the shell reaches its startup hook. The shell retains variables and definitions from the command, and a restart does not run it again. See [Control CLI terminal commands](/docs/using/control-cli/#terminals) for the supported shells and startup errors.
 
 {{< callout type="info" >}}
 Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).

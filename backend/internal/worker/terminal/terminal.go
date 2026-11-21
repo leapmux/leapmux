@@ -623,7 +623,7 @@ func startWithTerminalRegistration(
 		return nil, err
 	}
 	if bootstrap != nil {
-		if err := bootstrap.await(ctx, t, clock, bootstrap.requestPath(), ErrInitialCommandHandoff); err != nil {
+		if err := bootstrap.awaitReady(ctx, t, clock); err != nil {
 			return failStartup(err)
 		}
 	}

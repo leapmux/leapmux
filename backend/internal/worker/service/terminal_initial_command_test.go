@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -144,6 +145,31 @@ func TestOpenTerminalRunsOneInitialCommandWithADurableClaim(t *testing.T) {
 	sendInteractiveTerminalReceipt(t, svc, d, id, "WORKER_AFTER_INITIAL")
 	screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
 	assert.Equal(t, 1, strings.Count(string(screen), marker))
+	row, err := svc.Queries.GetTabCreation(t.Context(), db.GetTabCreationParams{
+		UserID: svc.RegisteredBy().String(), WorkerID: svc.WorkerID, TabID: id,
+	})
+	require.NoError(t, err)
+	assert.True(t, row.InitialCommandClaimed)
+}
+
+func TestOpenTerminalRunsNushellInitialCommandWithADurableClaim(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	shell, err := exec.LookPath("nu")
+	if err != nil {
+		t.Skip("Nushell is unavailable")
+	}
+	config := t.TempDir()
+	t.Setenv("HOME", config)
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("XDG_DATA_HOME", config)
+	t.Setenv("XDG_DATA_DIRS", config)
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	id := openTerminalRunning(t, svc, d, shell, "'WORKER_NUSHELL' + '_INITIAL_COMMAND'")
+	testutil.RequireEventually(t, func() bool {
+		screen, _, _ := svc.Terminals.ScreenSnapshotSince(id, 0)
+		return strings.Contains(string(screen), "WORKER_NUSHELL_INITIAL_COMMAND")
+	}, "the Worker should expose the startup command's output")
 	row, err := svc.Queries.GetTabCreation(t.Context(), db.GetTabCreationParams{
 		UserID: svc.RegisteredBy().String(), WorkerID: svc.WorkerID, TabID: id,
 	})
