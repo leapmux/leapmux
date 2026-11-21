@@ -16,10 +16,11 @@ import (
 )
 
 type claudePendingControl struct {
-	instanceID string
-	sessionID  string
-	agentID    string
-	toolUseID  string
+	instanceID   string
+	sessionID    string
+	nativeTurnID string
+	agentID      string
+	toolUseID    string
 	// elicitationServer and elicitationID identify one server's elicitation.
 	// A completion must match both values. Each MCP server assigns its own IDs.
 	elicitationServer string
@@ -81,6 +82,9 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	a.Mu.Lock()
 	record.sessionID = a.sessionID
+	if valid && record.agentID == "" {
+		record.nativeTurnID = a.claudeReplyTurnLocked(record.sessionID).InputID
+	}
 	if a.incomingControls == nil {
 		a.incomingControls = make(map[string]*claudePendingControl)
 	}
@@ -116,7 +120,9 @@ func (a *Agent) canBypassControlLocked(record *claudePendingControl) bool {
 }
 
 func (a *Agent) publishRegisteredControl(requestID string, record *claudePendingControl) {
-	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, InstanceID: record.instanceID, AgentSessionID: record.sessionID, Payload: record.payload})
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: requestID, InstanceID: record.instanceID, AgentSessionID: record.sessionID, NativeTurnID: record.nativeTurnID, Payload: record.payload,
+	})
 	a.Mu.Lock()
 	current := a.incomingControls[requestID] == record
 	if err == nil && !record.answered {

@@ -43,6 +43,7 @@ claudeTest.describe('control CLI waits for an agent', () => {
       id: agentId,
       message: 'delivered',
       state: 'idle',
+      turn_outcome: 'completed',
       replies: [ANSWER],
     })
     expect(typeof sent.input_id).toBe('string')
@@ -66,6 +67,26 @@ claudeTest('validates a retry key while the accepted input waits for permission'
   const { agentId } = authenticatedWorkspace
   await chooseSettingsOption(native.page, 'permissionMode-default')
   await waitForSettingsIdle(native.page)
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const earlierReply = 'The earlier readiness check passed.'
+  const earlierStep = await native.modelScript.queue({ text: earlierReply })
+  const earlierInput = [
+    'agent',
+    'send',
+    agentId,
+    native.modelScript.prompt('Summarize readiness before the permission probe.'),
+    '--request-id',
+    'readiness-before-permission',
+    '--wait',
+    '--all',
+  ]
+  const earlier = await runCLI(cli, earlierInput) as { input_id: string }
+  expect(earlier).toMatchObject({
+    turn_outcome: 'completed',
+    replies: [earlierReply],
+  })
+  await native.modelScript.waitForSteps(earlierStep + 1)
+  await waitForAgentIdle(native.page)
 
   const probe = join(createTestDirectory('cli-waiting-retry-'), 'approved.txt')
   const command = `printf approved > ${quotePosixShellArgument(probe)}; cat ${quotePosixShellArgument(probe)}`
@@ -76,7 +97,6 @@ claudeTest('validates a retry key while the accepted input waits for permission'
   }, { text: ANSWER })
   const question = 'Run the scripted permission probe.'
   const prompt = native.modelScript.prompt(question)
-  const cli = await mintCLITokenForAdmin(leapmuxServer)
   const keyedSend = [
     'agent',
     'send',
@@ -101,6 +121,13 @@ claudeTest('validates a retry key while the accepted input waits for permission'
     message: 'delivered',
     state: 'waiting_for_user',
   })
+  expect(await runCLI(cli, earlierInput)).toMatchObject({
+    input_id: earlier.input_id,
+    turn_outcome: 'completed',
+    state: 'waiting_for_user',
+    replies: [earlierReply],
+  })
+  await waitForControlBanner(native.page)
   await expect(runCLI(cli, [
     'agent',
     'send',
@@ -133,6 +160,11 @@ claudeTest('validates a retry key while the accepted input waits for permission'
     request.id,
   ])
   await native.modelScript.waitForSteps(step + 2)
+  expect(await runCLI(cli, [...keyedSend, '--wait'])).toMatchObject({
+    input_id: sent.input_id,
+    turn_outcome: 'completed',
+    replies: [ANSWER],
+  })
   await expect(userBubbles(native.page).filter({ hasText: question })).toHaveCount(1)
   await expect(assistantBubbles(native.page).filter({ hasText: ANSWER })).toHaveCount(1)
 })

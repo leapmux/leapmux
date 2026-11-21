@@ -369,6 +369,7 @@ The [Control Command Reference](/docs/reference/control-commands/) gives the fla
   - A paused input queue keeps the message, and the command says so on stderr and keeps waiting. A planned restart pauses the queue too, and that pause ends by itself.
   - For a tracked native input, JSON includes `turn_outcome` when the wait reaches an outcome. `completed` exits `0`. `interrupted`, `failed`, and `unproved` report the result and exit `6`. `state` describes the tab's current activity, which can belong to later work.
   - For ordinary ZCode inputs, the Worker matches the native turn start to the submitted input. For ordinary Kimi inputs, it matches the consuming user item and reads the reply in the native turn's recorded order. For ordinary Codex inputs, it uses the native turn ID from the response to that input's start request.
+  - For ordinary Claude Code inputs, the Worker matches the UUID echoed by the native stream and reads the root reply through its result.
 - **Both print their result even when the condition did not hold, and exit `6`**: `--timeout` passed, an agent closed, or the agent stopped at a prompt after the message. The result states where things stand. For `agent wait`, `reached` marks each agent that reached the state. For `agent send --wait`, `message` is `queued` or `delivered`, and `state` is the agent's state, such as `waiting_for_user`.
 - **A wait refuses the calling agent** with `usage`, because an agent cannot settle while its own turn runs the wait.
 

@@ -268,6 +268,7 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 // transcript a second name for the same session. What a reader needs is the
 // boundary, which is exactly what `context_cleared` states.
 func (a *Agent) claudeHandleConversationReset() {
+	a.retireClaudeInputReply()
 	notice, err := json.Marshal(map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeContextCleared})
 	if err != nil {
 		slog.Error("build claude context-cleared notice", "agent_id", a.AgentID(), "error", err)
@@ -406,6 +407,7 @@ type messageEnvelope struct {
 		Flagged      bool   `json:"flagged"`
 	} `json:"origin"`
 	Message struct {
+		Role       string          `json:"role"`
 		RawContent json.RawMessage `json:"content"`
 		Usage      *struct {
 			InputTokens              int64 `json:"input_tokens"`
@@ -1184,10 +1186,16 @@ func (a *Agent) claudeCodeHandleSystemInit(content []byte) {
 	a.Mu.Lock()
 	expected := a.sessionID
 	a.sessionID = initMsg.SessionID
+	var retired *claudeInputReply
+	if a.inputReply != nil && a.inputReply.receipt.SessionID != initMsg.SessionID {
+		retired = a.inputReply
+		a.inputReply = nil
+	}
 	if previousTranscriptSession != initMsg.SessionID {
 		a.inferredTurnEvidence = nil
 	}
 	a.Mu.Unlock()
+	a.retireUnprovedClaudeReply(retired)
 	if expected != "" && expected != initMsg.SessionID {
 		slog.Warn("Claude Code reported a different session ID", "agent_id", a.AgentID(), "expected_session_id", expected, "session_id", initMsg.SessionID)
 	}

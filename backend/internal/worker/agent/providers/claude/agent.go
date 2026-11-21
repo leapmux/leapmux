@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -30,6 +31,7 @@ type Agent struct {
 	inputMu              sync.Mutex
 	turnEndRevision      uint64
 	turnInputRevision    uint64
+	inputReply           *claudeInputReply
 	inferredTurnEvidence *claudeInferredTurnEvidence
 	// sessionStateReported records that this CLI publishes
 	// `system`/`session_state_changed`. Once it does, the output heuristic
@@ -120,6 +122,7 @@ func (a *Agent) Wait() error {
 
 func (a *Agent) finishClaudeProcessExit() {
 	a.joinFinalHoldReservation()
+	a.retireClaudeInputReply()
 	a.withdrawControls()
 	a.sink.ReportProgress(agent.ResetProgress())
 }
@@ -201,6 +204,12 @@ func (a *Agent) noteInterruptRequested() {
 // SendInput writes a user message to the agent's stdin.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInput(content, attachments, "")
+}
+
+var _ agent.InputReceiptSender = (*Agent)(nil)
+
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.writeClaudeInput(nil, content, attachments, "", uuid.NewString())
 }
 
 // PublishTurnActive republishes the Worker-visible turn state from turnActive,
@@ -327,12 +336,18 @@ func (a *Agent) sendInput(content string, attachments []*leapmuxv1.Attachment, p
 }
 
 func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment, priority string) error {
+	_, err := a.writeClaudeInput(expected, content, attachments, priority, "")
+	return err
+}
+
+func (a *Agent) writeClaudeInput(expected *string, content string, attachments []*leapmuxv1.Attachment, priority, inputID string) (agent.NativeInputReceipt, error) {
 	// Serialize input writes without blocking state updates or Stop on the process mutex.
 	defer a.PublishTurnActive()
 	a.inputMu.Lock()
 	defer a.inputMu.Unlock()
 	msg := UserInputMessage{
 		Type:     MessageTypeUser,
+		UUID:     inputID,
 		Priority: priority,
 		Message: UserInputContent{
 			Role: "user",
@@ -349,49 +364,67 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("marshal input: %w", err)
+		return agent.NativeInputReceipt{}, fmt.Errorf("marshal input: %w", err)
 	}
 
 	data = append(data, '\n')
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	inferredTurnPending := !a.sessionStateReported && a.inferredTurnEvidence != nil && a.inferredTurnEvidence.pending > 0
 	if priority == "" && (a.turnActive || inferredTurnPending) {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	endRevision := a.turnEndRevision
 	a.turnInputRevision++
 	inputRevision := a.turnInputRevision
+	var reply *claudeInputReply
+	var retired *claudeInputReply
 	if priority == "" {
 		a.awaitedInputRevision = inputRevision
+		retired = a.inputReply
+		a.inputReply = nil
+		if inputID != "" && a.sessionID != "" {
+			reply = &claudeInputReply{receipt: agent.NativeInputReceipt{SessionID: a.sessionID, InputID: inputID}}
+			a.inputReply = reply
+		}
 	}
 	a.Mu.Unlock()
+	a.retireUnprovedClaudeReply(retired)
 	writeErr := a.WriteStdin(data)
 	a.Mu.Lock()
-	if priority == "next" && writeErr == nil && !a.StoppedLocked() && a.turnEndRevision == endRevision {
+	var receipt agent.NativeInputReceipt
+	if reply != nil {
+		if writeErr == nil || reply.acknowledged {
+			receipt = reply.receipt
+		} else if a.inputReply == reply {
+			a.inputReply = nil
+		}
+	}
+	delivered := writeErr == nil || receipt.InputID != ""
+	if priority == "next" && delivered && !a.StoppedLocked() && a.turnEndRevision == endRevision {
 		// Do not wait again for a result that arrived during the write.
 		a.awaitedInputRevision = inputRevision
 	}
 	if priority == "" && a.turnEndRevision == endRevision {
-		if writeErr == nil && !a.StoppedLocked() {
+		if delivered && !a.StoppedLocked() {
 			a.turnActive = true
 		} else if !a.turnActive {
 			a.awaitedInputRevision = 0
 		}
 	}
 	a.Mu.Unlock()
-	if writeErr != nil {
-		return fmt.Errorf("write stdin: %w", writeErr)
+	if !delivered {
+		return agent.NativeInputReceipt{}, fmt.Errorf("write stdin: %w", writeErr)
 	}
-	return nil
+	return receipt, nil
 }
 
 // buildClaudeContentBlocks converts the prompt text and the classified

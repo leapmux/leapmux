@@ -146,16 +146,37 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 		}
 		return
 	}
+	if msgType == claudeMsgTypeUser {
+		if a.acknowledgeClaudeInputReply(routing.sessionID, &env) || routing.isReplay && claudeReplayedPrompt(&env) {
+			return
+		}
+	}
 	var result *claudeReceivedResult
 	var inputEvidence *claudeInferredTurnEvidence
+	var reply agent.NativeInputReceipt
+	var outcome leapmuxv1.AgentInputTurnOutcome
 	if !claudeIsSyntheticContext(msgType, &env) && !routing.isReplay && a.liveClaudeOutput() {
 		switch msgType {
 		case claudeMsgTypeResult:
 			if (env.Origin.Kind != "peer" || !env.Origin.Handback) &&
 				(routing.sessionID == "" || routing.sessionID == a.nativeTranscriptSession()) {
-				result = a.captureClaudeResultEdge()
+				result = a.captureClaudeResultEdge(routing.sessionID, env.Origin.Kind == "peer")
+				if result != nil && result.reply != nil {
+					outcome = claudeReplyOutcome(&env, routing.subtype, result.interrupted)
+					if outcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNSPECIFIED {
+						a.retireUnprovedClaudeReply(result.reply)
+						result.reply = nil
+					} else {
+						reply = result.reply.receipt
+					}
+				}
 			}
-		case claudeMsgTypeAssistant, claudeMsgTypeUser:
+		case claudeMsgTypeAssistant:
+			if env.Origin.Kind != "peer" {
+				reply = a.currentClaudeReplyTurn(routing.sessionID)
+			}
+			inputEvidence = a.reserveClaudeInferredTurn()
+		case claudeMsgTypeUser:
 			inputEvidence = a.reserveClaudeInferredTurn()
 		}
 	}
@@ -169,6 +190,14 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 			}
 		}
 		frame.result = result
+		if reply.InputID != "" {
+			if frame.content.AgentSessionID == reply.SessionID {
+				frame.content.NativeTurnID = reply.InputID
+				frame.content.InputTurnOutcome = outcome
+			} else if result != nil {
+				a.retireUnprovedClaudeReply(result.reply)
+			}
+		}
 		frame.inputEvidence = inputEvidence
 		if routing.sessionID != "" && routing.sessionID != frame.content.AgentSessionID {
 			a.releaseClaudeInferredTurn(frame.inputEvidence)
@@ -194,6 +223,9 @@ func (a *Agent) receiveClaudeConversation(content []byte, msgType string) {
 	})
 	if err != nil {
 		a.releaseClaudeInferredTurn(inputEvidence)
+		if result != nil {
+			a.retireUnprovedClaudeReply(result.reply)
+		}
 		a.reportClaudeSequenceError("process Claude conversation frame", err)
 		return
 	}
@@ -249,25 +281,41 @@ type claudeReceivedResult struct {
 	inputRevision uint64
 	busyRevision  uint64
 	interrupted   bool
+	reply         *claudeInputReply
 }
 
-func (a *Agent) captureClaudeResultEdge() *claudeReceivedResult {
+func (a *Agent) captureClaudeResultEdge(sessionID string, fromPeer bool) *claudeReceivedResult {
 	a.Mu.Lock()
+	if fromPeer && a.inputReply != nil {
+		// A peer result can arrive while the ordinary input still owns the turn.
+		a.Mu.Unlock()
+		return nil
+	}
 	a.turnEndRevision++
 	result := &claudeReceivedResult{
 		endRevision: a.turnEndRevision, inputRevision: a.turnInputRevision,
 		busyRevision: a.nativeBusyRevision, interrupted: a.interruptRequested,
 	}
 	a.interruptRequested = false
+	unproved := a.inputReply
+	if unproved != nil && unproved.acknowledged && unproved.receipt.SessionID == sessionID {
+		result.reply = unproved
+		unproved = nil
+	}
+	a.inputReply = nil
 	retired := a.takeControlsLocked(func(record *claudePendingControl) bool { return record.agentID == "" })
 	a.Mu.Unlock()
 	a.cancelControls(retired)
+	a.retireUnprovedClaudeReply(unproved)
 	return result
 }
 
 func (a *Agent) processClaudeRootFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame, retractions *claudeFrameRetractions) error {
 	accepted, err := a.admitClaudeFrame(sequence, frame, retractions)
 	if err != nil || !accepted {
+		if err == nil && frame.result != nil {
+			a.retireUnprovedClaudeReply(frame.result.reply)
+		}
 		return err
 	}
 	msgType, env := frame.msgType, frame.envelope
@@ -582,7 +630,8 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 				return nil
 			}
 			content.Metadata = a.MessageWithToolUses(raw).Metadata
-			if frame.result != nil && frame.result.interrupted && env.statesAbortedTurn() {
+			if content.InputTurnOutcome == leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED ||
+				frame.result != nil && frame.result.interrupted && env.statesAbortedTurn() {
 				content.Completion = agent.MessageCompletionInterrupted
 			}
 		}
