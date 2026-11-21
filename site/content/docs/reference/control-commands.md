@@ -686,17 +686,18 @@ leapmux control agent send 87a19d5f "Run the release checklist" --request-id rel
 
 ### `leapmux control agent wait`
 
-Wait until each agent reaches a state, then print the state of each.
+Wait until each agent reaches a requested state, then print the state of each.
 
-An agent reaches the state when the Worker reports it at any moment after the
-wait began, so an agent that is in the state already ends the wait at once.
+Repeat --until to accept several states. Each agent can reach a different
+requested state. A state reported at any moment during the wait counts,
+including the agent's initial state.
 "settled" is "idle" or "waiting_for_user": the agent works no more, because it
 finished or because it waits for an answer to a permission prompt. An agent
 whose input queue holds a message that it will read is neither idle nor
 settled yet, as an agent that "agent open --message" just started.
 
 The command exits 0 when the condition holds. It exits 6 when the wait ended
-without it: --timeout passed, or an agent closed before it reached the state.
+without it: --timeout passed, or an agent closed before it reached a requested state.
 It prints the state of each agent in both cases.
 
 ```text
@@ -709,12 +710,15 @@ leapmux control agent wait <agent>... [flags]
 
 | Flag | Description |
 |---|---|
-| `--until string` | the state to wait for (one of: settled, idle, working, waiting_for_user; default: settled) |
-| `--any` | end the wait when one agent reaches the state, not every agent |
+| `--until string` | a state to wait for; repeat to accept alternatives (one of: settled, idle, working, waiting_for_user; default: [settled]; repeatable) |
+| `--any` | end the wait as soon as one agent reaches a requested state |
 | `--timeout duration` | stop waiting after this long, such as 90s or 10m; 0 waits without a limit (default: 0s) |
 
 ```sh
 leapmux control agent wait 87a19d5f
+
+# Wait for an agent to start working or ask for input.
+leapmux control agent wait 87a19d5f --until working --until waiting_for_user
 
 # Wait until the first of two agents waits for an answer, for 10 minutes at most.
 leapmux control agent wait 87a19d5f 5c2e0b91 --until waiting_for_user --any --timeout 10m

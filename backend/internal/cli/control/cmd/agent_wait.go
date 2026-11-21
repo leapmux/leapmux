@@ -19,6 +19,33 @@ import (
 // AgentActivityState, as `agent list` prints it, or "settled".
 type waitUntil string
 
+type waitConditions []waitUntil
+
+// match reports whether a state matches and whether it still needs a queue check.
+func (conditions waitConditions) match(state string) (bool, bool) {
+	guardedMatch := false
+	for _, condition := range conditions {
+		if condition.holds(state) {
+			if !condition.needsEmptyQueue() {
+				return true, false
+			}
+			guardedMatch = true
+		}
+	}
+	return guardedMatch, guardedMatch
+}
+
+func (conditions waitConditions) description() string {
+	if len(conditions) == 1 {
+		return "the state " + string(conditions[0])
+	}
+	tokens := make([]string, 0, len(conditions))
+	for _, condition := range conditions {
+		tokens = append(tokens, string(condition))
+	}
+	return "any of the states " + strings.Join(tokens, ", ")
+}
+
 // waitUntilSettled is "idle" or "waiting_for_user": the agent works no more,
 // because it finished or because it waits for an answer. The Worker calls
 // the change from working to either of them the settle.
@@ -70,8 +97,7 @@ type agentWaitRow struct {
 	// State is the last state that the wait observed: a token of
 	// AgentActivityState, "closed", or "unknown".
 	State string `json:"state" table:"STATE"`
-	// Reached reports whether the agent was in the state that --until gives
-	// at a moment after the wait began.
+	// Reached reports whether the agent reached a requested state during the wait.
 	Reached bool `json:"reached" table:"REACHED"`
 }
 
@@ -96,7 +122,7 @@ const (
 // agentWaitSpec states one wait.
 type agentWaitSpec struct {
 	agentIDs []string
-	until    waitUntil
+	until    waitConditions
 	// anyAgent ends the wait when one agent reaches the state.
 	anyAgent bool
 	// timeout ends the wait after this long. Zero waits without a limit.
@@ -164,19 +190,21 @@ wait:
 				}
 				rows[i].State = agentStateToken(ev.state)
 			case activityInputChanged:
-				if !spec.until.needsEmptyQueue() {
-					continue
-				}
+				// The published state stays the same. Recheck its queue below.
 			case activityClosed:
 				rows[i].State = agentStateClosed
 				continue
 			case activityTurnEnd, activityStatusChange:
 				continue
 			}
-			if rows[i].Reached || !spec.until.holds(rows[i].State) {
+			if rows[i].Reached {
 				continue
 			}
-			if spec.until.needsEmptyQueue() {
+			matched, checkQueue := spec.until.match(rows[i].State)
+			if !matched || (ev.kind == activityInputChanged && !checkQueue) {
+				continue
+			}
+			if checkQueue {
 				busy, err := queueBlocksWait(ctx, ev.agentID, rows[i].State == idleState)
 				if ctx.Err() != nil {
 					break wait
@@ -222,7 +250,7 @@ func agentWaitVerdict(rows []agentWaitRow, anyAgent bool) (agentWaitOutcome, boo
 	return 0, false
 }
 
-// runAgentWait waits until the agents reach the state that --until gives.
+// runAgentWait waits for the agents to reach a requested state.
 // It prints the state of each agent whether the condition held or not, and
 // exits 6 when it did not.
 func runAgentWait(inv *cli.Invocation) (any, error) {
@@ -334,9 +362,16 @@ func queuedForDispatch(snapshot *leapmuxv1.AgentInputQueueSnapshot, now time.Tim
 
 // agentWaitSpecOf reads the flags of `agent wait`.
 func agentWaitSpecOf(inv *cli.Invocation) (agentWaitSpec, error) {
-	until, err := parseWaitUntil(stringFlag(inv, "until"))
-	if err != nil {
-		return agentWaitSpec{}, err
+	values := inv.StringArray("until")
+	until := make(waitConditions, 0, len(values))
+	for _, value := range values {
+		condition, err := parseWaitUntil(value)
+		if err != nil {
+			return agentWaitSpec{}, err
+		}
+		if !slices.Contains(until, condition) {
+			until = append(until, condition)
+		}
 	}
 	timeout, err := waitTimeoutFlag(inv)
 	if err != nil {
@@ -394,9 +429,9 @@ func agentWaitEnded(p *cli.Printer, result agentWaitResult, outcome agentWaitOut
 		return err
 	}
 	if outcome == agentWaitImpossible {
-		p.Notice("the wait ended, because %s closed before reaching the state %s", agentsClosed(result), spec.until)
+		p.Notice("the wait ended, because %s closed before reaching %s", agentsClosed(result), spec.until.description())
 	} else {
-		p.Notice("the wait ended after %s, before %s reached the state %s", spec.timeout, agentsNotReached(result), spec.until)
+		p.Notice("the wait ended after %s, before %s reached %s", spec.timeout, agentsNotReached(result), spec.until.description())
 	}
 	return &cli.ExitStatus{Code: cli.ExitWaitEnded}
 }

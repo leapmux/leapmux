@@ -105,7 +105,7 @@ func noQueuedInput(context.Context, string, bool) (bool, error) { return false, 
 func TestAwaitAgents_AnAgentInTheStateEndsTheWaitAtOnce(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(level("a-1", idle)),
-		noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitUntilSettled})
+		noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{waitUntilSettled}})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitHeld, outcome)
 	assert.Equal(t, agentWaitResult{Agents: []agentWaitRow{{ID: "a-1", State: "idle", Reached: true}}}, result)
@@ -121,7 +121,7 @@ func TestAwaitAgents_WaitsForEveryAgent(t *testing.T) {
 		change("a-1", waiting),
 	)
 	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), events,
-		noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: waitUntilSettled})
+		noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: waitConditions{waitUntilSettled}})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitHeld, outcome)
 	assert.Equal(t, []agentWaitRow{
@@ -140,7 +140,7 @@ func TestAwaitAgents_KeepsAStateThatAnAgentReachedOnce(t *testing.T) {
 		level("a-2", working),
 		change("a-1", working),
 		change("a-2", idle),
-	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: "idle"})
+	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: waitConditions{"idle"}})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitHeld, outcome)
 	assert.Equal(t, []agentWaitRow{
@@ -155,7 +155,7 @@ func TestAwaitAgents_AnyEndsWithTheFirstAgent(t *testing.T) {
 		level("a-1", working),
 		level("a-2", working),
 		change("a-2", waiting),
-	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: "waiting_for_user", anyAgent: true})
+	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: waitConditions{"waiting_for_user"}, anyAgent: true})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitHeld, outcome)
 	assert.Equal(t, []agentWaitRow{
@@ -170,7 +170,7 @@ func TestAwaitAgents_EndsWhenAnAgentClosesBeforeTheState(t *testing.T) {
 		level("a-1", working),
 		level("a-2", idle),
 		activityEvent{kind: activityClosed, agentID: "a-1"},
-	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: "idle"})
+	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: waitConditions{"idle"}})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitImpossible, outcome)
 	assert.Equal(t, []agentWaitRow{
@@ -188,7 +188,7 @@ func TestAwaitAgents_ALaterLevelDoesNotReviveAClosedAgent(t *testing.T) {
 		activityEvent{kind: activityClosed, agentID: "a-1"},
 		level("a-1", idle),
 		activityEvent{kind: activityClosed, agentID: "a-2"},
-	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: "idle", anyAgent: true})
+	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: waitConditions{"idle"}, anyAgent: true})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitImpossible, outcome)
 	assert.Equal(t, []agentWaitRow{
@@ -204,7 +204,7 @@ func TestAwaitAgents_PrintsAnUnstatedStateAsUnknown(t *testing.T) {
 	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(
 		level("a-1", leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED),
 		activityEvent{kind: activityClosed, agentID: "a-1"},
-	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitUntilSettled})
+	), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{waitUntilSettled}})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitImpossible, outcome)
 	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: agentStateClosed}}, result.Agents)
@@ -213,7 +213,7 @@ func TestAwaitAgents_PrintsAnUnstatedStateAsUnknown(t *testing.T) {
 	events := feedEvents(level("a-1", leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_UNSPECIFIED))
 	done := make(chan agentWaitResult, 1)
 	go func() {
-		result, _, _ := awaitAgents(ctx, testutil.NewQuartzMock(t), events, noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitUntilSettled})
+		result, _, _ := awaitAgents(ctx, testutil.NewQuartzMock(t), events, noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{waitUntilSettled}})
 		done <- result
 	}()
 	require.Eventually(t, func() bool { return len(events) == 0 }, 10*time.Second, time.Millisecond)
@@ -243,7 +243,7 @@ func TestAwaitAgents_DeadlineCancelsAnInFlightQueueRead(t *testing.T) {
 	done := make(chan ended, 1)
 	go func() {
 		result, outcome, err := awaitAgents(ctx, clock, feedEvents(level("a-1", idle)), queued,
-			agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle", timeout: time.Minute})
+			agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{"idle"}, timeout: time.Minute})
 		done <- ended{result: result, outcome: outcome, err: err}
 	}()
 	readCtx := receive(t, ctx, readStarted)
@@ -269,7 +269,7 @@ func TestAwaitAgents_EndsWhenTheTimeoutPasses(t *testing.T) {
 	}
 	done := make(chan ended, 1)
 	go func() {
-		result, outcome, err := awaitAgents(ctx, clock, events, noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitUntilSettled, timeout: 5 * time.Minute})
+		result, outcome, err := awaitAgents(ctx, clock, events, noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{waitUntilSettled}, timeout: 5 * time.Minute})
 		done <- ended{result, outcome, err}
 	}()
 	assert.Equal(t, 5*time.Minute, testutil.WaitForTimer(t, ctx, newTimer))
@@ -284,7 +284,7 @@ func TestAwaitAgents_EndsWhenTheTimeoutPasses(t *testing.T) {
 func TestAwaitAgents_ArmsNoTimerWithoutATimeout(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	clock := testutil.NewQuartzMock(t)
-	_, _, err := awaitAgents(ctx, clock, feedEvents(level("a-1", idle)), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle"})
+	_, _, err := awaitAgents(ctx, clock, feedEvents(level("a-1", idle)), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{"idle"}})
 	require.NoError(t, err)
 	_, armed := clock.Peek()
 	assert.False(t, armed)
@@ -294,14 +294,14 @@ func TestAwaitAgents_ReturnsTheFailureOfTheFeed(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	refused := errors.New("the worker refused")
 	_, _, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(activityEvent{kind: activityFailed, err: refused}),
-		noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle"})
+		noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{"idle"}})
 	assert.ErrorIs(t, err, refused)
 }
 
 func TestAwaitAgents_EndsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(testutil.DeadlineContext(t))
 	cancel(cli.ErrInterrupted)
-	_, _, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle"})
+	_, _, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(), noQueuedInput, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{"idle"}})
 	assert.ErrorIs(t, err, cli.ErrInterrupted)
 }
 
@@ -316,7 +316,7 @@ func TestAwaitAgents_AQueuedMessageKeepsAnIdleAgentFromSettling(t *testing.T) {
 		return len(asked) == 1, nil
 	}
 	events := feedEvents(level("a-1", idle), change("a-1", working), change("a-1", idle))
-	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), events, queued, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitUntilSettled})
+	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), events, queued, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{waitUntilSettled}})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitHeld, outcome)
 	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: "idle", Reached: true}}, result.Agents)
@@ -336,7 +336,7 @@ func TestAwaitAgents_RechecksTheQueueWithoutAnActivityChange(t *testing.T) {
 		activityEvent{kind: activityInputChanged, agentID: "a-1"},
 		activityEvent{kind: activityClosed, agentID: "a-1"},
 	)
-	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), events, queued, agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle"})
+	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), events, queued, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{"idle"}})
 	require.NoError(t, err)
 	assert.Equal(t, agentWaitHeld, outcome)
 	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: "idle", Reached: true}}, result.Agents)
@@ -351,7 +351,7 @@ func TestAwaitAgents_AsksTheQueueOnlyForIdleAndSettled(t *testing.T) {
 		return true, nil
 	}
 	for until, state := range map[waitUntil]leapmuxv1.AgentActivityState{"working": working, "waiting_for_user": waiting} {
-		_, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(level("a-1", state)), refuse, agentWaitSpec{agentIDs: []string{"a-1"}, until: until})
+		_, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(level("a-1", state)), refuse, agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{until}})
 		require.NoError(t, err)
 		assert.Equal(t, agentWaitHeld, outcome, until)
 	}
@@ -359,12 +359,39 @@ func TestAwaitAgents_AsksTheQueueOnlyForIdleAndSettled(t *testing.T) {
 	assert.True(t, waitUntilSettled.needsEmptyQueue())
 }
 
+func TestAwaitAgents_AlternativesAcrossAgents(t *testing.T) {
+	for _, anyAgent := range []bool{false, true} {
+		ctx := testutil.DeadlineContext(t)
+		result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t),
+			feedEvents(level("a-1", working), level("a-2", waiting)), noQueuedInput,
+			agentWaitSpec{agentIDs: []string{"a-1", "a-2"}, until: waitConditions{"working", "waiting_for_user"}, anyAgent: anyAgent})
+		require.NoError(t, err)
+		assert.Equal(t, agentWaitHeld, outcome)
+		assert.Equal(t, agentWaitRow{ID: "a-1", State: "working", Reached: true}, result.Agents[0])
+		if anyAgent {
+			assert.Equal(t, agentWaitRow{ID: "a-2", State: agentStateUnknown}, result.Agents[1])
+		} else {
+			assert.Equal(t, agentWaitRow{ID: "a-2", State: "waiting_for_user", Reached: true}, result.Agents[1])
+		}
+	}
+}
+
+func TestAwaitAgents_DirectAlternativeNeedsNoQueueRead(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	result, outcome, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(level("a-1", waiting)),
+		func(context.Context, string, bool) (bool, error) { return false, errors.New("unexpected queue read") },
+		agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{waitUntilSettled, "waiting_for_user"}})
+	require.NoError(t, err)
+	assert.Equal(t, agentWaitHeld, outcome)
+	assert.Equal(t, []agentWaitRow{{ID: "a-1", State: "waiting_for_user", Reached: true}}, result.Agents)
+}
+
 func TestAwaitAgents_ReturnsTheFailureOfAQueueRead(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	refused := errors.New("the worker refused")
 	_, _, err := awaitAgents(ctx, testutil.NewQuartzMock(t), feedEvents(level("a-1", idle)),
 		func(context.Context, string, bool) (bool, error) { return false, refused },
-		agentWaitSpec{agentIDs: []string{"a-1"}, until: "idle"})
+		agentWaitSpec{agentIDs: []string{"a-1"}, until: waitConditions{"idle"}})
 	assert.ErrorIs(t, err, refused)
 }
 
@@ -478,7 +505,7 @@ func TestAgentWaitEnded(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
 			p := &cli.Printer{Out: &out, Err: &errOut, Format: cli.FormatJSON}
-			err := agentWaitEnded(p, result, tc.outcome, agentWaitSpec{until: "idle", timeout: 90 * time.Second})
+			err := agentWaitEnded(p, result, tc.outcome, agentWaitSpec{until: waitConditions{"idle"}, timeout: 90 * time.Second})
 			var status *cli.ExitStatus
 			require.ErrorAs(t, err, &status)
 			assert.Equal(t, cli.ExitWaitEnded, status.Code)

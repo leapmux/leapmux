@@ -243,6 +243,27 @@ func TestAgentWaitOverIPC_AnIdleAgentEndsTheWaitAtOnce(t *testing.T) {
 	assert.Equal(t, []any{map[string]any{"id": id, "state": "idle", "reached": true}}, data["agents"])
 }
 
+func TestAgentWaitOverIPC_AcceptsAnEarlierUntilAlternative(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: working})
+	startActivityWorker(t, w, id)
+
+	data := runControl(t, "agent", "wait", id,
+		"--until", "working", "--until", "waiting_for_user", "--timeout", "5s").Data(t)
+	assert.Equal(t, []any{map[string]any{"id": id, "state": "working", "reached": true}}, data["agents"])
+}
+
+func TestAgentWaitOverIPC_RejectsAnInvalidEarlierUntilValue(t *testing.T) {
+	id := fullTestID("ag-2")
+	w := newActivityWorker(map[string]leapmuxv1.AgentActivityState{id: working})
+	startActivityWorker(t, w, id)
+
+	out := runControl(t, "agent", "wait", id, "--until", "invalid", "--until", "working")
+	failure := out.requireFailure(t, cli.CodeUsage)
+	assert.Contains(t, failure.Message, "invalid")
+	assert.Empty(t, w.called())
+}
+
 func TestAgentWaitOverIPC_WakesWhenOnlyTheQueueChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
