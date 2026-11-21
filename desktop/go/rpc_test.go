@@ -23,6 +23,7 @@ import (
 
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/version"
+	"github.com/leapmux/leapmux/worker"
 )
 
 type blockingWriteCloser struct {
@@ -1393,4 +1394,95 @@ func TestDispatchReportsTheBuildInStartupInfo(t *testing.T) {
 	assert.Equal(t, "2026-10-02T00:00:00Z", build.GetBuildTime())
 	assert.Equal(t, "feature/x", build.GetBranch())
 	assert.NotNil(t, response.GetStartupInfo().GetConfig(), "the startup information carries the config beside the build")
+}
+
+func TestRPCSessionInspectSoloBusyWork(t *testing.T) {
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	connCtx, connCancel := context.WithCancel(context.Background())
+	t.Cleanup(connCancel)
+	app.lifecycleMu.Lock()
+	app.connection = &desktopConnection{
+		ctx:  connCtx,
+		stop: connCancel,
+		solo: &soloRuntime{
+			instance: &recordingSoloInstance{
+				inspectBusyWork: func(context.Context) worker.BusyWorkSnapshot {
+					return worker.BusyWorkSnapshot{
+						Agents: []worker.BusyAgent{
+							{
+								TabID:                 "agent-1",
+								Title:                 "Refactor auth",
+								ActiveBackgroundTasks: []string{"Run unit tests"},
+								ActiveChildAgents:     []string{"Codebase reviewer"},
+							},
+						},
+						Terminals: []worker.BusyTerminal{
+							{
+								TabID: "term-1",
+								Title: "Dev server",
+								Processes: []worker.BusyTerminalProcess{
+									{PID: 51234, Name: "node"},
+									{PID: 51240, Name: "esbuild"},
+								},
+								TotalCount: 5,
+							},
+						},
+					}
+				},
+			},
+		},
+	}
+	app.lifecycleMu.Unlock()
+
+	var output bytes.Buffer
+	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+	session.dispatch(context.Background(), &desktoppb.Request{
+		Id:     9,
+		Method: &desktoppb.Request_InspectSoloBusyWork{InspectSoloBusyWork: &desktoppb.InspectSoloBusyWorkRequest{}},
+	}, nil)
+
+	frame, err := ReadFrame(&output)
+	require.NoError(t, err)
+	response := frame.GetResponse()
+	require.Equal(t, uint64(9), response.GetId())
+	require.Empty(t, response.GetError())
+
+	busy := response.GetInspectSoloBusyWork()
+	require.NotNil(t, busy)
+	require.Len(t, busy.GetAgents(), 1)
+	assert.Equal(t, "agent-1", busy.GetAgents()[0].GetTabId())
+	assert.Equal(t, "Refactor auth", busy.GetAgents()[0].GetTitle())
+	assert.Equal(t, []string{"Run unit tests"}, busy.GetAgents()[0].GetActiveBackgroundTasks())
+	assert.Equal(t, []string{"Codebase reviewer"}, busy.GetAgents()[0].GetActiveChildAgents())
+
+	require.Len(t, busy.GetTerminals(), 1)
+	assert.Equal(t, "term-1", busy.GetTerminals()[0].GetTabId())
+	assert.Equal(t, "Dev server", busy.GetTerminals()[0].GetTitle())
+	assert.Equal(t, int32(5), busy.GetTerminals()[0].GetTotalCount())
+	require.Len(t, busy.GetTerminals()[0].GetProcesses(), 2)
+	assert.Equal(t, int32(51234), busy.GetTerminals()[0].GetProcesses()[0].GetPid())
+	assert.Equal(t, "node", busy.GetTerminals()[0].GetProcesses()[0].GetName())
+	assert.Equal(t, int32(51240), busy.GetTerminals()[0].GetProcesses()[1].GetPid())
+	assert.Equal(t, "esbuild", busy.GetTerminals()[0].GetProcesses()[1].GetName())
+}
+
+func TestRPCSessionInspectSoloBusyWorkReturnsShutdownError(t *testing.T) {
+	app := NewApp("")
+	require.NoError(t, app.Shutdown())
+
+	var output bytes.Buffer
+	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+	session.dispatch(context.Background(), &desktoppb.Request{
+		Id:     10,
+		Method: &desktoppb.Request_InspectSoloBusyWork{InspectSoloBusyWork: &desktoppb.InspectSoloBusyWorkRequest{}},
+	}, nil)
+
+	frame, err := ReadFrame(&output)
+	require.NoError(t, err)
+	response := frame.GetResponse()
+	require.Equal(t, uint64(10), response.GetId())
+	assert.NotEmpty(t, response.GetError())
+	assert.Nil(t, response.GetResult())
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/worker"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,6 +21,9 @@ type failingSoloInstance struct {
 func (f failingSoloInstance) LocalListenURL() string { return "" }
 func (f failingSoloInstance) Wait() error            { return f.err }
 func (f failingSoloInstance) Stop() error            { return f.err }
+func (failingSoloInstance) InspectBusyWork(context.Context) worker.BusyWorkSnapshot {
+	return worker.BusyWorkSnapshot{}
+}
 
 func TestAppShutdownReturnsSoloError(t *testing.T) {
 	wantErr := errors.New("lease release failed")
@@ -55,6 +59,9 @@ type blockingSoloInstance struct {
 
 func (b blockingSoloInstance) LocalListenURL() string { return "" }
 func (b blockingSoloInstance) Wait() error            { return nil }
+func (blockingSoloInstance) InspectBusyWork(context.Context) worker.BusyWorkSnapshot {
+	return worker.BusyWorkSnapshot{}
+}
 func (b blockingSoloInstance) Stop() error {
 	close(b.entered)
 	<-b.release

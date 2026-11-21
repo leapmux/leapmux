@@ -16,7 +16,8 @@
     "browserAuthResult": "browser-auth:result",
     "menuShowAbout": "menu:show-about",
     "menuShowPreferences": "menu:show-preferences",
-    "tunnelsChanged": "tunnel:changed"
+    "tunnelsChanged": "tunnel:changed",
+    "appConfirmQuit": "app:confirm-quit"
   },
   "ipcHeaders": {
     "method": "method",

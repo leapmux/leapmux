@@ -2231,6 +2231,7 @@ export const DESKTOP_RS_EVENT_NAMES = {
   menuShowAbout: 'EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'EVENT_MENU_SHOW_PREFERENCES',
   tunnelsChanged: 'EVENT_TUNNELS_CHANGED',
+  appConfirmQuit: 'EVENT_APP_CONFIRM_QUIT',
 }
 
 export const DESKTOP_GO_SESSION_COOKIE_NAMES = {
@@ -2255,6 +2256,7 @@ export const DESKTOP_TS_EVENT_NAMES = {
   menuShowAbout: 'TAURI_EVENT_MENU_SHOW_ABOUT',
   menuShowPreferences: 'TAURI_EVENT_MENU_SHOW_PREFERENCES',
   tunnelsChanged: 'TAURI_EVENT_TUNNELS_CHANGED',
+  appConfirmQuit: 'TAURI_EVENT_APP_CONFIRM_QUIT',
 }
 
 export const DESKTOP_RS_IPC_HEADER_NAMES = {

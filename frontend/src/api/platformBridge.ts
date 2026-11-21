@@ -269,6 +269,110 @@ export interface ExternalApp {
   displayName: string
 }
 
+export interface BusyAgentWork {
+  tabId: string
+  title: string
+  activeBackgroundTasks: string[]
+  activeChildAgents: string[]
+}
+
+export interface BusyTerminalProcessWork {
+  pid: number
+  name: string
+}
+
+export interface BusyTerminalWork {
+  tabId: string
+  title: string
+  processes: BusyTerminalProcessWork[]
+  totalCount: number
+}
+
+export interface SoloBusyWork {
+  agents: BusyAgentWork[]
+  terminals: BusyTerminalWork[]
+}
+
+export interface QuitConfirmEvent {
+  promptId: number
+  busyWork: SoloBusyWork
+}
+
+function emptySoloBusyWork(): SoloBusyWork {
+  return { agents: [], terminals: [] }
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value))
+    return []
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+function normalizeSoloBusyWork(raw: unknown): SoloBusyWork {
+  if (typeof raw !== 'object' || raw === null)
+    return emptySoloBusyWork()
+  const record = raw as Record<string, unknown>
+  const agents: BusyAgentWork[] = Array.isArray(record.agents)
+    ? record.agents.flatMap((entry) => {
+        if (typeof entry !== 'object' || entry === null)
+          return []
+        const agent = entry as Record<string, unknown>
+        return [
+          {
+            tabId: typeof agent.tabId === 'string'
+              ? agent.tabId
+              : '',
+            title: typeof agent.title === 'string'
+              ? agent.title
+              : '',
+            activeBackgroundTasks: normalizeStringArray(agent.activeBackgroundTasks),
+            activeChildAgents: normalizeStringArray(agent.activeChildAgents),
+          },
+        ]
+      })
+    : []
+  const terminals: BusyTerminalWork[] = Array.isArray(record.terminals)
+    ? record.terminals.flatMap((entry) => {
+        if (typeof entry !== 'object' || entry === null)
+          return []
+        const term = entry as Record<string, unknown>
+        const processes: BusyTerminalProcessWork[] = Array.isArray(term.processes)
+          ? term.processes.flatMap((procEntry) => {
+              if (typeof procEntry !== 'object' || procEntry === null)
+                return []
+              const proc = procEntry as Record<string, unknown>
+              return [
+                {
+                  pid: typeof proc.pid === 'number' && Number.isFinite(proc.pid)
+                    ? proc.pid
+                    : 0,
+                  name: typeof proc.name === 'string'
+                    ? proc.name
+                    : '',
+                },
+              ]
+            })
+          : []
+        const totalCount = typeof term.totalCount === 'number' && Number.isFinite(term.totalCount)
+          ? term.totalCount
+          : processes.length
+        return [
+          {
+            tabId: typeof term.tabId === 'string'
+              ? term.tabId
+              : '',
+            title: typeof term.title === 'string'
+              ? term.title
+              : '',
+            processes,
+            totalCount,
+          },
+        ]
+      })
+    : []
+  return { agents, terminals }
+}
+
 // Tagged unions the UI consumes. Mirror CliPathStatusResponse and
 // CliInstallSymlinkResponse in proto/leapmux/desktop/v1/frame.proto.
 export type CliPathTargetKind = 'absent' | 'symlink' | 'regular_file' | 'unknown'
@@ -1342,6 +1446,40 @@ export const platformBridge = {
   async switchMode(): Promise<void> {
     await tauriInvoke('switch_mode')
     await refreshRuntimeState()
+  },
+  async inspectSoloBusyWork(): Promise<SoloBusyWork> {
+    if (!isTauriApp())
+      return emptySoloBusyWork()
+    try {
+      const raw = await tauriInvoke<unknown>('inspect_solo_busy_work')
+      return normalizeSoloBusyWork(raw)
+    }
+    catch (err) {
+      log.warn('inspect_solo_busy_work failed; proceeding fail-open', err)
+      return emptySoloBusyWork()
+    }
+  },
+  async ackQuitConfirmation(promptId: number): Promise<boolean> {
+    if (!isTauriApp())
+      return false
+    try {
+      const result = await tauriInvoke<unknown>('ack_quit_confirmation', { promptId })
+      return result === true
+    }
+    catch (err) {
+      log.warn('ack_quit_confirmation failed', err)
+      return false
+    }
+  },
+  async resolveQuitConfirmation(promptId: number, confirm: boolean): Promise<void> {
+    if (!isTauriApp())
+      return
+    try {
+      await tauriInvoke('resolve_quit_confirmation', { promptId, confirm })
+    }
+    catch (err) {
+      log.warn('resolve_quit_confirmation failed', err)
+    }
   },
   setTunnelTrustScope,
   onTunnelResetStatusChange,

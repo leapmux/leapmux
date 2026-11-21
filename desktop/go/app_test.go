@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/util/atomicfile"
+	"github.com/leapmux/leapmux/worker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -323,7 +324,8 @@ func TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedReq
 }
 
 type recordingSoloInstance struct {
-	stops int
+	stops           int
+	inspectBusyWork func(context.Context) worker.BusyWorkSnapshot
 }
 
 func (*recordingSoloInstance) LocalListenURL() string { return "" }
@@ -331,6 +333,12 @@ func (*recordingSoloInstance) Wait() error            { return nil }
 func (s *recordingSoloInstance) Stop() error {
 	s.stops++
 	return nil
+}
+func (s *recordingSoloInstance) InspectBusyWork(ctx context.Context) worker.BusyWorkSnapshot {
+	if s.inspectBusyWork != nil {
+		return s.inspectBusyWork(ctx)
+	}
+	return worker.BusyWorkSnapshot{}
 }
 
 // inspectingSoloInstance runs onStop while the solo runtime is stopping, which
@@ -342,6 +350,9 @@ type inspectingSoloInstance struct {
 
 func (*inspectingSoloInstance) LocalListenURL() string { return "" }
 func (*inspectingSoloInstance) Wait() error            { return nil }
+func (*inspectingSoloInstance) InspectBusyWork(context.Context) worker.BusyWorkSnapshot {
+	return worker.BusyWorkSnapshot{}
+}
 func (s *inspectingSoloInstance) Stop() error {
 	if s.onStop != nil {
 		s.onStop()
@@ -973,4 +984,169 @@ func TestSetDesktopBehaviorMapsEachFieldToItsOwnSetting(t *testing.T) {
 	assert.Equal(t, contracts.TrayOnCloseQuit, proto.TrayOnClose)
 	assert.Equal(t, contracts.TrayOnMinimizeTaskbar, proto.TrayOnMinimize)
 	assert.Equal(t, contracts.StartMinimizedMinimized, proto.StartMinimized)
+}
+
+func TestAppInspectSoloBusyWork_LauncherAndDistributedModes(t *testing.T) {
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	// Disconnected (launcher) mode returns empty snapshot with nil error.
+	got, err := app.InspectSoloBusyWork(context.Background())
+	require.NoError(t, err)
+	assert.True(t, got.IsEmpty())
+
+	// Distributed mode (connection.solo == nil) returns empty snapshot with nil error.
+	connCtx, connCancel := context.WithCancel(context.Background())
+	t.Cleanup(connCancel)
+	app.lifecycleMu.Lock()
+	app.connection = &desktopConnection{
+		ctx:    connCtx,
+		stop:   connCancel,
+		hubURL: "https://remote.example.com",
+	}
+	app.lifecycleMu.Unlock()
+
+	got, err = app.InspectSoloBusyWork(context.Background())
+	require.NoError(t, err)
+	assert.True(t, got.IsEmpty())
+}
+
+func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecycleLock(t *testing.T) {
+	t.Run("forwards snapshot and releases lifecycleMu during scan", func(t *testing.T) {
+		app := NewApp("")
+		t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+		want := worker.BusyWorkSnapshot{
+			Agents: []worker.BusyAgent{
+				{
+					TabID:                 "agent-1",
+					Title:                 "Refactor auth",
+					ActiveBackgroundTasks: []string{"Run unit tests"},
+					ActiveChildAgents:     []string{"Codebase reviewer"},
+				},
+			},
+			Terminals: []worker.BusyTerminal{
+				{
+					TabID:      "term-1",
+					Title:      "Dev server",
+					Processes:  []worker.BusyTerminalProcess{{PID: 51234, Name: "node"}},
+					TotalCount: 1,
+				},
+			},
+		}
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		inst := &recordingSoloInstance{
+			inspectBusyWork: func(context.Context) worker.BusyWorkSnapshot {
+				close(entered)
+				<-release
+				return want
+			},
+		}
+
+		connCtx, connCancel := context.WithCancel(context.Background())
+		t.Cleanup(connCancel)
+		app.lifecycleMu.Lock()
+		app.connection = &desktopConnection{
+			ctx:  connCtx,
+			stop: connCancel,
+			solo: &soloRuntime{instance: inst},
+		}
+		app.lifecycleMu.Unlock()
+
+		type result struct {
+			busy worker.BusyWorkSnapshot
+			err  error
+		}
+		resCh := make(chan result, 1)
+		go func() {
+			busy, err := app.InspectSoloBusyWork(context.Background())
+			resCh <- result{busy: busy, err: err}
+		}()
+
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("InspectBusyWork was not entered")
+		}
+
+		// Acquire the write lock on lifecycleMu while InspectBusyWork is blocked.
+		// Holding the read lock across InspectBusyWork would deadlock here.
+		lockAcquired := make(chan struct{})
+		go func() {
+			app.lifecycleMu.Lock()
+			close(lockAcquired)
+			app.lifecycleMu.Unlock()
+		}()
+		select {
+		case <-lockAcquired:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("lifecycleMu write lock blocked while InspectBusyWork was in flight")
+		}
+
+		close(release)
+		res := <-resCh
+		require.NoError(t, res.err)
+		assert.Equal(t, want, res.busy)
+	})
+
+	t.Run("cancelling connection lifetime context cancels inspection context", func(t *testing.T) {
+		app := NewApp("")
+		t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+		entered := make(chan struct{})
+		observedCancel := make(chan error, 1)
+		inst := &recordingSoloInstance{
+			inspectBusyWork: func(ctx context.Context) worker.BusyWorkSnapshot {
+				close(entered)
+				<-ctx.Done()
+				observedCancel <- ctx.Err()
+				return worker.BusyWorkSnapshot{}
+			},
+		}
+
+		connCtx, connCancel := context.WithCancel(context.Background())
+		app.lifecycleMu.Lock()
+		app.connection = &desktopConnection{
+			ctx:  connCtx,
+			stop: connCancel,
+			solo: &soloRuntime{instance: inst},
+		}
+		app.lifecycleMu.Unlock()
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := app.InspectSoloBusyWork(context.Background())
+			done <- err
+		}()
+
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			connCancel()
+			t.Fatal("InspectBusyWork was not entered")
+		}
+
+		connCancel()
+
+		select {
+		case err := <-observedCancel:
+			require.ErrorIs(t, err, context.Canceled)
+		case <-time.After(5 * time.Second):
+			t.Fatal("InspectBusyWork context did not cancel when connection.ctx ended")
+		}
+		require.NoError(t, <-done)
+	})
+}
+
+func TestAppInspectSoloBusyWork_ShutdownInProgress(t *testing.T) {
+	app := NewApp("")
+	require.NoError(t, app.Shutdown())
+
+	got, err := app.InspectSoloBusyWork(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shutting down")
+	assert.True(t, got.IsEmpty())
 }

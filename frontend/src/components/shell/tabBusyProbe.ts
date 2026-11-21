@@ -1,5 +1,4 @@
 import type { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { TerminalProcess } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { Tab } from '~/stores/tab.types'
 import { workerAgent, workerTerminal } from '~/api/workerRpc'
@@ -11,10 +10,17 @@ import { isSubagentTab, tabDisplayLabel } from '~/stores/tab.helpers'
 
 const log = createLogger('tabBusyProbe')
 
-/** Why closing a tab would interrupt work, and what that work is. */
+export type TabBusyActiveRow = Pick<BackgroundTaskItem, 'role' | 'title'>
+
+export interface TabBusyTerminalProcess {
+  readonly pid: number
+  readonly name: string
+}
+
+/** Why stopping a tab or app would interrupt work, and what that work is. */
 export type TabBusyReason
-  = | { kind: 'agent-work', activeRows: BackgroundTaskItem[] }
-    | { kind: 'terminal-processes', processes: TerminalProcess[], totalCount: number }
+  = | { kind: 'agent-work', activeRows: readonly TabBusyActiveRow[] }
+    | { kind: 'terminal-processes', processes: readonly TabBusyTerminalProcess[], totalCount: number }
 
 /** One busy tab and the reason, for the aggregated bulk-close prompt. */
 export interface BusyTab {

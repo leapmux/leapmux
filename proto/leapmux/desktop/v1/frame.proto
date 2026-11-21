@@ -60,6 +60,7 @@ message Request {
     StartBrowserAuthRequest start_browser_auth = 35;
     CancelBrowserAuthRequest cancel_browser_auth = 36;
     CancelProxyHttpRequest cancel_proxy_http = 37;
+    InspectSoloBusyWorkRequest inspect_solo_busy_work = 38;
   }
 }
 
@@ -127,6 +128,7 @@ message ResetTunnelsRequest {
   string channel_epoch = 1;
 }
 message ShutdownRequest {}
+message InspectSoloBusyWorkRequest {}
 message CliPathStatusRequest {}
 
 // CliInstallSymlinkRequest creates the on-PATH symlink for the bundled
@@ -272,7 +274,35 @@ message Response {
     CliInstallSymlinkResponse cli_install_symlink = 21;
     SetDesktopBehaviorResponse set_desktop_behavior = 22;
     StartBrowserAuthResponse start_browser_auth = 23;
+    InspectSoloBusyWorkResponse inspect_solo_busy_work = 24;
   }
+}
+
+// BusyAgentWork describes one local solo-mode agent whose active turn,
+// pending prompt, background task, or child agent would be stopped by quitting
+// or switching mode.
+message BusyAgentWork {
+  string tab_id = 1;
+  string title = 2;
+  repeated string active_background_tasks = 3;
+  repeated string active_child_agents = 4;
+}
+
+message BusyTerminalProcess {
+  int32 pid = 1;
+  string name = 2;
+}
+
+message BusyTerminalWork {
+  string tab_id = 1;
+  string title = 2;
+  repeated BusyTerminalProcess processes = 3;
+  int32 total_count = 4;
+}
+
+message InspectSoloBusyWorkResponse {
+  repeated BusyAgentWork agents = 1;
+  repeated BusyTerminalWork terminals = 2;
 }
 
 message StartBrowserAuthResponse {

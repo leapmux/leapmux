@@ -3533,6 +3533,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     menuShowAbout: 'm:a',
     menuShowPreferences: 'm:p',
     tunnelsChanged: 't:c',
+    appConfirmQuit: 'a:q',
   })
 
   const ipcHeaders = () => ({
@@ -3978,6 +3979,14 @@ describe('checkWorkerVocab / checkDesktop', () => {
     const d = readContract('desktop')
     expect(emitTsDesktop(d)).toContain('export const TAURI_EVENT_TUNNELS_CHANGED = "tunnel:changed" as const')
     expect(emitRsDesktop(d)).toContain('pub const EVENT_TUNNELS_CHANGED: &str = "tunnel:changed"')
+  })
+
+  it('emits the quit confirmation event to Rust and TypeScript without a macOS-only guard', () => {
+    const d = readContract('desktop')
+    const rs = emitRsDesktop(d)
+    expect(rs).toContain('pub const EVENT_APP_CONFIRM_QUIT: &str = "app:confirm-quit";')
+    expect(rs).not.toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_APP_CONFIRM_QUIT')
+    expect(emitTsDesktop(d)).toContain('export const TAURI_EVENT_APP_CONFIRM_QUIT = "app:confirm-quit" as const')
   })
 
   it('emits the window-behaviour tokens to all three languages from one contract value', () => {
