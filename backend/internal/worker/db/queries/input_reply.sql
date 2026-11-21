@@ -124,8 +124,17 @@ ORDER BY member.ordinal
 LIMIT sqlc.arg(page_size);
 
 -- name: GetCanonicalInputReplyCursor :one
-SELECT ordinal FROM native_agent_reply_items
-WHERE agent_id = sqlc.arg(agent_id) AND message_id = sqlc.arg(message_id);
+SELECT member.ordinal
+FROM messages AS input
+JOIN native_agent_inputs AS binding ON binding.agent_id = input.agent_id
+    AND binding.agent_session_id = input.agent_session_id
+    AND binding.native_input_id = input.native_input_id
+JOIN native_agent_reply_items AS member ON member.agent_id = binding.agent_id
+    AND member.agent_session_id = binding.agent_session_id
+    AND member.native_turn_id = binding.native_turn_id
+WHERE input.agent_id = sqlc.arg(agent_id)
+  AND input.id = sqlc.arg(input_id)
+  AND member.message_id = sqlc.arg(message_id);
 
 -- name: PublishNativeReplyTurn :execrows
 INSERT INTO native_agent_reply_turns (agent_id, agent_session_id, native_turn_id, outcome, reply_count)

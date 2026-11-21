@@ -390,12 +390,13 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	// The request states the item, so a provider that drops the steer can hand
 	// it back (see Service.requeueDroppedInput).
 	request := agent.SteerRequest{InputID: item.ID, AttemptID: item.SteerAttemptID, Content: resolvedInput.text, Attachments: attachments}
+	var receipt agent.NativeInputReceipt
 	if dbAgent.ParentAgentID.Valid {
 		row, rowErr := a.svc.queueChildRouteRow(item.AgentID)
 		if rowErr != nil {
 			return inputqueue.DispatchResult{}, rowErr
 		}
-		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, request.Content, request.Attachments)
+		receipt, err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, request.Content, request.Attachments)
 	} else if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
 		// A validated answer steers into an existing turn, so it must keep
 		// reaching the process whose question asked it, even while new prompts
@@ -409,12 +410,13 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		if err := a.svc.ensureAgentReadyForInput(item.AgentID); err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
-		err = a.svc.Agents.SteerInput(item.AgentID, request)
+		receipt, err = a.svc.Agents.SteerInput(item.AgentID, request)
 	}
 	return inputqueue.DispatchResult{
 		StartsTurn:          true,
 		SpanLines:           a.svc.Output.snapshotPassthroughSpanLines(item.AgentID),
 		SupplementalContent: resolvedInput.supplementalContent,
+		NativeReceipt:       receipt,
 	}, classifyQueueSteerError(err)
 }
 

@@ -156,7 +156,9 @@ func TestManagerSteerInputHandsTheProviderTheWholeRequest(t *testing.T) {
 		Attachments: []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("body")}},
 	}
 
-	require.NoError(t, m.SteerInput("agent-1", request))
+	receipt, err := m.SteerInput("agent-1", request)
+	require.NoError(t, err)
+	assert.Empty(t, receipt)
 	assert.Equal(t, []agent.SteerRequest{request}, provider.requests)
 
 	require.NoError(t, agent.SteerInputToSession(provider, "session-1", request))
@@ -174,7 +176,8 @@ func TestSteerRefusesARequestWithoutAQueueItem(t *testing.T) {
 	m.PutAgentForTest("agent-1", provider)
 	request := agent.SteerRequest{Content: "Also check the tests."}
 
-	require.ErrorContains(t, m.SteerInput("agent-1", request), "states no queue item")
+	_, err := m.SteerInput("agent-1", request)
+	require.ErrorContains(t, err, "states no queue item")
 	require.ErrorContains(t, agent.SteerInputToSession(provider, "session-1", request), "states no queue item")
 	assert.Empty(t, provider.requests)
 	assert.Empty(t, provider.sessions)

@@ -840,7 +840,10 @@ func (m *Manager) finishSteer(c *coordinator, ctx context.Context, prepared Prep
 		}
 		return snapshot, nil
 	}
-	if !turnEnded && !policy.SurvivesTurnEnd {
+	// A native receipt confirms acceptance even if the target turn ended
+	// while dispatch waited. Sending that input again would duplicate it.
+	confirmedAdmission := result.NativeReceipt.SessionID != "" && result.NativeReceipt.InputID != ""
+	if !turnEnded && !policy.SurvivesTurnEnd && !confirmedAdmission {
 		current, storeErr := m.store.Snapshot(ctx, agentID)
 		if storeErr != nil {
 			m.unlockAndPublish(c)

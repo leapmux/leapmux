@@ -1,10 +1,15 @@
 import { expect } from '@playwright/test'
+import { withCleanup } from '../helpers/cleanup'
 import { mintCLITokenForAdmin, runCLI } from '../helpers/cli'
 import { chooseQuestionOption } from '../helpers/nativeQuestion'
 import { currentNativeAgent, nativeTextStep } from '../helpers/nativeScenario'
-import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, userBubbles, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { askUserQuestionToolCall, bashToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { queuedInputRow, steerButton } from '../helpers/steer'
+import { openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
+import { createToolOutputControl } from '../helpers/toolOutputControl'
+import { applyPermissionPreset, assistantBubbles, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
+import { mimoChildTurn } from './childScenario'
 
 function sendAndWait(agentId: string, prompt: string, requestId: string): string[] {
   return [
@@ -70,4 +75,130 @@ mimoTest('returns the original exact reply while a later native question is open
   })
   await expect(userBubbles(page).filter({ hasText: prompt })).toHaveCount(1)
   await expect(assistantBubbles(page).filter({ hasText: nextAnswer })).toHaveCount(1)
+})
+
+mimoTest('returns only the reply after the root steer was delivered', async ({ native, page, leapmuxServer, modelScript }) => {
+  await waitForSettingsHydrated(page)
+  await applyPermissionPreset(page, 'bypass')
+  const { id: agentId, workingDir } = await currentNativeAgent(native)
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const output = createToolOutputControl(workingDir)
+  const before = 'I will run the checklist command.'
+  const after = 'The revised checklist passed.'
+  const prompt = 'Include the revised checklist.'
+  await modelScript.queue({
+    text: before,
+    toolCalls: [
+      bashToolCall(native.provider, 'mimo-cli-steer-boundary', output.command),
+    ],
+  }, nativeTextStep(native, after))
+  const root = [
+    ...sendAndWait(agentId, modelScript.prompt('Run the controlled checklist command.'), 'mimo-root-initial'),
+    '--all',
+  ]
+  const steer = [
+    ...sendAndWait(agentId, modelScript.prompt(prompt), 'mimo-root-steer'),
+    '--all',
+  ]
+  const deliverSteer = async () => {
+    await output.waitForFirstOutput()
+    return await Promise.all([
+      runCLI(cli, steer) as Promise<{ input_id: string }>,
+      (async () => {
+        const row = queuedInputRow(page, prompt)
+        await steerButton(row).click()
+        await expect(row).toHaveCount(0)
+        await output.releaseFirstOutput()
+        await output.waitForSecondOutput()
+        await output.releaseFinalOutput()
+      })(),
+    ])
+  }
+  const [initial, [result]] = await withCleanup(async () => await Promise.all([
+    runCLI(cli, root),
+    deliverSteer(),
+  ]), async () => {
+    await output.releaseFirstOutput()
+    await output.releaseFinalOutput()
+  })
+  expect(initial).toMatchObject({
+    turn_outcome: 'completed',
+    replies: [before, after],
+  })
+  expect(result).toMatchObject({
+    id: agentId,
+    turn_outcome: 'completed',
+    replies: [after],
+  })
+  expect(await runCLI(cli, steer)).toMatchObject({
+    input_id: result.input_id,
+    turn_outcome: 'completed',
+    replies: [after],
+  })
+  await expect(assistantBubbles(page).filter({ hasText: before })).toHaveCount(1)
+  await expect(userBubbles(page).filter({ hasText: prompt })).toHaveCount(1)
+})
+
+mimoTest('returns the exact reply of a steer delivered to a child', async ({ native, page, leapmuxServer, modelScript }) => {
+  await waitForSettingsHydrated(page)
+  await applyPermissionPreset(page, 'bypass')
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const gate = 'mimo-cli-child-tool'
+  const childTask = 'Answer the revised checklist after the shell command.'
+  const prompt = 'Use the revised child checklist.'
+  const childAnswer = '**Status**: success\n**Summary**: replied\n\nThe child verified the revised checklist.'
+  await modelScript.rule({
+    name: 'the child runs its first tool',
+    when: mimoChildTurn(childTask),
+    respond: {
+      gate,
+      toolCalls: [
+        bashToolCall(native.provider, 'mimo-cli-child-shell', 'printf mimo-cli-child-ready'),
+      ],
+    },
+    once: true,
+  }, {
+    name: 'the child reads the queued CLI input',
+    when: {
+      body: ['mimo-cli-child-ready', prompt],
+    },
+    respond: { text: childAnswer },
+    once: true,
+  })
+  await modelScript.queue({
+    toolCalls: [
+      spawnSubagentToolCall(native.provider, 'mimo-cli-spawn-child', {
+        description: 'Check the revised checklist',
+        prompt: modelScript.prompt(childTask),
+      }),
+    ],
+  }, nativeTextStep(native, 'The child finished its work.'))
+  await withCleanup(async () => {
+    await sendMessage(page, modelScript.prompt('Spawn a child to check the checklist.'))
+    await modelScript.waitForGate(gate)
+    const row = await requireRegistryRow(page)
+    await expect(row).toHaveAttribute('data-status', 'running')
+    const childId = await openChildTabFromRow(page, row)
+    const steer = sendAndWait(childId, modelScript.prompt(prompt), 'mimo-child-steer')
+    const [result] = await Promise.all([
+      runCLI(cli, steer) as Promise<{ input_id: string }>,
+      (async () => {
+        const queued = queuedInputRow(page, prompt)
+        await steerButton(queued).click()
+        await expect(queued).toHaveCount(0)
+        await modelScript.releaseGate(gate)
+      })(),
+    ])
+    expect(result).toMatchObject({
+      id: childId,
+      turn_outcome: 'completed',
+      replies: [childAnswer],
+    })
+    expect(await runCLI(cli, steer)).toMatchObject({
+      input_id: result.input_id,
+      turn_outcome: 'completed',
+      replies: [childAnswer],
+    })
+    await expect(userBubbles(page).filter({ hasText: prompt })).toHaveCount(1)
+  }, async () => { await modelScript.releaseGateIfHeld(gate) })
 })

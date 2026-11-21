@@ -40,6 +40,7 @@ type recordingDispatcher struct {
 	steerStarted    chan struct{}
 	steerRelease    <-chan struct{}
 	steerFail       error
+	steerReceipt    agent.NativeInputReceipt
 	interrupted     []string
 	interruptFail   error
 	preemption      bool
@@ -64,6 +65,7 @@ func (d *recordingDispatcher) Steer(item DispatchItem) (DispatchResult, error) {
 	d.steered = append(d.steered, item.ID)
 	started, release, steerFail := d.steerStarted, d.steerRelease, d.steerFail
 	onSteer := d.onSteer
+	receipt := d.steerReceipt
 	d.mu.Unlock()
 	if onSteer != nil {
 		onSteer(item)
@@ -74,7 +76,7 @@ func (d *recordingDispatcher) Steer(item DispatchItem) (DispatchResult, error) {
 	if release != nil {
 		<-release
 	}
-	return DispatchResult{StartsTurn: true}, steerFail
+	return DispatchResult{StartsTurn: true, NativeReceipt: receipt}, steerFail
 }
 
 func (d *recordingDispatcher) SupportsSteering(string) bool { return d.steering }
@@ -126,6 +128,36 @@ func TestManagerSteerOfASurvivorIsNotRequeuedWhenTheTurnEndsDuringTheCall(t *tes
 			assert.Empty(t, snapshot.Items)
 		}
 	}
+}
+
+func TestManagerSteerRetainsANativeAdmissionWhenTheTurnEndsDuringTheCall(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	native := agent.NativeInputReceipt{SessionID: "ses_demo", InputID: "receipt", TurnID: "receipt"}
+	dispatcher := &recordingDispatcher{steering: true, steerReceipt: native}
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	_, err := manager.SetPaused(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = store.Enqueue(t.Context(), NewItem{ID: "steer", AgentID: "agent-1", Text: "read this once", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+	require.NoError(t, err)
+	dispatcher.onSteer = func(DispatchItem) {
+		_, err := manager.TurnEnded(t.Context(), "agent-1")
+		require.NoError(t, err)
+	}
+	snapshot, err := manager.Steer(t.Context(), "agent-1", "steer")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+	assert.False(t, snapshot.ActiveTurn)
+	var sessionID, inputID, turnID string
+	require.NoError(t, store.db.QueryRowContext(t.Context(), `
+		SELECT m.agent_session_id, m.native_input_id, binding.native_turn_id
+		FROM messages m JOIN native_agent_inputs binding USING (agent_id, agent_session_id, native_input_id)
+		WHERE m.id = 'steer'`).Scan(&sessionID, &inputID, &turnID))
+	assert.Equal(t, native, agent.NativeInputReceipt{SessionID: sessionID, InputID: inputID, TurnID: turnID})
 }
 
 func (d *recordingDispatcher) PrepareSteer(agentID string) {

@@ -196,6 +196,7 @@ func TestCanonicalInputReplyUsesNativeOrderAndConsumingBoundaries(t *testing.T) 
 	user, assistant := leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
 	inputA := write("input-a", inputqueue.InputRequestKeyPrefix+"a", "native-a", user)
 	write("input-b", inputqueue.InputRequestKeyPrefix+"b", "native-b", user)
+	write("input-c", inputqueue.InputRequestKeyPrefix+"c", "native-c", user)
 	last := write("last reply", "key-last", "", assistant)
 	first := write("first reply", "key-first", "", assistant)
 	require.Greater(t, first, last)
@@ -223,6 +224,17 @@ func TestCanonicalInputReplyUsesNativeOrderAndConsumingBoundaries(t *testing.T) 
 	broken = turn
 	broken.Items = []agent.NativeReplyItem{{Ordinal: 3, MessageKey: "foreign-first"}, {Ordinal: 5, MessageKey: "foreign-last"}}
 	require.ErrorIs(t, sink.PublishNativeReplyTurn(broken), errNativeReplyConflict)
+	// A steer and its earlier input can share a reply row at different positions.
+	write("steer ending", "key-steer-ending", "", assistant)
+	steer := agent.NativeReplyTurn{
+		SessionID: sessionID, TurnID: "steer-turn", Outcome: outcome,
+		Inputs: []agent.NativeReplyBoundary{{InputID: "native-c", AfterOrdinal: 1}},
+		Items:  []agent.NativeReplyItem{{Ordinal: 6, MessageKey: "key-last"}, {Ordinal: 9, MessageKey: "key-steer-ending"}},
+	}
+	broken = steer
+	broken.Items = []agent.NativeReplyItem{{Ordinal: 6, MessageKey: "key-last"}, {Ordinal: 9, MessageKey: "key-last"}}
+	require.Error(t, sink.PublishNativeReplyTurn(broken), "one reply cannot list the same row twice")
+	require.NoError(t, sink.PublishNativeReplyTurn(steer))
 
 	read := func(id string) *leapmuxv1.AgentInputTurnReply {
 		t.Helper()
@@ -258,11 +270,25 @@ func TestCanonicalInputReplyUsesNativeOrderAndConsumingBoundaries(t *testing.T) 
 	require.Len(t, b.GetMessages(), 1)
 	assert.Equal(t, last, b.GetMessages()[0].GetSeq())
 	assert.False(t, b.GetHasMore())
+	c := page("input-c", 0)
+	require.Len(t, c.GetMessages(), 1)
+	assert.Equal(t, last, c.GetMessages()[0].GetSeq())
+	assert.True(t, c.GetHasMore())
+	assert.Equal(t, int64(6), c.GetNextReplyCursor())
+	lastPage := page("input-c", c.GetNextReplyCursor())
+	require.Len(t, lastPage.GetMessages(), 1)
+	assert.Equal(t, "steer ending", lastPage.GetMessages()[0].GetId())
+	assert.False(t, lastPage.GetHasMore())
 
 	_, err = svc.Queries.DeleteMessageByAgentAndID(ctx, db.DeleteMessageByAgentAndIDParams{AgentID: agentID, ID: "first reply"})
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, read("input-a").GetOutcome())
 	assert.Equal(t, outcome, read("input-b").GetOutcome(), "the withheld item preceded the second input")
+	_, err = svc.Queries.DeleteMessageByAgentAndID(ctx, db.DeleteMessageByAgentAndIDParams{AgentID: agentID, ID: "last reply"})
+	require.NoError(t, err)
+	for _, id := range []string{"input-b", "input-c"} {
+		assert.Equal(t, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED, read(id).GetOutcome())
+	}
 }
 
 func TestNativeInputControlProofCannotChangeAReplacementClaim(t *testing.T) {

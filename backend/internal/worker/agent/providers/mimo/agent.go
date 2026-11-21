@@ -215,8 +215,13 @@ func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput adds a message to the running turn.
 func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.sendInput(nil, request.Content, request.Attachments, true)
+	_, err := a.SteerInputWithReceipt(request)
 	return err
+}
+
+// SteerInputWithReceipt returns the inbox admission for a steer into the root.
+func (a *Agent) SteerInputWithReceipt(request agent.SteerRequest) (agent.NativeInputReceipt, error) {
+	return a.sendInput(nil, request.Content, request.Attachments, true)
 }
 
 // sendInput sends one prompt to the main agent.
@@ -276,7 +281,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.manualFollowupBusy = false
 	}
 	send := a.admitInputLocked(sessionID)
-	send.trackReply = true
+	send.replyLane = mimoReplyLane{actorID: mainActorID}
 	a.Mu.Unlock()
 	receiptID, err := a.rpc.promptAsync(a.Context(), sessionID, request)
 	receipt := a.confirmPromptReceipt(sessionID, send, receiptID)
@@ -315,9 +320,9 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 }
 
 type mimoInputSend struct {
-	done       chan struct{}
-	err        error // Written before done closes; readers wait for done.
-	trackReply bool  // Mu protects the interval in which the receipt ID is unknown.
+	done      chan struct{}
+	err       error         // Written before done closes; readers wait for done.
+	replyLane mimoReplyLane // Mu protects the lane until the response supplies the receipt ID.
 }
 
 // admitInputLocked registers a request before context clear can close admission.

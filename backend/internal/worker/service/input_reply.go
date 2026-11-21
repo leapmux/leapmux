@@ -202,7 +202,7 @@ func (svc *Service) listExactInputReply(ctx context.Context, agentID, inputID st
 		var next int64
 		if int64(len(rows)) > limit {
 			next, err = svc.Queries.GetCanonicalInputReplyCursor(ctx, db.GetCanonicalInputReplyCursorParams{
-				AgentID: agentID, MessageID: sql.NullString{String: rows[limit-1].ID, Valid: true},
+				AgentID: agentID, InputID: inputID, MessageID: sql.NullString{String: rows[limit-1].ID, Valid: true},
 			})
 		}
 		return rows, next, err

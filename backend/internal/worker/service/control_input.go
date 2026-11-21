@@ -158,7 +158,8 @@ func (svc *Service) sendResolvedInput(agentID string, input controlInput, attach
 // input supplies the session, and request is the steer that the provider reads.
 func (svc *Service) steerResolvedInput(agentID string, input controlInput, request agent.SteerRequest) error {
 	if input.source == nil {
-		return svc.Agents.SteerInput(agentID, request)
+		_, err := svc.Agents.SteerInput(agentID, request)
+		return err
 	}
 	provider, err := svc.controlInputProvider(agentID, input)
 	if err != nil {

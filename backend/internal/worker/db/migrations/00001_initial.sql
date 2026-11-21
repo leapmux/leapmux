@@ -285,7 +285,10 @@ CREATE TABLE native_agent_reply_items (
     FOREIGN KEY (agent_id, agent_session_id, native_turn_id)
         REFERENCES native_agent_reply_turns(agent_id, agent_session_id, native_turn_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
-CREATE UNIQUE INDEX idx_native_reply_items_message ON native_agent_reply_items(message_id);
+-- One transcript row can belong to several receipt projections. Prevent a
+-- duplicate within one projection and index the foreign key for retractions.
+CREATE UNIQUE INDEX idx_native_reply_items_message_by_turn
+    ON native_agent_reply_items(message_id, agent_id, agent_session_id, native_turn_id);
 -- Serves the notification duplicate lookup, which reads only messages whose
 -- generated count identifies a journal or corrupt private storage. Partial
 -- (only counted rows) so the far-more-numerous ordinary inserts skip it, and

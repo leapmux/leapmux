@@ -152,7 +152,8 @@ func TestInputRecoveryPreparesTheProviderSelectedForDelivery(t *testing.T) {
 			return agent.SendInputToSession(p, "delivery-thread", "input", nil)
 		}},
 		{name: "steer", deliver: func(svc *Service, id string) error {
-			return svc.Agents.SteerInput(id, agent.SteerRequest{InputID: "input-1", Content: "input"})
+			_, err := svc.Agents.SteerInput(id, agent.SteerRequest{InputID: "input-1", Content: "input"})
+			return err
 		}},
 		{name: "compact", deliver: func(svc *Service, id string) error {
 			return svc.Agents.CompactContext(id)

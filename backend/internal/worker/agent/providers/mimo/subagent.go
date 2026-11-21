@@ -678,12 +678,19 @@ func (a *Agent) actorForRowKeyLocked(rowKey string) *mimoActor {
 // holds the message and offers it as a steer. A subagent that runs no turn
 // refuses with errSubagentIdle (see sendChildInput).
 func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
-	return agent.ChildInputResult{StartsTurn: true}, a.sendChildInput(childKey, input.Content, input.Attachments, false)
+	_, err := a.sendChildInput(childKey, input.Content, input.Attachments, false)
+	return agent.ChildInputResult{StartsTurn: true}, err
 }
 
 // SteerChildInput adds a message to a subagent's running turn. The actor reads
 // it at its next step, as the main agent does.
 func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.SteerChildInputWithReceipt(childKey, content, attachments)
+	return err
+}
+
+// SteerChildInputWithReceipt returns the inbox admission for the captured child.
+func (a *Agent) SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendChildInput(childKey, content, attachments, true)
 }
 
@@ -716,69 +723,73 @@ func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 // The loop can finish before its idle event arrives.
 // Input in that interval can start another unreported turn.
 // No native event can eliminate that interval.
-func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) (agent.NativeInputReceipt, error) {
 	return a.sendChildInputBuilt(childKey, steer, func() ([]mimoPromptPart, error) {
 		return buildPromptParts(content, attachments)
 	})
 }
 
 // sendChildInputBuilt separates prompt construction from the captured delivery target.
-func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([]mimoPromptPart, error)) error {
+func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([]mimoPromptPart, error)) (agent.NativeInputReceipt, error) {
 	a.Mu.Lock()
 	actor, sessionID := a.actorForRowKeyLocked(childKey), a.sessionID
 	running := actor != nil && actor.running
 	a.Mu.Unlock()
 	if actor == nil {
-		return fmt.Errorf("MiMo holds no subagent for %q in this session", childKey)
+		return agent.NativeInputReceipt{}, fmt.Errorf("MiMo holds no subagent for %q in this session", childKey)
 	}
 	if sessionID == "" {
-		return fmt.Errorf("agent has no MiMo session")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent has no MiMo session")
 	}
 	if !running {
 		if steer {
-			return agent.ErrNoActiveTurn
+			return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 		}
-		return errSubagentIdle
+		return agent.NativeInputReceipt{}, errSubagentIdle
 	}
 	if !steer {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	parts, err := build()
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	a.Mu.Lock()
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	if a.sessionID != sessionID || a.actorForRowKeyLocked(childKey) != actor || sessionID == "" {
 		a.Mu.Unlock()
-		return agent.ErrChildRouteNotReady
+		return agent.NativeInputReceipt{}, agent.ErrChildRouteNotReady
 	}
 	if a.sessionSwitching {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	if !actor.running {
 		a.Mu.Unlock()
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	request, err := a.promptRequestLocked(parts, actor.id)
 	if err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	send := a.admitInputLocked(sessionID)
+	if actor.childAgentID != "" {
+		send.replyLane = mimoReplyLane{actorID: actor.id, childID: actor.childAgentID}
+	}
 	a.Mu.Unlock()
 	// The queue writes the message into the child transcript when it accepts the
 	// delivery, so this call writes no row of its own.
-	_, err = a.rpc.promptAsync(a.Context(), sessionID, request)
+	receiptID, err := a.rpc.promptAsync(a.Context(), sessionID, request)
+	receipt := a.confirmPromptReceipt(sessionID, send, receiptID)
 	a.finishInput(sessionID, send, err)
 	if err != nil {
-		return classifyDeliveryError("subagent message", err)
+		return agent.NativeInputReceipt{}, classifyDeliveryError("subagent message", err)
 	}
-	return nil
+	return receipt, nil
 }
 
 // mimoSendInput is the part of an `actor send` call's input the worker reads.

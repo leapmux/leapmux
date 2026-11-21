@@ -724,7 +724,7 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 					err = a.persistUserInstruction(record, *state.final)
 				}
 			} else if state != nil && state.final != nil {
-				err = a.persistFinalText(sink, record, state)
+				err = a.persistFinalText(target, record, state)
 			} else {
 				err = fmt.Errorf("the retained MiMo text part is absent")
 			}
@@ -740,7 +740,7 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 				}, agent.SpanInfo{})
 				if agent.OutputRetained(err) {
 					if wrote && state.kind == agent.AssembledMessageKindText {
-						a.recordInputReplyText(record, messageID, key)
+						a.recordInputReplyText(record, messageID, key, target.childID)
 					}
 					a.completeTextProgress(pending.partID, state, sink)
 				}
@@ -1023,7 +1023,8 @@ func (a *Agent) handleTextPart(sessionID string, part mimoPart) {
 }
 
 // persistFinalText writes the retained native final part with its resolved outcome.
-func (a *Agent) persistFinalText(sink agent.ProviderServices, record *mimoMessageRecord, state *mimoTextPart) error {
+func (a *Agent) persistFinalText(target *mimoTranscriptTarget, record *mimoMessageRecord, state *mimoTextPart) error {
+	sink := target.sink
 	part := state.final
 	text := part.Text
 	if strings.TrimSpace(text) == "" {
@@ -1039,7 +1040,7 @@ func (a *Agent) persistFinalText(sink agent.ProviderServices, record *mimoMessag
 		return err
 	}
 	if state.kind == agent.AssembledMessageKindText {
-		a.recordInputReplyText(record, state.messageID, content.IdempotencyKey)
+		a.recordInputReplyText(record, state.messageID, content.IdempotencyKey, target.childID)
 		if record.actor != nil {
 			a.Mu.Lock()
 			record.actor.lastText = text

@@ -116,7 +116,9 @@ func TestManager_SteerChildInputDispatch(t *testing.T) {
 	st := &steerableStub{}
 	m.PutAgentForTest("root", st)
 
-	require.NoError(t, m.SteerChildInput("root", "child-1", "guide", nil))
+	receipt, err := m.SteerChildInput("root", "child-1", "guide", nil)
+	require.NoError(t, err)
+	assert.Empty(t, receipt)
 	require.Len(t, st.steerInputCalls, 1)
 	assert.Equal(t, "child-1", st.steerInputCalls[0].childKey)
 	assert.Equal(t, "guide", st.steerInputCalls[0].content)

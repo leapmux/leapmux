@@ -23,8 +23,9 @@ type mimoReceiptUpdate struct {
 }
 
 type mimoInputReply struct {
-	native mimoReceiptUpdate
-	owned  bool
+	native  mimoReceiptUpdate
+	childID string
+	owned   bool
 	// A specified outcome freezes the parts observed before native settlement.
 	outcome   leapmuxv1.AgentInputTurnOutcome
 	projected bool
@@ -32,9 +33,14 @@ type mimoInputReply struct {
 	turnEpoch uint64
 	items     []agent.NativeReplyItem
 	parts     map[string]mimoReplyPart
-	// A replacement can reuse a native part ID. The transcript's idempotency
-	// key then still identifies the old text, so its replacement is unproved.
-	replacedPart bool
+	// A retracted key can still identify old text. A child row can also fall
+	// back to the root transcript when the child's sink is unavailable.
+	textUnproved bool
+}
+
+type mimoReplyLane struct {
+	actorID string
+	childID string
 }
 
 type mimoReplyPart struct {
@@ -52,27 +58,34 @@ func mimoNativeReceipt(sessionID, receiptID string) agent.NativeInputReceipt {
 // ownsMessage reports whether this receipt reached the model by the time the
 // given assistant message started. MiMo orders message IDs within a run.
 func (reply *mimoInputReply) ownsMessage(messageID string, record *mimoMessageRecord) bool {
-	return reply.outcome == 0 && reply.parts != nil && messageID >= reply.native.DeliveryID && record != nil &&
-		record.identityKnown && record.role == roleAssistant && record.actorID == mainActorID && !record.summary &&
-		record.sessionID == reply.native.SessionID && record.turnEpoch == reply.turnEpoch
+	if reply.outcome != 0 || reply.parts == nil || messageID < reply.native.DeliveryID || record == nil ||
+		!record.identityKnown || record.role != roleAssistant || record.actorID != reply.native.ActorID || record.summary ||
+		record.sessionID != reply.native.SessionID {
+		return false
+	}
+	if reply.childID == "" {
+		return record.turnEpoch == reply.turnEpoch
+	}
+	// Child lanes run independently of the root's turn counter.
+	return record.actor != nil && record.actor.childAgentID == reply.childID
 }
 
-func (a *Agent) awaitingPromptReceiptLocked(sessionID string) bool {
+func (a *Agent) awaitingPromptReceiptLocked(sessionID, actorID string) (mimoReplyLane, bool) {
 	for send := range a.inputSends[sessionID] {
-		if send.trackReply {
-			return true
+		if send.replyLane.actorID == actorID {
+			return send.replyLane, true
 		}
 	}
-	return false
+	return mimoReplyLane{}, false
 }
 
-func (a *Agent) inputReplyLocked(update mimoReceiptUpdate) *mimoInputReply {
+func (a *Agent) inputReplyLocked(update mimoReceiptUpdate, childID string) *mimoInputReply {
 	if a.inputReplies == nil {
 		a.inputReplies = make(map[string]*mimoInputReply)
 	}
 	reply := a.inputReplies[update.ID]
-	if reply == nil {
-		reply = &mimoInputReply{native: update}
+	if reply == nil || reply.native.SessionID != update.SessionID || reply.native.ActorID != update.ActorID || reply.childID != childID {
+		reply = &mimoInputReply{native: update, childID: childID}
 		a.inputReplies[update.ID] = reply
 	}
 	return reply
@@ -84,18 +97,23 @@ func (a *Agent) confirmPromptReceipt(sessionID string, send *mimoInputSend, rece
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 	a.Mu.Lock()
+	lane := send.replyLane
+	if lane.actorID == "" {
+		a.Mu.Unlock()
+		return agent.NativeInputReceipt{}
+	}
 	var reply *mimoInputReply
 	if receiptID != "" {
-		reply = a.inputReplyLocked(mimoReceiptUpdate{ID: receiptID, SessionID: sessionID})
+		reply = a.inputReplyLocked(mimoReceiptUpdate{ID: receiptID, SessionID: sessionID, ActorID: lane.actorID}, lane.childID)
 		reply.owned = true
 		if reply.outcome == 0 && (a.StoppedLocked() || a.sessionID != sessionID) {
 			reply.outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
 		}
 	}
-	send.trackReply = false
-	if !a.awaitingPromptReceiptLocked(sessionID) {
+	send.replyLane = mimoReplyLane{}
+	if _, pending := a.awaitingPromptReceiptLocked(sessionID, lane.actorID); !pending {
 		for id, candidate := range a.inputReplies {
-			if !candidate.owned && candidate.native.SessionID == sessionID {
+			if !candidate.owned && candidate.native.SessionID == sessionID && candidate.native.ActorID == lane.actorID {
 				delete(a.inputReplies, id)
 			}
 		}
@@ -107,7 +125,7 @@ func (a *Agent) confirmPromptReceipt(sessionID string, send *mimoInputSend, rece
 	a.Mu.Unlock()
 	if settled {
 		a.publishInputReply(reply)
-	} else if reply != nil {
+	} else if reply != nil && lane.actorID == mainActorID {
 		a.bindOpenReplyControls()
 	}
 	return mimoNativeReceipt(sessionID, receiptID)
@@ -118,7 +136,7 @@ func (a *Agent) confirmPromptReceipt(sessionID string, send *mimoInputSend, rece
 // order. The receipt identifies the same result in both paths.
 func (a *Agent) handleReceiptUpdated(raw json.RawMessage) {
 	var update mimoReceiptUpdate
-	if json.Unmarshal(raw, &update) != nil || update.ID == "" || update.InputID == "" || update.ActorID != mainActorID {
+	if json.Unmarshal(raw, &update) != nil || update.ID == "" || update.InputID == "" || update.ActorID == "" {
 		return
 	}
 	a.Mu.Lock()
@@ -127,11 +145,18 @@ func (a *Agent) handleReceiptUpdated(raw json.RawMessage) {
 		return
 	}
 	reply := a.inputReplies[update.ID]
-	if reply == nil && !a.awaitingPromptReceiptLocked(update.SessionID) {
-		a.Mu.Unlock()
-		return
+	var childID string
+	if reply == nil {
+		lane, pending := a.awaitingPromptReceiptLocked(update.SessionID, update.ActorID)
+		if !pending {
+			a.Mu.Unlock()
+			return
+		}
+		childID = lane.childID
+	} else {
+		childID = reply.childID
 	}
-	if reply != nil && (reply.outcome != 0 || reply.native.SessionID != update.SessionID ||
+	if reply != nil && (reply.outcome != 0 || reply.native.SessionID != update.SessionID || reply.native.ActorID != update.ActorID ||
 		reply.native.InputID != "" && (reply.native.InputID != update.InputID || reply.native.Epoch != update.Epoch) ||
 		reply.native.DeliveryID != "" && update.DeliveryID != "" && reply.native.DeliveryID != update.DeliveryID) {
 		a.Mu.Unlock()
@@ -139,7 +164,7 @@ func (a *Agent) handleReceiptUpdated(raw json.RawMessage) {
 	}
 	switch update.State {
 	case "accepted", "claimed":
-		reply = a.inputReplyLocked(update)
+		reply = a.inputReplyLocked(update, childID)
 		reply.native.InputID, reply.native.Epoch = update.InputID, update.Epoch
 		nowDelivered := update.DeliveryID != "" && reply.parts == nil
 		if nowDelivered {
@@ -147,14 +172,14 @@ func (a *Agent) handleReceiptUpdated(raw json.RawMessage) {
 			reply.turnEpoch = a.turnEpoch
 			reply.parts = make(map[string]mimoReplyPart)
 		}
-		bind := nowDelivered && reply.owned
+		bind := nowDelivered && reply.owned && update.ActorID == mainActorID
 		a.Mu.Unlock()
 		if bind {
 			a.bindOpenReplyControls()
 		}
 	case "settled", "cancelled", "rejected":
-		reply = a.inputReplyLocked(update)
-		reply.projected = !reply.replacedPart && reply.ownsMessage(reply.native.DeliveryID, a.messages[reply.native.DeliveryID]) &&
+		reply = a.inputReplyLocked(update, childID)
+		reply.projected = !reply.textUnproved && reply.ownsMessage(reply.native.DeliveryID, a.messages[reply.native.DeliveryID]) &&
 			!a.hasPendingReplyTextLocked(reply)
 		reply.outcome = mimoReceiptOutcome(update, reply.projected)
 		owned := reply.owned
@@ -194,12 +219,16 @@ func mimoReceiptOutcome(update mimoReceiptUpdate, proved bool) leapmuxv1.AgentIn
 
 func (a *Agent) publishInputReply(reply *mimoInputReply) {
 	receipt := mimoNativeReceipt(reply.native.SessionID, reply.native.ID)
+	sink := a.sink
+	if reply.childID != "" {
+		sink = a.sink.ChildSink(reply.childID)
+	}
 	outcome := reply.outcome
 	if reply.projected && outcome != leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED {
 		items := slices.DeleteFunc(reply.items, func(item agent.NativeReplyItem) bool {
 			return reply.parts[item.MessageKey].retracted
 		})
-		err := a.sink.PublishNativeReplyTurn(agent.NativeReplyTurn{
+		err := sink.PublishNativeReplyTurn(agent.NativeReplyTurn{
 			SessionID: receipt.SessionID, TurnID: receipt.TurnID, Outcome: outcome, Items: items,
 			Inputs: []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: 1}},
 		})
@@ -211,11 +240,7 @@ func (a *Agent) publishInputReply(reply *mimoInputReply) {
 			outcome = leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_UNPROVED
 		}
 	}
-	a.retireInputReply(receipt, outcome)
-}
-
-func (a *Agent) retireInputReply(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) {
-	if err := a.sink.RetireNativeInputTurn(receipt, outcome); !agent.OutputRetained(err) {
+	if err := sink.RetireNativeInputTurn(receipt, outcome); !agent.OutputRetained(err) {
 		slog.Warn("retain the MiMo input outcome", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -241,15 +266,19 @@ func (a *Agent) abandonInputReplies() {
 }
 
 // recordInputReplyText adds a text row once the transcript owns its write.
-func (a *Agent) recordInputReplyText(record *mimoMessageRecord, messageID, key string) {
+func (a *Agent) recordInputReplyText(record *mimoMessageRecord, messageID, key, childID string) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	for _, reply := range a.inputReplies {
 		if !reply.ownsMessage(messageID, record) {
 			continue
 		}
+		if reply.childID != childID {
+			reply.textUnproved = true
+			continue
+		}
 		if part, seen := reply.parts[key]; seen {
-			reply.replacedPart = reply.replacedPart || part.retracted
+			reply.textUnproved = reply.textUnproved || part.retracted
 		} else {
 			reply.parts[key] = mimoReplyPart{messageID: messageID}
 			reply.items = append(reply.items, agent.NativeReplyItem{Ordinal: int64(len(reply.items)) + 2, MessageKey: key})
@@ -300,7 +329,7 @@ func (a *Agent) bindControlReplyInputs(requestID string, control *mimoControl) {
 	var ids []string
 	if a.controls[requestID] == control && control.published && !control.answered && record != nil && record.sessionID == control.sessionID {
 		for id, reply := range a.inputReplies {
-			if reply.owned && reply.ownsMessage(control.messageID, record) {
+			if reply.owned && reply.childID == "" && reply.ownsMessage(control.messageID, record) {
 				ids = append(ids, id)
 			}
 		}

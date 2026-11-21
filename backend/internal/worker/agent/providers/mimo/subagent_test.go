@@ -1061,11 +1061,12 @@ func TestLateChildInputRefusesTheRetiredNativeSession(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
+		_, err := a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
 			close(entered)
 			<-release
 			return buildPromptParts("The original child delivery.", nil)
 		})
+		done <- err
 	}()
 	select {
 	case <-entered:
@@ -1094,7 +1095,7 @@ func TestChildInputRechecksTheActorAfterPromptConstruction(t *testing.T) {
 			t.Parallel()
 			a, _, server := newSinkTestAgent(t)
 			spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
-			err := a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
+			_, err := a.sendChildInputBuilt(spawnSpanID, true, func() ([]mimoPromptPart, error) {
 				a.Mu.Lock()
 				switch change {
 				case "idle actor":

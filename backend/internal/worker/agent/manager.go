@@ -649,26 +649,31 @@ func (m *Manager) CompactContext(agentID string) error {
 // a separate ACP method that LeapMux did not verify.
 //
 // It refuses a request that states no queue item before any provider reads it.
-func (m *Manager) SteerInput(agentID string, request SteerRequest) error {
+func (m *Manager) SteerInput(agentID string, request SteerRequest) (NativeInputReceipt, error) {
 	if err := request.validate(); err != nil {
-		return err
+		return NativeInputReceipt{}, err
 	}
 	p, err := m.providerAfterLifecycle(agentID)
 	if err != nil {
-		return err
+		return NativeInputReceipt{}, err
 	}
 	steerer, ok := p.(InputSteerer)
 	if !ok {
-		return ErrSteeringUnsupported
+		return NativeInputReceipt{}, ErrSteeringUnsupported
 	}
 	if err := prepareProviderProcessForInput(p); err != nil {
-		return err
+		return NativeInputReceipt{}, err
 	}
-	err = steerer.SteerInput(request)
+	var receipt NativeInputReceipt
+	if sender, ok := p.(SteerReceiptSender); ok {
+		receipt, err = sender.SteerInputWithReceipt(request)
+	} else {
+		err = steerer.SteerInput(request)
+	}
 	if err == nil {
 		observeGoalCommand(p, GoalDeliverySteer, request.Content)
 	}
-	return err
+	return receipt, err
 }
 
 // SteerPolicy reads the running provider's constant steering declarations.
@@ -833,16 +838,19 @@ func (m *Manager) SendChildInput(rootAgentID, childKey string, input ChildInput)
 	return result, err
 }
 
-func (m *Manager) SteerChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {
+func (m *Manager) SteerChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error) {
 	p, err := m.providerAfterLifecycle(rootAgentID)
 	if err != nil {
-		return err
+		return NativeInputReceipt{}, err
 	}
 	steerer, ok := p.(ChildSteerer)
 	if !ok {
-		return ErrChildOperationUnsupported
+		return NativeInputReceipt{}, ErrChildOperationUnsupported
 	}
-	return steerer.SteerChildInput(childKey, content, attachments)
+	if sender, ok := p.(ChildSteerReceiptSender); ok {
+		return sender.SteerChildInputWithReceipt(childKey, content, attachments)
+	}
+	return NativeInputReceipt{}, steerer.SteerChildInput(childKey, content, attachments)
 }
 
 // InterruptChild aborts a subagent's current turn inside the owner process.

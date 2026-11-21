@@ -1176,6 +1176,11 @@ type InputSteerer interface {
 	SupportsSteering() bool
 }
 
+// SteerReceiptSender reports the provider's durable admission of a steer.
+type SteerReceiptSender interface {
+	SteerInputWithReceipt(request SteerRequest) (NativeInputReceipt, error)
+}
+
 // SteerPreparer persists buffered output before the queue reserves the steer's position.
 // PrepareSteer takes only provider locks and must not wait for a turn to end.
 type SteerPreparer interface {
@@ -1293,6 +1298,11 @@ type ChildSteerer interface {
 	// ActiveChildTurnState classifies the child's current turn after
 	// SendChildInput returns ErrAgentBusy.
 	ActiveChildTurnState(childKey string) TurnState
+}
+
+// ChildSteerReceiptSender reports durable admission into a child conversation.
+type ChildSteerReceiptSender interface {
+	SteerChildInputWithReceipt(childKey, content string, attachments []*leapmuxv1.Attachment) (NativeInputReceipt, error)
 }
 
 // ChildInterrupter lets a provider stop a child turn without claiming that the
