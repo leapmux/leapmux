@@ -26,8 +26,8 @@ const (
 	antigravityStreamRetryMax          = 5 * time.Second
 )
 
-// Agent owns one agy process and the language server inside it. ACP stdio
-// manages sessions. Every live update arrives on one HTTP stream per cascade.
+// Agent owns one agy process and the language server inside it. Each cascade
+// receives live updates through its own HTTP stream.
 type Agent struct {
 	providerkit.JSONRPCProcess
 	sink       agent.ProviderServices
