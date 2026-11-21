@@ -250,6 +250,8 @@ type StoredItem struct {
 type DispatchItem struct {
 	StoredItem
 	Attachments []Attachment
+	// SteerAttemptID identifies a dispatch whose row waits for a native echo.
+	SteerAttemptID string
 }
 
 // SnapshotItem contains a preview, never dispatchable stored content.

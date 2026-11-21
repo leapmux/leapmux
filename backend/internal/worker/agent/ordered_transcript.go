@@ -529,6 +529,16 @@ func OutputQueueFor(writer TranscriptServices) *OutputQueue {
 	}
 }
 
+// RetainSteerResolution orders the input row between the native output that
+// preceded and followed the echo. Retries keep the original publisher and span context.
+func RetainSteerResolution(writer ProviderServices, resolution SteerResolution) error {
+	run := writer.CaptureSteerResolution(resolution)
+	if queue := OutputQueueFor(writer); queue != nil {
+		return (orderedTranscript{queue: queue}).submit("resolve steered input", run)
+	}
+	return run()
+}
+
 // DirectTranscript preserves the decorated writer below the queue.
 // A generation batch uses it after it reserves its own positions in that same queue.
 func DirectTranscript(writer TranscriptServices) TranscriptServices {

@@ -404,6 +404,8 @@ CREATE TABLE agent_input_queue_items (
     edit_owner      TEXT NOT NULL DEFAULT '',
     version         INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
     reserved_seq    INTEGER NOT NULL DEFAULT 0 CHECK (reserved_seq >= 0),
+    -- A steer that waits for an echo records the identity of its dispatch.
+    steer_attempt_id TEXT NOT NULL DEFAULT '',
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- The time at which someone removed the input from the queue, or NULL for

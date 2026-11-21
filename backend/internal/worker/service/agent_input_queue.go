@@ -389,7 +389,7 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	}
 	// The request states the item, so a provider that drops the steer can hand
 	// it back (see Service.requeueDroppedInput).
-	request := agent.SteerRequest{InputID: item.ID, Content: resolvedInput.text, Attachments: attachments}
+	request := agent.SteerRequest{InputID: item.ID, AttemptID: item.SteerAttemptID, Content: resolvedInput.text, Attachments: attachments}
 	if dbAgent.ParentAgentID.Valid {
 		row, rowErr := a.svc.queueChildRouteRow(item.AgentID)
 		if rowErr != nil {

@@ -83,6 +83,7 @@ type Sink struct {
 	// The test sink retains repeats so a test can detect the provider defect.
 	requeuedInputs   []RequeuedInput
 	steerEchoReports []SteerEchoReport
+	steerResolutions []agent.SteerResolution
 	// RequeueErr makes RequeueDroppedInput return an error instead of recording the call.
 	// The provider must report that the queue refused the input.
 	// Set this field at construction. Reads require no lock.
@@ -661,6 +662,24 @@ func (s *Sink) CaptureSteerReport(count int, outcome agent.SteerOutcome) func() 
 		}
 		return nil
 	}
+}
+
+func (s *Sink) CaptureSteerResolution(resolution agent.SteerResolution) func() error {
+	return func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.PersistErr != nil {
+			return s.PersistErr
+		}
+		s.steerResolutions = append(s.steerResolutions, resolution)
+		return nil
+	}
+}
+
+func (s *Sink) SteerResolutions() []agent.SteerResolution {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.steerResolutions)
 }
 
 func (s *Sink) ReportSteersEchoed(count int) {
@@ -2118,6 +2137,9 @@ func (nop) CaptureBackgroundTaskExit(bool) func() error     { return nil }
 func (nop) CaptureBackgroundTaskStartFailure() func() error { return nil }
 func (nop) OutputQueue() *agent.OutputQueue                 { return nil }
 func (nop) CaptureSteerReport(int, agent.SteerOutcome) func() error {
+	return func() error { return nil }
+}
+func (nop) CaptureSteerResolution(agent.SteerResolution) func() error {
 	return func() error { return nil }
 }
 func (nop) ReportSteersEchoed(int)    {}

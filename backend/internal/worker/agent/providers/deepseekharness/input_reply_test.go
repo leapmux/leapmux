@@ -127,7 +127,7 @@ func TestHarnessExactReplyRequiresAProvedEnd(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
 			receipt := agent.NativeInputReceipt{SessionID: "native-root", InputID: "request"}
-			a.registerReplySubmission(receipt)
+			a.registerReplySubmission(receipt, nil)
 			applyReplyEvent(t, a, 1, "turn/start", test.start)
 			applyReplyEvent(t, a, 2, "user/message", harnessInputEcho(receipt.InputID))
 			applyReplyEvent(t, a, 3, "assistant/message", test.output)
@@ -150,6 +150,32 @@ func TestHarnessExactReplyRequiresAProvedEnd(t *testing.T) {
 	}
 }
 
+func TestHarnessSteerBindsToTheTurnThatActuallyConsumesIt(t *testing.T) {
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	receipt := agent.NativeInputReceipt{SessionID: "native-root", InputID: "native-steer"}
+	request := agent.SteerRequest{InputID: "queued-steer", AttemptID: "attempt"}
+	applyReplyEvent(t, a, 1, "turn/start", `{"turn":5}`)
+	a.registerReplySubmission(receipt, &request)
+	applyReplyEvent(t, a, 2, "turn/end", `{"turn":5,"reason":{"kind":"completed"}}`)
+	assert.Empty(t, sink.SteerResolutions())
+	assert.Empty(t, sink.NativeReplyTurns())
+	applyReplyEvent(t, a, 3, "turn/start", `{"turn":6}`)
+	applyReplyEvent(t, a, 4, "user/message", harnessInputEcho(receipt.InputID))
+	receipt.TurnID = "6"
+	assert.Equal(t, []agent.SteerResolution{{
+		InputID: request.InputID, AttemptID: request.AttemptID, Outcome: agent.SteerOutcomeEchoed, Receipt: receipt,
+	}}, sink.SteerResolutions())
+	applyReplyEvent(t, a, 5, "assistant/message", `{"turn":6,"message":{"content":[{"type":"text","text":"This turn consumes the steer."}]}}`)
+	applyReplyEvent(t, a, 6, "turn/end", `{"turn":6,"reason":{"kind":"completed"}}`)
+	assert.Equal(t, []agent.NativeReplyTurn{{
+		SessionID: receipt.SessionID, TurnID: receipt.TurnID,
+		Outcome: leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_COMPLETED,
+		Inputs:  []agent.NativeReplyBoundary{{InputID: receipt.InputID, AfterOrdinal: 1}},
+		Items:   []agent.NativeReplyItem{{Ordinal: 2, MessageKey: "session-event:5:block:0"}},
+	}}, sink.NativeReplyTurns())
+}
+
 type harnessReplyControlSink struct {
 	agenttest.ControlSink
 	bindings []agent.NativeControlInputs
@@ -165,7 +191,7 @@ func TestHarnessExactReplyOwnsControlInEitherStreamOrder(t *testing.T) {
 		t.Run(fmt.Sprintf("control first=%t", controlFirst), func(t *testing.T) {
 			sink := &harnessReplyControlSink{}
 			a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
-			a.registerReplySubmission(agent.NativeInputReceipt{SessionID: "native-root", InputID: "input"})
+			a.registerReplySubmission(agent.NativeInputReceipt{SessionID: "native-root", InputID: "input"}, nil)
 			applyReplyEvent(t, a, 1, "turn/start", `{"turn":8}`)
 			applyReplyEvent(t, a, 2, "user/message", harnessInputEcho("input"))
 			publishApproval := func(id, callID string) {
@@ -180,7 +206,7 @@ func TestHarnessExactReplyOwnsControlInEitherStreamOrder(t *testing.T) {
 				publishApproval("owned", "call")
 			}
 			applyReplyEvent(t, a, 3, "tool/call", `{"turn":8,"name":"bash","callId":"call"}`)
-			a.registerReplySubmission(agent.NativeInputReceipt{SessionID: "native-root", InputID: "later-input"})
+			a.registerReplySubmission(agent.NativeInputReceipt{SessionID: "native-root", InputID: "later-input"}, nil)
 			applyReplyEvent(t, a, 4, "user/message", harnessInputEcho("later-input"))
 			if !controlFirst {
 				publishApproval("owned", "call")

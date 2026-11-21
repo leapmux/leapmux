@@ -726,6 +726,13 @@ func New(cfg Config) *Service {
 		}
 	})
 	svc.Output.SetRequeueDroppedInputFunc(svc.requeueDroppedInput)
+	svc.Output.resolveSteer = func(agentID string, resolution agent.SteerResolution, spanLines string) (bool, error) {
+		matched, err := svc.InputQueue.ResolveSteer(bgCtx(), agentID, resolution, spanLines)
+		if errors.Is(err, inputqueue.ErrManagerStopped) {
+			return false, nil
+		}
+		return matched, err
+	}
 	svc.Output.SetSteerEchoFuncs(func(agentID string, count int, spanLines string) error {
 		_, err := svc.InputQueue.AcceptEchoedSteers(bgCtx(), agentID, count, spanLines)
 		if errors.Is(err, inputqueue.ErrManagerStopped) {

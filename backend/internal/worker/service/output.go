@@ -328,6 +328,7 @@ type OutputHandler struct {
 	// OutputHandler directly, where RequeueDroppedInput then refuses.
 	requeueDroppedInput func(agentID string, dropped agent.SteerRequest) (bool, error)
 	steersEchoed        func(agentID string, count int, spanLines string) error
+	resolveSteer        func(agentID string, resolution agent.SteerResolution, spanLines string) (bool, error)
 	steersDropped       func(agentID string, count int) error
 	steersUncertain     func(agentID string, count int) error
 
@@ -1327,6 +1328,28 @@ func (s *agentOutputSink) CaptureSteerReport(count int, outcome agent.SteerOutco
 		default:
 			return fmt.Errorf("invalid steer outcome: %d", outcome)
 		}
+	}
+}
+
+func (s *agentOutputSink) CaptureSteerResolution(resolution agent.SteerResolution) func() error {
+	if s.root != nil {
+		return func() error { return errors.New("a child sink cannot resolve a root steer") }
+	}
+	spanLines := s.h.snapshotPassthroughSpanLines(s.agentID)
+	return func() error {
+		if !s.registeredCurrent() {
+			return nil
+		}
+		if s.h.resolveSteer == nil {
+			return errors.New("the steer resolution has no queue callback")
+		}
+		matched, err := s.h.resolveSteer(s.agentID, resolution, spanLines)
+		if err == nil && matched && resolution.Outcome == agent.SteerOutcomeDropped {
+			s.PersistLeapMuxNotification(map[string]interface{}{
+				contracts.NotificationFieldType: contracts.NotificationTypeInputRequeued,
+			})
+		}
+		return err
 	}
 }
 

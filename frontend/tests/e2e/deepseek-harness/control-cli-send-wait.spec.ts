@@ -1,10 +1,15 @@
 import { expect } from '@playwright/test'
+import { AgentInputState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { deepseekHarnessTest } from '../deepseek-harness-fixtures'
+import { withCleanup } from '../helpers/cleanup'
 import { mintCLITokenForAdmin, runCLI } from '../helpers/cli'
+import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
 import { chooseQuestionOption } from '../helpers/nativeQuestion'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { askUserQuestionToolCall, bashToolCall, deepseekHarnessEscalatedBashToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, userBubbles, waitForControlBanner } from '../helpers/ui'
+import { retryUntilPass } from '../helpers/retryUntilPass'
+import { queuedInputRow } from '../helpers/steer'
+import { assistantBubbles, interruptButton, resumePausedQueue, sendMessage, userBubbles, waitForControlBanner } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
 function sendAndWait(agentId: string, prompt: string, requestId: string): string[] {
@@ -134,4 +139,112 @@ deepseekHarnessTest('returns the owned question and completes the same input aft
     turn_outcome: 'completed',
     replies: [answer],
   })
+})
+
+deepseekHarnessTest('returns only the reply after the native steer echo', async ({ native, leapmuxServer, modelScript, page }) => {
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const { id: agentId } = await currentNativeAgent(native)
+  const gate = 'hold-native-steer-boundary'
+  const before = 'The command is about to run.'
+  const after = 'The updated readiness check completed.'
+  const steerText = 'Include the updated readiness check.'
+  await modelScript.queue({
+    text: before,
+    gate,
+    toolCalls: [
+      bashToolCall(native.provider, 'deepseek-cli-steer-boundary', 'printf steer-boundary'),
+    ],
+  }, { text: after })
+  const root = [
+    ...sendAndWait(agentId, modelScript.prompt('Run the scripted command.'), 'deepseek-steer-root'),
+    '--all',
+  ]
+  const steer = [
+    ...sendAndWait(agentId, modelScript.prompt(steerText), 'deepseek-steer-input'),
+    '--all',
+  ]
+  const deliverSteer = async () => {
+    await modelScript.waitForGate(gate)
+    return await Promise.all([
+      runCLI(cli, steer),
+      withCleanup(async () => {
+        const row = queuedInputRow(page, steerText)
+        await row.getByRole('button', { name: 'Steer', exact: true }).click()
+        await expect(row.and(page.locator(`:not([data-input-state="${AgentInputState.AWAITING_ECHO}"])`))).toHaveCount(0)
+        expect(await row.count()).toBe(1)
+        await expect(userBubbles(page).filter({ hasText: steerText })).toHaveCount(0)
+      }, async () => { await modelScript.releaseGateIfHeld(gate) }),
+    ])
+  }
+  const [first, [steered]] = await Promise.all([
+    runCLI(cli, root),
+    deliverSteer(),
+  ])
+  expect(first).toMatchObject({
+    turn_outcome: 'completed',
+    replies: [
+      before,
+      after,
+    ],
+  })
+  const expectedSteer = {
+    input_id: (steered as { input_id: string }).input_id,
+    turn_outcome: 'completed',
+    replies: [
+      after,
+    ],
+  }
+  expect(steered).toMatchObject(expectedSteer)
+  expect(await runCLI(cli, steer)).toMatchObject(expectedSteer)
+  await expect(userBubbles(page).filter({ hasText: steerText })).toHaveCount(1)
+})
+
+deepseekHarnessTest('keeps the original CLI request when a stop removes an unread steer', async ({ native, leapmuxServer, modelScript, page }) => {
+  const cli = await mintCLITokenForAdmin(leapmuxServer)
+  const { id: agentId } = await currentNativeAgent(native)
+  const gate = 'hold-native-steer-for-stop'
+  const steerText = 'Report the recovered readiness result.'
+  const answer = 'The recovered readiness check completed.'
+  await modelScript.queue({
+    text: 'This held answer will be interrupted.',
+    gate,
+  }, { text: answer })
+  const send = [
+    'agent',
+    'send',
+    agentId,
+    modelScript.prompt(steerText),
+    '--request-id',
+    'deepseek-requeue-steer',
+  ]
+  const inputId = await withCleanup(async () => {
+    await sendMessage(page, modelScript.prompt('Hold this turn while I queue an update.'))
+    await modelScript.waitForGate(gate)
+    const queued = await runCLI(cli, send) as { input_id: string }
+    await queuedInputRow(page, steerText).getByRole('button', { name: 'Steer', exact: true }).click()
+    await retryUntilPass(async () => {
+      const queue = await readNativeInputQueue(leapmuxServer, agentId)
+      expect(queue.items.find(item => item.id === queued.input_id)?.state).toBe(AgentInputState.AWAITING_ECHO)
+    })
+    await interruptButton(page).click()
+    await retryUntilPass(async () => {
+      const queue = await readNativeInputQueue(leapmuxServer, agentId)
+      expect(queue.activeTurn).toBe(false)
+      expect(queue.items.find(item => item.id === queued.input_id)?.state).toBe(AgentInputState.QUEUED)
+    })
+    return queued.input_id
+  }, async () => { await modelScript.releaseGateIfHeld(gate) })
+
+  await resumePausedQueue(page)
+  expect(await runCLI(cli, [
+    ...send,
+    '--wait',
+    '--timeout',
+    '20s',
+  ])).toMatchObject({
+    input_id: inputId,
+    turn_outcome: 'completed',
+    replies: [answer],
+  })
+  await expect(userBubbles(page).filter({ hasText: steerText })).toHaveCount(1)
 })

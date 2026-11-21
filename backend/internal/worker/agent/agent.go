@@ -819,6 +819,15 @@ const (
 	SteerOutcomeUncertain
 )
 
+// SteerResolution identifies one queue dispatch that the provider consumed or
+// removed. A consumed input can carry the receipt of its receiving turn.
+type SteerResolution struct {
+	InputID   string
+	AttemptID string
+	Outcome   SteerOutcome
+	Receipt   NativeInputReceipt
+}
+
 // SteerEchoServices reports delivery outcomes in the order of accepted steers.
 type SteerEchoServices interface {
 	// ReportSteersEchoed follows the output before the steer and precedes the output after it.
@@ -836,6 +845,8 @@ type OutputEffectServices interface {
 	OutputQueue() *OutputQueue
 	// CaptureSteerReport retains the original publisher and span context. A failed effect can be retried.
 	CaptureSteerReport(count int, outcome SteerOutcome) func() error
+	// CaptureSteerResolution retains the same context for a report about one dispatch.
+	CaptureSteerResolution(resolution SteerResolution) func() error
 	// CaptureBackgroundTaskExit retains the original physical registry owner and exit decision.
 	// A nil operation means that no process-exit registry write is admitted.
 	CaptureBackgroundTaskExit(stopped bool) func() error
@@ -1130,6 +1141,9 @@ type SteerRequest struct {
 	// id. The Manager refuses a request without one, so every steer that a
 	// provider receives states its item.
 	InputID string
+	// AttemptID is set when the queue waits for an echo. A new dispatch of the
+	// same input gets a new ID, so a late native report cannot resolve it.
+	AttemptID string
 	// Content is the text that the model reads. The Worker builds it from the
 	// item: a message from another agent holds the header that identifies the
 	// sender, and a control reply holds the words that state what it answers.

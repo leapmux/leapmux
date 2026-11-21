@@ -11,6 +11,7 @@ import (
 
 type harnessReplySubmission struct {
 	receipt agent.NativeInputReceipt
+	steer   agent.SteerRequest
 	echoed  bool
 }
 
@@ -35,13 +36,16 @@ func harnessTurnID(number *int64) string {
 
 // Register before the HTTP request. An echo can reach the WebSocket while
 // the HTTP response is still in flight.
-func (a *Agent) registerReplySubmission(receipt agent.NativeInputReceipt) *harnessReplySubmission {
+func (a *Agent) registerReplySubmission(receipt agent.NativeInputReceipt, steer *agent.SteerRequest) *harnessReplySubmission {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 	if a.replySubmissions == nil {
 		a.replySubmissions = make(map[string]*harnessReplySubmission)
 	}
 	submission := &harnessReplySubmission{receipt: receipt}
+	if steer != nil {
+		submission.steer = agent.SteerRequest{InputID: steer.InputID, AttemptID: steer.AttemptID}
+	}
 	a.replySubmissions[receipt.InputID] = submission
 	return submission
 }
@@ -83,17 +87,32 @@ func (a *Agent) bindReplyInput(sessionID, requestID string) {
 	delete(a.replySubmissions, requestID)
 	submission.echoed = true
 	turn := a.replyTurn
-	if turn == nil || turn.sessionID != sessionID {
-		a.retireReplyInput(submission.receipt)
-		return
+	provedTurn := turn != nil && turn.sessionID == sessionID
+	receipt := submission.receipt
+	var err error
+	if submission.steer.AttemptID != "" {
+		if provedTurn {
+			receipt.TurnID = turn.id
+		}
+		err = a.reportSteerResolution(submission.steer, agent.SteerOutcomeEchoed, receipt)
+	} else if provedTurn {
+		err = a.sink.BindNativeInputTurn(receipt, turn.id)
 	}
-	if err := a.sink.BindNativeInputTurn(submission.receipt, turn.id); !agent.OutputRetained(err) {
+	if !agent.OutputRetained(err) {
 		slog.Warn("Store the DeepSeek Harness input binding", "agent_id", a.AgentID(), "error", err)
-		a.retireReplyInput(submission.receipt)
+	}
+	if !provedTurn || !agent.OutputRetained(err) {
+		a.retireReplyInput(receipt)
 		return
 	}
 	turn.ordinal++
 	turn.inputs = append(turn.inputs, agent.NativeReplyBoundary{InputID: requestID, AfterOrdinal: turn.ordinal})
+}
+
+func (a *Agent) reportSteerResolution(request agent.SteerRequest, outcome agent.SteerOutcome, receipt agent.NativeInputReceipt) error {
+	return agent.RetainSteerResolution(a.sink, agent.SteerResolution{
+		InputID: request.InputID, AttemptID: request.AttemptID, Outcome: outcome, Receipt: receipt,
+	})
 }
 
 func (a *Agent) trackedReplyTurn(sessionID string) *harnessReplyTurn {
@@ -235,7 +254,9 @@ func (a *Agent) retireUnfinishedReplies() {
 		a.replyTurn = nil
 	}
 	for _, submission := range a.replySubmissions {
-		a.retireReplyInput(submission.receipt)
+		if submission.steer.AttemptID == "" {
+			a.retireReplyInput(submission.receipt)
+		}
 	}
 	clear(a.replySubmissions)
 }

@@ -1124,6 +1124,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 		return nil, Snapshot{}, err
 	}
 	var reservedSeq int64
+	var steerAttemptID string
 	// A row held for the provider's echo reserves no sequence: the echo's
 	// accept reserves one, in order with every other echoed row. Only a
 	// steered dispatch holds its row (requireActive), so an ordinary dispatch
@@ -1137,12 +1138,14 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 		} else if reservedSeq, err = reserveMessageSeq(ctx, tx, agentID); err != nil {
 			return nil, Snapshot{}, err
 		}
+	} else {
+		steerAttemptID = id.Generate()
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_items
-		SET state = ?, reserved_seq = ?, error = '', updated_at = ?
+		SET state = ?, reserved_seq = ?, steer_attempt_id = ?, error = '', updated_at = ?
 		WHERE agent_id = ? AND id = ? AND removed_at IS NULL AND state = ?`,
-		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, reservedSeq, nowText(), agentID, item.ID,
+		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, reservedSeq, steerAttemptID, nowText(), agentID, item.ID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED)
 	if err != nil {
 		return nil, Snapshot{}, err
@@ -1187,7 +1190,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 		return nil, Snapshot{}, err
 	}
 	return &PreparedDispatch{
-		Item:        DispatchItem{StoredItem: item, Attachments: attachments},
+		Item:        DispatchItem{StoredItem: item, Attachments: attachments, SteerAttemptID: steerAttemptID},
 		ReservedSeq: reservedSeq, Steering: requireActive,
 	}, snapshot, nil
 }
@@ -1614,31 +1617,14 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 	}
 	var accepted []AcceptedTranscript
 	for _, id := range ids {
-		item, attachments, found, err := getItem(ctx, tx, agentID, id, true)
+		row, err := acceptEchoedSteer(ctx, tx, agentID, id, DispatchResult{SpanLines: spanLines})
 		if err != nil {
-			return nil, false, Snapshot{}, err
-		}
-		if !found {
-			return nil, false, Snapshot{}, ErrConflict
-		}
-		seq, err := reserveMessageSeq(ctx, tx, agentID)
-		if err != nil {
-			return nil, false, Snapshot{}, err
-		}
-		row, err := insertInputTranscript(ctx, tx, item, attachments, seq, DispatchResult{SpanLines: spanLines})
-		if err != nil {
-			return nil, false, Snapshot{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, agentID, id); err != nil {
 			return nil, false, Snapshot{}, err
 		}
 		accepted = append(accepted, row)
 	}
 	if len(accepted) > 0 {
-		if err := compactOrder(ctx, tx, agentID); err != nil {
-			return nil, false, Snapshot{}, err
-		}
-		if err := bumpRevision(ctx, tx, agentID); err != nil {
+		if err := compactAfterSteerEcho(ctx, tx, agentID); err != nil {
 			return nil, false, Snapshot{}, err
 		}
 	}
@@ -1647,6 +1633,35 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 		return nil, false, Snapshot{}, err
 	}
 	return accepted, acceptedInFlight, snapshot, nil
+}
+
+func acceptEchoedSteer(ctx context.Context, tx *sql.Tx, agentID, inputID string, result DispatchResult) (AcceptedTranscript, error) {
+	item, attachments, found, err := getItem(ctx, tx, agentID, inputID, true)
+	if err != nil {
+		return AcceptedTranscript{}, err
+	}
+	if !found {
+		return AcceptedTranscript{}, ErrConflict
+	}
+	seq, err := reserveMessageSeq(ctx, tx, agentID)
+	if err != nil {
+		return AcceptedTranscript{}, err
+	}
+	row, err := insertInputTranscript(ctx, tx, item, attachments, seq, result)
+	if err != nil {
+		return AcceptedTranscript{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ? AND removed_at IS NULL`, agentID, inputID); err != nil {
+		return AcceptedTranscript{}, err
+	}
+	return row, nil
+}
+
+func compactAfterSteerEcho(ctx context.Context, tx db.DBTX, agentID string) error {
+	if err := compactOrder(ctx, tx, agentID); err != nil {
+		return err
+	}
+	return bumpRevision(ctx, tx, agentID)
 }
 
 // requeueUnechoedSteers returns selected steers to the head behind the remaining pending echoes.
@@ -1658,25 +1673,29 @@ func requeueUnechoedSteers(ctx context.Context, tx db.DBTX, agentID string, coun
 	if err != nil || len(ids) == 0 {
 		return 0, err
 	}
+	if err := requeueSteerIDs(ctx, tx, agentID, ids); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
+func requeueSteerIDs(ctx context.Context, tx db.DBTX, agentID string, ids []string) error {
 	absorbed := make(map[string]bool)
 	for _, id := range ids {
 		peerID, err := absorbQueuedAutoRetry(ctx, tx, agentID, id)
 		if err != nil {
-			return 0, err
+			return err
 		}
 		if peerID != "" {
 			absorbed[peerID] = true
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', reserved_seq = 0, updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', reserved_seq = 0, steer_attempt_id = '', updated_at = ? WHERE agent_id = ? AND id = ? AND removed_at IS NULL`,
 			leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, id); err != nil {
-			return 0, err
+			return err
 		}
 	}
 	remaining := slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return absorbed[id] })
-	if err := placeResolvedSteers(ctx, tx, agentID, remaining); err != nil {
-		return 0, err
-	}
-	return len(ids), nil
+	return placeResolvedSteers(ctx, tx, agentID, remaining)
 }
 
 // placeResolvedSteers keeps unresolved echoes first, then the selected inputs, then the remaining inputs.

@@ -81,6 +81,7 @@ type pendingSteer struct {
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputReceiptSender = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerEchoReporter = (*Agent)(nil)
 var _ agent.SteerSurvivor = (*Agent)(nil)
 var _ agent.ContextCompactor = (*Agent)(nil)
 var _ agent.GoalWriter = (*Agent)(nil)
@@ -109,9 +110,12 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 }
 
 func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	_, err := a.sendInput("", request.Content, request.Attachments, &request, false)
+	_, err := a.sendInput("", request.Content, request.Attachments, &request, request.AttemptID != "")
 	return err
 }
+
+// SteerRowAtEcho waits for the native event that identifies the consuming turn.
+func (*Agent) SteerRowAtEcho() bool { return true }
 
 // SteerSurvivesTurnEnd prevents the queue from resending an input that the native inbox retains.
 func (*Agent) SteerSurvivesTurnEnd() bool { return true }
@@ -164,6 +168,13 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 	if len(attachments) == 0 {
 		handled, err := a.userCommand(sessionID, content)
 		if handled || err != nil {
+			if err == nil && steer != nil && steer.AttemptID != "" {
+				// A local command can finish without submitting a native prompt.
+				err = a.reportSteerResolution(*steer, agent.SteerOutcomeEchoed, inputReceipt)
+				if agent.OutputRetained(err) {
+					err = nil
+				}
+			}
 			return inputReceipt, err
 		}
 	}
@@ -175,7 +186,7 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 	var submission *harnessReplySubmission
 	if trackReply {
 		inputReceipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: requestID}
-		submission = a.registerReplySubmission(inputReceipt)
+		submission = a.registerReplySubmission(inputReceipt, steer)
 	}
 	if delivery == "queue" {
 		a.Mu.Lock()
@@ -189,7 +200,8 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 	}
 	var pending *pendingSteer
 	if steer != nil {
-		pending = &pendingSteer{requestID: requestID, request: agent.SteerRequest{InputID: steer.InputID, Content: steer.Content}}
+		pending = &pendingSteer{requestID: requestID, request: *steer}
+		pending.request.Attachments = nil
 		for _, attachment := range steer.Attachments {
 			pending.request.Attachments = append(pending.request.Attachments, proto.CloneOf(attachment))
 		}
@@ -293,8 +305,18 @@ func (a *Agent) removePendingSteer(sessionID string, steer *pendingSteer) error 
 		steer.removed = true
 		a.Mu.Unlock()
 	}
-	if err := a.sink.RequeueDroppedInput(steer.request); err != nil {
-		return err
+	if steer.request.AttemptID != "" {
+		a.dispatchMu.Lock()
+		delete(a.replySubmissions, steer.requestID)
+		a.dispatchMu.Unlock()
+		err := a.reportSteerResolution(steer.request, agent.SteerOutcomeDropped, agent.NativeInputReceipt{})
+		if !agent.OutputRetained(err) {
+			return err
+		}
+	} else {
+		if err := a.sink.RequeueDroppedInput(steer.request); err != nil {
+			return err
+		}
 	}
 	a.forgetPendingSteer(steer)
 	return nil

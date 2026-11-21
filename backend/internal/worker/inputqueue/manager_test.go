@@ -34,7 +34,7 @@ type recordingDispatcher struct {
 	prepared        []string
 	onPrepare       func(string)
 	policy          agent.SteerPolicy
-	onSteer         func()
+	onSteer         func(DispatchItem)
 	fail            error
 	steering        bool
 	steerStarted    chan struct{}
@@ -66,7 +66,7 @@ func (d *recordingDispatcher) Steer(item DispatchItem) (DispatchResult, error) {
 	onSteer := d.onSteer
 	d.mu.Unlock()
 	if onSteer != nil {
-		onSteer()
+		onSteer(item)
 	}
 	if started != nil {
 		close(started)
@@ -113,7 +113,7 @@ func TestManagerSteerOfASurvivorIsNotRequeuedWhenTheTurnEndsDuringTheCall(t *tes
 		require.NoError(t, err)
 		_, err = store.Enqueue(t.Context(), NewItem{ID: "steer", AgentID: "agent-1", Text: "read this once", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
 		require.NoError(t, err)
-		dispatcher.onSteer = func() {
+		dispatcher.onSteer = func(DispatchItem) {
 			_, err := manager.TurnEnded(t.Context(), "agent-1")
 			require.NoError(t, err)
 		}
@@ -283,7 +283,7 @@ func TestManagerEchoDuringTheSteerCallWritesTheRowOnce(t *testing.T) {
 		f := newEchoQueueFixture(t, true)
 		f.enqueue(t, "steer")
 		f.dispatcher.steerFail = lateError
-		f.dispatcher.onSteer = func() {
+		f.dispatcher.onSteer = func(DispatchItem) {
 			_, err := f.manager.AcceptEchoedSteers(t.Context(), "agent-1", 1, "[]")
 			require.NoError(t, err)
 		}
@@ -316,7 +316,7 @@ func TestManagerDropDuringTheSteerCallRequeuesTheInput(t *testing.T) {
 	t.Parallel()
 	f := newEchoQueueFixture(t, true)
 	f.enqueue(t, "steer")
-	f.dispatcher.onSteer = func() {
+	f.dispatcher.onSteer = func(DispatchItem) {
 		_, err := f.manager.RequeueDroppedSteers(t.Context(), "agent-1", 1)
 		require.NoError(t, err)
 	}
@@ -335,7 +335,7 @@ func TestManagerAnEarlyEchoKeepsItsReceiptWhenTheNextSteerStarts(t *testing.T) {
 	f.enqueue(t, "first")
 	f.enqueue(t, "second")
 	calls := 0
-	f.dispatcher.onSteer = func() {
+	f.dispatcher.onSteer = func(DispatchItem) {
 		calls++
 		if calls != 1 {
 			return
@@ -1774,7 +1774,7 @@ func TestManagerUncertaintyDuringTheSteerCallKeepsTheInput(t *testing.T) {
 		t.Run(fmt.Sprint(providerErr), func(t *testing.T) {
 			f := newEchoQueueFixture(t, true)
 			f.enqueue(t, "steer")
-			f.dispatcher.onSteer = func() {
+			f.dispatcher.onSteer = func(DispatchItem) {
 				_, err := f.manager.ResolveUnechoedSteers(t.Context(), "agent-1", 1)
 				require.NoError(t, err)
 			}
