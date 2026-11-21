@@ -133,7 +133,7 @@ export class TunnelKeyPinMissingError extends Error {
 
 function requireTunnelTrustAccount(scope: WorkerTrustScope): string {
   scope.signal.throwIfAborted()
-  if (!scope.userId || getCurrentWorkerTrustScope() !== scope)
+  if (!scope.userId || !scope.storageAccount || getCurrentWorkerTrustScope() !== scope)
     throw new Error('The account changed. Open the tunnel action again.')
   return scope.userId
 }
@@ -146,7 +146,7 @@ export async function resolveTunnelTrust(workerId: string, scope: WorkerTrustSco
     throw new TunnelKeyApprovalExpiredError()
   }
 
-  const storageScope = { accountId: expectedUserId, signal: scope.signal }
+  const storageScope = { accountId: scope.storageAccount, signal: scope.signal }
   const { pin, removalRevision } = await readWorkerKeyPin(workerId, storageScope)
   requireTunnelTrustAccount(scope)
   if (approval) {

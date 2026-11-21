@@ -66,7 +66,10 @@ export { clearAllKeyPins, clearKeyPin, KeyPinRejectedError, KeyPinStore } from '
 export type { WorkerKeyBundle } from './workerKeyBundle'
 
 function sameWorkerTrustScope(first: WorkerTrustScope | undefined, second: WorkerTrustScope | undefined): boolean {
-  return first?.signal === second?.signal && first?.userId === second?.userId && first?.generation === second?.generation
+  return first?.signal === second?.signal
+    && first?.userId === second?.userId
+    && first?.storageAccount === second?.storageAccount
+    && first?.generation === second?.generation
 }
 
 const log = createLogger('channel')
@@ -468,7 +471,7 @@ export class ChannelManager {
     const identity = this.workerTrustScope()
     const accountId = identity === undefined
       ? storageAccountId()
-      : identity.userId
+      : identity.storageAccount
     const poolGeneration = this.pool.closeGeneration
     const previous = this.lastOpenScope
     if (previous !== undefined && sameWorkerTrustScope(previous.identity, identity) && previous.accountId === accountId && previous.poolGeneration === poolGeneration)

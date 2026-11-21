@@ -1,6 +1,7 @@
 import type { TunnelKeyApproval } from '~/api/workerRpc'
 import type { WorkerTrustScope } from '~/context/AuthContext'
 import { describe, expect, it, vi } from 'vitest'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { trustWorkerOnFirstContact, verifyWorkerKey, WorkerKeyPinMissingError, WorkerKeyPinPresentError } from './verifyWorkerKey'
 
 const review = vi.hoisted(() => vi.fn<(workerId: string, scope: WorkerTrustScope, signal?: AbortSignal) => Promise<TunnelKeyApproval>>())
@@ -15,7 +16,12 @@ const KeyPinMissingReviewError = vi.hoisted(() => class KeyPinMissingReviewError
 const KeyPinPresentFirstContactError = vi.hoisted(() => class KeyPinPresentFirstContactError extends Error {})
 vi.mock('~/lib/keyPinStore', () => ({ KeyPinMissingReviewError, KeyPinPresentFirstContactError, KeyPinRejectedError }))
 
-const scope: WorkerTrustScope = { userId: 'user', generation: 1, signal: new AbortController().signal }
+const scope: WorkerTrustScope = {
+  userId: 'user',
+  storageAccount: storageAccountFor(TEST_HUB, 'user'),
+  generation: 1,
+  signal: new AbortController().signal,
+}
 
 describe('verifyWorkerKey', () => {
   it('returns the approval from the fresh browser review', async () => {

@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, resetBrowserStorageForTests } from '~/lib/browserStorage'
+import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, resetBrowserStorageForTests, storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { IDB_NATIVE_SCHEMA_VERSION, IDB_TRUST_DATABASE_NAME } from '~/lib/idb'
 import { testKeyPinHex } from '~/test-support/keyPins'
 import { countRows, databaseStores, deleteEntries, deleteStorageDatabase, readEntry, storageKeys, waitForStoredEntry, writeEntry } from './storage'
@@ -86,7 +86,7 @@ function rawEntry(dbName: string, key: string): Promise<{ v: unknown, e: number 
 }
 
 describe('pin storage fixture', () => {
-  const accountId = 'user-1'
+  const accountId = storageAccountFor(TEST_HUB, 'user-1')
   const key = accountStorageKey(accountId, KEY_KEY_PINS)
 
   it('reads confirmed absence without leaving a database that blocks the first pin open', async () => {

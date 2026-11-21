@@ -100,10 +100,10 @@ export const KeyPinsControl: Component = () => {
 
   async function discardCorruptPins(): Promise<void> {
     const scope = auth.workerTrustScope()
-    if (!scope.userId)
+    if (!scope.userId || !scope.storageAccount)
       throw new Error('Sign in before discarding trusted Worker keys.')
     await discardCorruptKeyPinMap({
-      accountId: scope.userId,
+      accountId: scope.storageAccount,
       signal: AbortSignal.any([scope.signal, componentLifetime.signal]),
     })
   }

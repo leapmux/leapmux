@@ -1,3 +1,4 @@
+import type { StorageAccount } from './browserStorage'
 /**
  * Frontend E2EE channel pool: the channels Map, per-worker open dedup,
  * closeGeneration fence, identity cross-check helpers, and getOrOpenChannel
@@ -19,7 +20,7 @@ const log = createLogger('channel')
 
 export interface ChannelOpenScope {
   identity: WorkerTrustScope | undefined
-  accountId: string | null
+  accountId: StorageAccount | null
   signal: AbortSignal
   poolGeneration: number
   assertCurrent: () => void

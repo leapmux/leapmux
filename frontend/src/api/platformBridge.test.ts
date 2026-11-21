@@ -6,6 +6,7 @@ import { create, toBinary } from '@bufbuild/protobuf'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema, RelayCloseSchema, RelayReadResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { deferred, settle } from '~/test-support/async'
 import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
@@ -683,14 +684,24 @@ describe('platformBridge tunnel operations', () => {
   function adopt(userId: string): WorkerTrustScope {
     account.abort()
     account = new AbortController()
-    scope = { userId, signal: account.signal, generation: scope.generation + 1 }
+    scope = {
+      userId,
+      storageAccount: storageAccountFor(TEST_HUB, userId),
+      signal: account.signal,
+      generation: scope.generation + 1,
+    }
     return scope
   }
 
   beforeEach(() => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
     account = new AbortController()
-    scope = { userId: 'outgoing', signal: account.signal, generation: 1 }
+    scope = {
+      userId: 'outgoing',
+      storageAccount: storageAccountFor(TEST_HUB, 'outgoing'),
+      signal: account.signal,
+      generation: 1,
+    }
     dispose = platformBridge.setTunnelTrustScope(() => scope)
   })
 

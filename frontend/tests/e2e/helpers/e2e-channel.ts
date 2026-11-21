@@ -137,7 +137,12 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
   // the manager's identity cross-check (open-time reject + pooled identity-drift
   // eviction) short-circuits to "no expectation" and the whole feature runs
   // unexercised in e2e.
-  const identity = { userId, generation: 1, signal: new AbortController().signal }
+  const identity = {
+    userId,
+    storageAccount: account,
+    generation: 1,
+    signal: new AbortController().signal,
+  }
   return new ChannelManager(new FetchChannelTransport(hubUrl, cookie), {
     // Node has no Worker, so the channel sessions run in process, behind a
     // MessageChannel pair. closeAll shuts the host down, which closes its ports.

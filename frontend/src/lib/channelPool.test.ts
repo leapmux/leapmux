@@ -1,14 +1,22 @@
 import type { ChannelOpenScope, PooledChannel } from './channelPool'
 import { describe, expect, it, vi } from 'vitest'
 import { deferred } from '~/test-support/async'
+import { storageAccountFor, TEST_HUB } from './browserStorage'
 import { ChannelPool } from './channelPool'
 
 function openScope(userId?: string, signal = new AbortController().signal): ChannelOpenScope {
   return {
     identity: userId === undefined
       ? undefined
-      : { userId, generation: 1, signal },
-    accountId: userId ?? null,
+      : {
+          userId,
+          storageAccount: storageAccountFor(TEST_HUB, userId),
+          generation: 1,
+          signal,
+        },
+    accountId: userId === undefined
+      ? null
+      : storageAccountFor(TEST_HUB, userId),
     poolGeneration: 0,
     signal,
     assertCurrent: () => signal.throwIfAborted(),

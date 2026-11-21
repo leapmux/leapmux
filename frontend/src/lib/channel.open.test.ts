@@ -24,7 +24,7 @@ import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSessio
 import { seedKeyPin, testKeyPinHex, testWorkerKeyBundle } from '~/test-support/keyPins'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import * as browserStorage from './browserStorage'
-import { accountStorageKey, KEY_KEY_PINS, KEY_KEY_PINS_REMOVAL_REVISION, readKeyPinState, setStorageAccountForTests, storageAccountId } from './browserStorage'
+import { accountStorageKey, KEY_KEY_PINS, KEY_KEY_PINS_REMOVAL_REVISION, readKeyPinState, setStorageAccountForTests, storageAccountFor, storageAccountId, TEST_HUB } from './browserStorage'
 import { readTrustRowForTests, writeTrustRowForTests } from './browserStorageDb'
 import { ChannelError } from './channel'
 import {
@@ -219,9 +219,16 @@ describe('ChannelManager openChannel', () => {
   it.each(['identity', 'pool generation'] as const)('rolls back an encrypted Ping held across retirement of the %s', async (retire) => {
     const owner = 'hub-authenticated-user'
     const successor = 'successor-user'
+    const ownerAccount = storageAccountFor(TEST_HUB, owner)
+    const successorAccount = storageAccountFor(TEST_HUB, successor)
     const workerId = 'w-held-ping'
     const lifetime = new AbortController()
-    let identity = { userId: owner, generation: 1, signal: lifetime.signal }
+    let identity = {
+      userId: owner,
+      storageAccount: ownerAccount,
+      generation: 1,
+      signal: lifetime.signal,
+    }
     setStorageAccountForTests(owner)
     await seedKeyPin('unrelated-worker', {
       publicKeyHex: testKeyPinHex('11'),
@@ -266,7 +273,12 @@ describe('ChannelManager openChannel', () => {
       if (retire === 'identity') {
         lifetime.abort()
         setStorageAccountForTests(successor)
-        identity = { userId: successor, generation: 2, signal: new AbortController().signal }
+        identity = {
+          userId: successor,
+          storageAccount: successorAccount,
+          generation: 2,
+          signal: new AbortController().signal,
+        }
       }
       else {
         manager.closeAll()
@@ -284,8 +296,8 @@ describe('ChannelManager openChannel', () => {
       expect(manager.hasOpenChannel(workerId)).toBe(false)
       expect(close).toHaveBeenCalledExactlyOnceWith(frame.channelId)
       expect(invalidation).not.toHaveBeenCalled()
-      expect(await readKeyPinState({ accountId: owner })).toEqual(before)
-      expect(await readKeyPinState({ accountId: successor })).toEqual({ pins: {}, removalRevision: 0 })
+      expect(await readKeyPinState({ accountId: ownerAccount })).toEqual(before)
+      expect(await readKeyPinState({ accountId: successorAccount })).toEqual({ pins: {}, removalRevision: 0 })
     }
     finally {
       off()
@@ -1343,12 +1355,22 @@ describe('ChannelManager openChannelForKeyReview', () => {
     const userId = 'user-1'
     setStorageAccountForTests(userId)
     let lifetime = new AbortController()
-    let identity = { userId, generation: 1, signal: lifetime.signal }
+    let identity = {
+      userId,
+      storageAccount: storageAccountFor(TEST_HUB, userId),
+      generation: 1,
+      signal: lifetime.signal,
+    }
     const retireIdentity = (nextUserId = userId) => {
       lifetime.abort()
       lifetime = new AbortController()
       setStorageAccountForTests(nextUserId)
-      identity = { userId: nextUserId, generation: identity.generation + 1, signal: lifetime.signal }
+      identity = {
+        userId: nextUserId,
+        storageAccount: storageAccountFor(TEST_HUB, nextUserId),
+        generation: identity.generation + 1,
+        signal: lifetime.signal,
+      }
     }
     const { socket, transport } = makeOpenTransport(() => identity.userId)
     const confirmKeyPin = vi.fn()
@@ -1489,7 +1511,7 @@ describe('ChannelManager openChannelForKeyReview', () => {
         ...decision,
         commit: async () => {
           await writeTrustRowForTests({
-            k: accountStorageKey('user-1', KEY_KEY_PINS),
+            k: accountStorageKey(h.identity().storageAccount!, KEY_KEY_PINS),
             v: {},
             e: Date.now() + 60_000,
           })
@@ -1523,12 +1545,12 @@ describe('ChannelManager openChannelForKeyReview', () => {
       await waitForPendingChannel(h.cm, 'ch-1')
       await Promise.all([
         writeTrustRowForTests({
-          k: accountStorageKey('user-1', KEY_KEY_PINS),
+          k: accountStorageKey(h.identity().storageAccount!, KEY_KEY_PINS),
           v: {},
           e: Date.now() + 60_000,
         }),
         writeTrustRowForTests({
-          k: accountStorageKey('user-1', KEY_KEY_PINS_REMOVAL_REVISION),
+          k: accountStorageKey(h.identity().storageAccount!, KEY_KEY_PINS_REMOVAL_REVISION),
           v: 1,
           e: Number.POSITIVE_INFINITY,
         }),
@@ -1554,7 +1576,7 @@ describe('ChannelManager openChannelForKeyReview', () => {
         ...decision,
         commit: async () => {
           await writeTrustRowForTests({
-            k: accountStorageKey('user-1', KEY_KEY_PINS),
+            k: accountStorageKey(h.identity().storageAccount!, KEY_KEY_PINS),
             v: {
               worker: {
                 publicKeyHex: testKeyPinHex(keyByte.toString(16).padStart(2, '0')),

@@ -891,7 +891,7 @@ export function setStorageAccountForTests(hubUserId: string): void {
  * The one statement of the layout decision, so `storedKeyFor` and `resolveKey`
  * cannot answer it differently. They differ only in what they do with the null.
  */
-function composeKey(name: string, spec: KeySpec, accountId = storageAccount): string | null {
+function composeKey(name: string, spec: KeySpec, accountId: StorageAccount | null = storageAccount): string | null {
   if (spec.scope === 'device')
     return deviceStorageKey(name)
   return accountId === null
@@ -933,7 +933,7 @@ export function storedKeyFor(name: string): string | null {
 function resolveKey<S extends KeySpec>(
   name: string,
   index: SpecIndex<S>,
-  accountId = storageAccount,
+  accountId: StorageAccount | null = storageAccount,
 ): { key: string, ttl: number, spec: S } {
   const spec = specFor(name, index)
   if (spec === null) {
@@ -1656,7 +1656,7 @@ export interface KeyPinState {
 }
 
 export interface KeyPinStorageScope {
-  accountId?: string | null
+  accountId?: StorageAccount | null
   signal?: AbortSignal
 }
 
@@ -1718,7 +1718,7 @@ export type KeyPinStateChange
   | { kind: 'removeAll' }
 
 /** The stored keys of the two pin rows under the captured account. */
-function resolvePinKeys(accountId: string | null): { pins: string, revision: string, pinsTtl: number } {
+function resolvePinKeys(accountId: StorageAccount | null): { pins: string, revision: string, pinsTtl: number } {
   const pins = resolveKey(KEY_KEY_PINS, LOCAL_INDEX, accountId)
   return {
     pins: pins.key,

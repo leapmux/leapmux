@@ -26,6 +26,7 @@ import { deferred } from '~/test-support/async'
 import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
 import { makeIdentitySession } from '~/test-support/identitySession'
 import { testWorkerKeyBundle } from '~/test-support/keyPins'
+import { storageAccountFor, TEST_HUB } from './browserStorage'
 import { ChannelManager } from './channel'
 import { frameAssociatedData, frameBytes, unframeBytes } from './channelFraming'
 import { createInProcessSessionHost } from './channelSessionInProcess'
@@ -125,7 +126,12 @@ export function newTestChannelManager(transport: ChannelTransport, opts: TestCha
       lifetime = new AbortController()
       scope = userId === undefined
         ? undefined
-        : { userId, generation: ++generation, signal: lifetime.signal }
+        : {
+            userId,
+            storageAccount: storageAccountFor(TEST_HUB, userId),
+            generation: ++generation,
+            signal: lifetime.signal,
+          }
     }
     return scope
   }

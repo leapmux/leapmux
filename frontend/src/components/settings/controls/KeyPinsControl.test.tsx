@@ -1,9 +1,10 @@
 import type { KeyPinEntry } from '~/lib/keyPinStore'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { accountStorageKey, KEY_KEY_PINS, readKeyPinState, setStorageAccountForTests, storageAccountId } from '~/lib/browserStorage'
+import { accountStorageKey, hydrateStorageAccount, KEY_KEY_PINS, readKeyPinState, setStorageAccount, setStorageAccountForTests, storageAccountId } from '~/lib/browserStorage'
 import { writeTrustRowForTests } from '~/lib/browserStorageDb'
 import { deferred, settle } from '~/test-support/async'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { seedKeyPin, testKeyPinHex } from '~/test-support/keyPins'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { KeyPinsControl } from './KeyPinsControl'
@@ -74,7 +75,7 @@ vi.mock('~/lib/keyPinStore', async (importOriginal) => {
 useTestStorage()
 
 beforeEach(() => {
-  authState.setUserId?.(storageAccountId() ?? undefined)
+  authState.setUserId?.(TEST_USER_ID)
   pinIo.failList = false
   pinIo.failRemove = false
   pinIo.nextList = undefined
@@ -235,7 +236,8 @@ describe('KeyPinsControl', () => {
     expect(pinIo.nextList).toBeUndefined()
 
     setStorageAccountForTests('another-account')
-    setStorageAccountForTests(account)
+    await hydrateStorageAccount(account)
+    setStorageAccount(account)
     await waitForPinRows(['worker-a', 'worker-b'])
 
     if (outcome === 'success') {

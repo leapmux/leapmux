@@ -399,6 +399,7 @@ export const AuthProvider: ParentComponent = (props) => {
   let trustController = new AbortController()
   const initialTrustScope: WorkerTrustScope = {
     userId: null,
+    storageAccount: null,
     generation: 0,
     signal: trustController.signal,
   }
@@ -417,11 +418,12 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   /** Install the next lifetime. The caller retires the previous scope first. */
-  const installWorkerTrustScope = (userId: string | null) => {
+  const installWorkerTrustScope = (userId: string | null, account: StorageAccount | null) => {
     trustGeneration++
     trustController = new AbortController()
     setTrustScopeSignal({
       userId,
+      storageAccount: account,
       generation: trustGeneration,
       signal: trustController.signal,
     })
@@ -527,7 +529,7 @@ export const AuthProvider: ParentComponent = (props) => {
       }
     }
     if (advanceScope)
-      installWorkerTrustScope(nextId)
+      installWorkerTrustScope(nextId, account)
     setIdentity(next && account
       ? { user: next, storageAccount: account }
       : null)

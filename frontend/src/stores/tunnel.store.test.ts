@@ -3,6 +3,7 @@ import type { WorkerTrustScope } from '~/context/AuthContext'
 import { createEffect, createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { platformBridge } from '~/api/platformBridge'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { deferred, settle } from '~/test-support/async'
 import { createTunnelStore } from './tunnel.store'
 
@@ -49,14 +50,24 @@ describe('createTunnelStore', () => {
   function adopt(userId = 'user'): WorkerTrustScope {
     controller.abort()
     controller = new AbortController()
-    scope = { userId, generation: scope.generation + 1, signal: controller.signal }
+    scope = {
+      userId,
+      storageAccount: storageAccountFor(TEST_HUB, userId),
+      generation: scope.generation + 1,
+      signal: controller.signal,
+    }
     return scope
   }
 
   beforeEach(() => {
     vi.resetAllMocks()
     controller = new AbortController()
-    scope = { userId: 'user', generation: 1, signal: controller.signal }
+    scope = {
+      userId: 'user',
+      storageAccount: storageAccountFor(TEST_HUB, 'user'),
+      generation: 1,
+      signal: controller.signal,
+    }
     store = createTunnelStore(() => scope)
   })
 

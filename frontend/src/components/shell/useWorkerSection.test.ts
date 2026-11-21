@@ -10,6 +10,7 @@ import { render } from 'solid-js/web'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createDialogState } from '~/hooks/createDialogState'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { deferred } from '~/test-support/async'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
@@ -80,6 +81,9 @@ vi.mock('~/stores/tunnel.store', () => ({
 function trustScope(userId: string): WorkerTrustScope {
   return {
     userId: userId || null,
+    storageAccount: userId
+      ? storageAccountFor(TEST_HUB, userId)
+      : null,
     generation: 1,
     signal: new AbortController().signal,
   }

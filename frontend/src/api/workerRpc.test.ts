@@ -15,9 +15,10 @@ import { WorkerTerminalService } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import { WorkerTabService } from '~/generated/proto/leapmux/v1/worker_tab_pb'
+import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { ChannelError } from '~/lib/channelError'
-import { TauriRelayWebSocket } from './tauriRelaySocket'
 import { deferred } from '~/test-support/async'
+import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 // The retry lives inside `callWorker`, which is private — so these drive it
 // through a real client method and control the one seam beneath it.
@@ -34,6 +35,15 @@ const seams = vi.hoisted(() => ({
   reviewOpen: vi.fn(),
   firstContactOpen: vi.fn(),
 }))
+
+function trustScope(userId: string, generation: number, signal = new AbortController().signal): WorkerTrustScope {
+  return {
+    userId,
+    storageAccount: storageAccountFor(TEST_HUB, userId),
+    generation,
+    signal,
+  }
+}
 
 vi.mock('~/lib/channel', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/channel')>()
@@ -127,7 +137,7 @@ describe('callWorker retries an Unavailable reply', () => {
     vi.useFakeTimers()
     const { workerAgent, setExpectedUserId } = await import('./workerRpc')
     const outgoing = new AbortController()
-    let scope: WorkerTrustScope = { userId: 'user-a', generation: 1, signal: outgoing.signal }
+    let scope = trustScope('user-a', 1, outgoing.signal)
     const dispose = setExpectedUserId(() => scope)
     try {
       callWorkerMock.mockRejectedValueOnce(unavailable()).mockResolvedValueOnce({})
@@ -136,7 +146,7 @@ describe('callWorker retries an Unavailable reply', () => {
       await vi.advanceTimersByTimeAsync(0)
 
       outgoing.abort()
-      scope = { userId: 'user-b', generation: 2, signal: new AbortController().signal }
+      scope = trustScope('user-b', 2)
       await vi.advanceTimersByTimeAsync(200)
       expect(await outcome).toMatchObject({ name: 'AbortError' })
       expect(callWorkerMock).toHaveBeenCalledTimes(1)
@@ -615,7 +625,7 @@ describe('resolveTunnelTrust', () => {
 
   it('opens an ordinary browser channel and independently reads the committed pin on first contact', async () => {
     const { resolveTunnelTrust, setExpectedUserId } = await import('./workerRpc')
-    const scope = { userId: 'account', generation: 1, signal: new AbortController().signal }
+    const scope = trustScope('account', 1)
     const dispose = setExpectedUserId(() => scope)
     const proof = deferred<string>()
     const entered = deferred<void>()
@@ -634,11 +644,11 @@ describe('resolveTunnelTrust', () => {
       expect(seams.readPin.mock.calls).toEqual([
         [
           workerId,
-          { accountId: 'account', signal: scope.signal },
+          { accountId: scope.storageAccount, signal: scope.signal },
         ],
         [
           workerId,
-          { accountId: 'account', signal: scope.signal },
+          { accountId: scope.storageAccount, signal: scope.signal },
         ],
       ])
     }
@@ -649,7 +659,7 @@ describe('resolveTunnelTrust', () => {
 
   it('refuses failed pin reads and proof without a durable pin', async () => {
     const { resolveTunnelTrust, setExpectedUserId } = await import('./workerRpc')
-    const scope = { userId: 'account', generation: 1, signal: new AbortController().signal }
+    const scope = trustScope('account', 1)
     const dispose = setExpectedUserId(() => scope)
     try {
       seams.readPin.mockRejectedValueOnce(new Error('storage failed'))
@@ -687,7 +697,7 @@ describe('resolveTunnelTrust', () => {
     },
   ])('refuses an approved pin that was removed or replaced, without first contact', async ({ snapshot, message }) => {
     const { refreshWorkerTrustForTunnel, resolveTunnelTrust, setExpectedUserId } = await import('./workerRpc')
-    const scope = { userId: 'account', generation: 2, signal: new AbortController().signal }
+    const scope = trustScope('account', 2)
     const dispose = setExpectedUserId(() => scope)
     try {
       seams.reviewOpen.mockResolvedValueOnce({ publicKeyHex: 'committed', scope, pinSnapshot: savedPin })
@@ -714,7 +724,7 @@ describe('resolveTunnelTrust', () => {
 describe('establishWorkerTrustForTunnel', () => {
   it('returns the exact pin snapshot committed by deliberate first contact', async () => {
     const { establishWorkerTrustForTunnel, setExpectedUserId } = await import('./workerRpc')
-    const scope = { userId: 'account', generation: 3, signal: new AbortController().signal }
+    const scope = trustScope('account', 3)
     const dispose = setExpectedUserId(() => scope)
     const pinSnapshot = {
       pin: { publicKeyHex: 'committed', firstSeen: 1000 },

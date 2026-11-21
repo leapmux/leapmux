@@ -1,6 +1,9 @@
+import type { StorageAccount } from './browserStorage'
+
 /** One adopted account lifetime for Worker trust decisions. */
 export interface WorkerTrustScope {
   userId: string | null
+  storageAccount: StorageAccount | null
   generation: number
   signal: AbortSignal
 }
