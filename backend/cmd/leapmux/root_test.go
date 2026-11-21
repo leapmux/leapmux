@@ -331,6 +331,7 @@ func TestCompletion_PrintsAScriptForEachShell(t *testing.T) {
 		"fish":       "complete -c leapmux",
 		"powershell": "Register-ArgumentCompleter",
 		"elvish":     "set edit:completion:arg-completer[leapmux]",
+		"nushell":    "export extern leapmux",
 	}
 	require.Len(t, marks, len(shells), "every supported shell has a mark here")
 	for _, shell := range shells {
@@ -344,7 +345,7 @@ func TestCompletion_PrintsAScriptForEachShell(t *testing.T) {
 	o := runTestCLI(t, "completion", "tcsh")
 	assert.Equal(t, cli.ExitUsage, o.code)
 	assert.Contains(t, o.stderr, `unknown shell "tcsh"`)
-	assert.Contains(t, o.stderr, "bash, zsh, fish, powershell, elvish")
+	assert.Contains(t, o.stderr, "bash, zsh, fish, powershell, elvish, nushell")
 }
 
 // The completion asks the binary for its candidates, so a prefix completes

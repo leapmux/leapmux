@@ -718,13 +718,17 @@ describe('task build cache', () => {
     const dir = fixture()
     const guide = 'backend/internal/cli/control/cmd/guide/agent-guide.md'
     const completion = 'backend/cmd/leapmux/completion_elvish.elv'
+    const nushellCompletion = 'backend/cmd/leapmux/completion_nushell.nu'
     write(dir, guide, 'original guide')
     write(dir, completion, '# original completion')
+    write(dir, nushellCompletion, '# original Nushell completion')
     expect(run(dir, target)).toContain(target)
     expect(run(dir, target)).toEqual([])
     write(dir, guide, 'revised guide')
     expect(run(dir, target)).toEqual([target])
     write(dir, completion, '# revised completion')
+    expect(run(dir, target)).toEqual([target])
+    write(dir, nushellCompletion, '# revised Nushell completion')
     expect(run(dir, target)).toEqual([target])
   })
 

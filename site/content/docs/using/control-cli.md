@@ -72,7 +72,7 @@ leapmux control agent send 87a19d5f "Run the tests" --json
 - **Every command prints its help** with `--help`: the usage line, what each argument accepts, every flag, and examples.
 - **An agent starts with `leapmux control guide`**, which prints the guide bundled with the CLI. Use `leapmux control guide --topics --json` to list topics or `leapmux control guide targets` to read just the target selection section.
 - **A program reads the whole grammar** from `leapmux commands --json`: every command with its arguments, its flags, their types and accepted values, and its examples.
-- **Shell completion** completes commands, flags, and the IDs of your tabs, agents, workspaces, and Workers. Generate the script with `leapmux completion <shell>` for Bash, zsh, fish, PowerShell, or Elvish. In Elvish, run `eval (leapmux completion elvish | slurp)` to load it into the current shell.
+- **Shell completion** completes commands, flags, and the IDs of your tabs, agents, workspaces, and Workers. Generate the script with `leapmux completion <shell>` for Bash, zsh, fish, PowerShell, Elvish, or Nushell. In Elvish, run `eval (leapmux completion elvish | slurp)` to load it into the current shell. In Nushell 0.116 or later, run `leapmux completion nushell | save ($nu.default-config-dir | path join leapmux-completion.nu)` and add `use leapmux-completion.nu *` to `config.nu`.
 
 ## Targets
 

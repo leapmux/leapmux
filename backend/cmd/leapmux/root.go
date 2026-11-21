@@ -74,10 +74,13 @@ func newCommandsCommand(root *cobra.Command) *cobra.Command {
 }
 
 // shells lists the shells that `leapmux completion` writes a script for.
-var shells = []string{"bash", "zsh", "fish", "powershell", "elvish"}
+var shells = []string{"bash", "zsh", "fish", "powershell", "elvish", "nushell"}
 
 //go:embed completion_elvish.elv
 var elvishCompletion string
+
+//go:embed completion_nushell.nu
+var nushellCompletion string
 
 // newCompletionCommand builds `leapmux completion <shell>`. The script asks
 // the binary for each completion, so it completes the live ids of tabs,
@@ -86,12 +89,14 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 	return cli.NewLeaf(cli.Leaf{
 		Use:   "completion <shell>",
 		Short: "Print the shell completion script",
-		Long: "Print the completion script for Bash, zsh, fish, PowerShell, or Elvish.\n" +
+		Long: "Print the completion script for Bash, zsh, fish, PowerShell, Elvish,\n" +
+			"or Nushell.\n" +
 			"It completes commands, flags, and the IDs of your tabs, agents, workspaces, and Workers.",
 		Examples: []cli.Example{
 			{Comment: "Load completion into the current zsh.", Command: "source <(leapmux completion zsh)"},
 			{Comment: "Install it for every new bash.", Command: "leapmux completion bash > ~/.local/share/bash-completion/completions/leapmux"},
 			{Comment: "Load completion into the current Elvish shell.", Command: "eval (leapmux completion elvish | slurp)"},
+			{Comment: "Save the Nushell module, then add use leapmux-completion.nu * to config.nu.", Command: "leapmux completion nushell | save ($nu.default-config-dir | path join leapmux-completion.nu)"},
 		},
 		Complete: func(_ *cobra.Command, _ cli.ArgSpec, toComplete string) ([]string, cobra.ShellCompDirective) {
 			var out []string
@@ -120,6 +125,9 @@ func writeCompletion(root *cobra.Command, shell string, w io.Writer) error {
 		return root.GenPowerShellCompletionWithDesc(w)
 	case "elvish":
 		_, err := io.WriteString(w, elvishCompletion)
+		return err
+	case "nushell":
+		_, err := io.WriteString(w, nushellCompletion)
 		return err
 	}
 	return cli.Usagef("unknown shell %q; want one of %s", shell, strings.Join(shells, ", "))
