@@ -69,7 +69,7 @@
         "ajv": "^8.20.0",
         "ds-store": "^0.1.6",
         "eslint": "^10.9.1",
-        "eslint-plugin-solid": "^0.19.0",
+        "eslint-plugin-solid": "^0.20.0",
         "fake-indexeddb": "^6.2.5",
         "jiti": "^2.7.0",
         "jsdom": "^31.0.0",
@@ -831,7 +831,7 @@
 
     "eslint-plugin-regexp": ["eslint-plugin-regexp@3.3.3", "", { "dependencies": { "@eslint-community/eslint-utils": "^4.2.0", "@eslint-community/regexpp": "^4.11.0", "comment-parser": "^1.4.0", "jsdoc-type-pratt-parser": "^9.0.0", "refa": "^0.12.1", "regexp-ast-analysis": "^0.7.1", "scslre": "^0.3.0" }, "peerDependencies": { "eslint": ">=9.38.0" } }, "sha512-bIpFf1uL9AB6MY5cDUXL2lrfuBA+/WLc1AwC+56OsHWo93zoKQ4EcAQ+wsOxq5ozLC9xfTYAb4Si+0w0Ll1hYA=="],
 
-    "eslint-plugin-solid": ["eslint-plugin-solid@0.19.0", "", { "dependencies": { "eslint-visitor-keys": "^3.4.3", "estraverse": "^5.3.0", "is-html": "^2.0.0", "kebab-case": "^1.0.2", "known-css-properties": "^0.30.0", "parse5": "^7.3.0", "style-to-object": "^1.0.6", "validate-html-nesting": "^1.2.4" }, "peerDependencies": { "eslint": "^9.0.0 || ^10.0.0" }, "optionalPeers": ["eslint"] }, "sha512-Is7Aj9bfce774C9B6ivc/S5HNmUpYwlzYx8bO13EIIF7JaY8c6OACxE0LTyhNLDeMR3VNBDn+a/k830dvYl4uQ=="],
+    "eslint-plugin-solid": ["eslint-plugin-solid@0.20.0", "", { "dependencies": { "eslint-visitor-keys": "^3.4.3", "estraverse": "^5.3.0", "is-html": "^2.0.0", "kebab-case": "^1.0.2", "known-css-properties": "^0.30.0", "parse5": "^7.3.0", "style-to-object": "^1.0.6", "validate-html-nesting": "^1.2.4" }, "peerDependencies": { "eslint": "^9.0.0 || ^10.0.0" }, "optionalPeers": ["eslint"] }, "sha512-+cA9Yz+ON+Sr3sfl2RJePrPDXZmIAleS3D6W5rRuP/BKRqnt2DcSXi2YMFi52oClWGoOfBl29FdtLere7qoJUQ=="],
 
     "eslint-plugin-toml": ["eslint-plugin-toml@1.5.0", "", { "dependencies": { "@eslint/core": "^1.0.1", "@eslint/plugin-kit": "^0.7.0", "@ota-meshi/ast-token-store": "^0.3.0", "debug": "^4.1.1", "toml-eslint-parser": "^1.0.1" }, "peerDependencies": { "eslint": ">=9.38.0" } }, "sha512-qBjRywEkKxO2uYOjus//6GVF1r+Hg5QDkRO8RTY6XcaXgWfBU0DhwpFmJa2Ljf0Sz49r7DdZlpKwwHmJ4nmH1Q=="],
 
