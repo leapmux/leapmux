@@ -1,6 +1,8 @@
 package antigravity
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,9 +11,43 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type antigravityACPTestWriter func([]byte) (int, error)
+
+func (write antigravityACPTestWriter) Write(data []byte) (int, error) { return write(data) }
+
+func TestAntigravityACPBootstrapLeavesCascadesToNativeServer(t *testing.T) {
+	a, _ := testAgent(t)
+	requests := make(chan agenttest.RecordedRequest, 4)
+	a.SetStdinForTest(agenttest.NopStdin(antigravityACPTestWriter(func(data []byte) (int, error) {
+		var request struct {
+			ID     int64          `json:"id"`
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(data, &request); err != nil {
+			return 0, err
+		}
+		requests <- agenttest.RecordedRequest{Method: request.Method, Params: request.Params}
+		reply := agenttest.JSONRPCResponse(request.ID, agenttest.RPCReply{Result: json.RawMessage(`{"sessions":[]}`)})
+		if !a.Deliver(request.ID, reply) {
+			return 0, errors.New("no request waits for the test ACP reply")
+		}
+		return len(data), nil
+	})))
+
+	require.NoError(t, a.bootstrapBackend(testutil.DeadlineContext(t)))
+
+	assert.Equal(t, agenttest.RecordedRequest{
+		Method: "session/list", Params: map[string]any{"cwd": a.workingDir},
+	}, receiveTestValue(t, requests))
+	assert.Empty(t, requests)
+}
 
 func TestAntigravityPortPatternMatchesRealLogLine(t *testing.T) {
 	line := "2026-11-04T12:00:00Z Language server listening on random port at 54321 for HTTP"

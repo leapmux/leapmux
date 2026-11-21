@@ -97,8 +97,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if err := a.initializeACP(ctx); err != nil {
 		return cleanup("initialize", err)
 	}
-	sessionID, err := a.openACPSession(ctx, opts.ResumeSessionID)
-	if err != nil {
+	if err := a.bootstrapBackend(ctx); err != nil {
+		if opts.ResumeSessionID != "" && !errors.Is(err, errAntigravitySignIn) {
+			err = providerkit.ResumeFailedError(opts.ResumeSessionID, err)
+		}
 		return cleanup("session", err)
 	}
 	if err := a.discoverLSPort(ctx, opts.EffectiveStartupTimeout()); err != nil {
@@ -106,6 +108,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	if err := a.loadCatalog(); err != nil {
 		return cleanup("model catalog", err)
+	}
+	sessionID := opts.ResumeSessionID
+	if sessionID == "" {
+		sessionID, err = a.rpc.startCascade(ctx, a.workingDir)
+		if err != nil {
+			return cleanup("session", err)
+		}
 	}
 	a.Mu.Lock()
 	root := a.installRoot(sessionID, opts.ResumeSessionID != "")

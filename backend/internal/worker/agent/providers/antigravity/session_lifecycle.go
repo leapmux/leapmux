@@ -217,7 +217,7 @@ func (a *Agent) ClearContext() (string, error) {
 	oldRoot := a.root
 	admissionGeneration := a.generation
 	a.Mu.Unlock()
-	newID, err := a.openACPSession(a.Context(), "")
+	newID, err := a.rpc.startCascade(a.Context(), a.workingDir)
 	if err != nil {
 		a.Mu.Lock()
 		if a.root == oldRoot && a.generation == admissionGeneration && !a.StoppedLocked() {
@@ -229,8 +229,8 @@ func (a *Agent) ClearContext() (string, error) {
 	installed := false
 	defer func() {
 		if !installed {
-			if closeErr := a.closeACPSession(a.Context(), newID); closeErr != nil {
-				slog.Debug("antigravity close an unused replacement session", "error", closeErr)
+			if stopErr := a.rpc.forceStopCascadeTree(a.Context(), newID); stopErr != nil {
+				slog.Debug("antigravity stop the unused replacement cascade", "error", stopErr)
 			}
 		}
 	}()
@@ -257,8 +257,8 @@ func (a *Agent) ClearContext() (string, error) {
 	a.awaitStreams(group, antigravityClearTimerTag)
 	a.finishCascades(states, agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 	if oldRoot != nil {
-		if err := a.closeACPSession(a.Context(), oldRoot.id); err != nil {
-			slog.Warn("antigravity close the cleared session", "agent_id", a.AgentID(), "error", err)
+		if err := a.rpc.forceStopCascadeTree(a.Context(), oldRoot.id); err != nil {
+			slog.Warn("antigravity stop the cleared cascade tree", "agent_id", a.AgentID(), "error", err)
 		}
 	}
 	streamCtx, streamCancel := context.WithCancel(a.Context())

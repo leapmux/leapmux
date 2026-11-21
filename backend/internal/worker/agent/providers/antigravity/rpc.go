@@ -47,6 +47,24 @@ func (r antigravityRPC) handleInteraction(ctx context.Context, cascadeID string,
 	return r.deliver(ctx, "HandleCascadeUserInteraction", map[string]any{"cascadeId": cascadeID, "interaction": interaction})
 }
 
+func (r antigravityRPC) startCascade(ctx context.Context, workingDir string) (string, error) {
+	var reply struct {
+		CascadeID string `json:"cascadeId"`
+	}
+	err := r.do(ctx, "StartCascade", map[string]any{
+		"workspaceUris":  []string{fileURI(workingDir)},
+		"source":         "CORTEX_TRAJECTORY_SOURCE_CLI",
+		"trajectoryType": "CORTEX_TRAJECTORY_TYPE_CASCADE",
+	}, &reply)
+	if err != nil {
+		return "", err
+	}
+	if reply.CascadeID == "" {
+		return "", fmt.Errorf("the Antigravity StartCascade call returned no cascade ID")
+	}
+	return reply.CascadeID, nil
+}
+
 func (r antigravityRPC) deliver(ctx context.Context, method string, body any) error {
 	err := r.do(ctx, method, body, nil)
 	if errors.Is(err, errLanguageServerNotConnected) {
@@ -57,6 +75,10 @@ func (r antigravityRPC) deliver(ctx context.Context, method string, body any) er
 
 func (r antigravityRPC) cancel(ctx context.Context, cascadeID string) error {
 	return r.do(ctx, "CancelCascadeInvocation", map[string]any{"cascadeId": cascadeID, "killBackgroundTasks": true}, nil)
+}
+
+func (r antigravityRPC) forceStopCascadeTree(ctx context.Context, cascadeID string) error {
+	return r.do(ctx, "ForceStopCascadeTree", map[string]string{"conversationId": cascadeID}, nil)
 }
 
 func (r antigravityRPC) modelConfig(ctx context.Context) (antigravityCatalogReply, error) {

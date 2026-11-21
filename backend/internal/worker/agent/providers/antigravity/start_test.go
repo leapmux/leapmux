@@ -55,7 +55,7 @@ func TestAntigravityResumeAuthenticationPeer(t *testing.T) {
 	require.NotEmpty(t, logPath)
 	require.NoError(t, os.WriteFile(logPath, []byte("the runtime recorded both sign-in attempts\n"), 0o600))
 	input := bufio.NewScanner(os.Stdin)
-	for index, method := range []string{"initialize", "session/resume", "authenticate", "authenticate"} {
+	for index, method := range []string{"initialize", "session/list", "authenticate", "authenticate"} {
 		require.True(t, input.Scan(), "expected request %s", method)
 		var request struct {
 			ID     json.RawMessage

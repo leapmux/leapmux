@@ -39,60 +39,31 @@ func (a *Agent) initializeACP(ctx context.Context) error {
 	return nil
 }
 
-func (a *Agent) openACPSession(ctx context.Context, resumeID string) (string, error) {
-	id, err := a.tryOpenACPSession(ctx, resumeID)
+// session/list starts the language server and checks authentication. Both
+// session/new and session/resume start an ACP stream that requests permission
+// for the same steps as the native stream. Keep cascade lifecycle on the
+// language server so the native stream owns each permission decision.
+func (a *Agent) bootstrapBackend(ctx context.Context) error {
+	params, _ := json.Marshal(map[string]string{"cwd": a.workingDir})
+	_, err := a.SendRequestContext(ctx, "session/list", params, a.APITimeout())
+	if !providerkit.HasJSONRPCErrorCode(err, -32000) {
+		return err
+	}
+	if authErr := a.authenticateSession(ctx, "gemini-api-key"); authErr != nil {
+		if platformErr := a.authenticateSession(ctx, "agent-platform"); platformErr != nil {
+			return errAntigravitySignIn
+		}
+	}
+	_, err = a.SendRequestContext(ctx, "session/list", params, a.APITimeout())
 	if providerkit.HasJSONRPCErrorCode(err, -32000) {
-		if authErr := a.authenticateSession(ctx, "gemini-api-key"); authErr != nil {
-			if platformErr := a.authenticateSession(ctx, "agent-platform"); platformErr != nil {
-				return "", errAntigravitySignIn
-			}
-		}
-		id, err = a.tryOpenACPSession(ctx, resumeID)
-		if providerkit.HasJSONRPCErrorCode(err, -32000) {
-			return "", errAntigravitySignIn
-		}
+		return errAntigravitySignIn
 	}
-	if err != nil {
-		if resumeID != "" {
-			return "", providerkit.ResumeFailedError(resumeID, err)
-		}
-		return "", err
-	}
-	return id, nil
-}
-
-func (a *Agent) tryOpenACPSession(ctx context.Context, resumeID string) (string, error) {
-	method, params := "session/new", map[string]any{"cwd": a.workingDir, "mcpServers": []any{}}
-	if resumeID != "" {
-		method = "session/resume"
-		params["sessionId"] = resumeID
-	}
-	raw, _ := json.Marshal(params)
-	result, err := a.SendRequestContext(ctx, method, raw, a.APITimeout())
-	if err != nil {
-		return "", err
-	}
-	var reply struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(result, &reply); err != nil {
-		return "", err
-	}
-	if reply.SessionID == "" {
-		return "", fmt.Errorf("%s returned no session id", method)
-	}
-	return reply.SessionID, nil
+	return err
 }
 
 func (a *Agent) authenticateSession(ctx context.Context, method string) error {
 	params, _ := json.Marshal(map[string]any{"methodId": method})
 	_, err := a.SendRequestContext(ctx, "authenticate", params, a.APITimeout())
-	return err
-}
-
-func (a *Agent) closeACPSession(ctx context.Context, sessionID string) error {
-	params, _ := json.Marshal(map[string]any{"sessionId": sessionID})
-	_, err := a.SendRequestContext(ctx, "session/close", params, a.APITimeout())
 	return err
 }
 
