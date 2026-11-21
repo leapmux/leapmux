@@ -250,6 +250,7 @@ func waitForInitialCommand(ctx context.Context, term *Terminal, clock quartz.Clo
 	defer deadline.Stop(initialCommandDeadlineTag)
 	poll := clock.NewTicker(initialCommandPoll, initialCommandPollTag)
 	defer poll.Stop(initialCommandPollTag)
+waiting:
 	for {
 		if ctx.Err() == nil {
 			if ready, err := check(); ready || err != nil {
@@ -260,15 +261,18 @@ func waitForInitialCommand(ctx context.Context, term *Terminal, clock quartz.Clo
 		case <-ctx.Done():
 			return fmt.Errorf("%w: %w", unconfirmed, ctx.Err())
 		case <-term.exitCh:
-			if ready, err := check(); ready || err != nil {
-				return err
-			}
-			return unconfirmed
+			break waiting
 		case <-deadline.C:
-			return unconfirmed
+			break waiting
 		case <-poll.C:
 		}
 	}
+	// The shell can publish its marker while the Worker is between polls.
+	// A ready deadline or exit notification can be selected before that poll.
+	if ready, err := check(); ready || err != nil {
+		return err
+	}
+	return unconfirmed
 }
 
 func (b *initialCommandBootstrap) markerMatches(path, expected string) bool {

@@ -93,8 +93,13 @@ func TestInitialCommandCanExitNushell(t *testing.T) {
 	opts.InitialCommand = "exit 7"
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	term, err := Start(ctx, opts, quartz.NewReal(), func(Output) {})
-	require.NoError(t, err)
+	var output testutil.LogBuffer
+	term, err := Start(ctx, opts, quartz.NewReal(), func(chunk Output) {
+		_, _ = output.Write(chunk.Data)
+	})
+	if err != nil {
+		t.Fatalf("Nushell startup failed: %v\n%s", err, output.String())
+	}
 	t.Cleanup(func() {
 		term.Stop()
 		term.Wait()
