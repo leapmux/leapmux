@@ -357,6 +357,7 @@ func (a *Agent) publishRegisteredControl(requestID string, control *codewhalePen
 		RequestID:      requestID,
 		Payload:        control.payload,
 		AgentSessionID: control.threadID,
+		NativeTurnID:   control.turnID,
 	})
 	a.Mu.Lock()
 	control.ready, control.published = true, err == nil

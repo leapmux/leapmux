@@ -489,10 +489,10 @@ func (a *Agent) openGenerationIDs() []string {
 		seen[id] = true
 	}
 	var extra []string
-	for _, id := range a.openGeneratedItems {
-		if !seen[id] {
-			seen[id] = true
-			extra = append(extra, id)
+	for _, open := range a.openGeneratedItems {
+		if !seen[open.id] {
+			seen[open.id] = true
+			extra = append(extra, open.id)
 		}
 	}
 	sort.Strings(extra)
