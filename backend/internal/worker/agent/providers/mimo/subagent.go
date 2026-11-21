@@ -773,7 +773,7 @@ func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([
 	a.Mu.Unlock()
 	// The queue writes the message into the child transcript when it accepts the
 	// delivery, so this call writes no row of its own.
-	err = a.rpc.promptAsync(a.Context(), sessionID, request)
+	_, err = a.rpc.promptAsync(a.Context(), sessionID, request)
 	a.finishInput(sessionID, send, err)
 	if err != nil {
 		return classifyDeliveryError("subagent message", err)

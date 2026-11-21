@@ -366,6 +366,8 @@ func (a *Agent) publishRegisteredControl(requestID string, control *mimoControl)
 	a.Mu.Unlock()
 	if cancel {
 		a.sink.CancelControlRequestInstance(requestID, control.instanceID)
+	} else if err == nil {
+		a.bindControlReplyInputs(requestID, control)
 	}
 	if bypass {
 		a.queuePermissionApprovals()

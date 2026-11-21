@@ -733,10 +733,15 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 			if state == nil || state.buffer == nil {
 				err = fmt.Errorf("the retained MiMo streamed scope is absent")
 			} else {
-				_, err = state.buffer.PersistScopeTo(progressScope(pending.partID), state.completion, sink, agent.MessageContent{
-					AgentSessionID: record.sessionID, IdempotencyKey: "mimo-part:" + pending.partID + ":text",
+				key := mimoTextKey(pending.partID)
+				var wrote bool
+				wrote, err = state.buffer.PersistScopeTo(progressScope(pending.partID), state.completion, sink, agent.MessageContent{
+					AgentSessionID: record.sessionID, IdempotencyKey: key,
 				}, agent.SpanInfo{})
 				if agent.OutputRetained(err) {
+					if wrote && state.kind == agent.AssembledMessageKindText {
+						a.recordInputReplyText(record, messageID, key)
+					}
 					a.completeTextProgress(pending.partID, state, sink)
 				}
 			}
@@ -1029,18 +1034,23 @@ func (a *Agent) persistFinalText(sink agent.ProviderServices, record *mimoMessag
 	if err != nil {
 		return err
 	}
-	content := agent.MessageContent{Original: raw, AgentSessionID: record.sessionID, IdempotencyKey: "mimo-part:" + part.ID + ":text"}
+	content := agent.MessageContent{Original: raw, AgentSessionID: record.sessionID, IdempotencyKey: mimoTextKey(part.ID)}
 	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); !agent.OutputRetained(err) {
 		return err
 	}
-	if state.kind == agent.AssembledMessageKindText && record.actor != nil {
-		a.Mu.Lock()
-		record.actor.lastText = text
-		a.Mu.Unlock()
+	if state.kind == agent.AssembledMessageKindText {
+		a.recordInputReplyText(record, state.messageID, content.IdempotencyKey)
+		if record.actor != nil {
+			a.Mu.Lock()
+			record.actor.lastText = text
+			a.Mu.Unlock()
+		}
 	}
 	a.completeTextProgress(part.ID, state, sink)
 	return nil
 }
+
+func mimoTextKey(partID string) string { return "mimo-part:" + partID + ":text" }
 
 func (a *Agent) handlePartDelta(event mimoEvent) {
 	var delta mimoPartDelta
@@ -1122,6 +1132,9 @@ func (a *Agent) handlePartRemoved(event mimoEvent) {
 		sessionID = a.sessionID
 	}
 	record := a.messages[removed.MessageID]
+	if record != nil && record.sessionID == sessionID {
+		a.retractReplyTextLocked(removed.MessageID, mimoTextKey(removed.PartID))
+	}
 	state, call := a.parts[removed.PartID], a.tools[removed.PartID]
 	if record == nil || record.sessionID != sessionID || state == nil && call == nil ||
 		state != nil && state.messageID != removed.MessageID ||
@@ -1571,6 +1584,7 @@ func (a *Agent) handleMessageRemoved(event mimoEvent) {
 		a.Mu.Unlock()
 		return
 	}
+	a.retractReplyTextLocked(payload.MessageID, "")
 	var ended []*mimoCompaction
 	for partID, state := range a.compactions {
 		if state.messageID != payload.MessageID || state.phase == compactionEnded {

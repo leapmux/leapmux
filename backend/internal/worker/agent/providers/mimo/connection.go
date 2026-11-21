@@ -177,6 +177,7 @@ func (a *Agent) onStreamConnected(ctx context.Context) {
 	defer cancel()
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	a.abandonInputReplies()
 	a.reconcileTurnLocked(restateCtx)
 	a.restatePendingControls(restateCtx)
 }

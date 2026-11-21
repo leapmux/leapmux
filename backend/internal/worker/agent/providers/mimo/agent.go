@@ -67,6 +67,8 @@ type Agent struct {
 	// inputSends owns HTTP prompt calls by session. Context clear waits for
 	// these calls before aborting the outgoing native session.
 	inputSends map[string]map[*mimoInputSend]struct{}
+	// Mu protects receipt observations and the text rows they own.
+	inputReplies map[string]*mimoInputReply
 
 	catalog mimoCatalog
 	// model is the `<provider>/<model>` every prompt states. Empty until the
@@ -192,12 +194,19 @@ func newAgentState(sink agent.ProviderServices, rpc mimoRPC, workingDir string, 
 // SendInput delivers a user message to the main agent. It returns once the
 // server accepted the prompt, and never waits for the turn.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.SendInputWithReceipt(content, attachments)
+	return err
+}
+
+// SendInputWithReceipt returns the server's identity for the admitted prompt.
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
 	return a.sendInput(nil, content, attachments, false)
 }
 
 // SendInputForSession is SendInput for the session the caller states.
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendInput(&sessionID, content, attachments, false)
+	_, err := a.sendInput(&sessionID, content, attachments, false)
+	return err
 }
 
 // SupportsSteering always reports true. A prompt that reaches a running turn
@@ -206,7 +215,8 @@ func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerInput adds a message to the running turn.
 func (a *Agent) SteerInput(request agent.SteerRequest) error {
-	return a.sendInput(nil, request.Content, request.Attachments, true)
+	_, err := a.sendInput(nil, request.Content, request.Attachments, true)
+	return err
 }
 
 // sendInput sends one prompt to the main agent.
@@ -219,55 +229,57 @@ func (a *Agent) SteerInput(request agent.SteerRequest) error {
 // A steer still reaches the server if its turn ends after the local check.
 // The server starts a new turn and keeps that text. Reporting
 // ErrNoActiveTurn there would make the queue send the same text a second time.
-func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) (agent.NativeInputReceipt, error) {
 	parts, err := buildPromptParts(content, attachments)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent is stopped")
 	}
 	if a.sessionSwitching {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	sessionID, turnActive := a.sessionID, a.turnActive
 	compactionPending := a.compactionAck != nil || a.manualCompactionID != ""
 	if sessionID == "" {
 		a.Mu.Unlock()
-		return fmt.Errorf("agent has no MiMo session")
+		return agent.NativeInputReceipt{}, fmt.Errorf("agent has no MiMo session")
 	}
 	if !steer && (turnActive || compactionPending) {
 		a.Mu.Unlock()
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	if steer && (!turnActive || compactionPending) {
 		a.Mu.Unlock()
-		return agent.ErrNoActiveTurn
+		return agent.NativeInputReceipt{}, agent.ErrNoActiveTurn
 	}
 	request, err := a.promptRequestLocked(parts, "")
 	if err != nil {
 		a.Mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	manualFollowup := !steer && !turnActive && sessionID != "" && a.manualCompactionReady
 	if manualFollowup {
 		if a.manualFollowupSending {
 			a.Mu.Unlock()
-			return agent.ErrAgentBusy
+			return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 		}
 		a.manualFollowupSending = true
 		a.manualFollowupBusy = false
 	}
 	send := a.admitInputLocked(sessionID)
+	send.trackReply = true
 	a.Mu.Unlock()
-	err = a.rpc.promptAsync(a.Context(), sessionID, request)
+	receiptID, err := a.rpc.promptAsync(a.Context(), sessionID, request)
+	receipt := a.confirmPromptReceipt(sessionID, send, receiptID)
 	a.finishInput(sessionID, send, err)
 	if manualFollowup {
 		// An event can report busy before prompt_async answers. The stream
@@ -297,14 +309,15 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.Mu.Unlock()
 	}
 	if err != nil {
-		return classifyDeliveryError("prompt", err)
+		return agent.NativeInputReceipt{}, classifyDeliveryError("prompt", err)
 	}
-	return nil
+	return receipt, nil
 }
 
 type mimoInputSend struct {
-	done chan struct{}
-	err  error // Written before done closes; readers wait for done.
+	done       chan struct{}
+	err        error // Written before done closes; readers wait for done.
+	trackReply bool  // Mu protects the interval in which the receipt ID is unknown.
 }
 
 // admitInputLocked registers a request before context clear can close admission.

@@ -169,6 +169,7 @@ func (a *Agent) awaitEventStream() {
 func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	a.abandonInputReplies()
 	a.endLiveCompactions("")
 	a.flushUnfinishedOutput(completion)
 	status := actorStatusForCompletion(completion)

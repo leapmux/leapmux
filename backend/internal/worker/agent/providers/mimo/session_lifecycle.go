@@ -123,6 +123,7 @@ func (a *Agent) ClearContext() (string, error) {
 	}
 
 	a.dispatchMu.Lock()
+	a.abandonInputReplies()
 	a.endLiveCompactions("")
 	a.flushUnfinishedOutput(agent.MessageCompletionInterrupted)
 	a.retireAllControls()
