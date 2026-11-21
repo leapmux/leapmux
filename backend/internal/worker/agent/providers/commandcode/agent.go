@@ -21,6 +21,11 @@ type Agent struct {
 	sink       agent.ProviderServices
 	sendMu     sync.Mutex
 	dispatchMu sync.Mutex
+	// dispatchMu guards reply capture and the turn named by the native output stream.
+	replyOutputTurnID string
+	replyStartPending bool
+	replyStreamClosed bool
+	nativeReplies     map[string]*commandCodeNativeReply
 	// dispatchMu guards the error while the next native row determines whether it repeats.
 	pendingRunError *agent.CapturedTranscript
 	clock           quartz.Clock
@@ -60,11 +65,12 @@ type openTool struct {
 }
 
 var (
-	_ agent.Agent             = (*Agent)(nil)
-	_ agent.InputSteerer      = (*Agent)(nil)
-	_ agent.ContextCompactor  = (*Agent)(nil)
-	_ agent.SteerEchoReporter = (*Agent)(nil)
-	_ agent.SteerSurvivor     = (*Agent)(nil)
+	_ agent.Agent              = (*Agent)(nil)
+	_ agent.InputReceiptSender = (*Agent)(nil)
+	_ agent.InputSteerer       = (*Agent)(nil)
+	_ agent.ContextCompactor   = (*Agent)(nil)
+	_ agent.SteerEchoReporter  = (*Agent)(nil)
+	_ agent.SteerSurvivor      = (*Agent)(nil)
 )
 
 // PublishTurnActive reads and publishes the same state that refuses concurrent input.
@@ -81,45 +87,62 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 	return a.sendInputForSession(nil, content, attachments)
 }
 
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	return a.sendNativeInput(nil, content, attachments, true)
+}
+
 func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInputForSession(&sessionID, content, attachments)
 }
 
 func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := a.sendNativeInput(expected, content, attachments, false)
+	return err
+}
+
+func (a *Agent) sendNativeInput(expected *string, content string, attachments []*leapmuxv1.Attachment, captureReply bool) (agent.NativeInputReceipt, error) {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()
 	err := providerkit.CheckInputSession(expected, a.sessionID)
-	busy, stopped := a.operationActiveLocked(), a.StoppedLocked()
+	busy, stopped, sessionID := a.operationActiveLocked(), a.StoppedLocked(), a.sessionID
 	a.Mu.Unlock()
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if stopped {
-		return fmt.Errorf("the Command Code agent is stopped")
+		return agent.NativeInputReceipt{}, fmt.Errorf("the Command Code agent is stopped")
 	}
 	if busy {
-		return agent.ErrAgentBusy
+		return agent.NativeInputReceipt{}, agent.ErrAgentBusy
 	}
 	blocks, err := inputBlocks(content, agent.ClassifyAttachments(attachments))
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
+	}
+	var receipt agent.NativeInputReceipt
+	if captureReply {
+		a.beginCommandCodeReplyStart()
+		defer func() { a.finishCommandCodeReplyStart(receipt) }()
 	}
 	result, err := a.request(methodTurnStart, map[string]any{"input": blocks}, a.APITimeout())
 	if err != nil {
 		if providerkit.HasJSONRPCErrorCode(err, -32010) {
-			return agent.ErrAgentBusy
+			return receipt, agent.ErrAgentBusy
 		}
-		return providerkit.ClassifyJSONRPCDeliveryError(methodTurnStart, err)
+		return receipt, providerkit.ClassifyJSONRPCDeliveryError(methodTurnStart, err)
 	}
 	var response struct {
 		TurnID string `json:"turnId"`
 	}
 	if json.Unmarshal(result, &response) != nil || response.TurnID == "" {
-		return fmt.Errorf("%w: Command Code returned no turn ID", agent.ErrDeliveryUncertain)
+		return receipt, fmt.Errorf("%w: Command Code returned no turn ID", agent.ErrDeliveryUncertain)
 	}
 	a.startTurn(response.TurnID)
-	return nil
+	if captureReply {
+		receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: response.TurnID, TurnID: response.TurnID}
+	}
+	return receipt, nil
 }
 
 func inputBlocks(content string, attachments []agent.ClassifiedAttachment) ([]contentBlock, error) {
