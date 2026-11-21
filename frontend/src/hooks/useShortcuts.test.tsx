@@ -401,8 +401,11 @@ describe('useShortcuts', () => {
     // nothing itself, so the handler is called directly.
     it('returns the promise of the panel', () => {
       const advance = setup(agentTab)
+      const pending = Promise.resolve()
+      advance.mockReturnValueOnce(pending)
       const result = getCommand('chat.advanceInputQueue')!.handler()
-      expect(result).toBe(advance.mock.results[0]?.value)
+      expect(advance).toHaveBeenCalledOnce()
+      expect(result).toBe(pending)
     })
 
     it('does nothing when no tab is focused', () => {

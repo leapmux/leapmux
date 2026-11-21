@@ -2722,7 +2722,7 @@ describe('agent editor panel queue commands', () => {
 // what the panel feeds into it: the snapshot of the head row, the pause, the
 // recovery routing, the in-flight guard, and the agent of the keypress.
 describe('agent editor panel queue advance from the keyboard', () => {
-  interface Item { id: string, canSteer?: boolean, canPreempt?: boolean }
+  interface Item { id: string, state?: AgentInputState, canSteer?: boolean, canPreempt?: boolean }
   const queueOf = (pauseReason: AgentInputQueuePauseReason, items: Item[], extra: MessageInitShape<typeof AgentInputQueueSnapshotSchema> = {}) =>
     create(AgentInputQueueSnapshotSchema, {
       pauseReason,
@@ -2845,6 +2845,7 @@ describe('agent editor panel queue advance from the keyboard', () => {
 
     expect(onSetQueuePaused).toHaveBeenCalledExactlyOnceWith(false)
     expect(onPreemptQueueItem).toHaveBeenCalledExactlyOnceWith('a1', headWith('h1'))
+    expect(onSetQueuePaused.mock.invocationCallOrder[0]).toBeLessThan(onPreemptQueueItem.mock.invocationCallOrder[0]!)
   })
 
   // The resume's drain dispatched h1 and started its turn; h2 now offers a
@@ -3078,5 +3079,91 @@ describe('agent editor panel queue advance from the keyboard', () => {
     await press
 
     expect(onSetQueuePaused).not.toHaveBeenCalled()
+  })
+
+  // The panel wires `inputState` from `props.inputQueue?.items`. When a steer
+  // delivery fails under a delivery-failure pause, the Worker keeps the same
+  // pause reason and marks the head FAILED, so the press must not resume.
+  it('does not resume when the steer leaves the head failed under a delivery-failure pause', async () => {
+    const onSteerQueueItem = vi.fn()
+    const onSetQueuePaused = vi.fn().mockResolvedValue(undefined)
+    const { setQueue } = renderAdvancePanel({
+      queue: queueOf(AgentInputQueuePauseReason.DELIVERY_FAILED, [
+        { id: 'h1', canSteer: true },
+      ]),
+      dispatch: QueueHeadDispatch.STEER,
+      onSteerQueueItem,
+      onSetQueuePaused,
+    })
+    onSteerQueueItem.mockImplementation(async () => {
+      setQueue(queueOf(AgentInputQueuePauseReason.DELIVERY_FAILED, [
+        { id: 'h1', state: AgentInputState.FAILED, canSteer: false },
+      ]))
+    })
+
+    await (await registeredHandle()).advanceInputQueue()
+
+    expect(onSteerQueueItem).toHaveBeenCalledExactlyOnceWith('a1', headWith('h1'))
+    expect(onSetQueuePaused).not.toHaveBeenCalled()
+  })
+
+  it('does not preempt another agent when the panel moves during the resume', async () => {
+    const resume = deferred()
+    const onSetQueuePaused = vi.fn(() => resume.promise)
+    const onPreemptQueueItem = vi.fn().mockResolvedValue(undefined)
+    const { setAgentId, setQueue } = renderAdvancePanel({
+      queue: paused([
+        { id: 'h1', canPreempt: false },
+      ]),
+      dispatch: QueueHeadDispatch.PREEMPT,
+      onSetQueuePaused,
+      onPreemptQueueItem,
+    })
+    const handle = await registeredHandle()
+
+    const press = handle.advanceInputQueue()
+    setAgentId('a2')
+    setQueue(running([
+      { id: 'h1', canPreempt: true },
+    ]))
+    resume.resolve()
+    await press
+
+    expect(onSetQueuePaused).toHaveBeenCalledExactlyOnceWith(false)
+    expect(onPreemptQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('settles without throwing when preempt fails after a resume', async () => {
+    const onPreemptQueueItem = vi.fn().mockRejectedValue(new Error('turn already ended'))
+    const onSetQueuePaused = vi.fn()
+    const { setQueue } = renderAdvancePanel({
+      queue: paused([
+        { id: 'h1', canPreempt: false },
+      ]),
+      dispatch: QueueHeadDispatch.PREEMPT,
+      onPreemptQueueItem,
+      onSetQueuePaused,
+    })
+    onSetQueuePaused.mockImplementation(async () => {
+      setQueue(running([
+        { id: 'h1', canPreempt: true },
+      ]))
+    })
+
+    await expect((await registeredHandle()).advanceInputQueue()).resolves.toBeUndefined()
+
+    expect(onSetQueuePaused).toHaveBeenCalledExactlyOnceWith(false)
+    expect(onPreemptQueueItem).toHaveBeenCalledExactlyOnceWith('a1', headWith('h1'))
+  })
+
+  it('settles without throwing when the queue callbacks are absent', async () => {
+    renderAdvancePanel({
+      queue: paused([
+        { id: 'h1', canSteer: true },
+      ]),
+      dispatch: QueueHeadDispatch.STEER,
+    })
+
+    await expect((await registeredHandle()).advanceInputQueue()).resolves.toBeUndefined()
   })
 })
