@@ -2,16 +2,16 @@ import type { QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import { AgentInputState, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /**
- * The browser's half of the agent input queue's reorder policy, as pure
- * functions. The Worker derives which rows may trade places (each row's
- * `reorderSegment`); this module turns a gesture into the move that the
- * Worker accepts.
+ * Pure browser-side policy for the agent input queue: input-state predicates,
+ * head-action selection, and reorder geometry. The Worker derives which rows
+ * may trade places (each row's `reorderSegment`) and which head actions are
+ * legal (`canSteer`, `canPreempt`); this module interprets those fields for
+ * the queue rows and keyboard shortcuts.
  *
- * Its own module, because a pointer drag cannot be reproduced in a unit test:
- * solid-dnd activates on real pointer geometry and collision detection, which
- * jsdom does not supply. The gesture is covered end to end in
- * `tests/e2e/108-agent-input-queue.spec.ts`; the arithmetic is covered beside
- * this file, with no component, no drag library and no icons to import.
+ * Kept in its own module so the arithmetic and state rules run as fast pure
+ * unit tests without mounting components, drag libraries, or icons (pointer
+ * drag gestures are covered end to end in
+ * `tests/e2e/108-agent-input-queue.spec.ts`).
  */
 
 /**
@@ -28,6 +28,11 @@ export function dragIdOf(item: QueuedAgentInput): string {
 /** Lock inputs that the provider can already read. */
 export function isLockedInputState(state: AgentInputState): boolean {
   return state === AgentInputState.DISPATCHING || state === AgentInputState.AWAITING_ECHO
+}
+
+/** Whether an input's delivery failed or may have failed, which waits for an explicit retry. */
+export function isDeliveryFailedState(state: AgentInputState): boolean {
+  return state === AgentInputState.FAILED || state === AgentInputState.DELIVERY_UNCERTAIN
 }
 
 /** Find the first input that does not await an echo, or return -1. */

@@ -152,12 +152,12 @@ export function createAgentInputQueueOperations(deps: {
   const preemptQueueItem = async (agentId: string, item: QueuedAgentInput) => {
     await runQueueRpc(agentId, 'Failed to preempt queued input', workerAgentInput.preemptQueuedAgentInput, { inputId: item.id })
   }
-  const setQueuePaused = async (paused: boolean) => {
-    // The shell mounts the composer for a FOCUSED agent alone, so an agent is
-    // focused whenever this runs. Read that agent once, at call time:
-    // `runQueueRpc` then resolves the Worker of that same agent, even when a
-    // tab switch moves the focus while the RPC is in flight.
-    await runQueueRpc(deps.focusedAgentId()!, 'Failed to change queue pause state', workerAgentInput.setAgentInputQueuePaused, { paused })
+  const setQueuePaused = async (agentId: string, paused: boolean) => {
+    await runQueueRpc(agentId, 'Failed to change queue pause state', workerAgentInput.setAgentInputQueuePaused, { paused })
+  }
+  const advanceInputQueue = async (agentId: string): Promise<AgentInputQueueSnapshot | undefined> => {
+    const response = await runQueueRpc(agentId, 'Failed to advance input queue', workerAgentInput.advanceAgentInputQueue, {})
+    return response.snapshot
   }
   const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments: FileAttachment[] = [], scheduledAt = '', requirePendingAttempt = false): Promise<boolean> => {
     // Capture the destination before the request can yield to a tab switch.
@@ -233,6 +233,7 @@ export function createAgentInputQueueOperations(deps: {
     steerQueueItem,
     preemptQueueItem,
     setQueuePaused,
+    advanceInputQueue,
     sendMessage,
     retryPendingMessage,
     sendControlFeedback,

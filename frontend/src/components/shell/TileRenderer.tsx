@@ -38,6 +38,7 @@ import { createEffect, createMemo, createSignal, For, mapArray, onCleanup, Show 
 import { Portal } from 'solid-js/web'
 import { workerAgent } from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
+import { queueHeadAction } from '~/components/chat/agentInputQueuePolicy'
 import { AgentInputRecoveryDialog } from '~/components/chat/AgentInputRecoveryDialog'
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
@@ -51,7 +52,7 @@ import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { pageScrollFocusedTerminal, TerminalView } from '~/components/terminal/TerminalView'
 import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
-import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputQueuePauseReason, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitFileStatusCode, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createStableKeys } from '~/lib/keyedRows'
@@ -1541,6 +1542,44 @@ export function createTileRenderer(opts: TileRendererOpts) {
     )
   }
 
+  const advanceFocusedInputQueue = async (): Promise<void> => {
+    if (isActiveWorkspaceArchived())
+      return
+    const agentId = focusedAgentId()
+    if (!agentId || isSubagentReadOnly(agentId))
+      return
+    const snapshot = agentInputQueueStore.get(agentId)
+    if (!snapshot)
+      return
+    const state = opts.agentComposerActionStates.forAgent(agentId)
+    if (state.advanceInFlight() || state.pauseInFlight())
+      return
+    const offered = queueHeadAction(view.getAgentTab(agentId)?.queueHeadDispatch, snapshot.items)
+    // When login recovery blocks the queue and no head action (such as a
+    // steerable QUESTION_ANSWER) can run first, open the approval dialog
+    // directly with no Worker round trip.
+    if (!offered && snapshot.processRecovery) {
+      requestInputRecovery(agentId, snapshot.processRecovery)
+      return
+    }
+    if (!offered && snapshot.pauseReason === AgentInputQueuePauseReason.UNSPECIFIED)
+      return
+    state.setAdvanceInFlight(true)
+    try {
+      const updated = await queueOps.advanceInputQueue(agentId)
+      // Open login recovery only while this tab stays focused and writable, so
+      // an in-flight advance does not pop a modal over another tab.
+      if (updated?.processRecovery && !isActiveWorkspaceArchived() && focusedAgentId() === agentId && !isSubagentReadOnly(agentId))
+        requestInputRecovery(agentId, updated.processRecovery)
+    }
+    catch {
+      // runQueueRpc already surfaced the warning toast.
+    }
+    finally {
+      state.setAdvanceInFlight(false)
+    }
+  }
+
   return {
     getActiveTabForTile,
     resolveFocusedTab,
@@ -1549,6 +1588,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     renderTileContent,
     focusedAgentId,
     focusedQuakeTab,
+    advanceFocusedInputQueue,
     splitFocusedTile(direction: SplitOrientation) {
       const tileId = layoutStore.focusedTileId()
       if (tileId)
@@ -1571,11 +1611,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
         chatHandlers.get(tab.id)?.pageScroll(direction)
     },
     FocusedAgentEditorPanel,
-    // The queue RPCs, so the shell's keyboard layer can reach the same
-    // operations the queue rows do. Built above for the composer; exposed here
-    // rather than rebuilt, so a shortcut and a button cannot take two different
-    // paths to one worker call.
-    queueOps,
     // Reinserting a native modal removes it from the browser's top layer.
     // Keep its DOM outside responsive shell updates while retaining shell state.
     RecoveryDialog: () => (

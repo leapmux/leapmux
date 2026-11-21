@@ -1,3 +1,4 @@
+import type { AgentInputQueueSnapshot } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { Tab } from '~/stores/tab.types'
@@ -7,7 +8,7 @@ import { DragDropProvider } from '@thisbeyond/solid-dnd'
 import { createRoot, createSignal, Show } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
-import { AgentInputProcessRecoverySchema, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputProcessRecoverySchema, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentInputState, AgentProvider, AgentStatus, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { setCRDTBridge } from '~/lib/crdt'
@@ -96,6 +97,7 @@ vi.mock('~/components/fileviewer/FileViewer', () => ({
 const renameAgent = vi.hoisted(() => vi.fn(async () => ({})))
 const renameTerminal = vi.hoisted(() => vi.fn(async () => ({})))
 const enqueueAgentInput = vi.hoisted(() => vi.fn(async () => ({ snapshot: undefined })))
+const advanceAgentInputQueue = vi.hoisted(() => vi.fn(async (): Promise<{ snapshot: AgentInputQueueSnapshot | undefined }> => ({ snapshot: undefined })))
 const listAgentInputRecoveries = vi.hoisted(() => vi.fn())
 const recoverAgentInputProcess = vi.hoisted(() => vi.fn())
 vi.mock('~/api/workerRpc', async (importOriginal) => {
@@ -113,6 +115,7 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
     workerAgentInput: {
       ...actual.workerAgentInput,
       enqueueAgentInput,
+      advanceAgentInputQueue,
       listAgentInputRecoveries,
       recoverAgentInputProcess,
     },
@@ -152,6 +155,8 @@ interface RenderRendererOptions {
   onNewTerminalAdvanced?: () => void
   chatStore?: ReturnType<typeof createChatStore>
   agentInputQueueStore?: ReturnType<typeof createAgentInputQueueStore>
+  agentComposerActionStates?: ReturnType<typeof createAgentComposerActionStateStore>
+  isActiveWorkspaceArchived?: () => boolean
   /** The control store the renderer reads, so a test can seed its requests. */
   controlStore?: ReturnType<typeof createControlStore>
   /** The renderer object itself, for tests that read its shell helpers. */
@@ -176,7 +181,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
   const forceScrollToBottomRef = options.forceScrollToBottomRef ?? createImperativeRef<() => void>()
   return render(() => {
     const r = createTileRenderer({
-      agentComposerActionStates: createAgentComposerActionStateStore(),
+      agentComposerActionStates: options.agentComposerActionStates ?? createAgentComposerActionStateStore(),
       // Same factory production uses, so the test exercises the real
       // select-and-focus behaviour rather than a bare `setActive`.
       mruEditorDeps: mruAgentEditorDeps({
@@ -234,7 +239,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       },
       workspace: {
         isActiveWorkspaceMutatable: () => true,
-        isActiveWorkspaceArchived: () => false,
+        isActiveWorkspaceArchived: options.isActiveWorkspaceArchived ?? (() => false),
         activeWorkspace: () => ({ id: s.workspaceId }),
         getMruAgentContext,
       },
@@ -298,6 +303,9 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
 }
 
 afterEach(() => {
+  advanceAgentInputQueue.mockReset()
+  advanceAgentInputQueue.mockResolvedValue({ snapshot: undefined })
+  listAgentInputRecoveries.mockReset()
   setupCleanups.splice(0).forEach(dispose => dispose())
   setCRDTBridge(null)
   // The composer test seeds this draft, and a draft outlives the render.
@@ -1219,4 +1227,333 @@ describe('createTileRenderer new-tab actions', () => {
       })
     }
   }
+})
+
+describe('createTileRenderer advanceFocusedInputQueue', () => {
+  const recovery = () => create(AgentInputProcessRecoverySchema, {
+    outputGeneration: 4n,
+    agentSessionId: 'session-4',
+    agentProvider: AgentProvider.CODEX,
+    processInstanceId: 'process-4',
+  })
+
+  function setupAdvance(options: {
+    archived?: () => boolean
+    composerShown?: () => boolean
+    dispatch?: QueueHeadDispatch
+    readOnlySubagent?: boolean
+    snapshot?: ReturnType<typeof create<typeof AgentInputQueueSnapshotSchema>>
+  } = {}) {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId, 'Agent 1', 'worker-1')
+    if (options.dispatch !== undefined)
+      s.metadata.patch('a1', { queueHeadDispatch: options.dispatch })
+    if (options.readOnlySubagent)
+      s.metadata.patch('a1', { parentAgentId: 'root-1', acceptsMessages: false })
+    const agentInputQueueStore = createAgentInputQueueStore()
+    if (options.snapshot)
+      agentInputQueueStore.apply('a1', options.snapshot)
+    const agentComposerActionStates = createAgentComposerActionStateStore()
+    let renderer!: ReturnType<typeof createTileRenderer>
+    renderRenderer(s, tileId, {
+      agentInputQueueStore,
+      agentComposerActionStates,
+      ...(options.archived
+        ? { isActiveWorkspaceArchived: options.archived }
+        : {}),
+      ...(options.composerShown
+        ? { withComposer: true, composerShown: options.composerShown }
+        : {}),
+      onRenderer: (r) => { renderer = r },
+    })
+    return {
+      s,
+      tileId,
+      agentInputQueueStore,
+      agentComposerActionStates,
+      renderer,
+    }
+  }
+
+  it('calls advanceAgentInputQueue for a paused queue and stores the returned snapshot', async () => {
+    const updated = create(AgentInputQueueSnapshotSchema, {
+      revision: 2n,
+      pauseReason: AgentInputQueuePauseReason.UNSPECIFIED,
+    })
+    advanceAgentInputQueue.mockResolvedValueOnce({ snapshot: updated })
+    const { renderer, agentInputQueueStore } = setupAdvance({
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 1n,
+        pauseReason: AgentInputQueuePauseReason.MANUAL,
+      }),
+    })
+
+    await renderer.advanceFocusedInputQueue()
+
+    expect(advanceAgentInputQueue).toHaveBeenCalledExactlyOnceWith('worker-1', { agentId: 'a1' })
+    expect(agentInputQueueStore.get('a1')?.revision).toBe(2n)
+  })
+
+  it('calls advanceAgentInputQueue on a running queue with a steerable or preemptable head', async () => {
+    for (const [dispatch, flag] of [
+      [
+        QueueHeadDispatch.STEER,
+        { canSteer: true },
+      ],
+      [
+        QueueHeadDispatch.PREEMPT,
+        { canPreempt: true },
+      ],
+    ] as const) {
+      advanceAgentInputQueue.mockClear()
+      const { renderer } = setupAdvance({
+        dispatch,
+        snapshot: create(AgentInputQueueSnapshotSchema, {
+          revision: 1n,
+          pauseReason: AgentInputQueuePauseReason.UNSPECIFIED,
+          items: [
+            {
+              id: 'h1',
+              text: 'go',
+              kind: AgentInputKind.USER_MESSAGE,
+              state: AgentInputState.QUEUED,
+              ...flag,
+            },
+          ],
+        }),
+      })
+
+      await renderer.advanceFocusedInputQueue()
+
+      expect(advanceAgentInputQueue).toHaveBeenCalledExactlyOnceWith('worker-1', { agentId: 'a1' })
+    }
+  })
+
+  it('skips the RPC on a running queue with no offered head action, missing snapshot, archived workspace, or read-only subagent', async () => {
+    const runningEmpty = setupAdvance({
+      dispatch: QueueHeadDispatch.STEER,
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 1n,
+        pauseReason: AgentInputQueuePauseReason.UNSPECIFIED,
+      }),
+    })
+    await runningEmpty.renderer.advanceFocusedInputQueue()
+
+    const noSnapshot = setupAdvance({ dispatch: QueueHeadDispatch.STEER })
+    await noSnapshot.renderer.advanceFocusedInputQueue()
+
+    const archived = setupAdvance({
+      archived: () => true,
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 1n,
+        pauseReason: AgentInputQueuePauseReason.MANUAL,
+      }),
+    })
+    await archived.renderer.advanceFocusedInputQueue()
+
+    const readOnly = setupAdvance({
+      readOnlySubagent: true,
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 1n,
+        pauseReason: AgentInputQueuePauseReason.MANUAL,
+      }),
+    })
+    await readOnly.renderer.advanceFocusedInputQueue()
+
+    expect(advanceAgentInputQueue).not.toHaveBeenCalled()
+  })
+
+  it('opens login recovery directly without an RPC when recovery blocks the queue', async () => {
+    listAgentInputRecoveries.mockResolvedValue({ targets: [] })
+    const { renderer } = setupAdvance({
+      dispatch: QueueHeadDispatch.STEER,
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 1n,
+        pauseReason: AgentInputQueuePauseReason.UNSPECIFIED,
+        processRecovery: recovery(),
+        items: [
+          {
+            id: 'h1',
+            text: 'blocked',
+            kind: AgentInputKind.USER_MESSAGE,
+            state: AgentInputState.QUEUED,
+            canSteer: false,
+          },
+        ],
+      }),
+    })
+
+    await renderer.advanceFocusedInputQueue()
+
+    expect(advanceAgentInputQueue).not.toHaveBeenCalled()
+    expect(screen.getByTestId('input-recovery-dialog')).toBeInTheDocument()
+  })
+
+  it('opens login recovery after advancing a steerable head while the tab remains focused across a composer remount', async () => {
+    const pending = deferred<{ snapshot: ReturnType<typeof create<typeof AgentInputQueueSnapshotSchema>> }>()
+    advanceAgentInputQueue.mockReturnValueOnce(pending.promise)
+    listAgentInputRecoveries.mockResolvedValue({ targets: [] })
+    const [composerShown, setComposerShown] = createSignal(true)
+    const { renderer } = setupAdvance({
+      composerShown,
+      dispatch: QueueHeadDispatch.STEER,
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 1n,
+        pauseReason: AgentInputQueuePauseReason.PROCESS_RECOVERY,
+        processRecovery: recovery(),
+        items: [
+          {
+            id: 'q1',
+            text: 'yes',
+            kind: AgentInputKind.QUESTION_ANSWER,
+            state: AgentInputState.QUEUED,
+            canSteer: true,
+          },
+        ],
+      }),
+    })
+
+    const press = renderer.advanceFocusedInputQueue()
+    // Simulate a responsive desktop/mobile remount while the RPC is in flight.
+    setComposerShown(false)
+    setComposerShown(true)
+    pending.resolve({
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 2n,
+        pauseReason: AgentInputQueuePauseReason.PROCESS_RECOVERY,
+        processRecovery: recovery(),
+      }),
+    })
+    await press
+
+    expect(advanceAgentInputQueue).toHaveBeenCalledExactlyOnceWith('worker-1', { agentId: 'a1' })
+    expect(screen.getByTestId('input-recovery-dialog')).toBeInTheDocument()
+  })
+
+  it('does not open login recovery over another tab if focus moved while advance was in flight', async () => {
+    const pending = deferred<{ snapshot: ReturnType<typeof create<typeof AgentInputQueueSnapshotSchema>> }>()
+    advanceAgentInputQueue.mockReturnValueOnce(pending.promise)
+    listAgentInputRecoveries.mockResolvedValue({ targets: [] })
+    const { s, tileId, renderer } = setupAdvance({
+      dispatch: QueueHeadDispatch.STEER,
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 1n,
+        pauseReason: AgentInputQueuePauseReason.MANUAL,
+        items: [
+          {
+            id: 'h1',
+            text: 'steer',
+            kind: AgentInputKind.USER_MESSAGE,
+            state: AgentInputState.QUEUED,
+            canSteer: true,
+          },
+        ],
+      }),
+    })
+    s.addAgent('a2', tileId, 'Agent 2', 'worker-1')
+    s.selection.setActiveById(TabType.AGENT, 'a1')
+
+    const press = renderer.advanceFocusedInputQueue()
+    s.selection.setActiveById(TabType.AGENT, 'a2')
+    pending.resolve({
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 2n,
+        pauseReason: AgentInputQueuePauseReason.PROCESS_RECOVERY,
+        processRecovery: recovery(),
+      }),
+    })
+    await press
+
+    expect(screen.queryByTestId('input-recovery-dialog')).not.toBeInTheDocument()
+  })
+
+  it('does not open login recovery if the workspace archives or the subagent becomes read-only while advance is in flight', async () => {
+    for (const mutate of ['archive', 'read-only'] as const) {
+      const pending = deferred<{ snapshot: ReturnType<typeof create<typeof AgentInputQueueSnapshotSchema>> }>()
+      advanceAgentInputQueue.mockReturnValueOnce(pending.promise)
+      listAgentInputRecoveries.mockResolvedValue({ targets: [] })
+      const [archived, setArchived] = createSignal(false)
+      const { s, renderer } = setupAdvance({
+        archived,
+        dispatch: QueueHeadDispatch.STEER,
+        snapshot: create(AgentInputQueueSnapshotSchema, {
+          revision: 1n,
+          pauseReason: AgentInputQueuePauseReason.MANUAL,
+          items: [
+            {
+              id: 'h1',
+              text: 'steer',
+              kind: AgentInputKind.USER_MESSAGE,
+              state: AgentInputState.QUEUED,
+              canSteer: true,
+            },
+          ],
+        }),
+      })
+
+      const press = renderer.advanceFocusedInputQueue()
+      if (mutate === 'archive')
+        setArchived(true)
+      else
+        s.metadata.patch('a1', { parentAgentId: 'root-1', acceptsMessages: false })
+      pending.resolve({
+        snapshot: create(AgentInputQueueSnapshotSchema, {
+          revision: 2n,
+          pauseReason: AgentInputQueuePauseReason.PROCESS_RECOVERY,
+          processRecovery: recovery(),
+        }),
+      })
+      await press
+
+      expect(screen.queryByTestId('input-recovery-dialog')).not.toBeInTheDocument()
+    }
+  })
+
+  it('guards overlapping advances per agent, respects pauseInFlight, and releases after rejection', async () => {
+    const firstPending = deferred<{ snapshot: undefined }>()
+    advanceAgentInputQueue
+      .mockReturnValueOnce(firstPending.promise)
+      .mockResolvedValueOnce({ snapshot: undefined })
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ snapshot: undefined })
+
+    const { s, tileId, agentInputQueueStore, agentComposerActionStates, renderer } = setupAdvance({
+      snapshot: create(AgentInputQueueSnapshotSchema, {
+        revision: 1n,
+        pauseReason: AgentInputQueuePauseReason.MANUAL,
+      }),
+    })
+    s.addAgent('a2', tileId, 'Agent 2', 'worker-2')
+    agentInputQueueStore.apply('a2', create(AgentInputQueueSnapshotSchema, {
+      revision: 1n,
+      pauseReason: AgentInputQueuePauseReason.MANUAL,
+    }))
+    s.selection.setActiveById(TabType.AGENT, 'a1')
+
+    const first = renderer.advanceFocusedInputQueue()
+    await renderer.advanceFocusedInputQueue()
+    expect(advanceAgentInputQueue).toHaveBeenCalledTimes(1)
+
+    // Another agent can advance independently while a1 is in flight.
+    s.selection.setActiveById(TabType.AGENT, 'a2')
+    await renderer.advanceFocusedInputQueue()
+    expect(advanceAgentInputQueue).toHaveBeenCalledTimes(2)
+    expect(advanceAgentInputQueue).toHaveBeenNthCalledWith(2, 'worker-2', { agentId: 'a2' })
+
+    firstPending.resolve({ snapshot: undefined })
+    await first
+
+    // pauseInFlight blocks advance on a1.
+    s.selection.setActiveById(TabType.AGENT, 'a1')
+    agentComposerActionStates.forAgent('a1').setPauseInFlight(true)
+    await renderer.advanceFocusedInputQueue()
+    expect(advanceAgentInputQueue).toHaveBeenCalledTimes(2)
+    agentComposerActionStates.forAgent('a1').setPauseInFlight(false)
+
+    // A rejected RPC settles without throwing and releases the in-flight guard.
+    await expect(renderer.advanceFocusedInputQueue()).resolves.toBeUndefined()
+    await renderer.advanceFocusedInputQueue()
+    expect(advanceAgentInputQueue).toHaveBeenCalledTimes(4)
+  })
 })

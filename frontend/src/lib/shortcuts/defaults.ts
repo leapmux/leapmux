@@ -87,6 +87,10 @@ export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
 
   // Chat input
   //
+  // On an empty composer this chord steers or preempts the head of the input
+  // queue, and resumes a paused queue in the same press (see
+  // `AdvanceAgentInputQueue` and `advanceFocusedInputQueue`).
+  //
   // Every conjunct earns its place. `activeTabType` scopes the action to an
   // agent tab without demanding that focus be in the composer -- the user may be
   // reading the transcript. `chatInputEmpty` is what LEAVES the chord to
@@ -94,8 +98,8 @@ export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
   // preventDefault only for a binding that resolves, so a false `when` is the
   // one thing that lets Send keep working. `!terminalFocused` matters because a
   // quake terminal lives INSIDE an agent tab, and without it the chord typed
-  // into that shell would steer instead of reaching the PTY.
-  { key: '$mod+Enter', command: 'chat.steerQueuedInput', when: 'activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen' },
+  // into that shell would act on the queue instead of reaching the PTY.
+  { key: '$mod+Enter', command: 'chat.advanceInputQueue', when: 'activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen' },
 
   // `chat.sendMessage` gives up its chord, because Enter and Cmd+Enter in the
   // composer already send. It keeps its ENTRY, with an empty key, and that

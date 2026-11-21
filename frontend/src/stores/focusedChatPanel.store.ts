@@ -6,12 +6,13 @@
  * `document.activeElement.closest()` -- keyed by the panel's root element rather
  * than by agent id so the lookup falls out of the DOM without leaking an agent
  * id into it, and so a `WeakMap` collects the entry when the element detaches.
- * `chat.steerQueuedInput` acts on the CURRENT agent tab whether or not focus is
- * in the composer, so it reads the mounted panel directly.
+ * `chatInputEmpty` checks the CURRENT agent tab's composer whether or not focus
+ * is inside the composer, so it reads the mounted panel directly.
  *
  * There is at most one mounted panel: `FocusedAgentEditorPanel` is rendered in
  * exactly one of the two shell layers (mobile and desktop are mutually
- * exclusive) and is keyed to the focused agent. `activePanel` therefore identifies
+ * exclusive) and follows the focused agent -- the shell reuses one instance
+ * across agent tabs. `activePanel` therefore identifies
  * "the current agent tab's composer" unambiguously, and a re-registration
  * replaces it.
  */

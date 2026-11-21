@@ -97,6 +97,9 @@ var agentHandlerCases = []agentHandlerCase{
 	{leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure, func(id string) proto.Message {
 		return &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: id, InputId: "input"}
 	}},
+	{leapmuxv1connect.WorkerAgentInputServiceAdvanceAgentInputQueueProcedure, func(id string) proto.Message {
+		return &leapmuxv1.AdvanceAgentInputQueueRequest{AgentId: id}
+	}},
 	{leapmuxv1connect.WorkerAgentInputServiceRetryQueuedAgentInputProcedure, func(id string) proto.Message {
 		return &leapmuxv1.RetryQueuedAgentInputRequest{AgentId: id, InputId: "input"}
 	}},

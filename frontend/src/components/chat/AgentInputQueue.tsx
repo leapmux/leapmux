@@ -26,7 +26,7 @@ import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import * as styles from './AgentInputQueue.css'
-import { dragIdOf, isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
+import { dragIdOf, isDeliveryFailedState, isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueuePolicy'
 
 export interface AgentInputQueueProps {
   snapshot?: AgentInputQueueSnapshot
@@ -316,7 +316,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
     // This row has no edit owner, so the shared scan needs no exclusion
     // for this row: it can only add a false term.
     const requiresTakeover = () => editedByOther() || (!item().editOwnerClientId && anyItemIsEdited())
-    const retryable = () => item().state === AgentInputState.FAILED || item().state === AgentInputState.DELIVERY_UNCERTAIN
+    const retryable = () => isDeliveryFailedState(item().state)
     const canRecover = () => !!props.snapshot?.processRecovery && !!props.onRecover && isHead() && !isLocked() && !item().editOwnerClientId
     // The edit slot holds ONE button, and who owns the edit decides
     // which. A memo keeps the four cases in one place, so the icon,

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { getActiveChatPanel, getFocusedChatPanel, registerChatPanel, unregisterChatPanel } from './focusedChatPanel.store'
 
 afterEach(() => {
@@ -14,7 +14,11 @@ function mountPanel(handle: { send?: () => void, hasPendingInput?: () => boolean
   document.body.appendChild(panel)
   const send = handle.send ?? vi.fn()
   const hasPendingInput = handle.hasPendingInput ?? (() => false)
-  registerChatPanel(panel, { send, hasPendingInput })
+  registerChatPanel(panel, {
+    send,
+    hasPendingInput,
+  })
+  onTestFinished(() => unregisterChatPanel(panel))
   return { panel, input, send, hasPendingInput }
 }
 

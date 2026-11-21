@@ -1611,6 +1611,7 @@ export const AppShell: Component = () => {
     resolveFocusedTab: tileRenderer.resolveFocusedTab,
     isActiveWorkspaceArchived,
     splitFocusedTile: tileRenderer.splitFocusedTile,
+    advanceFocusedInputQueue: tileRenderer.advanceFocusedInputQueue,
     // Both resolve the terminal from the DOM, which is the same question the
     // `terminalFocused` guard on these bindings asks -- and the only one that
     // reaches a quake terminal, which has no tab for a tile-shaped lookup to
@@ -1622,9 +1623,6 @@ export const AppShell: Component = () => {
     customKeybindings: preferences.customKeybindings,
     preferredExternalAppId: preferences.preferredExternalAppId,
     setPreferredExternalAppId: preferences.setPreferredExternalAppId,
-    getAgentInputQueue: agentId => agentInputQueueStore.get(agentId),
-    steerQueueItem: (agentId, item) => tileRenderer.queueOps.steerQueueItem(agentId, item),
-    preemptQueueItem: (agentId, item) => tileRenderer.queueOps.preemptQueueItem(agentId, item),
     quakePanel: {
       open: tab => void quakeStore.open(tab),
       close: key => quakeStore.close(key),

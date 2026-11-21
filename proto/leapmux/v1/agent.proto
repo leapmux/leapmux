@@ -91,6 +91,9 @@ service WorkerAgentInputService {
   rpc PreemptQueuedAgentInput(PreemptQueuedAgentInputRequest) returns (PreemptQueuedAgentInputResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
   }
+  rpc AdvanceAgentInputQueue(AdvanceAgentInputQueueRequest) returns (AdvanceAgentInputQueueResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
   rpc RetryQueuedAgentInput(RetryQueuedAgentInputRequest) returns (RetryQueuedAgentInputResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
   }
@@ -685,6 +688,22 @@ message PreemptQueuedAgentInputRequest {
   string input_id = 2;
 }
 message PreemptQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+// AdvanceAgentInputQueue performs one keyboard advance step against an agent's
+// input queue.
+//
+// - When the head can steer, the Worker steers it and then resumes a paused
+//   queue if no new pause, failure, or login-recovery proposal appeared.
+// - When the queue is running and the head can preempt, the Worker interrupts
+//   the active turn.
+// - When the queue is paused and no steer runs, the Worker resumes it and
+//   atomically preempts the original head if the resume made it preemptable.
+// - When login recovery blocks the queue, the Worker returns the current
+//   snapshot without resuming so the client can open the approval dialog.
+message AdvanceAgentInputQueueRequest {
+  string agent_id = 1;
+}
+message AdvanceAgentInputQueueResponse { AgentInputQueueSnapshot snapshot = 1; }
 
 message RetryQueuedAgentInputRequest {
   string agent_id = 1;

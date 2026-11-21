@@ -113,7 +113,7 @@ export interface AgentEditorPanelProps {
   onRetryQueueItem?: (agentId: string, item: QueuedAgentInput, confirmUncertain: boolean) => Promise<void>
   onSteerQueueItem?: (agentId: string, item: QueuedAgentInput) => Promise<void>
   onPreemptQueueItem?: (agentId: string, item: QueuedAgentInput) => Promise<void>
-  onSetQueuePaused?: (paused: boolean) => Promise<void>
+  onSetQueuePaused?: (agentId: string, paused: boolean) => Promise<void>
   onRecoverInputProcess?: (recovery: AgentInputProcessRecovery) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
@@ -191,10 +191,10 @@ export interface AgentEditorPanelProps {
 /**
  * Swallows the rejection of a queue RPC.
  *
- * `runQueueRpc` in `~/lib/agentInputQueueOperations` already shows the failure
- * to the user and then rethrows, so every caller here owes the promise a
- * handler and owes the user nothing further. One helper, so the reason is
- * stated once rather than at each of the eight call sites.
+ * `runQueueRpc` in `~/components/shell/agentInputQueueOperations` already shows
+ * the failure to the user and then rethrows, so every caller here owes the
+ * promise a handler and owes the user nothing further. One helper, so the
+ * reason is stated once rather than at each call site.
  */
 function fireQueueRpc(call: Promise<unknown> | undefined): void {
   void call?.catch(() => {})
@@ -288,29 +288,38 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // a change to the source or to the default cannot reach three of them and
   // miss the fourth.
   // The worker pauses a queue exactly when it states a pause reason.
-  const queuePaused = () => (props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED) !== AgentInputQueuePauseReason.UNSPECIFIED
-  // ONE in-flight mark for the pause RPC, shared by the two controls that fire
-  // it: the banner's Resume and the composer's toggle. Neither updates
-  // optimistically -- `queuePaused()` moves only when the Worker's snapshot
-  // lands -- so both still read "Resume" for the whole round trip, which is
-  // what invites a second press. The state converges either way, because the
-  // RPC carries an absolute boolean; the cost is that `runQueueRpc` raises one
-  // warn toast per failure, so two presses of one intent raise two toasts.
+  const queuePauseReason = () => props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED
+  const queuePaused = () => queuePauseReason() !== AgentInputQueuePauseReason.UNSPECIFIED
+  // ONE in-flight mark for queue pause changes, shared by the banner's Resume,
+  // the composer's toggle, and `TileRenderer`'s `advanceFocusedInputQueue`.
+  // Neither button updates optimistically -- `queuePaused()` moves only when
+  // the Worker's snapshot lands -- so both still read "Resume" for the whole
+  // round trip, which is what invites a second press. The state converges
+  // either way, because the RPC carries an absolute boolean; the cost is that
+  // `runQueueRpc` raises one warn toast per failure, so two presses of one
+  // intent raise two toasts.
   //
   // A plain signal, NOT `createLoadingSignal`. That hook holds `loading` true
   // for a one-second debounce after `stop()`, which steadies a spinner but
   // would leave this toggle dead for a second after a flip that normally
   // settles in milliseconds.
-  const pauseInFlight = () => actionState().pauseInFlight()
-  const setQueuePaused = (paused: boolean) => {
-    const state = actionState()
-    if (state.pauseInFlight())
+  const pauseInFlight = () => actionState().pauseInFlight() || actionState().advanceInFlight()
+  // Never rejects: `runQueueRpc` already warned the user about a failure.
+  const setQueuePaused = async (agentId: string, paused: boolean): Promise<void> => {
+    const state = actionStates.forAgent(agentId)
+    if (state.pauseInFlight() || state.advanceInFlight())
       return
-    const call = props.onSetQueuePaused?.(paused)
-    if (!call)
+    const callback = props.onSetQueuePaused
+    if (!callback)
       return
     state.setPauseInFlight(true)
-    fireQueueRpc(call.finally(() => state.setPauseInFlight(false)))
+    try {
+      await callback(agentId, paused)
+    }
+    catch {}
+    finally {
+      state.setPauseInFlight(false)
+    }
   }
 
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
@@ -343,7 +352,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     if (canOpenInputRecovery())
       openInputRecovery()
     else
-      setQueuePaused(!queuePaused())
+      void setQueuePaused(props.agentId, !queuePaused())
   }
   // The queue-edit session owns the open edit and everything it holds. The
   // panel creates it BEFORE `useChatAttachments`, because `attachmentDraftKey`
@@ -488,8 +497,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         unregisterEditorRef(registeredAgentId)
         registeredAgentId = null
       }
-      if (panelRef)
-        unregisterChatPanel(panelRef)
     })
   })
   createEffect(on(() => props.agentId, (agentId, prevAgentId) => {
@@ -681,7 +688,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
    * `hasContent` is deliberately left alone: the Send button, the height reset
    * and the ask-user-question clearing all tolerate the lag.
    */
-  const hasPendingInput = () => (editorContentRef?.get() ?? '') !== '' || allowEmptySend()
+  // Before `editorContentRef` lands (while the editor loads its draft or if its
+  // build fails), report pending input so `chatInputEmpty` stays false and the
+  // default queue shortcut never steals a keypress from a loading draft.
+  const hasPendingInput = () => !editorContentRef || editorContentRef.get() !== '' || allowEmptySend()
 
   // Clear interrupt loading when the button hides.
   createEffect(on(ctrl.showInterrupt, (show) => {
@@ -765,6 +775,21 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     return `${props.agentId}-ctrl-${requestInstanceId(request)}${pageSuffix}`
   })
   let triggerSend: (() => void | Promise<void>) | undefined
+
+  // Registering the chat panel at mount keeps `chatInputEmpty` false until
+  // `editorContentRef` lands while `MarkdownEditor` builds asynchronously.
+  onMount(() => {
+    if (panelRef) {
+      registerChatPanel(panelRef, {
+        send: () => triggerSend?.(),
+        hasPendingInput,
+      })
+    }
+    onCleanup(() => {
+      if (panelRef)
+        unregisterChatPanel(panelRef)
+    })
+  })
 
   // The body of the agent-info card. Rendered by the status bar's info popover
   // and by the `[+]` menu's "Agent info" submenu, so it is written once: the
@@ -858,8 +883,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             : {})}
           paused={queuePaused() && queueControlsShown()}
           busy={pauseInFlight()}
-          reason={props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED}
-          onResume={() => setQueuePaused(false)}
+          reason={queuePauseReason()}
+          onResume={() => void setQueuePaused(props.agentId, false)}
         />
         <TurnRetryOfferBanner
           offer={props.onRetryTurn ? props.turnRetryOffer : undefined}
@@ -995,8 +1020,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             sendRef: (fn) => {
               triggerSend = fn
               props.triggerSendRef?.(fn)
-              if (panelRef)
-                registerChatPanel(panelRef, { send: fn, hasPendingInput })
             },
             focusRef: (fn) => {
               editorFocusFn = fn

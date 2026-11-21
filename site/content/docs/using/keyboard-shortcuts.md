@@ -119,9 +119,14 @@ These act on the file browser. See [File Browser](/docs/using/file-browser/).
 
 | Command | macOS | Windows / Linux | Active when |
 |---|---|---|---|
-| Steer Queued Input | `⌘⏎` | `Ctrl+⏎` | agent tab, composer empty, no terminal focused, no dialog open |
+| Resume Queue and Steer or Preempt | `⌘⏎` | `Ctrl+⏎` | agent tab, composer empty, no terminal focused, no dialog open |
 
-`Steer Queued Input` hands the input queue's first item to the turn the agent already runs. It acts only on an empty composer, because the same chord sends whatever the composer holds — so text, an attachment, or a permission prompt awaiting approval all send as usual. Nothing happens when the provider does not accept a steer, when the queue is empty, or when the first item is not in a steerable state — a first item scheduled for a later time is not steerable until its scheduled instant arrives. See [The input queue](/docs/using/coding-agents/#the-input-queue).
+`Resume Queue and Steer or Preempt` acts on the input queue in one press:
+
+- When the provider accepts a steer, it hands the queue's first item to the turn the agent already runs. When the provider can only interrupt, it preempts instead: it cancels the turn, and the first item goes out next.
+- When the queue is paused, the same press also resumes it. When the queue waits for login recovery, the press opens the recovery dialog instead.
+
+It acts only on an empty composer, because `Cmd/Ctrl+Enter` sends whatever the composer holds in the default **Cmd/Ctrl+Enter sends** mode — so text, an attachment, or a permission prompt awaiting approval never triggers a queue action. The press does not steer or preempt when the provider supports neither, when the queue is empty, when no turn is running, or when the first item is scheduled for a later time (it stays waiting until its scheduled instant arrives). Steering also requires an ordinary turn and a steerable first item, while preemption can cancel a non-steerable turn or dispatch a `/clear` or `/compact` item next. See [The input queue](/docs/using/coding-agents/#the-input-queue).
 
 {{< callout type="info" >}}
 `Send Message` (command `chat.sendMessage`) submits the focused chat input from anywhere inside the chat panel. It has no default chord, because the chat editor's own Enter and Cmd/Ctrl+Enter already send — see [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below. Bind it in Preferences if you want a second way in.
@@ -285,7 +290,7 @@ Each override targets a command by its id. Each id corresponds to one of the act
 | `app.openPreferences` | Open Preferences |
 | `app.openInExternalApp` | Open in External App |
 | `chat.sendMessage` | Send Message |
-| `chat.steerQueuedInput` | Steer Queued Input |
+| `chat.advanceInputQueue` | Resume Queue and Steer or Preempt |
 | `terminal.toggleQuake` | Toggle Quake Terminal |
 | `terminal.openQuake` / `terminal.closeQuake` | Open / Close Quake Terminal |
 | `terminal.lineStart` / `terminal.lineEnd` | Go to Line Start / End |

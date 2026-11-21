@@ -7,7 +7,7 @@ import {
   QueuedAgentInputSchema,
   QueueHeadDispatch,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
+import { isDeliveryFailedState, isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueuePolicy'
 
 describe('queueHeadIndex', () => {
   it('skips awaiting-echo rows', () => {
@@ -59,6 +59,14 @@ describe('queueHeadAction', () => {
     ])).toEqual({ action: 'steer', head })
   })
 
+  it('offers Preempt on the head behind an input that awaits its echo', () => {
+    const head = item('head', { canPreempt: true })
+    expect(queueHeadAction(QueueHeadDispatch.PREEMPT, [
+      locked('pending', AgentInputState.AWAITING_ECHO),
+      head,
+    ])).toEqual({ action: 'preempt', head })
+  })
+
   it('reads the head alone, although a later item reports the action', () => {
     expect(queueHeadAction(QueueHeadDispatch.STEER, [
       item('head'),
@@ -80,6 +88,20 @@ describe('isLockedInputState', () => {
     expect(isLockedInputState(AgentInputState.AWAITING_ECHO)).toBe(true)
     for (const state of [AgentInputState.QUEUED, AgentInputState.FAILED, AgentInputState.DELIVERY_UNCERTAIN])
       expect(isLockedInputState(state)).toBe(false)
+  })
+})
+
+describe('isDeliveryFailedState', () => {
+  it('matches failed and delivery-uncertain inputs only', () => {
+    expect(isDeliveryFailedState(AgentInputState.FAILED)).toBe(true)
+    expect(isDeliveryFailedState(AgentInputState.DELIVERY_UNCERTAIN)).toBe(true)
+    for (const state of [
+      AgentInputState.UNSPECIFIED,
+      AgentInputState.QUEUED,
+      AgentInputState.DISPATCHING,
+      AgentInputState.AWAITING_ECHO,
+    ])
+      expect(isDeliveryFailedState(state)).toBe(false)
   })
 })
 

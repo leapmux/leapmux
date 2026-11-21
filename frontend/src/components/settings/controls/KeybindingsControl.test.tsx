@@ -50,18 +50,18 @@ describe('buildCommandRows', () => {
 
   /**
    * A row carries its default `when`, and an override the user records inherits
-   * it. That matters most for the steer chord: rebound with no clause, `$mod+
+   * it. That matters most for the queue chord: rebound with no clause, `$mod+
    * Enter` would resolve everywhere -- and because `activateBindings` calls
    * preventDefault on a command that resolves, it would swallow the composer's
    * own send rather than fall through to it.
    */
-  it('carries the steer binding\'s when-clause onto its row', () => {
+  it('carries the queue chord\'s when-clause onto its row', () => {
     const rows = buildCommandRows(WORKSPACE_KEYBINDINGS, [], [
-      { id: 'chat.steerQueuedInput', title: 'Steer Queued Input', category: 'Chat' },
+      { id: 'chat.advanceInputQueue', title: 'Resume Queue and Steer or Preempt', category: 'Chat' },
     ])
-    const steer = rows.find(r => r.command === 'chat.steerQueuedInput')
-    expect(steer?.keys).toContain('$mod+Enter')
-    expect(steer?.when).toBe('activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen')
+    const advance = rows.find(r => r.command === 'chat.advanceInputQueue')
+    expect(advance?.keys).toContain('$mod+Enter')
+    expect(advance?.when).toBe('activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen')
   })
 
   // `chat.sendMessage` gave up $mod+j and kept no default chord, but it stays
@@ -137,23 +137,23 @@ describe('KeybindingsControl', () => {
     resetCommands()
   })
 
-  it('lists commands with their effective bindings and source badges', async () => {
-    render(() => (
+  function renderControl() {
+    return render(() => (
       <PreferencesProvider>
         <KeybindingsControl />
       </PreferencesProvider>
     ))
+  }
+
+  it('lists commands with their effective bindings and source badges', async () => {
+    renderControl()
     await waitFor(() => expect(screen.getByText('New Agent')).toBeTruthy())
     expect(screen.getAllByText('Default').length).toBeGreaterThan(0)
     expect(screen.queryAllByText('Custom')).toHaveLength(0)
   })
 
   it('captures a clicked binding and writes the override', async () => {
-    render(() => (
-      <PreferencesProvider>
-        <KeybindingsControl />
-      </PreferencesProvider>
-    ))
+    renderControl()
     await waitFor(() => expect(screen.getByText('New Agent')).toBeTruthy())
     fireEvent.click(screen.getByTestId('keybinding-app.newAgent'))
     await waitFor(() => expect(screen.getByTestId('keybinding-capture-app.newAgent')).toBeTruthy())
@@ -169,11 +169,7 @@ describe('KeybindingsControl', () => {
   })
 
   it('refuses a chord already bound in the same when-context, naming the conflict', async () => {
-    render(() => (
-      <PreferencesProvider>
-        <KeybindingsControl />
-      </PreferencesProvider>
-    ))
+    renderControl()
     await waitFor(() => expect(screen.getByText('New Agent')).toBeTruthy())
     fireEvent.click(screen.getByTestId('keybinding-app.openPreferences'))
     await waitFor(() => expect(screen.getByTestId('keybinding-capture-app.openPreferences')).toBeTruthy())
@@ -202,11 +198,7 @@ describe('KeybindingsControl', () => {
         },
       ],
     })
-    render(() => (
-      <PreferencesProvider>
-        <KeybindingsControl />
-      </PreferencesProvider>
-    ))
+    renderControl()
     await waitFor(() => expect(screen.getByTestId('keybinding-reset-app.newAgent')).toBeTruthy())
     fireEvent.click(screen.getByTestId('keybinding-reset-app.newAgent'))
     await waitFor(() => expect(updateUserSetting).toHaveBeenCalledWith({

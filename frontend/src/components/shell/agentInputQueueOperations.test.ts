@@ -29,6 +29,7 @@ const moveQueuedAgentInput = vi.hoisted(() => vi.fn())
 const retryQueuedAgentInput = vi.hoisted(() => vi.fn())
 const steerQueuedAgentInput = vi.hoisted(() => vi.fn())
 const preemptQueuedAgentInput = vi.hoisted(() => vi.fn())
+const advanceAgentInputQueue = vi.hoisted(() => vi.fn())
 vi.mock('~/api/workerRpc', () => ({
   workerAgentInput: {
     enqueueAgentInput,
@@ -41,6 +42,7 @@ vi.mock('~/api/workerRpc', () => ({
     retryQueuedAgentInput,
     steerQueuedAgentInput,
     preemptQueuedAgentInput,
+    advanceAgentInputQueue,
   },
 }))
 
@@ -275,6 +277,18 @@ describe('createAgentInputQueueOperations queue commands', () => {
         run: ops => ops.preemptQueueItem('agent-2', queuedItem('q1')),
         request: { agentId: 'agent-2', inputId: 'q1' },
       },
+      {
+        name: 'setQueuePaused',
+        rpc: setAgentInputQueuePaused,
+        run: ops => ops.setQueuePaused('agent-2', true),
+        request: { agentId: 'agent-2', paused: true },
+      },
+      {
+        name: 'advanceInputQueue',
+        rpc: advanceAgentInputQueue,
+        run: ops => ops.advanceInputQueue('agent-2'),
+        request: { agentId: 'agent-2' },
+      },
     ]
 
     it.each(commands)('$name sends the request for that agent to its Worker and stores the snapshot under it', async ({ rpc, run, request }) => {
@@ -294,28 +308,28 @@ describe('createAgentInputQueueOperations queue commands', () => {
     })
   })
 
-  it('reads the focused agent once when it changes the pause state', async () => {
-    const { ops } = setup({
-      workerByAgent: { 'agent-7': 'worker-7' },
-      focusedAgentId: 'agent-7',
+  it('returns the snapshot from advanceInputQueue after storing it', async () => {
+    const { ops, store } = setup({
+      workerByAgent: { 'agent-1': 'worker-1' },
+      focusedAgentId: 'agent-1',
     })
-    setAgentInputQueuePaused.mockResolvedValueOnce({ snapshot: undefined })
+    const snapshot = snapshotOf(6n, ['q1'])
+    advanceAgentInputQueue.mockResolvedValueOnce({ snapshot })
 
-    await ops.setQueuePaused(true)
+    const returned = await ops.advanceInputQueue('agent-1')
 
-    expect(setAgentInputQueuePaused.mock.calls[0]?.[0]).toBe('worker-7')
-    expect(setAgentInputQueuePaused.mock.calls[0]?.[1]).toMatchObject({ agentId: 'agent-7', paused: true })
+    expect(returned).toBe(snapshot)
+    expect(store.get('agent-1')?.revision).toBe(6n)
   })
 
-  // The snapshot no longer states its agent, so the agent read at call time is
-  // the only key the answer can go under. A tab switch while the RPC runs
-  // must not file one agent's queue under another.
-  it('stores a pause answer under the agent focused at call time after the focus moves', async () => {
+  // The snapshot no longer states its agent, so the explicit agentId passed
+  // at call time is the key the answer goes under even if focus moves.
+  it('stores a pause answer under the requested agent after the focus moves', async () => {
     const { ops, store, focusOn } = setupWithMovableFocus()
     const reply = deferred<{ snapshot: ReturnType<typeof snapshotOf> }>()
     setAgentInputQueuePaused.mockReturnValueOnce(reply.promise)
 
-    const pending = ops.setQueuePaused(true)
+    const pending = ops.setQueuePaused('agent-1', true)
     focusOn('agent-2')
     reply.resolve({
       snapshot: snapshotOf(3n, []),

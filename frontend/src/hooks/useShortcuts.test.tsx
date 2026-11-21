@@ -1,7 +1,8 @@
-import type { AgentInputQueueSnapshot } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { UseShortcutsProps } from './useShortcuts'
+import type { FocusedChatPanel } from '~/stores/focusedChatPanel.store'
+import type { BaseTab, Tab } from '~/stores/tab.types'
 import { cleanup, render } from '@solidjs/testing-library'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentInputState, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { evaluateWhen, getContext } from '~/lib/shortcuts/context'
@@ -58,6 +59,7 @@ vi.mock('~/lib/fileTreeOps', () => ({
 
 afterEach(() => {
   cleanup()
+  document.body.innerHTML = ''
   resetCommands()
   refreshFileTree.mockReset()
   toggleHiddenFiles.mockReset()
@@ -70,17 +72,33 @@ afterEach(() => {
   showWarnToastMock.mockReset()
 })
 
+function makeTab(type: Tab['type'], fields: Omit<BaseTab, 'workspaceId'> & { workspaceId?: string }): Tab {
+  const base: BaseTab = { workspaceId: 'ws-1', ...fields }
+  switch (type) {
+    case TabType.AGENT:
+      return { ...base, type: TabType.AGENT }
+    case TabType.TERMINAL:
+      return { ...base, type: TabType.TERMINAL }
+    case TabType.FILE:
+      return { ...base, type: TabType.FILE }
+    case TabType.IMAGE:
+      return { ...base, type: TabType.IMAGE }
+  }
+}
+
 function makeProps() {
   return {
-    tabStore: {
-      state: { tabs: [], activeTabKey: null },
-      activeTab: () => null,
-      getTabsForTile: () => [],
-      getActiveTabKeyForTile: () => null,
+    view: {
+      forTile: (): Tab[] => [],
+      forWorkspace: (): Tab[] => [],
     },
+    selection: {
+      activeKeyForTile: (): string | null => null,
+      activeKeyForWorkspace: (): string | null => null,
+    },
+    getActiveWorkspaceId: (): string | null => null,
     layoutStore: {
-      focusedTileId: () => null,
-      splitTile: vi.fn(),
+      focusedTileId: () => '',
     },
     tabOps: {
       handleTabClose: vi.fn(),
@@ -95,26 +113,27 @@ function makeProps() {
     newAgentDialog: {
       open: vi.fn(),
       close: vi.fn(),
-      isOpen: () => false,
+      value: () => null,
     },
     newTerminalDialog: {
       open: vi.fn(),
       close: vi.fn(),
-      isOpen: () => false,
+      value: () => null,
     },
     newWorkspaceDialog: {
       open: vi.fn(),
       close: vi.fn(),
       value: () => null,
     },
-    hasActiveWorkspace: () => true,
+    hasActiveWorkspace: (): boolean => true,
     toggleFloatingTab: vi.fn(),
     toggleLeftSidebar: vi.fn(),
     toggleRightSidebar: vi.fn(),
-    activeTabType: () => null,
-    resolveFocusedTab: () => null,
-    isActiveWorkspaceArchived: () => false,
+    activeTabType: (): TabType | null => null,
+    resolveFocusedTab: (): Tab | null => null,
+    isActiveWorkspaceArchived: (): boolean => false,
     splitFocusedTile: vi.fn(),
+    advanceFocusedInputQueue: vi.fn(async () => {}),
     scrollFocusedTabPage: vi.fn(),
     writeToFocusedTerminal: vi.fn(),
     getCurrentTabContext: () => ({
@@ -126,24 +145,41 @@ function makeProps() {
     customKeybindings: () => [],
     preferredExternalAppId: (): string | undefined => undefined,
     setPreferredExternalAppId: vi.fn(),
-    getAgentInputQueue: (): AgentInputQueueSnapshot | undefined => undefined,
-    steerQueueItem: vi.fn(async () => {}),
     quakePanel: {
       open: vi.fn(),
       close: vi.fn(),
       toggle: vi.fn(),
     },
+  } satisfies UseShortcutsProps
+}
+
+function renderShortcuts(props: UseShortcutsProps = makeProps()) {
+  render(() => {
+    useShortcuts(props)
+    return null
+  })
+}
+
+function mountChatPanel(overrides: Partial<FocusedChatPanel> = {}) {
+  const panel = document.createElement('div')
+  panel.setAttribute('data-chat-panel', '')
+  const input = document.createElement('input')
+  panel.appendChild(input)
+  document.body.appendChild(panel)
+  const send = overrides.send ?? vi.fn()
+  const hasPendingInput = overrides.hasPendingInput ?? (() => false)
+  registerChatPanel(panel, { send, hasPendingInput })
+  onTestFinished(() => unregisterChatPanel(panel))
+  return {
+    panel,
+    input,
+    send,
   }
 }
 
 describe('useShortcuts', () => {
   it('registers file-tree shortcut commands that call the direct helpers', () => {
-    const props = makeProps()
-
-    render(() => {
-      useShortcuts(props as any)
-      return null
-    })
+    renderShortcuts()
 
     expect(getCommand('app.refreshDirectoryTree')).toBeDefined()
     expect(getCommand('app.toggleHiddenFiles')).toBeDefined()
@@ -156,14 +192,11 @@ describe('useShortcuts', () => {
   })
 
   it('routes page scroll commands through the focused-tile dispatcher for chat and terminal tabs', () => {
-    const props = makeProps() as any
+    const props = makeProps()
     let activeTabType: TabType | null = TabType.AGENT
     props.activeTabType = () => activeTabType
 
-    render(() => {
-      useShortcuts(props as any)
-      return null
-    })
+    renderShortcuts(props)
 
     executeCommand('app.scrollActiveTabPageUp')
     activeTabType = TabType.TERMINAL
@@ -176,10 +209,7 @@ describe('useShortcuts', () => {
   it('routes terminal write commands through the focused terminal dispatcher', () => {
     const props = makeProps()
 
-    render(() => {
-      useShortcuts(props as any)
-      return null
-    })
+    renderShortcuts(props)
 
     executeCommand('terminal.lineStart')
     executeCommand('terminal.lineEnd')
@@ -193,14 +223,16 @@ describe('useShortcuts', () => {
   })
 
   it('closes the active tab from the focused tile', () => {
-    const props = makeProps() as any
-    const tab = { type: TabType.TERMINAL, id: 'term-1', tileId: 'tile-1' }
+    const props = makeProps()
+    const tab: Tab = {
+      type: TabType.TERMINAL,
+      id: 'term-1',
+      workspaceId: 'ws-1',
+      tileId: 'tile-1',
+    }
     props.resolveFocusedTab = () => tab
 
-    render(() => {
-      useShortcuts(props as any)
-      return null
-    })
+    renderShortcuts(props)
 
     executeCommand('app.closeActiveTab')
 
@@ -212,17 +244,14 @@ describe('useShortcuts', () => {
     TabType.TERMINAL,
     TabType.FILE,
     TabType.IMAGE,
-  ])(
+  ] as const)(
     'refuses to close tab type %s in an archived workspace',
     (type) => {
-      const props = makeProps() as any
-      props.resolveFocusedTab = () => ({ type, id: 'tab-1', tileId: 'tile-1' })
+      const props = makeProps()
+      props.resolveFocusedTab = () => makeTab(type, { id: 'tab-1', tileId: 'tile-1' })
       props.isActiveWorkspaceArchived = () => true
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       executeCommand('app.closeActiveTab')
 
@@ -232,23 +261,15 @@ describe('useShortcuts', () => {
 
   describe('without an active workspace', () => {
     function makeNoWorkspaceProps() {
-      const props = makeProps() as any
+      const props = makeProps()
       props.hasActiveWorkspace = () => false
-      props.newWorkspaceDialog = {
-        open: vi.fn(),
-        close: vi.fn(),
-        value: () => null,
-      }
       return props
     }
 
     it('redirects newAgent and newAgentDialog to the new-workspace dialog', () => {
       const props = makeNoWorkspaceProps()
 
-      render(() => {
-        useShortcuts(props)
-        return null
-      })
+      renderShortcuts(props)
 
       executeCommand('app.newAgent')
       expect(props.newWorkspaceDialog.open).toHaveBeenCalledWith({})
@@ -262,10 +283,7 @@ describe('useShortcuts', () => {
     it('makes newTerminal and newTerminalDialog a no-op', () => {
       const props = makeNoWorkspaceProps()
 
-      render(() => {
-        useShortcuts(props)
-        return null
-      })
+      renderShortcuts(props)
 
       executeCommand('app.newTerminal')
       executeCommand('app.newTerminalDialog')
@@ -277,51 +295,20 @@ describe('useShortcuts', () => {
   })
 
   describe('chat.sendMessage', () => {
-    afterEach(() => {
-      document.body.innerHTML = ''
-    })
-
     it('invokes the registered send fn for the panel containing focused element', () => {
-      const props = makeProps()
-
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
-
-      const panel = document.createElement('div')
-      panel.setAttribute('data-chat-panel', '')
-      const input = document.createElement('input')
-      panel.appendChild(input)
-      document.body.appendChild(panel)
-
-      const send = vi.fn()
-      registerChatPanel(panel, {
-        send,
+      renderShortcuts()
+      const { input, send } = mountChatPanel({
         hasPendingInput: () => true,
       })
       input.focus()
 
       executeCommand('chat.sendMessage')
       expect(send).toHaveBeenCalledOnce()
-
-      unregisterChatPanel(panel)
     })
 
     it('is a no-op when focus is not inside a chat panel', () => {
-      const props = makeProps()
-
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
-
-      const send = vi.fn()
-      const panel = document.createElement('div')
-      panel.setAttribute('data-chat-panel', '')
-      document.body.appendChild(panel)
-      registerChatPanel(panel, {
-        send,
+      renderShortcuts()
+      const { send } = mountChatPanel({
         hasPendingInput: () => true,
       })
 
@@ -331,17 +318,10 @@ describe('useShortcuts', () => {
 
       executeCommand('chat.sendMessage')
       expect(send).not.toHaveBeenCalled()
-
-      unregisterChatPanel(panel)
     })
 
     it('reports chatInputFocused as true only when focus is inside [data-chat-input]', () => {
-      const props = makeProps()
-
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts()
 
       const editor = document.createElement('div')
       editor.setAttribute('data-chat-input', '')
@@ -359,288 +339,101 @@ describe('useShortcuts', () => {
     })
   })
 
-  describe('chat.steerQueuedInput', () => {
-    afterEach(() => {
-      document.body.innerHTML = ''
-    })
-
-    /** Props for an agent tab with a queue whose head reports `canSteer`. */
-    function steerProps(over: {
-      queueHeadDispatch?: QueueHeadDispatch
-      items?: { canSteer: boolean, canPreempt?: boolean, id: string, state?: AgentInputState }[]
-      snapshot?: boolean
-      tab?: unknown
-    } = {}) {
+  describe('chat.advanceInputQueue', () => {
+    // `TileRenderer` owns the queue snapshot, in-flight guard, login-recovery
+    // routing, and `AdvanceAgentInputQueue` RPC. This command only decides
+    // whether the press reaches `advanceFocusedInputQueue`.
+    function setup(tab: Tab | null) {
       const props = makeProps()
-      const items = over.items ?? [
-        { canSteer: true, id: 'q1' },
-      ]
-      const tab = 'tab' in over
-        ? over.tab
-        : { type: TabType.AGENT, id: 'a1', queueHeadDispatch: over.queueHeadDispatch ?? QueueHeadDispatch.STEER }
-      return {
-        ...props,
-        resolveFocusedTab: () => tab,
-        getAgentInputQueue: () => (over.snapshot === false
-          ? undefined
-          : { items }),
-        steerQueueItem: vi.fn(async () => {}),
-        preemptQueueItem: vi.fn(async () => {}),
-      }
+      props.resolveFocusedTab = () => tab
+      renderShortcuts(props)
+      return props.advanceFocusedInputQueue
     }
 
-    // The parameter is deliberately not called `props`: these are plain test
-    // values, and the reactivity lint reads any `props.x` as a prop access that
-    // must sit in a tracked scope.
-    function run(bag: ReturnType<typeof steerProps>) {
-      render(() => {
-        useShortcuts(bag as any)
-        return null
-      })
-      executeCommand('chat.steerQueuedInput')
-      return bag.steerQueueItem
-    }
+    const agentTab: Tab = { type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1' }
 
-    it('steers the queue head of the focused agent tab', () => {
-      const props = steerProps()
-      const steer = run(props)
-      expect(steer).toHaveBeenCalledWith('a1', { canSteer: true, id: 'q1' })
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
+    it('hands the press to advanceFocusedInputQueue when an agent tab is focused', () => {
+      const advance = setup(agentTab)
+      executeCommand('chat.advanceInputQueue')
+      expect(advance).toHaveBeenCalledOnce()
     })
 
-    it('does nothing when the agent provider does not accept a steer', () => {
-      const props = steerProps({ queueHeadDispatch: QueueHeadDispatch.NONE })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    it('preempts the queue head of an agent whose provider can only interrupt', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
-        items: [
-          { canSteer: false, canPreempt: true, id: 'q1' },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).toHaveBeenCalledWith('a1', { canSteer: false, canPreempt: true, id: 'q1' })
-    })
-
-    it('does not preempt a head that the worker refuses to preempt', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
-        items: [
-          { canSteer: false, canPreempt: false, id: 'q1' },
-        ],
-      })
-      run(props)
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    // A provider that steers never falls back to a preempt, even when the
-    // worker would allow one for the head.
-    it('does not preempt on a provider that steers when the head refuses a steer', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.STEER,
-        items: [
-          { canSteer: false, canPreempt: true, id: 'q1' },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    // The client reads an UNSPECIFIED dispatch, which a worker that never
-    // reported one leaves, as NONE.
-    it('does nothing when the dispatch is unspecified', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.UNSPECIFIED,
-        items: [
-          { canSteer: true, canPreempt: true, id: 'q1' },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    it('does nothing when the worker refuses to steer the head', () => {
-      expect(run(steerProps({
-        items: [
-          { canSteer: false, id: 'q1' },
-        ],
-      }))).not.toHaveBeenCalled()
-    })
-
-    it('does nothing when the queue is empty', () => {
-      expect(run(steerProps({ items: [] }))).not.toHaveBeenCalled()
-    })
-
-    it('does nothing before the first queue snapshot arrives', () => {
-      expect(run(steerProps({ snapshot: false }))).not.toHaveBeenCalled()
+    // `executeCommand` attaches its catch to the RETURNED promise and returns
+    // nothing itself, so the handler is called directly.
+    it('returns the promise of advanceFocusedInputQueue', () => {
+      const advance = setup(agentTab)
+      const pending = Promise.resolve()
+      advance.mockReturnValueOnce(pending)
+      const result = getCommand('chat.advanceInputQueue')!.handler()
+      expect(advance).toHaveBeenCalledOnce()
+      expect(result).toBe(pending)
     })
 
     it('does nothing when no tab is focused', () => {
-      expect(run(steerProps({ tab: null }))).not.toHaveBeenCalled()
+      const advance = setup(null)
+      executeCommand('chat.advanceInputQueue')
+      expect(advance).not.toHaveBeenCalled()
     })
 
     it('does nothing when the focused tab is a terminal', () => {
-      expect(run(steerProps({
-        tab: { type: TabType.TERMINAL, id: 't1' },
-      }))).not.toHaveBeenCalled()
-    })
-
-    // The worker marks `canSteer` on the queue head alone, so a scan for a
-    // steerable item would answer a different question than the one the
-    // worker will enforce.
-    it('steers the head alone, although a later item reports canSteer', () => {
-      const steer = run(steerProps({
-        items: [
-          { canSteer: false, id: 'q1' },
-          { canSteer: true, id: 'q2' },
-        ],
-      }))
-      expect(steer).not.toHaveBeenCalled()
-    })
-
-    // The head is the first input that does not await its echo, the same row
-    // the queue panel offers Steer on. The chord read index 0, so it did
-    // nothing while the row showed the button.
-    it('steers the head behind an input that awaits its echo', () => {
-      const props = steerProps({
-        items: [
-          { canSteer: false, id: 'q0', state: AgentInputState.AWAITING_ECHO },
-          { canSteer: true, id: 'q1', state: AgentInputState.QUEUED },
-        ],
-      })
-      expect(run(props)).toHaveBeenCalledExactlyOnceWith('a1', { canSteer: true, id: 'q1', state: AgentInputState.QUEUED })
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    it('preempts the head behind an input that awaits its echo', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
-        items: [
-          {
-            canSteer: false,
-            canPreempt: false,
-            id: 'q0',
-            state: AgentInputState.AWAITING_ECHO,
-          },
-          {
-            canSteer: false,
-            canPreempt: true,
-            id: 'q1',
-            state: AgentInputState.QUEUED,
-          },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).toHaveBeenCalledExactlyOnceWith('a1', {
-        canSteer: false,
-        canPreempt: true,
-        id: 'q1',
-        state: AgentInputState.QUEUED,
-      })
-    })
-
-    it('does nothing when every input awaits its echo', () => {
-      const props = steerProps({
-        items: [
-          {
-            canSteer: true,
-            canPreempt: true,
-            id: 'q0',
-            state: AgentInputState.AWAITING_ECHO,
-          },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
+      const advance = setup({ type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1' })
+      executeCommand('chat.advanceInputQueue')
+      expect(advance).not.toHaveBeenCalled()
     })
   })
 
   describe('chatInputEmpty', () => {
-    afterEach(() => {
-      document.body.innerHTML = ''
-    })
-
-    function mountPanel(hasPendingInput: () => boolean) {
-      const panel = document.createElement('div')
-      panel.setAttribute('data-chat-panel', '')
-      document.body.appendChild(panel)
-      registerChatPanel(panel, {
-        send: vi.fn(),
-        hasPendingInput,
-      })
-      return panel
-    }
-
     it('is true when the current composer has nothing to submit', () => {
-      const props = makeProps()
-      render(() => {
-        useShortcuts(props as any)
-        return null
+      renderShortcuts()
+      mountChatPanel({
+        hasPendingInput: () => false,
       })
-      const panel = mountPanel(() => false)
       expect(evaluateWhen('chatInputEmpty')).toBe(true)
-      unregisterChatPanel(panel)
     })
 
     // Text, an attachment, or a control request awaiting approval all count as
     // something to submit -- that is what leaves the chord to the composer.
     it('is false while the current composer has something to submit', () => {
-      const props = makeProps()
-      render(() => {
-        useShortcuts(props as any)
-        return null
+      renderShortcuts()
+      mountChatPanel({
+        hasPendingInput: () => true,
       })
-      const panel = mountPanel(() => true)
       expect(evaluateWhen('chatInputEmpty')).toBe(false)
-      unregisterChatPanel(panel)
     })
 
     // Focus is deliberately NOT consulted: the action is about the current tab,
     // so it works from the transcript too.
     it('answers for the current composer even when focus is elsewhere', () => {
-      const props = makeProps()
-      render(() => {
-        useShortcuts(props as any)
-        return null
+      renderShortcuts()
+      mountChatPanel({
+        hasPendingInput: () => false,
       })
-      const panel = mountPanel(() => false)
       const outside = document.createElement('input')
       document.body.appendChild(outside)
       outside.focus()
       expect(evaluateWhen('chatInputEmpty')).toBe(true)
-      unregisterChatPanel(panel)
     })
 
     // `!undefined?.hasPendingInput()` is true, so without the explicit check a
     // missing composer would read as an empty one and claim the chord where
     // there is no chat at all.
     it('is false when no chat panel is mounted', () => {
-      const props = makeProps()
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts()
       expect(evaluateWhen('chatInputEmpty')).toBe(false)
     })
 
     it('stops answering once the hook tears down', () => {
-      const props = makeProps()
-      render(() => {
-        useShortcuts(props as any)
-        return null
+      renderShortcuts()
+      mountChatPanel({
+        hasPendingInput: () => false,
       })
-      const panel = mountPanel(() => false)
       cleanup()
       expect(getContext('chatInputEmpty')).toBeUndefined()
-      unregisterChatPanel(panel)
     })
   })
 
   describe('the quake terminal commands', () => {
-    function quakeProps(tab: unknown) {
+    function quakeProps(tab: Tab | null) {
       return {
         ...makeProps(),
         resolveFocusedTab: () => tab,
@@ -653,17 +446,15 @@ describe('useShortcuts', () => {
     }
 
     function run(props: ReturnType<typeof quakeProps>, command: string) {
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
       executeCommand(command)
       return props.quakePanel
     }
 
-    const agentTab = {
+    const agentTab: Tab = {
       type: TabType.AGENT,
       id: 'a1',
+      workspaceId: 'ws-1',
       workerId: 'w1',
       workingDir: '/repo',
     }
@@ -692,12 +483,13 @@ describe('useShortcuts', () => {
      * agent" case, which was a restatement of an addressing rule that no longer
      * exists.
      */
-    it.each([
+    it.each<[string, Tab]>([
       [
         'a terminal tab',
         {
           type: TabType.TERMINAL,
           id: 't1',
+          workspaceId: 'ws-1',
           workerId: 'w1',
           workingDir: '/repo',
         },
@@ -707,6 +499,7 @@ describe('useShortcuts', () => {
         {
           type: TabType.FILE,
           id: 'f1',
+          workspaceId: 'ws-1',
           workerId: 'w1',
           workingDir: '/repo',
         },
@@ -716,6 +509,7 @@ describe('useShortcuts', () => {
         {
           type: TabType.IMAGE,
           id: 'i1',
+          workspaceId: 'ws-1',
           workerId: 'w1',
           workingDir: '/repo',
         },
@@ -729,9 +523,10 @@ describe('useShortcuts', () => {
     // root's panel. That is the right answer rather than a special case, and it
     // replaces the refusal this used to carry.
     it('toggles the root panel from a subagent tab', () => {
-      const child = {
+      const child: Tab = {
         type: TabType.AGENT,
         id: 'c1',
+        workspaceId: 'ws-1',
         parentAgentId: 'a1',
         workerId: 'w1',
         workingDir: '/repo',
@@ -747,14 +542,24 @@ describe('useShortcuts', () => {
 
     // The one refusal left, and it is about the DIRECTORY rather than the tab
     // kind: a tab with no worker or no working directory has no panel.
-    it.each([
+    it.each<[string, Tab]>([
       [
         'no worker',
-        { type: TabType.AGENT, id: 'a1', workingDir: '/repo' },
+        {
+          type: TabType.AGENT,
+          id: 'a1',
+          workspaceId: 'ws-1',
+          workingDir: '/repo',
+        },
       ],
       [
         'no working directory',
-        { type: TabType.AGENT, id: 'a1', workerId: 'w1' },
+        {
+          type: TabType.AGENT,
+          id: 'a1',
+          workspaceId: 'ws-1',
+          workerId: 'w1',
+        },
       ],
     ])('does nothing for a tab with %s', (_label, tab) => {
       const panel = run(quakeProps(tab), 'terminal.toggleQuake')
@@ -806,10 +611,7 @@ describe('useShortcuts', () => {
         { id: 'vscode', displayName: 'VS Code' },
       ])
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       expect(openInExternalAppMock).not.toHaveBeenCalled()
@@ -822,10 +624,7 @@ describe('useShortcuts', () => {
         { id: 'vscode', displayName: 'VS Code' },
       ])
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       expect(openInExternalAppMock).not.toHaveBeenCalled()
@@ -836,10 +635,7 @@ describe('useShortcuts', () => {
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
       loadExternalAppsMock.mockResolvedValue([])
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       expect(openInExternalAppMock).not.toHaveBeenCalled()
@@ -854,10 +650,7 @@ describe('useShortcuts', () => {
       ])
       props.preferredExternalAppId = () => 'zed'
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       expect(openInExternalAppMock).toHaveBeenCalledWith('zed', '/p')
@@ -873,10 +666,7 @@ describe('useShortcuts', () => {
       ])
       props.preferredExternalAppId = () => undefined
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       expect(openInExternalAppMock).toHaveBeenCalledWith('vscode', '/p')
@@ -893,10 +683,7 @@ describe('useShortcuts', () => {
       ])
       props.preferredExternalAppId = () => 'zed'
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       expect(openInExternalAppMock).toHaveBeenCalledWith('vscode', '/p')
@@ -914,10 +701,7 @@ describe('useShortcuts', () => {
       ])
       props.preferredExternalAppId = () => 'file-manager'
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       expect(openInExternalAppMock).toHaveBeenCalledWith('file-manager', '/p')
@@ -936,10 +720,7 @@ describe('useShortcuts', () => {
       ])
       props.preferredExternalAppId = () => undefined
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       expect(openInExternalAppMock).toHaveBeenCalledWith('vscode', '/p')
@@ -957,10 +738,7 @@ describe('useShortcuts', () => {
       const refused = new Error('launch Visual Studio Code: exit status 1')
       openInExternalAppMock.mockRejectedValue(refused)
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       await vi.waitFor(() => expect(showWarnToastMock).toHaveBeenCalledTimes(1))
@@ -980,10 +758,7 @@ describe('useShortcuts', () => {
       ])
       openInExternalAppMock.mockRejectedValue('launch Zed: exit status 1: bundle is missing')
 
-      render(() => {
-        useShortcuts(props as any)
-        return null
-      })
+      renderShortcuts(props)
 
       await getCommand('app.openInExternalApp')!.handler()
       await vi.waitFor(() => expect(showWarnToastMock).toHaveBeenCalledTimes(1))

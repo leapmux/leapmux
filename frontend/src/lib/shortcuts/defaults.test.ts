@@ -28,11 +28,11 @@ describe('default keybindings', () => {
   // resolves, so every conjunct here is what lets a keypress fall through to
   // ProseMirror while the composer holds something to send. Pinned whole rather
   // than by key, because dropping one conjunct would silently swallow messages.
-  it('gives the queue steer $mod+Enter only while the composer is empty', () => {
+  it('gives the queue chord $mod+Enter only while the composer is empty', () => {
     expect(WORKSPACE_KEYBINDINGS.filter(b => b.key === '$mod+Enter')).toEqual([
       {
         key: '$mod+Enter',
-        command: 'chat.steerQueuedInput',
+        command: 'chat.advanceInputQueue',
         when: 'activeTabType == "agent" && chatInputEmpty && !terminalFocused && !dialogOpen',
       },
     ])
