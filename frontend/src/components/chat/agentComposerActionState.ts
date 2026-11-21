@@ -11,6 +11,8 @@ export interface AgentComposerActionState {
   setEnqueueInFlight: Setter<boolean>
   pauseInFlight: Accessor<boolean>
   setPauseInFlight: Setter<boolean>
+  advanceInFlight: Accessor<boolean>
+  setAdvanceInFlight: Setter<boolean>
 }
 
 interface StoredAgentComposerActionState extends AgentComposerActionState {
@@ -34,6 +36,7 @@ export function createAgentComposerActionStateStore() {
     const created = createRoot((dispose): StoredAgentComposerActionState => {
       const [enqueueInFlight, setEnqueueInFlight] = createSignal(false)
       const [pauseInFlight, setPauseInFlight] = createSignal(false)
+      const [advanceInFlight, setAdvanceInFlight] = createSignal(false)
       return {
         sending: createLoadingSignal(),
         interrupting: createLoadingSignal(),
@@ -41,6 +44,8 @@ export function createAgentComposerActionStateStore() {
         setEnqueueInFlight,
         pauseInFlight,
         setPauseInFlight,
+        advanceInFlight,
+        setAdvanceInFlight,
         dispose,
       }
     })

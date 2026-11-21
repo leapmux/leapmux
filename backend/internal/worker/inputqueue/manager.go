@@ -46,6 +46,16 @@ type coordinator struct {
 	// retired records that the agent closed. A closed agent takes no input,
 	// so its queue arms no maturity timer and starts no drain again.
 	retired bool
+	// pauseEvents increments under mu whenever a pause, failure, crash,
+	// unechoed-steer resolution, planned restart, or retirement is recorded.
+	// Advance compares this counter across an unlocked Steer so a crash or
+	// failure that kept an earlier MANUAL pause reason still stops the
+	// follow-up resume.
+	pauseEvents uint64
+	// advancing holds true while Advance runs for this agent so concurrent
+	// Advance calls return the current snapshot instead of racing a steer or
+	// resuming behind an in-flight advance.
+	advancing bool
 }
 
 // pendingEchoSteer retains an early callback until its provider call returns.
@@ -587,6 +597,9 @@ func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (S
 		snapshot, err = m.store.SetPaused(ctx, agentID, paused, reason)
 	}
 	if err == nil {
+		if paused {
+			c.pauseEvents++
+		}
 		m.enqueueSnapshotLocked(c, snapshot)
 	}
 	m.unlockAndPublish(c)
@@ -607,8 +620,12 @@ func (m *Manager) Pause(ctx context.Context, agentID string, reason leapmuxv1.Ag
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
+	c := m.coordinator(agentID)
 	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
 		snapshot, err := m.store.Pause(ctx, agentID, reason)
+		if err == nil {
+			c.pauseEvents++
+		}
 		return snapshot, true, err
 	})
 }
@@ -620,8 +637,13 @@ func (m *Manager) PauseForArchive(ctx context.Context, agentID string) (Snapshot
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
+	c := m.coordinator(agentID)
 	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
-		return m.store.PauseForArchive(ctx, agentID)
+		snapshot, changed, err := m.store.PauseForArchive(ctx, agentID)
+		if err == nil {
+			c.pauseEvents++
+		}
+		return snapshot, changed, err
 	})
 }
 
@@ -752,13 +774,52 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	return m.finishSteer(c, ctx, *prepared, result, err, echo, policy)
 }
 
+type steerOutcome uint8
+
+const (
+	steerAccepted steerOutcome = iota
+	steerTurnEnded
+	steerFailed
+)
+
+type steerPostDrain uint8
+
+const (
+	steerDrainNone steerPostDrain = iota
+	steerDrainIfIdle
+	steerDrainAlways
+)
+
 // finishSteer records the result for manual and automatic steering. echo and
 // policy are the in-flight steer's echo tracker and the provider policy that
 // Steer read, or nil and the zero value when the provider writes its row at
 // once.
 func (m *Manager) finishSteer(c *coordinator, ctx context.Context, prepared PreparedDispatch, result DispatchResult, err error, echo *pendingEchoSteer, policy agent.SteerPolicy) (Snapshot, error) {
-	agentID, inputID := prepared.Item.AgentID, prepared.Item.ID
 	c.mu.Lock()
+	snapshot, _, postDrain, retErr := m.finishSteerLocked(c, ctx, prepared, result, err, echo, policy)
+	m.unlockAndPublish(c)
+	if retErr == nil || errors.Is(retErr, ErrSteeringUnsupported) {
+		m.runSteerPostDrain(prepared.Item.AgentID, snapshot, postDrain)
+	}
+	return snapshot, retErr
+}
+
+func (m *Manager) runSteerPostDrain(agentID string, snapshot Snapshot, postDrain steerPostDrain) {
+	switch postDrain {
+	case steerDrainNone:
+	case steerDrainAlways:
+		m.drainIfReleased(agentID, snapshot)
+	case steerDrainIfIdle:
+		if !snapshot.ActiveTurn {
+			m.drainIfReleased(agentID, snapshot)
+		}
+	}
+}
+
+// finishSteerLocked stores the steer result under c.mu without releasing it,
+// so Advance can decide whether to resume in the same lock hold.
+func (m *Manager) finishSteerLocked(c *coordinator, ctx context.Context, prepared PreparedDispatch, result DispatchResult, err error, echo *pendingEchoSteer, policy agent.SteerPolicy) (Snapshot, steerOutcome, steerPostDrain, error) {
+	agentID, inputID := prepared.Item.AgentID, prepared.Item.ID
 	if c.echoSteer == echo {
 		c.echoSteer = nil
 	}
@@ -767,8 +828,11 @@ func (m *Manager) finishSteer(c *coordinator, ctx context.Context, prepared Prep
 			m.enqueueLogLocked(c, slog.LevelWarn, "provider reported an error after the steer outcome", "agent_id", agentID, "error", err)
 		}
 		snapshot, snapshotErr := m.store.Snapshot(ctx, agentID)
-		m.unlockAndPublish(c)
-		return snapshot, snapshotErr
+		outcome := steerAccepted
+		if echo.outcome == agent.SteerOutcomeUncertain {
+			outcome = steerFailed
+		}
+		return snapshot, outcome, steerDrainNone, snapshotErr
 	}
 	if echo != nil && echo.outcome == agent.SteerOutcomeDropped {
 		err = ErrTurnEnded
@@ -776,67 +840,54 @@ func (m *Manager) finishSteer(c *coordinator, ctx context.Context, prepared Prep
 	if errors.Is(err, ErrSteeringUnsupported) {
 		snapshot, storeErr := m.store.RequeuePrepared(ctx, agentID, inputID)
 		if storeErr != nil {
-			m.unlockAndPublish(c)
-			return Snapshot{}, storeErr
+			return Snapshot{}, steerFailed, steerDrainNone, storeErr
 		}
 		m.enqueueSnapshotLocked(c, snapshot)
-		m.unlockAndPublish(c)
-		if !snapshot.ActiveTurn {
-			m.drainIfReleased(agentID, snapshot)
-		}
-		return snapshot, ErrSteeringUnsupported
+		return snapshot, steerFailed, steerDrainIfIdle, ErrSteeringUnsupported
 	}
 	turnEnded := errors.Is(err, ErrTurnEnded)
 	if err != nil && !turnEnded {
 		snapshot, storeErr := m.recordDispatchFailure(c, ctx, prepared, err)
-		m.unlockAndPublish(c)
 		if storeErr != nil {
-			return snapshot, storeErr
+			return snapshot, steerFailed, steerDrainNone, storeErr
 		}
-		if !snapshot.ActiveTurn {
-			m.drainIfReleased(agentID, snapshot)
-		}
-		return snapshot, nil
+		return snapshot, steerFailed, steerDrainIfIdle, nil
 	}
 	if !turnEnded && !policy.SurvivesTurnEnd {
 		current, storeErr := m.store.Snapshot(ctx, agentID)
 		if storeErr != nil {
-			m.unlockAndPublish(c)
-			return Snapshot{}, storeErr
+			return Snapshot{}, steerFailed, steerDrainNone, storeErr
 		}
 		turnEnded = !current.ActiveTurn
 	}
 	if turnEnded {
 		snapshot, storeErr := m.store.RequeuePrepared(ctx, agentID, inputID)
 		if storeErr != nil {
-			m.unlockAndPublish(c)
-			return Snapshot{}, storeErr
+			return Snapshot{}, steerFailed, steerDrainNone, storeErr
 		}
 		m.enqueueSnapshotLocked(c, snapshot)
-		m.unlockAndPublish(c)
-		if !snapshot.ActiveTurn {
-			m.drainIfReleased(agentID, snapshot)
-		}
-		return snapshot, nil
+		return snapshot, steerTurnEnded, steerDrainIfIdle, nil
 	}
 	result.StartsTurn = true
 	result.Steering = true
 	var snapshot Snapshot
+	var persisted bool
 	// A control reply's row is LeapMux's own record, accepted at the steer:
 	// a provider may repeat a steered answer at its own echo long after the
 	// model call that holds it, and the answer's row must not wait for that.
 	if policy.RowAtEcho && !controlReplyKind(prepared.Item.Kind) {
-		snapshot, err = m.holdForEcho(c, ctx, prepared)
+		snapshot, persisted, err = m.holdForEcho(c, ctx, prepared)
 	} else {
-		snapshot, _, err = m.acceptDispatch(c, ctx, prepared, result)
+		snapshot, persisted, err = m.acceptDispatch(c, ctx, prepared, result)
 	}
 	if err != nil {
-		m.unlockAndPublish(c)
-		return Snapshot{}, err
+		return Snapshot{}, steerFailed, steerDrainNone, err
 	}
-	m.unlockAndPublish(c)
-	m.drainIfReleased(agentID, snapshot)
-	return snapshot, nil
+	outcome := steerAccepted
+	if !persisted {
+		outcome = steerFailed
+	}
+	return snapshot, outcome, steerDrainAlways, nil
 }
 
 // AcceptEchoedSteers commits the oldest echoed inputs and publishes their rows in order.
@@ -929,6 +980,7 @@ func (m *Manager) ResolveUnechoedSteers(ctx context.Context, agentID string, cou
 			c.echoSteer.outcome = agent.SteerOutcomeUncertain
 		}
 		if resolved > 0 {
+			c.pauseEvents++
 			m.enqueueSnapshotLocked(c, snapshot)
 		}
 		if count > resolved {
@@ -940,19 +992,23 @@ func (m *Manager) ResolveUnechoedSteers(ctx context.Context, agentID string, cou
 }
 
 // holdForEcho keeps the accepted input or records uncertain delivery if that write fails.
+// The Boolean reports whether the input stayed held for echo (false on FailDispatch fallback).
 // The caller holds c.mu.
-func (m *Manager) holdForEcho(c *coordinator, ctx context.Context, prepared PreparedDispatch) (Snapshot, error) {
+func (m *Manager) holdForEcho(c *coordinator, ctx context.Context, prepared PreparedDispatch) (Snapshot, bool, error) {
 	snapshot, err := m.store.HoldForEcho(ctx, prepared)
 	if err != nil {
 		uncertain := fmt.Errorf("provider accepted the steer but echo tracking failed: %w", err)
 		var failErr error
 		snapshot, failErr = m.store.FailDispatch(ctx, prepared.Item.AgentID, prepared.Item.ID, uncertain, true)
 		if failErr != nil {
-			return Snapshot{}, errors.Join(err, failErr)
+			return Snapshot{}, false, errors.Join(err, failErr)
 		}
+		c.pauseEvents++
+		m.enqueueSnapshotLocked(c, snapshot)
+		return snapshot, false, nil
 	}
 	m.enqueueSnapshotLocked(c, snapshot)
-	return snapshot, nil
+	return snapshot, true, nil
 }
 
 // Preempt cancels the agent's active turn so the specified queued item is sent as
@@ -999,6 +1055,10 @@ func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapsho
 	}
 	c.mu.Unlock()
 
+	return m.finishPreemptInterrupt(ctx, agentID, c, snapshot, false)
+}
+
+func (m *Manager) finishPreemptInterrupt(ctx context.Context, agentID string, c *coordinator, fallback Snapshot, alwaysDrain bool) (Snapshot, error) {
 	interruptErr := m.dispatcher.Interrupt(agentID)
 
 	// Whatever the cancel did, the queue's own drain owns the delivery: a
@@ -1009,11 +1069,205 @@ func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapsho
 	current, snapshotErr := m.store.Snapshot(ctx, agentID)
 	c.mu.Unlock()
 	if snapshotErr != nil {
-		return snapshot, interruptErr
+		return fallback, interruptErr
 	}
-	snapshot = current
-	m.drainIfReleased(agentID, snapshot)
-	return snapshot, interruptErr
+	if alwaysDrain {
+		m.scheduleDrain(agentID)
+	} else {
+		m.drainIfReleased(agentID, current)
+	}
+	return current, interruptErr
+}
+
+func hasDispatchingItem(snapshot Snapshot) bool {
+	for i := range snapshot.Items {
+		if snapshot.Items[i].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING {
+			return true
+		}
+	}
+	return false
+}
+
+func headCanSteer(snapshot Snapshot, head int, supportsSteer, recoveryRequired bool) bool {
+	if !supportsSteer || head < 0 || !snapshot.Items[head].CanSteer {
+		return false
+	}
+	return !recoveryRequired || snapshot.Items[head].Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER
+}
+
+func headCanPreempt(snapshot Snapshot, head int, supportsPreempt, recoveryRequired bool) bool {
+	if !supportsPreempt || head < 0 || !snapshot.Items[head].CanPreempt {
+		return false
+	}
+	return !recoveryRequired || snapshot.Items[head].Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER
+}
+
+// Advance performs one keyboard advance step against the agent's input queue.
+//
+// The order follows what the store admits:
+//   - Steer first, then resume a paused queue under the same coordinator lock
+//     when the steer succeeded or cleanly requeued on turn end and no crash,
+//     pause, failure, or login-recovery proposal landed while it ran.
+//   - Preempt directly when the queue is running and the head can preempt.
+//   - Return the current snapshot without resuming when login recovery blocks
+//     the queue, so the client can open the approval dialog.
+//   - Resume a paused queue and atomically check whether the original head
+//     became preemptable before scheduling a drain, removing the round-trip
+//     window between resume and preempt.
+//
+// hasRecovery reads whether the agent currently carries a login-recovery
+// proposal. Advance calls it outside c.mu so lock ordering stays acyclic.
+func (m *Manager) Advance(ctx context.Context, agentID string, hasRecovery func(string) bool) (Snapshot, error) {
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	if c.retired || c.advancing {
+		snapshot, err := m.store.Snapshot(ctx, agentID)
+		c.mu.Unlock()
+		return snapshot, err
+	}
+	c.advancing = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.advancing = false
+		c.mu.Unlock()
+	}()
+
+	return m.advanceClaimed(ctx, agentID, c, hasRecovery)
+}
+
+func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordinator, hasRecovery func(string) bool) (Snapshot, error) {
+	supportsSteer := m.dispatcher != nil && m.dispatcher.SupportsSteering(agentID)
+	supportsPreempt := !supportsSteer && m.dispatcher != nil && m.dispatcher.SupportsPreemption(agentID)
+	recoveryAtStart := hasRecovery != nil && hasRecovery(agentID)
+	var steerPolicy agent.SteerPolicy
+	if supportsSteer {
+		steerPolicy = m.dispatcher.SteerPolicy(agentID)
+		c.mu.Lock()
+		skipPeek := c.retired || c.plannedRestarts > 0
+		var peek Snapshot
+		var err error
+		if !skipPeek {
+			peek, err = m.store.Snapshot(ctx, agentID)
+		}
+		c.mu.Unlock()
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if !skipPeek && !hasDispatchingItem(peek) && headCanSteer(peek, peek.HeadIndex(), supportsSteer, recoveryAtStart) {
+			m.dispatcher.PrepareSteer(agentID)
+			recoveryAtStart = hasRecovery != nil && hasRecovery(agentID)
+		}
+	}
+
+	c.mu.Lock()
+	snapshot, err := m.store.Snapshot(ctx, agentID)
+	if err != nil {
+		c.mu.Unlock()
+		return Snapshot{}, err
+	}
+	m.rearmMaturityLocked(c, snapshot)
+	if c.retired || c.plannedRestarts > 0 || hasDispatchingItem(snapshot) {
+		c.mu.Unlock()
+		return snapshot, nil
+	}
+
+	head := snapshot.HeadIndex()
+	if headCanSteer(snapshot, head, supportsSteer, recoveryAtStart) {
+		headID := snapshot.Items[head].ID
+		pausedAtStart := snapshot.Paused
+		reasonAtStart := snapshot.PauseReason
+		pauseEventsAtStart := c.pauseEvents
+		c.steerPolicy = steerPolicy
+		prepared, prepSnapshot, prepErr := m.store.PrepareSteer(ctx, agentID, headID, steerPolicy.RowAtEcho)
+		if prepErr != nil {
+			m.unlockAndPublish(c)
+			return Snapshot{}, prepErr
+		}
+		if prepared == nil {
+			m.unlockAndPublish(c)
+			return prepSnapshot, ErrSteeringState
+		}
+		var echo *pendingEchoSteer
+		if steerPolicy.RowAtEcho {
+			echo = &pendingEchoSteer{inputID: headID}
+			c.echoSteer = echo
+		}
+		m.enqueueSnapshotLocked(c, prepSnapshot)
+		m.unlockAndPublish(c)
+
+		result, steerErr := m.dispatcher.Steer(prepared.Item)
+		recoveryAfterSteer := hasRecovery != nil && hasRecovery(agentID)
+
+		c.mu.Lock()
+		finished, outcome, postDrain, retErr := m.finishSteerLocked(c, ctx, *prepared, result, steerErr, echo, steerPolicy)
+		shouldResume := retErr == nil &&
+			pausedAtStart &&
+			!recoveryAtStart &&
+			!recoveryAfterSteer &&
+			(outcome == steerAccepted || outcome == steerTurnEnded) &&
+			!c.retired &&
+			c.plannedRestarts == 0 &&
+			c.pauseEvents == pauseEventsAtStart &&
+			finished.Paused &&
+			finished.PauseReason == reasonAtStart
+		if shouldResume {
+			resumed, resumeErr := m.store.resumeWithNoRestart(ctx, agentID)
+			if resumeErr != nil {
+				retErr = resumeErr
+			} else {
+				finished = resumed
+				m.enqueueSnapshotLocked(c, finished)
+			}
+		}
+		m.unlockAndPublish(c)
+		if shouldResume && retErr == nil {
+			m.scheduleDrain(agentID)
+		} else if retErr == nil || errors.Is(retErr, ErrSteeringUnsupported) {
+			m.runSteerPostDrain(agentID, finished, postDrain)
+		}
+		return finished, retErr
+	}
+
+	if headCanPreempt(snapshot, head, supportsPreempt, recoveryAtStart) {
+		c.mu.Unlock()
+		return m.finishPreemptInterrupt(ctx, agentID, c, snapshot, false)
+	}
+
+	if recoveryAtStart || !snapshot.Paused {
+		c.mu.Unlock()
+		return snapshot, nil
+	}
+
+	headAtKeypress := ""
+	if head >= 0 {
+		headAtKeypress = snapshot.Items[head].ID
+	}
+	resumed, err := m.store.resumeWithNoRestart(ctx, agentID)
+	if err != nil {
+		m.unlockAndPublish(c)
+		return Snapshot{}, err
+	}
+	m.enqueueSnapshotLocked(c, resumed)
+	shouldPreempt := false
+	if supportsPreempt && headAtKeypress != "" {
+		if nextHead := resumed.HeadIndex(); nextHead >= 0 &&
+			resumed.Items[nextHead].ID == headAtKeypress &&
+			resumed.Items[nextHead].CanPreempt {
+			shouldPreempt = true
+		}
+	}
+	m.unlockAndPublish(c)
+	if !shouldPreempt {
+		m.scheduleDrain(agentID)
+		return resumed, nil
+	}
+	return m.finishPreemptInterrupt(ctx, agentID, c, resumed, true)
 }
 
 // BeginPlannedRestart pauses automatic dispatch before a provider replacement.
@@ -1058,6 +1312,7 @@ func (m *Manager) beginPlannedRestart(ctx context.Context, agentID string, input
 	}
 	if err == nil {
 		c.plannedRestarts++
+		c.pauseEvents++
 		if resumeQueue || inputRecovery {
 			m.enqueueSnapshotLocked(c, snapshot)
 		}
@@ -1092,7 +1347,11 @@ func (r *PlannedRestart) FinishInputRecovery(ctx context.Context, oldProcessEnde
 		return fmt.Errorf("%w: this restart does not own input recovery", ErrConflict)
 	}
 	return r.finish(func() (Snapshot, bool, error) {
-		return r.manager.store.finishInputRecovery(ctx, r.agentID, *r.recovery, oldProcessEnded, failureReason)
+		snapshot, changed, err := r.manager.store.finishInputRecovery(ctx, r.agentID, *r.recovery, oldProcessEnded, failureReason)
+		if err == nil && failureReason != leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
+			r.coordinator.pauseEvents++
+		}
+		return snapshot, changed, err
 	})
 }
 
@@ -1154,6 +1413,7 @@ func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
 	c := m.coordinator(agentID)
 	c.mu.Lock()
 	c.retired = true
+	c.pauseEvents++
 	stopMaturityLocked(c)
 	snapshot, changed, err := m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
 	if err == nil && changed {
@@ -1429,6 +1689,7 @@ func (m *Manager) acceptDispatch(c *coordinator, ctx context.Context, prepared P
 	if failErr != nil {
 		return Snapshot{}, false, errors.Join(err, failErr)
 	}
+	c.pauseEvents++
 	m.enqueueSnapshotLocked(c, snapshot)
 	return snapshot, false, nil
 }
@@ -1438,8 +1699,10 @@ func (m *Manager) acceptDispatch(c *coordinator, ctx context.Context, prepared P
 // admission and unavailable processes. Each outcome has its own store operation.
 func (m *Manager) recordDispatchFailure(c *coordinator, ctx context.Context, prepared PreparedDispatch, dispatchErr error) (Snapshot, error) {
 	item := prepared.Item
+	outcome := dispatchOutcome(dispatchErr)
 	var record func() (Snapshot, error)
-	switch dispatchOutcome(dispatchErr) {
+	var pauses bool
+	switch outcome {
 	case DispatchPending:
 		record = func() (Snapshot, error) {
 			return m.store.RequeuePending(ctx, item.AgentID, item.ID)
@@ -1454,6 +1717,7 @@ func (m *Manager) recordDispatchFailure(c *coordinator, ctx context.Context, pre
 			return m.store.RequeueBusy(ctx, item.AgentID, item.ID, activeTurnSteerable)
 		}
 	case DispatchNotReady:
+		pauses = true
 		// The pause carries the caller's own reason, because the reader reads it.
 		// A provider that is not ready yet means AGENT_STOPPED; a failed read of
 		// the worker's own store does not.
@@ -1466,10 +1730,12 @@ func (m *Manager) recordDispatchFailure(c *coordinator, ctx context.Context, pre
 			return m.store.RequeueAndPause(ctx, item.AgentID, item.ID, dispatchErr, reason)
 		}
 	case DispatchUncertain:
+		pauses = true
 		record = func() (Snapshot, error) {
 			return m.store.FailDispatch(ctx, item.AgentID, item.ID, dispatchErr, true)
 		}
 	case DispatchFailed:
+		pauses = true
 		record = func() (Snapshot, error) {
 			return m.store.FailDispatch(ctx, item.AgentID, item.ID, dispatchErr, false)
 		}
@@ -1477,6 +1743,9 @@ func (m *Manager) recordDispatchFailure(c *coordinator, ctx context.Context, pre
 	snapshot, err := record()
 	if err != nil {
 		return Snapshot{}, err
+	}
+	if pauses {
+		c.pauseEvents++
 	}
 	m.enqueueSnapshotLocked(c, snapshot)
 	return snapshot, nil

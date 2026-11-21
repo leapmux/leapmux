@@ -1,7 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { localFieldValueOf } from '../../src/components/chat/composer/scheduleSend'
-import { AgentInputState } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { getUserId } from './helpers/api'
 import { nativeUserStrings } from './helpers/attachmentModelProbe'
 import { attachFile, attachmentPills, writeAttachmentFixture } from './helpers/attachments'
@@ -9,9 +8,9 @@ import { finishCleanup, withCleanup } from './helpers/cleanup'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { withExtraClients } from './helpers/multiClient'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
-import { QUEUED_INPUT_ROW_TESTID, queuedInputRow } from './helpers/steer'
+import { expectSteerAccepted, QUEUED_INPUT_ROW_TESTID, queuedInputRow, steerButton } from './helpers/steer'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
-import { agentTabs, assistantBubbles, composerEditor, fillComposer, focusComposer, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
+import { agentTabs, assistantBubbles, composerEditor, fillComposer, focusComposer, inputQueue, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, userBubbles, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
 
 /**
@@ -42,7 +41,7 @@ async function seedTwoQueuedRows(page: Page) {
   await sendMessage(page, 'first queued')
   await sendMessage(page, 'second queued')
 
-  const rows = page.getByTestId(/^queued-input-/)
+  const rows = page.getByTestId(QUEUED_INPUT_ROW_TESTID)
   await expect(rows).toHaveCount(2)
   await expect(rows.first()).toContainText('first queued')
   return {
@@ -71,36 +70,36 @@ test.describe('agent input queue', () => {
       await sendMessage(page, queuedFirst)
       await sendMessage(page, 'queued second')
       for (const clientPage of [page, secondPage]) {
-        await expect(clientPage.getByTestId('agent-input-queue')).toContainText(queuedFirstPreview)
-        await expect(clientPage.getByTestId('agent-input-queue')).not.toContainText('full text tail')
-        await expect(clientPage.getByTestId('agent-input-queue')).toContainText('queued-input.txt')
-        await expect(clientPage.getByTestId('agent-input-queue')).toContainText('queued second')
-        await expect(clientPage.getByTestId('agent-input-queue')).toHaveCSS('overflow-y', 'auto')
+        await expect(inputQueue(clientPage)).toContainText(queuedFirstPreview)
+        await expect(inputQueue(clientPage)).not.toContainText('full text tail')
+        await expect(inputQueue(clientPage)).toContainText('queued-input.txt')
+        await expect(inputQueue(clientPage)).toContainText('queued second')
+        await expect(inputQueue(clientPage)).toHaveCSS('overflow-y', 'auto')
       }
 
       await restartWorker(separateHubWorker)
       await ensureWorkerOnline(separateHubWorker)
       await page.reload()
-      await expect(page.getByTestId('agent-input-queue')).toContainText(queuedFirstPreview)
-      await expect(page.getByTestId('agent-input-queue')).toContainText('queued second')
+      await expect(inputQueue(page)).toContainText(queuedFirstPreview)
+      await expect(inputQueue(page)).toContainText('queued second')
 
       const editor = composerEditor(page)
       await editor.fill('normal draft')
       await attachFile(page, writeAttachmentFixture('text', 'normal-draft.txt'))
       await expect(attachmentPills(page)).toContainText('normal-draft.txt')
-      const first = page.getByTestId(/queued-input-/).filter({ hasText: queuedFirstPreview })
+      const first = queuedInputRow(page, queuedFirstPreview)
       await first.getByRole('button', { name: 'Edit', exact: true }).click()
       await expect(editor).toContainText('full text tail')
       await expect(attachmentPills(page)).toContainText('queued-input.txt')
       await editor.fill('edited first')
       await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
       for (const clientPage of [page, secondPage])
-        await expect(clientPage.getByTestId('agent-input-queue')).toContainText('edited first')
-      await expect(page.getByTestId('agent-input-queue')).toContainText('queued-input.txt')
+        await expect(inputQueue(clientPage)).toContainText('edited first')
+      await expect(inputQueue(page)).toContainText('queued-input.txt')
       await expect(editor).toHaveText('normal draft')
       await expect(attachmentPills(page)).toContainText('normal-draft.txt')
 
-      const edited = page.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
+      const edited = queuedInputRow(page, 'edited first')
       await edited.getByRole('button', { name: 'Edit', exact: true }).click()
       await expect(editor).toHaveText('edited first')
       await editor.fill('unsaved queue edit')
@@ -112,20 +111,20 @@ test.describe('agent input queue', () => {
       await page.reload()
       await expect(editor).toHaveText('unsaved queue edit')
       await expect(attachmentPills(page)).toContainText('queued-input.txt')
-      const resumedEdit = page.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
+      const resumedEdit = queuedInputRow(page, 'edited first')
       await resumedEdit.getByRole('button', { name: 'Cancel Edit' }).click()
       await expect(editor).toHaveText('normal draft')
 
       await edited.getByRole('button', { name: 'Edit', exact: true }).click()
-      const secondClientItem = secondPage.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
+      const secondClientItem = queuedInputRow(secondPage, 'edited first')
       await secondClientItem.getByRole('button', { name: 'Take Over' }).click()
       await expect(composerEditor(secondPage)).toHaveText('edited first')
       await expect(editor).toHaveText('normal draft')
       await secondClientItem.getByRole('button', { name: 'Cancel Edit' }).click()
 
-      const second = page.getByTestId(/queued-input-/).filter({ hasText: 'queued second' })
+      const second = queuedInputRow(page, 'queued second')
       await second.getByRole('button', { name: 'Move Up' }).click()
-      const previews = page.getByTestId('agent-input-queue').locator('div').filter({ hasText: /^(edited first|queued second)$/ })
+      const previews = inputQueue(page).locator('div').filter({ hasText: /^(edited first|queued second)$/ })
       await expect(previews.first()).toHaveText('queued second')
 
       // The first Delete click requests confirmation. The second click removes the input.
@@ -133,7 +132,7 @@ test.describe('agent input queue', () => {
       // Playwright resolves the locator again for every action.
       // The row remains until the Worker returns its snapshot, and ConfirmButton restores Delete immediately after the confirmation click.
       // A second first() lookup can therefore select the old row again and request confirmation just before that row disappears.
-      const rowIds = await page.getByTestId(/queued-input-/).evaluateAll(rows =>
+      const rowIds = await page.getByTestId(QUEUED_INPUT_ROW_TESTID).evaluateAll(rows =>
         rows.map(row => row.getAttribute('data-testid')!),
       )
       expect(rowIds).toHaveLength(2)
@@ -144,7 +143,7 @@ test.describe('agent input queue', () => {
         await expect(row).toHaveCount(0)
       }
       for (const clientPage of [page, secondPage])
-        await expect(clientPage.getByTestId('agent-input-queue')).toHaveCount(0)
+        await expect(inputQueue(clientPage)).toHaveCount(0)
       await resumePausedQueue(page)
       await expect(queuePauseButton(secondPage)).toHaveText('Pause Queue')
     })
@@ -163,13 +162,11 @@ test.describe('agent input queue', () => {
       // The coarse pointer shows the grip. A fine pointer hides it through display: none.
       // The workspace list uses the same rule.
       await expect(grip).toBeVisible()
-      const gripBox = (await grip.boundingBox())!
-      const targetBox = (await target.boundingBox())!
 
       await touchDragGripOnto({
         page,
-        grip: { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 },
-        target: { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 },
+        grip: await boxCenter(grip),
+        target: await boxCenter(target),
         draggedRow: source,
         draggingClass: /itemDragging/,
       })
@@ -185,7 +182,7 @@ test.describe('agent input queue', () => {
     await pauseQueue(page)
     await sendMessage(page, 'only queued input')
 
-    const row = page.getByTestId(/^queued-input-/)
+    const row = page.getByTestId(QUEUED_INPUT_ROW_TESTID)
     await expect(row).toHaveCount(1)
     await expect(row).not.toHaveClass(/itemDraggable/)
     await expect(row.getByTestId(/^queue-drag-handle-/)).toHaveClass(/dragHandleInert/)
@@ -205,7 +202,7 @@ test.describe('agent input queue', () => {
       // The activation move of the drag has a sideways part, so the check also covers a
       // pointer that leaves the axis.
       whileLifted: () => expect
-        .poll(() => page.getByTestId('agent-input-queue')
+        .poll(() => inputQueue(page)
           .evaluate(queue => queue.scrollWidth - queue.clientWidth))
         .toBe(0),
     })
@@ -235,14 +232,23 @@ test.describe('agent input queue', () => {
   })
 
   // An empty queue dispatches nothing on resume, so the case needs no scripted turn.
+  // A second press on the now-running idle queue must remain a no-op.
   test('resumes a paused queue with the send chord when the composer is empty', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     await expect(composerEditor(page)).toBeVisible()
     await pauseQueue(page)
 
-    await focusComposer(page)
+    const editor = await focusComposer(page)
     await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(queuePauseButton(page)).toHaveText('Pause Queue')
+
+    // On a running idle queue, the same empty-composer press must not toggle pause,
+    // send an empty message, or insert a newline into the editor.
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    await expect(queuePauseButton(page)).toHaveText('Pause Queue')
+    await expect(inputQueue(page)).toHaveCount(0)
+    await expect(userBubbles(page)).toHaveCount(0)
+    await expect(editor).toHaveText('')
   })
 
   // One press on a paused queue steers the head into the running turn and then resumes the queue.
@@ -268,12 +274,13 @@ test.describe('agent input queue', () => {
       await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
       const queued = queuedInputRow(page, 'Stop the report')
       await expect(queued).toBeVisible()
+      await expect(steerButton(queued)).toBeVisible()
       await expect(editor).toHaveText('')
       await expect(queuePauseButton(page)).toHaveText('Resume Queue')
 
       // The composer is empty now, so the same chord steers and resumes.
       await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
-      await expect(queued.and(page.locator(`:not([data-input-state="${AgentInputState.AWAITING_ECHO}"])`))).toHaveCount(0)
+      await expectSteerAccepted(page, queued)
       await expect(queuePauseButton(page)).toHaveText('Pause Queue')
 
       await modelScript.releaseGate(gate)
@@ -293,7 +300,7 @@ test.describe('agent input queue', () => {
     await expect(composerEditor(page)).toBeVisible()
     await pauseQueue(page)
     await sendMessage(page, 'a queued input')
-    await expect(page.getByTestId('agent-input-queue')).toContainText('a queued input')
+    await expect(inputQueue(page)).toContainText('a queued input')
     await attachFile(page, writeAttachmentFixture('text', 'notes.txt'))
     await expect(attachmentPills(page)).toContainText('notes.txt')
 
@@ -302,7 +309,7 @@ test.describe('agent input queue', () => {
     // inputArea supplies one common gap, and each child has zero vertical padding.
     // Separate child padding adds at adjacent children because padding does not collapse like margins.
     // That previous design doubled one gap and changed its size when optional children appeared.
-    const measured = await page.getByTestId('agent-input-queue').evaluate((queue) => {
+    const measured = await inputQueue(page).evaluate((queue) => {
       const column = queue.parentElement!
       const children = Array.from(column.children).filter((child) => {
         const style = getComputedStyle(child)

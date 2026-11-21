@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentInputState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { QUEUED_INPUT_ROW_TESTID, STEER_BUTTON_NAME, steerQueuedInput } from './steer'
+import { expectSteerAccepted, QUEUED_INPUT_ROW_TESTID, queuedInputRow, STEER_BUTTON_NAME, steerQueuedInput } from './steer'
 
 class TestLocator {
   constructor(readonly elements: () => Element[]) {}
@@ -50,6 +50,36 @@ vi.mock('@playwright/test', () => ({
 
 afterEach(() => document.body.replaceChildren())
 
+function createTestPage(): Page {
+  return {
+    getByTestId: (id: RegExp) => new TestLocator(() => [
+      ...document.querySelectorAll('[data-testid]'),
+    ]
+      .filter(element => id.test(element.getAttribute('data-testid') ?? ''))),
+    locator: (selector: string) => new TestLocator(() => [
+      ...document.querySelectorAll(selector),
+    ]),
+  } as unknown as Page
+}
+
+describe('expectSteerAccepted', () => {
+  it.each(['awaiting echo', 'removed', 'queued'] as const)('evaluates a row left %s', async (outcome) => {
+    document.body.innerHTML = '<div data-testid="queued-input-test" data-input-state="1">Queued message</div>'
+    const rowEl = document.querySelector('[data-testid="queued-input-test"]')!
+    if (outcome === 'removed')
+      rowEl.remove()
+    else if (outcome === 'awaiting echo')
+      rowEl.setAttribute('data-input-state', String(AgentInputState.AWAITING_ECHO))
+    const page = createTestPage()
+    const row: Locator = queuedInputRow(page, 'Queued message')
+    const result = expectSteerAccepted(page, row)
+    if (outcome === 'queued')
+      await expect(result).rejects.toThrow('to have a length of +0')
+    else
+      await expect(result).resolves.toBeUndefined()
+  })
+})
+
 describe('steerQueuedInput', () => {
   it.each(['awaiting echo', 'removed', 'queued'] as const)('checks the row after the click leaves it %s', async (outcome) => {
     document.body.innerHTML = '<div data-testid="queued-input-test" data-input-state="1">Queued message<button>Steer</button></div>'
@@ -60,15 +90,7 @@ describe('steerQueuedInput', () => {
       else if (outcome === 'awaiting echo')
         row.setAttribute('data-input-state', String(AgentInputState.AWAITING_ECHO))
     })
-    const page = {
-      getByTestId: (id: RegExp) => new TestLocator(() => [
-        ...document.querySelectorAll('[data-testid]'),
-      ]
-        .filter(element => id.test(element.getAttribute('data-testid') ?? ''))),
-      locator: (selector: string) => new TestLocator(() => [
-        ...document.querySelectorAll(selector),
-      ]),
-    } as unknown as Page
+    const page = createTestPage()
     const result = steerQueuedInput(page, { message: 'Queued message', match: 'Queued message' })
     if (outcome === 'queued')
       await expect(result).rejects.toThrow('to have a length of +0')

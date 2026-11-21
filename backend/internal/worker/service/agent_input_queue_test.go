@@ -469,6 +469,94 @@ func TestPreemptQueuedAgentInputRPCRefusesAPausedQueue(t *testing.T) {
 	assert.Equal(t, int32(codes.FailedPrecondition), writer.errors[0].code)
 }
 
+type countingNonSteerableAgent struct {
+	agent.Agent
+	interrupts *atomic.Int32
+}
+
+func (a countingNonSteerableAgent) Interrupt(agent.StopContext) error {
+	a.interrupts.Add(1)
+	return nil
+}
+
+func TestAdvanceAgentInputQueueRPCResumesAndPreemptsAtomically(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+	}))
+	var interrupts atomic.Int32
+	start := func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+		inner, err := claudetest.StartSilent(ctx, opts, sink)
+		if err != nil {
+			return nil, err
+		}
+		return countingNonSteerableAgent{Agent: inner, interrupts: &interrupts}, nil
+	}
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: "agent-1", WorkingDir: workingDir,
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR), start)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+
+	_, err = svc.InputQueue.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "one", AgentID: "agent-1", Text: "one",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	_, err = svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceAdvanceAgentInputQueueProcedure, &leapmuxv1.AdvanceAgentInputQueueRequest{AgentId: "agent-1"}, writer)
+	response := decodeQueueResponse(t, writer, &leapmuxv1.AdvanceAgentInputQueueResponse{})
+	require.NotNil(t, response.GetSnapshot())
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED, response.GetSnapshot().GetPauseReason())
+	require.Len(t, response.GetSnapshot().GetItems(), 1)
+	assert.Equal(t, "one", response.GetSnapshot().GetItems()[0].GetId())
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, response.GetSnapshot().GetItems()[0].GetState())
+	assert.Equal(t, int32(1), interrupts.Load(), "atomic resume+preempt must interrupt the running turn")
+}
+
+func TestAdvanceAgentInputQueueRPCLeavesRecoveryPaused(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	starts := &recoveryStarts{prepareFor: func(int) func(int) error { return nil }}
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
+		return svc.Agents.StartAgentWith(ctx, opts, sink, starts.start)
+	}
+	const id = "advance-recovery-agent"
+	seedRecoveryAgent(t, svc, id, "saved-thread")
+	require.NoError(t, svc.ensureAgentRunning(id, resumeStoredSession, interactiveStart))
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(id) })
+	stale := starts.fake(0)
+	stale.mu.Lock()
+	stale.recoveryRequired = true
+	stale.mu.Unlock()
+	_, err := svc.InputQueue.SetPaused(ctx, id, true)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "one", AgentID: id, Text: "blocked",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceAdvanceAgentInputQueueProcedure, &leapmuxv1.AdvanceAgentInputQueueRequest{AgentId: id}, writer)
+	response := decodeQueueResponse(t, writer, &leapmuxv1.AdvanceAgentInputQueueResponse{})
+	require.NotNil(t, response.GetSnapshot())
+	require.NotNil(t, response.GetSnapshot().GetProcessRecovery())
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, response.GetSnapshot().GetPauseReason())
+}
+
 // TestLiveStatusChangePublishesSteeringCapability covers the LIVE pushes. The
 // test above covers the initial read.
 //

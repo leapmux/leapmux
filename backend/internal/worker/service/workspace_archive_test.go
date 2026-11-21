@@ -755,6 +755,7 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 		{leapmuxv1connect.WorkerAgentInputServiceSetAgentInputQueuePausedProcedure, &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: agentID, Paused: true}},
 		{leapmuxv1connect.WorkerAgentInputServiceSteerQueuedAgentInputProcedure, &leapmuxv1.SteerQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
 		{leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure, &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{leapmuxv1connect.WorkerAgentInputServiceAdvanceAgentInputQueueProcedure, &leapmuxv1.AdvanceAgentInputQueueRequest{AgentId: agentID}},
 		{leapmuxv1connect.WorkerAgentInputServiceRetryQueuedAgentInputProcedure, &leapmuxv1.RetryQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
 		{leapmuxv1connect.WorkerAgentInputServiceRecoverAgentInputProcessProcedure, &leapmuxv1.RecoverAgentInputProcessRequest{AgentId: agentID,
 			Recovery: &leapmuxv1.AgentInputProcessRecovery{OutputGeneration: 1, AgentSessionId: "saved-session", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, ProcessInstanceId: "process-instance"},

@@ -6,8 +6,8 @@
  * `document.activeElement.closest()` -- keyed by the panel's root element rather
  * than by agent id so the lookup falls out of the DOM without leaking an agent
  * id into it, and so a `WeakMap` collects the entry when the element detaches.
- * `chat.advanceInputQueue` acts on the CURRENT agent tab whether or not focus is
- * in the composer, so it reads the mounted panel directly.
+ * `chatInputEmpty` checks the CURRENT agent tab's composer whether or not focus
+ * is inside the composer, so it reads the mounted panel directly.
  *
  * There is at most one mounted panel: `FocusedAgentEditorPanel` is rendered in
  * exactly one of the two shell layers (mobile and desktop are mutually
@@ -40,14 +40,6 @@ export interface FocusedChatPanel {
    * live ProseMirror document instead.
    */
   hasPendingInput: () => boolean
-  /**
-   * Steer or preempt the head of the input queue, and resume the queue when it
-   * is paused, all in one press. `advanceInputQueue` in
-   * `~/components/chat/advanceInputQueue` gives the order and its reasons.
-   *
-   * Never rejects: the panel reports each failed queue request itself.
-   */
-  advanceInputQueue: () => Promise<void>
 }
 
 const panelHandles = new WeakMap<Element, FocusedChatPanel>()

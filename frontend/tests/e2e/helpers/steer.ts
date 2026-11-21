@@ -47,6 +47,15 @@ export function steerButton(row: Locator): Locator {
 }
 
 /**
+ * Assert that a queued input row was accepted for steering.
+ *
+ * Accept either a removed row or a row that awaits the provider's echo.
+ */
+export async function expectSteerAccepted(page: Page, row: Locator): Promise<void> {
+  await expect(row.and(page.locator(`:not([data-input-state="${AgentInputState.AWAITING_ECHO}"])`))).toHaveCount(0)
+}
+
+/**
  * Queue `input.message` during a running turn and steer it into that turn.
  *
  * Accept either a removed row or a row that awaits the provider's echo.
@@ -58,7 +67,7 @@ export async function steerQueuedInput(page: Page, input: SteerInput): Promise<v
   const steer = steerButton(queued)
   await expect(steer).toBeVisible()
   await steer.click()
-  await expect(queued.and(page.locator(`:not([data-input-state="${AgentInputState.AWAITING_ECHO}"])`))).toHaveCount(0)
+  await expectSteerAccepted(page, queued)
 }
 
 /**

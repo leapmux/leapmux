@@ -89,7 +89,7 @@ export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
   //
   // On an empty composer this chord steers or preempts the head of the input
   // queue, and resumes a paused queue in the same press (see
-  // `advanceInputQueue`).
+  // `AdvanceAgentInputQueue` and `advanceFocusedInputQueue`).
   //
   // Every conjunct earns its place. `activeTabType` scopes the action to an
   // agent tab without demanding that focus be in the composer -- the user may be

@@ -137,23 +137,23 @@ describe('KeybindingsControl', () => {
     resetCommands()
   })
 
-  it('lists commands with their effective bindings and source badges', async () => {
-    render(() => (
+  function renderControl() {
+    return render(() => (
       <PreferencesProvider>
         <KeybindingsControl />
       </PreferencesProvider>
     ))
+  }
+
+  it('lists commands with their effective bindings and source badges', async () => {
+    renderControl()
     await waitFor(() => expect(screen.getByText('New Agent')).toBeTruthy())
     expect(screen.getAllByText('Default').length).toBeGreaterThan(0)
     expect(screen.queryAllByText('Custom')).toHaveLength(0)
   })
 
   it('captures a clicked binding and writes the override', async () => {
-    render(() => (
-      <PreferencesProvider>
-        <KeybindingsControl />
-      </PreferencesProvider>
-    ))
+    renderControl()
     await waitFor(() => expect(screen.getByText('New Agent')).toBeTruthy())
     fireEvent.click(screen.getByTestId('keybinding-app.newAgent'))
     await waitFor(() => expect(screen.getByTestId('keybinding-capture-app.newAgent')).toBeTruthy())
@@ -169,11 +169,7 @@ describe('KeybindingsControl', () => {
   })
 
   it('refuses a chord already bound in the same when-context, naming the conflict', async () => {
-    render(() => (
-      <PreferencesProvider>
-        <KeybindingsControl />
-      </PreferencesProvider>
-    ))
+    renderControl()
     await waitFor(() => expect(screen.getByText('New Agent')).toBeTruthy())
     fireEvent.click(screen.getByTestId('keybinding-app.openPreferences'))
     await waitFor(() => expect(screen.getByTestId('keybinding-capture-app.openPreferences')).toBeTruthy())
@@ -202,11 +198,7 @@ describe('KeybindingsControl', () => {
         },
       ],
     })
-    render(() => (
-      <PreferencesProvider>
-        <KeybindingsControl />
-      </PreferencesProvider>
-    ))
+    renderControl()
     await waitFor(() => expect(screen.getByTestId('keybinding-reset-app.newAgent')).toBeTruthy())
     fireEvent.click(screen.getByTestId('keybinding-reset-app.newAgent'))
     await waitFor(() => expect(updateUserSetting).toHaveBeenCalledWith({

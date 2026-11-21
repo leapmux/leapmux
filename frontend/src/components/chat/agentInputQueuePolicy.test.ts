@@ -7,7 +7,7 @@ import {
   QueuedAgentInputSchema,
   QueueHeadDispatch,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
+import { isDeliveryFailedState, isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueuePolicy'
 
 describe('queueHeadIndex', () => {
   it('skips awaiting-echo rows', () => {
@@ -88,6 +88,20 @@ describe('isLockedInputState', () => {
     expect(isLockedInputState(AgentInputState.AWAITING_ECHO)).toBe(true)
     for (const state of [AgentInputState.QUEUED, AgentInputState.FAILED, AgentInputState.DELIVERY_UNCERTAIN])
       expect(isLockedInputState(state)).toBe(false)
+  })
+})
+
+describe('isDeliveryFailedState', () => {
+  it('matches failed and delivery-uncertain inputs only', () => {
+    expect(isDeliveryFailedState(AgentInputState.FAILED)).toBe(true)
+    expect(isDeliveryFailedState(AgentInputState.DELIVERY_UNCERTAIN)).toBe(true)
+    for (const state of [
+      AgentInputState.UNSPECIFIED,
+      AgentInputState.QUEUED,
+      AgentInputState.DISPATCHING,
+      AgentInputState.AWAITING_ECHO,
+    ])
+      expect(isDeliveryFailedState(state)).toBe(false)
   })
 })
 

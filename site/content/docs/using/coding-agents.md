@@ -194,11 +194,14 @@ neither steers when any of them is unmet:
 On a paused queue, one press of the shortcut steers and then resumes the queue.
 The **Steer** button steers through the pause and leaves the queue paused.
 
-The shortcut acts only on an **empty** composer, because `Cmd/Ctrl+Enter` sends
-whatever the composer holds. Text, an attachment, or a permission prompt waiting
-for approval all count as something to send, so in each of those cases the chord
-sends as usual. To steer with a new message, type it and press the shortcut
-twice: the first press sends it to the queue, and the second press steers it.
+The shortcut acts only on an **empty** composer, so it never takes
+`Cmd/Ctrl+Enter` away from the composer while there is text, an attachment, or a
+permission prompt waiting for approval. In **Cmd/Ctrl+Enter sends** mode (the
+default) with an empty queue, type a message and press the shortcut twice: the
+first press adds it to the queue, and the second press steers it. In
+**Enter sends** mode, press **`Enter`** first to queue the message, then press
+**`Cmd/Ctrl+Enter`** to steer it. When another item already waits in the queue,
+the shortcut steers that first item instead.
 
 ## How tool calls and results render
 

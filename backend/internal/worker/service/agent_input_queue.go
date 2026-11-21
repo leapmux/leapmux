@@ -693,6 +693,17 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.PreemptQueuedAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
+	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceAdvanceAgentInputQueueProcedure, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.AdvanceAgentInputQueueRequest, sender channel.ResponseWriter) {
+			snapshot, err := svc.InputQueue.Advance(bgCtx(), r.GetAgentId(), func(agentID string) bool {
+				return svc.inputProcessRecovery(agentID) != nil
+			})
+			if sendQueueError(sender, err) {
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.AdvanceAgentInputQueueResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
+		})
+
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceRetryQueuedAgentInputProcedure, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RetryQueuedAgentInputRequest, sender channel.ResponseWriter) {
 			snapshot, err := svc.InputQueue.Retry(bgCtx(), r.GetAgentId(), r.GetInputId(), r.GetConfirmDeliveryUncertain())

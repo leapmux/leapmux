@@ -341,7 +341,7 @@ export const NODE_TEST_FILES = [
   'scripts/run-vitest.test.mjs',
   'src/api/streamBuffer.test.ts',
   'src/api/workerErrors.test.ts',
-  'src/components/chat/agentInputQueueDrop.test.ts',
+  'src/components/chat/agentInputQueuePolicy.test.ts',
   'src/components/chat/chatHeightShared.test.ts',
   'src/components/chat/chatLayoutShift.test.ts',
   'src/components/chat/chatRawJson.test.ts',

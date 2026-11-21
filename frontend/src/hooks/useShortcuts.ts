@@ -28,14 +28,14 @@ import { getActiveChatPanel, getFocusedChatPanel } from '~/stores/focusedChatPan
 import { quakeKeyForTab } from '~/stores/quakeTerminal.store'
 import { canCloseTab, tabKey } from '~/stores/tab.helpers'
 
-interface UseShortcutsProps {
-  view: TabView
-  selection: TabSelectionStore
+export interface UseShortcutsProps {
+  view: Pick<TabView, 'forTile' | 'forWorkspace'>
+  selection: Pick<TabSelectionStore, 'activeKeyForTile' | 'activeKeyForWorkspace'>
   getActiveWorkspaceId: () => string | null
-  layoutStore: ReturnType<typeof createLayoutStore>
-  tabOps: ReturnType<typeof useTabOperations>
-  agentOps: ReturnType<typeof useAgentOperations>
-  termOps: ReturnType<typeof useTerminalOperations>
+  layoutStore: Pick<ReturnType<typeof createLayoutStore>, 'focusedTileId'>
+  tabOps: Pick<ReturnType<typeof useTabOperations>, 'handleTabClose' | 'handleTabSelect'>
+  agentOps: Pick<ReturnType<typeof useAgentOperations>, 'handleOpenAgent'>
+  termOps: Pick<ReturnType<typeof useTerminalOperations>, 'handleOpenTerminal'>
 
   newAgentDialog: DialogState<NewTabTarget>
   newTerminalDialog: DialogState<NewTabTarget>
@@ -53,6 +53,7 @@ interface UseShortcutsProps {
    */
   isActiveWorkspaceArchived: () => boolean
   splitFocusedTile: (direction: SplitOrientation) => void
+  advanceFocusedInputQueue: () => Promise<void>
   scrollFocusedTabPage: (direction: -1 | 1) => void
   writeToFocusedTerminal: (data: string) => void
   /**
@@ -121,6 +122,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
     activeTabType,
     resolveFocusedTab,
     splitFocusedTile,
+    advanceFocusedInputQueue,
     scrollFocusedTabPage,
     writeToFocusedTerminal,
     getCurrentTabContext,
@@ -267,21 +269,20 @@ export function useShortcuts(props: UseShortcutsProps): void {
   }, 'Chat')
 
   cmd('chat.advanceInputQueue', 'Resume Queue and Steer or Preempt', () => {
-    // The capability checks live in the panel, not in the `when` clause.
-    // `queueHeadDispatch`, `canSteer`, `canPreempt` and the pause are
-    // per-agent, per-snapshot facts that move in the middle of a turn, and the
-    // WORKER computes each one precisely so the browser never re-derives the
-    // precondition. A context would have to poll them from the keybinding layer
-    // and could still be a tick stale at dispatch.
+    // The capability checks live in `TileRenderer` and the Worker, not in the
+    // `when` clause. `queueHeadDispatch`, `canSteer`, `canPreempt` and the
+    // pause are per-agent, per-snapshot facts that move in the middle of a
+    // turn, and the WORKER computes each one precisely so the browser never
+    // re-derives the precondition.
     //
     // The tab guard stays although the default `when` already requires an
     // agent tab: a user override can replace that clause.
     if (resolveFocusedTab()?.type !== TabType.AGENT)
       return
     // RETURNED, not discarded: `executeCommand` attaches a catch to a returned
-    // promise. The panel owns the queue snapshot that its head row shows, the
-    // pause, and the order of the steps; see `advanceInputQueue`.
-    return getActiveChatPanel()?.advanceInputQueue()
+    // promise. `TileRenderer` guards archive/read-only/in-flight state, opens
+    // login recovery when needed, and calls `AdvanceAgentInputQueue`.
+    return advanceFocusedInputQueue()
   }, 'Chat')
 
   /**
@@ -345,17 +346,11 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('terminal.wordLeft', 'Go to Previous Word', () => writeToFocusedTerminal('\x1Bb'), 'Terminal')
   cmd('terminal.wordRight', 'Go to Next Word', () => writeToFocusedTerminal('\x1Bf'), 'Terminal')
 
+  const isFocusInside = (selector: string) => () => !!document.activeElement?.closest(selector)
+
   registerLazyContext('inputFocused', isTypingContext)
-
-  registerLazyContext('editorFocused', () => {
-    const el = document.activeElement
-    return !!el?.closest('.ProseMirror')
-  })
-
-  registerLazyContext('chatInputFocused', () => {
-    const el = document.activeElement
-    return !!el?.closest('[data-chat-input]')
-  })
+  registerLazyContext('editorFocused', isFocusInside('.ProseMirror'))
+  registerLazyContext('chatInputFocused', isFocusInside('[data-chat-input]'))
 
   // "The current agent tab's composer has nothing to submit."
   //
@@ -372,10 +367,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
     return panel !== undefined && !panel.hasPendingInput()
   })
 
-  registerLazyContext('terminalFocused', () => {
-    const el = document.activeElement
-    return !!el?.closest('.xterm')
-  })
+  registerLazyContext('terminalFocused', isFocusInside('.xterm'))
 
   const updateDialogOpen = () => {
     setContext('dialogOpen', document.querySelector('dialog[open]') !== null)

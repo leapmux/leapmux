@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { getActiveChatPanel, getFocusedChatPanel, registerChatPanel, unregisterChatPanel } from './focusedChatPanel.store'
 
 afterEach(() => {
@@ -17,8 +17,8 @@ function mountPanel(handle: { send?: () => void, hasPendingInput?: () => boolean
   registerChatPanel(panel, {
     send,
     hasPendingInput,
-    advanceInputQueue: vi.fn(async () => {}),
   })
+  onTestFinished(() => unregisterChatPanel(panel))
   return { panel, input, send, hasPendingInput }
 }
 
@@ -84,7 +84,6 @@ describe('focusedChatPanel store', () => {
       registerChatPanel(panel, {
         send: replacement,
         hasPendingInput: () => true,
-        advanceInputQueue: vi.fn(async () => {}),
       })
 
       expect(getActiveChatPanel()?.send).toBe(replacement)
