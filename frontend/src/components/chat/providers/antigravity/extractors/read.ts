@@ -6,6 +6,8 @@ import { parseImageBlock, withFallbackFilePath } from '~/lib/imageBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { fileUriToPath } from '~/lib/paths'
 
+const FILE_READ_HEADER = /^(?:Created At: [^\r\n]+\r?\n)?(?:Completed At: [^\r\n]+\r?\n)?Showing lines \d+-\d+ of \d+(?:\r?\n|$)/
+
 export function antigravityReadRequest(step: AntigravityStep): ReadRequest {
   const view = pickObject(step.raw, 'viewFile')
   const binaryURI = pickString(pickObject(view, 'binaryData'), 'uri') || pickString(pickObject(view, 'mediaData'), 'uri')
@@ -15,11 +17,11 @@ export function antigravityReadRequest(step: AntigravityStep): ReadRequest {
 
 export function antigravityReadResult(step: AntigravityStep): ReadFileResult {
   const content = pickString(pickObject(step.raw, 'viewFile'), 'content')
-  const body = content.replace(/^Showing lines \d+-\d+ of \d+\n?/, '')
+  const body = content.replace(FILE_READ_HEADER, '')
   if (!body)
     return { lines: [], fallbackContent: '' }
   const lines: NumberedFileLine[] = []
-  for (const line of body.split('\n')) {
+  for (const line of body.split(/\r?\n/)) {
     const match = /^(\d+): ?(.*)$/.exec(line)
     if (!match?.[1])
       return { lines: null, fallbackContent: body }

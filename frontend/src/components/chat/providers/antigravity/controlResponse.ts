@@ -3,9 +3,9 @@ import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { ControlQuestion } from '../../model/question'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import type { ControlRequest } from '~/stores/control.store'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickObject } from '~/lib/jsonPick'
 import { CONTROL_DECISION_WORDS, controlBehaviorDisplay, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
-import { antigravityExtractQuestions } from './askUserQuestion'
+import { antigravityExtractQuestions, antigravityQuestionAnswers } from './askUserQuestion'
 
 interface InteractionAddress {
   cascadeId: string
@@ -110,24 +110,9 @@ export function antigravityControlResponseSummary(cr: PersistedControlResponse):
     return null
   if (ask.cancelled === true)
     return label('Dismissed')
-  const responses = Array.isArray(ask.responses)
-    ? ask.responses
-    : []
   const questions = antigravityExtractQuestions(cr.request ?? {})
-  const lines: string[] = []
-  responses.forEach((answer, index) => {
-    if (!isObject(answer))
-      return
-    const selected = Array.isArray(answer.selectedOptionIds)
-      ? answer.selectedOptionIds.filter((id): id is string => typeof id === 'string')
-      : []
-    const labels = selected.map(id => questions[index]?.options.find(option => option.value === id)?.label ?? id)
-    const text = pickString(answer, 'writeInResponse') || labels.join(', ') || (answer.skipped === true
-      ? 'Skipped'
-      : '')
-    const line = labeledAnswerLine(questions[index]?.question ?? `Question ${index + 1}`, text)
-    if (line !== null)
-      lines.push(line)
-  })
+  const lines = antigravityQuestionAnswers(ask.responses, questions)
+    .map(({ header, answer }) => labeledAnswerLine(header, [answer]))
+    .filter(line => line !== null)
   return labelOrNull(joinAnswerLines(lines))
 }

@@ -26,6 +26,23 @@ export function antigravityStepHeader(raw: Record<string, unknown> | undefined):
     : null
 }
 
+export function antigravityPlannerContent(raw: Record<string, unknown> | undefined): { text: string, thinking: string } {
+  const planner = pickObject(raw, 'plannerResponse')
+  const modified = pickString(planner, 'modifiedResponse')
+  const response = pickString(planner, 'response')
+  const thinking = pickString(planner, 'thinking')
+  return {
+    text: modified.trim()
+      ? modified
+      : response.trim()
+        ? response
+        : '',
+    thinking: thinking.trim()
+      ? thinking
+      : '',
+  }
+}
+
 export function antigravityStep(raw: Record<string, unknown> | undefined): AntigravityStep | null {
   const header = antigravityStepHeader(raw)
   if (!raw || !header || !STEP_TYPES.has(header.type))

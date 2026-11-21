@@ -10,6 +10,43 @@ function input(parentObject: Record<string, unknown>) {
 }
 
 describe('classifyAntigravityMessage', () => {
+  it('classifies every member of a notification thread', () => {
+    const first = { type: 'settings_changed', changes: {} }
+    const second = { type: 'pending_requests_approved' }
+    expect(classifyAntigravityMessage({
+      parentObject: first,
+      wrapper: {
+        messages: [first],
+      },
+    } as never).kind).toBe('hidden')
+    expect(classifyAntigravityMessage({
+      parentObject: first,
+      wrapper: {
+        messages: [first, second],
+      },
+    } as never)).toMatchObject({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text: 'Bypass permissions approved the pending requests.' },
+      ],
+    })
+  })
+
+  it.each([
+    {
+      toolCalls: [
+        { name: 'read_file' },
+      ],
+      stopReason: 'STOP',
+    },
+    { modifiedResponse: '   ', response: '\n', thinking: '\t' },
+  ])('hides a planner frame without visible text: %j', (plannerResponse) => {
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
+      plannerResponse,
+    })).kind).toBe('hidden')
+  })
+
   it('classifies steps, interactions and turn ends', () => {
     expect(classifyAntigravityMessage(input({ name: ANTIGRAVITY_FRAME.TurnEnd })).kind).toBe('result_divider')
     expect(classifyAntigravityMessage(input({ name: ANTIGRAVITY_FRAME.Interaction, modelRequest: {} })).kind).toBe('notification')
@@ -71,7 +108,7 @@ describe('antigravitySpanRole', () => {
     } as never)).toBe('request')
     expect(antigravitySpanRole({
       parentObject: { type: ANTIGRAVITY_STEP_TYPE.PlannerResponse, status: 'CORTEX_STEP_STATUS_DONE' },
-    } as never)).toBe('result')
+    } as never)).toBe('other')
   })
 
   it('places the closing copy of an open step on the result side', () => {

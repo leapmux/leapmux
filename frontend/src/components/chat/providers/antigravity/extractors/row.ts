@@ -4,7 +4,7 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { toolCallRow } from '../../../model/row'
 import { antigravityToolCall, antigravityToolRow } from './toolCall'
-import { antigravityRowOpen, antigravityStep } from './toolCommon'
+import { antigravityPlannerContent, antigravityRowOpen, antigravityStep } from './toolCommon'
 
 function antigravityUserInputText(parent: Record<string, unknown> | undefined): string {
   const input = pickObject(parent, 'userInput')
@@ -22,8 +22,7 @@ export function antigravityExtractRow(input: RowExtractionInput): ChatRow | null
   const parent = parsed.parentObject
   switch (category.kind) {
     case 'assistant_text': {
-      const planner = pickObject(parent, 'plannerResponse')
-      const text = pickString(planner, 'modifiedResponse') || pickString(planner, 'response')
+      const { text } = antigravityPlannerContent(parent)
       return text
         ? { kind: 'assistant-text', text }
         : { kind: 'hidden' }
@@ -31,7 +30,7 @@ export function antigravityExtractRow(input: RowExtractionInput): ChatRow | null
     case 'assistant_thinking':
       return {
         kind: 'assistant-thinking',
-        text: pickString(pickObject(parent, 'plannerResponse'), 'thinking'),
+        text: antigravityPlannerContent(parent).thinking,
       }
     case 'tool_use':
     case 'tool_result': {

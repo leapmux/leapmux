@@ -72,8 +72,7 @@ func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, 
 	}
 	if isOpenStepStatus(step.Status) {
 		if isToolStep(step) {
-			state.sink.OpenSpan(spanID, "")
-			if err := a.persistLiveStep(state, index, step, raw, spanID); err != nil {
+			if err := a.persistLiveStep(state, index, raw, spanID); err != nil {
 				return err
 			}
 			if output := step.RunCommand.CombinedOutput.Full; output != "" {
@@ -85,7 +84,7 @@ func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, 
 	return a.persistStep(state, index, step, raw)
 }
 
-func (a *Agent) persistLiveStep(state *cascadeState, index int, step antigravityStep, raw json.RawMessage, spanID string) error {
+func (a *Agent) persistLiveStep(state *cascadeState, index int, raw json.RawMessage, spanID string) error {
 	if a.IsDiscardingOutput() {
 		return nil
 	}
@@ -105,10 +104,11 @@ func (a *Agent) persistLiveStep(state *cascadeState, index int, step antigravity
 		slog.Error("antigravity scrub live step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
 		return err
 	}
-	err = state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+	err = providerkit.OpenToolSpan(state.sink, agent.MessageContent{
 		Original: cleaned, AgentSessionID: state.id, IdempotencyKey: fmt.Sprintf("antigravity:%s:%d:live", state.id, index),
-	}, agent.SpanInfo{SpanID: spanID, SpanType: contracts.AntigravityFrameStep})
+	}, spanID, contracts.AntigravityFrameStep, false)
 	if !agent.OutputRetained(err) {
+		state.sink.CloseSpan(spanID)
 		a.Mu.Lock()
 		record.liveOutputAccepted = false
 		a.Mu.Unlock()

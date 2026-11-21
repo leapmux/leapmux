@@ -4,20 +4,19 @@ import { ANTIGRAVITY_FRAME, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { antigravityNotificationEntry } from './extractors/notification'
-import { antigravityMessageIsChildPrompt, antigravityRowOpen, antigravityStepHeader } from './extractors/toolCommon'
+import { antigravityMessageIsChildPrompt, antigravityPlannerContent, antigravityRowOpen, antigravityStepHeader } from './extractors/toolCommon'
 
 export function classifyAntigravityMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
   const notification = notificationClassifierFor(input.agentProvider, antigravityNotificationEntry)
-  if (input.wrapper && input.wrapper.messages.length === 0)
-    return { kind: 'hidden' }
-  if (!parent)
-    return { kind: 'unknown' }
   if (input.wrapper) {
-    const category = notification([parent], 'hidden')
-    if (category.kind === 'notification')
+    const category = notification(input.wrapper.messages, 'hidden')
+    // The Worker can wrap the native system message that starts a child.
+    if (category.kind !== 'hidden' || parent?.type !== ANTIGRAVITY_STEP_TYPE.SystemMessage)
       return category
   }
+  if (!parent)
+    return { kind: 'unknown' }
   if (pickString(parent, 'name') === ANTIGRAVITY_FRAME.TurnEnd)
     return { kind: 'result_divider' }
   if (pickString(parent, 'name') === ANTIGRAVITY_FRAME.Interaction)
@@ -26,11 +25,12 @@ export function classifyAntigravityMessage(input: ClassificationInput): MessageC
   if (step) {
     switch (step.type) {
       case ANTIGRAVITY_STEP_TYPE.PlannerResponse: {
-        const response = pickObject(parent, 'plannerResponse')
-        const text = pickString(response, 'modifiedResponse') || pickString(response, 'response')
-        if (!text && pickString(response, 'thinking'))
+        const { text, thinking } = antigravityPlannerContent(parent)
+        if (text)
+          return { kind: 'assistant_text' }
+        if (thinking)
           return { kind: 'assistant_thinking' }
-        return { kind: 'assistant_text' }
+        return { kind: 'hidden' }
       }
       case ANTIGRAVITY_STEP_TYPE.UserInput:
         return { kind: 'user_content' }

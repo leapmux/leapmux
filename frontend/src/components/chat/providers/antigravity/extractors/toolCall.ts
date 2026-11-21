@@ -11,13 +11,13 @@ import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
 import { failedResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 import { toolRequestFor } from '../../defaultToolRequests'
-import { questionsFromRecords } from '../../questionRecords'
 import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { antigravityToolKind } from '../toolKinds'
 import { antigravityAgentRequest, antigravityAgentResult } from './agent'
 import { antigravityCommandResult, antigravityExecuteRequest } from './execute'
 import { antigravityFileChange, antigravityLandedChanges } from './fileEdit'
 import { antigravityMcpRequest, antigravityMcpResult } from './mcp'
+import { antigravityQuestionRequest, antigravityQuestionResult } from './question'
 import { antigravityReadImages, antigravityReadRequest, antigravityReadResult } from './read'
 import { antigravityGenericResult, antigravityStepDeclined, antigravityStepFailed, antigravityStepOpen, antigravityToolName } from './toolCommon'
 
@@ -115,13 +115,7 @@ export const ANTIGRAVITY_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<Antigravit
       : {}),
     text: pickString(args, 'Message'),
   }),
-  question: (args): ToolRequestByKind['question'] => ({
-    questions: questionsFromRecords(args.questions, question => ({
-      question: pickString(question, 'question'),
-    }), option => ({
-      label: pickString(option, 'text'),
-    })),
-  }),
+  question: (_args, facts): ToolRequestByKind['question'] => antigravityQuestionRequest(facts.step),
 }
 
 function requestFor<K extends ToolKind>(kind: K, facts: AntigravityToolFacts): ToolRequestByKind[K] {
@@ -132,6 +126,8 @@ function early<K extends ToolKind>(kind: K, facts: AntigravityToolFacts, request
   if (!facts.answered)
     return { kind, request }
   if (facts.failed) {
+    if (facts.lifecycle.providerOutcome === 'interrupted' && !facts.text)
+      return { kind, request }
     return {
       kind,
       request,
@@ -256,7 +252,22 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
       result: genericFallback(facts, 'mcpTool') ?? antigravityMcpResult(facts.step),
     }
   },
-  question: declared('question'),
+  question: (facts): ToolCallSpecVariant<'question'> => {
+    const request = requestFor('question', facts)
+    const initial = early('question', facts, request)
+    if (initial)
+      return initial
+    const result = antigravityQuestionResult(facts.step, request) ?? (facts.text
+      ? unparsedResult(facts.text)
+      : undefined)
+    return {
+      kind: 'question',
+      request,
+      ...(result
+        ? { result }
+        : {}),
+    }
+  },
   web_search: declared('web_search'),
   fetch: declared('fetch'),
   grep: declared('grep'),

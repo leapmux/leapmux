@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -83,6 +84,62 @@ func TestAntigravityCumulativePlannerText(t *testing.T) {
 	var step antigravityStep
 	require.NoError(t, json.Unmarshal(transcriptMessages(sink)[0].Content, &step))
 	assert.Equal(t, "HELLO WORLD", step.PlannerResponse.ModifiedResponse)
+}
+
+func TestAntigravityRepeatedToolUpdatesKeepOneRailPerCall(t *testing.T) {
+	a, sink := testAgent(t)
+	firstPending := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_PENDING","metadata":{"toolCall":{"id":"first","name":"run_command"}}}`)
+	firstRunning := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"first","name":"run_command"}}}`)
+	firstDone := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_DONE","metadata":{"toolCall":{"id":"first","name":"run_command"}}}`)
+	secondPending := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_PENDING","metadata":{"toolCall":{"id":"second","name":"read_file"}}}`)
+	secondDone := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_VIEW_FILE","status":"CORTEX_STEP_STATUS_DONE","metadata":{"toolCall":{"id":"second","name":"read_file"}}}`)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{firstPending}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{firstRunning, secondPending}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{firstRunning, secondPending}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{firstDone, secondDone}))
+
+	rows := transcriptMessages(sink)
+	require.Len(t, rows, 4)
+	assert.Empty(t, rows[0].SpansOpenAtPersist)
+	assert.Positive(t, rows[0].SpanColor)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "first"}}, rows[1].SpansOpenAtPersist)
+	assert.Positive(t, rows[1].SpanColor)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "first"}, {SpanID: "second"}}, rows[2].SpansOpenAtPersist)
+	assert.True(t, rows[2].Closing)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "second"}}, rows[3].SpansOpenAtPersist)
+	assert.True(t, rows[3].Closing)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "first"}, {SpanID: "second"}}, sink.OpenSpans())
+}
+
+type refusingToolRequestSink struct {
+	agent.ProviderServices
+	refusal error
+}
+
+func (s *refusingToolRequestSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if s.refusal != nil {
+		return s.refusal
+	}
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func TestAntigravityRefusedToolRequestCanRetryWithoutAnOpenRail(t *testing.T) {
+	a, sink := testAgent(t)
+	writer := &refusingToolRequestSink{ProviderServices: a.root.sink, refusal: errors.New("write refused")}
+	a.root.sink = writer
+	a.root.steps[0] = &stepState{}
+	raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_PENDING","metadata":{"toolCall":{"id":"call","name":"read_file"}}}`)
+
+	require.ErrorIs(t, a.persistLiveStep(a.root, 0, raw, "call"), writer.refusal)
+	assert.Empty(t, transcriptMessages(sink))
+	assert.False(t, a.root.steps[0].liveOutputAccepted)
+
+	writer.refusal = nil
+	require.NoError(t, a.persistLiveStep(a.root, 0, raw, "call"))
+	rows := transcriptMessages(sink)
+	require.Len(t, rows, 1)
+	assert.Empty(t, rows[0].SpansOpenAtPersist)
+	assert.Positive(t, rows[0].SpanColor)
 }
 
 func TestAntigravityRewrittenPlannerTextDoesNotEmitNegativeDelta(t *testing.T) {
@@ -273,7 +330,7 @@ func TestAntigravityScrubFailureAllowsPersistenceRetry(t *testing.T) {
 	a, _ := testAgent(t)
 	a.root.steps[0] = &stepState{}
 	raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":`)
-	assert.Error(t, a.persistLiveStep(a.root, 0, antigravityStep{}, raw, "call"))
+	assert.Error(t, a.persistLiveStep(a.root, 0, raw, "call"))
 	assert.False(t, a.root.steps[0].liveOutputAccepted)
 	assert.Error(t, a.persistStep(a.root, 0, antigravityStep{}, raw))
 	assert.False(t, a.root.steps[0].consumed)

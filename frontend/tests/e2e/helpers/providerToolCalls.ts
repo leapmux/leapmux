@@ -3743,15 +3743,6 @@ export function readToolCall(provider: AgentProvider, id: string, path: string):
   return requireBuilder(vocabulary(provider).read, provider, 'read')(id, path)
 }
 
-/** Read a file through the tool that Antigravity gives its subagents. */
-export function viewFileToolCall(id: string, path: string): MockModelToolCall {
-  return {
-    id,
-    name: ANTIGRAVITY_TOOL.ViewFile,
-    arguments: { AbsolutePath: path },
-  }
-}
-
 export function zcodeReadRangeToolCall(id: string, path: string, range: { offset: number, limit: number }): MockModelToolCall {
   if (!Number.isSafeInteger(range.offset) || range.offset < 0 || !Number.isSafeInteger(range.limit) || range.limit < 1)
     throw new Error('The native ZCode Read range requires a nonnegative integer offset and a positive integer limit.')
