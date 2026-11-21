@@ -1,6 +1,8 @@
+import type { AgentInputEnqueueAttempt } from './agentInputEnqueueRetry'
 import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
+import type { createChatStore } from '~/stores/chat.store'
 import type { TabView } from '~/stores/tabView'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { getOwner, onCleanup } from 'solid-js'
@@ -53,6 +55,8 @@ export function createAgentInputQueueOperations(deps: {
   view: TabView
   /** The store that every response snapshot lands in. */
   store: ReturnType<typeof createAgentInputQueueStore>
+  /** The Worker records each accepted input under its input ID in the transcript. */
+  chatStore: Pick<ReturnType<typeof createChatStore>, 'subscribeStoredUserMessages'>
   /** This browser tab's identity. The edit commands claim the edit lock with it. */
   clientId: () => string
   /** The agent that the composer writes to, or null when no agent tab is focused. */
@@ -63,16 +67,25 @@ export function createAgentInputQueueOperations(deps: {
   // Keep ambiguous enqueue attempts across editor unmounts. A user can switch
   // to a file and back while the unchanged draft still needs its original ID.
   const enqueueRetry = createAgentInputEnqueueRetry()
-  // A snapshot that shows an attempt's input settles it, whether the snapshot
-  // came in an RPC response or a broadcast: a later send of the same payload
-  // is a new message (see forgetDelivered).
-  const stopForgetting = deps.store.onApply((_, snapshot) =>
-    enqueueRetry.forgetDelivered(snapshot.items.map(item => item.id)))
-  if (getOwner())
-    onCleanup(stopForgetting)
   // One input ID represents one delivery attempt, including across editor
   // remounts. Share its in-flight request so outcomes cannot disagree.
-  const inFlightByInputId = new Map<string, Promise<boolean>>()
+  const inFlightByInputId = new Map<string, { attempt: AgentInputEnqueueAttempt, promise: Promise<boolean> }>()
+  const observeAcceptedInput = (agentId: string, inputId: string) => {
+    const request = inFlightByInputId.get(inputId)
+    if (request?.attempt.agentId === agentId)
+      enqueueRetry.markAccepted(request.attempt)
+    else
+      enqueueRetry.observeAccepted(agentId, inputId)
+  }
+  const stopQueueObserver = deps.store.onApply((agentId, snapshot) => {
+    for (const item of snapshot.items)
+      observeAcceptedInput(agentId, item.id)
+  })
+  const stopTranscriptObserver = deps.chatStore.subscribeStoredUserMessages(({ agentId, messageId }) => observeAcceptedInput(agentId, messageId))
+  if (getOwner()) {
+    onCleanup(stopQueueObserver)
+    onCleanup(stopTranscriptObserver)
+  }
   /**
    * Run one queue RPC for `agentId` and apply the snapshot that it answers
    * with.
@@ -85,28 +98,33 @@ export function createAgentInputQueueOperations(deps: {
    *
    * Every response of this family carries the whole queue, so the apply
    * belongs HERE rather than at each call site: a handler that forgets it
-   * leaves the panel on a stale queue until the next broadcast arrives. A
-   * failure shows one warning and rethrows, so the caller still sees it.
+   * leaves the panel on a stale queue until the next broadcast arrives.
    */
   // The generated response types declare `snapshot?: ... | undefined` (proto
   // field presence), so the constraint must admit an explicit undefined too.
+  const applyQueueRpc = async <R extends { agentId?: string }, T extends { snapshot?: AgentInputQueueSnapshot | undefined }>(
+    agentId: string,
+    rpc: (workerId: string, req: R) => Promise<T>,
+    req: Omit<R, 'agentId'>,
+  ): Promise<T> => {
+    const workerId = deps.view.getAgentTab(agentId)?.workerId ?? ''
+    const response = await rpc(workerId, { ...req, agentId } as R)
+    deps.store.apply(agentId, response.snapshot)
+    return response
+  }
   const runQueueRpc = async <R extends { agentId?: string }, T extends { snapshot?: AgentInputQueueSnapshot | undefined }>(
     agentId: string,
     label: string,
     rpc: (workerId: string, req: R) => Promise<T>,
     req: Omit<R, 'agentId'>,
   ): Promise<T> => {
-    const workerId = deps.view.getAgentTab(agentId)?.workerId ?? ''
-    let response: T
     try {
-      response = await rpc(workerId, { ...req, agentId } as R)
+      return await applyQueueRpc(agentId, rpc, req)
     }
     catch (error) {
       showWarnToast(label, error)
       throw error
     }
-    deps.store.apply(agentId, response.snapshot)
-    return response
   }
   // The one handler whose caller needs the response: the composer loads the
   // full text and the attachments of the input that it starts to edit. The
@@ -186,40 +204,46 @@ export function createAgentInputQueueOperations(deps: {
     // in flight shares its outcome: `enqueueRetry` returns the attempt that was
     // pending when the call started, and this copy still holds its request.
     const inFlightAtCall = new Map(inFlightByInputId)
-    const inputId = requirePendingAttempt
-      ? await enqueueRetry.inputIdForPendingAttempt(payload)
-      : await enqueueRetry.inputIdFor(payload)
-    if (inputId === undefined)
+    const attempt = requirePendingAttempt
+      ? await enqueueRetry.pendingAttemptFor(payload)
+      : await enqueueRetry.attemptFor(payload)
+    if (attempt === undefined)
       return false
+    if (attempt.state === 'accepted')
+      return true
+    const { inputId } = attempt
     const existing = inFlightByInputId.get(inputId) ?? inFlightAtCall.get(inputId)
     if (existing)
-      return existing
+      return existing.promise
     // Scroll before the RPC so a reader above the tail sees the sent message.
     deps.forceScrollToBottom()
     const request = (async () => {
       try {
-        await runQueueRpc(initialAgentID, 'Failed to queue message', workerAgentInput.enqueueAgentInput, {
+        await applyQueueRpc(initialAgentID, workerAgentInput.enqueueAgentInput, {
           inputId,
           kind: payload.kind,
           text: content,
           attachments: queueAttachmentsOf(fileAttachments),
           scheduledAt,
         })
-        enqueueRetry.markAccepted(inputId)
+        enqueueRetry.markAccepted(attempt)
         return true
       }
       catch (error) {
+        if (attempt.state === 'accepted')
+          return true
         if (isDefinitiveEnqueueRefusal(error))
-          enqueueRetry.markRefused(inputId)
+          enqueueRetry.markRefused(attempt)
         else
-          enqueueRetry.markUncertain(inputId)
+          enqueueRetry.markUncertain(attempt)
+        showWarnToast('Failed to queue message', error)
         throw error
       }
       finally {
         inFlightByInputId.delete(inputId)
       }
     })()
-    inFlightByInputId.set(inputId, request)
+    inFlightByInputId.set(inputId, { attempt, promise: request })
     return request
   }
   const sendMessage = async (content: string, fileAttachments?: FileAttachment[], scheduledAt = '') => {

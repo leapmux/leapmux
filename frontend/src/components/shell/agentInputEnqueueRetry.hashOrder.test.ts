@@ -57,12 +57,33 @@ describe('createAgentInputEnqueueRetry', () => {
 
     const gate = deferred<void>()
     digest.gate = gate.promise
-    const held = retry.inputIdFor(message('deploy it'))
+    const held = retry.attemptFor(message('deploy it'))
     digest.gate = Promise.resolve()
-    const later = await retry.inputIdFor(message('deploy it'))
+    const later = await retry.attemptFor(message('deploy it'))
     gate.resolve()
 
     expect(await held).toBe(later)
     expect(sequence).toBe(1)
+  })
+
+  it('keeps the confirmed attempt when a later send of the same payload hashes first', async () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const payload = message('deploy it')
+    const first = await retry.attemptFor(payload)
+    retry.markUncertain(first)
+
+    const gate = deferred<void>()
+    digest.gate = gate.promise
+    const heldRetry = retry.pendingAttemptFor(payload)
+    retry.observeAccepted(first.agentId, first.inputId)
+    digest.gate = Promise.resolve()
+    const next = await retry.attemptFor(payload)
+    gate.resolve()
+
+    expect(await heldRetry).toBe(first)
+    expect(first.state).toBe('accepted')
+    expect(next).toMatchObject({ inputId: 'input-2', state: 'pending' })
+    expect(await retry.attemptFor(payload)).toBe(next)
   })
 })

@@ -5,12 +5,15 @@ import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  AgentChatMessageSchema,
   AgentInputKind,
   AgentInputQueueSnapshotSchema,
+  MessageSource,
   QueuedAgentInputSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ChannelError } from '~/lib/channelError'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
+import { createChatStore } from '~/stores/chat.store'
 import { deferred } from '~/test-support/async'
 import { holdWorkerReplies, settleWorkerReplies } from '~/test-support/fakeWorker'
 import { createAgentInputQueueOperations } from './agentInputQueueOperations'
@@ -70,6 +73,10 @@ function snapshotOf(revision: bigint, itemIds: string[]) {
   })
 }
 
+function transcriptMessage(id: string, seq = 1n, source: MessageSource = MessageSource.USER) {
+  return create(AgentChatMessageSchema, { id, seq, source })
+}
+
 function attachment(filename: string): FileAttachment {
   const data = new Uint8Array([1, 2, 3])
   return {
@@ -90,30 +97,40 @@ interface SetupOptions {
 
 function setup(options: SetupOptions = {}) {
   const store = createAgentInputQueueStore()
+  const chatStore = createChatStore()
   const forceScrollToBottom = vi.fn()
-  const ops = createAgentInputQueueOperations({
+  const deps = {
     view: stubView(options.workerByAgent ?? { 'agent-1': 'worker-1' }),
     store,
+    chatStore,
     clientId: () => 'client-1',
     focusedAgentId: () => (options.focusedAgentId === undefined
       ? 'agent-1'
       : options.focusedAgentId),
     forceScrollToBottom,
-  })
-  return { ops, store, forceScrollToBottom }
+  }
+  const ops = createAgentInputQueueOperations(deps)
+  return {
+    ops,
+    store,
+    chatStore,
+    forceScrollToBottom,
+  }
 }
 
 /** The `setup` harness over two agents, with a focus that a test can move. */
 function setupWithMovableFocus() {
   let focused = 'agent-1'
   const store = createAgentInputQueueStore()
-  const ops = createAgentInputQueueOperations({
+  const deps = {
     view: stubView({ 'agent-1': 'worker-1', 'agent-2': 'worker-2' }),
     store,
+    chatStore: createChatStore(),
     clientId: () => 'client-1',
     focusedAgentId: () => focused,
     forceScrollToBottom: vi.fn(),
-  })
+  }
+  const ops = createAgentInputQueueOperations(deps)
   return {
     ops,
     store,
@@ -383,6 +400,54 @@ describe('createAgentInputQueueOperations composer send', () => {
     await ops.sendMessage('deploy it')
 
     expect(sentInputId(1)).not.toBe(sentInputId(0))
+  })
+
+  it('mints a fresh input ID after history shows the dispatched input', async () => {
+    const { ops, chatStore } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: undefined })
+
+    await expect(ops.sendMessage('deploy it')).rejects.toThrow('answer lost')
+    chatStore.setMessages('agent-1', [
+      transcriptMessage(sentInputId(0)),
+    ], false)
+    await ops.sendMessage('deploy it')
+
+    expect(enqueueAgentInput).toHaveBeenCalledTimes(2)
+    expect(sentInputId(1)).not.toBe(sentInputId(0))
+  })
+
+  it('confirms an in-flight send from the transcript when the enqueue response is lost', async () => {
+    const { ops, chatStore } = setup()
+    const response = deferred<{ snapshot: undefined }>()
+    enqueueAgentInput.mockReturnValueOnce(response.promise)
+
+    const send = ops.sendMessage('deploy it')
+    const settled = Promise.allSettled([send])
+    await settleWorkerReplies()
+    expect(enqueueAgentInput).toHaveBeenCalledOnce()
+    chatStore.addMessage('agent-1', transcriptMessage(sentInputId(0)))
+    response.reject(new Error('answer lost'))
+
+    expect(await settled).toEqual([
+      { status: 'fulfilled', value: undefined },
+    ])
+    expect(showWarnToast).not.toHaveBeenCalled()
+  })
+
+  it('keeps the original input ID when chat shows a row that does not prove acceptance', async () => {
+    const { ops, chatStore } = setup()
+    enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
+    enqueueAgentInput.mockResolvedValueOnce({ snapshot: undefined })
+
+    await expect(ops.sendMessage('deploy it')).rejects.toThrow('answer lost')
+    const id = sentInputId(0)
+    chatStore.addMessage('agent-2', transcriptMessage(id))
+    chatStore.addMessage('agent-1', transcriptMessage(id, 0n))
+    chatStore.addMessage('agent-1', transcriptMessage(id, 1n, MessageSource.AGENT))
+    await ops.sendMessage('deploy it')
+
+    expect(sentInputId(1)).toBe(id)
   })
 
   it('keeps the input ID of an unanswered attempt that no snapshot showed', async () => {

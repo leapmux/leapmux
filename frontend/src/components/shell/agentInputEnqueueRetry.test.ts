@@ -57,22 +57,22 @@ describe('agent input enqueue retry', () => {
       scheduledAt: '',
     }
 
-    expect(await retry.inputIdFor(first)).toBe('input-1')
-    expect(await retry.inputIdFor({
+    expect(await retry.attemptFor(first)).toMatchObject({ inputId: 'input-1' })
+    expect(await retry.attemptFor({
       ...first,
       attachments: [
         attachment('a.txt', [1, 2, 3]),
       ],
-    })).toBe('input-1')
-    expect(await retry.inputIdFor({ ...first, text: 'changed' })).toBe('input-2')
-    expect(await retry.inputIdFor({ ...first, agentId: 'agent-2' })).toBe('input-3')
-    expect(await retry.inputIdFor({ ...first, kind: AgentInputKind.CONTROL_FEEDBACK })).toBe('input-4')
-    expect(await retry.inputIdFor({
+    })).toMatchObject({ inputId: 'input-1' })
+    expect(await retry.attemptFor({ ...first, text: 'changed' })).toMatchObject({ inputId: 'input-2' })
+    expect(await retry.attemptFor({ ...first, agentId: 'agent-2' })).toMatchObject({ inputId: 'input-3' })
+    expect(await retry.attemptFor({ ...first, kind: AgentInputKind.CONTROL_FEEDBACK })).toMatchObject({ inputId: 'input-4' })
+    expect(await retry.attemptFor({
       ...first,
       attachments: [
         attachment('a.txt', [1, 2, 4]),
       ],
-    })).toBe('input-5')
+    })).toMatchObject({ inputId: 'input-5' })
   })
 
   it('mints a new input ID after the Worker accepts an attempt', async () => {
@@ -85,11 +85,11 @@ describe('agent input enqueue retry', () => {
       attachments: [] as FileAttachment[],
       scheduledAt: '',
     }
-    const accepted = await retry.inputIdFor(payload)
+    const accepted = await retry.attemptFor(payload)
 
     retry.markAccepted(accepted)
 
-    expect(await retry.inputIdFor(payload)).toBe('input-2')
+    expect(await retry.attemptFor(payload)).toMatchObject({ inputId: 'input-2' })
   })
 
   it('keeps message and control-feedback attempts independent', async () => {
@@ -103,9 +103,9 @@ describe('agent input enqueue retry', () => {
       scheduledAt: '',
     }
 
-    expect(await retry.inputIdFor(message)).toBe('input-1')
-    expect(await retry.inputIdFor({ ...message, kind: AgentInputKind.CONTROL_FEEDBACK, text: 'feedback' })).toBe('input-2')
-    expect(await retry.inputIdFor(message)).toBe('input-1')
+    expect(await retry.attemptFor(message)).toMatchObject({ inputId: 'input-1' })
+    expect(await retry.attemptFor({ ...message, kind: AgentInputKind.CONTROL_FEEDBACK, text: 'feedback' })).toMatchObject({ inputId: 'input-2' })
+    expect(await retry.attemptFor(message)).toMatchObject({ inputId: 'input-1' })
   })
 
   // A failed send leaves the text in the composer. The user can abandon it,
@@ -124,27 +124,27 @@ describe('agent input enqueue retry', () => {
     }
     const second = { ...first, text: 'second' }
 
-    const firstId = await retry.inputIdFor(first)
-    const secondId = await retry.inputIdFor(second)
+    const firstAttempt = await retry.attemptFor(first)
+    const secondAttempt = await retry.attemptFor(second)
 
-    expect(secondId).not.toBe(firstId)
-    expect(await retry.inputIdFor(first)).toBe(firstId)
-    expect(await retry.inputIdFor(second)).toBe(secondId)
+    expect(secondAttempt).not.toBe(firstAttempt)
+    expect(await retry.attemptFor(first)).toBe(firstAttempt)
+    expect(await retry.attemptFor(second)).toBe(secondAttempt)
   })
 
   it('drops the oldest attempt once the pending map is full', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    const oldestId = await retry.inputIdFor(message('message-0'))
+    const oldestId = (await retry.attemptFor(message('message-0'))).inputId
     const newestText = `message-${MAX_PENDING_ATTEMPTS}`
     let newestId = ''
     for (let index = 1; index <= MAX_PENDING_ATTEMPTS; index++)
-      newestId = await retry.inputIdFor(message(`message-${index}`))
+      newestId = (await retry.attemptFor(message(`message-${index}`))).inputId
 
     // One attempt past the cap, so the oldest aged out and mints a fresh ID.
-    expect(await retry.inputIdFor(message('message-0'))).not.toBe(oldestId)
+    expect((await retry.attemptFor(message('message-0'))).inputId).not.toBe(oldestId)
     // Every attempt inside the cap still recovers its own ID.
-    expect(await retry.inputIdFor(message(newestText))).toBe(newestId)
+    expect((await retry.attemptFor(message(newestText))).inputId).toBe(newestId)
   })
 
   it('moves a repeated attempt to the newest slot so it does not age out', async () => {
@@ -152,33 +152,28 @@ describe('agent input enqueue retry', () => {
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
     const ids: string[] = []
     for (let index = 1; index <= MAX_PENDING_ATTEMPTS; index++)
-      ids.push(await retry.inputIdFor(message(`message-${index}`)))
+      ids.push((await retry.attemptFor(message(`message-${index}`))).inputId)
 
     // Repeat the oldest attempt, then add one more past the cap.
-    expect(await retry.inputIdFor(message('message-1'))).toBe(ids[0])
-    await retry.inputIdFor(message('overflow'))
+    expect((await retry.attemptFor(message('message-1'))).inputId).toBe(ids[0])
+    await retry.attemptFor(message('overflow'))
 
-    expect(await retry.inputIdFor(message('message-1'))).toBe(ids[0])
-    expect(await retry.inputIdFor(message('message-2'))).not.toBe(ids[1])
+    expect((await retry.attemptFor(message('message-1'))).inputId).toBe(ids[0])
+    expect((await retry.attemptFor(message('message-2'))).inputId).not.toBe(ids[1])
   })
 
   it('does not let a late acknowledgement clear a newer attempt', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    const first = {
-      agentId: 'agent-1',
-      kind: AgentInputKind.USER_MESSAGE,
-      text: 'first',
-      attachments: [] as FileAttachment[],
-      scheduledAt: '',
-    }
-    const firstId = await retry.inputIdFor(first)
-    const second = { ...first, text: 'second' }
-    const secondId = await retry.inputIdFor(second)
+    const payload = message('repeat this')
+    const firstAttempt = await retry.attemptFor(payload)
+    retry.observeAccepted(firstAttempt.agentId, firstAttempt.inputId)
+    const secondAttempt = await retry.attemptFor(payload)
+    expect(secondAttempt.inputId).not.toBe(firstAttempt.inputId)
 
-    retry.markAccepted(firstId)
+    retry.markAccepted(firstAttempt)
 
-    expect(await retry.inputIdFor(second)).toBe(secondId)
+    expect(await retry.attemptFor(payload)).toBe(secondAttempt)
   })
 })
 
@@ -194,15 +189,15 @@ describe('agent input enqueue retry schedule', () => {
       scheduledAt: '2030-01-01T09:00:00.000Z',
     }
 
-    expect(await retry.inputIdFor(scheduled)).toBe('input-1')
-    expect(await retry.inputIdFor({ ...scheduled })).toBe('input-1')
-    expect(await retry.inputIdFor({
+    expect(await retry.attemptFor(scheduled)).toMatchObject({ inputId: 'input-1' })
+    expect(await retry.attemptFor({ ...scheduled })).toMatchObject({ inputId: 'input-1' })
+    expect(await retry.attemptFor({
       ...message('later'),
-    })).toBe('input-2')
-    expect(await retry.inputIdFor({
+    })).toMatchObject({ inputId: 'input-2' })
+    expect(await retry.attemptFor({
       ...message('later'),
       scheduledAt: '2031-01-01T09:00:00.000Z',
-    })).toBe('input-3')
+    })).toMatchObject({ inputId: 'input-3' })
   })
 })
 
@@ -212,18 +207,19 @@ describe('agent input enqueue retry pending attempts', () => {
   it('forgets exactly the attempts whose inputs a snapshot holds', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    const shown = await retry.inputIdFor(message('shown'))
-    const hidden = await retry.inputIdFor(message('hidden'))
+    const shown = await retry.attemptFor(message('shown'))
+    const hidden = await retry.attemptFor(message('hidden'))
     retry.markUncertain(shown)
     retry.markUncertain(hidden)
 
-    retry.forgetDelivered([])
-    expect(await retry.inputIdForPendingAttempt(message('shown'))).toBe(shown)
-    retry.forgetDelivered([shown, 'unrelated'])
+    retry.observeAccepted('another-agent', shown.inputId)
+    retry.observeAccepted(shown.agentId, 'unrelated')
+    expect(await retry.pendingAttemptFor(message('shown'))).toBe(shown)
+    retry.observeAccepted(shown.agentId, shown.inputId)
 
-    expect(await retry.inputIdForPendingAttempt(message('shown'))).toBeUndefined()
-    expect(await retry.inputIdForPendingAttempt(message('hidden'))).toBe(hidden)
-    expect(await retry.inputIdFor(message('shown'))).toBe('input-3')
+    expect(await retry.pendingAttemptFor(message('shown'))).toBeUndefined()
+    expect(await retry.pendingAttemptFor(message('hidden'))).toBe(hidden)
+    expect(await retry.attemptFor(message('shown'))).toMatchObject({ inputId: 'input-3' })
   })
 
   it('acquires only an uncertain attempt until the Worker accepts it', async () => {
@@ -232,13 +228,13 @@ describe('agent input enqueue retry pending attempts', () => {
       ...message('later'),
       scheduledAt: '2030-01-01T09:00:00.000Z',
     }
-    expect(await retry.inputIdForPendingAttempt(scheduled)).toBeUndefined()
-    const id = await retry.inputIdFor(scheduled)
-    expect(await retry.inputIdForPendingAttempt(scheduled)).toBeUndefined()
-    retry.markUncertain(id)
-    expect(await retry.inputIdForPendingAttempt({ ...scheduled })).toBe(id)
-    retry.markAccepted(id)
-    expect(await retry.inputIdForPendingAttempt(scheduled)).toBeUndefined()
+    expect(await retry.pendingAttemptFor(scheduled)).toBeUndefined()
+    const attempt = await retry.attemptFor(scheduled)
+    expect(await retry.pendingAttemptFor(scheduled)).toBeUndefined()
+    retry.markUncertain(attempt)
+    expect(await retry.pendingAttemptFor({ ...scheduled })).toBe(attempt)
+    retry.markAccepted(attempt)
+    expect(await retry.pendingAttemptFor(scheduled)).toBeUndefined()
   })
 
   it('does not acquire a pending attempt for a payload that differs in any part', async () => {
@@ -247,7 +243,7 @@ describe('agent input enqueue retry pending attempts', () => {
       ...message('later'),
       scheduledAt: '2030-01-01T09:00:00.000Z',
     }
-    retry.markUncertain(await retry.inputIdFor(scheduled))
+    retry.markUncertain(await retry.attemptFor(scheduled))
     for (const changed of [
       message('later'),
       { ...scheduled, text: 'other' },
@@ -260,27 +256,27 @@ describe('agent input enqueue retry pending attempts', () => {
         ],
       },
     ])
-      expect(await retry.inputIdForPendingAttempt(changed)).toBeUndefined()
+      expect(await retry.pendingAttemptFor(changed)).toBeUndefined()
   })
 
   it('does not mint an id for an absent pending attempt', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    expect(await retry.inputIdForPendingAttempt(message('hello'))).toBeUndefined()
-    expect(await retry.inputIdFor(message('hello'))).toBe('input-1')
+    expect(await retry.pendingAttemptFor(message('hello'))).toBeUndefined()
+    expect(await retry.attemptFor(message('hello'))).toMatchObject({ inputId: 'input-1' })
   })
 
   it('removes a known refusal but retains earlier delivery uncertainty', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
     const payload = message('hello')
-    const refused = await retry.inputIdFor(payload)
+    const refused = await retry.attemptFor(payload)
     retry.markRefused(refused)
-    const uncertain = await retry.inputIdFor(payload)
+    const uncertain = await retry.attemptFor(payload)
     expect(uncertain).not.toBe(refused)
     retry.markUncertain(uncertain)
     retry.markRefused(uncertain)
-    expect(await retry.inputIdForPendingAttempt(payload)).toBe(uncertain)
+    expect(await retry.pendingAttemptFor(payload)).toBe(uncertain)
   })
 
   it('detects changed attachment bytes when acquiring a pending attempt', async () => {
@@ -291,9 +287,9 @@ describe('agent input enqueue retry pending attempts', () => {
         attachment('a.txt', [1, 2]),
       ],
     }
-    retry.markUncertain(await retry.inputIdFor(payload))
+    retry.markUncertain(await retry.attemptFor(payload))
     payload.attachments[0]!.data[0] = 9
-    expect(await retry.inputIdForPendingAttempt(payload)).toBeUndefined()
+    expect(await retry.pendingAttemptFor(payload)).toBeUndefined()
   })
 })
 
@@ -319,54 +315,55 @@ describe('agent input enqueue retry during the hash', () => {
   it('returns the ID of an attempt that the Worker accepts during the hash', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    const inFlight = await retry.inputIdFor(message('deploy it'))
+    const inFlight = await retry.attemptFor(message('deploy it'))
 
-    const second = holdHash(() => retry.inputIdFor(message('deploy it')))
+    const second = holdHash(() => retry.attemptFor(message('deploy it')))
     retry.markAccepted(inFlight)
     await second.release()
 
     expect(await second.result).toBe(inFlight)
     // The accepted attempt stays settled: a later send of the same text is a new message.
-    expect(await retry.inputIdFor(message('deploy it'))).toBe('input-2')
+    expect(await retry.attemptFor(message('deploy it'))).toMatchObject({ inputId: 'input-2' })
   })
 
   it('returns the ID of an attempt that the Worker refuses during the hash', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    const inFlight = await retry.inputIdFor(message('deploy it'))
+    const inFlight = await retry.attemptFor(message('deploy it'))
 
-    const second = holdHash(() => retry.inputIdFor(message('deploy it')))
+    const second = holdHash(() => retry.attemptFor(message('deploy it')))
     retry.markRefused(inFlight)
     await second.release()
 
     expect(await second.result).toBe(inFlight)
-    expect(await retry.inputIdFor(message('deploy it'))).toBe('input-2')
+    expect(await retry.attemptFor(message('deploy it'))).toMatchObject({ inputId: 'input-2' })
   })
 
   it('acquires an uncertain attempt that the Worker accepts during the hash', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    const uncertain = await retry.inputIdFor(message('deploy it'))
+    const uncertain = await retry.attemptFor(message('deploy it'))
     retry.markUncertain(uncertain)
 
-    const retried = holdHash(() => retry.inputIdForPendingAttempt(message('deploy it')))
+    const retried = holdHash(() => retry.pendingAttemptFor(message('deploy it')))
     retry.markAccepted(uncertain)
     await retried.release()
 
     expect(await retried.result).toBe(uncertain)
-    expect(await retry.inputIdForPendingAttempt(message('deploy it'))).toBeUndefined()
+    expect(await retry.pendingAttemptFor(message('deploy it'))).toBeUndefined()
   })
 
   it('mints one ID for two identical calls whose hashes run at the same time', async () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
 
-    const ids = await Promise.all([
-      retry.inputIdFor(message('deploy it')),
-      retry.inputIdFor(message('deploy it')),
+    const attempts = await Promise.all([
+      retry.attemptFor(message('deploy it')),
+      retry.attemptFor(message('deploy it')),
     ])
 
-    expect(ids).toEqual(['input-1', 'input-1'])
+    expect(attempts[0]?.inputId).toBe('input-1')
+    expect(attempts[1]).toBe(attempts[0])
   })
 })
 
@@ -391,7 +388,7 @@ describe('agent input enqueue retry fingerprint', () => {
       ],
     }
 
-    await retry.inputIdFor(payload)
+    await retry.attemptFor(payload)
 
     expect(requests).toHaveLength(1)
     const { fields } = requests[0]!
@@ -430,9 +427,9 @@ describe('agent input enqueue retry fingerprint', () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
     const payload = large()
-    const first = await retry.inputIdFor(payload)
+    const first = await retry.attemptFor(payload)
     const data = payload.attachments[0]!.data
     data[data.length - 1] = 255
-    expect(await retry.inputIdFor(payload)).not.toBe(first)
+    expect(await retry.attemptFor(payload)).not.toBe(first)
   })
 })

@@ -1350,6 +1350,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const queueOps = createAgentInputQueueOperations({
     view,
     store: agentInputQueueStore,
+    chatStore,
     clientId: opts.clientId,
     focusedAgentId,
     forceScrollToBottom: () => forceScrollToBottomRef()?.(),
