@@ -168,7 +168,10 @@ a matured retry exactly as it holds anything else; resuming delivers it.
 The queue pauses itself when something goes wrong — a delivery fails, delivery
 is uncertain, or the agent stopped — and a banner above the composer says which.
 Pause it yourself with **Pause Queue** to stack up several messages before
-letting the agent have them. **Resume** starts delivery again. A pause holds
+letting the agent have them. **Resume** starts delivery again, and so does
+**`Cmd/Ctrl+Enter`** while the composer is empty (see [Steering](#steering)).
+When the queue waits for login recovery, the same shortcut opens the recovery
+dialog instead. A pause holds
 scheduled input too: an item whose time arrives while the queue is paused waits
 — visible with its state — until you resume.
 
@@ -180,18 +183,22 @@ mid-thought: queue "use the existing helper instead", steer it, and the agent
 takes it into the work in progress.
 
 Press **`Cmd/Ctrl+Enter`** while the composer is empty, or click **Steer** on the
-first row. The shortcut and the button offer the same thing under the same
-conditions, and nothing happens when any of them is unmet:
+first row. The shortcut and the button steer under the same conditions, and
+neither steers when any of them is unmet:
 
 - the agent's provider has to accept a steer while it runs;
 - a turn has to be in progress, and it has to be an ordinary turn rather than a
   `/clear` or a `/compact`;
 - the first item has to be waiting — not on its way to the agent, and not open for edit.
 
+On a paused queue, one press of the shortcut steers and then resumes the queue.
+The **Steer** button steers through the pause and leaves the queue paused.
+
 The shortcut acts only on an **empty** composer, because `Cmd/Ctrl+Enter` sends
 whatever the composer holds. Text, an attachment, or a permission prompt waiting
 for approval all count as something to send, so in each of those cases the chord
-sends as usual.
+sends as usual. To steer with a new message, type it and press the shortcut
+twice: the first press sends it to the queue, and the second press steers it.
 
 ## How tool calls and results render
 

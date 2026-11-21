@@ -14,7 +14,11 @@ function mountPanel(handle: { send?: () => void, hasPendingInput?: () => boolean
   document.body.appendChild(panel)
   const send = handle.send ?? vi.fn()
   const hasPendingInput = handle.hasPendingInput ?? (() => false)
-  registerChatPanel(panel, { send, hasPendingInput })
+  registerChatPanel(panel, {
+    send,
+    hasPendingInput,
+    advanceInputQueue: vi.fn(async () => {}),
+  })
   return { panel, input, send, hasPendingInput }
 }
 
@@ -80,6 +84,7 @@ describe('focusedChatPanel store', () => {
       registerChatPanel(panel, {
         send: replacement,
         hasPendingInput: () => true,
+        advanceInputQueue: vi.fn(async () => {}),
       })
 
       expect(getActiveChatPanel()?.send).toBe(replacement)

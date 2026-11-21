@@ -1,7 +1,5 @@
-import type { AgentInputQueueSnapshot } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, render } from '@solidjs/testing-library'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentInputState, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { evaluateWhen, getContext } from '~/lib/shortcuts/context'
@@ -126,8 +124,6 @@ function makeProps() {
     customKeybindings: () => [],
     preferredExternalAppId: (): string | undefined => undefined,
     setPreferredExternalAppId: vi.fn(),
-    getAgentInputQueue: (): AgentInputQueueSnapshot | undefined => undefined,
-    steerQueueItem: vi.fn(async () => {}),
     quakePanel: {
       open: vi.fn(),
       close: vi.fn(),
@@ -299,6 +295,7 @@ describe('useShortcuts', () => {
       registerChatPanel(panel, {
         send,
         hasPendingInput: () => true,
+        advanceInputQueue: vi.fn(async () => {}),
       })
       input.focus()
 
@@ -323,6 +320,7 @@ describe('useShortcuts', () => {
       registerChatPanel(panel, {
         send,
         hasPendingInput: () => true,
+        advanceInputQueue: vi.fn(async () => {}),
       })
 
       const outside = document.createElement('input')
@@ -359,202 +357,70 @@ describe('useShortcuts', () => {
     })
   })
 
-  describe('chat.steerQueuedInput', () => {
+  describe('chat.advanceInputQueue', () => {
     afterEach(() => {
       document.body.innerHTML = ''
     })
 
-    /** Props for an agent tab with a queue whose head reports `canSteer`. */
-    function steerProps(over: {
-      queueHeadDispatch?: QueueHeadDispatch
-      items?: { canSteer: boolean, canPreempt?: boolean, id: string, state?: AgentInputState }[]
-      snapshot?: boolean
-      tab?: unknown
-    } = {}) {
+    // The panel owns the queue snapshot, the pause and the order of the steps
+    // (`advanceInputQueue`, covered beside it and in `AgentEditorPanel.test.tsx`).
+    // The command only decides whether the chord reaches the panel.
+    function setup(tab: unknown, withPanel = true) {
       const props = makeProps()
-      const items = over.items ?? [
-        { canSteer: true, id: 'q1' },
-      ]
-      const tab = 'tab' in over
-        ? over.tab
-        : { type: TabType.AGENT, id: 'a1', queueHeadDispatch: over.queueHeadDispatch ?? QueueHeadDispatch.STEER }
-      return {
-        ...props,
-        resolveFocusedTab: () => tab,
-        getAgentInputQueue: () => (over.snapshot === false
-          ? undefined
-          : { items }),
-        steerQueueItem: vi.fn(async () => {}),
-        preemptQueueItem: vi.fn(async () => {}),
-      }
-    }
-
-    // The parameter is deliberately not called `props`: these are plain test
-    // values, and the reactivity lint reads any `props.x` as a prop access that
-    // must sit in a tracked scope.
-    function run(bag: ReturnType<typeof steerProps>) {
       render(() => {
-        useShortcuts(bag as any)
+        useShortcuts({
+          ...props,
+          resolveFocusedTab: () => tab,
+        } as any)
         return null
       })
-      executeCommand('chat.steerQueuedInput')
-      return bag.steerQueueItem
+      const advance = vi.fn(async () => {})
+      if (withPanel) {
+        const panel = document.createElement('div')
+        panel.setAttribute('data-chat-panel', '')
+        document.body.appendChild(panel)
+        registerChatPanel(panel, {
+          send: vi.fn(),
+          hasPendingInput: () => false,
+          advanceInputQueue: advance,
+        })
+        onTestFinished(() => unregisterChatPanel(panel))
+      }
+      return advance
     }
 
-    it('steers the queue head of the focused agent tab', () => {
-      const props = steerProps()
-      const steer = run(props)
-      expect(steer).toHaveBeenCalledWith('a1', { canSteer: true, id: 'q1' })
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
+    const agentTab = { type: TabType.AGENT, id: 'a1' }
+
+    it('hands the press to the panel of the focused agent tab', () => {
+      const advance = setup(agentTab)
+      executeCommand('chat.advanceInputQueue')
+      expect(advance).toHaveBeenCalledOnce()
     })
 
-    it('does nothing when the agent provider does not accept a steer', () => {
-      const props = steerProps({ queueHeadDispatch: QueueHeadDispatch.NONE })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    it('preempts the queue head of an agent whose provider can only interrupt', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
-        items: [
-          { canSteer: false, canPreempt: true, id: 'q1' },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).toHaveBeenCalledWith('a1', { canSteer: false, canPreempt: true, id: 'q1' })
-    })
-
-    it('does not preempt a head that the worker refuses to preempt', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
-        items: [
-          { canSteer: false, canPreempt: false, id: 'q1' },
-        ],
-      })
-      run(props)
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    // A provider that steers never falls back to a preempt, even when the
-    // worker would allow one for the head.
-    it('does not preempt on a provider that steers when the head refuses a steer', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.STEER,
-        items: [
-          { canSteer: false, canPreempt: true, id: 'q1' },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    // The client reads an UNSPECIFIED dispatch, which a worker that never
-    // reported one leaves, as NONE.
-    it('does nothing when the dispatch is unspecified', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.UNSPECIFIED,
-        items: [
-          { canSteer: true, canPreempt: true, id: 'q1' },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    it('does nothing when the worker refuses to steer the head', () => {
-      expect(run(steerProps({
-        items: [
-          { canSteer: false, id: 'q1' },
-        ],
-      }))).not.toHaveBeenCalled()
-    })
-
-    it('does nothing when the queue is empty', () => {
-      expect(run(steerProps({ items: [] }))).not.toHaveBeenCalled()
-    })
-
-    it('does nothing before the first queue snapshot arrives', () => {
-      expect(run(steerProps({ snapshot: false }))).not.toHaveBeenCalled()
+    // `executeCommand` attaches its catch to the RETURNED promise and returns
+    // nothing itself, so the handler is called directly.
+    it('returns the promise of the panel', () => {
+      const advance = setup(agentTab)
+      const result = getCommand('chat.advanceInputQueue')!.handler()
+      expect(result).toBe(advance.mock.results[0]?.value)
     })
 
     it('does nothing when no tab is focused', () => {
-      expect(run(steerProps({ tab: null }))).not.toHaveBeenCalled()
+      const advance = setup(null)
+      executeCommand('chat.advanceInputQueue')
+      expect(advance).not.toHaveBeenCalled()
     })
 
     it('does nothing when the focused tab is a terminal', () => {
-      expect(run(steerProps({
-        tab: { type: TabType.TERMINAL, id: 't1' },
-      }))).not.toHaveBeenCalled()
+      const advance = setup({ type: TabType.TERMINAL, id: 't1' })
+      executeCommand('chat.advanceInputQueue')
+      expect(advance).not.toHaveBeenCalled()
     })
 
-    // The worker marks `canSteer` on the queue head alone, so a scan for a
-    // steerable item would answer a different question than the one the
-    // worker will enforce.
-    it('steers the head alone, although a later item reports canSteer', () => {
-      const steer = run(steerProps({
-        items: [
-          { canSteer: false, id: 'q1' },
-          { canSteer: true, id: 'q2' },
-        ],
-      }))
-      expect(steer).not.toHaveBeenCalled()
-    })
-
-    // The head is the first input that does not await its echo, the same row
-    // the queue panel offers Steer on. The chord read index 0, so it did
-    // nothing while the row showed the button.
-    it('steers the head behind an input that awaits its echo', () => {
-      const props = steerProps({
-        items: [
-          { canSteer: false, id: 'q0', state: AgentInputState.AWAITING_ECHO },
-          { canSteer: true, id: 'q1', state: AgentInputState.QUEUED },
-        ],
-      })
-      expect(run(props)).toHaveBeenCalledExactlyOnceWith('a1', { canSteer: true, id: 'q1', state: AgentInputState.QUEUED })
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
-    })
-
-    it('preempts the head behind an input that awaits its echo', () => {
-      const props = steerProps({
-        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
-        items: [
-          {
-            canSteer: false,
-            canPreempt: false,
-            id: 'q0',
-            state: AgentInputState.AWAITING_ECHO,
-          },
-          {
-            canSteer: false,
-            canPreempt: true,
-            id: 'q1',
-            state: AgentInputState.QUEUED,
-          },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).toHaveBeenCalledExactlyOnceWith('a1', {
-        canSteer: false,
-        canPreempt: true,
-        id: 'q1',
-        state: AgentInputState.QUEUED,
-      })
-    })
-
-    it('does nothing when every input awaits its echo', () => {
-      const props = steerProps({
-        items: [
-          {
-            canSteer: true,
-            canPreempt: true,
-            id: 'q0',
-            state: AgentInputState.AWAITING_ECHO,
-          },
-        ],
-      })
-      expect(run(props)).not.toHaveBeenCalled()
-      expect(props.preemptQueueItem).not.toHaveBeenCalled()
+    // Called directly, because `executeCommand` would swallow a throw.
+    it('returns nothing and does not throw when no panel is mounted', () => {
+      setup(agentTab, false)
+      expect(getCommand('chat.advanceInputQueue')!.handler()).toBeUndefined()
     })
   })
 
@@ -570,6 +436,7 @@ describe('useShortcuts', () => {
       registerChatPanel(panel, {
         send: vi.fn(),
         hasPendingInput,
+        advanceInputQueue: vi.fn(async () => {}),
       })
       return panel
     }

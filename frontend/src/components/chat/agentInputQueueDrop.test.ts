@@ -59,6 +59,14 @@ describe('queueHeadAction', () => {
     ])).toEqual({ action: 'steer', head })
   })
 
+  it('offers Preempt on the head behind an input that awaits its echo', () => {
+    const head = item('head', { canPreempt: true })
+    expect(queueHeadAction(QueueHeadDispatch.PREEMPT, [
+      locked('pending', AgentInputState.AWAITING_ECHO),
+      head,
+    ])).toEqual({ action: 'preempt', head })
+  })
+
   it('reads the head alone, although a later item reports the action', () => {
     expect(queueHeadAction(QueueHeadDispatch.STEER, [
       item('head'),

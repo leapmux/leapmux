@@ -1,14 +1,17 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { localFieldValueOf } from '../../src/components/chat/composer/scheduleSend'
+import { AgentInputState } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { getUserId } from './helpers/api'
+import { nativeUserStrings } from './helpers/attachmentModelProbe'
 import { attachFile, attachmentPills, writeAttachmentFixture } from './helpers/attachments'
+import { finishCleanup, withCleanup } from './helpers/cleanup'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { withExtraClients } from './helpers/multiClient'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { QUEUED_INPUT_ROW_TESTID, queuedInputRow } from './helpers/steer'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
-import { agentTabs, composerEditor, fillComposer, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForEditorDraft } from './helpers/ui'
+import { agentTabs, assistantBubbles, composerEditor, fillComposer, focusComposer, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
 
 /**
@@ -211,9 +214,9 @@ test.describe('agent input queue', () => {
     await expect(rows.first()).toContainText('second queued')
   })
 
-  // The queue steering shortcut and composer send control share the same key combination.
-  // Only an empty composer permits the steering shortcut to consume it.
-  // This case protects a send keypress from that shortcut.
+  // The queue shortcut and composer send control share the same key combination.
+  // Only an empty composer permits the queue shortcut to consume it.
+  // This case protects a send keypress from that shortcut, which would otherwise resume the paused queue.
   // Use PLATFORM_MOD because tinykeys maps $mod to Meta on Apple platforms and Control elsewhere.
   // A fixed Meta key would bypass the queue shortcut on Linux and Windows.
   // The composer accepts either modifier, so both assertions could pass without testing the intended shortcut.
@@ -221,19 +224,68 @@ test.describe('agent input queue', () => {
     void authenticatedWorkspace
     const { rows } = await seedTwoQueuedRows(page)
 
-    // With an empty composer and no active turn, the first queued input cannot steer.
-    // The shortcut consumes the keypress without sending or queueing anything.
+    // With composer text present, the key combination must send the prompt and leave the queue paused.
     const editor = await focusComposer(page)
-    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
-    await expect(rows).toHaveCount(2)
-
-    // With composer text present, the same key combination must send the prompt.
-    await editor.click()
     await page.keyboard.type('typed then sent')
     await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(editor).toHaveText('')
     await expect(rows).toHaveCount(3)
     await expect(rows.last()).toContainText('typed then sent')
+    await expect(queuePauseButton(page)).toHaveText('Resume Queue')
+  })
+
+  // An empty queue dispatches nothing on resume, so the case needs no scripted turn.
+  test('resumes a paused queue with the send chord when the composer is empty', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await expect(composerEditor(page)).toBeVisible()
+    await pauseQueue(page)
+
+    await focusComposer(page)
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    await expect(queuePauseButton(page)).toHaveText('Pause Queue')
+  })
+
+  // One press on a paused queue steers the head into the running turn and then resumes the queue.
+  // The steer goes first, because the Worker steers through a pause.
+  // The default agent of this suite is Claude Code, which steers.
+  test('resumes a paused queue and steers with one send chord', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    const gate = 'queue-chord-steer-hold'
+    await withCleanup(async () => {
+      // The gate holds the first turn open, so the next message waits in the queue.
+      const start = await modelScript.queue(
+        { text: 'A report.', gate },
+        { text: 'STEERED' },
+      )
+      await sendMessage(page, modelScript.prompt('Write a long technical report.'))
+      await modelScript.waitForGate(gate)
+      await expect(interruptButton(page)).toBeVisible()
+      await pauseQueue(page)
+
+      const steering = 'Stop the report now and reply with the single word STEERED.'
+      const editor = await focusComposer(page)
+      await page.keyboard.type(modelScript.prompt(steering))
+      await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+      const queued = queuedInputRow(page, 'Stop the report')
+      await expect(queued).toBeVisible()
+      await expect(editor).toHaveText('')
+      await expect(queuePauseButton(page)).toHaveText('Resume Queue')
+
+      // The composer is empty now, so the same chord steers and resumes.
+      await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+      await expect(queued.and(page.locator(`:not([data-input-state="${AgentInputState.AWAITING_ECHO}"])`))).toHaveCount(0)
+      await expect(queuePauseButton(page)).toHaveText('Pause Queue')
+
+      await modelScript.releaseGate(gate)
+      const request = await modelScript.requestAt(start + 1)
+      expect(nativeUserStrings(request.body).join('\n')).toContain(steering)
+      await waitForAgentIdle(page)
+      await expect(assistantBubbles(page).filter({ hasText: 'STEERED' })).toHaveCount(1)
+    }, async () => {
+      await finishCleanup([
+        modelScript.releaseGateIfHeld(gate),
+      ])
+    })
   })
 
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {

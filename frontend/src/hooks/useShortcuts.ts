@@ -4,7 +4,6 @@ import type { TabContext } from '~/components/shell/tabContext'
 import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
-import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
@@ -14,7 +13,6 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState } from '~/api/platformBridge'
-import { queueHeadAction } from '~/components/chat/agentInputQueueDrop'
 import { openPreferences } from '~/components/shell/UserMenuState'
 import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
@@ -74,16 +72,6 @@ interface UseShortcutsProps {
    * showing the old pin for the life of the page.
    */
   setPreferredExternalAppId: (id: string | undefined) => void
-  /**
-   * One agent's input-queue snapshot, or undefined before the first arrives.
-   * Narrow on purpose: the steer command needs the head item and nothing else,
-   * and handing this hook the whole queue store would make the keyboard layer a
-   * second place that knows how a queue is shaped.
-   */
-  getAgentInputQueue: (agentId: string) => AgentInputQueueSnapshot | undefined
-  /** Hand `agentId`'s queue head to the running turn. Rejects like every queue RPC. */
-  steerQueueItem: (agentId: string, item: QueuedAgentInput) => Promise<void>
-  preemptQueueItem: (agentId: string, item: QueuedAgentInput) => Promise<void>
   /**
    * Show, hide, or flip the quake terminal panel of the focused tab's working
    * directory.
@@ -278,31 +266,22 @@ export function useShortcuts(props: UseShortcutsProps): void {
     void getFocusedChatPanel()?.send()
   }, 'Chat')
 
-  cmd('chat.steerQueuedInput', 'Steer or Preempt Queued Input', () => {
-    const tab = resolveFocusedTab()
-    // The capability checks live HERE and not in the `when` clause.
-    // `queueHeadDispatch`, `canSteer` and `canPreempt` are per-agent,
-    // per-snapshot facts that move in the middle of a turn, and the WORKER
-    // computes each one precisely so the browser never re-derives the
+  cmd('chat.advanceInputQueue', 'Resume Queue and Steer or Preempt', () => {
+    // The capability checks live in the panel, not in the `when` clause.
+    // `queueHeadDispatch`, `canSteer`, `canPreempt` and the pause are
+    // per-agent, per-snapshot facts that move in the middle of a turn, and the
+    // WORKER computes each one precisely so the browser never re-derives the
     // precondition. A context would have to poll them from the keybinding layer
     // and could still be a tick stale at dispatch.
-    if (tab?.type !== TabType.AGENT)
+    //
+    // The tab guard stays although the default `when` already requires an
+    // agent tab: a user override can replace that clause.
+    if (resolveFocusedTab()?.type !== TabType.AGENT)
       return
-    // The head and its action come from the rule the queue panel's head row
-    // reads: the first input that does not await its echo, which is the item
-    // the worker marks `canSteer` and `canPreempt` on. A search for a
-    // steerable item would answer a different question from the one the
-    // worker enforces.
-    const offered = queueHeadAction(tab.queueHeadDispatch, props.getAgentInputQueue(tab.id)?.items ?? [])
-    if (!offered)
-      return
-    // RETURNED, not discarded: `executeCommand` attaches a catch to a
-    // returned promise, and `runQueueRpc` rethrows after it toasts.
-    // Preemption is the same chord on a provider that can only interrupt: the
-    // turn is cancelled and the head follows as the next dispatch.
-    return offered.action === 'steer'
-      ? props.steerQueueItem(tab.id, offered.head)
-      : props.preemptQueueItem(tab.id, offered.head)
+    // RETURNED, not discarded: `executeCommand` attaches a catch to a returned
+    // promise. The panel owns the queue snapshot that its head row shows, the
+    // pause, and the order of the steps; see `advanceInputQueue`.
+    return getActiveChatPanel()?.advanceInputQueue()
   }, 'Chat')
 
   /**

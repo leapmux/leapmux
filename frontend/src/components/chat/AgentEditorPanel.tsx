@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { AgentComposerActionStateStore } from './agentComposerActionState'
+import type { QueueHeadAction } from './agentInputQueueDrop'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { ControlResponseHandler, EditorContentRef } from './controls/types'
 import type { MessageContextResolver } from './messageContextResolver'
@@ -41,9 +42,11 @@ import { optionValuesFromGroups } from '~/stores/tab.helpers'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { hideInNarrowComposer } from '~/styles/shared.css'
 import { iconSize } from '~/styles/tokens'
+import { advanceInputQueue } from './advanceInputQueue'
 import { createAgentComposerActionStateStore } from './agentComposerActionState'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AgentInputQueue } from './AgentInputQueue'
+import { queueHeadAction, queueHeadIndex } from './agentInputQueueDrop'
 import { AgentInputQueuePauseBanner } from './AgentInputQueuePauseBanner'
 import { clearAttachments as clearCachedAttachments } from './attachments'
 import { AttachmentStrip } from './AttachmentStrip'
@@ -191,10 +194,10 @@ export interface AgentEditorPanelProps {
 /**
  * Swallows the rejection of a queue RPC.
  *
- * `runQueueRpc` in `~/lib/agentInputQueueOperations` already shows the failure
- * to the user and then rethrows, so every caller here owes the promise a
- * handler and owes the user nothing further. One helper, so the reason is
- * stated once rather than at each of the eight call sites.
+ * `runQueueRpc` in `~/components/shell/agentInputQueueOperations` already shows
+ * the failure to the user and then rethrows, so every caller here owes the
+ * promise a handler and owes the user nothing further. One helper, so the
+ * reason is stated once rather than at each call site.
  */
 function fireQueueRpc(call: Promise<unknown> | undefined): void {
   void call?.catch(() => {})
@@ -302,15 +305,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // would leave this toggle dead for a second after a flip that normally
   // settles in milliseconds.
   const pauseInFlight = () => actionState().pauseInFlight()
-  const setQueuePaused = (paused: boolean) => {
+  // Resolves true only when the Worker changed the pause. It NEVER rejects:
+  // `runQueueRpc` already warned the user about a failure, and the keyboard's
+  // queue advance reads the answer to decide whether it may preempt next.
+  const setQueuePaused = (paused: boolean): Promise<boolean> => {
     const state = actionState()
     if (state.pauseInFlight())
-      return
+      return Promise.resolve(false)
     const call = props.onSetQueuePaused?.(paused)
     if (!call)
-      return
+      return Promise.resolve(false)
     state.setPauseInFlight(true)
-    fireQueueRpc(call.finally(() => state.setPauseInFlight(false)))
+    return call.then(() => true, () => false).finally(() => state.setPauseInFlight(false))
   }
 
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
@@ -343,7 +349,56 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     if (canOpenInputRecovery())
       openInputRecovery()
     else
-      setQueuePaused(!queuePaused())
+      void setQueuePaused(!queuePaused())
+  }
+
+  // ---- The keyboard's queue advance (`chat.advanceInputQueue`) ----
+  //
+  // The steps run across awaits, and the shell reuses this panel across agent
+  // tabs, so every reader below reads `props` when it runs and the advance
+  // checks `stillCurrent` after each await. See `advanceInputQueue` for the
+  // order of the steps and the reasons.
+
+  /** Steer or preempt one head. Resolves false when the call fails; never rejects. */
+  const actOnQueueHead = (offered: QueueHeadAction): Promise<boolean> => {
+    const call = offered.action === 'steer'
+      ? props.onSteerQueueItem?.(props.agentId, offered.head)
+      : props.onPreemptQueueItem?.(props.agentId, offered.head)
+    return call
+      ? call.then(() => true, () => false)
+      : Promise.resolve(false)
+  }
+  /**
+   * The resume half of the advance. It does what the banner's button does: a
+   * login-recovery pause opens its dialog, which resumes nothing by itself.
+   */
+  const resumeQueueFromKeyboard = (): Promise<boolean> => {
+    if (!queueControlsShown())
+      return Promise.resolve(false)
+    if (canOpenInputRecovery()) {
+      openInputRecovery()
+      return Promise.resolve(false)
+    }
+    return setQueuePaused(false)
+  }
+  let disposed = false
+  onCleanup(() => {
+    disposed = true
+  })
+  const advanceQueue = (): Promise<void> => {
+    const agentIdAtKeypress = props.agentId
+    const items = () => props.inputQueue?.items ?? []
+    return advanceInputQueue({
+      // The head row reads the same dispatch and the same snapshot, so the
+      // chord cannot do what the row does not offer.
+      headAction: () => queueHeadAction(props.agent?.queueHeadDispatch, items()),
+      headId: () => items()[queueHeadIndex(items())]?.id,
+      inputState: inputId => items().find(item => item.id === inputId)?.state,
+      pauseReason: () => props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED,
+      stillCurrent: () => !disposed && props.agentId === agentIdAtKeypress,
+      act: actOnQueueHead,
+      resume: resumeQueueFromKeyboard,
+    })
   }
   // The queue-edit session owns the open edit and everything it holds. The
   // panel creates it BEFORE `useChatAttachments`, because `attachmentDraftKey`
@@ -859,7 +914,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           paused={queuePaused() && queueControlsShown()}
           busy={pauseInFlight()}
           reason={props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED}
-          onResume={() => setQueuePaused(false)}
+          onResume={() => void setQueuePaused(false)}
         />
         <TurnRetryOfferBanner
           offer={props.onRetryTurn ? props.turnRetryOffer : undefined}
@@ -996,7 +1051,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               triggerSend = fn
               props.triggerSendRef?.(fn)
               if (panelRef)
-                registerChatPanel(panelRef, { send: fn, hasPendingInput })
+                registerChatPanel(panelRef, { send: fn, hasPendingInput, advanceInputQueue: advanceQueue })
             },
             focusRef: (fn) => {
               editorFocusFn = fn
