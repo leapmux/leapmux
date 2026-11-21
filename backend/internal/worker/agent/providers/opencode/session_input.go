@@ -44,6 +44,7 @@ type openCodeSessionRuntime struct {
 	activityVersion uint64
 	settingsVersion uint64
 	admissions      map[string]*openCodeInputAdmission
+	replyInputs     map[string]agent.NativeInputReceipt
 	steers          providerkit.SteerLedger
 }
 
@@ -119,32 +120,37 @@ func (s *openCodeSessionRuntime) checkInputActivityLocked(steer bool) error {
 	return nil
 }
 
-func (s *openCodeSessionRuntime) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) (sendErr error) {
+func (s *openCodeSessionRuntime) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
+	_, err := s.submitInput(expected, content, attachments, steer, false)
+	return err
+}
+
+func (s *openCodeSessionRuntime) submitInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer, trackReply bool) (_ agent.NativeInputReceipt, sendErr error) {
 	s.operations.Lock()
 	defer s.operations.Unlock()
 	if err := s.ctx.Err(); err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	s.mu.Lock()
 	if err := providerkit.CheckInputSession(expected, s.id); err != nil {
 		s.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	if err := s.checkInputActivityLocked(steer); err != nil {
 		s.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	model, err := s.catalog.effectiveModel(s.selectedModel, s.selectedAgentID)
 	if err != nil {
 		s.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	nativeModel := s.catalog.findModel(openCodeModelKey(model))
 	sessionID := s.id
 	s.mu.Unlock()
 	request, err := buildOpenCodePrompt(content, attachments, nativeModel)
 	if err != nil {
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	request.ID = openCodeInputIDPrefix + id.Generate()
 	// Native queued input waits behind pending steer reminders and can miss the next model step.
@@ -154,13 +160,13 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 	// Activity can change while the attachment builder validates local data.
 	if err := s.checkInputActivityLocked(steer); err != nil {
 		s.mu.Unlock()
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	previous := s.turnStateLocked()
 	seq := s.claimTurnSequence()
 	if seq == 0 {
 		s.mu.Unlock()
-		return agent.ErrInputSessionChanged
+		return agent.NativeInputReceipt{}, agent.ErrInputSessionChanged
 	}
 	s.active = true
 	s.activityVersion++
@@ -170,6 +176,14 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 		s.admissions = make(map[string]*openCodeInputAdmission)
 	}
 	s.admissions[request.ID] = admission
+	var receipt agent.NativeInputReceipt
+	if trackReply {
+		receipt = agent.NativeInputReceipt{SessionID: sessionID, InputID: request.ID, TurnID: request.ID}
+		if s.replyInputs == nil {
+			s.replyInputs = make(map[string]agent.NativeInputReceipt)
+		}
+		s.replyInputs[request.ID] = receipt
+	}
 	var ticket providerkit.SteerTicket
 	if steer && s.parentID == "" {
 		ticket = s.steers.Add(request.ID)
@@ -180,6 +194,9 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 	defer func() {
 		s.mu.Lock()
 		delete(s.admissions, request.ID)
+		if sendErr != nil {
+			delete(s.replyInputs, request.ID)
+		}
 		admitted := admission.admitted
 		s.mu.Unlock()
 		if sendErr != nil && ticket != 0 && !admitted {
@@ -196,7 +213,7 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 	admitted := admission.admitted
 	s.mu.Unlock()
 	if err == nil || admitted {
-		return nil
+		return receipt, nil
 	}
 	if !openCodeDeliveryUncertain(err) {
 		s.mu.Lock()
@@ -207,7 +224,7 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 		state, seq := s.turnStateLocked(), s.claimTurnSequence()
 		s.mu.Unlock()
 		s.publishState(state, seq)
-		return err
+		return agent.NativeInputReceipt{}, err
 	}
 	confirmed, reconcileErr := s.reconcileInput(request.ID, version)
 	s.mu.Lock()
@@ -215,9 +232,9 @@ func (s *openCodeSessionRuntime) sendInput(expected *string, content string, att
 	confirmed = admission.admitted
 	s.mu.Unlock()
 	if confirmed {
-		return nil
+		return receipt, nil
 	}
-	return fmt.Errorf("%w: OpenCode did not confirm input delivery: %w", agent.ErrDeliveryUncertain, errors.Join(err, reconcileErr))
+	return agent.NativeInputReceipt{}, fmt.Errorf("%w: OpenCode did not confirm input delivery: %w", agent.ErrDeliveryUncertain, errors.Join(err, reconcileErr))
 }
 
 // reconcileInput separates native activity from an uncertain HTTP outcome.

@@ -55,6 +55,7 @@ type openCodeRun struct {
 
 var (
 	_ agent.Agent               = (*Agent)(nil)
+	_ agent.InputReceiptSender  = (*Agent)(nil)
 	_ agent.InputSteerer        = (*Agent)(nil)
 	_ agent.SessionInputSteerer = (*Agent)(nil)
 	_ agent.ChildSteerer        = (*Agent)(nil)
@@ -86,6 +87,13 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 		return err
 	}
 	return run.SendInput(content, attachments)
+}
+func (a *Agent) SendInputWithReceipt(content string, attachments []*leapmuxv1.Attachment) (agent.NativeInputReceipt, error) {
+	run, err := a.rootRun()
+	if err != nil {
+		return agent.NativeInputReceipt{}, err
+	}
+	return run.submitInput(nil, content, attachments, false, true)
 }
 func (a *Agent) SendInputForSession(id, content string, attachments []*leapmuxv1.Attachment) error {
 	run, err := a.rootRun()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -61,6 +62,9 @@ type Sink struct {
 	modeChanges        []ModeChange
 	settingsRefreshes  []SettingsRefresh
 	sessionInfos       []map[string]interface{}
+
+	nativeReplyTurns       []agent.NativeReplyTurn
+	nativeReplyRetirements map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome
 	// leapMuxNotifications holds every PersistLeapMuxNotification payload in
 	// arrival order. These are the worker's OWN notification envelopes, which no
 	// provider writes, so a test reads the meaning rather than provider bytes.
@@ -547,11 +551,42 @@ func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo)
 	return nil
 }
 
-func (s *Sink) SetNativeControlInputs(agent.NativeControlInputs) error     { return nil }
-func (s *Sink) PublishNativeReplyTurn(agent.NativeReplyTurn) error         { return nil }
-func (s *Sink) BindNativeInputTurn(agent.NativeInputReceipt, string) error { return nil }
-func (s *Sink) RetireNativeInputTurn(agent.NativeInputReceipt, leapmuxv1.AgentInputTurnOutcome) error {
+func (s *Sink) SetNativeControlInputs(agent.NativeControlInputs) error { return nil }
+func (s *Sink) PublishNativeReplyTurn(turn agent.NativeReplyTurn) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turn.Items = slices.Clone(turn.Items)
+	turn.Inputs = slices.Clone(turn.Inputs)
+	s.nativeReplyTurns = append(s.nativeReplyTurns, turn)
 	return nil
+}
+
+func (s *Sink) NativeReplyTurns() []agent.NativeReplyTurn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turns := slices.Clone(s.nativeReplyTurns)
+	for i := range turns {
+		turns[i].Items = slices.Clone(turns[i].Items)
+		turns[i].Inputs = slices.Clone(turns[i].Inputs)
+	}
+	return turns
+}
+
+func (s *Sink) BindNativeInputTurn(agent.NativeInputReceipt, string) error { return nil }
+func (s *Sink) RetireNativeInputTurn(receipt agent.NativeInputReceipt, outcome leapmuxv1.AgentInputTurnOutcome) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nativeReplyRetirements == nil {
+		s.nativeReplyRetirements = make(map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome)
+	}
+	s.nativeReplyRetirements[receipt] = outcome
+	return nil
+}
+
+func (s *Sink) NativeReplyRetirements() map[agent.NativeInputReceipt]leapmuxv1.AgentInputTurnOutcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.nativeReplyRetirements)
 }
 
 // SetTurnState records the provider's turn flag transitions in order, so a

@@ -74,6 +74,8 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 	wasActive := run.active || run.compacting
 	run.mu.Unlock()
 	var pending *openCodeStoredMessage
+	receipts := run.pendingInputReplies()
+	var replyProjection openCodeReplyProjection
 	pendingCount := 0
 	persistHistorical := func(message openCodeStoredMessage, count int) error {
 		if run.ended[message.ID] {
@@ -89,6 +91,9 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 		return nil
 	}
 	err = a.rpc.visitMessages(ctx, run.id, func(message openCodeStoredMessage) error {
+		if len(receipts) != 0 && message.Type != contracts.OpenCodeNativeMessageTypeIdle {
+			replyProjection.observe(message, receipts)
+		}
 		if pending != nil && message.Type != contracts.OpenCodeNativeMessageTypeIdle {
 			if err := persistHistorical(*pending, pendingCount); err != nil {
 				return err
@@ -107,6 +112,15 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 			run.publishNativeUsage(snapshot.Tokens, snapshot.Model)
 			return nil
 		case contracts.OpenCodeNativeMessageTypeIdle:
+			replyProjection.outcome = openCodeProjectedReplyOutcome(message)
+			if err := run.publishInputReply(replyProjection); err != nil {
+				return err
+			}
+			delete(receipts, replyProjection.receipt.InputID)
+			for _, receipt := range replyProjection.earlier {
+				delete(receipts, receipt.InputID)
+			}
+			replyProjection = openCodeReplyProjection{}
 			if pending != nil {
 				if err := persistHistorical(*pending, pendingCount); err != nil {
 					return err
@@ -208,6 +222,7 @@ func (a *Agent) restoreGlobalFormsLocked(ctx context.Context) error {
 	}
 	owner := a.controlOwner(root)
 	owner.nativeSessionID = "global"
+	owner.replyTurn = nil
 	for _, raw := range forms {
 		form, err := readOpenCodeForm(raw)
 		if err != nil {

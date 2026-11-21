@@ -36,19 +36,21 @@ func (m *openCodeStoredMessage) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+const openCodeMessagePageSize = 200
+
 // visitMessages validates and visits each page before fetching the next one.
 // Raw message bodies live for one page; IDs and cursors detect invalid pagination.
 func (r openCodeRPC) visitMessages(ctx context.Context, sessionID string, visit func(openCodeStoredMessage) error) error {
 	if visit == nil {
 		return errors.New("OpenCode message recovery requires a visitor")
 	}
-	return r.scanMessages(ctx, sessionID, url.Values{"order": {"asc"}}, func(message openCodeStoredMessage) (bool, error) {
+	return r.scanMessages(ctx, sessionID, url.Values{"order": {"asc"}}, openCodeMessagePageSize, func(message openCodeStoredMessage) (bool, error) {
 		return false, visit(message)
 	})
 }
 
 // scanMessages validates each page before visiting it. A true result stops the scan.
-func (r openCodeRPC) scanMessages(ctx context.Context, sessionID string, selector url.Values, visit func(openCodeStoredMessage) (bool, error)) error {
+func (r openCodeRPC) scanMessages(ctx context.Context, sessionID string, selector url.Values, limit int, visit func(openCodeStoredMessage) (bool, error)) error {
 	path, err := openCodeSessionRoute(sessionID, "/message")
 	if err != nil {
 		return err
@@ -56,7 +58,6 @@ func (r openCodeRPC) scanMessages(ctx context.Context, sessionID string, selecto
 	seenIDs := make(map[string]struct{})
 	seenCursors := make(map[string]struct{})
 	cursor := ""
-	limit := 200
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -194,7 +195,7 @@ func readOpenCodeAssistantSnapshot(message openCodeStoredMessage) (*openCodeAssi
 func (r openCodeRPC) modelVariantPreference(ctx context.Context, sessionID string, target openCodeModelRef) (string, bool, error) {
 	var variant string
 	var found bool
-	err := r.scanMessages(ctx, sessionID, url.Values{"type": {contracts.OpenCodeNativeMessageTypeModelSwitched}, "order": {"desc"}}, func(message openCodeStoredMessage) (bool, error) {
+	err := r.scanMessages(ctx, sessionID, url.Values{"type": {contracts.OpenCodeNativeMessageTypeModelSwitched}, "order": {"desc"}}, openCodeMessagePageSize, func(message openCodeStoredMessage) (bool, error) {
 		if message.Type != contracts.OpenCodeNativeMessageTypeModelSwitched {
 			return false, errors.New("the native model history contains another message type")
 		}

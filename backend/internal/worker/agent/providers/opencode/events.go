@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -239,6 +240,7 @@ func (s *openCodeSessionRuntime) observeInbox(event openCodeEvent) (bool, error)
 	if admission := s.admissions[data.InboxID]; admission != nil {
 		admission.admitted = true
 	}
+	receipt := s.replyInputs[data.InboxID]
 	s.mu.Unlock()
 	switch event.Type {
 	case "session.inbox.delivered":
@@ -247,6 +249,9 @@ func (s *openCodeSessionRuntime) observeInbox(event openCodeEvent) (bool, error)
 		s.steers.DropID(data.InboxID)
 	}
 	s.steers.Settle(s.sink)
+	if event.Type == "session.inbox.cancelled" && receipt.InputID != "" {
+		return true, s.retireInputReply(receipt, leapmuxv1.AgentInputTurnOutcome_AGENT_INPUT_TURN_OUTCOME_INTERRUPTED)
+	}
 	return true, nil
 }
 

@@ -45,9 +45,13 @@ func (s *openCodeTextStreams) segment(messageID string, ordinal int, kind agent.
 	if segment != nil {
 		return segment, nil
 	}
-	segment = &openCodeTextSegment{scopeID: fmt.Sprintf("opencode:%s:%s:%d", messageID, kind, ordinal), kind: kind, order: len(s.segments)}
+	segment = &openCodeTextSegment{scopeID: openCodeTextScopeID(messageID, kind, ordinal), kind: kind, order: len(s.segments)}
 	s.segments[key] = segment
 	return segment, nil
+}
+
+func openCodeTextScopeID(messageID string, kind agent.AssembledMessageKind, ordinal int) string {
+	return fmt.Sprintf("opencode:%s:%s:%d", messageID, kind, ordinal)
 }
 
 func (s *openCodeTextStreams) append(segment *openCodeTextSegment, text string) {
@@ -83,6 +87,10 @@ func (s *openCodeTextStreams) recover(message openCodeStoredMessage) error {
 	if err != nil || snapshot == nil {
 		return err
 	}
+	return s.recoverSnapshot(message.ID, snapshot)
+}
+
+func (s *openCodeTextStreams) recoverSnapshot(messageID string, snapshot *openCodeAssistantSnapshot) error {
 	ordinals := make(map[string]int)
 	for _, raw := range *snapshot.Content {
 		var header struct {
@@ -93,7 +101,7 @@ func (s *openCodeTextStreams) recover(message openCodeStoredMessage) error {
 		}
 		ordinal := ordinals[header.Type]
 		ordinals[header.Type]++
-		if err := s.recoverPart(message.ID, ordinal, raw, snapshot); err != nil {
+		if err := s.recoverPart(messageID, ordinal, raw, snapshot); err != nil {
 			return err
 		}
 	}

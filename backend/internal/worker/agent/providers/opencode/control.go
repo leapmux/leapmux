@@ -20,7 +20,10 @@ import (
 type openCodeControlOwner struct {
 	nativeSessionID string
 	sessionID       string
+	nativeTurnID    string
 	sink            agent.ProviderServices
+	// replyTurn checks the native projected owner of a control's assistant message.
+	replyTurn func(messageID string) string
 	// current reads captured session authority only. Callers do not hold the owner mutex when entering this registry.
 	current func() bool
 }
@@ -118,6 +121,9 @@ func (r *openCodeControls) publishPermission(owner openCodeControlOwner, raw jso
 	header := map[string]any{"tool_name": permission.Action}
 	if permission.Source != nil && permission.Source.MessageID != "" {
 		header["tool_use_id"] = openCodeToolSpanID(permission.Source.MessageID, permission.Source.ID)
+		if owner.replyTurn != nil {
+			owner.nativeTurnID = owner.replyTurn(permission.Source.MessageID)
+		}
 	}
 	return r.register(owner, permission.ID, "permission", contracts.OpenCodeNativeEventPermissionAsked, raw, header)
 }
@@ -152,6 +158,9 @@ func (r *openCodeControls) publishForm(owner openCodeControlOwner, raw json.RawM
 	header := map[string]any{"tool_name": toolName}
 	if metadata.Tool != nil && metadata.Tool.MessageID != "" {
 		header["tool_use_id"] = openCodeToolSpanID(metadata.Tool.MessageID, metadata.Tool.ID)
+		if owner.replyTurn != nil {
+			owner.nativeTurnID = owner.replyTurn(metadata.Tool.MessageID)
+		}
 	}
 	data, err := json.Marshal(map[string]json.RawMessage{"form": raw})
 	if err != nil {
@@ -214,7 +223,7 @@ func (r *openCodeControls) publish(record *openCodePendingControl) error {
 	}
 	record.publishing = true
 	r.mu.Unlock()
-	err := record.owner.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.owner.sessionID, RequestID: record.requestID, InstanceID: record.instanceID, Payload: record.payload})
+	err := record.owner.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.owner.sessionID, NativeTurnID: record.owner.nativeTurnID, RequestID: record.requestID, InstanceID: record.instanceID, Payload: record.payload})
 	r.mu.Lock()
 	record.publishing = false
 	current := r.pending[record.requestID] == record

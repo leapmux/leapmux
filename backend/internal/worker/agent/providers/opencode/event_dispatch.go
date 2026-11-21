@@ -58,7 +58,7 @@ func (a *Agent) acceptNativeEvent(ctx context.Context, raw json.RawMessage) erro
 }
 
 func (a *Agent) controlOwner(run *openCodeRun) openCodeControlOwner {
-	return openCodeControlOwner{nativeSessionID: run.id, sessionID: run.id, sink: run.sink, current: func() bool {
+	return openCodeControlOwner{nativeSessionID: run.id, sessionID: run.id, sink: run.sink, replyTurn: run.controlReplyTurn, current: func() bool {
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
 		return !a.StoppedLocked() && run.ctx.Err() == nil && a.runs[run.id] == run
@@ -81,6 +81,7 @@ func (a *Agent) dispatchGlobalControlLocked(event openCodeEvent) error {
 		}
 		owner := a.controlOwner(root)
 		owner.nativeSessionID = "global"
+		owner.replyTurn = nil
 		return a.controls.publishForm(owner, data.Form)
 	case "form.replied", "form.cancelled":
 		var data struct {
@@ -155,9 +156,9 @@ func (a *Agent) dispatchRunEventLocked(ctx context.Context, run *openCodeRun, ev
 		}
 		return nil
 	case contracts.OpenCodeNativeEventExecutionSucceeded:
-		return a.finishRunExecutionLocked(run, nativeMessageIDForEvent(event.ID), event.Raw, agent.MessageCompletionComplete)
+		return a.finishRunExecutionEventLocked(ctx, run, event, agent.MessageCompletionComplete)
 	case contracts.OpenCodeNativeEventExecutionFailed:
-		return a.finishRunExecutionLocked(run, nativeMessageIDForEvent(event.ID), event.Raw, agent.MessageCompletionError)
+		return a.finishRunExecutionEventLocked(ctx, run, event, agent.MessageCompletionError)
 	case contracts.OpenCodeNativeEventExecutionInterrupted:
 		var data struct {
 			Reason string `json:"reason"`
@@ -167,10 +168,14 @@ func (a *Agent) dispatchRunEventLocked(ctx context.Context, run *openCodeRun, ev
 		}
 		// Native execution interruptions default to shutdown, including permission rejection.
 		// Ignore that reason only while this adapter is ending its process.
-		if data.Reason == "shutdown" && (a.IntentionalStopRequested() || a.Context().Err() != nil) {
-			return nil
+		if data.Reason == "shutdown" {
+			if a.IntentionalStopRequested() || a.Context().Err() != nil {
+				return nil
+			}
+			// OpenCode retains the claim on shutdown and writes no ending message.
+			return a.finishRunExecutionLocked(run, nativeMessageIDForEvent(event.ID), event.Raw, agent.MessageCompletionInterrupted)
 		}
-		return a.finishRunExecutionLocked(run, nativeMessageIDForEvent(event.ID), event.Raw, agent.MessageCompletionInterrupted)
+		return a.finishRunExecutionEventLocked(ctx, run, event, agent.MessageCompletionInterrupted)
 	case "session.agent.selected", "session.model.selected", "session.moved", "session.updated":
 		info, err := a.rpc.session(ctx, run.id)
 		if err != nil {
@@ -235,6 +240,20 @@ func nativeMessageIDForEvent(eventID string) string {
 	}
 	return eventID
 }
+func (a *Agent) finishRunExecutionEventLocked(ctx context.Context, run *openCodeRun, event openCodeEvent, completion agent.MessageCompletion) error {
+	id := nativeMessageIDForEvent(event.ID)
+	if receipts := run.pendingInputReplies(); len(receipts) != 0 {
+		projection, err := run.readReplyProjection(ctx, id, receipts)
+		if err != nil {
+			return err
+		}
+		if err := run.publishInputReply(projection); err != nil {
+			return err
+		}
+	}
+	return a.finishRunExecutionLocked(run, id, event.Raw, completion)
+}
+
 func (a *Agent) finishRunExecutionLocked(run *openCodeRun, id string, raw []byte, completion agent.MessageCompletion) error {
 	if run.ended[id] {
 		if err := run.sink.OutputQueue().Flush(); err != nil {
@@ -291,7 +310,7 @@ func (a *Agent) retireRunLocked(run *openCodeRun, completion agent.MessageComple
 	}
 	run.cancel()
 	a.controls.retireOwner(run.id)
-	result = errors.Join(result, run.text.finish(completion), run.tools.finish(completion))
+	result = errors.Join(result, run.text.finish(completion), run.tools.finish(completion), run.retirePendingInputReplies())
 	run.finishPendingSteers()
 	if run.childLease != nil && run.childLease.Cleanup != nil {
 		run.childLease.Cleanup()
