@@ -192,6 +192,43 @@ test.describe('control CLI terminals', () => {
     })
   })
 
+  test('keeps startup command state in the original Yash shell', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    test.skip(process.platform === 'win32', 'The Yash startup handoff requires a Unix Worker.')
+    test.skip(spawnSync('yash', ['--version'], { stdio: 'ignore' }).status !== 0, 'Yash is unavailable on the test host.')
+
+    const cli = await mintCLITokenForAdmin(leapmuxServer)
+    const opened = await runCLI(cli, [
+      'terminal',
+      'open',
+      '--workspace',
+      authenticatedWorkspace.workspaceId,
+      '--worker',
+      leapmuxServer.workerId,
+      '--shell',
+      'yash',
+      '--command',
+      'leapmux_startup_value=$((6 * 7)); leapmux_startup_function() { printf "YASH_STATE_%s\\n" "$leapmux_startup_value"; }; leapmux_startup_function',
+    ]) as OpenedTerminal
+    const wait = [
+      'terminal',
+      'wait',
+      opened.id,
+      '--timeout',
+      '20s',
+    ]
+    expect(await runCLI(cli, [...wait, '--regex', '^YASH_STATE_42$'])).toMatchObject({ reached: true, line: 'YASH_STATE_42' })
+    await runCLI(cli, [
+      'terminal',
+      'run',
+      opened.id,
+      'leapmux_startup_value=$((leapmux_startup_value + 1)); leapmux_startup_function',
+    ])
+    expect(await runCLI(cli, [...wait, '--regex', '^YASH_STATE_43$'])).toMatchObject({ reached: true, line: 'YASH_STATE_43' })
+    await expect(tabById(page, opened.id)).toBeVisible()
+    await tabById(page, opened.id).click()
+    await waitForTerminalText(page, 'YASH_STATE_43')
+  })
+
   test('replaces the running shell in the same terminal tab', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     const cli = await mintCLITokenForAdmin(leapmuxServer)
     const opened = await runCLI(cli, [

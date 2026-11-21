@@ -84,7 +84,7 @@ if [[ $ZSH_SUBSHELL = 0 && $$ = "$LEAPMUX_INITIAL_COMMAND_PID" ]]; then
 	return restoreZshProfileDirectory + sourceProfile + "\nif [[ -o RCS ]]; then\n" + saveZshProfileDirectory + "\nelse\n" + handoff + "\nfi\n"
 }
 
-const posixInitialStartup = restoreStartupEnvironment + `
+const sourcePOSIXEnvironmentProfile = `
 if [ -n "${ENV:-}" ]; then
   # An unquoted here-document expands ENV as data. Quotes in a literal
   # filename cannot finish the shell statement that expands it.
@@ -102,6 +102,9 @@ $__leapmux_delimiter
   fi
   unset __leapmux_profile __leapmux_delimiter
 fi
+`
+
+const posixInitialHandoff = `
 if [ "$$" = "$LEAPMUX_INITIAL_COMMAND_PID" ] &&
    /bin/sh -c 'printf "%s\n" "$PPID"' > "$LEAPMUX_INITIAL_COMMAND_PARENT" &&
    IFS= read -r __leapmux_parent < "$LEAPMUX_INITIAL_COMMAND_PARENT" &&
@@ -110,6 +113,31 @@ if [ "$$" = "$LEAPMUX_INITIAL_COMMAND_PID" ] &&
 fi
 unset __leapmux_parent
 `
+
+const posixInitialStartup = restoreStartupEnvironment + sourcePOSIXEnvironmentProfile + posixInitialHandoff
+
+// Yash ignores --rcfile after a login profile enables POSIX mode.
+// Run both startup phases through --profile and keep the shell interactive.
+const yashInitialStartup = `
+if [ -n "${XDG_CONFIG_HOME:-}" ] && [ -r "$XDG_CONFIG_HOME/yash/profile" ]; then
+  . "$XDG_CONFIG_HOME/yash/profile"
+elif [ -n "${HOME:-}" ] && [ -r "$HOME/.config/yash/profile" ]; then
+  . "$HOME/.config/yash/profile"
+elif [ -n "${HOME:-}" ] && [ -r "$HOME/.yash_profile" ]; then
+  . "$HOME/.yash_profile"
+fi
+if test -o posixly-correct; then
+` + sourcePOSIXEnvironmentProfile + `
+elif [ -n "${XDG_CONFIG_HOME:-}" ] && [ -r "$XDG_CONFIG_HOME/yash/rc" ]; then
+  . "$XDG_CONFIG_HOME/yash/rc"
+elif [ -n "${HOME:-}" ] && [ -r "$HOME/.config/yash/rc" ]; then
+  . "$HOME/.config/yash/rc"
+elif [ -n "${HOME:-}" ] && [ -r "$HOME/.yashrc" ]; then
+  . "$HOME/.yashrc"
+else
+  . -L initialization/default || :
+fi
+` + posixInitialHandoff
 
 const fishInitialCommand = `
 if test "$fish_pid" = "$LEAPMUX_INITIAL_COMMAND_PID"; and not test -e "$LEAPMUX_INITIAL_COMMAND_READY"

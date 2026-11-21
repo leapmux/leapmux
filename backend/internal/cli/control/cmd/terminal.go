@@ -157,7 +157,7 @@ const terminalOpenLong = `Open a new terminal in a new tab. Without --workspace 
 tab opens beside the tab that runs leapmux.
 
 --command runs a command in the original interactive shell after its startup
-files run. Use Bash, zsh, fish, sh, Dash, Elvish, or Nushell on Unix.
+files run. Use Bash, zsh, fish, sh, Dash, Elvish, Nushell, or Yash on Unix.
 PowerShell also works. If Elvish has a startup file, its directory must
 allow the Worker to create a temporary link. The Worker reports a startup
 failure if the shell cannot acknowledge the handoff.
