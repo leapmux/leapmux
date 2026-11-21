@@ -388,8 +388,8 @@ type gitWriteResult struct {
 
 // runGitWrite makes one git write on the worker of --worker.
 func runGitWrite(inv *cli.Invocation, method string, req, resp proto.Message) (any, error) {
-	dir := strings.TrimSpace(stringFlag(inv, "dir"))
-	if dir == "" {
+	dir := stringFlag(inv, "dir")
+	if strings.TrimSpace(dir) == "" {
 		return nil, cli.Usagef("--dir is empty")
 	}
 	if err := callOnWorker(inv, method, req, resp); err != nil {

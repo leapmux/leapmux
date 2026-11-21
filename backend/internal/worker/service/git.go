@@ -224,7 +224,7 @@ func readBatchBlob(r io.Reader, limit int64) (gitBlob, error) {
 // registerGitHandlers registers handlers for git operations on the local filesystem.
 func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitInfoRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -287,7 +287,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitWorkingTreeStateRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -308,7 +308,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitFileStatusRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -403,7 +403,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ReadGitFileRequest, sender channel.ResponseWriter) {
-		absPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		absPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -480,7 +480,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListGitBranchesRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -509,7 +509,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListGitWorktreesRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -637,7 +637,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectBranchDeletionProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectBranchDeletionRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -659,7 +659,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectWorktreeRemovalProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectWorktreeRemovalRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -679,7 +679,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceInspectBranchChangeProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.InspectBranchChangeRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -699,7 +699,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceCheckoutBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.CheckoutBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -729,7 +729,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceCreateBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.CreateBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
@@ -758,7 +758,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.DeleteBranchRequest, sender channel.ResponseWriter) {
-		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		dirPath, err := validate.ResolveLiteralPath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
 			return
