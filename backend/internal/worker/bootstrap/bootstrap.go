@@ -235,6 +235,9 @@ func Wire(p Params) *Wiring {
 	}
 
 	svc := service.New(service.Config{
+		CheckNotificationWorkspace: func(ctx context.Context, workspaceID string) error {
+			return p.Client.CheckNotificationWorkspace(ctx, p.AuthToken, workspaceID)
+		},
 		ResolveTabPublication: func(ctx context.Context, request *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
 			return p.Client.ResolveTabPublication(ctx, p.AuthToken, request)
 		},

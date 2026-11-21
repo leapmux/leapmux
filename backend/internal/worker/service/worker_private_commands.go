@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -14,59 +13,15 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
-// The limits of a notification. The Worker refuses a longer text rather than
-// cutting it, so a script learns the limit instead of showing a text that it
-// did not write. The browser truncates what it draws and needs no copy of
-// either limit.
-const (
-	// notificationTitleMaxBytes caps the title, which a toast shows on one
-	// line and a desktop notification shows as its heading.
-	notificationTitleMaxBytes = 256
-	// notificationBodyMaxBytes caps the body, which a toast shows below the
-	// title: a few lines, such as the last lines of a build log.
-	notificationBodyMaxBytes = 4096
-)
-
-// registerWorkerPrivateCommandHandlers registers the three WorkerPrivateService
-// RPCs that the Control CLI uses to reach the user's open frontends: Notify,
-// RevealTab and SetTabStatus. SetQuakePanel is their older sibling, and it is
-// registered with the terminal handlers, because its CLI verb is
-// `terminal quake`.
-//
-// Each one publishes on the private-event bus to the CALLER's subscribers
-// only, the way every publisher of that bus does.
+// registerWorkerPrivateCommandHandlers registers the notification, reveal,
+// and status commands. Their events go to the caller's subscribers.
 func registerWorkerPrivateCommandHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, dispatchPlain, svc.handleNotify)
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, dispatchPlain, svc.handleListNotifications)
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, dispatchPlain, svc.handleClearNotification)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, dispatchPlain, svc.handleRevealTab)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure, dispatchPlain, svc.handleSetTabStatus)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceListTabStatusesProcedure, dispatchPlain, svc.handleListTabStatuses)
-}
-
-// handleNotify relays a notification to every frontend that the caller has
-// open. It stores nothing, as SetQuakePanel stores nothing.
-//
-// The source tab comes from the caller, never from the request: the local IPC
-// router stamps the tab of the control token that made the call, and a call
-// that a sibling Worker relays carries the tab that the sibling stamped the
-// same way (see channel.Caller.SourceTabID). A process cannot claim that
-// another tab sent its notification.
-func (svc *Service) handleNotify(_ context.Context, caller channel.Caller, r *leapmuxv1.NotifyRequest, sender channel.ResponseWriter) {
-	title := strings.TrimSpace(r.GetTitle())
-	body := strings.TrimSpace(r.GetBody())
-	if title == "" {
-		sendInvalidArgument(sender, "title is required")
-		return
-	}
-	if len(title) > notificationTitleMaxBytes {
-		sendInvalidArgument(sender, fmt.Sprintf("title is %d bytes long; the limit is %d bytes", len(title), notificationTitleMaxBytes))
-		return
-	}
-	if len(body) > notificationBodyMaxBytes {
-		sendInvalidArgument(sender, fmt.Sprintf("body is %d bytes long; the limit is %d bytes", len(body), notificationBodyMaxBytes))
-		return
-	}
-	svc.PrivateEvents.PublishUserNotification(caller.UserID, title, body, caller.SourceTabID)
-	sendProtoResponse(sender, &leapmuxv1.NotifyResponse{Title: title, Body: body})
 }
 
 // handleRevealTab asks every frontend that the caller has open to show one tab

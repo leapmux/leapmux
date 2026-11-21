@@ -834,3 +834,14 @@ func (c *Client) ResolveTabPublication(ctx context.Context, token string, reques
 	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	return c.connector.ResolveTabPublication(ctx, &leapmuxv1.ResolveTabPublicationRequest{Publication: request})
 }
+
+// CheckNotificationWorkspace verifies a destination under this Worker's owner.
+func (c *Client) CheckNotificationWorkspace(ctx context.Context, token, workspaceID string) error {
+	if token == "" {
+		return errors.New("the Worker has no Hub credential")
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	_, err := c.connector.CheckNotificationWorkspace(ctx, &leapmuxv1.CheckNotificationWorkspaceRequest{WorkspaceId: workspaceID})
+	return err
+}

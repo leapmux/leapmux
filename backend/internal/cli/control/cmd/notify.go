@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli"
+	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
 // notifyLong is the help of `notify`.
@@ -17,23 +18,20 @@ const notifyLong = `Show a notification in every LeapMux window that you have op
 the title and the body. While a window is hidden, it also shows a desktop
 notification, when "Desktop notifications" is on in Preferences.
 
-The notification names the tab that runs the command, so you see which agent
-or terminal sent it. Nothing stores a notification: a window that you open
-later does not show it.
+The Worker identifies the sending tab when the command runs inside one.
+Use --tab or --workspace to attach a destination the user can open.
 
-The command goes to the Worker of the tab that runs it. Outside a tab, pass
---worker. A window hears a Worker only while one of your tabs runs on that
-Worker. A notification sent from outside a tab names no tab.
+With --tab, the notification goes through the destination's Worker. For
+other notifications, the command uses the sending tab's Worker. Outside a
+tab, pass --worker. A window hears a Worker while one of your tabs runs there.
+
+The command returns the notification ID. Use "notification list" to read the
+Worker's recent notifications, and "notification clear" to remove one by ID.
+A window that connects later does not show an old toast.
 
 The Worker refuses a title or a body that is too long, and states the limit.`
 
-// newNotifyCommand builds `notify`, which asks every open frontend of the
-// user to show a notification.
-//
-// It addresses a Worker rather than a tab, as `terminal quake` does: the
-// Worker relays the request on its private-event stream, which reaches every
-// frontend that has a tab on it, and it stamps the calling tab from the
-// control token, so the CLI sends no tab at all.
+// newNotifyCommand builds the command for posting a notification.
 func newNotifyCommand() *cobra.Command {
 	return cli.NewLeaf(cli.Leaf{
 		Use:     "notify <title>",
@@ -47,20 +45,53 @@ func newNotifyCommand() *cobra.Command {
 			{Command: `leapmux control notify "Tests passed"`},
 			{Comment: "Say what failed, with the last lines of the log.", Command: `tail -n 5 build.log | leapmux control notify "Build failed" --body -`},
 			{Comment: "Notify through another Worker from outside a tab.", Command: `leapmux control notify "Deploy finished" --body "v1.4.2 is live" --worker name:build-box`},
+			{Comment: "Attach the deployment terminal.", Command: `leapmux control notify "Deploy finished" --tab title:Deployment`},
 		},
 		Flags: func(fs *pflag.FlagSet) {
 			fs.String("body", "", `more text below the title ("-" reads stdin)`)
+			fs.String("tab", "", "open this tab from the notification")
+			fs.String("workspace", "", "open this workspace from the notification")
 			addWorkerFlag(fs)
 		},
 		Run: runNotify,
 	})
 }
 
+func newNotificationCommand() *cobra.Command {
+	return cli.Group("notification", "List and clear recent Worker notifications",
+		cli.NewLeaf(cli.Leaf{
+			Use:   "list",
+			Short: "List the recent notifications on a Worker",
+			Examples: []cli.Example{
+				{Command: "leapmux control notification list --worker name:build-box"},
+			},
+			Flags: addWorkerFlag,
+			Run:   runNotificationList,
+		}),
+		cli.NewLeaf(cli.Leaf{
+			Use:     "clear <notification-id>",
+			Short:   "Remove one notification from a Worker and dismiss its toast",
+			Mutates: true,
+			Args: map[string]string{
+				"notification-id": "The ID returned by notify or notification list.",
+			},
+			Examples: []cli.Example{
+				{Command: "leapmux control notification clear 7fe1879a7fe1879a7fe1879a7fe1879a7fe1879a7fe1879a --worker name:build-box"},
+			},
+			Flags: addWorkerFlag,
+			Run:   runNotificationClear,
+		}),
+	)
+}
+
 // notifyResult is the result of `notify`.
 type notifyResult struct {
-	WorkerID string `json:"worker_id"`
-	Title    string `json:"title"`
-	Body     string `json:"body,omitempty"`
+	ID          string `json:"id"`
+	WorkerID    string `json:"worker_id"`
+	Title       string `json:"title"`
+	Body        string `json:"body,omitempty"`
+	TabID       string `json:"tab_id,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
 // runNotify sends the notification to the selected Worker and prints the
@@ -69,6 +100,9 @@ type notifyResult struct {
 // the trim, which drops the line ending that a pipe leaves on --body -, and
 // the length limits. The CLI keeps no copy of them.
 func runNotify(inv *cli.Invocation) (any, error) {
+	if inv.Changed("tab") && inv.Changed("workspace") {
+		return nil, cli.Usagef("pass just one of --tab and --workspace")
+	}
 	title := inv.Arg("title")
 	if strings.TrimSpace(title) == "" {
 		return nil, cli.Usagef("the title is empty")
@@ -89,17 +123,107 @@ func runNotify(inv *cli.Invocation) (any, error) {
 		return nil, err
 	}
 	defer s.Close()
-	workerID, err := s.workerScope()
+	workerID, destination, err := notificationDestination(s)
 	if err != nil {
 		return nil, err
 	}
 	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
 		return nil, err
 	}
-	req := &leapmuxv1.NotifyRequest{Title: title, Body: body}
+	req := &leapmuxv1.NotifyRequest{Title: title, Body: body, Destination: destination}
 	var resp leapmuxv1.NotifyResponse
 	if err := callInnerRPC(s.ctx, s.c, workerID, leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, req, &resp); err != nil {
 		return nil, err
 	}
-	return notifyResult{WorkerID: workerID, Title: resp.GetTitle(), Body: resp.GetBody()}, nil
+	if resp.GetId() == "" {
+		return nil, cli.Newf(cli.CodeInternal, "the Worker returned no notification ID")
+	}
+	target := resp.GetDestination()
+	return notifyResult{
+		ID: resp.GetId(), WorkerID: workerID, Title: resp.GetTitle(), Body: resp.GetBody(),
+		TabID: target.GetTab().GetTabId(), WorkspaceID: target.GetWorkspaceId(),
+	}, nil
+}
+
+func notificationDestination(s *session) (string, *leapmuxv1.NotificationDestination, error) {
+	if s.inv.Changed("tab") {
+		tab, err := s.resolveTab(resolve.KindTab, stringFlag(s.inv, "tab"), resolve.Need{WorkerID: true, Want: resolve.Wants{TabType: true}})
+		if err != nil {
+			return "", nil, err
+		}
+		if s.inv.Changed(workerFlag) {
+			workerID, err := s.workerScope()
+			if err != nil {
+				return "", nil, err
+			}
+			if workerID != tab.WorkerID {
+				return "", nil, cli.Usagef("the selected Worker does not host the destination tab")
+			}
+		}
+		destination := &leapmuxv1.NotificationDestination{
+			Target: &leapmuxv1.NotificationDestination_Tab{Tab: &leapmuxv1.TabIdent{TabId: tab.ID, TabType: tab.Type}},
+		}
+		return tab.WorkerID, destination, nil
+	}
+	workerID, err := s.workerScope()
+	if err != nil {
+		return "", nil, err
+	}
+	if !s.inv.Changed("workspace") {
+		return workerID, nil, nil
+	}
+	workspace, err := s.resolveOne(resolve.KindWorkspace, stringFlag(s.inv, "workspace"))
+	if err != nil {
+		return "", nil, err
+	}
+	return workerID, &leapmuxv1.NotificationDestination{Target: &leapmuxv1.NotificationDestination_WorkspaceId{WorkspaceId: workspace.ID}}, nil
+}
+
+type recentNotificationRow struct {
+	ID          string `json:"id" table:"ID"`
+	Title       string `json:"title" table:"TITLE"`
+	Body        string `json:"body,omitempty"`
+	SourceTabID string `json:"source_tab_id,omitempty"`
+	TabID       string `json:"tab_id,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
+}
+
+func runNotificationList(inv *cli.Invocation) (any, error) {
+	var response leapmuxv1.ListNotificationsResponse
+	workerID, err := callOnWorkerWithID(inv, leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, &leapmuxv1.ListNotificationsRequest{}, &response)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]recentNotificationRow, 0, len(response.GetNotifications()))
+	for _, notice := range response.GetNotifications() {
+		if notice.GetId() == "" || notice.GetTitle() == "" {
+			return nil, cli.Newf(cli.CodeInternal, "the Worker returned an incomplete notification record")
+		}
+		destination := notice.GetDestination()
+		rows = append(rows, recentNotificationRow{
+			ID: notice.GetId(), Title: notice.GetTitle(), Body: notice.GetBody(), SourceTabID: notice.GetSourceTabId(),
+			TabID: destination.GetTab().GetTabId(), WorkspaceID: destination.GetWorkspaceId(),
+		})
+	}
+	return struct {
+		WorkerID      string                  `json:"worker_id"`
+		Notifications []recentNotificationRow `json:"notifications"`
+	}{workerID, rows}, nil
+}
+
+func runNotificationClear(inv *cli.Invocation) (any, error) {
+	noticeID := strings.TrimSpace(inv.Arg("notification-id"))
+	if noticeID == "" {
+		return nil, cli.Usagef("the notification ID is empty")
+	}
+	var response leapmuxv1.ClearNotificationResponse
+	workerID, err := callOnWorkerWithID(inv, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, &leapmuxv1.ClearNotificationRequest{Id: noticeID}, &response)
+	if err != nil {
+		return nil, err
+	}
+	return struct {
+		ID       string `json:"id"`
+		WorkerID string `json:"worker_id"`
+		Cleared  bool   `json:"cleared"`
+	}{noticeID, workerID, response.GetCleared()}, nil
 }

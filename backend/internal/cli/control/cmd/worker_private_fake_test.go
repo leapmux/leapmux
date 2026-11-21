@@ -47,6 +47,10 @@ func (w *privateCommandWorker) DispatchWith(_ context.Context, caller channel.Ca
 	switch req.GetMethod() {
 	case leapmuxv1connect.WorkerPrivateServiceNotifyProcedure:
 		in, reply = &leapmuxv1.NotifyRequest{}, &leapmuxv1.NotifyResponse{}
+	case leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure:
+		in, reply = &leapmuxv1.ListNotificationsRequest{}, &leapmuxv1.ListNotificationsResponse{}
+	case leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure:
+		in, reply = &leapmuxv1.ClearNotificationRequest{}, &leapmuxv1.ClearNotificationResponse{}
 	case leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure:
 		in, reply = &leapmuxv1.RevealTabRequest{}, &leapmuxv1.RevealTabResponse{}
 	case leapmuxv1connect.WorkerPrivateServiceSetTabStatusProcedure:
@@ -75,7 +79,7 @@ func (w *privateCommandWorker) DispatchWith(_ context.Context, caller channel.Ca
 	} else {
 		switch got := in.(type) {
 		case *leapmuxv1.NotifyRequest:
-			reply = &leapmuxv1.NotifyResponse{Title: got.GetTitle(), Body: got.GetBody()}
+			reply = &leapmuxv1.NotifyResponse{Id: "test-notification", Title: got.GetTitle(), Body: got.GetBody(), Destination: got.GetDestination()}
 		case *leapmuxv1.SetTabStatusRequest:
 			key := "default"
 			if got.Key != nil {

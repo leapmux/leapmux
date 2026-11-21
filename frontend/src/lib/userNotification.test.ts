@@ -23,7 +23,12 @@ describe('showUserNotification', () => {
 
   it('shows a toast and no desktop notification while the page is visible', () => {
     setVisibility('visible')
-    const notification = { title: 'Tests passed', body: 'All 42', sourceTabTitle: 'Builder' }
+    const notification = {
+      id: 'notice',
+      title: 'Tests passed',
+      body: 'All 42',
+      sourceTabTitle: 'Builder',
+    }
     showUserNotification(notification)
 
     expect(showNotificationToast).toHaveBeenCalledExactlyOnceWith(notification)
@@ -34,7 +39,12 @@ describe('showUserNotification', () => {
   // what reaches them while they look elsewhere.
   it('shows a toast and a desktop notification while the page is hidden', () => {
     setVisibility('hidden')
-    showUserNotification({ title: 'Build failed', body: 'error: 3 tests failed', sourceTabTitle: 'Builder' })
+    showUserNotification({
+      id: 'notice',
+      title: 'Build failed',
+      body: 'error: 3 tests failed',
+      sourceTabTitle: 'Builder',
+    })
 
     expect(showNotificationToast).toHaveBeenCalledOnce()
     expect(showDesktopNotification).toHaveBeenCalledOnce()
@@ -71,7 +81,12 @@ describe('showUserNotification', () => {
     ],
   ])('leaves the empty parts out of the desktop notification with %s', (_name, body, sourceTabTitle, desktopBody) => {
     setVisibility('hidden')
-    showUserNotification({ title: 'Done', body, sourceTabTitle })
+    showUserNotification({
+      id: 'notice',
+      title: 'Done',
+      body,
+      sourceTabTitle,
+    })
 
     expect(showDesktopNotification.mock.calls[0]![0].body).toBe(desktopBody)
   })
@@ -81,54 +96,53 @@ describe('showUserNotification', () => {
   it('shows one toast when the desktop notification is unavailable', () => {
     setVisibility('hidden')
     showDesktopNotification.mockImplementationOnce((_opts: unknown, onUnavailable: () => void) => onUnavailable())
-    showUserNotification({ title: 'Done', body: '', sourceTabTitle: undefined })
+    showUserNotification({
+      id: 'notice',
+      title: 'Done',
+      body: '',
+      sourceTabTitle: undefined,
+    })
 
     expect(showDesktopNotification).toHaveBeenCalledOnce()
     expect(showNotificationToast).toHaveBeenCalledOnce()
   })
 
-  // Every open window shows the notification from its own stream. The tag is
-  // what makes the browser show one desktop notification for all of them.
-  it('tags the desktop notification by its text', () => {
+  it('uses one tag for the same notification even while windows resolve its source differently', () => {
     setVisibility('hidden')
-    showUserNotification({ title: 'Done', body: 'x', sourceTabTitle: undefined })
-    showUserNotification({ title: 'Done', body: 'x', sourceTabTitle: undefined })
-    showUserNotification({ title: 'Done', body: 'y', sourceTabTitle: undefined })
+    showUserNotification({
+      id: 'notice',
+      title: 'Done',
+      body: 'All 42',
+      sourceTabTitle: 'Builder',
+    })
+    showUserNotification({
+      id: 'notice',
+      title: 'Done',
+      body: 'All 42',
+      sourceTabTitle: undefined,
+    })
 
-    const tags = showDesktopNotification.mock.calls.map(call => call[0].tag)
-    expect(tags[0]).toBe(tags[1])
-    expect(tags[2]).not.toBe(tags[0])
+    const [first, second] = showDesktopNotification.mock.calls.map(call => call[0].tag)
+    expect(first).toBe('leapmux-notify:notice')
+    expect(second).toBe(first)
   })
 
-  // The same words from two tabs are two notifications: the source is part of
-  // the text, so it is part of the tag.
-  it('tags notifications from two tabs apart', () => {
+  it('keeps distinct posts with the same text separate', () => {
     setVisibility('hidden')
-    showUserNotification({ title: 'Done', body: 'x', sourceTabTitle: 'Builder' })
-    showUserNotification({ title: 'Done', body: 'x', sourceTabTitle: 'Linter' })
+    showUserNotification({
+      id: 'first',
+      title: 'Done',
+      body: '',
+      sourceTabTitle: undefined,
+    })
+    showUserNotification({
+      id: 'second',
+      title: 'Done',
+      body: '',
+      sourceTabTitle: undefined,
+    })
 
     const [first, second] = showDesktopNotification.mock.calls.map(call => call[0].tag)
     expect(first).not.toBe(second)
-  })
-
-  // A title can hold a line break, so a tag that joins the title and the body
-  // with one would give two different notifications one tag, and the browser
-  // would replace the first with the second.
-  it('tags a title and a body apart from the same text in the title alone', () => {
-    setVisibility('hidden')
-    showUserNotification({ title: 'Done', body: 'x\ny', sourceTabTitle: undefined })
-    showUserNotification({ title: 'Done\nx', body: 'y', sourceTabTitle: undefined })
-
-    const [first, second] = showDesktopNotification.mock.calls.map(call => call[0].tag)
-    expect(first).not.toBe(second)
-  })
-
-  it('gives one notification the same tag in every window', () => {
-    setVisibility('hidden')
-    showUserNotification({ title: 'Done', body: 'x', sourceTabTitle: 'Builder' })
-    showUserNotification({ title: 'Done', body: 'x', sourceTabTitle: 'Builder' })
-
-    const [first, second] = showDesktopNotification.mock.calls.map(call => call[0].tag)
-    expect(first).toBe(second)
   })
 })

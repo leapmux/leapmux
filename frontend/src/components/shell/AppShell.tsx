@@ -442,6 +442,7 @@ export const AppShell: Component = () => {
     // A hoisted function declaration: the tab operations it calls exist only
     // further down, and a reveal arrives from an event, after they do.
     revealTab,
+    revealWorkspace: handleSelectWorkspace,
   })
 
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).

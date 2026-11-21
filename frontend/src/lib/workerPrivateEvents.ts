@@ -9,7 +9,7 @@
 // late-joining client receives the full state before any live events.
 
 import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
-import type { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import type { NotificationDestination, QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import type { TabPayloadView } from '~/lib/tabPayload'
 import type { TabStatusView } from '~/lib/tabStatus'
 import { channelManager } from '~/api/workerRpc'
@@ -20,6 +20,14 @@ import { tabPayloadView } from '~/lib/tabPayload'
 import { tabStatusView } from '~/lib/tabStatus'
 
 const log = createLogger('workerPrivateEvents')
+
+export interface WorkerNotification {
+  id: string
+  title: string
+  body: string
+  sourceTabId: string
+  destination: NotificationDestination | undefined
+}
 
 // One stream per call, so a single fixed backoff key suffices.
 const RECONNECT_KEY = 'reconnect'
@@ -63,10 +71,10 @@ interface OpenStreamOpts {
    * `sourceTabId` is the tab that the Worker stamped from the caller's control
    * token, or '' for a caller in no tab.
    *
-   * A COMMAND, like `onQuakePanelCommand`: the worker stores none, so a
-   * reconnect never replays an old one.
+   * A reconnect never replays the toast.
    */
-  onUserNotification?: (evt: { title: string, body: string, sourceTabId: string }) => void
+  onUserNotification?: (evt: WorkerNotification) => void
+  onUserNotificationCleared?: (id: string) => void
   /**
    * The Control CLI asked to show one tab that this worker hosts. A COMMAND,
    * like `onQuakePanelCommand`.
@@ -179,7 +187,17 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
                 }
                 case 'userNotification': {
                   const r = evt.event.value
-                  opts.onUserNotification?.({ title: r.title, body: r.body, sourceTabId: r.sourceTabId })
+                  opts.onUserNotification?.({
+                    id: r.id,
+                    title: r.title,
+                    body: r.body,
+                    sourceTabId: r.sourceTabId,
+                    destination: r.destination,
+                  })
+                  break
+                }
+                case 'userNotificationCleared': {
+                  opts.onUserNotificationCleared?.(evt.event.value.id)
                   break
                 }
                 case 'tabRevealCommand': {

@@ -170,25 +170,6 @@ func (b *PrivateEventsBus) PublishQuakePanelCommand(owner userid.UserID, working
 	})
 }
 
-// PublishUserNotification broadcasts a UserNotification to owner's
-// subscribers. sourceTabID is the tab whose process asked for it, or "" for a
-// caller in no tab.
-//
-// Like a QuakePanelCommand it is a command, not a fact: nothing stores it, and
-// the bootstrap replay in SnapshotAndSubscribe never sends it, so a frontend
-// that opens later does not show an old notification.
-func (b *PrivateEventsBus) PublishUserNotification(owner userid.UserID, title, body, sourceTabID string) {
-	b.publish(owner, &leapmuxv1.WorkerPrivateEvent{
-		Event: &leapmuxv1.WorkerPrivateEvent_UserNotification{
-			UserNotification: &leapmuxv1.UserNotification{
-				Title:       title,
-				Body:        body,
-				SourceTabId: sourceTabID,
-			},
-		},
-	})
-}
-
 // PublishTabRevealCommand broadcasts a TabRevealCommand for the tab tabID of
 // kind tabType to owner's subscribers. Like a QuakePanelCommand it is
 // live-only: which tab a client shows is client-local state, and a replay on
@@ -238,12 +219,9 @@ func tabStatusChangedEvent(tabType leapmuxv1.TabType, tabID string, status *leap
 // snapshot and the live stream, which is harmless because the client's applies
 // are keyed by tab id and idempotent.
 //
-// QuakePanelCommand, UserNotification and TabRevealCommand are deliberately
-// NOT part of any snapshot. Each is a transient command rather than state the
-// worker holds, so replaying it would reopen a panel, show an old notification
-// or move the user to another tab on every reconnect -- overwriting
-// client-local state the user set. The bootstrap replay is for facts, and these
-// three cases are not facts. TabStatusChanged is a fact, which is why the
+// Quake commands, notification events and tab reveals belong to the live
+// stream. Replaying them would change the client view on every reconnect.
+// TabStatusChanged describes current state, which is why the
 // production snapshotFn replays each status that is set.
 //
 // snapshotFn receives the owner and returns the events that should be

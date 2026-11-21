@@ -163,6 +163,77 @@ func TestNotify_ShowsTheNotificationWithTheCallersTab(t *testing.T) {
 	answer := decodeResponse(t, w, &leapmuxv1.NotifyResponse{})
 	assert.Equal(t, "Build finished", answer.GetTitle())
 	assert.Equal(t, "All 42 tests passed", answer.GetBody())
+	assert.Len(t, answer.GetId(), 48)
+	assert.Equal(t, answer.GetId(), got.GetId())
+}
+
+func TestNotify_TargetedRecordsFollowTheTabReadScope(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t)
+	seedAgent(t, svc, "agent-1")
+	seedTerminal(t, svc, "term-1")
+	log := watchPrivateEvents(t, svc, dispatcher)
+	notify := func(id string, kind leapmuxv1.TabType) *testResponseWriter {
+		w := newTestWriter()
+		dispatchFromTab(dispatcher, "term-1", leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, &leapmuxv1.NotifyRequest{
+			Title: "Build complete",
+			Destination: &leapmuxv1.NotificationDestination{Target: &leapmuxv1.NotificationDestination_Tab{
+				Tab: &leapmuxv1.TabIdent{TabId: id, TabType: kind},
+			}},
+		}, w)
+		return w
+	}
+	requireRefused(t, notify("agent-1", leapmuxv1.TabType_TAB_TYPE_TERMINAL), codes.NotFound)
+	agentNotice := decodeResponse(t, notify("agent-1", leapmuxv1.TabType_TAB_TYPE_AGENT), &leapmuxv1.NotifyResponse{})
+	terminalNotice := decodeResponse(t, notify("term-1", leapmuxv1.TabType_TAB_TYPE_TERMINAL), &leapmuxv1.NotifyResponse{})
+	require.NotEqual(t, agentNotice.GetId(), terminalNotice.GetId())
+
+	list := func() []*leapmuxv1.UserNotification {
+		w := newTestWriter()
+		dispatchScoped(dispatcher, mustScopes("workspace:read agent:read"),
+			leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, &leapmuxv1.ListNotificationsRequest{}, w)
+		return decodeResponse(t, w, &leapmuxv1.ListNotificationsResponse{}).GetNotifications()
+	}
+	visible := list()
+	require.Len(t, visible, 1)
+	assert.Equal(t, agentNotice.GetId(), visible[0].GetId())
+	assert.Equal(t, "term-1", visible[0].GetSourceTabId())
+	assert.Equal(t, "agent-1", visible[0].GetDestination().GetTab().GetTabId())
+
+	request := &leapmuxv1.ClearNotificationRequest{Id: agentNotice.GetId()}
+	denied := newTestWriter()
+	dispatchAs(dispatcher, userid.MustNew("user-2"), leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, request, denied)
+	requireRefused(t, denied, codes.PermissionDenied)
+	for _, want := range []bool{true, false} {
+		w := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, request, w)
+		assert.Equal(t, want, decodeResponse(t, w, &leapmuxv1.ClearNotificationResponse{}).GetCleared())
+	}
+	assert.Empty(t, list())
+	events := log.waitForSentinel(t, svc)
+	require.Len(t, events, 3)
+	clear := events[2].GetUserNotificationCleared()
+	require.NotNil(t, clear)
+	assert.Equal(t, agentNotice.GetId(), clear.GetId())
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, clear.GetDestination().GetTab().GetTabType())
+	assert.False(t, privateEventVisible(channel.NewCaller(userid.MustNew("user-1"), mustScopes("workspace:read terminal:read")), events[2]))
+}
+
+func TestNotify_KeepsARecentListWithoutReplayingToasts(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t)
+	owner := userid.MustNew("user-1")
+	for i := range recentNotificationLimit + 1 {
+		svc.publishNotification(owner, &leapmuxv1.UserNotification{Id: fmt.Sprint(i), Title: "Recent activity"})
+	}
+	w := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, &leapmuxv1.ListNotificationsRequest{}, w)
+	notices := decodeResponse(t, w, &leapmuxv1.ListNotificationsResponse{}).GetNotifications()
+	require.Len(t, notices, recentNotificationLimit)
+	assert.Equal(t, fmt.Sprint(recentNotificationLimit), notices[0].GetId())
+	assert.Equal(t, "1", notices[len(notices)-1].GetId())
+	assert.False(t, svc.clearNotification(owner, "0"))
+	assert.Empty(t, watchPrivateEvents(t, svc, dispatcher).waitForSentinel(t, svc))
 }
 
 // decodeResponse decodes the one response that the handler sent into into.

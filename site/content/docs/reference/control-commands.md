@@ -2417,13 +2417,16 @@ Show a notification in every LeapMux window that you have open: a toast with
 the title and the body. While a window is hidden, it also shows a desktop
 notification, when "Desktop notifications" is on in Preferences.
 
-The notification names the tab that runs the command, so you see which agent
-or terminal sent it. Nothing stores a notification: a window that you open
-later does not show it.
+The Worker identifies the sending tab when the command runs inside one.
+Use --tab or --workspace to attach a destination the user can open.
 
-The command goes to the Worker of the tab that runs it. Outside a tab, pass
---worker. A window hears a Worker only while one of your tabs runs on that
-Worker. A notification sent from outside a tab names no tab.
+With --tab, the notification goes through the destination's Worker. For
+other notifications, the command uses the sending tab's Worker. Outside a
+tab, pass --worker. A window hears a Worker while one of your tabs runs there.
+
+The command returns the notification ID. Use "notification list" to read the
+Worker's recent notifications, and "notification clear" to remove one by ID.
+A window that connects later does not show an old toast.
 
 The Worker refuses a title or a body that is too long, and states the limit.
 
@@ -2440,6 +2443,8 @@ leapmux control notify <title> [flags]
 | Flag | Description |
 |---|---|
 | `--body string` | more text below the title ("-" reads stdin) |
+| `--tab string` | open this tab from the notification |
+| `--workspace string` | open this workspace from the notification |
 | `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
 
 ```sh
@@ -2450,6 +2455,51 @@ tail -n 5 build.log | leapmux control notify "Build failed" --body -
 
 # Notify through another Worker from outside a tab.
 leapmux control notify "Deploy finished" --body "v1.4.2 is live" --worker name:build-box
+
+# Attach the deployment terminal.
+leapmux control notify "Deploy finished" --tab title:Deployment
+```
+
+## `leapmux control notification`
+
+List and clear recent Worker notifications.
+
+### `leapmux control notification list`
+
+List the recent notifications on a Worker.
+
+```text
+leapmux control notification list [flags]
+```
+
+| Flag | Description |
+|---|---|
+| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+
+```sh
+leapmux control notification list --worker name:build-box
+```
+
+### `leapmux control notification clear`
+
+Remove one notification from a Worker and dismiss its toast.
+
+This command changes state.
+
+```text
+leapmux control notification clear <notification-id> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<notification-id>` | The ID returned by notify or notification list. |
+
+| Flag | Description |
+|---|---|
+| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+
+```sh
+leapmux control notification clear 7fe1879a7fe1879a7fe1879a7fe1879a7fe1879a7fe1879a --worker name:build-box
 ```
 
 ### `leapmux control rpc`

@@ -160,14 +160,15 @@ type Service struct {
 	// PrivateEvents is the worker-local pub/sub for the E2EE-only events of
 	// WorkerPrivateEvent (see PrivateEventsBus). Always non-nil after New.
 	PrivateEvents *PrivateEventsBus
+	notifications recentNotifications
 
 	// TabPayloads persists (user_id, tab_id) -> TabPayload for every
 	// payload-backed tab kind (FILE, IMAGE). Always non-nil after New.
 	// The hub never sees these rows; clients fetch payloads over E2EE.
 	TabPayloads *TabPayloadStore
 
-	// TabStatuses holds, in memory, the status that a process reported for
-	// each hosted tab through SetTabStatus. Always non-nil after New.
+	// TabStatuses holds the status entries for each hosted tab in memory.
+	// Always non-nil after New.
 	TabStatuses *TabStatusStore
 
 	// Cleanup tracks in-flight close handlers so Shutdown() can wait for
@@ -580,6 +581,8 @@ type Config struct {
 	// PublishTab and CancelTabPublication use this Worker's captured Hub credential.
 	PublishTab           func(context.Context, *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error)
 	CancelTabPublication func(context.Context, *leapmuxv1.TabPublication) error
+	// CheckNotificationWorkspace verifies a workspace under the Worker's owner.
+	CheckNotificationWorkspace func(context.Context, string) error
 
 	// Enforced: New panics if Channels, Send, or Agents is missing.
 	Channels *channel.Manager // E2EE channel manager (for session lookups)

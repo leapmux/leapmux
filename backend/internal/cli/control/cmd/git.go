@@ -254,19 +254,24 @@ func runGitStatus(inv *cli.Invocation) (any, error) {
 // callOnWorker resolves the worker of a command that runs on one worker, and makes the
 // call.
 func callOnWorker(inv *cli.Invocation, method string, req, resp proto.Message) error {
+	_, err := callOnWorkerWithID(inv, method, req, resp)
+	return err
+}
+
+func callOnWorkerWithID(inv *cli.Invocation, method string, req, resp proto.Message) (string, error) {
 	s, err := openSession(inv)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer s.Close()
 	workerID, err := s.workerScope()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := maybePreflightWorker(s.ctx, s.c, workerID); err != nil {
-		return err
+		return "", err
 	}
-	return callInnerRPC(s.ctx, s.c, workerID, method, req, resp)
+	return workerID, callInnerRPC(s.ctx, s.c, workerID, method, req, resp)
 }
 
 // gitBranchList is the result of `git branches`.

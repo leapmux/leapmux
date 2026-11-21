@@ -1,11 +1,14 @@
 /// <reference types="vitest/globals" />
 import type { TabPayloadView } from '~/lib/tabPayload'
 import type { TabStatusView } from '~/lib/tabStatus'
+import type { UserNotificationContent } from '~/lib/userNotification'
+import type { WorkerNotification } from '~/lib/workerPrivateEvents'
 import type { Tab } from '~/stores/tab.types'
+import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
-import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { NotificationDestinationSchema, QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { setStorageAccountForTests } from '~/lib/browserStorage'
 import { getCRDTBridge, setCRDTBridge, setTabWorkerId, tombstoneTab } from '~/lib/crdt'
 import { useMetadataSweep } from '~/stores/tabMetadata.store'
@@ -21,7 +24,7 @@ interface OpenedStream {
   onTabPayloadRegistered: (evt: { tabId: string, payload: TabPayloadView }) => void
   onTabPayloadRevoked: (evt: { tabId: string }) => void
   onQuakePanelCommand: (evt: { workingDir: string, action: QuakePanelAction }) => void
-  onUserNotification: (evt: { title: string, body: string, sourceTabId: string }) => void
+  onUserNotification: (evt: WorkerNotification) => void
   onTabRevealCommand: (evt: { tabId: string }) => void
   onTabStatusChanged: (evt: { tabId: string, status: TabStatusView | undefined }) => void
   onSubscribed: () => void
@@ -111,6 +114,7 @@ describe('useWorkerPrivateStreams', () => {
         quakeStore,
         tabStatuses: stores.statuses,
         revealTab,
+        revealWorkspace: () => {},
       }),
     }
   }
@@ -598,6 +602,7 @@ describe('useWorkerPrivateStreams retired tabs', () => {
           quakeStore: createTestQuakeStore(stores.view),
           tabStatuses: stores.statuses,
           revealTab: () => {},
+          revealWorkspace: () => {},
         })
         await flush()
         const stream = firstOpened()
@@ -641,6 +646,7 @@ describe('useWorkerPrivateStreams cleared Worker register', () => {
           quakeStore: createTestQuakeStore(stores.view),
           tabStatuses: stores.statuses,
           revealTab: () => {},
+          revealWorkspace: () => {},
         })
         await flush()
         const stream = firstOpened()
@@ -683,6 +689,7 @@ describe('useWorkerPrivateStreams creation ownership', () => {
           quakeStore: createTestQuakeStore(stores.view),
           tabStatuses: stores.statuses,
           revealTab: () => {},
+          revealWorkspace: () => {},
         })
         await flush()
         if (kind === 'payload') {
@@ -714,6 +721,7 @@ describe('useWorkerPrivateStreams creation ownership', () => {
         quakeStore: createTestQuakeStore(stores.view),
         tabStatuses: stores.statuses,
         revealTab: () => {},
+        revealWorkspace: () => {},
       })
       await flush()
       const stream = firstOpened()
@@ -745,6 +753,7 @@ describe('useWorkerPrivateStreams creation ownership', () => {
           quakeStore: createTestQuakeStore(stores.view),
           tabStatuses: stores.statuses,
           revealTab: () => {},
+          revealWorkspace: () => {},
         })
         await flush()
         const stream = opened.find(stream => stream.workerId === 'w1')!
@@ -774,6 +783,7 @@ describe('useWorkerPrivateStreams account generation', () => {
           quakeStore: createTestQuakeStore(stores.view),
           tabStatuses: stores.statuses,
           revealTab: () => {},
+          revealWorkspace: () => {},
         })
         await flush()
         const original = firstOpened()
@@ -819,6 +829,7 @@ describe('useWorkerPrivateStreams account generation', () => {
           quakeStore: createTestQuakeStore(stores.view),
           tabStatuses: stores.statuses,
           revealTab,
+          revealWorkspace: () => {},
         })
         await flush()
         const original = firstOpened()
@@ -843,7 +854,13 @@ describe('useWorkerPrivateStreams account generation', () => {
           tabId: 'a1',
           status: { text: 'Obsolete', progressPercent: undefined, tone: 'error' },
         })
-        original.onUserNotification({ title: 'Obsolete', body: '', sourceTabId: 'a1' })
+        original.onUserNotification({
+          id: 'notice',
+          title: 'Obsolete',
+          body: '',
+          sourceTabId: 'a1',
+          destination: undefined,
+        })
         original.onTabRevealCommand({ tabId: 'a1' })
         expect(stores.statuses.get('a1')).toEqual(running)
         expect(showUserNotification).not.toHaveBeenCalled()
@@ -877,6 +894,7 @@ describe('useWorkerPrivateStreams commands and statuses', () => {
       quakeStore: createTestQuakeStore(stores.view),
       tabStatuses: stores.statuses,
       revealTab,
+      revealWorkspace: () => {},
     })
     const streamOf = (workerId: string) => {
       const stream = opened.find(o => o.workerId === workerId && !o.closed)
@@ -898,8 +916,52 @@ describe('useWorkerPrivateStreams commands and statuses', () => {
       try {
         const s = mountTwoWorkers()
         await flush()
-        s.streamOf('w1').onUserNotification({ title: 'Tests passed', body: 'All 42', sourceTabId: 'a1' })
-        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({ title: 'Tests passed', body: 'All 42', sourceTabTitle: 'Builder' })
+        s.streamOf('w1').onUserNotification({
+          id: 'notice',
+          title: 'Tests passed',
+          body: 'All 42',
+          sourceTabId: 'a1',
+          destination: undefined,
+        })
+        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({
+          id: 'notice',
+          title: 'Tests passed',
+          body: 'All 42',
+          sourceTabTitle: 'Builder',
+          destination: undefined,
+        })
+      }
+      finally { dispose() }
+    })
+  })
+
+  it('resolves the notification destination again when it is opened', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const s = mountTwoWorkers()
+        await flush()
+        s.streamOf('w1').onUserNotification({
+          id: 'notice',
+          title: 'Build ready',
+          body: '',
+          sourceTabId: '',
+          destination: create(NotificationDestinationSchema, {
+            target: {
+              case: 'tab',
+              value: { tabId: 'a1', tabType: TabType.AGENT },
+            },
+          }),
+        })
+        const content = showUserNotification.mock.calls[0]?.[0] as UserNotificationContent | undefined
+        expect(content?.destination?.label).toBe('Open Builder')
+        content?.destination?.open()
+        expect(s.revealTab).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'a1' }))
+        s.publisher.deliver([
+          tombstoneTab(s.publisher.context, TabType.AGENT, 'a1'),
+        ])
+        await flush()
+        content?.destination?.open()
+        expect(s.revealTab).toHaveBeenCalledOnce()
       }
       finally { dispose() }
     })
@@ -916,8 +978,20 @@ describe('useWorkerPrivateStreams commands and statuses', () => {
       try {
         const s = mountTwoWorkers()
         await flush()
-        s.streamOf('w1').onUserNotification({ title: 'Deploy started', body: '', sourceTabId })
-        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({ title: 'Deploy started', body: '', sourceTabTitle: undefined })
+        s.streamOf('w1').onUserNotification({
+          id: 'notice',
+          title: 'Deploy started',
+          body: '',
+          sourceTabId,
+          destination: undefined,
+        })
+        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({
+          id: 'notice',
+          title: 'Deploy started',
+          body: '',
+          sourceTabTitle: undefined,
+          destination: undefined,
+        })
       }
       finally { dispose() }
     })
@@ -930,8 +1004,20 @@ describe('useWorkerPrivateStreams commands and statuses', () => {
       try {
         const s = mountTwoWorkers()
         await flush()
-        s.streamOf('w2').onUserNotification({ title: 'Tests passed', body: '', sourceTabId: 'a2' })
-        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({ title: 'Tests passed', body: '', sourceTabTitle: 'Agent' })
+        s.streamOf('w2').onUserNotification({
+          id: 'notice',
+          title: 'Tests passed',
+          body: '',
+          sourceTabId: 'a2',
+          destination: undefined,
+        })
+        expect(showUserNotification).toHaveBeenCalledExactlyOnceWith({
+          id: 'notice',
+          title: 'Tests passed',
+          body: '',
+          sourceTabTitle: 'Agent',
+          destination: undefined,
+        })
       }
       finally { dispose() }
     })
@@ -1086,7 +1172,13 @@ describe('useWorkerPrivateStreams commands and statuses', () => {
       const stream = s.streamOf('w1')
       dispose()
       stream.onTabStatusChanged({ tabId: 'a1', status: running })
-      stream.onUserNotification({ title: 'Late', body: '', sourceTabId: '' })
+      stream.onUserNotification({
+        id: 'notice',
+        title: 'Late',
+        body: '',
+        sourceTabId: '',
+        destination: undefined,
+      })
       stream.onTabRevealCommand({ tabId: 'a1' })
       expect(s.stores.statuses.get('a1')).toBeUndefined()
       expect(showUserNotification).not.toHaveBeenCalled()

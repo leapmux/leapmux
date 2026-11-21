@@ -76,11 +76,13 @@ export function showInfoToast(message: string) {
 
 /** What a notification toast shows. */
 export interface NotificationToastContent {
+  id?: string
   title: string
   /** More text below the title. Empty shows none. */
   body: string
   /** The title of the tab that sent the notification, when it is known. */
   sourceTabTitle: string | undefined
+  destination?: { label: string, open: () => void } | undefined
 }
 
 /**
@@ -98,6 +100,15 @@ export const NOTIFICATION_TOAST_MS = 10_000
  */
 export function showNotificationToast(content: NotificationToastContent) {
   renderToast(content, 'success', NOTIFICATION_TOAST_MS)
+}
+
+export function dismissNotificationToast(id: string) {
+  if (!id)
+    return
+  for (const toast of document.querySelectorAll<HTMLElement>('output[data-notification-id]')) {
+    if (toast.dataset.notificationId === id)
+      dismissToast(toast)
+  }
 }
 
 /**
@@ -154,6 +165,14 @@ function fillToastMessage(el: HTMLElement, content: string | NotificationToastCo
     source.textContent = `From ${content.sourceTabTitle}`
     el.appendChild(source)
   }
+  if (content.destination) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.setAttribute('data-notification-open', '')
+    button.textContent = content.destination.label
+    button.style.marginTop = 'var(--space-2)'
+    el.appendChild(button)
+  }
 }
 
 // durationMs of 0 means "until dismissed"; the toast already renders its own
@@ -190,6 +209,8 @@ function renderToast(content: string | NotificationToastContent, type: ToastType
     : 'danger'
 
   const toast = document.createElement('output')
+  if (typeof content !== 'string' && content.id)
+    toast.dataset.notificationId = content.id
   toast.setAttribute('data-variant', variant)
   toast.style.display = 'flex'
   toast.style.alignItems = 'start'
@@ -223,6 +244,15 @@ function renderToast(content: string | NotificationToastContent, type: ToastType
 
   if (sticky) {
     liveSticky.set(message, mounted)
+  }
+  const destination = typeof content === 'string'
+    ? undefined
+    : content.destination
+  if (destination) {
+    mounted.querySelector('[data-notification-open]')?.addEventListener('click', () => {
+      destination.open()
+      dismissToast(mounted)
+    })
   }
 
   mounted.querySelector('[data-close]')?.addEventListener('click', () => {

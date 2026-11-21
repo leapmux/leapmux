@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
-import { NOTIFICATION_TOAST_MS, showNotificationToast, showStickyWarnToast, showWarnToast, showWarnToastUnlessDisconnected, showWarnToastWithLoggedCause } from './Toast'
+import { dismissNotificationToast, NOTIFICATION_TOAST_MS, showNotificationToast, showStickyWarnToast, showWarnToast, showWarnToastUnlessDisconnected, showWarnToastWithLoggedCause } from './Toast'
 
 // The toast host is a runtime global the design system installs; jsdom has no
 // such thing, so stand in for it and record what each helper asked for.
@@ -183,6 +183,34 @@ describe('showNotificationToast', () => {
     showNotificationToast({ title: 'Done', body: '', sourceTabTitle: undefined })
 
     expect(shown).toHaveLength(2)
+  })
+
+  it('opens its destination and dismisses only the requested notification', () => {
+    vi.useFakeTimers()
+    try {
+      const open = vi.fn()
+      const notice = { title: 'Ready', body: '', sourceTabTitle: undefined }
+      showNotificationToast({
+        ...notice,
+        id: 'first',
+        destination: { label: 'Open Build', open },
+      })
+      showNotificationToast({ ...notice, id: 'second' })
+      showNotificationToast({ ...notice, id: 'third' })
+      const first = shown[0]!.el
+      const openButton = first.querySelector<HTMLButtonElement>('[data-notification-open]')
+      expect(openButton?.textContent).toBe('Open Build')
+      openButton?.click()
+      expect(open).toHaveBeenCalledOnce()
+      dismissNotificationToast('second')
+      vi.runAllTimers()
+      expect(first.isConnected).toBe(false)
+      expect(shown[1]!.el.isConnected).toBe(false)
+      expect(shown[2]!.el.isConnected).toBe(true)
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 })
 

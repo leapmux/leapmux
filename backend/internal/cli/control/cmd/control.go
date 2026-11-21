@@ -43,6 +43,7 @@ func NewCommand() *cobra.Command {
 		newWorkerCommand(),
 		newEventsCommand(),
 		newNotifyCommand(),
+		newNotificationCommand(),
 		newRPCCommand(),
 		newAdminCommand(),
 	)

@@ -477,10 +477,11 @@ A script that loses the answer of `agent send` or `agent open`, for a timeout or
 
 ### Telling the user
 
-Three commands reach every LeapMux window that you have open, through the Worker's encrypted event stream. A window hears a Worker only while one of your tabs runs on that Worker.
+These commands reach your open LeapMux windows through the Worker's encrypted event stream. A window hears a Worker while one of your tabs runs on that Worker.
 
-- `notify <title>` shows a toast in each window: the title, the `--body` text below it, and the tab that ran the command. While a window is hidden, it also shows a desktop notification, when **Desktop notifications** is on in [Settings](/docs/using/settings/#desktop-notifications). `--body -` reads the body from standard input: `tail -n 5 build.log | leapmux control notify "Build failed" --body -`. Nothing stores a notification, so a window that you open later does not show it.
-  - The command goes to the Worker of the tab that runs it. Outside a tab, pass `--worker`.
+- `notify <title>` shows a toast in each window with the title, the `--body` text, and the tab that ran the command. While a window is hidden, it also shows a desktop notification when **Desktop notifications** is on in [Settings](/docs/using/settings/#desktop-notifications). `--body -` reads from standard input.
+  - Add `--tab <tab>` or `--workspace <workspace>` so the toast can open that destination. A tab destination selects its Worker. For a broadcast or a workspace destination, the command uses the calling tab's Worker. Outside a tab, pass `--worker`.
+  - The result includes the notification ID and Worker. Use `notification list --worker <worker>` to read its latest 100 notifications. Use `notification clear <id> --worker <worker>` to remove one and dismiss its LeapMux toast. The Worker keeps the list in memory and sends each toast as a live event.
   - The Worker names the tab from the control token of the tab's socket, so a process cannot claim another tab. With `--worker`, the tab's own Worker relays the notification and states the tab. A notification sent from outside a tab names no tab.
   - The Worker refuses an empty title, a title over 256 bytes and a body over 4096 bytes with `invalid_argument`.
 - `tab reveal <tab>` brings a tab into view in each window: the window switches to the tab's workspace, and the tab becomes the active tab of its tile, as a click on the tab in the sidebar does. Nothing stores the reveal, and a window that does not know the tab yet ignores it. A tab that its Worker does not host, such as a closed one, fails with `not_found`.

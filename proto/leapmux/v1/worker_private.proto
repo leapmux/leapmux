@@ -54,17 +54,20 @@ service WorkerPrivateService {
     option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_WRITE };
   }
 
-  // Notify asks every one of the caller's frontends to show a notification:
-  // a toast in each open LeapMux window, and a desktop notification where the
-  // user allowed them. Like SetQuakePanel it stores nothing, so a frontend
-  // that is not open never shows it. The Worker stamps the tab that sent it
-  // from the caller's control token, so the notification states where it came
-  // from. Emits UserNotification.
-  //
-  // It acts on the user's workspace view and changes no stored state, so it
-  // takes the workspace write scope, as the commands that open and close tabs
-  // do.
+  // Notify sends a live toast to the caller's open frontends. The Worker
+  // takes the source tab from the authenticated caller and verifies any
+  // requested destination. It keeps a recent record and returns its ID.
   rpc Notify(NotifyRequest) returns (NotifyResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+
+  // ListNotifications lists recent notifications sent through this Worker.
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
+
+  // ClearNotification removes one notification and dismisses its live toast.
+  rpc ClearNotification(ClearNotificationRequest) returns (ClearNotificationResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
   }
 
@@ -104,6 +107,7 @@ message WorkerPrivateEvent {
     UserNotification     user_notification      = 5;
     TabRevealCommand     tab_reveal_command     = 6;
     TabStatusChanged     tab_status_changed     = 7;
+    UserNotificationCleared user_notification_cleared = 8;
   }
 }
 
@@ -251,6 +255,7 @@ message NotifyRequest {
   string title = 1;
   // More text below the title. Optional.
   string body = 2;
+  NotificationDestination destination = 3;
 }
 
 // NotifyResponse states the notification that the Worker published: the title
@@ -259,11 +264,33 @@ message NotifyRequest {
 message NotifyResponse {
   string title = 1;
   string body = 2;
+  string id = 3;
+  NotificationDestination destination = 4;
 }
 
-// UserNotification asks each frontend to show a notification. Like a
-// QuakePanelCommand it is live-only: a reconnect never replays it, so a
-// notification that no frontend was open for is not shown later.
+message NotificationDestination {
+  oneof target {
+    TabIdent tab = 1;
+    string workspace_id = 2;
+  }
+}
+
+message ListNotificationsRequest {}
+
+message ListNotificationsResponse {
+  // Most recent first. The Worker keeps a limited in-memory list.
+  repeated UserNotification notifications = 1;
+}
+
+message ClearNotificationRequest {
+  string id = 1;
+}
+
+message ClearNotificationResponse {
+  bool cleared = 1;
+}
+
+// UserNotification displays a live toast. A stream reconnect does not replay it.
 message UserNotification {
   string title = 1;
   string body = 2;
@@ -272,6 +299,13 @@ message UserNotification {
   // states for a call that it relays (see CallSource). Empty when the caller
   // runs in no tab, such as the CLI on a laptop.
   string source_tab_id = 3;
+  string id = 4;
+  NotificationDestination destination = 5;
+}
+
+message UserNotificationCleared {
+  string id = 1;
+  NotificationDestination destination = 2;
 }
 
 message RevealTabRequest {

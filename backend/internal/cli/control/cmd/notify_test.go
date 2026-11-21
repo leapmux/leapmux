@@ -42,7 +42,7 @@ func TestNotifyOverIPC_SendsTheNotificationToTheTabsWorker(t *testing.T) {
 	startNotifyWorker(t, w)
 
 	data := runControl(t, "notify", "Tests passed", "--body", "All 42 tests passed").Data(t)
-	assert.Equal(t, map[string]any{"worker_id": "worker-A", "title": "Tests passed", "body": "All 42 tests passed"}, data)
+	assert.Equal(t, map[string]any{"id": "test-notification", "worker_id": "worker-A", "title": "Tests passed", "body": "All 42 tests passed"}, data)
 
 	req, call := requireOneNotify(t, w)
 	assert.True(t, proto.Equal(&leapmuxv1.NotifyRequest{Title: "Tests passed", Body: "All 42 tests passed"}, req), "request: %v", req)
@@ -55,6 +55,7 @@ func TestNotifyOverIPC_SendsTheNotificationToTheTabsWorker(t *testing.T) {
 func TestNotifyOverIPC_ReadsTheBodyFromStdin(t *testing.T) {
 	w := &privateCommandWorker{answers: map[string]proto.Message{
 		leapmuxv1connect.WorkerPrivateServiceNotifyProcedure: &leapmuxv1.NotifyResponse{
+			Id:    "stored-id",
 			Title: "Build failed",
 			Body:  "error: 3 tests failed\nFAIL ./internal/cli",
 		},
@@ -75,13 +76,22 @@ func TestNotifyOverIPC_ReadsTheBodyFromStdin(t *testing.T) {
 // what it stored, and the CLI keeps no copy of that rule.
 func TestNotifyOverIPC_PrintsTheWorkersAnswer(t *testing.T) {
 	w := &privateCommandWorker{answers: map[string]proto.Message{
-		leapmuxv1connect.WorkerPrivateServiceNotifyProcedure: &leapmuxv1.NotifyResponse{Title: "Stored title"},
+		leapmuxv1connect.WorkerPrivateServiceNotifyProcedure: &leapmuxv1.NotifyResponse{Id: "stored-id", Title: "Stored title"},
 	}}
 	startNotifyWorker(t, w)
 
 	data := runControl(t, "notify", "Sent title", "--body", "Sent body").Data(t)
-	assert.Equal(t, map[string]any{"worker_id": "worker-A", "title": "Stored title"}, data,
+	assert.Equal(t, map[string]any{"id": "stored-id", "worker_id": "worker-A", "title": "Stored title"}, data,
 		"a body that the Worker did not store is not printed")
+}
+
+func TestNotifyOverIPC_RejectsAResponseWithoutANotificationID(t *testing.T) {
+	w := &privateCommandWorker{answers: map[string]proto.Message{
+		leapmuxv1connect.WorkerPrivateServiceNotifyProcedure: &leapmuxv1.NotifyResponse{Title: "Stored title"},
+	}}
+	startNotifyWorker(t, w)
+	failure := runControl(t, "notify", "Stored title").requireFailure(t, cli.CodeInternal)
+	assert.Contains(t, failure.Message, "returned no notification ID")
 }
 
 // The body is optional, and an absent body leaves the result without one.
@@ -114,7 +124,43 @@ func TestNotifyOverIPC_PrintsTheNotificationAsText(t *testing.T) {
 
 	o := runControlText(t, "notify", "Tests passed", "--body", "All green")
 	require.Equal(t, cli.ExitOK, o.Code, "stderr: %s", o.Stderr)
-	assert.Equal(t, "worker_id: worker-A  title: \"Tests passed\"  body: \"All green\"\n", o.Stdout)
+	assert.Equal(t, "id: test-notification  worker_id: worker-A  title: \"Tests passed\"  body: \"All green\"\n", o.Stdout)
+}
+
+func TestNotifyOverIPC_KeepsTheAddressApartFromTheSender(t *testing.T) {
+	w := &privateCommandWorker{}
+	tab := terminalTab()
+	startTabWorker(t, w, tab)
+	targetID := tab.GetTab().GetTabId()
+	data := runControl(t, "notify", "Deployment ready", "--tab", targetID).Data(t)
+	assert.Equal(t, "test-notification", data["id"])
+	assert.Equal(t, targetID, data["tab_id"])
+	request, call := requireOneNotify(t, w)
+	assert.True(t, proto.Equal(tab.GetTab(), request.GetDestination().GetTab()))
+	assert.Equal(t, "agent-1", call.caller.SourceTabID)
+}
+
+func TestNotifyListAndClearUseTheSelectedWorker(t *testing.T) {
+	w := &privateCommandWorker{answers: map[string]proto.Message{
+		leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure: &leapmuxv1.ListNotificationsResponse{
+			Notifications: []*leapmuxv1.UserNotification{{Id: "recent-id", Title: "Deployment ready", SourceTabId: "agent-1"}},
+		},
+		leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure: &leapmuxv1.ClearNotificationResponse{Cleared: true},
+	}}
+	startNotifyWorker(t, w)
+	list := runControl(t, "notification", "list").Data(t)
+	assert.Equal(t, map[string]any{
+		"worker_id": "worker-A",
+		"notifications": []any{
+			map[string]any{"id": "recent-id", "title": "Deployment ready", "source_tab_id": "agent-1"},
+		},
+	}, list)
+	cleared := runControl(t, "notification", "clear", "recent-id").Data(t)
+	assert.Equal(t, map[string]any{"id": "recent-id", "worker_id": "worker-A", "cleared": true}, cleared)
+	calls := w.recorded()
+	require.Len(t, calls, 2)
+	assert.Equal(t, leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, calls[0].method)
+	assert.True(t, proto.Equal(&leapmuxv1.ClearNotificationRequest{Id: "recent-id"}, calls[1].request))
 }
 
 // What the CLI refuses, it refuses before it sends anything.
@@ -127,6 +173,7 @@ func TestNotify_RefusesAnInvalidCommandLine(t *testing.T) {
 		{"an empty title", []string{"notify", ""}, "the title is empty"},
 		{"a title of spaces", []string{"notify", "  \t"}, "the title is empty"},
 		{"no title", []string{"notify"}, ""},
+		{"both destinations", []string{"notify", "Ready", "--tab", "agent-1", "--workspace", "ws-1"}, "--tab and --workspace"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

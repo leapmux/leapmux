@@ -4353,7 +4353,9 @@ func callerReadsTabView(caller channel.Caller, tabType leapmuxv1.TabType) bool {
 func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEvent) bool {
 	switch event := evt.GetEvent().(type) {
 	case *leapmuxv1.WorkerPrivateEvent_UserNotification:
-		return caller.Allows(leapmuxv1.Scope_SCOPE_WORKSPACE_READ)
+		return notificationDestinationVisible(caller, event.UserNotification.GetDestination())
+	case *leapmuxv1.WorkerPrivateEvent_UserNotificationCleared:
+		return notificationDestinationVisible(caller, event.UserNotificationCleared.GetDestination())
 	case *leapmuxv1.WorkerPrivateEvent_TabRevealCommand:
 		return callerReadsTabView(caller, event.TabRevealCommand.GetTabType())
 	case *leapmuxv1.WorkerPrivateEvent_TabStatusChanged:

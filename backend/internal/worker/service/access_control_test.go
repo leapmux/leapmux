@@ -358,6 +358,12 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, leapmuxv1connect.WorkerPrivateServiceNotifyProcedure, func() proto.Message {
 			return &leapmuxv1.NotifyRequest{Title: "Build finished", Body: "All tests passed"}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, leapmuxv1connect.WorkerPrivateServiceListNotificationsProcedure, func() proto.Message {
+			return &leapmuxv1.ListNotificationsRequest{}
+		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, leapmuxv1connect.WorkerPrivateServiceClearNotificationProcedure, func() proto.Message {
+			return &leapmuxv1.ClearNotificationRequest{Id: "notification"}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, leapmuxv1connect.WorkerPrivateServiceRevealTabProcedure, func() proto.Message {
 			return &leapmuxv1.RevealTabRequest{TabId: "agent-1"}
 		}},

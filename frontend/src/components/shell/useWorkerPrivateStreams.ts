@@ -1,10 +1,13 @@
+import type { NotificationToastContent } from '~/components/common/Toast'
 import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { NotificationDestination } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import type { QuakeTerminalStore } from '~/stores/quakeTerminal.store'
 import type { Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabStatusStore } from '~/stores/tabStatus.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, onCleanup } from 'solid-js'
+import { dismissNotificationToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { storageAccountUserId } from '~/lib/browserStorage'
@@ -64,6 +67,7 @@ export interface UseWorkerPrivateStreamsOpts {
    * as a click on the tab in the sidebar does.
    */
   revealTab: (tab: Tab) => void
+  revealWorkspace: (workspaceId: string) => void
 }
 
 /**
@@ -173,6 +177,42 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
         return !record
           || (hlcIsZero(record.tombstoneAt) && (!record.workerId || record.workerId.value === workerId))
       }
+      const notificationAction = (destination: NotificationDestination | undefined): NotificationToastContent['destination'] => {
+        const target = destination?.target
+        if (target?.case === 'tab') {
+          const findTab = () => {
+            const tab = placedTabOnWorker(opts.view, workerId, target.value.tabId)
+            return tab?.type === target.value.tabType
+              ? tab
+              : undefined
+          }
+          const tab = findTab()
+          return {
+            label: tab
+              ? `Open ${tabDisplayLabel(tab)}`
+              : 'Open tab',
+            open: () => {
+              if (!isCurrent())
+                return
+              const current = findTab()
+              if (current)
+                opts.revealTab(current)
+            },
+          }
+        }
+        if (target?.case === 'workspaceId') {
+          return {
+            label: 'Open workspace',
+            open: () => {
+              if (!isCurrent())
+                return
+              if (opts.state()?.workspaces[target.value])
+                opts.revealWorkspace(target.value)
+            },
+          }
+        }
+        return undefined
+      }
       const close = openWorkerPrivateEventStream({
         workerId,
         onSubscribed: () => {
@@ -198,12 +238,18 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
             ? placedTabOnWorker(opts.view, workerId, evt.sourceTabId)
             : undefined
           showUserNotification({
+            id: evt.id,
             title: evt.title,
             body: evt.body,
+            destination: notificationAction(evt.destination),
             sourceTabTitle: source === undefined
               ? undefined
               : tabDisplayLabel(source),
           })
+        },
+        onUserNotificationCleared: (id) => {
+          if (isCurrent())
+            dismissNotificationToast(id)
         },
         onTabRevealCommand: (evt) => {
           if (!isCurrent())

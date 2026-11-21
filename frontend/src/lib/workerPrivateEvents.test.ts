@@ -307,18 +307,41 @@ describe('openWorkerPrivateEventStream commands and statuses', () => {
 
   it('surfaces a notification with the tab that sent it', async () => {
     const onUserNotification = vi.fn()
+    const onUserNotificationCleared = vi.fn()
     const stop = openWorkerPrivateEventStream({
       workerId: 'w',
       onTabRenamed: () => {},
       onUserNotification,
+      onUserNotificationCleared,
     })
     await tick(0)
 
     streams[0]!.emitMessage(event({
       case: 'userNotification',
-      value: { title: 'Tests passed', body: 'All 42', sourceTabId: 'a1' },
+      value: {
+        id: 'notice',
+        title: 'Tests passed',
+        body: 'All 42',
+        sourceTabId: 'a1',
+        destination: {
+          target: { case: 'workspaceId', value: 'workspace-1' },
+        },
+      },
     }))
-    expect(onUserNotification).toHaveBeenCalledExactlyOnceWith({ title: 'Tests passed', body: 'All 42', sourceTabId: 'a1' })
+    expect(onUserNotification).toHaveBeenCalledExactlyOnceWith({
+      id: 'notice',
+      title: 'Tests passed',
+      body: 'All 42',
+      sourceTabId: 'a1',
+      destination: expect.objectContaining({
+        target: { case: 'workspaceId', value: 'workspace-1' },
+      }),
+    })
+    streams[0]!.emitMessage(event({
+      case: 'userNotificationCleared',
+      value: { id: 'notice' },
+    }))
+    expect(onUserNotificationCleared).toHaveBeenCalledExactlyOnceWith('notice')
     stop()
   })
 

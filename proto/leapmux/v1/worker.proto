@@ -72,6 +72,14 @@ service WorkerConnectorService {
   rpc ResolveTabPublication(ResolveTabPublicationRequest) returns (ResolveTabPublicationResponse) {
     option (leapmux.v1.access) = { public: {} };
   }
+  // Verify a notification destination against the authenticated Worker's owner.
+  rpc CheckNotificationWorkspace(CheckNotificationWorkspaceRequest) returns (google.protobuf.Empty) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+}
+
+message CheckNotificationWorkspaceRequest {
+  string workspace_id = 1;
 }
 
 message PublishTabRequest {
