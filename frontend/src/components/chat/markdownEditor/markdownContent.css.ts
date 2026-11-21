@@ -1,4 +1,12 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import {
+  LOCAL_IMAGE_CLASS,
+  LOCAL_IMAGE_CLICKABLE_ATTRIBUTE,
+  LOCAL_IMAGE_ERROR_CLASS,
+  LOCAL_IMAGE_FALLBACK_CLASS,
+  LOCAL_LINK_ATTRIBUTE,
+  LOCAL_LINKS_ACTIVE_ATTRIBUTE,
+} from '~/lib/localLinks'
 import { MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE, MARKDOWN_SOURCE_FALLBACK_CLASS } from '~/lib/markdownSourceFallback'
 import {
   BLOCKED_IMAGE_CHIP_CLASS,
@@ -167,4 +175,75 @@ globalStyle(`.${BLOCKED_IMAGE_LABEL_CLASS}`, {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   color: 'var(--muted-foreground)',
+})
+
+// Interactive local filesystem links when rendered inside a tab-associated
+// MarkdownLocalLinkProvider (`data-local-links-active` on the body wrapper).
+// Outside any provider the attribute is absent and `[data-local-link]` stays
+// visually indistinguishable from ordinary text.
+globalStyle(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] [${LOCAL_LINK_ATTRIBUTE}]`, {
+  color: 'var(--primary)',
+  textDecoration: 'underline',
+  cursor: 'pointer',
+  borderRadius: 'var(--radius-small)',
+})
+
+globalStyle(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] [${LOCAL_LINK_ATTRIBUTE}]:hover`, {
+  backgroundColor: 'color-mix(in srgb, var(--primary) 12%, transparent)',
+})
+
+globalStyle(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] [${LOCAL_LINK_ATTRIBUTE}]:focus-visible`, {
+  outline: '2px solid var(--ring)',
+  outlineOffset: '2px',
+})
+
+// Local filesystem images: render as a subtle inline fallback pill before
+// hydration (or outside a worker context / on refusal), and swap to a
+// constrained inline `<img>` once hydrated from the worker RPC.
+globalStyle(`.${LOCAL_IMAGE_CLASS}`, {
+  display: 'inline-flex',
+  alignItems: 'baseline',
+  maxWidth: '100%',
+  verticalAlign: 'middle',
+})
+
+globalStyle(`.${LOCAL_IMAGE_CLASS}:has(> .${LOCAL_IMAGE_FALLBACK_CLASS})`, {
+  gap: 'var(--space-1)',
+  padding: 'var(--space-1) var(--space-2)',
+  borderRadius: 'var(--radius-small)',
+  border: '1px dashed var(--border)',
+  backgroundColor: 'var(--card)',
+  verticalAlign: 'baseline',
+})
+
+globalStyle(`.${LOCAL_IMAGE_FALLBACK_CLASS}`, {
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  color: 'var(--muted-foreground)',
+})
+
+globalStyle(`.${LOCAL_IMAGE_ERROR_CLASS}`, {
+  color: 'var(--muted-foreground)',
+  fontSize: 'var(--text-8)',
+})
+
+globalStyle(`.${LOCAL_IMAGE_CLASS} > img`, {
+  display: 'block',
+  maxWidth: '100%',
+  maxHeight: '480px',
+  width: 'auto',
+  height: 'auto',
+  objectFit: 'contain',
+  borderRadius: 'var(--radius-small)',
+})
+
+globalStyle(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] .${LOCAL_IMAGE_CLASS}[${LOCAL_IMAGE_CLICKABLE_ATTRIBUTE}]`, {
+  cursor: 'pointer',
+  borderRadius: 'var(--radius-small)',
+})
+
+globalStyle(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] .${LOCAL_IMAGE_CLASS}[${LOCAL_IMAGE_CLICKABLE_ATTRIBUTE}]:focus-visible`, {
+  outline: '2px solid var(--ring)',
+  outlineOffset: '2px',
 })

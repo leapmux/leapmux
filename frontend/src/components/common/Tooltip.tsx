@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import { createEffect, createMemo, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, getOwner, on, onCleanup, onMount, runWithOwner, Show, untrack } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import { srOnly } from '~/styles/shared.css'
 import { holdIsOverMenu, touchReleaseOpensMenu } from './contextMenuGesture'
@@ -21,6 +21,53 @@ let activeHide: (() => void) | undefined
 /** Hide the visible tooltip, if any. A menu that is about to open calls this. */
 export function dismissActiveTooltip(): void {
   activeHide?.()
+}
+
+interface TooltipPos {
+  top: number
+  left: number
+}
+
+/** Position a tooltip above `rect`, horizontally centered (`translate(-50%, -100%)`). */
+function positionAboveRect(rect: DOMRect): TooltipPos {
+  return {
+    top: rect.top - 6,
+    left: rect.left + rect.width / 2,
+  }
+}
+
+/** True when `(x, y)` lies outside `rect` expanded by `HOVER_MARGIN_PX`. */
+function isOutsideHoverRect(x: number, y: number, rect: DOMRect): boolean {
+  return (
+    x < rect.left - HOVER_MARGIN_PX
+    || x > rect.right + HOVER_MARGIN_PX
+    || y < rect.top - HOVER_MARGIN_PX
+    || y > rect.bottom + HOVER_MARGIN_PX
+  )
+}
+
+/** Clamp a rendered tooltip horizontally to the viewport and flip below `triggerRect` if clipped at the top. */
+function schedulePositionClamp(
+  getTooltipEl: () => HTMLDivElement | undefined,
+  triggerRect: DOMRect,
+  getPos: () => TooltipPos,
+  setPos: (next: TooltipPos) => void,
+): void {
+  requestAnimationFrame(() => {
+    const el = getTooltipEl()
+    if (!el || !el.isConnected)
+      return
+    const tr = el.getBoundingClientRect()
+    let { top, left } = getPos()
+    const halfW = tr.width / 2
+    if (left - halfW < 4)
+      left = halfW + 4
+    else if (left + halfW > window.innerWidth - 4)
+      left = window.innerWidth - 4 - halfW
+    if (tr.top < 4)
+      top = triggerRect.bottom + 6 + tr.height
+    setPos({ top, left })
+  })
 }
 
 export interface TooltipProps {
@@ -436,12 +483,7 @@ export function Tooltip(props: TooltipProps) {
       return
     }
     const { clientX: x, clientY: y } = e
-    if (
-      x < rect.left - HOVER_MARGIN_PX
-      || x > rect.right + HOVER_MARGIN_PX
-      || y < rect.top - HOVER_MARGIN_PX
-      || y > rect.bottom + HOVER_MARGIN_PX
-    ) {
+    if (isOutsideHoverRect(x, y, rect)) {
       dismiss()
     }
   }
@@ -466,29 +508,14 @@ export function Tooltip(props: TooltipProps) {
     // Position above the trigger, centered horizontally.
     // transform: translate(-50%, -100%) places the tooltip's
     // bottom-center at this point.
-    setPos({ top: rect.top - 6, left: rect.left + rect.width / 2 })
+    setPos(positionAboveRect(rect))
     setVisible(true)
 
     // Start watching pointer position as a fallback for mouseleave.
     document.addEventListener('pointermove', onPointerMove)
 
     // Clamp to viewport after the tooltip renders.
-    requestAnimationFrame(() => {
-      if (!tooltipEl)
-        return
-      const tr = tooltipEl.getBoundingClientRect()
-      let { top, left } = pos()
-      // Clamp horizontally
-      const halfW = tr.width / 2
-      if (left - halfW < 4)
-        left = halfW + 4
-      else if (left + halfW > window.innerWidth - 4)
-        left = window.innerWidth - 4 - halfW
-      // If tooltip would go above viewport, flip below the trigger
-      if (tr.top < 4)
-        top = rect.bottom + 6 + tr.height
-      setPos({ top, left })
-    })
+    schedulePositionClamp(() => tooltipEl, rect, pos, setPos)
   }
 
   const show = () => {
@@ -703,5 +730,240 @@ export function Tooltip(props: TooltipProps) {
         </Portal>
       </Show>
     </>
+  )
+}
+
+export interface AnchoredTooltipProps {
+  /** Active hovered or focused DOM element, or undefined when none. */
+  target: HTMLElement | undefined
+  /** Plain-text tooltip body, or undefined/empty to keep hidden. */
+  text: string | undefined
+  /** Increment to dismiss immediately without waiting for HIDE_DELAY_MS. */
+  dismissNonce?: number
+}
+
+interface AnchoredSnapshot {
+  target: HTMLElement
+  text: string
+  rect: DOMRect
+}
+
+/**
+ * Delegated tooltip anchored to an imperatively tracked DOM element (for example
+ * spans inside raw HTML rendered via `cachedInnerHtml`). Shares the timing,
+ * single-active-tooltip coordination, top-layer popover, viewport clamping, and
+ * `aria-describedby` contract of {@link Tooltip}.
+ */
+export function AnchoredTooltip(props: AnchoredTooltipProps): JSX.Element {
+  const tooltipId = createUniqueId()
+  const domId = `tooltip-${tooltipId}`
+  const [visible, setVisible] = createSignal(false)
+  const [pos, setPos] = createSignal<TooltipPos>({ top: 0, left: 0 })
+  const [snapshot, setSnapshot] = createSignal<AnchoredSnapshot | undefined>(undefined)
+
+  let tooltipEl: HTMLDivElement | undefined
+  let showTimer: ReturnType<typeof setTimeout> | undefined
+  let hideTimer: ReturnType<typeof setTimeout> | undefined
+  let prevTarget: HTMLElement | undefined
+  let lastNonEmptyText: string | undefined
+  let describedTarget: HTMLElement | undefined
+  let originalDescribedBy: string | null = null
+
+  const renderedText = () => snapshot()?.text ?? (props.text || '')
+
+  const clearTimers = () => {
+    clearTimeout(showTimer)
+    clearTimeout(hideTimer)
+    showTimer = undefined
+    hideTimer = undefined
+  }
+
+  const detachDescribedBy = () => {
+    if (!describedTarget)
+      return
+    if (originalDescribedBy != null)
+      describedTarget.setAttribute('aria-describedby', originalDescribedBy)
+    else
+      describedTarget.removeAttribute('aria-describedby')
+    describedTarget = undefined
+    originalDescribedBy = null
+  }
+
+  const attachDescribedBy = (target: HTMLElement) => {
+    if (describedTarget === target)
+      return
+    detachDescribedBy()
+    describedTarget = target
+    originalDescribedBy = target.getAttribute('aria-describedby')
+    const tokens = (originalDescribedBy ?? '')
+      .split(WHITESPACE_RE)
+      .filter(Boolean)
+      .filter(id => id !== domId)
+    tokens.push(domId)
+    target.setAttribute('aria-describedby', tokens.join(' '))
+  }
+
+  const dismiss = () => {
+    clearTimers()
+    setSnapshot(undefined)
+    detachDescribedBy()
+    // eslint-disable-next-line ts/no-use-before-define -- mutual recursion between dismiss and onPointerMove
+    document.removeEventListener('pointermove', onPointerMove)
+    if (activeHide === dismiss)
+      activeHide = undefined
+    setVisible(false)
+  }
+
+  const onPointerMove = (e: PointerEvent) => {
+    const liveTarget = untrack(() => props.target)
+    const snap = untrack(snapshot)
+    const anchor = liveTarget ?? snap?.target
+    if (!anchor?.isConnected) {
+      dismiss()
+      return
+    }
+    const rect = liveTarget
+      ? liveTarget.getBoundingClientRect()
+      : snap?.rect
+    if (!rect || isOutsideHoverRect(e.clientX, e.clientY, rect))
+      dismiss()
+  }
+
+  const present = () => {
+    showTimer = undefined
+    if (holdIsOverMenu() || touchReleaseOpensMenu())
+      return
+    const target = untrack(() => props.target)
+    const text = untrack(() => props.text)
+    if (!target || !target.isConnected || !text)
+      return
+
+    const rect = target.getBoundingClientRect()
+    activeHide?.()
+    activeHide = dismiss
+    attachDescribedBy(target)
+    setPos(positionAboveRect(rect))
+    setVisible(true)
+    document.addEventListener('pointermove', onPointerMove)
+    schedulePositionClamp(() => tooltipEl, rect, pos, setPos)
+  }
+
+  createEffect(on(
+    () => [props.target, props.text] as const,
+    ([target, rawText]) => {
+      const text = rawText || ''
+      const currentSnapshot = untrack(snapshot)
+      const isVisible = untrack(visible)
+
+      // 1. No target (!target)
+      if (!target) {
+        if (!isVisible) {
+          clearTimers()
+        }
+        else if (currentSnapshot) {
+          if (!currentSnapshot.target.isConnected)
+            dismiss()
+        }
+        else if (prevTarget?.isConnected && lastNonEmptyText) {
+          setSnapshot({
+            target: prevTarget,
+            text: lastNonEmptyText,
+            rect: prevTarget.getBoundingClientRect(),
+          })
+          clearTimers()
+          hideTimer = setTimeout(dismiss, HIDE_DELAY_MS)
+        }
+        else {
+          dismiss()
+        }
+        prevTarget = undefined
+        return
+      }
+
+      // 2. Target present with empty text (!text)
+      if (!text) {
+        if (isVisible)
+          dismiss()
+        else
+          clearTimers()
+        prevTarget = target
+        return
+      }
+
+      // 3. Target present with non-empty text
+      if (!target.isConnected) {
+        if (isVisible)
+          dismiss()
+        else
+          clearTimers()
+        prevTarget = undefined
+        return
+      }
+      lastNonEmptyText = text
+      if (isVisible && currentSnapshot) {
+        if (target === currentSnapshot.target) {
+          clearTimers()
+          setSnapshot(undefined)
+        }
+        else {
+          dismiss()
+          showTimer = setTimeout(present, SHOW_DELAY_MS)
+        }
+      }
+      else if (isVisible) {
+        if (target !== prevTarget) {
+          dismiss()
+          showTimer = setTimeout(present, SHOW_DELAY_MS)
+        }
+      }
+      else {
+        if (target !== prevTarget || showTimer === undefined) {
+          clearTimers()
+          showTimer = setTimeout(present, SHOW_DELAY_MS)
+        }
+      }
+      prevTarget = target
+    },
+  ))
+
+  createEffect(on(
+    () => props.dismissNonce,
+    () => {
+      dismiss()
+    },
+    { defer: true },
+  ))
+
+  onCleanup(dismiss)
+
+  return (
+    <Show when={visible() && Boolean(renderedText())}>
+      <Portal>
+        <div
+          id={domId}
+          ref={(el) => {
+            tooltipEl = el
+            onCleanup(() => {
+              if (tooltipEl === el)
+                tooltipEl = undefined
+            })
+            requestAnimationFrame(() => {
+              if (el.isConnected)
+                el.showPopover()
+            })
+          }}
+          popover="manual"
+          role="tooltip"
+          class={styles.tooltip}
+          style={{
+            top: `${pos().top}px`,
+            left: `${pos().left}px`,
+            transform: 'translate(-50%, -100%)',
+          }}
+        >
+          {renderedText()}
+        </div>
+      </Portal>
+    </Show>
   )
 }

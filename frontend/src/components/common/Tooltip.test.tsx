@@ -1,8 +1,8 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { batch, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as gesture from './contextMenuGesture'
-import { dismissActiveTooltip, Tooltip } from './Tooltip'
+import { AnchoredTooltip, dismissActiveTooltip, HIDE_DELAY_MS, SHOW_DELAY_MS, Tooltip } from './Tooltip'
 
 describe('tooltip', () => {
   beforeEach(() => {
@@ -772,5 +772,325 @@ describe('tooltip on a disabled control', () => {
     fireEvent.mouseEnter(wrapperOf(button))
     vi.advanceTimersByTime(700)
     expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Saving...')
+  })
+})
+
+describe('AnchoredTooltip', () => {
+  function mockRect(el: HTMLElement, rect: Partial<DOMRect>) {
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      x: rect.left ?? 100,
+      y: rect.top ?? 100,
+      left: rect.left ?? 100,
+      top: rect.top ?? 100,
+      right: rect.right ?? 200,
+      bottom: rect.bottom ?? 120,
+      width: rect.width ?? 100,
+      height: rect.height ?? 20,
+      toJSON: () => ({}),
+    })
+  }
+
+  function makeAnchor(label: string, describedBy?: string): HTMLButtonElement {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.textContent = label
+    if (describedBy !== undefined)
+      btn.setAttribute('aria-describedby', describedBy)
+    document.body.appendChild(btn)
+    mockRect(btn, {
+      left: 100,
+      top: 100,
+      right: 200,
+      bottom: 120,
+      width: 100,
+      height: 20,
+    })
+    return btn
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    HTMLElement.prototype.showPopover = vi.fn()
+  })
+
+  afterEach(() => {
+    dismissActiveTooltip()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('opens after SHOW_DELAY_MS, preserves pre-existing aria-describedby tokens, and restores them on hide and unmount', () => {
+    const a = makeAnchor('A', 'existing-hint')
+    const [target, setTarget] = createSignal<HTMLElement | undefined>(undefined)
+
+    const rendered = render(() => <AnchoredTooltip target={target()} text="/repo/a.ts" />)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    setTarget(a)
+    vi.advanceTimersByTime(SHOW_DELAY_MS - 1)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    vi.advanceTimersByTime(1)
+    const tip = screen.getByRole('tooltip', { hidden: true })
+    expect(tip).toHaveTextContent('/repo/a.ts')
+    expect(a.getAttribute('aria-describedby')).toBe(`existing-hint ${tip.id}`)
+
+    // Hide via clearing target and letting HIDE_DELAY_MS elapse.
+    setTarget(undefined)
+    vi.advanceTimersByTime(HIDE_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(a.getAttribute('aria-describedby')).toBe('existing-hint')
+
+    // Re-open and unmount while visible: aria-describedby still restores.
+    setTarget(a)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    rendered.unmount()
+    expect(a.getAttribute('aria-describedby')).toBe('existing-hint')
+    a.remove()
+  })
+
+  it('stays hidden when text is empty or undefined and opens after SHOW_DELAY_MS when text becomes non-empty on the same target', () => {
+    const a = makeAnchor('A')
+    const [text, setText] = createSignal<string | undefined>(undefined)
+
+    render(() => <AnchoredTooltip target={a} text={text()} />)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    setText('')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    setText('/repo/later.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS - 1)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    vi.advanceTimersByTime(1)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/later.ts')
+    a.remove()
+  })
+
+  it('cancels the pending show timer when target clears before SHOW_DELAY_MS even if text stays non-empty', () => {
+    const a = makeAnchor('A')
+    const [target, setTarget] = createSignal<HTMLElement | undefined>(a)
+
+    render(() => <AnchoredTooltip target={target()} text="/repo/a.ts" />)
+    vi.advanceTimersByTime(SHOW_DELAY_MS / 2)
+    setTarget(undefined)
+    vi.advanceTimersByTime(SHOW_DELAY_MS * 2)
+
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    a.remove()
+  })
+
+  it('cleans aria-describedby on A and opens for B after a fresh delay when switching targets', () => {
+    const a = makeAnchor('A')
+    const b = makeAnchor('B')
+    const [target, setTarget] = createSignal<HTMLElement | undefined>(a)
+    const [text, setText] = createSignal<string | undefined>('/repo/a.ts')
+
+    render(() => <AnchoredTooltip target={target()} text={text()} />)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(a.getAttribute('aria-describedby')).toBeTruthy()
+
+    setTarget(b)
+    setText('/repo/b.ts')
+    expect(a).not.toHaveAttribute('aria-describedby')
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    const tip = screen.getByRole('tooltip', { hidden: true })
+    expect(tip).toHaveTextContent('/repo/b.ts')
+    expect(b.getAttribute('aria-describedby')).toBe(tip.id)
+    a.remove()
+    b.remove()
+  })
+
+  it('keeps snapshot visible across HIDE_DELAY_MS when target and text clear simultaneously, and handles A -> undefined -> A and A -> undefined -> B', () => {
+    const a = makeAnchor('A')
+    const b = makeAnchor('B')
+    const [target, setTarget] = createSignal<HTMLElement | undefined>(a)
+    const [text, setText] = createSignal<string | undefined>('/repo/a.ts')
+
+    render(() => <AnchoredTooltip target={target()} text={text()} />)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/a.ts')
+
+    // Clear target and text together (mirrors MarkdownText pointerout).
+    batch(() => {
+      setTarget(undefined)
+      setText(undefined)
+    })
+
+    // Pointer move inside HOVER_MARGIN_PX keeps the snapshotted tooltip open during HIDE_DELAY_MS.
+    vi.advanceTimersByTime(HIDE_DELAY_MS / 2)
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 150, clientY: 110 }))
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/a.ts')
+
+    // Returning to A within HIDE_DELAY_MS cancels the hide timer and keeps it open.
+    batch(() => {
+      setTarget(a)
+      setText('/repo/a.ts')
+    })
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/a.ts')
+
+    // Leaving A then arriving on B within HIDE_DELAY_MS dismisses A immediately and delays B.
+    batch(() => {
+      setTarget(undefined)
+      setText(undefined)
+    })
+    vi.advanceTimersByTime(HIDE_DELAY_MS / 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/a.ts')
+
+    batch(() => {
+      setTarget(b)
+      setText('/repo/b.ts')
+    })
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(a).not.toHaveAttribute('aria-describedby')
+
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/b.ts')
+    a.remove()
+    b.remove()
+  })
+
+  it('dismisses immediately and detaches pointermove when text clears while target stays defined', () => {
+    const addSpy = vi.spyOn(document, 'addEventListener')
+    const removeSpy = vi.spyOn(document, 'removeEventListener')
+    const a = makeAnchor('A')
+    const [text, setText] = createSignal<string | undefined>('/repo/a.ts')
+
+    render(() => <AnchoredTooltip target={a} text={text()} />)
+
+    // Before SHOW_DELAY_MS elapses: clearing text cancels the timer without attaching pointermove.
+    vi.advanceTimersByTime(SHOW_DELAY_MS / 2)
+    setText('')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(addSpy.mock.calls.filter(c => c[0] === 'pointermove')).toHaveLength(0)
+
+    // Open, then clear text while target remains defined: dismisses immediately and removes pointermove.
+    setText('/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    expect(addSpy.mock.calls.filter(c => c[0] === 'pointermove')).toHaveLength(1)
+
+    setText(undefined)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(removeSpy.mock.calls.filter(c => c[0] === 'pointermove')).toHaveLength(1)
+    a.remove()
+  })
+
+  it('hides immediately when dismissNonce increments or dismissActiveTooltip is called', () => {
+    const a = makeAnchor('A')
+    const [nonce, setNonce] = createSignal(0)
+    const [target, setTarget] = createSignal<HTMLElement | undefined>(a)
+
+    render(() => <AnchoredTooltip target={target()} text="/repo/a.ts" dismissNonce={nonce()} />)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    setNonce(1)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // Re-open via leave + re-enter, then hide via dismissActiveTooltip().
+    setTarget(undefined)
+    setTarget(a)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    dismissActiveTooltip()
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    a.remove()
+  })
+
+  it('suppresses opening when holdIsOverMenu or touchReleaseOpensMenu is true', () => {
+    const a = makeAnchor('A')
+    const holdSpy = vi.spyOn(gesture, 'holdIsOverMenu').mockReturnValue(true)
+    const touchSpy = vi.spyOn(gesture, 'touchReleaseOpensMenu').mockReturnValue(false)
+    const [target, setTarget] = createSignal<HTMLElement | undefined>(a)
+
+    render(() => <AnchoredTooltip target={target()} text="/repo/a.ts" />)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    holdSpy.mockReturnValue(false)
+    touchSpy.mockReturnValue(true)
+    setTarget(undefined)
+    setTarget(a)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    touchSpy.mockReturnValue(false)
+    setTarget(undefined)
+    setTarget(a)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    a.remove()
+  })
+
+  it('dismisses on global pointermove outside HOVER_MARGIN_PX', () => {
+    const a = makeAnchor('A')
+    render(() => <AnchoredTooltip target={a} text="/repo/a.ts" />)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 500, clientY: 500 }))
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    a.remove()
+  })
+
+  it('aborts or dismisses immediately when the target disconnects before show, before hide, or on pointermove', () => {
+    // 1. Disconnected before SHOW_DELAY_MS fires -> never opens.
+    const a = makeAnchor('A')
+    const [target, setTarget] = createSignal<HTMLElement | undefined>(a)
+    const [text, setText] = createSignal<string | undefined>('/repo/a.ts')
+    render(() => <AnchoredTooltip target={target()} text={text()} />)
+    a.remove()
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // 2. Disconnected while visible then target clears without pointermove -> dismisses immediately without HIDE_DELAY_MS.
+    const b = makeAnchor('B')
+    setTarget(b)
+    setText('/repo/b.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    b.remove()
+    setTarget(undefined)
+    setText(undefined)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // 3. Disconnected while visible -> pointermove over its zeroed (0, 0) rect still dismisses immediately.
+    const c = makeAnchor('C')
+    setTarget(c)
+    setText('/repo/c.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    c.remove()
+    mockRect(c, {
+      left: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: 0,
+      height: 0,
+    })
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 0, clientY: 0 }))
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // 4. Disconnected during HIDE_DELAY_MS -> pointermove dismisses immediately.
+    const d = makeAnchor('D')
+    setTarget(d)
+    setText('/repo/d.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    setTarget(undefined)
+    setText(undefined)
+    d.remove()
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 150, clientY: 110 }))
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
   })
 })

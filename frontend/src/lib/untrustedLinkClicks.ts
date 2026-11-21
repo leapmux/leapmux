@@ -5,7 +5,7 @@ import { activateUntrustedLink, classifyUntrustedLink, linkLabelFromText } from 
  * The attribute that marks an anchor as untrusted: an agent wrote its text and
  * its address, so the two may disagree on purpose.
  *
- * `rehypeExternalLinks` puts it on every anchor that survives the markdown
+ * `rehypeMarkdownLinks` puts it on every anchor that survives the markdown
  * hardening pass, which is why no render path has to remember it. The few
  * agent-authored anchors that markdown does not build -- a web-search result,
  * a tool title, an image link -- set it themselves.

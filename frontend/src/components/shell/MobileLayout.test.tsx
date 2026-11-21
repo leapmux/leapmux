@@ -265,4 +265,29 @@ describe('createMobileOverlayState', () => {
       dispose()
     })
   })
+
+  it('opens a drawer idempotently on openDrawer and replaces any other overlay', () => {
+    createRoot((dispose) => {
+      const s = createMobileOverlayState()
+      s.openDrawer('right')
+      expect(s.overlay()).toBe('right')
+
+      // Unlike toggleDrawer, calling openDrawer twice keeps the drawer open.
+      s.openDrawer('right')
+      expect(s.overlay()).toBe('right')
+
+      // Replaces the opposite drawer directly.
+      s.openDrawer('left')
+      expect(s.overlay()).toBe('left')
+      s.openDrawer('right')
+      expect(s.overlay()).toBe('right')
+
+      // Replaces an open sheet directly.
+      s.toggleSheet()
+      expect(s.overlay()).toBe('sheet')
+      s.openDrawer('right')
+      expect(s.overlay()).toBe('right')
+      dispose()
+    })
+  })
 })

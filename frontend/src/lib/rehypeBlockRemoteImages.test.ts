@@ -3,6 +3,12 @@ import remarkParse from 'remark-parse'
 import remarkRehype from 'remark-rehype'
 import { unified } from 'unified'
 import { describe, expect, it } from 'vitest'
+import {
+  LOCAL_IMAGE_ALT_ATTRIBUTE,
+  LOCAL_IMAGE_ATTRIBUTE,
+  LOCAL_IMAGE_CLASS,
+  LOCAL_IMAGE_FALLBACK_CLASS,
+} from '~/lib/localLinks'
 import { BLOCKED_IMAGE_CHIP_TEXT, BLOCKED_IMAGE_CLASS, rehypeBlockRemoteImages } from '~/lib/rehypeBlockRemoteImages'
 
 // The plugin in isolation (no link hardening): asserts the src allowlist itself. The
@@ -37,16 +43,48 @@ describe('rehypeBlockRemoteImages', () => {
     expect(html).toContain('>https://cdn.example/d.png<')
   })
 
-  it('blocks http, protocol-relative, relative and root-relative srcs (all are fetches)', () => {
-    for (const src of [
-      'http://evil.example/x.png',
-      '//evil.example/x.png',
-      './x.png',
-      '/x.png',
-      'x.png',
-    ]) {
+  it('rewrites local image srcs into local-markdown-image placeholder spans without an <img>', () => {
+    const cases: Array<[string, string]> = [
+      ['./x.png', './x.png'],
+      ['../img/arch.svg', '../img/arch.svg'],
+      ['/docs/a.png', '/docs/a.png'],
+      ['x.png', 'x.png'],
+      ['file:///tmp/x.png', 'file:///tmp/x.png'],
+      // remark-rehype percent-encodes `\` in Markdown URLs to `%5C`.
+      ['C:\\repo\\x.png', 'C:%5Crepo%5Cx.png'],
+    ]
+    for (const [src, expectedAttr] of cases) {
       const html = render(`![shot](${src})`)
       expect(html, src).not.toContain('<img')
+      expect(html, src).not.toContain('src=')
+      expect(html, src).not.toContain(BLOCKED_IMAGE_CHIP_TEXT)
+      expect(html, src).toContain(`class="${LOCAL_IMAGE_CLASS}"`)
+      expect(html, src).toContain(`${LOCAL_IMAGE_ATTRIBUTE}="${expectedAttr}"`)
+      expect(html, src).toContain(`${LOCAL_IMAGE_ALT_ATTRIBUTE}="shot"`)
+      expect(html, src).toContain(`class="${LOCAL_IMAGE_FALLBACK_CLASS}">shot<`)
+    }
+
+    const noAlt = render('![](./logo.svg)')
+    expect(noAlt).toContain(`class="${LOCAL_IMAGE_FALLBACK_CLASS}">./logo.svg<`)
+  })
+
+  it('blocks http, protocol-relative, remote file:, UNC, mixed-slash, and encoded UNC srcs', () => {
+    // CommonMark unescapes `\\` in link destinations to a single `\`, so a literal
+    // UNC path in Markdown source writes four leading backslashes (`\\\\srv\\share\\x.png`).
+    const blocked = [
+      'http://evil.example/x.png',
+      '//evil.example/x.png',
+      'file://evil.example/x.png',
+      'file:////evil.example/share/x.png',
+      '\\\\\\\\srv\\\\share\\\\x.png',
+      '/\\evil.example/share/x.png',
+      '%5c%5cevil.example%5cshare%5cx.png',
+    ]
+    for (const src of blocked) {
+      const html = render(`![shot](${src})`)
+      expect(html, src).not.toContain('<img')
+      expect(html, src).not.toContain('src=')
+      expect(html, src).not.toContain(LOCAL_IMAGE_ATTRIBUTE)
       expect(html, src).toContain(BLOCKED_IMAGE_CHIP_TEXT)
       expect(html, src).toContain('>shot<')
     }

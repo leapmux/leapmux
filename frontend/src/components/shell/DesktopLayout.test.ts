@@ -1,6 +1,7 @@
 import type { AutoCollapseInput } from './DesktopLayout'
-import { describe, expect, it } from 'vitest'
-import { decideAutoCollapse } from './DesktopLayout'
+import { createRoot } from 'solid-js'
+import { describe, expect, it, vi } from 'vitest'
+import { decideAutoCollapse, useSidebarSide } from './DesktopLayout'
 
 function input(overrides: Partial<AutoCollapseInput> = {}): AutoCollapseInput {
   return {
@@ -157,5 +158,48 @@ describe('decideAutoCollapse', () => {
       rightCollapsed: true,
     }))
     expect(decision).toEqual({ collapseLeft: true })
+  })
+})
+
+describe('useSidebarSide', () => {
+  it('preserves dragged width and skips saving when expand is called on an already-expanded sidebar', () => {
+    createRoot((dispose) => {
+      const onSave = vi.fn()
+      const side = useSidebarSide({
+        side: 'left',
+        initWidth: 250,
+        initCollapsed: false,
+        initAutoCollapsed: false,
+        minWidth: 250,
+        collapsedSizePx: 45,
+        onSave,
+      })
+
+      // Widen the open sidebar from 250px to 360px via pointer drag.
+      const handle = document.createElement('div')
+      const down = new PointerEvent('pointerdown', { clientX: 250, cancelable: true })
+      Object.defineProperty(down, 'currentTarget', { value: handle })
+      side.drag(down)
+      document.dispatchEvent(new PointerEvent('pointermove', { clientX: 360 }))
+      document.dispatchEvent(new PointerEvent('pointerup', { clientX: 360 }))
+
+      expect(side.width()).toBe(360)
+      const saveCountAfterDrag = onSave.mock.calls.length
+
+      // Calling expand() while already expanded must be a no-op.
+      side.expand()
+      expect(side.width()).toBe(360)
+      expect(side.collapsed()).toBe(false)
+      expect(onSave).toHaveBeenCalledTimes(saveCountAfterDrag)
+
+      // Collapsing and expanding later restores the dragged 360px width.
+      side.collapse()
+      expect(side.collapsed()).toBe(true)
+      side.expand()
+      expect(side.collapsed()).toBe(false)
+      expect(side.width()).toBe(360)
+
+      dispose()
+    })
   })
 })

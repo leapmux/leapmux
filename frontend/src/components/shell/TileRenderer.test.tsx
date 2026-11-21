@@ -1,3 +1,4 @@
+import type { MarkdownLocalLinkContextValue } from '~/components/chat/markdownLocalLinks'
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { Tab } from '~/stores/tab.types'
@@ -7,6 +8,7 @@ import { DragDropProvider } from '@thisbeyond/solid-dnd'
 import { createRoot, createSignal, Show } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
+import { useMarkdownLocalLinks } from '~/components/chat/markdownLocalLinks'
 import { AgentInputProcessRecoverySchema, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -22,6 +24,7 @@ import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { deferred } from '~/test-support/async'
 import { reportChatViewportSize } from '~/test-support/chatViewRows'
@@ -70,22 +73,48 @@ vi.mock('~/context/PreferencesContext', () => ({
 const chatViewState = vi.hoisted(() => ({
   props: undefined as undefined | Parameters<typeof import('~/components/chat/ChatView').ChatView>[0],
 }))
+const localLinkCaptures = vi.hoisted(() => ({
+  chat: undefined as MarkdownLocalLinkContextValue | undefined,
+  editor: undefined as MarkdownLocalLinkContextValue | undefined,
+  file: undefined as MarkdownLocalLinkContextValue | undefined,
+  terminal: undefined as MarkdownLocalLinkContextValue | undefined,
+  chatMounts: 0,
+  editorMounts: 0,
+  fileMounts: 0,
+  terminalMounts: 0,
+}))
 vi.mock('~/components/chat/ChatView', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/components/chat/ChatView')>()
   return {
     ...actual,
-    // The real view, with a record of its props.
+    // The real view, with a record of its props and ambient local-link context.
     ChatView: (props: Parameters<typeof actual.ChatView>[0]) => {
       chatViewState.props = props
+      localLinkCaptures.chatMounts += 1
+      localLinkCaptures.chat = useMarkdownLocalLinks()
       return actual.ChatView(props)
     },
   }
 })
 
+vi.mock('~/components/chat/AgentEditorPanel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/components/chat/AgentEditorPanel')>()
+  return {
+    ...actual,
+    AgentEditorPanel: (props: Parameters<typeof actual.AgentEditorPanel>[0]) => {
+      localLinkCaptures.editorMounts += 1
+      localLinkCaptures.editor = useMarkdownLocalLinks()
+      return actual.AgentEditorPanel(props)
+    },
+  }
+})
+
 vi.mock('~/components/fileviewer/FileViewer', () => ({
-  FileViewer: (props: { rootPath?: string, homeDir?: string }) => (
-    <div data-testid="file-viewer" data-root={props.rootPath} data-home={props.homeDir} />
-  ),
+  FileViewer: (props: { rootPath?: string, homeDir?: string }) => {
+    localLinkCaptures.fileMounts += 1
+    localLinkCaptures.file = useMarkdownLocalLinks()
+    return <div data-testid="file-viewer" data-root={props.rootPath} data-home={props.homeDir} />
+  },
 }))
 
 /**
@@ -120,11 +149,15 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
 })
 
 vi.mock('~/components/terminal/TerminalView', () => ({
-  TerminalView: (props: { terminals: Array<{ id: string }> }) => (
-    <div data-testid="terminal-view">
-      {props.terminals.map(t => t.id).join(',')}
-    </div>
-  ),
+  TerminalView: (props: { terminals: Array<{ id: string }> }) => {
+    localLinkCaptures.terminalMounts += 1
+    localLinkCaptures.terminal = useMarkdownLocalLinks()
+    return (
+      <div data-testid="terminal-view">
+        {props.terminals.map(t => t.id).join(',')}
+      </div>
+    )
+  },
   getTerminalInstance: () => undefined,
 }))
 
@@ -169,6 +202,7 @@ interface RenderRendererOptions {
   composerShown?: () => boolean
   /** The agent operation that records an approval of a denied auto-review. */
   handleApproveAutoReviewDenial?: (agentId: string, messageId: string, reviewId: string) => Promise<void>
+  onActivateLocalLink?: NonNullable<Parameters<typeof createTileRenderer>[0]['onActivateLocalLink']>
 }
 
 function renderRenderer(s: RendererSetup, focusedTileId: string, options: RenderRendererOptions = {}) {
@@ -208,6 +242,9 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       clientId: () => 'test-client',
       ...(options.onOpenChatImage
         ? { onOpenChatImage: options.onOpenChatImage }
+        : {}),
+      ...(options.onActivateLocalLink
+        ? { onActivateLocalLink: options.onActivateLocalLink }
         : {}),
       confirmLink: async () => false,
       ops: {
@@ -1219,4 +1256,138 @@ describe('createTileRenderer new-tab actions', () => {
       })
     }
   }
+})
+
+describe('MarkdownLocalLinkProvider wiring', () => {
+  beforeEach(() => {
+    localLinkCaptures.chat = undefined
+    localLinkCaptures.editor = undefined
+    localLinkCaptures.file = undefined
+    localLinkCaptures.terminal = undefined
+    localLinkCaptures.chatMounts = 0
+    localLinkCaptures.editorMounts = 0
+    localLinkCaptures.fileMounts = 0
+    localLinkCaptures.terminalMounts = 0
+  })
+
+  it('provides undefined to all four surfaces when onActivateLocalLink is omitted', () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId)
+    s.addFile('f1', tileId)
+    s.addTerminal('t1', tileId)
+    // Keep agent focused so FocusedAgentEditorPanel mounts too.
+    s.selection.setActiveById(TabType.AGENT, 'a1')
+
+    renderRenderer(s, tileId, { withComposer: true })
+
+    expect(localLinkCaptures.chatMounts).toBe(1)
+    expect(localLinkCaptures.editorMounts).toBe(1)
+    expect(localLinkCaptures.fileMounts).toBe(1)
+    expect(localLinkCaptures.terminalMounts).toBe(1)
+    expect(localLinkCaptures.chat).toBeUndefined()
+    expect(localLinkCaptures.editor).toBeUndefined()
+    expect(localLinkCaptures.file).toBeUndefined()
+    expect(localLinkCaptures.terminal).toBeUndefined()
+  })
+
+  it('provides reactive contexts across agent, editor, file, and terminal panes with OS flavor and activateSource', () => {
+    const osByWorker = new Map<string, string>([
+      ['worker-1', 'windows'],
+    ])
+    const homeByWorker = new Map<string, string>([
+      ['worker-1', 'C:\\Users\\Alice'],
+    ])
+    const getOsSpy = vi.spyOn(workerInfoStore, 'getOs').mockImplementation(id => osByWorker.get(id))
+    const getHomeSpy = vi.spyOn(workerInfoStore, 'getHomeDir').mockImplementation(id => homeByWorker.get(id) ?? '')
+    setupCleanups.push(() => {
+      getOsSpy.mockRestore()
+      getHomeSpy.mockRestore()
+    })
+
+    const s = createSetup()
+    const otherTile = s.layoutStore.focusedTileId()!
+    s.addAgent('other', otherTile)
+    const sourceTile = s.layoutStore.splitTile(otherTile, 'horizontal')!
+    s.addAgent('a1', sourceTile)
+    s.addFile('f1', sourceTile)
+    s.addTerminal('t1', sourceTile)
+    s.metadata.patch('a1', { workingDir: 'C:\\Repo' })
+    s.metadata.patch('f1', { filePath: 'C:\\Repo\\docs\\guide.md', workingDir: 'C:\\Repo' })
+    s.metadata.patch('t1', { workingDir: 'C:\\Repo\\scripts' })
+
+    // Focus `sourceTile` on agent `a1` so FocusedAgentEditorPanel renders for `a1`.
+    s.layoutStore.setFocusedTile(sourceTile, s.workspaceId)
+    s.selection.setActiveById(TabType.AGENT, 'a1')
+
+    const onActivateLocalLink = vi.fn()
+    renderRenderer(s, sourceTile, { withComposer: true, onActivateLocalLink })
+
+    expect(localLinkCaptures.chat?.workerId).toBe('worker-1')
+    expect(localLinkCaptures.chat?.baseDir).toBe('C:\\Repo')
+    expect(localLinkCaptures.chat?.workingDir).toBe('C:\\Repo')
+    expect(localLinkCaptures.chat?.homeDir).toBe('C:\\Users\\Alice')
+    expect(localLinkCaptures.chat?.flavor).toBe('win32')
+
+    expect(localLinkCaptures.editor?.workerId).toBe('worker-1')
+    expect(localLinkCaptures.editor?.baseDir).toBe('C:\\Repo')
+    expect(localLinkCaptures.editor?.flavor).toBe('win32')
+
+    // FileViewer derives baseDir via parentDirectory(filePath, flavor).
+    expect(localLinkCaptures.file?.workerId).toBe('worker-1')
+    expect(localLinkCaptures.file?.baseDir).toBe('C:\\Repo\\docs')
+    expect(localLinkCaptures.file?.workingDir).toBe('C:\\Repo')
+    expect(localLinkCaptures.file?.homeDir).toBe('C:\\Users\\Alice')
+    expect(localLinkCaptures.file?.flavor).toBe('win32')
+
+    // Updating metadata updates getters without remounting the panes.
+    s.metadata.patch('a1', { workingDir: 'C:\\Repo2' })
+    s.metadata.patch('f1', { filePath: 'C:\\Repo2\\sub\\a.md', workingDir: 'C:\\Repo2' })
+    expect(localLinkCaptures.chatMounts).toBe(1)
+    expect(localLinkCaptures.fileMounts).toBe(1)
+    expect(localLinkCaptures.chat?.baseDir).toBe('C:\\Repo2')
+    expect(localLinkCaptures.editor?.baseDir).toBe('C:\\Repo2')
+    expect(localLinkCaptures.file?.baseDir).toBe('C:\\Repo2\\sub')
+
+    // Move focus away to otherTile, then activate from Agent, File, and Terminal panes.
+    s.layoutStore.setFocusedTile(otherTile, s.workspaceId)
+    s.selection.setActiveById(TabType.AGENT, 'other')
+
+    localLinkCaptures.chat?.onActivate('./notes.md')
+    const agentCall = onActivateLocalLink.mock.calls.at(-1)!
+    expect(agentCall[0]).toBe('./notes.md')
+    agentCall[1].activateSource?.()
+    expect(s.layoutStore.focusedTileId()).toBe(sourceTile)
+    expect(s.selection.activeTabForTile(sourceTile)?.id).toBe('a1')
+
+    s.layoutStore.setFocusedTile(otherTile, s.workspaceId)
+    s.selection.setActiveById(TabType.AGENT, 'other')
+    localLinkCaptures.file?.onActivate('../README.md')
+    const fileCall = onActivateLocalLink.mock.calls.at(-1)!
+    expect(fileCall[0]).toBe('../README.md')
+    expect(fileCall[1].baseDir).toBe('C:\\Repo2\\sub')
+    fileCall[1].activateSource?.()
+    expect(s.layoutStore.focusedTileId()).toBe(sourceTile)
+    expect(s.selection.activeTabForTile(sourceTile)?.id).toBe('f1')
+
+    // Activate terminal tab so terminalTab() is active on sourceTile, then test from unfocused state.
+    s.selection.setActiveById(TabType.TERMINAL, 't1')
+    expect(localLinkCaptures.terminal?.baseDir).toBe('C:\\Repo\\scripts')
+    expect(localLinkCaptures.terminal?.flavor).toBe('win32')
+    s.layoutStore.setFocusedTile(otherTile, s.workspaceId)
+    s.selection.setActiveById(TabType.AGENT, 'other')
+    localLinkCaptures.terminal?.onActivate('./run.sh')
+    const termCall = onActivateLocalLink.mock.calls.at(-1)!
+    expect(termCall[0]).toBe('./run.sh')
+    termCall[1].activateSource?.()
+    expect(s.layoutStore.focusedTileId()).toBe(sourceTile)
+    expect(s.selection.activeTabForTile(sourceTile)?.id).toBe('t1')
+
+    // Editor panel activation forwards rawHref and source.
+    s.selection.setActiveById(TabType.AGENT, 'a1')
+    localLinkCaptures.editor?.onActivate('./plan.md')
+    const editorCall = onActivateLocalLink.mock.calls.at(-1)!
+    expect(editorCall[0]).toBe('./plan.md')
+    expect(editorCall[1].workingDir).toBe('C:\\Repo2')
+  })
 })

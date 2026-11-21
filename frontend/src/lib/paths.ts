@@ -275,6 +275,117 @@ export function join(parts: string[], flavor?: PathFlavor): string {
     : joined
 }
 
+/**
+ * Normalize separators for the platform flavor and collapse `.` and `..`
+ * segments. Clamps `..` at filesystem roots, preserves leading `..` on
+ * relative paths, and keeps trailing separators only on filesystem roots.
+ */
+export function cleanPath(p: string, flavor?: PathFlavor): string {
+  if (!p)
+    return ''
+  const f = flavorOf(p, flavor)
+  const s = sep(f)
+
+  let volume = ''
+  let rooted = false
+  let rest = p
+
+  if (f === 'win32') {
+    const normalized = normalizeSeparators(p, 'win32')
+    if (DRIVE_LETTER_RE.test(normalized)) {
+      volume = normalized.slice(0, 2)
+      rooted = true
+      rest = normalized.slice(2)
+    }
+    else {
+      const unc = parseUncHead(normalized)
+      if (unc) {
+        volume = unc.volume
+        rooted = true
+        rest = unc.rest
+      }
+      else if (normalized.startsWith('\\')) {
+        rooted = true
+        rest = normalized
+      }
+      else {
+        rest = normalized
+      }
+    }
+  }
+  else {
+    rooted = p.startsWith('/')
+  }
+
+  const rawSegments = f === 'win32'
+    ? rest.split(SEP_SPLIT_RE)
+    : rest.split('/')
+  const stack: string[] = []
+  for (const segment of rawSegments) {
+    if (segment === '' || segment === '.')
+      continue
+    if (segment === '..') {
+      if (stack.length > 0 && stack[stack.length - 1] !== '..')
+        stack.pop()
+      else if (!rooted)
+        stack.push('..')
+      continue
+    }
+    stack.push(segment)
+  }
+
+  if (rooted) {
+    return stack.length === 0
+      ? `${volume}${s}`
+      : `${volume}${s}${stack.join(s)}`
+  }
+  return stack.length === 0
+    ? '.'
+    : stack.join(s)
+}
+
+/**
+ * Resolve `target` against `baseDir` and clean `.` / `..` segments.
+ *
+ * - An absolute target with a volume (or any POSIX `/...`) resolves independently of `baseDir`.
+ * - A volume-less rooted Win32 target (`/foo` or `\foo`) inherits `baseDir`'s filesystem root when present.
+ * - A relative target joins onto `baseDir` before cleaning.
+ */
+export function resolvePath(baseDir: string, target: string, flavor?: PathFlavor): string {
+  const inferred = baseDir
+    ? detectFlavor(baseDir)
+    : detectFlavor(target)
+  const f = flavor ?? inferred
+  if (!target) {
+    return baseDir
+      ? cleanPath(baseDir, f)
+      : ''
+  }
+
+  if (f === 'win32') {
+    const normTarget = normalizeSeparators(target, 'win32')
+    if (filesystemRoot(normTarget, 'win32') !== undefined)
+      return cleanPath(normTarget, 'win32')
+    if (isAbsolute(normTarget, 'win32')) {
+      const root = baseDir
+        ? filesystemRoot(normalizeSeparators(baseDir, 'win32'), 'win32')
+        : undefined
+      if (root !== undefined)
+        return cleanPath(`${root}${normTarget.replace(LEADING_SEP_RE, '')}`, 'win32')
+      return cleanPath(normTarget, 'win32')
+    }
+    return baseDir
+      ? cleanPath(join([baseDir, normTarget], 'win32'), 'win32')
+      : cleanPath(normTarget, 'win32')
+  }
+
+  if (isAbsolute(target, 'posix'))
+    return cleanPath(target, 'posix')
+  return baseDir
+    ? cleanPath(`${baseDir}/${target}`, 'posix')
+    : cleanPath(target, 'posix')
+}
+
 // Parent directory of `p`. For a root, returns the root itself.
 export function parentDirectory(p: string, flavor?: PathFlavor): string {
   if (!p)

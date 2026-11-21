@@ -230,7 +230,8 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.StatFileResponse{
-			Info: fileInfoToProto(info, filePath),
+			Info:          fileInfoToProto(info, filePath),
+			CanonicalPath: pathutil.Canonicalize(filePath),
 		})
 	})
 }

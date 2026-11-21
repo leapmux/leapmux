@@ -7,6 +7,7 @@ import rehypeShikiFromHighlighter from '@shikijs/rehype/core'
 import rehypeStringify from 'rehype-stringify'
 import remarkRehype from 'remark-rehype'
 import { visit } from 'unist-util-visit'
+import { isLocalLinkHref, LOCAL_LINK_ATTRIBUTE } from './localLinks'
 import { createMarkdownParser } from './markdownParse'
 import { markdownSourceFallbackHtml } from './markdownSourceFallback'
 import { rehypeBlockRemoteImages } from './rehypeBlockRemoteImages'
@@ -85,11 +86,15 @@ function remarkHtmlAsText() {
 }
 
 /**
- * Rehype plugin that secures links: adds target/rel to http(s) links, unwraps non-http(s)
- * links. Also the single source of the link-hardening rule for the placeholder anchors
+ * Rehype plugin that handles Markdown links:
+ * 1. Lowercase `http(s)://` links are hardened with `target="_blank"`, safe `rel`, and `data-untrusted-link`.
+ * 2. Safe local file/directory links (`isLocalLinkHref`) become context-independent `<span data-local-link="...">` markers.
+ * 3. Every other link is unwrapped to its children.
+ *
+ * Also the single source of the link-hardening rule for the placeholder anchors
  * rehypeBlockRemoteImages emits, which is why it runs AFTER that plugin.
  */
-function rehypeExternalLinks() {
+function rehypeMarkdownLinks() {
   return (tree: Root) => {
     visit(tree, 'element', (node, index, parent) => {
       if (node.tagName !== 'a')
@@ -110,8 +115,15 @@ function rehypeExternalLinks() {
         node.properties[UNTRUSTED_LINK_ATTRIBUTE] = ''
         return undefined
       }
+      if (typeof href === 'string' && isLocalLinkHref(href)) {
+        node.tagName = 'span'
+        node.properties = {
+          [LOCAL_LINK_ATTRIBUTE]: href,
+        }
+        return undefined
+      }
       if (parent && typeof index === 'number') {
-        // Non-http(s) link — unwrap: replace <a> with its children
+        // Non-http(s), non-local link — unwrap: replace <a> with its children
         parent.children.splice(index, 1, ...node.children)
         return index
       }
@@ -123,7 +135,7 @@ function rehypeExternalLinks() {
 /**
  * Append the shared security-hardening + stringify tail every markdown pipeline
  * ends with: block remote images, then harden links, then stringify. Runs
- * rehypeExternalLinks AFTER rehypeBlockRemoteImages so the blocked-image
+ * rehypeMarkdownLinks AFTER rehypeBlockRemoteImages so the blocked-image
  * placeholder's `<a href>` is owned by the link-hardening pass.
  *
  * Centralizing the tail makes remote-image blocking a PROPERTY of any pipeline built
@@ -136,7 +148,7 @@ function rehypeExternalLinks() {
 function withHardeningTail<P extends Processor<any, any, Root, any, any>>(pipeline: P) {
   return pipeline
     .use(rehypeBlockRemoteImages)
-    .use(rehypeExternalLinks)
+    .use(rehypeMarkdownLinks)
     .use(rehypeStringify)
 }
 
