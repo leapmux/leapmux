@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -16,6 +17,7 @@ type nativeControl struct {
 	event           string
 	toolName        string
 	agentID         string
+	instanceID      string
 	request         json.RawMessage
 	sink            agent.ProviderServices
 	payload         []byte
@@ -25,6 +27,10 @@ type nativeControl struct {
 	automaticFailed bool
 	publicationDone chan struct{}
 	publicationOnce sync.Once
+	// Mu protects reply ownership as the native tool and request streams meet.
+	replyCallID   string
+	replyInputIDs []string
+	replyBound    bool
 }
 
 type nativeQuestion struct {
@@ -177,7 +183,16 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 		return err
 	}
 	toolName, _ := header["tool_name"].(string)
-	control := &nativeControl{event: event, toolName: toolName, agentID: sessionID, request: append([]byte(nil), request...), sink: sink, payload: content, publicationDone: make(chan struct{})}
+	callID, _ := header["tool_use_id"].(string)
+	if callID == "" && event == contracts.DeepseekHarnessControlEventUserQuestions {
+		wait, _ := header["wait"].(map[string]any)
+		callID, _ = wait["callId"].(string)
+	}
+	control := &nativeControl{
+		event: event, toolName: toolName, agentID: sessionID, instanceID: uuid.NewString(),
+		request: append([]byte(nil), request...), sink: sink, payload: content, publicationDone: make(chan struct{}),
+		replyCallID: callID, replyInputIDs: a.replyToolInputs(sessionID, callID),
+	}
 	a.Mu.Lock()
 	if a.controls[id] != nil {
 		a.Mu.Unlock()
@@ -202,7 +217,9 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 }
 
 func (a *Agent) publishRegisteredControl(id string, control *nativeControl) error {
-	err := control.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.agentID, RequestID: id, Payload: control.payload})
+	err := control.sink.PublishControlRequest(agent.ControlRequest{
+		AgentSessionID: control.agentID, RequestID: id, InstanceID: control.instanceID, Payload: control.payload,
+	})
 	a.Mu.Lock()
 	current := a.controls[id] == control
 	control.published, control.ready = err == nil, true
@@ -210,8 +227,13 @@ func (a *Agent) publishRegisteredControl(id string, control *nativeControl) erro
 	if err != nil && current {
 		delete(a.controls, id)
 	}
+	var binding agent.NativeControlInputs
+	if current {
+		binding = control.takeReplyInputsLocked(id)
+	}
 	automatic := current && err == nil && a.canBypassControlLocked(control)
 	a.Mu.Unlock()
+	a.bindReplyControl(binding)
 	if !current && err == nil {
 		control.sink.CancelControlRequest(id)
 	}

@@ -29,6 +29,7 @@ var silentSessionEvents = map[string]struct{}{
 }
 
 type assistantMessageEventData struct {
+	Turn    *int64 `json:"turn"`
 	Message struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -66,6 +67,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		stream.tools = 0
 		stream.startedAt = event.Time
 		if stream.childAgentID == "" {
+			a.beginReplyTurn(stream.sessionID, event.Data)
 			a.setTurnState(true)
 		} else {
 			if err := a.childTurnState(stream.sessionID, true, agent.MessageCompletionComplete); err != nil {
@@ -103,14 +105,25 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			blockContent.IdempotencyKey += fmt.Sprintf(":block:%d", index)
 			blockContent.Supplemental = supplemental
 			blockContent.Completion = completion
+			var reply *harnessReplyTurn
+			if stream.childAgentID == "" && block.Type == contracts.DeepseekHarnessContentTypeText {
+				reply = a.replyTurnForText(stream.sessionID, data.Turn)
+			}
+			if reply != nil {
+				blockContent.NativeTurnID = reply.id
+			}
 			if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, blockContent, agent.SpanInfo{}); !agent.OutputRetained(err) {
 				return err
+			}
+			if reply != nil {
+				reply.recordText(blockContent.IdempotencyKey)
 			}
 		}
 	case contracts.DeepseekHarnessEventUserMessage:
 		if stream.childAgentID == "" {
 			var message struct {
 				Source struct {
+					Kind  string `json:"kind"`
 					RPCID string `json:"rpcId"`
 				} `json:"source"`
 			}
@@ -126,6 +139,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 				return true
 			})
 			a.Mu.Unlock()
+			if message.Source.Kind == nativeUserSourceKind && message.Source.RPCID != "" {
+				a.bindReplyInput(stream.sessionID, message.Source.RPCID)
+			}
 		}
 		if stream.childAgentID != "" && isUnstoredChildInput(event.Data) {
 			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
@@ -160,6 +176,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		var call struct {
 			ID   string `json:"callId"`
 			Name string `json:"name"`
+			Turn *int64 `json:"turn"`
 		}
 		if err := json.Unmarshal(event.Data, &call); err != nil || call.ID == "" || call.Name == "" {
 			return fmt.Errorf("DeepSeek Harness tool call has no identity")
@@ -171,6 +188,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		sink.SetSpanType(call.ID, call.Name)
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: call.ID, SpanType: call.Name, SpanColor: sink.ReserveSpanColor(call.ID, "")}); !agent.OutputRetained(err) {
 			return err
+		}
+		if stream.childAgentID == "" {
+			a.recordReplyToolCall(stream.sessionID, call.ID, call.Turn)
 		}
 		stream.tools++
 		stream.pendingOrder = append(stream.pendingOrder, call.ID)
@@ -202,15 +222,17 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		sink.CloseSpan(id)
 	case contracts.DeepseekHarnessEventTurnEnd:
 		completion := nativeTurnCompletion(event.Data)
+		var end struct {
+			Turn   *int64 `json:"turn"`
+			Reason struct {
+				Kind  string `json:"kind"`
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"reason"`
+		}
 		if stream.childAgentID == "" {
 			a.retryResolution.Reset()
-			var end struct {
-				Reason struct {
-					Error struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				} `json:"reason"`
-			}
 			if err := json.Unmarshal(event.Data, &end); err != nil {
 				return err
 			}
@@ -231,6 +253,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			return err
 		}
 		if stream.childAgentID == "" {
+			a.finishReplyTurn(stream.sessionID, end.Turn, end.Reason.Kind)
 			a.setTurnState(false)
 		} else {
 			if err := a.childTurnState(stream.sessionID, false, completion); err != nil {
