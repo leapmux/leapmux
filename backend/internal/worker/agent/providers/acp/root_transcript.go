@@ -225,17 +225,22 @@ func appendRootTarget(targets []*acpTranscriptTarget, target *acpTranscriptTarge
 
 // Reserve genuinely unowned text before the new physical group. Capture runs after unlock.
 func (b *Base) preparePriorTextLocked(turn *acpTurnSnapshot) {
-	if b.hooks.OpenRootTranscript == nil {
-		return
+	if b.hooks.OpenRootTranscript != nil {
+		b.reserveBufferedTextLocked(turn)
 	}
+}
+
+// Reserve text without a root transcript capture before later rows can enter the queue.
+func (b *Base) reserveBufferedTextLocked(turn *acpTurnSnapshot) {
 	if (turn.thoughtText == "" || turn.thoughtAdmission != nil) && (turn.assistantText == "" || turn.assistantAdmission != nil) {
 		return
 	}
 	batch, err := agent.ReserveCapturedTranscriptBatch(b.sink)
 	if err != nil {
-		panic(fmt.Sprintf("reserve preceding ACP transcript: %v", err))
+		slog.Error("reserve buffered ACP text", "agent_id", b.AgentID(), "error", err)
+		return
 	}
-	turn.priorText = batch
+	turn.textBatch = batch
 }
 
 func (b *Base) finishRootTargets(turn acpTurnSnapshot, reason RootTranscriptEnd, completion agent.MessageCompletion, discard bool) {
@@ -245,6 +250,9 @@ func (b *Base) finishRootTargets(turn acpTurnSnapshot, reason RootTranscriptEnd,
 	}
 }
 func waitRootTargets(turn acpTurnSnapshot) {
+	if turn.answeredPrompt != nil {
+		waitRootTargets(*turn.answeredPrompt)
+	}
 	for _, target := range turn.rootTargets {
 		target.waitForCaptureCompletion()
 	}
@@ -256,6 +264,11 @@ func (b *Base) finishRootSnapshot(turn acpTurnSnapshot, textCompletion, toolComp
 	}
 	count := turn.completedToolUses + len(turn.incompleteTools)
 	if b.IsDiscardingOutput() {
+		if turn.textBatch.Discard() {
+			if err := agent.OutputQueueFor(b.sink).Flush(); err != nil && !agent.OutputRetained(err) {
+				slog.Error("release discarded ACP text", "agent_id", b.AgentID(), "error", err)
+			}
+		}
 		turn.releaseTranscriptAdmissions()
 		b.finishRootTargets(turn, reason, textCompletion, true)
 		if !turn.hasPromptBoundary {
@@ -289,32 +302,45 @@ func (b *Base) captureRootSnapshotLocked(turn *acpTurnSnapshot, allTurns bool) {
 
 func (b *Base) detachRootPrompt() acpTurnSnapshot {
 	b.turnMu.Lock()
+	defer b.turnMu.Unlock()
+	return b.takeRootPromptLocked()
+}
+
+func (b *Base) takeRootPromptLocked() acpTurnSnapshot {
+	if answered := b.takeAnsweredPromptLocked(); answered != nil {
+		return *answered
+	}
+	return b.snapshotRootPromptLocked()
+}
+
+func (b *Base) snapshotRootPromptLocked() acpTurnSnapshot {
 	turn, _ := b.drainPromptTurnLocked()
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()
-	b.turnMu.Unlock()
 	return turn
 }
 
 func (b *Base) detachAllRootOutput() acpTurnSnapshot {
 	b.turnMu.Lock()
-	turn := b.drainTurnLocked()
-	b.Mu.Lock()
-	b.captureRootSnapshotLocked(&turn, true)
-	b.Mu.Unlock()
-	b.turnMu.Unlock()
-	return turn
+	defer b.turnMu.Unlock()
+	return b.drainAllRootOutputLocked()
 }
 
 func (b *Base) replaceRootSession(updateProtocol func()) acpTurnSnapshot {
 	b.turnMu.Lock()
+	defer b.turnMu.Unlock()
+	turn := b.drainAllRootOutputLocked()
+	updateProtocol()
+	return turn
+}
+
+func (b *Base) drainAllRootOutputLocked() acpTurnSnapshot {
 	turn := b.drainTurnLocked()
+	turn.answeredPrompt = b.takeAnsweredPromptLocked()
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, true)
 	b.Mu.Unlock()
-	updateProtocol()
-	b.turnMu.Unlock()
 	return turn
 }
 
@@ -340,10 +366,74 @@ func (b *Base) persistRootFailure(writer agent.TranscriptServices, err error) {
 	}
 }
 
+type acpRootPromptRequest struct {
+	sessionID string
+	target    *acpTranscriptTarget
+	answered  *acpTurnSnapshot
+}
+
+func (b *Base) takeAnsweredPromptLocked() *acpTurnSnapshot {
+	request := b.rootPromptRequest
+	b.rootPromptRequest = nil
+	if request == nil {
+		return nil
+	}
+	return request.answered
+}
+
+func (b *Base) ownsRootPromptEndLocked(sessionID string, target *acpTranscriptTarget, request *acpRootPromptRequest) bool {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	if b.sessionID != sessionID || b.rootPromptRequest != request {
+		return false
+	}
+	return (request != nil && request.answered != nil) || (b.promptTarget == target && !b.promptOutputDrained)
+}
+
+func (b *Base) observeRootPromptResponse(request *acpRootPromptRequest) {
+	// This runs on the reader without sessionMu. Session replacement keeps the
+	// output and session identity together under turnMu while the reader can
+	// still deliver the response that replacement is waiting for.
+	b.sessionUpdates.mu.Lock()
+	defer b.sessionUpdates.mu.Unlock()
+	if b.sessionUpdates.buffering {
+		b.sessionUpdates.pending = append(b.sessionUpdates.pending, bufferedSessionUpdate{sessionID: request.sessionID, promptResponse: request})
+		return
+	}
+	b.captureRootPromptResponse(request)
+}
+
+// The caller holds sessionUpdates.mu. The reader can accept the next text
+// only after the old progress scope completes.
+func (b *Base) captureRootPromptResponse(request *acpRootPromptRequest) {
+	b.turnMu.Lock()
+	if request.answered != nil || !b.ownsRootPromptEndLocked(request.sessionID, request.target, request) {
+		b.turnMu.Unlock()
+		return
+	}
+	turn := b.snapshotRootPromptLocked()
+	b.reserveBufferedTextLocked(&turn)
+	turn.textProgressCompleted = true
+	request.answered = &turn
+	b.turnMu.Unlock()
+	main := b.main()
+	if turn.thoughtText != "" {
+		main.completeTextProgress(agent.AssembledMessageKindReasoning)
+	}
+	if turn.assistantText != "" {
+		main.completeTextProgress(agent.AssembledMessageKindText)
+	}
+}
+
 func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTranscriptTarget, content string, attachments []*leapmuxv1.Attachment, releaseOperation func()) error {
-	return b.sendPromptDetachedLocked(sessionID, content, attachments, target, func(response json.RawMessage, err error) {
+	request := &acpRootPromptRequest{sessionID: sessionID, target: target}
+	b.turnMu.Lock()
+	b.rootPromptRequest = request
+	b.turnMu.Unlock()
+	observe := func(json.RawMessage) { b.observeRootPromptResponse(request) }
+	return b.sendPromptDetachedLocked(sessionID, content, attachments, target, observe, func(response json.RawMessage, err error) {
 		defer releaseOperation()
-		b.finishOwnedPromptRequest(sessionID, target, response, err)
+		b.finishOwnedPromptRequest(sessionID, target, request, response, err)
 	})
 }
 

@@ -194,8 +194,16 @@ func (c *conversation) flushTextBuffer(kind agent.AssembledMessageKind) {
 }
 
 func (c *conversation) persistFinishedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
-	defer admission.release()
+	c.completeTextProgress(kind)
+	c.persistSelectedTextTo(admission, kind, messageID, text, completion)
+}
+
+func (c *conversation) completeTextProgress(kind agent.AssembledMessageKind) {
 	c.sink().ReportProgress(agent.CompleteModelProgress("acp:" + acpTextProgressScope(kind)))
+}
+
+func (c *conversation) persistSelectedTextTo(admission *acpTranscriptAdmission, kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
+	defer admission.release()
 	c.persistAssembledTextTo(admission.transcript(c.sink()), kind, messageID, text, completion)
 }
 

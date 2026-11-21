@@ -105,24 +105,16 @@ func (b *Base) claimPromptLocked(expected *string) (string, error) {
 
 func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, err error) {
 	b.turnMu.Lock()
-	target := b.promptTarget
+	target, request := b.promptTarget, b.rootPromptRequest
 	b.turnMu.Unlock()
-	b.finishOwnedPromptRequest(sessionID, target, response, err)
+	b.finishOwnedPromptRequest(sessionID, target, request, response, err)
 }
 
-func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, response json.RawMessage, err error) {
+func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, request *acpRootPromptRequest, response json.RawMessage, err error) {
 	b.sessionMu.RLock()
 	defer b.sessionMu.RUnlock()
-	b.Mu.Lock()
-	current := b.sessionID == sessionID
-	b.Mu.Unlock()
-	if !current {
-		return
-	}
 	b.turnMu.Lock()
-	b.Mu.Lock()
-	ownsPrompt := b.promptTarget == target && !b.promptOutputDrained
-	b.Mu.Unlock()
+	ownsPrompt := b.ownsRootPromptEndLocked(sessionID, target, request)
 	b.turnMu.Unlock()
 	if !ownsPrompt {
 		return
@@ -132,22 +124,17 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 	if b.hooks.PromptEnded != nil {
 		ending = b.hooks.PromptEnded(err, stopped)
 	}
-	// The reader must finish accepting each tool before the callback detaches its state.
-	// Capture and archive recovery run after this lock releases.
+	// If no response reached the reader, detach the prompt after any update in flight.
+	// Persistence and archive recovery run after the locks release.
 	b.sessionUpdates.mu.Lock()
 	b.turnMu.Lock()
-	b.Mu.Lock()
-	ownsPrompt = b.promptTarget == target && !b.promptOutputDrained
-	b.Mu.Unlock()
+	ownsPrompt = b.ownsRootPromptEndLocked(sessionID, target, request)
 	if !ownsPrompt {
 		b.turnMu.Unlock()
 		b.sessionUpdates.mu.Unlock()
 		return
 	}
-	turn, _ := b.drainPromptTurnLocked()
-	b.Mu.Lock()
-	b.captureRootSnapshotLocked(&turn, false)
-	b.Mu.Unlock()
+	turn := b.takeRootPromptLocked()
 	b.turnMu.Unlock()
 	b.sessionUpdates.mu.Unlock()
 	switch {
@@ -184,10 +171,10 @@ func (b *Base) SendPromptDetached(sessionID, content string, attachments []*leap
 	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
-	return b.sendPromptDetachedLocked(sessionID, content, attachments, nil, handle)
+	return b.sendPromptDetachedLocked(sessionID, content, attachments, nil, nil, handle)
 }
 
-func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments []*leapmuxv1.Attachment, target *acpTranscriptTarget, handle func(json.RawMessage, error)) error {
+func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments []*leapmuxv1.Attachment, target *acpTranscriptTarget, observe func(json.RawMessage), handle func(json.RawMessage, error)) error {
 	blocks, err := b.preparePromptBlocks(sessionID, content, attachments)
 	if err != nil {
 		return err
@@ -230,7 +217,7 @@ func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments [
 	if err := b.writeDeferredOptionsBeforePrompt(sessionID); err != nil {
 		return err
 	}
-	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+	return b.SendDetachedRequestObserved(MethodSessionPrompt, params, observe, handle)
 }
 
 // writeDeferredOptionsBeforePrompt runs under the prompt's exclusive session

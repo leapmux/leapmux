@@ -157,44 +157,7 @@ func (b *Base) endPromptOutput(turn acpTurnSnapshot) {
 // provider can consume it at its hook, as Gemini does, or avoid it with a
 // resume that sends no replay.
 func (b *Base) persistUnownedText(turn acpTurnSnapshot) {
-	if turn.priorText == nil {
-		b.main().persistBufferedText(turn, agent.MessageCompletionComplete)
-		return
-	}
-	// Owned segments already have earlier local positions.
-	if turn.thoughtAdmission != nil {
-		b.main().persistFinishedTextTo(turn.thoughtAdmission, agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, agent.MessageCompletionComplete)
-	}
-	if turn.assistantAdmission != nil {
-		b.main().persistFinishedTextTo(turn.assistantAdmission, agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, agent.MessageCompletionComplete)
-	}
-	err := turn.priorText.Prepare(func() []agent.CapturedTranscriptOperation {
-		var operations []agent.CapturedTranscriptOperation
-		appendText := func(kind agent.AssembledMessageKind, messageID, text string, admission *acpTranscriptAdmission) {
-			if text == "" || admission != nil {
-				return
-			}
-			template, prepare, err := b.main().preparedAssembledText(kind, messageID, text, agent.MessageCompletionComplete)
-			if err != nil {
-				slog.Error("prepare preceding ACP text", "error", err)
-				return
-			}
-			capture, present, err := agent.CapturePreparedTranscript(b.sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, template, agent.SpanInfo{}, prepare)
-			if err != nil {
-				slog.Error("capture preceding ACP text", "error", err)
-				return
-			}
-			if present {
-				operations = append(operations, capture.MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
-			}
-		}
-		appendText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, turn.thoughtAdmission)
-		appendText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, turn.assistantAdmission)
-		return operations
-	})
-	if err != nil && !agent.OutputRetained(err) {
-		slog.Error("persist preceding ACP text", "error", err)
-	}
+	b.main().persistBufferedText(turn, agent.MessageCompletionComplete)
 }
 
 // AgentTurnActive reports whether the running turn is one that the agent

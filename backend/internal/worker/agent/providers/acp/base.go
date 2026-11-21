@@ -102,6 +102,9 @@ type Base struct {
 	settingsPublications agentapi.OutputQueue
 	nativeModeID         string
 	promptOutputDrained  bool
+	// rootPromptRequest identifies the detached request that may end the prompt.
+	// turnMu protects the request and its captured output.
+	rootPromptRequest *acpRootPromptRequest
 
 	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
 	promptActive bool
@@ -309,6 +312,9 @@ func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agentapi.MessageCo
 }
 
 func (b *Base) finishACPTurnFor(turn acpTurnSnapshot, completion agentapi.MessageCompletion, reason RootTranscriptEnd) {
+	if turn.answeredPrompt != nil {
+		b.finishRootSnapshot(*turn.answeredPrompt, completion, completion, reason, nil)
+	}
 	b.finishRootSnapshot(turn, completion, completion, reason, nil)
 	b.sink.ReportProgress(agentapi.ResetProgress())
 }

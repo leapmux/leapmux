@@ -29,6 +29,8 @@ type bufferedSessionUpdate struct {
 	sessionID     string
 	rootSessionID string
 	raw           json.RawMessage
+	// promptResponse places a correlated reply among the notifications it separates.
+	promptResponse *acpRootPromptRequest
 	// dispatch is nil for standard session/update params. A provider supplies
 	// its concrete handler for an extension notification's unchanged frame.
 	dispatch       func(string, json.RawMessage)
@@ -96,6 +98,10 @@ func (b *Base) dispatchBufferedSessionUpdate(update bufferedSessionUpdate) {
 	}
 	if update.dispatch != nil {
 		update.dispatch(update.sessionID, update.raw)
+		return
+	}
+	if update.promptResponse != nil {
+		b.captureRootPromptResponse(update.promptResponse)
 		return
 	}
 	b.dispatchACPSessionUpdate(update.raw)

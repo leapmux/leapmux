@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -68,10 +69,48 @@ func (b *Base) DiscardBufferedOutput(kinds ...agent.AssembledMessageKind) {
 
 // persistBufferedText writes nonempty segments without completing a scope that holds no text.
 func (c *conversation) persistBufferedText(turn acpTurnSnapshot, completion agent.MessageCompletion) {
-	if turn.thoughtText != "" {
-		c.persistFinishedTextTo(turn.thoughtAdmission, agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, completion)
+	persist := c.persistFinishedTextTo
+	if turn.textProgressCompleted {
+		persist = c.persistSelectedTextTo
 	}
-	if turn.assistantText != "" {
-		c.persistFinishedTextTo(turn.assistantAdmission, agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, completion)
+	if turn.thoughtText != "" && (turn.textBatch == nil || turn.thoughtAdmission != nil) {
+		persist(turn.thoughtAdmission, agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, completion)
+	}
+	if turn.assistantText != "" && (turn.textBatch == nil || turn.assistantAdmission != nil) {
+		persist(turn.assistantAdmission, agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, completion)
+	}
+	if turn.textBatch == nil {
+		return
+	}
+	// Root transcript admissions already reserved their own positions. This
+	// batch holds the remaining text until preparation can run off the reader.
+	err := turn.textBatch.Prepare(func() []agent.CapturedTranscriptOperation {
+		const source = leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
+		var operations []agent.CapturedTranscriptOperation
+		appendText := func(kind agent.AssembledMessageKind, messageID, text string, admission *acpTranscriptAdmission) {
+			if text == "" || admission != nil {
+				return
+			}
+			template, prepare, err := c.preparedAssembledText(kind, messageID, text, completion)
+			if err != nil {
+				slog.Error("prepare buffered ACP text", "agent_id", c.b.AgentID(), "error", err)
+				return
+			}
+			template.AgentSessionID = turn.sessionID
+			capture, present, err := agent.CapturePreparedTranscript(c.sink(), source, template, agent.SpanInfo{}, prepare)
+			if err != nil {
+				slog.Error("capture buffered ACP text", "agent_id", c.b.AgentID(), "error", err)
+				return
+			}
+			if present {
+				operations = append(operations, capture.MessageOperation(source))
+			}
+		}
+		appendText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, turn.thoughtAdmission)
+		appendText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, turn.assistantAdmission)
+		return operations
+	})
+	if err != nil && !agent.OutputRetained(err) {
+		slog.Error("persist buffered ACP text", "agent_id", c.b.AgentID(), "error", err)
 	}
 }
