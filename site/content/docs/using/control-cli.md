@@ -287,7 +287,7 @@ The Worker also puts one directory first on the `PATH` of each agent and termina
 
 A login shell runs its profile after it starts, and the profile can move the entry or remove it. macOS moves its system directories, such as `/usr/local/bin`, before it, and Debian's `/etc/profile` replaces `PATH` for bash and sh. Two mechanisms keep `leapmux control` on the Worker's own CLI anyway:
 
-- **The shell of an agent puts the entry back.** The Worker starts each agent through your login shell. After your profile runs, the Worker puts the directory first on `PATH` again. This works in bash, zsh, sh, dash, ksh, fish, Nushell, tcsh, csh, PowerShell and xonsh. In tcsh and csh, `PATH` then holds the directory twice, and the first entry wins.
+- **The shell of an agent puts the entry back.** The Worker starts each agent through your login shell. After your profile runs, the Worker puts the directory first on `PATH` again. This works in bash, zsh, sh, dash, ksh, fish, Nushell, Elvish, tcsh, csh, PowerShell and xonsh. In tcsh and csh, `PATH` then holds the directory twice, and the first entry wins. Elvish agent launches load `rc.elv` as a module without the interactive editor.
 - **`leapmux control` hands each command to the Worker's CLI.** Inside a tab, a `leapmux` that is not the Worker's own runs `$LEAPMUX_CONTROL_CLI` with the same arguments. It does so for each `leapmux control` command, for `leapmux help control`, and for the shell completion of `leapmux control`. Every other command, such as `leapmux worker run`, `leapmux version` or `leapmux commands`, stays with the `leapmux` that you ran. When `$LEAPMUX_CONTROL_CLI` does not exist or cannot run, `leapmux` prints a warning and runs the command itself.
 
 {{< callout type="warning" >}}

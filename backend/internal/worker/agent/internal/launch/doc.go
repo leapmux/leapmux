@@ -5,7 +5,7 @@
 //   - Where is the program? A Locator probes bare names through the user's
 //     login shell or calls the resolver supplied by the provider.
 //   - How is it started? Wrap builds the shell command in the user's own
-//     dialect (POSIX, csh, fish, Nushell, PowerShell or xonsh), with the
+//     dialect (POSIX, csh, fish, Nushell, Elvish, PowerShell or xonsh), with the
 //     preamble delimiter and metadata lines the caller reads back from stdout.
 //     After the profile, and before the command selects or starts the
 //     program, it puts the directory of the Worker's own CLI first on PATH

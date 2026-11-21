@@ -209,6 +209,8 @@ func Wrap(ctx context.Context, spec WrapSpec) (*PreparedLaunch, error) {
 		script = buildNuCommand(shellSpec, prepared)
 	case shell == "fish":
 		script = buildFishCommand(shellSpec, prepared)
+	case shell == "elvish":
+		script = buildElvishCommand(shellSpec, prepared)
 	case shell == "xonsh":
 		script = buildXonshCommand(shellSpec, prepared)
 	case isCsh(shell):

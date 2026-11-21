@@ -150,7 +150,7 @@ func TestWrapRunsTheControlCLIStepBeforeTheLaunchInEveryDialect(t *testing.T) {
 // controlCLIShells lists every Unix shell that the real-shell tests of the
 // control CLI step start. requireProfileShell skips each shell that PATH does
 // not hold, unless LEAPMUX_REQUIRE_PROFILE_SHELLS lists it.
-var controlCLIShells = []string{"sh", "bash", "ash", "dash", "ksh", "zsh", "fish", "nu", "tcsh", "csh", "pwsh", "xonsh"}
+var controlCLIShells = []string{"sh", "bash", "ash", "dash", "ksh", "zsh", "fish", "nu", "elvish", "tcsh", "csh", "pwsh", "xonsh"}
 
 // conformanceShells lists the shells whose step the conformance test runs. A
 // POSIX shell on Windows, such as Git Bash, reads a Windows path that it

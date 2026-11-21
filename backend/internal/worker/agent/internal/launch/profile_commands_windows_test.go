@@ -181,7 +181,7 @@ func assertWindowsPowerShellExplicitDiscovery(t *testing.T, shell, directory, ca
 	names := []string{missing, candidate}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	probe, err := newShellCommand(ctx, shell, false, renderCommandProbe(terminal.ShellBaseName(shell), nonce, names, false), directory, nil)
+	probe, err := newShellCommand(ctx, shell, false, renderCommandProbe(terminal.ShellBaseName(shell), nonce, names, false, false), directory, nil)
 	require.NoError(t, err)
 	configure(probe)
 	output, err := probe.CombinedOutput()

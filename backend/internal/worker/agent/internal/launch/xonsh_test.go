@@ -65,7 +65,7 @@ func TestXonshCommandsHoldPrintableASCIIOnly(t *testing.T) {
 		}
 	}
 	for _, native := range []bool{false, true} {
-		assertPrintableASCII(t, renderCommandProbe("xonsh", "__LEAPMUX_PROBE_TEST__", []string{name}, native))
+		assertPrintableASCII(t, renderCommandProbe("xonsh", "__LEAPMUX_PROBE_TEST__", []string{name}, native, false))
 	}
 }
 

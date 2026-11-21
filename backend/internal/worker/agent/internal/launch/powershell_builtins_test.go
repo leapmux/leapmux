@@ -102,7 +102,7 @@ func TestPowerShellCommandsCallNoUnqualifiedCmdlet(t *testing.T) {
 		}
 	}
 	for _, native := range []bool{false, true} {
-		check("the probe", renderCommandProbe("pwsh", "__LEAPMUX_PROBE_TEST__", []string{"leapmux-test-agent"}, native))
+		check("the probe", renderCommandProbe("pwsh", "__LEAPMUX_PROBE_TEST__", []string{"leapmux-test-agent"}, native, false))
 	}
 	// The strip, the pins and the control CLI step call these cmdlets, so the
 	// scan reaches each of them.

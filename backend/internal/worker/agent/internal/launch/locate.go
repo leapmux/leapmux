@@ -154,7 +154,7 @@ func probeCommands(ctx context.Context, shellPath string, loginShell bool, names
 		return nil, ""
 	}
 	nonce := "__LEAPMUX_PROBE_" + id.Short() + "__"
-	output := runShellProbe(ctx, shellPath, loginShell, renderCommandProbe(shell, nonce, names, nativeOnly))
+	output := runShellProbe(ctx, shellPath, loginShell, renderCommandProbe(shell, nonce, names, nativeOnly, loginShell))
 	return parseCommandProbe(output, nonce, names, nativeOnly)
 }
 

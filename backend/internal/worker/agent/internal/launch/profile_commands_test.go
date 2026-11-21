@@ -210,7 +210,7 @@ func TestProfileCommandPowerShellRegistrySizedProbe(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			script := renderCommandProbe(terminal.ShellBaseName(shell), nonce, names, false)
+			script := renderCommandProbe(terminal.ShellBaseName(shell), nonce, names, false, false)
 			cmd, err := newShellCommand(ctx, shell, false, script, t.TempDir(), nil)
 			require.NoError(t, err)
 			quote := shellquote.PowerShell.Quote

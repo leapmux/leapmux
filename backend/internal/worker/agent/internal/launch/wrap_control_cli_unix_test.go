@@ -49,7 +49,7 @@ func newControlCLIFixture(t *testing.T) controlCLIFixture {
 
 // shellProfiles holds the body of the login profile of each dialect.
 type shellProfiles struct {
-	posix, csh, fish, nu, pwsh, xonsh string
+	posix, csh, fish, nu, elvish, pwsh, xonsh string
 }
 
 // writeShellProfiles writes, into home, the login profile of each shell that
@@ -68,6 +68,7 @@ func writeShellProfiles(t *testing.T, home string, profiles shellProfiles) {
 		".cshrc":           profiles.csh,
 		"fish/config.fish": profiles.fish,
 		"nushell/login.nu": profiles.nu,
+		"elvish/rc.elv":    profiles.elvish,
 		"powershell/Microsoft.PowerShell_profile.ps1": profiles.pwsh,
 		// xonsh reads rc.xsh with and without the login flags. homeEnv lists it
 		// in XONSHRC.
@@ -83,12 +84,13 @@ func writeShellProfiles(t *testing.T, home string, profiles shellProfiles) {
 // decoyProfiles puts decoyDir first on PATH in each dialect.
 func decoyProfiles(decoyDir string) shellProfiles {
 	return shellProfiles{
-		posix: "PATH=" + shellquote.POSIX.Quote(decoyDir) + ":\"$PATH\"; export PATH\n",
-		csh:   "setenv PATH " + shellquote.POSIX.Quote(decoyDir) + "\":$PATH\"\n",
-		fish:  "set --global --export PATH " + shellquote.POSIX.Quote(decoyDir) + " $PATH\n",
-		nu:    "$env.PATH = ($env.PATH | split row (char esep) | prepend " + nuQuote(decoyDir) + ")\n",
-		pwsh:  "$env:PATH = " + shellquote.PowerShell.Quote(decoyDir+":") + " + $env:PATH\n",
-		xonsh: "$PATH.insert(0, " + pythonString(decoyDir) + ")\n",
+		posix:  "PATH=" + shellquote.POSIX.Quote(decoyDir) + ":\"$PATH\"; export PATH\n",
+		csh:    "setenv PATH " + shellquote.POSIX.Quote(decoyDir) + "\":$PATH\"\n",
+		fish:   "set --global --export PATH " + shellquote.POSIX.Quote(decoyDir) + " $PATH\n",
+		nu:     "$env.PATH = ($env.PATH | split row (char esep) | prepend " + nuQuote(decoyDir) + ")\n",
+		elvish: "set E:PATH = " + elvishQuote(decoyDir+":") + "$E:PATH\n",
+		pwsh:   "$env:PATH = " + shellquote.PowerShell.Quote(decoyDir+":") + " + $env:PATH\n",
+		xonsh:  "$PATH.insert(0, " + pythonString(decoyDir) + ")\n",
 	}
 }
 
@@ -270,12 +272,13 @@ func TestWrapLeavesAPathThatTheProfileUnsetsUnset(t *testing.T) {
 			fixture := newControlCLIFixture(t)
 			home := t.TempDir()
 			writeShellProfiles(t, home, shellProfiles{
-				posix: "unset PATH\n",
-				csh:   "unsetenv PATH\n",
-				fish:  "set --erase PATH\n",
-				nu:    "hide-env PATH\n",
-				pwsh:  "Remove-Item Env:PATH\n",
-				xonsh: "del $PATH\n",
+				posix:  "unset PATH\n",
+				csh:    "unsetenv PATH\n",
+				fish:   "set --erase PATH\n",
+				nu:     "hide-env PATH\n",
+				elvish: "unset-env PATH\n",
+				pwsh:   "Remove-Item Env:PATH\n",
+				xonsh:  "del $PATH\n",
 			})
 
 			for _, cli := range []string{"", fixture.cli} {

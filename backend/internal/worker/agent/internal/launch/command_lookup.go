@@ -339,9 +339,13 @@ func lookupSetup(shell string, nativeOnly bool) string {
 
 // renderCommandProbe runs each lookup in the same profile and working directory.
 // Metadata is line-framed separately from the profile's output.
-func renderCommandProbe(shell, nonce string, names []string, nativeOnly bool) string {
+func renderCommandProbe(shell, nonce string, names []string, nativeOnly, loginShell bool) string {
 	var script strings.Builder
-	script.WriteString(lookupSetup(shell, nativeOnly))
+	if shell == "elvish" {
+		script.WriteString(elvishSetup(loginShell))
+	} else {
+		script.WriteString(lookupSetup(shell, nativeOnly))
+	}
 	if shell == "bash" && !nativeOnly {
 		fmt.Fprintf(&script, "__lm_probe_records=('' '%s:start')\n", nonce)
 		for index, name := range names {
@@ -382,6 +386,8 @@ func protocolLine(shell, line string, first bool) string {
 	case shell == "fish":
 		separator = "builtin printf '\\n'; "
 		record = "builtin printf '%s\\n' " + fishQuote(line) + "\n"
+	case shell == "elvish":
+		return elvishProtocolLine(line, first)
 	case isCsh(shell):
 		separator = "'/bin/echo' ''\n"
 		record = "'/bin/echo' " + cshQuote(line) + "\n"
@@ -422,6 +428,8 @@ func commandProbeResult(shell, name, prefix string, nativeOnly bool) string {
 			nuQuote(name), nativeOnly, value, absent)
 	case shell == "xonsh":
 		return xonshProbeResult(name, present, absent, nativeOnly)
+	case shell == "elvish":
+		return elvishProbeResult(name, present, absent, nativeOnly)
 	case shell == "fish":
 		if nativeOnly {
 			return fmt.Sprintf("__leapmux_lookup %s path\nif test \"$__lm_kind\" = external; if not string match -q '/*' -- \"$__lm_path\"; set __lm_path \"$PWD/$__lm_path\"; end; builtin printf '%%s:%%s\\n' '%s' \"$__lm_path\"; else; builtin printf '%%s\\n' '%s'; end\n",
