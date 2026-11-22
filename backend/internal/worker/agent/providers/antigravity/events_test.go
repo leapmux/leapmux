@@ -60,3 +60,65 @@ func TestAntigravityFirstOpenIndexSkipsBackgroundSteps(t *testing.T) {
 	a.root.steps[3].consumed = false
 	assert.Equal(t, 3, a.firstOpenIndexLocked(a.root))
 }
+
+func TestAntigravityModelUsageUnmarshal(t *testing.T) {
+	t.Run("parses string and numeric counters and skips non-counter values", func(t *testing.T) {
+		var usage antigravityModelUsage
+		raw := []byte(`{
+			"inputTokens": "2118",
+			"outputTokens": 194,
+			"zeroTokens": "0",
+			"zeroNumber": 0,
+			"maxTokens": "9223372036854775807",
+			"overflow": "99999999999999999999999999",
+			"fractional": 12.5,
+			"flag": true,
+			"list": [1, 2],
+			"empty": null,
+			"model": "MODEL_PLACEHOLDER_M532",
+			"responseHeader": {"sessionID": "-4651990807555912056"}
+		}`)
+		require.NoError(t, json.Unmarshal(raw, &usage))
+		assert.Equal(t, antigravityModelUsage{
+			"inputTokens":  2118,
+			"outputTokens": 194,
+			"zeroTokens":   0,
+			"zeroNumber":   0,
+			"maxTokens":    9223372036854775807,
+		}, usage)
+	})
+
+	t.Run("resets to nil on null, empty object, or non-counter-only object", func(t *testing.T) {
+		for _, payload := range []string{
+			`null`,
+			`{}`,
+			`{"model":"M532","responseHeader":{"sessionID":"1"}}`,
+		} {
+			usage := antigravityModelUsage{"stale": 1}
+			require.NoError(t, json.Unmarshal([]byte(payload), &usage), payload)
+			assert.Nil(t, usage, payload)
+		}
+	})
+
+	t.Run("rejects non-object json", func(t *testing.T) {
+		for _, payload := range []string{`[]`, `"2118"`, `42`} {
+			var usage antigravityModelUsage
+			assert.Error(t, json.Unmarshal([]byte(payload), &usage), payload)
+		}
+	})
+}
+
+func TestAntigravityConsumedStepRefreshesStructuredModelUsage(t *testing.T) {
+	a, sink := testAgent(t)
+	initial := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"toolCalls":[{"name":"read_file"}]}}`)
+	updated := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"toolCalls":[{"name":"read_file"}]},"metadata":{"modelUsage":{"inputTokens":"100","outputTokens":"25","responseHeader":{"sessionID":"-1"}}}}`)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{initial}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{updated}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+
+	assert.Empty(t, transcriptMessages(sink))
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	require.True(t, rows[0].TurnEnd)
+	assert.JSONEq(t, `{"name":"antigravity_turn_end","num_tool_uses":0,"metadata":{"modelUsage":{"inputTokens":100,"outputTokens":25}}}`, string(rows[0].Content))
+}

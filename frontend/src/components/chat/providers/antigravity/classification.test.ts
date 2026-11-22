@@ -39,6 +39,34 @@ describe('classifyAntigravityMessage', () => {
       type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
       plannerResponse: { modifiedResponse: 'text' },
     })).kind).toBe('assistant_text')
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
+      plannerResponse: { modifiedResponse: 'answer', thinking: 'reasoning' },
+    })).kind).toBe('assistant_text')
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
+      plannerResponse: { modifiedResponse: ' ', response: 'fallback answer' },
+    })).kind).toBe('assistant_text')
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
+      plannerResponse: { thinking: 'reasoning' },
+    })).kind).toBe('assistant_thinking')
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
+      plannerResponse: {
+        toolCalls: [
+          { id: 'call_1', name: 'run_command', argumentsJson: '{}' },
+        ],
+        stopReason: 'STOP_REASON_STOP_PATTERN',
+      },
+    })).kind).toBe('hidden')
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
+      plannerResponse: { modifiedResponse: ' \t', response: '\uFEFF', thinking: '\n' },
+    })).kind).toBe('hidden')
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.PlannerResponse,
+    })).kind).toBe('hidden')
     expect(classifyAntigravityMessage(input({ type: ANTIGRAVITY_STEP_TYPE.RunCommand, status: 'CORTEX_STEP_STATUS_RUNNING' })).kind).toBe('tool_use')
     expect(classifyAntigravityMessage(input({ type: ANTIGRAVITY_STEP_TYPE.RunCommand, status: 'CORTEX_STEP_STATUS_DONE' })).kind).toBe('tool_result')
     expect(classifyAntigravityMessage(input({ type: ANTIGRAVITY_STEP_TYPE.UserInput })).kind).toBe('user_content')

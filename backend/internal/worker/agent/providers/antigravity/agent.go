@@ -122,7 +122,7 @@ type stepState struct {
 	spanID             string
 	text               string
 	toolStep           bool
-	modelUsage         map[string]string
+	modelUsage         antigravityModelUsage
 	raw                json.RawMessage
 }
 
@@ -395,6 +395,8 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 					previous.modelUsage = step.Metadata.ModelUsage
 				}
 				a.Mu.Unlock()
+			} else {
+				slog.Warn("antigravity decode consumed step failed", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
 			}
 			continue
 		}
@@ -415,6 +417,7 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 		a.Mu.Unlock()
 		step, err := decodeStep(raw)
 		if err != nil {
+			slog.Warn("antigravity decode step failed; persisting raw step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
 			if err := a.persistUnknownStep(state, index, raw); err != nil {
 				return err
 			}
