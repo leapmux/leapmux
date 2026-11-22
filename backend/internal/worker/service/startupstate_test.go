@@ -976,7 +976,7 @@ func TestStartupCore_ReplacementIsNoStartupWindow(t *testing.T) {
 	t.Parallel()
 
 	core := newTestStartupCore(t)
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement)
 	_, _, _, tracked := core.snapshot("tab-1")
 	assert.True(t, tracked, "a replacement must make the agent read STARTING")
@@ -1027,7 +1027,7 @@ func TestStartupCore_ReplacementRefusesAnIDThatIsHeld(t *testing.T) {
 			wasTracked := func() bool { _, _, _, tracked := core.snapshot("tab-1"); return tracked }
 			before := wasTracked()
 
-			assert.Nil(t, core.beginReplacement("tab-1"))
+			assert.Nil(t, core.beginReplacement("tab-1", func() {}))
 
 			assert.Equal(t, before, wasTracked(), "a refused replacement must leave the holder's entry alone")
 			end()
@@ -1058,7 +1058,7 @@ func TestStartupCore_ACloseReachesTheStartupBehindAReplacement(t *testing.T) {
 
 	core := newTestStartupCore(t)
 	open, openCancelled := beginEndedStartup(t, &core, "tab-1")
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement, "an ended startup leaves the id free for a replacement")
 
 	core.cancelAndClear("tab-1", removeWorktreeOnClose)
@@ -1085,7 +1085,7 @@ func TestStartupCore_AnArchiveStopsAndWaitsForTheStartupBehindAReplacement(t *te
 	synctest.Test(t, func(t *testing.T) {
 		core := newTestStartupCore(t)
 		open, _ := beginEndedStartup(t, &core, "tab-1")
-		replacement := core.beginReplacement("tab-1")
+		replacement := core.beginReplacement("tab-1", func() {})
 		require.NotNil(t, replacement)
 
 		archived := core.cancelForArchive("tab-1")
@@ -1124,7 +1124,7 @@ func TestStartupCore_AReplacementThatEndsLeavesTheStartupBehindItReachable(t *te
 
 	core := newTestStartupCore(t)
 	open, _ := beginEndedStartup(t, &core, "tab-1")
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement)
 	core.abandon(replacement)
 
@@ -1142,7 +1142,7 @@ func TestStartupCore_ClaimsOfOneIDThatReturnOutOfOrderLeaveNothingBehind(t *test
 
 	core := newTestStartupCore(t)
 	open, _ := beginEndedStartup(t, &core, "tab-1")
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement)
 
 	core.finishEntry(open)
@@ -1162,7 +1162,7 @@ func TestClaimRefusedAfterCloseClaims(t *testing.T) {
 	core.closeClaims()
 
 	assert.Nil(t, core.begin("a", nil), "begin must be refused")
-	assert.Nil(t, core.beginReplacement("b"), "beginReplacement must be refused")
+	assert.Nil(t, core.beginReplacement("b", func() {}), "beginReplacement must be refused")
 	entry, outcome := core.beginColdStart("c", nil)
 	assert.Nil(t, entry, "beginColdStart must be refused")
 	assert.Equal(t, claimRefusedShuttingDown, outcome)
@@ -1653,7 +1653,7 @@ func TestStartupCoreCancelForShutdownReachesEnclosingClaims(t *testing.T) {
 
 	core := newTestStartupCore(t)
 	open, openCancelled := beginEndedStartup(t, &core, "tab-1")
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement)
 
 	ids := core.cancelForShutdown()
@@ -1662,6 +1662,16 @@ func TestStartupCoreCancelForShutdownReachesEnclosingClaims(t *testing.T) {
 	assert.True(t, core.shutdownStopped(replacement), "the newest claim must learn that the shutdown stopped it")
 	assert.True(t, core.shutdownStopped(open), "the claim behind it must learn that too")
 	assert.True(t, *openCancelled, "the goroutine behind the newest claim must be cancelled too")
+}
+
+func (r *startupCore) snapshot(id string) (failed bool, startupError, startupMessage string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found := r.entries[id]
+	if !found {
+		return false, "", "", false
+	}
+	return entry.failed, entry.startupError, entry.startupMessage, true
 }
 
 func TestStartupCore_PromptGuardsAndShutdownCancel(t *testing.T) {
@@ -1744,7 +1754,7 @@ func TestStartupCore_PromptGuardsAndShutdownCancel(t *testing.T) {
 		core := newTestStartupCore(t)
 
 		open, openCanceled := beginEndedStartup(t, &core, "tab-1")
-		replacement := core.beginReplacement("tab-1")
+		replacement := core.beginReplacement("tab-1", func() {})
 		require.NotNil(t, replacement)
 		_, _, ok := core.setPrompt(replacement, samplePrompt("p-open"), "Waiting…", "")
 		require.True(t, ok)
@@ -1793,7 +1803,7 @@ func TestStartupCore_PromptGuardsAndShutdownCancel(t *testing.T) {
 		core := newTestStartupCore(t)
 
 		open, _ := beginEndedStartup(t, &core, "tab-1")
-		replacement := core.beginReplacement("tab-1")
+		replacement := core.beginReplacement("tab-1", func() {})
 		require.NotNil(t, replacement)
 
 		core.closeClaims()

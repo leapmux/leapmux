@@ -8,6 +8,7 @@ import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-lib
 import { DragDropProvider } from '@thisbeyond/solid-dnd'
 import { createEffect, createRoot, createSignal, For, Show } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { useMarkdownLocalLinks } from '~/components/chat/markdownLocalLinks'
 import { AgentInputKind, AgentInputProcessRecoverySchema, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentInputState, AgentProvider, AgentStartupPromptSchema, AgentStatus, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -899,8 +900,20 @@ describe('createTileRenderer recovery dialog', () => {
     await fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Recover all Codex tabs with login issues' }))
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Recover login' }))
     expect(recoverAgentInputProcess).toHaveBeenCalledTimes(2)
-    expect(recoverAgentInputProcess).toHaveBeenCalledWith('worker-1', { agentId: 'a1', recovery: firstRecovery })
-    expect(recoverAgentInputProcess).toHaveBeenCalledWith('worker-2', { agentId: 'a2', recovery: secondRecovery })
+    expect(recoverAgentInputProcess).toHaveBeenCalledWith(
+      'worker-1',
+      { agentId: 'a1', recovery: firstRecovery },
+      {
+        timeoutMs: workspaceBootstrapTimeoutMs(),
+      },
+    )
+    expect(recoverAgentInputProcess).toHaveBeenCalledWith(
+      'worker-2',
+      { agentId: 'a2', recovery: secondRecovery },
+      {
+        timeoutMs: workspaceBootstrapTimeoutMs(),
+      },
+    )
 
     setComposerShown(false)
     s.selection.setActiveById(TabType.AGENT, 'a2')

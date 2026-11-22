@@ -6,6 +6,7 @@ import { Code, ConnectError } from '@connectrpc/connect'
 
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { workerAgent } from '~/api/workerRpc'
 import { clearScheduleDraft, getScheduleDraft, setScheduleDraft } from '~/components/chat/composer/scheduleDrafts'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
@@ -720,12 +721,18 @@ describe('useAgentOperations', () => {
           })
 
           // One RPC carrying the uniform `{ options: { [groupKey]: value } }` payload.
-          expect(mockUpdateAgentSettings).toHaveBeenCalledWith('w-1', {
-            agentId: 'a-1',
-            settings: {
-              options: { opencode_mode: 'fast' },
+          expect(mockUpdateAgentSettings).toHaveBeenCalledWith(
+            'w-1',
+            {
+              agentId: 'a-1',
+              settings: {
+                options: { opencode_mode: 'fast' },
+              },
             },
-          })
+            {
+              timeoutMs: workspaceBootstrapTimeoutMs(),
+            },
+          )
           // The failed change rolls back to the prior current value ('safe').
           expect(view.getAgentTab('a-1')?.optionValues?.opencode_mode).toBe('safe')
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to change Execution Mode', expect.any(Error))

@@ -277,6 +277,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
     activeWorkspace,
     getMruAgentContext,
   } = opts.workspace
+  const actionableStartupPrompt = (tab: AgentTab | undefined) => {
+    if (
+      isActiveWorkspaceArchived()
+      || tab === undefined
+      || tab.agentStatus !== AgentStatus.STARTING
+      || tab.startupPrompt == null
+      || !workerOnline.isOnline(tab.workerId ?? '')
+    ) {
+      return undefined
+    }
+    return tab.startupPrompt
+  }
   const { handleTabSelect, handleTabClose, probeBusy, setIsTabEditing, isTabEditing, closingTabKeys } = opts.tab
   const {
     newAgentLoadingProvider,
@@ -1079,18 +1091,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get startupError() { return agent()?.startupError },
               get startupMessage() { return agent()?.startupMessage },
               get onOpenStartupPrompt() {
-                if (isActiveWorkspaceArchived())
-                  return undefined
-                const current = agent()
-                if (
-                  current === undefined
-                  || current.agentStatus !== AgentStatus.STARTING
-                  || current.startupPrompt == null
-                  || !workerOnline.isOnline(current.workerId ?? '')
-                ) {
-                  return undefined
-                }
-                return () => activateTile(tileId)
+                return actionableStartupPrompt(agent()) !== undefined
+                  ? () => activateTile(tileId)
+                  : undefined
               },
               get providerLabel() { return agentProviderLabel(agent()?.agentProvider) },
               get backgroundTasks() { return chipTasks() },
@@ -1423,23 +1426,25 @@ export function createTileRenderer(opts: TileRendererOpts) {
    */
   const focusedQuakeTab = createMemo<Tab | null>(resolveFocusedTab)
 
-  const focusedStartupPromptKey = createMemo<string | undefined>(() => {
-    if (isActiveWorkspaceArchived())
-      return undefined
-    const agentId = focusedAgentId()
-    if (!agentId)
-      return undefined
-    const tab = view.getAgentTab(agentId)
-    if (
-      tab === undefined
-      || tab.agentStatus !== AgentStatus.STARTING
-      || tab.startupPrompt == null
-      || !workerOnline.isOnline(tab.workerId ?? '')
-    ) {
-      return undefined
-    }
-    return `${agentId}:${tab.startupPrompt.promptId}`
-  })
+  const focusedStartupPrompt = createMemo<{ agentId: string, prompt: NonNullable<AgentTab['startupPrompt']> } | undefined>(
+    () => {
+      const agentId = focusedAgentId()
+      if (!agentId)
+        return undefined
+      const prompt = actionableStartupPrompt(view.getAgentTab(agentId))
+      return prompt !== undefined
+        ? { agentId, prompt }
+        : undefined
+    },
+    undefined,
+    {
+      // Keep the same object reference across unrelated tab metadata patches
+      // while (agentId, promptId) stays unchanged so <Show keyed> does not
+      // remount the open dialog.
+      equals: (prev, next) =>
+        prev?.agentId === next?.agentId && prev?.prompt.promptId === next?.prompt.promptId,
+    },
+  )
 
   // The composer delegates queue requests and snapshot updates to agentInputQueueOperations.
   const queueOps = createAgentInputQueueOperations({
@@ -1729,26 +1734,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
     ),
     StartupPromptDialog: () => (
       <Portal>
-        <Show when={focusedStartupPromptKey()} keyed>
-          {(_key) => {
-            const prompt = createMemo(() => {
-              const id = focusedAgentId()
-              return id
-                ? view.getAgentTab(id)?.startupPrompt ?? undefined
-                : undefined
-            })
-            const agentId = createMemo(() => focusedAgentId() ?? '')
-            return (
-              <Show when={prompt()}>
-                {currentPrompt => (
-                  <AgentStartupPromptDialog
-                    prompt={currentPrompt()}
-                    onRespond={proceed => agentOps.handleRespondAgentStartupPrompt(agentId(), currentPrompt().promptId, proceed)}
-                  />
-                )}
-              </Show>
-            )
-          }}
+        <Show when={focusedStartupPrompt()} keyed>
+          {entry => (
+            <AgentStartupPromptDialog
+              prompt={entry.prompt}
+              onRespond={proceed => agentOps.handleRespondAgentStartupPrompt(entry.agentId, entry.prompt.promptId, proceed)}
+            />
+          )}
         </Show>
       </Portal>
     ),

@@ -2,6 +2,7 @@ import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentOptionSettlementState, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
@@ -42,7 +43,7 @@ function unresolvedResponse(...axes: string[]) {
 
 vi.mock('~/api/workerRpc', () => ({
   workerAgent: {
-    updateAgentSettings: (workerId: string, req: unknown) => updateAgentSettings(workerId, req),
+    updateAgentSettings: (workerId: string, req: unknown, opts?: unknown) => updateAgentSettings(workerId, req, opts),
   },
 }))
 
@@ -199,12 +200,18 @@ describe('useAgentOperations settings reconciliation', () => {
 
     await runChange(stores, { groupKey: 'model', value: 'default' })
 
-    expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
-      agentId: 'a1',
-      settings: {
-        options: { model: 'default' },
+    expect(updateAgentSettings).toHaveBeenCalledWith(
+      'w1',
+      {
+        agentId: 'a1',
+        settings: {
+          options: { model: 'default' },
+        },
       },
-    })
+      {
+        timeoutMs: workspaceBootstrapTimeoutMs(),
+      },
+    )
     const tab = stores.view.getAgentTab('a1')
     // Without the post-RPC reconciliation, the optimistic model would be frozen on
     // "default" (rendered as "Default (recommended)" with no effort group). It must
@@ -342,12 +349,18 @@ describe('useAgentOperations settings reconciliation', () => {
 
       await runChange(stores, { groupKey: 'model', value: 'sonnet' })
 
-      expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
-        agentId: 'a1',
-        settings: {
-          options: { model: 'sonnet' },
+      expect(updateAgentSettings).toHaveBeenCalledWith(
+        'w1',
+        {
+          agentId: 'a1',
+          settings: {
+            options: { model: 'sonnet' },
+          },
         },
-      })
+        {
+          timeoutMs: workspaceBootstrapTimeoutMs(),
+        },
+      )
       const tab = stores.view.getAgentTab('a1')
       expect(tab?.optionValues?.model).toBe('sonnet')
       expect(tab?.optionValues?.effort).toBe('xhigh')
@@ -363,12 +376,18 @@ describe('useAgentOperations settings reconciliation', () => {
 
       await runChange(stores, { groupKey: 'model', value: 'haiku' })
 
-      expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
-        agentId: 'a1',
-        settings: {
-          options: { model: 'haiku' },
+      expect(updateAgentSettings).toHaveBeenCalledWith(
+        'w1',
+        {
+          agentId: 'a1',
+          settings: {
+            options: { model: 'haiku' },
+          },
         },
-      })
+        {
+          timeoutMs: workspaceBootstrapTimeoutMs(),
+        },
+      )
       const tab = stores.view.getAgentTab('a1')
       expect(tab?.optionValues?.model).toBe('haiku')
       expect(tab?.optionValues).not.toHaveProperty('effort')
@@ -624,12 +643,18 @@ describe('useAgentOperations settings reconciliation', () => {
     // One RPC carries all axes, so the worker applies them
     // atomically and can't leave the agent half-bypassed.
     expect(updateAgentSettings).toHaveBeenCalledTimes(1)
-    expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
-      agentId: 'a1',
-      settings: {
-        options: { permission_profile: ':danger-full-access', permissionMode: 'never' },
+    expect(updateAgentSettings).toHaveBeenCalledWith(
+      'w1',
+      {
+        agentId: 'a1',
+        settings: {
+          options: { permission_profile: ':danger-full-access', permissionMode: 'never' },
+        },
       },
-    })
+      {
+        timeoutMs: workspaceBootstrapTimeoutMs(),
+      },
+    )
   })
 
   it('rolls back every axis of a failed multi-axis change (restoring priors, deleting keys that had none)', async () => {

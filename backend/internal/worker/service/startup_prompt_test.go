@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 func testStartupPrompt() agent.StartupPrompt {
@@ -84,7 +85,9 @@ func TestStartupPrompt_ProceedContinuesStartupAndClearsPrompt(t *testing.T) {
 		svc.AgentStartup.cancelPendingPromptsForShutdown()
 	}()
 	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-		require.NotNil(t, opts.ConfirmStartupPrompt)
+		if opts.ConfirmStartupPrompt == nil {
+			return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+		}
 		<-enterPrompt
 		ok, err := opts.ConfirmStartupPrompt(ctx, prompt)
 		proceedResult <- struct {
@@ -302,6 +305,7 @@ func TestStartupPrompt_RejectsInvalidRequests(t *testing.T) {
 
 	svc, d, childID, rootID := setupChildAgentTest(t)
 	defer drainAllInFlight(svc)
+	defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 	// (a) Empty prompt_id -> InvalidArgument.
 	w := newTestWriter()
@@ -400,6 +404,7 @@ func TestStartupPrompt_CloseTabAndShutdownUnblockWaitingPrompt(t *testing.T) {
 
 		svc, d, openW := setupTestService(t)
 		defer drainAllInFlight(svc)
+		defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 		confirmErrCh := make(chan error, 1)
 		svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
@@ -437,6 +442,8 @@ func TestStartupPrompt_CloseTabAndShutdownUnblockWaitingPrompt(t *testing.T) {
 		t.Parallel()
 
 		svc, d, openW := setupTestService(t)
+		defer drainAllInFlight(svc)
+		defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 		var openStarts atomic.Int32
 		openConfirmErr := make(chan error, 1)
 		coldConfirmErr := make(chan error, 1)
@@ -558,6 +565,7 @@ func TestStartupPrompt_BackgroundStartIsNonInteractiveAndColdStartIsInteractive(
 
 			svc, d, _ := setupTestService(t)
 			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "cold-" + tc.name
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -567,7 +575,9 @@ func TestStartupPrompt_BackgroundStartIsNonInteractiveAndColdStartIsInteractive(
 			}))
 
 			svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-				require.NotNil(t, opts.ConfirmStartupPrompt)
+				if opts.ConfirmStartupPrompt == nil {
+					return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+				}
 				proceed, err := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
 				if err != nil {
 					return nil, err
@@ -617,6 +627,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 
 		svc, d, _ := setupTestService(t)
 		defer drainAllInFlight(svc)
+		defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 		agentID := "clear-ordinary"
 		require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -626,7 +637,9 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 		}))
 
 		svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-			require.NotNil(t, opts.ConfirmStartupPrompt)
+			if opts.ConfirmStartupPrompt == nil {
+				return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+			}
 			proceed, err := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
 			if err != nil {
 				return nil, err
@@ -645,6 +658,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			trackedAtBroadcast      atomic.Bool
 			derivedStatusAtBcast    atomic.Int32
 			promptNonNilAtBcast     atomic.Bool
+			inspectReadErr          atomic.Value
 		)
 		inspectW := &syncBroadcastInspectWriter{
 			testResponseWriter: newTestWriter(),
@@ -666,9 +680,14 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 				}
 				_, _, _, tracked := svc.AgentStartup.status(agentID)
 				trackedAtBroadcast.Store(tracked)
-				listedAtBroadcast := listAgentByID(t, d, agentID)
-				derivedStatusAtBcast.Store(int32(listedAtBroadcast.GetStatus()))
-				promptNonNilAtBcast.Store(listedAtBroadcast.GetStartupPrompt() != nil)
+				rowAtBroadcast, readErr := svc.Queries.GetAgentByID(bgCtx(), agentID)
+				if readErr != nil {
+					inspectReadErr.Store(readErr)
+					return
+				}
+				derived := deriveAgentStatus(&rowAtBroadcast, svc.agentLivenessOf(&rowAtBroadcast))
+				derivedStatusAtBcast.Store(int32(derived.status))
+				promptNonNilAtBcast.Store(derived.startupPrompt != nil)
 				observedFailedBroadcast.Store(true)
 			},
 		}
@@ -692,6 +711,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 		err := <-errCh
 		require.ErrorIs(t, err, agent.ErrStartupCanceled)
 
+		require.Nil(t, inspectReadErr.Load(), "GetAgentByID inside broadcast inspector must succeed")
 		require.True(t, observedFailedBroadcast.Load(), "broadcastAgentFailed must deliver STARTUP_FAILED synchronously to registered watchers")
 		assert.False(t, trackedAtBroadcast.Load(), "hold.handle must be removed from AgentStartup before broadcastAgentFailed")
 		assert.Equal(t, int32(leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED), derivedStatusAtBcast.Load(),
@@ -712,6 +732,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 
 		svc, d, _ := setupTestService(t)
 		defer drainAllInFlight(svc)
+		defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 		agentID := "clear-ordinary-close"
 		require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -721,7 +742,9 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 		}))
 
 		svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-			require.NotNil(t, opts.ConfirmStartupPrompt)
+			if opts.ConfirmStartupPrompt == nil {
+				return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+			}
 			_, err := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
 			return nil, err
 		}
@@ -754,6 +777,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 
 		svc, d, _ := setupTestService(t)
 		defer drainAllInFlight(svc)
+		defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 		agentID := "clear-ordinary-archive"
 		require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -763,7 +787,9 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 		}))
 
 		svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-			require.NotNil(t, opts.ConfirmStartupPrompt)
+			if opts.ConfirmStartupPrompt == nil {
+				return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+			}
 			_, err := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
 			return nil, err
 		}
@@ -793,6 +819,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 
 		svc, _, _ := setupTestService(t)
 		defer drainAllInFlight(svc)
+		defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 		agentID := "clear-recovery-archive"
 		require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -803,7 +830,9 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 		svc.persistAgentStartupError(agentID, "prior failure")
 
 		svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-			require.NotNil(t, opts.ConfirmStartupPrompt)
+			if opts.ConfirmStartupPrompt == nil {
+				return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+			}
 			_, err := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
 			return nil, err
 		}
@@ -856,6 +885,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 
 		svc, d, openW := setupTestService(t)
 		defer drainAllInFlight(svc)
+		defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 		var startCount atomic.Int32
 		relaunchStarted := make(chan struct{})
@@ -864,14 +894,20 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			if n == 1 {
 				// Simulate a mid-startup settings change by updating the DB row before returning.
 				row, err := svc.Queries.GetAgentByID(ctx, opts.AgentID)
-				require.NoError(t, err)
+				if err != nil {
+					return nil, err
+				}
 				_, err = casPersistAgentOptions(ctx, svc.Queries, opts.AgentID, row.Options, map[string]string{agent.OptionIDModel: "changed-model"})
-				require.NoError(t, err)
+				if err != nil {
+					return nil, err
+				}
 				// Install an agent whose UpdateSettings returns AppliedLive: false so runAgentStartup relaunches.
 				return map[string]string{}, nil
 			}
 			close(relaunchStarted)
-			require.NotNil(t, opts.ConfirmStartupPrompt)
+			if opts.ConfirmStartupPrompt == nil {
+				return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+			}
 			_, err := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
 			return nil, err
 		}
@@ -993,6 +1029,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			t.Parallel()
 			svc, d, _ := setupTestService(t)
 			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "restart-cancel"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1009,7 +1046,9 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			require.NoError(t, err)
 
 			svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-				require.NotNil(t, opts.ConfirmStartupPrompt)
+				if opts.ConfirmStartupPrompt == nil {
+					return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+				}
 				proceed, promptErr := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
 				if promptErr != nil {
 					return nil, promptErr
@@ -1046,6 +1085,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			t.Parallel()
 			svc, _, _ := setupTestService(t)
 			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "restart-archive"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1096,6 +1136,8 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 		t.Run("shutdown suppresses DELIVERY_FAILED and agent_error", func(t *testing.T) {
 			t.Parallel()
 			svc, _, _ := setupTestService(t)
+			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "restart-shutdown"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1152,6 +1194,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			t.Parallel()
 			svc, _, _ := setupTestService(t)
 			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "restart-shutdown-active-queue"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1181,8 +1224,10 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			}()
 
 			_ = waitForPendingPrompt(t, svc, agentID)
-			// Cancel pending prompts for shutdown while InputQueue is still running,
-			// matching the window between shuttingDown.Store(true) and InputQueue.Stop().
+			// Cancel pending prompts while InputQueue is still running to exercise the
+			// !errors.Is(err, errWorkerShuttingDown) guard directly. During Shutdown(),
+			// InputQueue.Stop() runs before cancelPendingPromptsForShutdown(), so a
+			// Pause call would fail with queue-stopped instead of proving the guard.
 			svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			require.ErrorIs(t, <-errCh, errWorkerShuttingDown)
@@ -1201,6 +1246,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			t.Parallel()
 			svc, d, _ := setupTestService(t)
 			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "restart-close"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1258,6 +1304,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			t.Parallel()
 			svc, d, _ := setupTestService(t)
 			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "plan-cancel"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1273,7 +1320,9 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			require.NoError(t, err)
 
 			svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-				require.NotNil(t, opts.ConfirmStartupPrompt)
+				if opts.ConfirmStartupPrompt == nil {
+					return nil, errors.New("expected non-nil ConfirmStartupPrompt")
+				}
 				proceed, promptErr := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
 				if promptErr != nil {
 					return nil, promptErr
@@ -1310,6 +1359,8 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 		t.Run("shutdown suppresses agent_error and preserves session_id", func(t *testing.T) {
 			t.Parallel()
 			svc, _, _ := setupTestService(t)
+			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "plan-shutdown"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1363,6 +1414,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			t.Parallel()
 			svc, d, _ := setupTestService(t)
 			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "plan-close"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1412,6 +1464,7 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			t.Parallel()
 			svc, _, _ := setupTestService(t)
 			defer drainAllInFlight(svc)
+			defer svc.AgentStartup.cancelPendingPromptsForShutdown()
 
 			agentID := "plan-archive"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -1454,4 +1507,237 @@ func TestStartupPrompt_ClearAndRestartPathsWirePromptAndPreserveSession(t *testi
 			}
 		})
 	})
+}
+
+func TestStartupPrompt_ShutdownAfterResolveRefusesProceed(t *testing.T) {
+	t.Parallel()
+
+	svc, d, openWriter := setupTestService(t)
+	defer drainAllInFlight(svc)
+	defer svc.AgentStartup.cancelPendingPromptsForShutdown()
+
+	enterPrompt := make(chan struct{})
+	enterPromptOnce := sync.OnceFunc(func() { close(enterPrompt) })
+	defer enterPromptOnce()
+	resultCh := make(chan struct {
+		proceed bool
+		err     error
+	}, 1)
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+		<-enterPrompt
+		proceed, err := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
+		resultCh <- struct {
+			proceed bool
+			err     error
+		}{proceed: proceed, err: err}
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{}, nil
+	}
+
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+	}, openWriter)
+	require.Empty(t, openWriter.errors)
+	var openResp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(openWriter.responses[0].GetPayload(), &openResp))
+	agentID := openResp.GetAgent().GetId()
+
+	liveWatcher := newTestWriter()
+	registerAgentWatch(svc, "shutdown-after-resolve-watcher", agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, liveWatcher)
+	enterPromptOnce()
+
+	pending := waitForPendingPrompt(t, svc, agentID)
+	// Wait for the opening STARTING broadcast (emitted after the pre-broadcast
+	// checkPromptInterruption) so shuttingDown is observed on the post-resolve
+	// decisionCh path rather than the pre-broadcast guard.
+	require.Eventually(t, func() bool {
+		for _, sc := range agentStatusChanges(t, liveWatcher, agentID) {
+			if sc.GetStartupPrompt().GetPromptId() == pending.GetPromptId() {
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 10*time.Millisecond)
+	// Simulate Shutdown having set shuttingDown=true right as RespondAgentStartupPrompt
+	// clears pendingPrompt and delivers proceed=true on decisionCh.
+	svc.shuttingDown.Store(true)
+	w := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceRespondAgentStartupPromptProcedure, &leapmuxv1.RespondAgentStartupPromptRequest{
+		AgentId:  agentID,
+		PromptId: pending.GetPromptId(),
+		Proceed:  true,
+	}, w)
+	require.Empty(t, w.errors)
+
+	res := <-resultCh
+	assert.False(t, res.proceed)
+	assert.ErrorIs(t, res.err, errWorkerShuttingDown, "startupPromptConfirmer must refuse proceed once shuttingDown is true")
+}
+
+func TestStartupPrompt_RelaunchPostProceedCancelsContextOnClose(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+	defer svc.AgentStartup.cancelPendingPromptsForShutdown()
+
+	agentID := "restart-post-proceed-cancel"
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID:            agentID,
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+		Resumed:       1,
+	}))
+	row, err := svc.Queries.GetAgentByID(t.Context(), agentID)
+	require.NoError(t, err)
+
+	proceeded := make(chan struct{})
+	var ctxCanceled atomic.Bool
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+		proceed, promptErr := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
+		if promptErr != nil {
+			return nil, promptErr
+		}
+		if !proceed {
+			return nil, agent.ErrStartupCanceled
+		}
+		close(proceeded)
+		select {
+		case <-ctx.Done():
+			ctxCanceled.Store(true)
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+			return nil, errors.New("launch ctx was not canceled after CloseTab")
+		}
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, restartErr := svc.restartAgentPreservingSession(row, storedRestartOptions, settingsRestartMessages, restartTurnEndPending, nil)
+		errCh <- restartErr
+	}()
+
+	pending := waitForPendingPrompt(t, svc, agentID)
+	w := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceRespondAgentStartupPromptProcedure, &leapmuxv1.RespondAgentStartupPromptRequest{
+		AgentId:  agentID,
+		PromptId: pending.GetPromptId(),
+		Proceed:  true,
+	}, w)
+	require.Empty(t, w.errors)
+
+	select {
+	case <-proceeded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startAgentFn did not advance past Proceed")
+	}
+
+	closeW := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: agentTabIdent(agentID),
+	}, closeW)
+	require.Empty(t, closeW.errors)
+
+	restartErr := <-errCh
+	assert.True(t, ctxCanceled.Load(), "CloseTab must cancel the relaunch launch context after Proceed")
+	assert.ErrorIs(t, restartErr, errAgentClosedDuringLaunch)
+}
+
+func TestAgentInputQueueDispatch_ClassifiesWorkerShuttingDownAsNotReady(t *testing.T) {
+	t.Parallel()
+
+	for _, kind := range []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
+	} {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			svc, _, _ := setupTestService(t)
+			defer drainAllInFlight(svc)
+
+			agentID := "queue-shutdown-" + kind.String()
+			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+				ID:            agentID,
+				WorkingDir:    t.TempDir(),
+				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+			}))
+			svc.shuttingDown.Store(true)
+			svc.AgentStartup.closeClaims()
+			svc.startAgentFn = func(ctx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+				if opts.ConfirmStartupPrompt != nil {
+					_, err := opts.ConfirmStartupPrompt(ctx, testStartupPrompt())
+					return nil, err
+				}
+				return nil, errWorkerShuttingDown
+			}
+
+			adapter := &agentInputQueueAdapter{svc: svc}
+			_, err := adapter.Dispatch(inputqueue.DispatchItem{
+				StoredItem: inputqueue.StoredItem{
+					ItemMetadata: inputqueue.ItemMetadata{
+						OrderingMetadata: inputqueue.OrderingMetadata{
+							AgentID: agentID,
+							Kind:    kind,
+						},
+						TargetMode: "acceptEdits",
+					},
+					Text: "hello",
+				},
+			})
+			require.Error(t, err)
+			var deliveryErr *inputqueue.DeliveryError
+			require.ErrorAs(t, err, &deliveryErr, "errWorkerShuttingDown must be classified as a DeliveryError")
+			assert.Equal(t, inputqueue.DispatchNotReady, deliveryErr.Outcome,
+				"Worker shutdown must yield DispatchNotReady rather than DispatchFailed")
+		})
+	}
+}
+
+func TestStartupPrompt_ConfirmerReleasedAfterStartReturns(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+
+	agentID := "release-confirmer-agent"
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID:            agentID,
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+	}))
+
+	var innerCalls atomic.Int32
+	var retained agent.StartupPromptConfirmer
+	opts := svc.baseAgentOptions(agentID, t.TempDir(), leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	opts.ConfirmStartupPrompt = func(context.Context, agent.StartupPrompt) (bool, error) {
+		innerCalls.Add(1)
+		return true, nil
+	}
+	sink, err := svc.Output.NewRootSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	require.NoError(t, err)
+
+	_, err = svc.startAgentWithTurnReset(t.Context(), opts, sink, func(ctx context.Context, startOpts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+		require.NotNil(t, startOpts.ConfirmStartupPrompt)
+		retained = startOpts.ConfirmStartupPrompt
+		proceed, promptErr := startOpts.ConfirmStartupPrompt(ctx, testStartupPrompt())
+		if promptErr != nil {
+			return nil, promptErr
+		}
+		if !proceed {
+			return nil, errors.New("expected proceed=true")
+		}
+		return map[string]string{}, nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), innerCalls.Load())
+	require.NotNil(t, retained)
+
+	proceed, err := retained(t.Context(), testStartupPrompt())
+	assert.False(t, proceed)
+	assert.Error(t, err)
+	assert.Equal(t, int32(1), innerCalls.Load(), "inner confirmer closure must be released after start returns")
 }

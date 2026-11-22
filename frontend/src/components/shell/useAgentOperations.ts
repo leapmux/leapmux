@@ -16,6 +16,7 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 
+import { workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { workerAgent } from '~/api/workerRpc'
 import { forgetAgentAttachments } from '~/components/chat/attachments'
 import { forgetAgentScheduleDrafts } from '~/components/chat/composer/scheduleDrafts'
@@ -400,12 +401,18 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     props.settingsLoading.start(agentId, keys)
     let resp: Awaited<ReturnType<typeof workerAgent.updateAgentSettings>>
     try {
-      resp = await workerAgent.updateAgentSettings(agent.workerId, {
-        agentId,
-        settings: {
-          options: { ...sets },
+      resp = await workerAgent.updateAgentSettings(
+        agent.workerId,
+        {
+          agentId,
+          settings: {
+            options: { ...sets },
+          },
         },
-      })
+        {
+          timeoutMs: workspaceBootstrapTimeoutMs(),
+        },
+      )
     }
     catch (err) {
       // Roll back every axis this change set (other axes preserved via the spread). Restore

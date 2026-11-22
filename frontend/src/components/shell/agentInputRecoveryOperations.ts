@@ -3,6 +3,7 @@ import type { InputRecoveryActions, InputRecoveryDiscovery, InputRecoveryResult,
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { TabView } from '~/stores/tabView'
 import { clone } from '@bufbuild/protobuf'
+import { workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { workerAgentInput } from '~/api/workerRpc'
 import { AgentInputProcessRecoverySchema, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatErrorMessage } from '~/lib/errors'
@@ -145,7 +146,13 @@ export function createAgentInputRecoveryOperations(deps: {
       throw new Error('Each tab can occur only once in a recovery approval.')
     return mapRequests<InputRecoveryTarget, InputRecoveryResult>(captured, async (target) => {
       try {
-        const response = await workerAgentInput.recoverAgentInputProcess(target.workerId, { agentId: target.agentId, recovery: target.recovery })
+        const response = await workerAgentInput.recoverAgentInputProcess(
+          target.workerId,
+          { agentId: target.agentId, recovery: target.recovery },
+          {
+            timeoutMs: workspaceBootstrapTimeoutMs(),
+          },
+        )
         if (!response.snapshot)
           throw new Error('Recovery could not be confirmed. Check this tab before trying again.')
         deps.store.apply(target.agentId, response.snapshot)

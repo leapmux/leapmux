@@ -785,7 +785,7 @@ export function handleControlRequest(
   catchUpPhase: CatchUpPhase,
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
 ): void {
-  const { view, metadata, selection, getActiveWorkspaceId, controlStore } = stores
+  const { view, controlStore } = stores
   if (cr.responseState === ControlResponseState.COMPLETED || cr.responseState === ControlResponseState.CANCELED) {
     controlStore.cancelRequest(agentId, cr)
     return
@@ -841,8 +841,7 @@ export function handleControlRequest(
   if (catchUpPhase === 'live') {
     // Set the hidden tab's badge when its agent needs an answer.
     // Use the same tile visibility rule as FULL watch mode.
-    if (!isAgentTabOnScreen(agentId, view, selection, getActiveWorkspaceId))
-      metadata.patch(agentId, { hasNotification: true })
+    badgeOffScreenAgentTab(agentId, stores)
     // A control request can change WORKING to WAITING_FOR_USER.
     // handleAgentSettled plays that alert once.
     // onTurnEndRefresh refreshes git and the directory tree after the turn ends.
@@ -861,6 +860,14 @@ export function isAgentTabOnScreen(
   getActiveWorkspaceId: () => string | null,
 ): boolean {
   return isTabOnScreen(view.getAgentTab(agentId), getActiveWorkspaceId(), tileId => selection.activeKeyForTile(tileId))
+}
+
+function badgeOffScreenAgentTab(
+  agentId: string,
+  stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'>,
+): void {
+  if (!isAgentTabOnScreen(agentId, stores.view, stores.selection, stores.getActiveWorkspaceId))
+    stores.metadata.patch(agentId, { hasNotification: true })
 }
 
 /**
@@ -913,11 +920,9 @@ export function handleAgentSettled(
     onAgentSettled?: (agentId: string, numToolUses?: number) => void
   },
 ): void {
-  const { metadata, selection, getActiveWorkspaceId, view } = stores
-  if (!view.getAgentTab(agentId))
+  if (!stores.view.getAgentTab(agentId))
     return
-  if (!isAgentTabOnScreen(agentId, view, selection, getActiveWorkspaceId))
-    metadata.patch(agentId, { hasNotification: true })
+  badgeOffScreenAgentTab(agentId, stores)
   stores.onAgentSettled?.(agentId, numToolUses)
 }
 
@@ -979,9 +984,8 @@ export function handleAgentStatusChange(
     catchUpPhase === 'live'
     && sc.status === AgentStatus.STARTING
     && sc.startupPrompt !== undefined
-    && !isAgentTabOnScreen(agentId, stores.view, stores.selection, stores.getActiveWorkspaceId)
   ) {
-    stores.metadata.patch(agentId, { hasNotification: true })
+    badgeOffScreenAgentTab(agentId, stores)
   }
   if (!pendingSettings)
     settingsLoading.stop()

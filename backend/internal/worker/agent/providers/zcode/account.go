@@ -64,7 +64,7 @@ func (a *Agent) readAccountBindings(rules []zcodeBuiltinProviderRule) []zcodeAcc
 	selection, selectionErr := loadZCodeAccountSelection(a.homeDir)
 	entitlements, entitlementErr := loadZCodeCodingPlanEntitlements(a.homeDir)
 	providers, providerErr := loadZCodeRegistryProviders(a.homeDir)
-	credentials := a.readAccountCredentials()
+	credentials := a.readAccountCredentialsContext(a.Context())
 	a.Mu.Lock()
 	if selectionErr == nil {
 		a.catalog.accountSelection = selection
@@ -330,10 +330,6 @@ func zcodeAccountScope(binding zcodeAccountBinding, team *zcodeTeamProject, sess
 
 func zcodeMissingCredentialError(providerID string) error {
 	return fmt.Errorf("leapmux holds no credential for provider %q; sign in with ZCode again", providerID)
-}
-
-func (a *Agent) readAccountCredentials() zcodeCredentials {
-	return a.readAccountCredentialsContext(a.Context())
 }
 
 func (a *Agent) readAccountCredentialsContext(ctx context.Context) zcodeCredentials {

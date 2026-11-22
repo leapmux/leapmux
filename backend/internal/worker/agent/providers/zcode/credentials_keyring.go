@@ -23,7 +23,7 @@ const (
 	// zcodeOSKeyEncodedLen is the length of a 32-byte key encoded as unpadded
 	// base64url, matching ZCode's ENCODED_KEY_PATTERN (/^[A-Za-z0-9_-]{43}$/).
 	zcodeOSKeyEncodedLen = 43
-	// zcodeOSKeyringTimeout bounds one OS credential store lookup when the caller
+	// zcodeOSKeyringTimeout limits one OS credential store lookup when the caller
 	// supplies no shorter deadline, leaving time for an interactive authorization
 	// prompt (such as macOS Keychain).
 	zcodeOSKeyringTimeout = 60 * time.Second
@@ -43,8 +43,12 @@ type zcodeOSKeyAccessState uint8
 
 const (
 	// zcodeOSKeyAccessSilent means reading the item will not prompt the user
-	// (or the item is absent / the platform has no per-app Keychain prompt).
+	// (the platform has no per-app Keychain prompt, or the ACL already trusts
+	// /usr/bin/security).
 	zcodeOSKeyAccessSilent zcodeOSKeyAccessState = iota
+	// zcodeOSKeyAccessNotFound means the silent probe confirmed no Keychain item
+	// exists for (service, account), so spawning the OS helper is unnecessary.
+	zcodeOSKeyAccessNotFound
 	// zcodeOSKeyAccessMayPrompt means reading the item may show an interactive
 	// OS dialog (such as macOS Keychain authorization or unlock).
 	zcodeOSKeyAccessMayPrompt
@@ -76,6 +80,11 @@ type zcodeDarwinACLInfo struct {
 	promptSelector  uint16
 }
 
+func zcodeHasDarwinDecryptAuthorization(auths []string) bool {
+	return slices.Contains(auths, "ACLAuthorizationDecrypt") ||
+		slices.Contains(auths, "ACLAuthorizationAny")
+}
+
 // zcodeEvaluateDarwinKeychainACL returns zcodeOSKeyAccessSilent only when the
 // keychain is unlocked and at least one ACL authorizes decryption (or any
 // operation) without requiring a passphrase and trusts either all applications
@@ -85,8 +94,7 @@ func zcodeEvaluateDarwinKeychainACL(unlocked bool, acls []zcodeDarwinACLInfo) zc
 		return zcodeOSKeyAccessMayPrompt
 	}
 	for _, acl := range acls {
-		if !slices.Contains(acl.authorizations, "ACLAuthorizationDecrypt") &&
-			!slices.Contains(acl.authorizations, "ACLAuthorizationAny") {
+		if !zcodeHasDarwinDecryptAuthorization(acl.authorizations) {
 			continue
 		}
 		if acl.promptSelector&kSecKeychainPromptRequirePassphase != 0 {
@@ -112,8 +120,7 @@ func zcodeParseDarwinTrustedAppPath(raw []byte) string {
 // encryption key under: the lowercase hex SHA-256 of the resolved credentials.json
 // path.
 func zcodeOSKeyringAccount(absPath string) string {
-	sum := sha256.Sum256([]byte(absPath))
-	return hex.EncodeToString(sum[:])
+	return zcodeSHA256Hex(absPath)
 }
 
 // zcodeKeyFingerprint returns the 24-character lowercase hex prefix of SHA-256(key),
@@ -140,17 +147,7 @@ func zcodeDecodeOSKey(encoded string) ([sha256.Size]byte, error) {
 }
 
 func zcodeIsValidEncodedOSKey(value string) bool {
-	if len(value) != zcodeOSKeyEncodedLen {
-		return false
-	}
-	for i := range len(value) {
-		c := value[i]
-		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
-			continue
-		}
-		return false
-	}
-	return true
+	return len(value) == zcodeOSKeyEncodedLen && zcodeIsBase64URLChars(value)
 }
 
 // zcodeDecodeWindowsCredentialBlob decodes a Windows Credential Manager blob
@@ -184,6 +181,21 @@ type zcodeOSKeyCacheEntry struct {
 	failedErr        error
 }
 
+func (e *zcodeOSKeyCacheEntry) matchesFingerprints(wantFingerprints []string) bool {
+	for _, fp := range wantFingerprints {
+		if fp != "" && fp != e.fingerprint {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *zcodeOSKeyCacheEntry) clearFailure() {
+	e.failed = false
+	e.failedCheckedKey = ""
+	e.failedErr = nil
+}
+
 // zcodeOSKeyCache caches OS keyring lookups per normalized credentials.json path
 // and coalesces concurrent requests. A definitive failure (such as a denied
 // Keychain prompt or locked keyring) is cached for the same fingerprint set so
@@ -214,15 +226,20 @@ func (c *zcodeOSKeyCache) hasValidKey(absPath string, wantFingerprints []string)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry := c.entries[absPath]
-	if entry == nil || !entry.hasKey {
+	return entry != nil && entry.hasKey && entry.matchesFingerprints(wantFingerprints)
+}
+
+// hasCachedOutcome reports whether load would return an already-cached key or
+// failure for (absPath, wantFingerprints) without calling the OS keyring reader.
+func (c *zcodeOSKeyCache) hasCachedOutcome(absPath string, wantFingerprints []string) bool {
+	if absPath == "" {
 		return false
 	}
-	for _, fp := range wantFingerprints {
-		if fp != "" && fp != entry.fingerprint {
-			return false
-		}
-	}
-	return true
+	checkedKey := strings.Join(wantFingerprints, ",")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, _, hit := c.cachedLocked(absPath, wantFingerprints, checkedKey)
+	return hit
 }
 
 // loadFresh clears any cached failure (and any stale checkedKey for a
@@ -232,16 +249,9 @@ func (c *zcodeOSKeyCache) loadFresh(ctx context.Context, absPath string, wantFin
 	if absPath != "" {
 		c.mu.Lock()
 		if entry := c.entries[absPath]; entry != nil {
-			entry.failed = false
-			entry.failedCheckedKey = ""
-			entry.failedErr = nil
-			if entry.hasKey {
-				for _, fp := range wantFingerprints {
-					if fp != "" && fp != entry.fingerprint {
-						entry.checkedKey = ""
-						break
-					}
-				}
+			entry.clearFailure()
+			if entry.hasKey && !entry.matchesFingerprints(wantFingerprints) {
+				entry.checkedKey = ""
 			}
 		}
 		c.mu.Unlock()
@@ -254,17 +264,8 @@ func (c *zcodeOSKeyCache) cachedLocked(absPath string, wantFingerprints []string
 	if entry == nil {
 		return [sha256.Size]byte{}, nil, false
 	}
-	if entry.hasKey {
-		allMatch := true
-		for _, fp := range wantFingerprints {
-			if fp != "" && fp != entry.fingerprint {
-				allMatch = false
-				break
-			}
-		}
-		if allMatch || entry.checkedKey == checkedKey {
-			return entry.key, nil, true
-		}
+	if entry.hasKey && (entry.matchesFingerprints(wantFingerprints) || entry.checkedKey == checkedKey) {
+		return entry.key, nil, true
 	}
 	if entry.failed && entry.failedCheckedKey == checkedKey {
 		return [sha256.Size]byte{}, entry.failedErr, true
@@ -332,9 +333,7 @@ func (c *zcodeOSKeyCache) load(ctx context.Context, absPath string, wantFingerpr
 			entry.key = key
 			entry.fingerprint = zcodeKeyFingerprint(key)
 			entry.checkedKey = checkedKey
-			entry.failed = false
-			entry.failedCheckedKey = ""
-			entry.failedErr = nil
+			entry.clearFailure()
 		})
 		if keyErr != nil {
 			return [sha256.Size]byte{}, fmt.Errorf("%w: %w", errZCodeCredentialStoreUnavailable, keyErr)

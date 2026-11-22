@@ -150,7 +150,7 @@ describe('AgentStartupPromptDialog', () => {
     }
   })
 
-  it('clears busy and remounts visibly when onRespond rejects after a dismiss-triggered cancel', async () => {
+  it('clears busy and data-closing in place when onRespond rejects after a dismiss-triggered cancel', async () => {
     vi.useFakeTimers()
     const onRespond = vi.fn()
       .mockRejectedValueOnce(new Error('network error'))
@@ -172,17 +172,49 @@ describe('AgentStartupPromptDialog', () => {
 
     expect(onRespond).toHaveBeenCalledTimes(1)
     expect(onRespond).toHaveBeenCalledWith(false)
-    // Failed dismiss re-keys ConfirmDialog so showModal runs again and the
-    // remounted dialog is no longer stuck in data-closing.
-    expect((HTMLDialogElement.prototype.showModal as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(initialShowCount)
-    const remounted = screen.getByTestId('agent-startup-prompt-dialog')
-    expect(remounted).not.toBe(dialog)
-    expect(remounted).not.toHaveAttribute('data-closing')
+    // Failed dismiss keeps the same <dialog> mounted without calling showModal
+    // again, and clears data-closing so the dialog stays visible and interactive.
+    expect((HTMLDialogElement.prototype.showModal as ReturnType<typeof vi.fn>).mock.calls.length).toBe(initialShowCount)
+    expect(screen.getByTestId('agent-startup-prompt-dialog')).toBe(dialog)
+    expect(dialog).not.toHaveAttribute('data-closing')
     const proceedBtn = screen.getByTestId('agent-startup-prompt-proceed')
     expect(proceedBtn).not.toBeDisabled()
     fireEvent.click(proceedBtn)
     await flush()
     expect(onRespond).toHaveBeenCalledTimes(2)
     expect(onRespond).toHaveBeenLastCalledWith(true)
+  })
+
+  it('clears data-closing immediately when Proceed runs during a dismiss fade and stays interactive on failure', async () => {
+    vi.useFakeTimers()
+    const pending = deferred<void>()
+    const onRespond = vi.fn()
+      .mockImplementationOnce(() => pending.promise)
+      .mockResolvedValueOnce(undefined)
+
+    render(() => (
+      <AgentStartupPromptDialog
+        prompt={samplePrompt()}
+        onRespond={onRespond}
+      />
+    ))
+
+    const dialog = screen.getByTestId('agent-startup-prompt-dialog')
+    // Start closing via Escape, then click Proceed before motion.fast finishes.
+    fireEvent(dialog, new Event('cancel', { cancelable: true }))
+    expect(dialog).toHaveAttribute('data-closing', '')
+    fireEvent.click(screen.getByTestId('agent-startup-prompt-proceed'))
+    // Becoming busy immediately cancels the pending close fade while in flight.
+    expect(dialog).not.toHaveAttribute('data-closing')
+    vi.advanceTimersByTime(motion.fast)
+    expect(onRespond).toHaveBeenCalledTimes(1)
+    expect(onRespond).toHaveBeenCalledWith(true)
+
+    pending.reject(new Error('network error'))
+    await flush()
+
+    expect(screen.getByTestId('agent-startup-prompt-dialog')).toBe(dialog)
+    expect(dialog).not.toHaveAttribute('data-closing')
+    expect(screen.getByTestId('agent-startup-prompt-proceed')).not.toBeDisabled()
   })
 })

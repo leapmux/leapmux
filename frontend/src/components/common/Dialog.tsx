@@ -1,9 +1,21 @@
 import type { Component, JSX } from 'solid-js'
 import X from 'lucide-solid/icons/x'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { motion } from '~/styles/tokens'
 import * as styles from './Dialog.css'
 import { IconButton, IconButtonState } from './IconButton'
+
+/**
+ * Handler invoked after the exit animation finishes. A function returning
+ * `false` (or a Promise that resolves to `false` or rejects) aborts the close
+ * and restores the dialog visibly; any other return value (including arrow
+ * shorthands like `() => setOpen(null)`) completes the close as before.
+ */
+export type DialogCloseHandler = (() => void) | (() => boolean | Promise<boolean | void>)
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return value !== null && (typeof value === 'object' || typeof value === 'function') && typeof (value as { then?: unknown }).then === 'function'
+}
 
 interface DialogProps {
   'title': string
@@ -13,7 +25,7 @@ interface DialogProps {
   'busy'?: boolean
   'class'?: string
   'data-testid'?: string
-  'onClose': () => void
+  'onClose': DialogCloseHandler
   'children': JSX.Element
 }
 
@@ -49,6 +61,37 @@ export const Dialog: Component<DialogProps> = (props) => {
     return clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom
   }
 
+  // If the dialog enters busy state while its exit animation is still pending
+  // (e.g. Escape followed quickly by clicking Confirm), abort the pending close
+  // and restore visibility immediately so the in-flight action stays visible.
+  createEffect(() => {
+    if (props.busy && closeTimer !== undefined) {
+      clearTimeout(closeTimer)
+      closeTimer = undefined
+      setClosing(false)
+    }
+  })
+
+  const handleCloseResult = (result: unknown) => {
+    if (result === false) {
+      if (!unmounting)
+        setClosing(false)
+      return
+    }
+    if (isPromiseLike(result)) {
+      void result.then(
+        (closed) => {
+          if (closed === false && !unmounting)
+            setClosing(false)
+        },
+        () => {
+          if (!unmounting)
+            setClosing(false)
+        },
+      )
+    }
+  }
+
   // Set `.closing` so both the dialog's fade-out (the transition in
   // Dialog.css.ts animating opacity/transform back to @starting-style values) and
   // the backdrop's exit keyframe run against the still-mounted
@@ -61,8 +104,13 @@ export const Dialog: Component<DialogProps> = (props) => {
     setClosing(true)
     closeTimer = setTimeout(() => {
       closeTimer = undefined
-      if (!unmounting)
-        props.onClose()
+      if (unmounting)
+        return
+      if (props.busy) {
+        setClosing(false)
+        return
+      }
+      handleCloseResult(props.onClose())
     }, motion.fast)
   }
 
@@ -181,7 +229,7 @@ export const Dialog: Component<DialogProps> = (props) => {
       }}
       onClose={() => {
         if (!unmounting && !props.busy)
-          props.onClose()
+          void props.onClose()
       }}
     >
       <header class={styles.header}>

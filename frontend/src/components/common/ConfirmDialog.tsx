@@ -1,4 +1,5 @@
 import type { Component, JSX } from 'solid-js'
+import type { DialogCloseHandler } from './Dialog'
 import { Show } from 'solid-js'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmButton } from './ConfirmButton'
@@ -21,7 +22,7 @@ interface ConfirmDialogProps {
   'danger'?: boolean
   'busy'?: boolean
   'onConfirm': () => void
-  'onCancel': () => void
+  'onCancel': DialogCloseHandler
   'data-testid'?: string
   'confirmTestId'?: string
   'cancelTestId'?: string
@@ -62,7 +63,9 @@ export const ConfirmDialog: Component<ConfirmDialogProps> = (props) => {
             class="outline"
             disabled={props.busy}
             data-testid={props.cancelTestId}
-            onClick={() => props.onCancel()}
+            onClick={() => {
+              void props.onCancel()
+            }}
           >
             {props.cancelLabel ?? 'Cancel'}
           </button>

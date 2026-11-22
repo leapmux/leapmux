@@ -222,12 +222,12 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		}
 		afterAccept, err := svc.prepareClearContext(item.AgentID)
 		if err != nil {
-			return inputqueue.DispatchResult{}, err
+			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{StartsTurn: false, SpanLines: spanLines, AfterAccept: afterAccept}, nil
 	case leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT:
 		if err := ensureRunning(); err != nil {
-			return inputqueue.DispatchResult{}, err
+			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		err := svc.Agents.CompactContext(item.AgentID)
 		if errors.Is(err, agent.ErrCompactionUnsupported) {
@@ -244,7 +244,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			}
 		}
 		if err := ensureRunning(); err != nil {
-			return inputqueue.DispatchResult{}, err
+			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		if item.PrepareContext {
 			if err := svc.confirmPreparedPlanSettings(item, resolvedInput); err != nil {
@@ -257,7 +257,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: svc.Output.snapshotPassthroughSpanLines(item.AgentID)}, nil
 	default:
 		if err := ensureRunning(); err != nil {
-			return inputqueue.DispatchResult{}, err
+			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		if err := svc.sendResolvedInput(item.AgentID, resolvedInput, attachments); err != nil {
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
@@ -318,7 +318,7 @@ func queueDispatchOutcome(err error) inputqueue.DispatchOutcome {
 		return inputqueue.DispatchPending
 	case errors.Is(err, agent.ErrAgentBusy):
 		return inputqueue.DispatchBusy
-	case errors.Is(err, agent.ErrChildRouteNotReady), errors.Is(err, agent.ErrAgentNotFound):
+	case errors.Is(err, agent.ErrChildRouteNotReady), errors.Is(err, agent.ErrAgentNotFound), errors.Is(err, errWorkerShuttingDown):
 		return inputqueue.DispatchNotReady
 	case errors.Is(err, agent.ErrDeliveryUncertain):
 		return inputqueue.DispatchUncertain
@@ -373,7 +373,7 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		// a dispatched one: a process that requires recovery holds the prompt
 		// for approval before the steer reaches it.
 		if err := a.svc.ensureAgentReadyForInput(item.AgentID); err != nil {
-			return inputqueue.DispatchResult{}, err
+			return inputqueue.DispatchResult{}, classifyQueueSteerError(err)
 		}
 		err = a.svc.Agents.SteerInput(item.AgentID, text, attachments)
 	}

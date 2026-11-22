@@ -60,15 +60,6 @@ var (
 	darwinSecFramework     darwinSecurityFramework
 )
 
-func registerDarwinSymbol(fnPtr any, handle uintptr, name string) error {
-	sym, err := purego.Dlsym(handle, name)
-	if err != nil {
-		return err
-	}
-	purego.RegisterFunc(fnPtr, sym)
-	return nil
-}
-
 func loadDarwinSecurityFramework() *darwinSecurityFramework {
 	darwinSecFrameworkOnce.Do(func() {
 		secHandle, err := purego.Dlopen("/System/Library/Frameworks/Security.framework/Security", purego.RTLD_LAZY|purego.RTLD_LOCAL)
@@ -105,10 +96,12 @@ func loadDarwinSecurityFramework() *darwinSecurityFramework {
 			{&darwinSecFramework.cfStringGetCString, cfHandle, "CFStringGetCString"},
 		}
 		for _, b := range bindings {
-			if err := registerDarwinSymbol(b.fnPtr, b.handle, b.name); err != nil {
+			sym, err := purego.Dlsym(b.handle, b.name)
+			if err != nil {
 				darwinSecFramework.err = err
 				return
 			}
+			purego.RegisterFunc(b.fnPtr, sym)
 		}
 		// Disable in-process Security.framework UI prompts permanently for this
 		// process. Interactive Keychain reads run out-of-process via
@@ -160,6 +153,12 @@ func (f *darwinSecurityFramework) readACL(aclRef uintptr) (zcodeDarwinACLInfo, b
 				info.authorizations = append(info.authorizations, auth)
 			}
 		}
+	}
+	// Skip SecACLCopyContents for non-decrypt auxiliary ACLs (such as
+	// PartitionID or Integrity), which may be non-simple and return
+	// errSecACLNotSimple without affecting decryption access.
+	if !zcodeHasDarwinDecryptAuthorization(info.authorizations) {
+		return info, true
 	}
 
 	var appListRef, descRef uintptr
@@ -227,7 +226,7 @@ func probeZCodeOSKeyAccess(service, account string) zcodeOSKeyAccessState {
 	runtime.KeepAlive(acctBytes)
 	defer f.release(itemRef)
 	if status == darwinErrSecItemNotFound {
-		return zcodeOSKeyAccessSilent
+		return zcodeOSKeyAccessNotFound
 	}
 	if status != darwinErrSecSuccess || itemRef == 0 {
 		return zcodeOSKeyAccessMayPrompt
@@ -280,7 +279,7 @@ func probeZCodeOSKeyAccess(service, account string) zcodeOSKeyAccessState {
 // Apple's signed /usr/bin/security CLI so the Keychain ACL entry persists across
 // LeapMux updates and requires no cgo.
 func readZCodeOSKey(ctx context.Context, service, account string) (string, bool, error) {
-	cmd := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w")
+	cmd := exec.CommandContext(ctx, darwinSecurityBinaryPath, "find-generic-password", "-s", service, "-a", account, "-w")
 	cmd.Stdin = nil
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

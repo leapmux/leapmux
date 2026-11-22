@@ -1,8 +1,9 @@
 /// <reference types="vitest/globals" />
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal, Show } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { motion } from '~/styles/tokens'
+import { deferred, flush } from '~/test-support/async'
 import { Dialog, DialogColumns } from './Dialog'
 import * as styles from './Dialog.css'
 
@@ -513,5 +514,83 @@ describe('dialog', () => {
     // Dialog.onCleanup calls dialogRef.close(), which fires the 'close' event.
     // Without the fix, this would call onClose -> accessor() -> throw.
     expect(() => setState(null)).not.toThrow()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('clears data-closing and allows retry when onClose returns false, resolves false, or rejects', async () => {
+    vi.useFakeTimers()
+    const responses: Array<() => boolean | Promise<boolean>> = [
+      () => false,
+      () => Promise.resolve(false),
+      () => Promise.reject(new Error('rpc failed')),
+    ]
+    let call = 0
+    const onClose = vi.fn(() => responses[call++]!())
+
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    for (let attempt = 1; attempt <= responses.length; attempt++) {
+      dialog.dispatchEvent(new Event('cancel', { bubbles: false, cancelable: true }))
+      expect(dialog.hasAttribute('data-closing')).toBe(true)
+      vi.advanceTimersByTime(motion.fast)
+      await flush()
+      expect(onClose).toHaveBeenCalledTimes(attempt)
+      expect(dialog.hasAttribute('data-closing')).toBe(false)
+    }
+  })
+
+  it('keeps data-closing set until unmount when async onClose resolves true', async () => {
+    vi.useFakeTimers()
+    const pending = deferred<boolean>()
+    const onClose = vi.fn(() => pending.promise)
+
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new Event('cancel', { bubbles: false, cancelable: true }))
+    expect(dialog.hasAttribute('data-closing')).toBe(true)
+    vi.advanceTimersByTime(motion.fast)
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(dialog.hasAttribute('data-closing')).toBe(true)
+
+    pending.resolve(true)
+    await flush()
+    expect(dialog.hasAttribute('data-closing')).toBe(true)
+  })
+
+  it('cancels the pending close and clears data-closing when busy becomes true during motion.fast', () => {
+    vi.useFakeTimers()
+    const [busy, setBusy] = createSignal(false)
+    const onClose = vi.fn()
+
+    const { container } = render(() => (
+      <Dialog title="Test" busy={busy()} onClose={onClose}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new Event('cancel', { bubbles: false, cancelable: true }))
+    expect(dialog.hasAttribute('data-closing')).toBe(true)
+
+    // Flipping busy true before motion.fast expires aborts the close fade.
+    setBusy(true)
+    expect(dialog.hasAttribute('data-closing')).toBe(false)
+
+    vi.advanceTimersByTime(motion.fast)
+    expect(onClose).not.toHaveBeenCalled()
+    expect(dialog.hasAttribute('data-closing')).toBe(false)
   })
 })

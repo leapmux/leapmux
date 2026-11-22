@@ -227,16 +227,6 @@ func TestZCodeProviderSetupRequiresTheInstalledProviderConfiguration(t *testing.
 	assert.Empty(t, stdin.Requests(t), "an unreadable configuration sends no account snapshot")
 }
 
-func TestZCodeLaunchEnvValueTakesTheFinalDuplicate(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, "/new", zcodeLaunchEnvValue([]string{
-		"PATH=/bin",
-		zcodeBuiltinProviderConfigEnv + "=/old",
-		zcodeBuiltinProviderConfigEnv + "=/new",
-	}, zcodeBuiltinProviderConfigEnv))
-}
-
 func TestZCodeInterrupt_IdleIsANoop(t *testing.T) {
 	t.Parallel()
 

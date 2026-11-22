@@ -4,8 +4,10 @@ import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { StorageAccount } from '~/lib/browserStorage'
 import type { TabPayloadView } from '~/lib/tabPayload'
+import { equals, isMessage } from '@bufbuild/protobuf'
 import { batch, createEffect, createMemo, getOwner, onCleanup } from 'solid-js'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
+import { AgentStartupPromptSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_TAB_MRU, onStorageAccountChange, sessionStorageGet, sessionStorageSet, storageAccountId, storageAccountUserId } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { assignDefined } from '~/lib/jsonPick'
@@ -326,24 +328,6 @@ function mergeDefined(target: TabMetadata, fields: TabMetadata): void {
  * how to compare a proto and is where that belongs. All this needs to see is
  * whether the stabiliser handed back the same elements.
  */
-function isAgentStartupPrompt(value: unknown): value is AgentStartupPrompt {
-  return typeof value === 'object'
-    && value !== null
-    && 'promptId' in value
-    && 'steps' in value
-    && Array.isArray((value as { steps: unknown }).steps)
-}
-
-function sameAgentStartupPrompt(prev: AgentStartupPrompt, next: AgentStartupPrompt): boolean {
-  return prev.promptId === next.promptId
-    && prev.title === next.title
-    && prev.description === next.description
-    && prev.note === next.note
-    && prev.confirmLabel === next.confirmLabel
-    && prev.cancelLabel === next.cancelLabel
-    && shallowEqualArrays(prev.steps, next.steps)
-}
-
 function sameStoredValue(prev: unknown, next: unknown): boolean {
   if (Object.is(prev, next))
     return true
@@ -351,8 +335,8 @@ function sameStoredValue(prev: unknown, next: unknown): boolean {
     return false
   if (Array.isArray(prev) && Array.isArray(next))
     return shallowEqualArrays(prev, next)
-  if (isAgentStartupPrompt(prev) && isAgentStartupPrompt(next))
-    return sameAgentStartupPrompt(prev, next)
+  if (isMessage(prev, AgentStartupPromptSchema) && isMessage(next, AgentStartupPromptSchema))
+    return equals(AgentStartupPromptSchema, prev, next)
   return shallowEqual(prev, next)
 }
 

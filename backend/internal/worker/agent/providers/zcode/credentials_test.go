@@ -23,12 +23,11 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-func TestZCodeCredentialSecret(t *testing.T) {
+func TestZCodeLegacyFallbackSecret(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "from-env", zcodeCredentialSecret(func(string) string { return "from-env" }, "/home/u", "u"))
 	assert.Equal(t, "zcode-credential-fallback:"+zcodeNodeOS(runtime.GOOS)+":/home/u:alice",
-		zcodeCredentialSecret(func(string) string { return "" }, "/home/u", "alice"),
+		zcodeLegacyFallbackSecret("/home/u", "alice"),
 		"the fallback spells the platform as Node.js does")
 	assert.NotContains(t, zcodeNodeUsername(), `\`, "Node.js reports the user name without its Windows domain")
 }
@@ -60,7 +59,8 @@ func TestZCodeDecryptCredential(t *testing.T) {
 	t.Parallel()
 
 	key := sha256.Sum256([]byte("k"))
-	plain, err := zcodeDecryptCredential(key, "not encrypted")
+	creds := zcodeCredentials{v1Keys: [][sha256.Size]byte{key}}
+	plain, err := creds.decrypt("not encrypted")
 	require.NoError(t, err)
 	assert.Equal(t, "not encrypted", plain, "a value without the cipher prefix is plain, as in ZCode")
 
@@ -75,11 +75,11 @@ func TestZCodeDecryptCredential(t *testing.T) {
 		"a short tag":   zcodeCredentialCipherPrefix + parts[0] + ".AAAA." + parts[2],
 		"bad base64url": zcodeCredentialCipherPrefix + parts[0] + "." + parts[1] + ".%%%",
 	} {
-		_, err := zcodeDecryptCredential(key, value)
+		_, err := creds.decrypt(value)
 		assert.Error(t, err, name)
 	}
 	padded := zcodeCredentialCipherPrefix + parts[0] + "=." + parts[1] + "." + parts[2]
-	plain, err = zcodeDecryptCredential(key, padded)
+	plain, err = creds.decrypt(padded)
 	require.NoError(t, err, "base64url padding is accepted, as Node's Buffer accepts it")
 	assert.Equal(t, "secret", plain)
 }
@@ -87,18 +87,18 @@ func TestZCodeDecryptCredential(t *testing.T) {
 func TestZCodeCredentialStore_ReadFailures(t *testing.T) {
 	t.Parallel()
 
-	credentials, err := newZCodeCredentialStore("", zcodeTestCredentialGetenv).read()
+	credentials, err := newZCodeCredentialStore("", zcodeTestCredentialGetenv).readContext(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, credentials.values, "no home directory holds no store")
 
-	credentials, err = newZCodeCredentialStore(t.TempDir(), zcodeTestCredentialGetenv).read()
+	credentials, err = newZCodeCredentialStore(t.TempDir(), zcodeTestCredentialGetenv).readContext(t.Context())
 	require.NoError(t, err)
 	assert.Empty(t, credentials.values, "a store that does not exist reads as empty")
 
 	store := newZCodeCredentialStore(t.TempDir(), zcodeTestCredentialGetenv)
 	require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
 	require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":`), 0o600))
-	_, err = store.read()
+	_, err = store.readContext(t.Context())
 	require.ErrorContains(t, err, "read the ZCode credential store")
 }
 
@@ -339,7 +339,7 @@ func TestZCodeCredentials_DecryptsV2(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
 	require.NoError(t, os.WriteFile(store.path, []byte(`{"oauth:zai:access_token":"`+v2Env+`"}`), 0o600))
 
-	credentials, err := store.read()
+	credentials, err := store.readContext(t.Context())
 	require.NoError(t, err)
 	got, err := credentials.get(zcodeOAuthAccessTokenKey("zai"))
 	require.NoError(t, err)
@@ -395,7 +395,7 @@ func TestZCodeCredentials_DecryptsV2OSKeyringAndCaches(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(store.path, data, 0o600))
 
-	creds, err := store.read()
+	creds, err := store.readContext(t.Context())
 	require.NoError(t, err)
 	session, signedIn, err := creds.session(zcodeFamilyZAI)
 	require.NoError(t, err)
@@ -413,7 +413,7 @@ func TestZCodeCredentials_DecryptsV2OSKeyringAndCaches(t *testing.T) {
 	assert.Equal(t, zcodeOSKeyringAccount(absPath), seenAccount)
 
 	// Second read reuses the cached OS key without hitting the OS keyring again.
-	creds2, err := store.read()
+	creds2, err := store.readContext(t.Context())
 	require.NoError(t, err)
 	token2, err := creds2.get(zcodeOAuthAccessTokenKey("zai"))
 	require.NoError(t, err)
@@ -430,7 +430,7 @@ func TestZCodeCredentials_DecryptsV2OSKeyringAndCaches(t *testing.T) {
 	data, err = json.Marshal(raw)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(store.path, data, 0o600))
-	creds3, err := store.read()
+	creds3, err := store.readContext(t.Context())
 	require.NoError(t, err)
 	rotated, err := creds3.get(zcodeOAuthAccessTokenKey("zai"))
 	require.NoError(t, err)
@@ -471,7 +471,7 @@ func TestZCodeCredentials_OSKeyringCachesDefinitiveFailureNotCancellation(t *tes
 		return "", false, errors.New("user denied keychain access")
 	}
 	for range 3 {
-		creds, err := store.read()
+		creds, err := store.readContext(t.Context())
 		require.NoError(t, err)
 		_, err = creds.get(zcodeCredentialZCodeJWT)
 		require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
@@ -484,7 +484,7 @@ func TestZCodeCredentials_OSKeyringCachesDefinitiveFailureNotCancellation(t *tes
 	fresh.osKeyReader = func(context.Context, string, string) (string, bool, error) {
 		return encoded, true, nil
 	}
-	creds, err = fresh.read()
+	creds, err = fresh.readContext(t.Context())
 	require.NoError(t, err)
 	got, err := creds.get(zcodeCredentialZCodeJWT)
 	require.NoError(t, err)
@@ -512,7 +512,7 @@ func TestZCodeCredentials_ManagedSecretFileAndDefaultFile(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
 		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+v2Env+`"}`), 0o600))
 
-		creds, err := store.read()
+		creds, err := store.readContext(t.Context())
 		require.NoError(t, err)
 		got, err := creds.get(zcodeCredentialZCodeJWT)
 		require.NoError(t, err)
@@ -532,7 +532,7 @@ func TestZCodeCredentials_ManagedSecretFileAndDefaultFile(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(store.path), zcodeCredentialDefaultSecretFile), []byte(secret), 0o600))
 		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+v2Env+`"}`), 0o600))
 
-		creds, err := store.read()
+		creds, err := store.readContext(t.Context())
 		require.NoError(t, err)
 		got, err := creds.get(zcodeCredentialZCodeJWT)
 		require.NoError(t, err)
@@ -557,7 +557,7 @@ func TestZCodeCredentials_ManagedSecretFileAndDefaultFile(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
 		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+v2Env+`"}`), 0o600))
 
-		creds, err := store.read()
+		creds, err := store.readContext(t.Context())
 		require.NoError(t, err)
 		_, err = creds.get(zcodeCredentialZCodeJWT)
 		require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
@@ -576,7 +576,7 @@ func TestZCodeCredentials_ManagedSecretFileAndDefaultFile(t *testing.T) {
 		require.NoError(t, os.Chmod(secretPath, 0o644))
 		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+v2Env+`"}`), 0o600))
 
-		creds, err := store.read()
+		creds, err := store.readContext(t.Context())
 		require.NoError(t, err)
 		_, err = creds.get(zcodeCredentialZCodeJWT)
 		require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
@@ -600,7 +600,7 @@ func TestZCodeCredentials_ManagedSecretFileAndDefaultFile(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(store.path, data, 0o600))
 
-		creds, err := store.read()
+		creds, err := store.readContext(t.Context())
 		require.NoError(t, err)
 		_, err = creds.get("from-os")
 		require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
@@ -648,7 +648,7 @@ func TestZCodeCredentials_PinnedOSSkipsKeyringForEnvEntriesAndAvoidsMismatchLoop
 		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(store.path), zcodeCredentialSourceFile), []byte(zcodeCredentialOSSourceMarker), 0o600))
 		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+v2Env+`"}`), 0o600))
 
-		creds, err := store.read()
+		creds, err := store.readContext(t.Context())
 		require.NoError(t, err)
 		_, err = creds.get(zcodeCredentialZCodeJWT)
 		require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
@@ -670,7 +670,7 @@ func TestZCodeCredentials_PinnedOSSkipsKeyringForEnvEntriesAndAvoidsMismatchLoop
 		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+zcodeTestEncryptV2Credential(t, otherKey, zcodeCredentialSourceOS, "stale")+`"}`), 0o600))
 
 		for range 3 {
-			creds, err := store.read()
+			creds, err := store.readContext(t.Context())
 			require.NoError(t, err)
 			_, err = creds.get(zcodeCredentialZCodeJWT)
 			require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
@@ -699,7 +699,7 @@ func TestZCodeCredentials_PinnedOSSkipsKeyringForEnvEntriesAndAvoidsMismatchLoop
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(store.path, data, 0o600))
 
-		creds, err := store.read()
+		creds, err := store.readContext(t.Context())
 		require.NoError(t, err)
 		gotTrimmed, err := creds.get("trimmed")
 		require.NoError(t, err)
@@ -1161,4 +1161,123 @@ func TestZCodeCredentialStore_ResolveKeysSkipsPromptingOSReadAtRuntime(t *testin
 	assert.Equal(t, "secret-token", raw)
 	assert.Equal(t, 2, probeCalls, "cached key must skip probe")
 	assert.Zero(t, readerCalls, "cached key must skip reader")
+}
+
+func TestZCodeCredentialStore_ResolveKeysUsesCachedOutcomeOnStaleFingerprintAndFailure(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	keyNew, encodedNew := zcodeTestRandomOSKey(t)
+	keyOld, _ := zcodeTestRandomOSKey(t)
+	ctNew := zcodeTestEncryptV2Credential(t, keyNew, zcodeCredentialSourceOS, "active-jwt")
+	ctOld := zcodeTestEncryptV2Credential(t, keyOld, zcodeCredentialSourceOS, "stale-token")
+
+	t.Run("cached key with stale extra fingerprint skips MayPrompt probe and decrypts matching entry", func(t *testing.T) {
+		t.Parallel()
+		subHome := filepath.Join(home, "stale-fp")
+		cache := &zcodeOSKeyCache{}
+		store := newZCodeCredentialStore(subHome, nil)
+		store.osKeyCache = cache
+		probeCalls := 0
+		store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+			probeCalls++
+			return zcodeOSKeyAccessMayPrompt
+		}
+		readerCalls := 0
+		store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			readerCalls++
+			return encodedNew, true, nil
+		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
+		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+ctNew+`","staleentry":"`+ctOld+`"}`), 0o600))
+
+		// Startup pre-flight prompts once, user clicks Proceed + one-time Allow.
+		err := store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+			return true, nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, probeCalls)
+		assert.Equal(t, 1, readerCalls)
+
+		// Runtime readContext must reuse the cached key without re-probing MayPrompt.
+		creds, err := store.readContext(t.Context())
+		require.NoError(t, err)
+		val, err := creds.get(zcodeCredentialZCodeJWT)
+		require.NoError(t, err, "valid key cached during startup Proceed must decrypt active entry even when a stale fingerprint exists")
+		assert.Equal(t, "active-jwt", val)
+		assert.Equal(t, 1, probeCalls, "cached checkedKey outcome must skip repeated OS probe")
+		assert.Equal(t, 1, readerCalls)
+	})
+
+	t.Run("cached failure outcome skips repeated OS probes on runtime reads", func(t *testing.T) {
+		t.Parallel()
+		subHome := filepath.Join(home, "cached-fail")
+		cache := &zcodeOSKeyCache{}
+		store := newZCodeCredentialStore(subHome, nil)
+		store.osKeyCache = cache
+		probeCalls := 0
+		store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+			probeCalls++
+			return zcodeOSKeyAccessSilent
+		}
+		readerCalls := 0
+		store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			readerCalls++
+			return "", false, errors.New("keychain denied")
+		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
+		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+ctNew+`"}`), 0o600))
+
+		// First runtime read probes and caches the failure.
+		creds1, err := store.readContext(t.Context())
+		require.NoError(t, err)
+		_, err = creds1.get(zcodeCredentialZCodeJWT)
+		require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
+		assert.Equal(t, 1, probeCalls)
+		assert.Equal(t, 1, readerCalls)
+
+		// Second runtime read must hit the cached failure without calling probe again.
+		creds2, err := store.readContext(t.Context())
+		require.NoError(t, err)
+		_, err = creds2.get(zcodeCredentialZCodeJWT)
+		require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
+		assert.Equal(t, 1, probeCalls, "cached failure must skip repeated OS probe")
+		assert.Equal(t, 1, readerCalls)
+	})
+
+	t.Run("not-found probe skips spawning OS keyring reader on startup and runtime reads", func(t *testing.T) {
+		t.Parallel()
+		subHome := filepath.Join(home, "not-found")
+		cache := &zcodeOSKeyCache{}
+		store := newZCodeCredentialStore(subHome, nil)
+		store.osKeyCache = cache
+		probeCalls := 0
+		store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+			probeCalls++
+			return zcodeOSKeyAccessNotFound
+		}
+		readerCalls := 0
+		store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			readerCalls++
+			return "", false, nil
+		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
+		require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+ctNew+`"}`), 0o600))
+
+		confirmCalls := 0
+		err := store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+			confirmCalls++
+			return true, nil
+		})
+		require.NoError(t, err)
+		assert.Zero(t, confirmCalls)
+		assert.Zero(t, readerCalls, "not-found probe must not spawn OS keyring helper on startup")
+
+		creds, err := store.readContext(t.Context())
+		require.NoError(t, err)
+		_, err = creds.get(zcodeCredentialZCodeJWT)
+		require.ErrorIs(t, err, errZCodeOSKeyNotFound)
+		assert.Zero(t, readerCalls, "not-found probe must not spawn OS keyring helper at runtime")
+		assert.Equal(t, 2, probeCalls)
+	})
 }

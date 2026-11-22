@@ -136,19 +136,6 @@ func newZCodeCredentialStore(homeDir string, getenv func(string) string) zcodeCr
 	}
 }
 
-// zcodeCredentialSecret returns the legacy v1 secret that ZCode derives its key
-// from (defaultCredentialSecret): ZCODE_CREDENTIAL_SECRET, or a fallback that
-// spells the platform, the home directory, and the user name as Node.js reports
-// them.
-func zcodeCredentialSecret(getenv func(string) string, homeDir, username string) string {
-	if getenv != nil {
-		if secret := getenv(zcodeCredentialSecretEnv); secret != "" {
-			return secret
-		}
-	}
-	return zcodeLegacyFallbackSecret(homeDir, username)
-}
-
 func zcodeLegacyFallbackSecret(homeDir, username string) string {
 	if username == "" {
 		username = "unknown"
@@ -191,9 +178,18 @@ type zcodeCredentials struct {
 	identity zcodeCredentialKeyIdentity
 }
 
-// read reads the store without a caller context.
-func (s zcodeCredentialStore) read() (zcodeCredentials, error) {
-	return s.readContext(context.Background())
+func (s zcodeCredentialStore) readRawValues() (map[string]string, error) {
+	var values map[string]string
+	err := sessionstore.ReadSidecarFile(s.path, sessionstore.MaxSidecarBytes, func(data []byte) error {
+		return json.Unmarshal(data, &values)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if values == nil {
+		values = map[string]string{}
+	}
+	return values, nil
 }
 
 // readContext reads the store and resolves only the key material needed to
@@ -204,49 +200,68 @@ func (s zcodeCredentialStore) readContext(ctx context.Context) (zcodeCredentials
 	if s.path == "" {
 		return credentials, nil
 	}
-	err := sessionstore.ReadSidecarFile(s.path, sessionstore.MaxSidecarBytes, func(data []byte) error {
-		return json.Unmarshal(data, &credentials.values)
-	})
+	values, err := s.readRawValues()
 	if errors.Is(err, os.ErrNotExist) {
 		return credentials, nil
 	}
 	if err != nil {
 		return zcodeCredentials{}, fmt.Errorf("read the ZCode credential store %s: %w", s.path, err)
 	}
-	if credentials.values == nil {
-		credentials.values = map[string]string{}
-	}
+	credentials.values = values
 
-	hasV1, hasV2OS, hasV2Env, osFingerprints := zcodeScanCredentialValues(credentials.values)
-	s.resolveKeys(ctx, &credentials, hasV1, hasV2OS, hasV2Env, osFingerprints)
+	s.resolveKeys(ctx, &credentials, zcodeScanCredentialValues(credentials.values))
 	return credentials, nil
 }
 
-func zcodeScanCredentialValues(values map[string]string) (hasV1, hasV2OS, hasV2Env bool, osFingerprints []string) {
+type zcodeCredentialRequirements struct {
+	hasV1          bool
+	hasV2OS        bool
+	hasV2Env       bool
+	osFingerprints []string
+}
+
+func (r zcodeCredentialRequirements) empty() bool {
+	return !r.hasV1 && !r.hasV2OS && !r.hasV2Env
+}
+
+func zcodeClassifyCiphertext(raw string) (zcodeCredentialRequirements, bool) {
+	switch {
+	case strings.HasPrefix(raw, zcodeCredentialV2Prefix):
+		source, fp, _, parsed := zcodeParseV2Ciphertext(raw)
+		if !parsed {
+			return zcodeCredentialRequirements{}, false
+		}
+		if source == zcodeCredentialSourceOS {
+			return zcodeCredentialRequirements{hasV2OS: true, osFingerprints: []string{fp}}, true
+		}
+		return zcodeCredentialRequirements{hasV2Env: true}, true
+	case strings.HasPrefix(raw, zcodeCredentialCipherPrefix):
+		return zcodeCredentialRequirements{hasV1: true}, true
+	default:
+		return zcodeCredentialRequirements{}, false
+	}
+}
+
+func zcodeScanCredentialValues(values map[string]string) zcodeCredentialRequirements {
+	var req zcodeCredentialRequirements
 	seenOSFingerprints := map[string]struct{}{}
 	for _, raw := range values {
-		switch {
-		case strings.HasPrefix(raw, zcodeCredentialV2Prefix):
-			source, fp, _, ok := zcodeParseV2Ciphertext(raw)
-			if !ok {
-				continue
+		entry, ok := zcodeClassifyCiphertext(raw)
+		if !ok {
+			continue
+		}
+		req.hasV1 = req.hasV1 || entry.hasV1
+		req.hasV2OS = req.hasV2OS || entry.hasV2OS
+		req.hasV2Env = req.hasV2Env || entry.hasV2Env
+		for _, fp := range entry.osFingerprints {
+			if _, seen := seenOSFingerprints[fp]; !seen {
+				seenOSFingerprints[fp] = struct{}{}
+				req.osFingerprints = append(req.osFingerprints, fp)
 			}
-			switch source {
-			case zcodeCredentialSourceOS:
-				hasV2OS = true
-				if _, seen := seenOSFingerprints[fp]; !seen {
-					seenOSFingerprints[fp] = struct{}{}
-					osFingerprints = append(osFingerprints, fp)
-				}
-			case zcodeCredentialSourceEnv:
-				hasV2Env = true
-			}
-		case strings.HasPrefix(raw, zcodeCredentialCipherPrefix):
-			hasV1 = true
 		}
 	}
-	slices.Sort(osFingerprints)
-	return hasV1, hasV2OS, hasV2Env, osFingerprints
+	slices.Sort(req.osFingerprints)
+	return req
 }
 
 func (s zcodeCredentialStore) resolvedAbsPath() string {
@@ -313,15 +328,12 @@ func (s zcodeCredentialStore) prepareOSKeyForStartup(ctx context.Context, confir
 	if s.path == "" {
 		return nil
 	}
-	var values map[string]string
-	err := sessionstore.ReadSidecarFile(s.path, sessionstore.MaxSidecarBytes, func(data []byte) error {
-		return json.Unmarshal(data, &values)
-	})
+	values, err := s.readRawValues()
 	if err != nil {
 		return nil
 	}
-	_, hasV2OS, _, osFingerprints := zcodeScanCredentialValues(values)
-	if !hasV2OS {
+	req := zcodeScanCredentialValues(values)
+	if !req.hasV2OS {
 		return nil
 	}
 	if _, hasExplicit, explicitErr := s.readExplicitManagedSecret(); hasExplicit || explicitErr != nil {
@@ -332,16 +344,20 @@ func (s zcodeCredentialStore) prepareOSKeyForStartup(ctx context.Context, confir
 		return nil
 	}
 	reader, cache := s.osKeyReaderAndCache()
-	if cache.hasValidKey(absPath, osFingerprints) {
+	if cache.hasValidKey(absPath, req.osFingerprints) {
 		return nil
 	}
-	if s.resolveOSKeyProbe()(zcodeOSKeyringService, zcodeOSKeyringAccount(absPath)) == zcodeOSKeyAccessSilent {
+	switch s.resolveOSKeyProbe()(zcodeOSKeyringService, zcodeOSKeyringAccount(absPath)) {
+	case zcodeOSKeyAccessNotFound:
+		return nil
+	case zcodeOSKeyAccessSilent:
 		if confirm != nil {
-			_, _ = cache.loadFresh(ctx, absPath, osFingerprints, reader)
+			_, _ = cache.loadFresh(ctx, absPath, req.osFingerprints, reader)
 		} else {
-			_, _ = cache.load(ctx, absPath, osFingerprints, reader)
+			_, _ = cache.load(ctx, absPath, req.osFingerprints, reader)
 		}
 		return nil
+	case zcodeOSKeyAccessMayPrompt:
 	}
 	if confirm == nil {
 		return fmt.Errorf("%w: macOS Keychain access for ZCode credentials requires interactive authorization; open the agent or send a message to authorize, or configure ZCODE_CREDENTIAL_SECRET_FILE", agent.ErrStartupCanceled)
@@ -353,7 +369,7 @@ func (s zcodeCredentialStore) prepareOSKeyForStartup(ctx context.Context, confir
 	if !proceed {
 		return fmt.Errorf("%w: macOS Keychain access was not authorized", agent.ErrStartupCanceled)
 	}
-	if _, err := cache.loadFresh(ctx, absPath, osFingerprints, reader); err != nil {
+	if _, err := cache.loadFresh(ctx, absPath, req.osFingerprints, reader); err != nil {
 		return fmt.Errorf("%w: authorize macOS Keychain access for ZCode credentials: %w", agent.ErrStartupCanceled, err)
 	}
 	return nil
@@ -365,35 +381,20 @@ func (s zcodeCredentialStore) decryptRaw(ctx context.Context, value string) (str
 	if !strings.HasPrefix(value, zcodeCredentialEncPrefix) {
 		return value, nil
 	}
-	var credentials zcodeCredentials
-	var hasV1, hasV2OS, hasV2Env bool
-	var osFingerprints []string
-	switch {
-	case strings.HasPrefix(value, zcodeCredentialV2Prefix):
-		source, fp, _, ok := zcodeParseV2Ciphertext(value)
-		if !ok {
-			return "", errZCodeCredentialDecryptFailed
-		}
-		if source == zcodeCredentialSourceOS {
-			hasV2OS = true
-			osFingerprints = []string{fp}
-		} else {
-			hasV2Env = true
-		}
-	case strings.HasPrefix(value, zcodeCredentialCipherPrefix):
-		hasV1 = true
-	default:
+	req, ok := zcodeClassifyCiphertext(value)
+	if !ok {
 		return "", errZCodeCredentialDecryptFailed
 	}
-	s.resolveKeys(ctx, &credentials, hasV1, hasV2OS, hasV2Env, osFingerprints)
+	var credentials zcodeCredentials
+	s.resolveKeys(ctx, &credentials, req)
 	return credentials.decrypt(value)
 }
 
-func (s zcodeCredentialStore) resolveKeys(ctx context.Context, out *zcodeCredentials, hasV1, hasV2OS, hasV2Env bool, osFingerprints []string) {
+func (s zcodeCredentialStore) resolveKeys(ctx context.Context, out *zcodeCredentials, req zcodeCredentialRequirements) {
 	absPath := s.resolvedAbsPath()
 	out.identity.path = absPath
 
-	if !hasV1 && !hasV2OS && !hasV2Env {
+	if req.empty() {
 		return
 	}
 
@@ -405,90 +406,83 @@ func (s zcodeCredentialStore) resolveKeys(ctx context.Context, out *zcodeCredent
 		out.v2Err = explicitErr
 		return
 	}
-	if hasExplicit {
-		key := sha256.Sum256([]byte(explicitSecret))
-		out.hasV2Key = true
-		out.v2Source = zcodeCredentialSourceEnv
-		out.v2Key = key
-		out.v1Keys = s.legacyKeyCandidates(explicitSecret)
-		s.recordIdentity(out)
-		return
-	}
+	defer s.recordIdentity(out)
 
-	// Step 2: Check credential-source pinning and default credential-secret file.
-	pinnedOS, markerErr := zcodeReadOSSourceMarker(absPath)
-	if markerErr != nil {
-		if hasV2OS || hasV2Env {
-			out.v2Err = markerErr
-		}
-		if hasV1 {
-			out.v1Keys = s.legacyKeyCandidates("")
-		}
-		s.recordIdentity(out)
-		return
-	}
-
-	useOS := pinnedOS || hasV2OS
-	var defaultFileSecret string
-	if !useOS && absPath != "" {
-		secretPath := filepath.Join(filepath.Dir(absPath), zcodeCredentialDefaultSecretFile)
-		secret, found, err := zcodeReadSecretFile(secretPath, true)
-		if err != nil {
-			out.v2Err = fmt.Errorf("%w: %w", errZCodeCredentialStoreUnavailable, err)
-			if hasV1 {
-				out.v1Keys = s.legacyKeyCandidates("")
-			}
-			s.recordIdentity(out)
-			return
-		}
-		if found {
-			defaultFileSecret = secret
-			key := sha256.Sum256([]byte(secret))
+	legacySecret := ""
+	resolveV2 := func() {
+		if hasExplicit {
+			legacySecret = explicitSecret
 			out.hasV2Key = true
 			out.v2Source = zcodeCredentialSourceEnv
-			out.v2Key = key
-			if hasV1 {
-				out.v1Keys = s.legacyKeyCandidates(defaultFileSecret)
-			}
-			s.recordIdentity(out)
+			out.v2Key = sha256.Sum256([]byte(explicitSecret))
 			return
 		}
-		if hasV2Env {
-			out.v2Err = fmt.Errorf("%w: missing %s for env-encrypted credentials", errZCodeCredentialStoreUnavailable, zcodeCredentialDefaultSecretFile)
-			if hasV1 {
-				out.v1Keys = s.legacyKeyCandidates("")
+
+		// Step 2: Check credential-source pinning and default credential-secret file.
+		pinnedOS, markerErr := zcodeReadOSSourceMarker(absPath)
+		if markerErr != nil {
+			if req.hasV2OS || req.hasV2Env {
+				out.v2Err = markerErr
 			}
-			s.recordIdentity(out)
 			return
 		}
-	}
 
-	if hasV1 {
-		out.v1Keys = s.legacyKeyCandidates(defaultFileSecret)
-	}
+		useOS := pinnedOS || req.hasV2OS
+		if !useOS && absPath != "" {
+			secretPath := filepath.Join(filepath.Dir(absPath), zcodeCredentialDefaultSecretFile)
+			secret, found, err := zcodeReadSecretFile(secretPath, true)
+			if err != nil {
+				out.v2Err = fmt.Errorf("%w: %w", errZCodeCredentialStoreUnavailable, err)
+				return
+			}
+			if found {
+				legacySecret = secret
+				out.hasV2Key = true
+				out.v2Source = zcodeCredentialSourceEnv
+				out.v2Key = sha256.Sum256([]byte(secret))
+				return
+			}
+			if req.hasV2Env {
+				out.v2Err = fmt.Errorf("%w: missing %s for env-encrypted credentials", errZCodeCredentialStoreUnavailable, zcodeCredentialDefaultSecretFile)
+			}
+			return
+		}
 
-	// Step 3: OS credential store, queried only when an enc:v2:os: entry needs it.
-	// If the directory is pinned to OS storage and only enc:v2:env: entries exist,
-	// fail closed without triggering an OS keyring prompt.
-	if hasV2OS {
-		reader, cache := s.osKeyReaderAndCache()
-		if !cache.hasValidKey(absPath, osFingerprints) &&
-			s.resolveOSKeyProbe()(zcodeOSKeyringService, zcodeOSKeyringAccount(absPath)) == zcodeOSKeyAccessMayPrompt {
-			out.v2Err = fmt.Errorf("%w: macOS Keychain authorization is required; reopen or restart the ZCode agent to authorize", errZCodeCredentialStoreUnavailable)
-		} else {
-			key, err := cache.load(ctx, absPath, osFingerprints, reader)
+		// Step 3: OS keyring, queried only when an enc:v2:os: entry needs it.
+		// If the directory is pinned to the OS keyring and only enc:v2:env: entries
+		// exist, fail closed without triggering an OS keyring prompt.
+		if req.hasV2OS {
+			reader, cache := s.osKeyReaderAndCache()
+			if !cache.hasCachedOutcome(absPath, req.osFingerprints) {
+				switch s.resolveOSKeyProbe()(zcodeOSKeyringService, zcodeOSKeyringAccount(absPath)) {
+				case zcodeOSKeyAccessMayPrompt:
+					out.v2Err = fmt.Errorf("%w: macOS Keychain authorization is required; reopen or restart the ZCode agent to authorize", errZCodeCredentialStoreUnavailable)
+					return
+				case zcodeOSKeyAccessNotFound:
+					out.v2Err = fmt.Errorf("%w: %w", errZCodeCredentialStoreUnavailable, errZCodeOSKeyNotFound)
+					return
+				case zcodeOSKeyAccessSilent:
+				}
+			}
+			key, err := cache.load(ctx, absPath, req.osFingerprints, reader)
 			if err != nil {
 				out.v2Err = err
-			} else {
-				out.hasV2Key = true
-				out.v2Source = zcodeCredentialSourceOS
-				out.v2Key = key
+				return
 			}
+			out.hasV2Key = true
+			out.v2Source = zcodeCredentialSourceOS
+			out.v2Key = key
+			return
 		}
-	} else if hasV2Env {
-		out.v2Err = fmt.Errorf("%w: credential directory is pinned to OS storage", errZCodeCredentialStoreUnavailable)
+		if req.hasV2Env {
+			out.v2Err = fmt.Errorf("%w: credential directory is pinned to OS storage", errZCodeCredentialStoreUnavailable)
+		}
 	}
-	s.recordIdentity(out)
+
+	resolveV2()
+	if req.hasV1 {
+		out.v1Keys = s.legacyKeyCandidates(legacySecret)
+	}
 }
 
 func (s zcodeCredentialStore) recordIdentity(out *zcodeCredentials) {
@@ -712,19 +706,6 @@ func zcodeIsBase64URLChars(value string) bool {
 		return false
 	}
 	return true
-}
-
-// zcodeDecryptCredential decrypts one legacy v1 store value under key, as ZCode's
-// createLegacyCredentialCipher does. Plain values without an "enc:" prefix pass
-// through; any non-v1 "enc:" prefix fails decryption.
-func zcodeDecryptCredential(key [sha256.Size]byte, value string) (string, error) {
-	if sealed, ok := strings.CutPrefix(value, zcodeCredentialCipherPrefix); ok {
-		return zcodeOpenAESGCM(key, sealed, true)
-	}
-	if strings.HasPrefix(value, zcodeCredentialEncPrefix) {
-		return "", fmt.Errorf("%w: unsupported encrypted credential format", errZCodeCredentialDecryptFailed)
-	}
-	return value, nil
 }
 
 func zcodeOpenAESGCM(key [sha256.Size]byte, sealed string, allowPadding bool) (string, error) {

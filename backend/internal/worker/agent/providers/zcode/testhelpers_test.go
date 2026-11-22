@@ -135,7 +135,7 @@ func zcodeTestCredentialStore(t *testing.T, values map[string]string) zcodeCrede
 // zcodeTestReadCredentials reads a test credential store.
 func zcodeTestReadCredentials(t *testing.T, store zcodeCredentialStore) zcodeCredentials {
 	t.Helper()
-	credentials, err := store.read()
+	credentials, err := store.readContext(t.Context())
 	require.NoError(t, err)
 	return credentials
 }
@@ -169,7 +169,7 @@ func zcodeTestStartPlanServer(t *testing.T, handler http.HandlerFunc) (*httptest
 // snapshot, as pushAccountProviderConfig does.
 func seedZCodeAccountStateForTests(t *testing.T, a *Agent) {
 	t.Helper()
-	credentials, err := a.credentials.read()
+	credentials, err := a.credentials.readContext(t.Context())
 	require.NoError(t, err)
 	bindings := zcodeTestBindings(t, a.catalog, zcodeBuiltinZAIAccountConfig, credentials)
 	a.Mu.Lock()

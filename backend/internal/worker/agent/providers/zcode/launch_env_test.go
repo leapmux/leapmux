@@ -21,7 +21,10 @@ import (
 
 func zcodeWriteStoreWithSecret(t *testing.T, home, secret string) {
 	t.Helper()
-	key := sha256.Sum256([]byte(zcodeCredentialSecret(func(string) string { return secret }, home, zcodeNodeUsername())))
+	if secret == "" {
+		secret = zcodeLegacyFallbackSecret(home, zcodeNodeUsername())
+	}
+	key := sha256.Sum256([]byte(secret))
 	data, err := json.Marshal(map[string]string{zcodeCredentialZCodeJWT: zcodeTestEncryptCredential(t, key, "fixture-jwt")})
 	require.NoError(t, err)
 	path := filepath.Join(home, ".zcode", "v2", "credentials.json")
@@ -42,7 +45,7 @@ func TestZCodeAccountEnvironment_UsesFinalizedEnvironment(t *testing.T) {
 			environment := envutil.PinEnv(os.Environ(), "HOME="+home, "USERPROFILE="+home, zcodeCredentialSecretEnv+"=worker")
 			got, err := resolveZCodeAccountEnvironment(t.Context(), opts, providerkit.FinalizeAgentEnv(environment, opts))
 			require.NoError(t, err)
-			credentials, err := got.credentials.read()
+			credentials, err := got.credentials.readContext(t.Context())
 			require.NoError(t, err)
 			jwt, err := credentials.get(zcodeCredentialZCodeJWT)
 			require.NoError(t, err)
@@ -66,7 +69,7 @@ func TestZCodeAccountEnvironment_UsesProfileAndWorkingDirectory(t *testing.T) {
 	environment := envutil.PinEnv(os.Environ(), "HOME="+oldHome, "LEAPMUX_TEST_ACCOUNT_HOME="+home)
 	got, err := resolveZCodeAccountEnvironment(context.Background(), opts, providerkit.FinalizeAgentEnv(environment, opts))
 	require.NoError(t, err)
-	credentials, err := got.credentials.read()
+	credentials, err := got.credentials.readContext(t.Context())
 	require.NoError(t, err)
 	jwt, err := credentials.get(zcodeCredentialZCodeJWT)
 	require.NoError(t, err)
@@ -140,7 +143,7 @@ func TestZCodeAccountEnvironment_UsesSecretFileFromProfile(t *testing.T) {
 	environment := envutil.PinEnv(os.Environ(), "HOME="+home, "USERPROFILE="+home, "LEAPMUX_TEST_PROFILE_DIR="+profileDir)
 	got, err := resolveZCodeAccountEnvironment(t.Context(), opts, providerkit.FinalizeAgentEnv(environment, opts))
 	require.NoError(t, err)
-	creds, err := got.credentials.read()
+	creds, err := got.credentials.readContext(t.Context())
 	require.NoError(t, err)
 	jwt, err := creds.get(zcodeCredentialZCodeJWT)
 	require.NoError(t, err)

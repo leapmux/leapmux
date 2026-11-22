@@ -13,45 +13,48 @@ export interface AgentStartupBannerProps {
   containerClass: string
 }
 
-export const AgentStartupBanner: Component<AgentStartupBannerProps> = props => (
-  <Switch>
-    <Match when={props.status === AgentStatus.STARTING}>
-      <div class={props.containerClass} data-testid="agent-startup-overlay">
-        <Show
-          when={props.onOpenStartupPrompt}
-          fallback={<StartupSpinner label={props.startupMessage || `Starting ${props.providerLabel ?? 'agent'}…`} />}
+export const AgentStartupBanner: Component<AgentStartupBannerProps> = (props) => {
+  const startupLabel = () => props.startupMessage || `Starting ${props.providerLabel ?? 'agent'}…`
+  return (
+    <Switch>
+      <Match when={props.status === AgentStatus.STARTING}>
+        <div class={props.containerClass} data-testid="agent-startup-overlay">
+          <Show
+            when={props.onOpenStartupPrompt}
+            fallback={<StartupSpinner label={startupLabel()} />}
+          >
+            {onOpen => (
+              <div class={startupPanelStyles.startupBody}>
+                <div class={startupPanelStyles.startupActions}>
+                  <StartupSpinner label={startupLabel()} />
+                </div>
+                <div class={startupPanelStyles.startupActions}>
+                  <button
+                    type="button"
+                    class="outline"
+                    data-testid="agent-startup-prompt-open"
+                    onClick={() => onOpen()()}
+                  >
+                    Review instructions
+                  </button>
+                </div>
+              </div>
+            )}
+          </Show>
+        </div>
+      </Match>
+      <Match when={props.status === AgentStatus.STARTUP_FAILED}>
+        <div
+          class={props.containerClass}
+          data-testid="agent-startup-error"
+          style={{ color: 'var(--danger)' }}
         >
-          {onOpen => (
-            <div class={startupPanelStyles.startupBody}>
-              <div class={startupPanelStyles.startupActions}>
-                <StartupSpinner label={props.startupMessage || `Starting ${props.providerLabel ?? 'agent'}…`} />
-              </div>
-              <div class={startupPanelStyles.startupActions}>
-                <button
-                  type="button"
-                  class="outline"
-                  data-testid="agent-startup-prompt-open"
-                  onClick={() => onOpen()()}
-                >
-                  Review instructions
-                </button>
-              </div>
-            </div>
-          )}
-        </Show>
-      </div>
-    </Match>
-    <Match when={props.status === AgentStatus.STARTUP_FAILED}>
-      <div
-        class={props.containerClass}
-        data-testid="agent-startup-error"
-        style={{ color: 'var(--danger)' }}
-      >
-        <StartupErrorBody
-          title={`${props.providerLabel ?? 'Agent'} failed to start`}
-          error={props.startupError ?? ''}
-        />
-      </div>
-    </Match>
-  </Switch>
-)
+          <StartupErrorBody
+            title={`${props.providerLabel ?? 'Agent'} failed to start`}
+            error={props.startupError ?? ''}
+          />
+        </div>
+      </Match>
+    </Switch>
+  )
+}
