@@ -151,20 +151,32 @@ describe('local link context and directory reveal forwarding', () => {
     })
   })
 
-  it('provides undefined to GoalsAndTodos when onActivateLocalLink is absent', () => {
+  it('reactively activates and deactivates local links when onActivateLocalLink changes after mount', () => {
+    const onActivateLocalLink = vi.fn()
+    const [handler, setHandler] = createSignal<SectionDefContext['onActivateLocalLink']>(undefined)
     const ctx = context({
       workerId: 'w-1',
       workingDir: '/repo',
       homeDir: '/home/alice',
       workerInfoFn: () => ({ os: 'linux' } as ReturnType<SectionDefContext['workerInfoFn']>),
-      onActivateLocalLink: undefined,
+      get onActivateLocalLink() { return handler() },
     })
 
     const definition = buildSectionDef(sectionOf(SectionType.TODOS, 'Goals & To-dos'), ctx)
     render(() => definition.content())
 
     expect(captured.todosMounts).toBe(1)
-    expect(captured.localLinkCtx).toBeUndefined()
+    expect(captured.localLinkCtx?.workerId ?? '').toBe('')
+
+    setHandler(() => onActivateLocalLink)
+    expect(captured.todosMounts).toBe(1)
+    expect(captured.localLinkCtx?.workerId).toBe('w-1')
+
+    captured.localLinkCtx?.onActivate('./a.md')
+    expect(onActivateLocalLink).toHaveBeenCalledTimes(1)
+
+    setHandler(undefined)
+    expect(captured.localLinkCtx?.workerId ?? '').toBe('')
   })
 
   it('forwards directoryReveal and onDirectoryRevealHandled to FilesSection', () => {

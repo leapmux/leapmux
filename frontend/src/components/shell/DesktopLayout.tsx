@@ -159,8 +159,8 @@ interface DesktopLayoutProps {
   fileDropDisabled?: boolean
   setToggleLeftSidebar?: (fn: () => void) => void
   setToggleRightSidebar?: (fn: () => void) => void
-  setExpandLeftSidebar?: (fn: () => void) => void
-  setExpandRightSidebar?: (fn: () => void) => void
+  setExpandLeftSidebar?: (fn: (() => void) | undefined) => void
+  setExpandRightSidebar?: (fn: (() => void) | undefined) => void
   setLeftSidebarVisible?: (visible: boolean) => void
   setRightSidebarVisible?: (visible: boolean) => void
 }
@@ -411,6 +411,8 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     if (resizeRafId !== null)
       cancelAnimationFrame(resizeRafId)
     saveSidebarState.flush()
+    props.setExpandLeftSidebar?.(undefined)
+    props.setExpandRightSidebar?.(undefined)
   })
 
   // Computed widths for CSS.

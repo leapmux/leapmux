@@ -5,7 +5,7 @@ import type { PathFlavor } from '~/lib/paths'
 import { createEffect, createSignal, on } from 'solid-js'
 import { workerFile } from '~/api/workerRpc'
 import { formatErrorMessage } from '~/lib/errors'
-import { join, normalizeSeparators, relativeUnder, split } from '~/lib/paths'
+import { join, relativeUnder, split } from '~/lib/paths'
 import { samePath } from './directoryTreeState'
 
 // -------------------------------------------------------------------------
@@ -117,13 +117,12 @@ export async function loadChildren(
  * ancestor, and `C:` identifies the current directory on drive C, not its
  * root.
  *
- * Both inputs are normalized first, for the reason `isDescendantPath` states:
- * a target the user typed as `C:/Users/alice` is under a root spelled `C:\`,
- * and an un-normalized comparison says it is not.
+ * `relativeUnder` normalizes separators for `flavor`, so a target the user
+ * typed as `C:/Users/alice` matches a root spelled `C:\`.
  */
 export function ancestorChain(root: string, target: string, flavor: PathFlavor): string[] {
   const rel = target
-    ? relativeUnder(normalizeSeparators(target, flavor), normalizeSeparators(root, flavor), flavor)
+    ? relativeUnder(target, root, flavor)
     : null
   if (!rel)
     return [root]

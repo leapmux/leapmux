@@ -1,18 +1,13 @@
-import type { PathFlavor } from '~/lib/paths'
-import { Code } from '@connectrpc/connect'
-import { ChannelError } from '~/lib/channelError'
+import type { LocalLinkResolveOptions } from '~/lib/localLinks'
 import { resolveLocalLinkCandidates } from '~/lib/localLinks'
-import { lruSet } from '~/lib/mapLru'
-import { join, normalizeSeparators, parentDirectory, relativeUnder } from '~/lib/paths'
+import { isLocalPathFallbackRpcError, localPathRpcErrorMessage } from '~/lib/localPathRpc'
+import { lruGet, lruSet } from '~/lib/mapLru'
+import { join, parentDirectory, relativeUnder } from '~/lib/paths'
 
 const MAX_CANONICAL_ROOT_CACHE_ENTRIES = 64
 
-export interface LocalLinkActivationSource {
+export interface LocalLinkActivationSource extends LocalLinkResolveOptions {
   workerId: string
-  baseDir: string
-  workingDir: string
-  homeDir: string
-  flavor: PathFlavor
   /** Bring the originating tile/tab into focus before opening or revealing. */
   activateSource?: () => void
 }
@@ -27,10 +22,55 @@ export interface LocalLinkActivationDeps {
   showWarning: (message: string, cause?: unknown) => void
 }
 
-function isRetryableStatError(err: unknown): boolean {
-  return err instanceof ChannelError
-    && err.source === 'rpc'
-    && (err.code === Code.NotFound || err.code === Code.PermissionDenied)
+interface StatMatch {
+  info: { path: string, isDir: boolean }
+  canonicalPath: string
+  matchedCandidate: string
+}
+
+type ProbeStatResult
+  = | { kind: 'ok', match: StatMatch }
+    | { kind: 'error', error: unknown }
+
+async function probeStatCandidates(
+  statFile: LocalLinkActivationDeps['statFile'],
+  workerId: string,
+  candidates: readonly string[],
+): Promise<ProbeStatResult> {
+  const settled = candidates.length === 1
+    ? [await statFile(workerId, { path: candidates[0]! }).then(
+        value => ({ status: 'fulfilled' as const, value }),
+        reason => ({ status: 'rejected' as const, reason }),
+      )]
+    : await Promise.allSettled(
+        candidates.map(candidate => statFile(workerId, { path: candidate })),
+      )
+
+  let lastError: unknown
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i]!
+    const outcome = settled[i]!
+    if (outcome.status === 'fulfilled') {
+      const resp = outcome.value
+      if (resp.info) {
+        return {
+          kind: 'ok',
+          match: {
+            info: resp.info,
+            canonicalPath: resp.canonicalPath ?? '',
+            matchedCandidate: candidate,
+          },
+        }
+      }
+      lastError = new Error('Worker returned empty file metadata')
+      break
+    }
+    lastError = outcome.reason
+    if (!isLocalPathFallbackRpcError(outcome.reason))
+      break
+  }
+
+  return { kind: 'error', error: lastError }
 }
 
 /**
@@ -45,6 +85,7 @@ export function createLocalLinkActivator(deps: LocalLinkActivationDeps): {
   clearCanonicalRootCache: () => void
 } {
   let activationSeq = 0
+  let canonicalRootCacheEpoch = 0
   const canonicalRootCache = new Map<string, string>()
 
   const cancelPending = () => {
@@ -52,7 +93,59 @@ export function createLocalLinkActivator(deps: LocalLinkActivationDeps): {
   }
 
   const clearCanonicalRootCache = () => {
+    canonicalRootCacheEpoch += 1
     canonicalRootCache.clear()
+  }
+
+  const resolveTreeDirectoryPath = async (
+    seq: number,
+    source: LocalLinkActivationSource,
+    logicalPath: string,
+    canonicalPath: string,
+    treeRoot: string,
+  ): Promise<{ cancelled: true } | { cancelled: false, treePath: string | undefined }> => {
+    const flavor = source.flavor
+
+    if (relativeUnder(logicalPath, treeRoot, flavor) !== null)
+      return { cancelled: false, treePath: logicalPath }
+    if (canonicalPath && relativeUnder(canonicalPath, treeRoot, flavor) !== null)
+      return { cancelled: false, treePath: canonicalPath }
+
+    const cacheKey = `${source.workerId}\0${treeRoot}`
+    let rootCanonical = lruGet(canonicalRootCache, cacheKey)
+    if (rootCanonical === undefined) {
+      const epoch = canonicalRootCacheEpoch
+      try {
+        const rootResp = await deps.statFile(source.workerId, { path: treeRoot })
+        if (seq !== activationSeq)
+          return { cancelled: true }
+        if (rootResp.canonicalPath) {
+          rootCanonical = rootResp.canonicalPath
+          if (epoch === canonicalRootCacheEpoch)
+            lruSet(canonicalRootCache, cacheKey, rootCanonical, MAX_CANONICAL_ROOT_CACHE_ENTRIES)
+        }
+      }
+      catch {
+        if (seq !== activationSeq)
+          return { cancelled: true }
+      }
+    }
+
+    if (rootCanonical) {
+      const rem = (canonicalPath
+        ? relativeUnder(canonicalPath, rootCanonical, flavor)
+        : null) ?? relativeUnder(logicalPath, rootCanonical, flavor)
+      if (rem !== null) {
+        return {
+          cancelled: false,
+          treePath: rem === ''
+            ? treeRoot
+            : join([treeRoot, rem], flavor),
+        }
+      }
+    }
+
+    return { cancelled: false, treePath: undefined }
   }
 
   const activate = async (rawHref: string, source: LocalLinkActivationSource): Promise<void> => {
@@ -61,63 +154,30 @@ export function createLocalLinkActivator(deps: LocalLinkActivationDeps): {
     // `setFileTreePath`, and so `handleFileOpen` opens inside the right tile.
     source.activateSource?.()
 
-    const candidates = resolveLocalLinkCandidates(rawHref, {
-      baseDir: source.baseDir,
-      workingDir: source.workingDir,
-      homeDir: source.homeDir,
-      flavor: source.flavor,
-    })
+    // Increment before the unresolvable early return so a failed click on a
+    // newly focused tile supersedes any earlier in-flight activation.
+    const seq = ++activationSeq
+
+    const candidates = resolveLocalLinkCandidates(rawHref, source)
     if (!source.workerId || candidates.length === 0) {
       deps.showWarning(`Cannot resolve local path: ${rawHref}`)
       return
     }
 
-    const seq = ++activationSeq
-    let matched: {
-      info: { path: string, isDir: boolean }
-      canonicalPath: string
-      matchedCandidate: string
-    } | undefined
-    let lastError: unknown
-
-    for (const candidate of candidates) {
-      try {
-        const resp = await deps.statFile(source.workerId, { path: candidate })
-        if (seq !== activationSeq)
-          return
-        if (resp.info) {
-          matched = {
-            info: resp.info,
-            canonicalPath: resp.canonicalPath ?? '',
-            matchedCandidate: candidate,
-          }
-          break
-        }
-        lastError = new Error('Worker returned empty file metadata')
-        break
-      }
-      catch (err) {
-        if (seq !== activationSeq)
-          return
-        lastError = err
-        if (!isRetryableStatError(err))
-          break
-      }
-    }
-
+    const probe = await probeStatCandidates(deps.statFile, source.workerId, candidates)
     if (seq !== activationSeq)
       return
 
-    if (!matched) {
-      if (lastError instanceof ChannelError && lastError.source === 'rpc' && lastError.message) {
-        deps.showWarning(`Cannot open local link: ${lastError.message}`, lastError)
-      }
-      else {
-        deps.showWarning('Cannot open local link', lastError)
-      }
+    if (probe.kind === 'error') {
+      const rpcMsg = localPathRpcErrorMessage(probe.error)
+      if (rpcMsg)
+        deps.showWarning(`Cannot open local link: ${rpcMsg}`, probe.error)
+      else
+        deps.showWarning('Cannot open local link', probe.error)
       return
     }
 
+    const matched = probe.match
     const flavor = source.flavor
     if (!matched.info.isDir) {
       const filePath = matched.info.path || matched.matchedCandidate
@@ -137,55 +197,13 @@ export function createLocalLinkActivator(deps: LocalLinkActivationDeps): {
       return
     }
 
-    const norm = (p: string) => normalizeSeparators(p, flavor)
-    const normRoot = norm(treeRoot)
-    let treePath: string | undefined
+    const resolved = await resolveTreeDirectoryPath(seq, source, logicalPath, canonicalPath, treeRoot)
+    if (resolved.cancelled)
+      return
 
-    if (relativeUnder(norm(logicalPath), normRoot, flavor) !== null) {
-      treePath = logicalPath
-    }
-    else if (canonicalPath && relativeUnder(norm(canonicalPath), normRoot, flavor) !== null) {
-      treePath = canonicalPath
-    }
-    else {
-      const cacheKey = `${source.workerId}\0${treeRoot}`
-      let rootCanonical = canonicalRootCache.get(cacheKey)
-      if (rootCanonical === undefined) {
-        try {
-          const rootResp = await deps.statFile(source.workerId, { path: treeRoot })
-          if (seq !== activationSeq)
-            return
-          if (rootResp.canonicalPath) {
-            rootCanonical = rootResp.canonicalPath
-            lruSet(canonicalRootCache, cacheKey, rootCanonical, MAX_CANONICAL_ROOT_CACHE_ENTRIES)
-          }
-        }
-        catch {
-          if (seq !== activationSeq)
-            return
-        }
-      }
-      else {
-        // Refresh recency on cache hit.
-        lruSet(canonicalRootCache, cacheKey, rootCanonical, MAX_CANONICAL_ROOT_CACHE_ENTRIES)
-      }
-
-      if (rootCanonical) {
-        const normRootCanonical = norm(rootCanonical)
-        const rem = (canonicalPath
-          ? relativeUnder(norm(canonicalPath), normRootCanonical, flavor)
-          : null) ?? relativeUnder(norm(logicalPath), normRootCanonical, flavor)
-        if (rem !== null) {
-          treePath = rem === ''
-            ? treeRoot
-            : join([treeRoot, rem], flavor)
-        }
-      }
-    }
-
-    if (treePath !== undefined) {
+    if (resolved.treePath !== undefined) {
       deps.revealDirectory({
-        path: treePath,
+        path: resolved.treePath,
         ...(canonicalPath
           ? { canonicalPath }
           : {}),

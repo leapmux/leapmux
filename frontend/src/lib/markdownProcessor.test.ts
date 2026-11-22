@@ -689,10 +689,14 @@ describe('link hardening in both processors', () => {
         '%5c%5cevil.example%5cshare%5cx',
         'HttPs://a.example',
         '#section',
+        'javascript%3aalert(1)',
+        'x://evil.example/a',
+        'example.com:8080/x',
       ]) {
         const html = render(`[label](${href})`)
         expect(html, `${name}: ${href}`).not.toContain('<a')
         expect(html, `${name}: ${href}`).not.toContain(LOCAL_LINK_ATTRIBUTE)
+        expect(html, `${name}: ${href}`).not.toContain(href)
         // Unwrapping keeps the author's own text; it must not delete content.
         expect(html, `${name}: ${href}`).toContain('label')
       }

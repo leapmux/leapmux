@@ -2,7 +2,7 @@ import type { LocalLinkActivationDeps, LocalLinkActivationSource } from './local
 import { Code } from '@connectrpc/connect'
 import { describe, expect, it, vi } from 'vitest'
 import { ChannelError } from '~/lib/channelError'
-import { deferred } from '~/test-support/async'
+import { deferred, settle } from '~/test-support/async'
 import { createLocalLinkActivator } from './localLinkActivation'
 
 function makeSource(overrides: Partial<LocalLinkActivationSource> = {}): LocalLinkActivationSource {
@@ -123,12 +123,16 @@ describe('createLocalLinkActivator', () => {
       workingDir: '/repo',
     })
 
-    // Transport error stops immediately without trying the second candidate.
+    // Transport error on candidate 1 stops priority selection even if candidate 2 succeeds.
     statFile.mockReset()
     const transportErr = new ChannelError('transport', 'channel not open')
-    statFile.mockRejectedValueOnce(transportErr)
+    statFile
+      .mockRejectedValueOnce(transportErr)
+      .mockResolvedValueOnce({
+        info: { path: '/repo/LICENSE.md', isDir: false },
+      })
     await activator.activate('/LICENSE.md', makeSource())
-    expect(statFile).toHaveBeenCalledTimes(1)
+    expect(openFile).toHaveBeenCalledTimes(2)
     expect(showWarning).toHaveBeenCalledWith('Cannot open local link', transportErr)
   })
 
@@ -349,5 +353,132 @@ describe('createLocalLinkActivator', () => {
     expect(open2).not.toHaveBeenCalled()
     expect(reveal2).not.toHaveBeenCalled()
     expect(warn2).not.toHaveBeenCalled()
+  })
+
+  it('cancels an earlier in-flight activation when a newer activation fails to resolve', async () => {
+    const firstGate = deferred<{ info?: { path: string, isDir: boolean }, canonicalPath?: string }>()
+    const { deps, openFile, showWarning } = makeDeps({
+      statFile: vi.fn(() => firstGate.promise),
+    })
+    const activator = createLocalLinkActivator(deps)
+
+    const p1 = activator.activate('./slow.md', makeSource())
+    // Second activation cannot resolve (empty workerId) and returns early.
+    await activator.activate('./unresolvable.md', makeSource({ workerId: '' }))
+    expect(showWarning).toHaveBeenCalledWith('Cannot resolve local path: ./unresolvable.md')
+
+    firstGate.resolve({
+      info: { path: '/repo/docs/slow.md', isDir: false },
+    })
+    await p1
+
+    expect(openFile).not.toHaveBeenCalled()
+  })
+
+  it('ignores stale canonical root writeback when clearCanonicalRootCache runs mid-flight', async () => {
+    const rootGate = deferred<{ info?: { path: string, isDir: boolean }, canonicalPath?: string }>()
+    let rootCalls = 0
+    const { deps, revealDirectory } = makeDeps({
+      statFile: vi.fn((_workerId, req) => {
+        if (req.path === '/tmp/repo') {
+          rootCalls++
+          if (rootCalls === 1)
+            return rootGate.promise
+          return Promise.resolve({
+            info: { path: '/tmp/repo', isDir: true },
+            canonicalPath: '/private/tmp/repo-new',
+          })
+        }
+        return Promise.resolve({
+          info: { path: req.path, isDir: true },
+          canonicalPath: req.path,
+        })
+      }),
+    })
+    const activator = createLocalLinkActivator(deps)
+    const source = makeSource({ baseDir: '/tmp/repo', workingDir: '/tmp/repo' })
+
+    const p1 = activator.activate('/private/tmp/repo-old/sub', source)
+    // Wait until target stat completes and treeRoot stat is in flight.
+    await settle()
+    expect(rootCalls).toBe(1)
+
+    // Clear the cache without calling cancelPending.
+    activator.clearCanonicalRootCache()
+    rootGate.resolve({
+      info: { path: '/tmp/repo', isDir: true },
+      canonicalPath: '/private/tmp/repo-old',
+    })
+    await p1
+    expect(revealDirectory).toHaveBeenCalledWith({
+      path: '/tmp/repo/sub',
+      canonicalPath: '/private/tmp/repo-old/sub',
+    })
+
+    // Next activation must NOT observe the pre-clear cached root value.
+    await activator.activate('/private/tmp/repo-new/sub', source)
+    expect(rootCalls).toBe(2)
+    expect(revealDirectory).toHaveBeenLastCalledWith({
+      path: '/tmp/repo/sub',
+      canonicalPath: '/private/tmp/repo-new/sub',
+    })
+  })
+
+  it('probes multi-candidate statFile calls concurrently while respecting priority order', async () => {
+    const firstGate = deferred<{ info?: { path: string, isDir: boolean }, canonicalPath?: string }>()
+    const secondGate = deferred<{ info?: { path: string, isDir: boolean }, canonicalPath?: string }>()
+    const statFile = vi.fn((_workerId: string, req: { path: string }) => (req.path === '/LICENSE.md'
+      ? firstGate.promise
+      : secondGate.promise))
+    const { deps, openFile } = makeDeps({ statFile })
+    const activator = createLocalLinkActivator(deps)
+
+    const pending = activator.activate('/LICENSE.md', makeSource())
+    // Both candidates are dispatched concurrently before either settles.
+    expect(statFile).toHaveBeenCalledTimes(2)
+    expect(statFile.mock.calls.map(c => c[1].path)).toEqual(['/LICENSE.md', '/repo/LICENSE.md'])
+
+    // Even if candidate 2 resolves first, candidate 1 wins when it succeeds.
+    secondGate.resolve({
+      info: { path: '/repo/LICENSE.md', isDir: false },
+    })
+    await Promise.resolve()
+    firstGate.resolve({
+      info: { path: '/LICENSE.md', isDir: false },
+    })
+    await pending
+
+    expect(openFile).toHaveBeenCalledExactlyOnceWith('/LICENSE.md', {
+      workerId: 'w-1',
+      workingDir: '/repo',
+    })
+  })
+
+  it('preserves leading backslashes in POSIX relative subpaths under a symlinked treeRoot', async () => {
+    const { deps, statFile, revealDirectory } = makeDeps()
+    statFile.mockImplementation(async (_workerId, req) => {
+      if (req.path === '/private/tmp/repo/\\weird') {
+        return {
+          info: { path: '/private/tmp/repo/\\weird', isDir: true },
+          canonicalPath: '/private/tmp/repo/\\weird',
+        }
+      }
+      if (req.path === '/tmp/repo') {
+        return {
+          info: { path: '/tmp/repo', isDir: true },
+          canonicalPath: '/private/tmp/repo',
+        }
+      }
+      throw new ChannelError('rpc', 'not found', { code: Code.NotFound })
+    })
+    const activator = createLocalLinkActivator(deps)
+    await activator.activate('/private/tmp/repo/%5Cweird', makeSource({
+      baseDir: '/tmp/repo',
+      workingDir: '/tmp/repo',
+    }))
+    expect(revealDirectory).toHaveBeenCalledWith({
+      path: '/tmp/repo/\\weird',
+      canonicalPath: '/private/tmp/repo/\\weird',
+    })
   })
 })

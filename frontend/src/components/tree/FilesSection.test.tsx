@@ -9,6 +9,7 @@ import { workerFile } from '~/api/workerRpc'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { localStorageGet, localStorageSet, PREFIX_FILES_SORT_ORDER } from '~/lib/browserStorage'
 import { DEFAULT_FILE_SORT_ORDER } from '~/lib/fileSort'
+import { findTreeRowByName, makeDirFixture } from '~/test-support/treeTestHelpers'
 import { FilesSection, FilesSectionHeaderActions } from './FilesSection'
 
 vi.mock('~/api/workerRpc', () => ({
@@ -423,23 +424,6 @@ describe('FilesSection tree root', () => {
 })
 
 describe('FilesSection directory reveal', () => {
-  function dirEntry(path: string, name: string, hidden = false) {
-    return {
-      name,
-      path,
-      isDir: true,
-      hidden,
-      size: 0n,
-      modTime: '2026-01-01T00:00:00Z',
-    }
-  }
-
-  function rowFor(name: string): HTMLElement | undefined {
-    return [
-      ...document.querySelectorAll<HTMLElement>('[data-testid="tree-row"]'),
-    ].find(el => el.querySelector('[data-testid="tree-row-name"]')?.textContent === name)
-  }
-
   afterEach(() => {
     vi.mocked(workerFile.listDirectory).mockImplementation(async () => ({
       listings: [
@@ -461,7 +445,7 @@ describe('FilesSection directory reveal', () => {
             {
               path: WORKING_DIR,
               entries: [
-                dirEntry('/repo/src', 'src'),
+                makeDirFixture('/repo/src', 'src'),
               ],
               truncated: false,
               totalEntries: 1,
@@ -514,8 +498,8 @@ describe('FilesSection directory reveal', () => {
 
     expect(screen.queryByTestId('files-flat-list')).toBeNull()
     expect(handle.flatListMode()).toBe(false)
-    expect(rowFor('src')).toHaveAttribute('data-reveal-cue', 'true')
-    expect(document.activeElement).toBe(rowFor('src'))
+    expect(findTreeRowByName('src')).toHaveAttribute('data-reveal-cue', 'true')
+    expect(document.activeElement).toBe(findTreeRowByName('src'))
   })
 
   it('resets the Changed git filter only when the target directory is excluded by the filter', async () => {
@@ -526,8 +510,8 @@ describe('FilesSection directory reveal', () => {
             {
               path: WORKING_DIR,
               entries: [
-                dirEntry('/repo/src', 'src'),
-                dirEntry('/repo/docs', 'docs'),
+                makeDirFixture('/repo/src', 'src'),
+                makeDirFixture('/repo/docs', 'docs'),
               ],
               truncated: false,
               totalEntries: 2,
@@ -582,16 +566,17 @@ describe('FilesSection directory reveal', () => {
     await waitFor(() => expect(handled).toEqual([1]))
     expect(handle.isFiltered()).toBe(true)
 
-    // Pause DirectoryTree before requesting unchanged `/repo/docs` so only FilesSection's
-    // upfront `isVisible` check can clear the filter synchronously before DirectoryTree walks.
+    // While DirectoryTree is paused (enabled=false), FilesSection must NOT
+    // prematurely clear the active filter; once enabled, DirectoryTree clears
+    // it authoritatively via onClearFilterRequired.
     setEnabled(false)
     setReveal({ path: '/repo/docs', nonce: 2 })
-    expect(handle.isFiltered()).toBe(false)
+    expect(handle.isFiltered()).toBe(true)
 
     setEnabled(true)
     await waitFor(() => expect(handled).toEqual([1, 2]))
     expect(handle.isFiltered()).toBe(false)
-    expect(rowFor('docs')).toHaveAttribute('data-reveal-cue', 'true')
+    expect(findTreeRowByName('docs')).toHaveAttribute('data-reveal-cue', 'true')
   })
 
   it('resets the git filter via onClearFilterRequired when a symlink logical row is filtered out even though canonicalPath matches Changed', async () => {
@@ -602,8 +587,8 @@ describe('FilesSection directory reveal', () => {
             {
               path: WORKING_DIR,
               entries: [
-                dirEntry('/repo/src', 'src'),
-                dirEntry('/repo/link-src', 'link-src'),
+                makeDirFixture('/repo/src', 'src'),
+                makeDirFixture('/repo/link-src', 'link-src'),
               ],
               truncated: false,
               totalEntries: 2,
@@ -655,7 +640,7 @@ describe('FilesSection directory reveal', () => {
     await waitFor(() => expect(handled).toEqual([1]))
 
     expect(handle.isFiltered()).toBe(false)
-    const linkRow = rowFor('link-src')
+    const linkRow = findTreeRowByName('link-src')
     expect(linkRow).toHaveAttribute('data-reveal-cue', 'true')
     expect(document.activeElement).toBe(linkRow)
   })
@@ -668,7 +653,7 @@ describe('FilesSection directory reveal', () => {
             {
               path: WORKING_DIR,
               entries: [
-                dirEntry('/repo/.github', '.github', true),
+                makeDirFixture('/repo/.github', '.github', true),
               ],
               truncated: false,
               totalEntries: 1,
@@ -682,7 +667,7 @@ describe('FilesSection directory reveal', () => {
             {
               path: '/repo/.github',
               entries: [
-                dirEntry('/repo/.github/workflows', 'workflows'),
+                makeDirFixture('/repo/.github/workflows', 'workflows'),
               ],
               truncated: false,
               totalEntries: 1,
@@ -728,18 +713,19 @@ describe('FilesSection directory reveal', () => {
       />
     ))
 
-    // Turn hidden files off first while DirectoryTree is paused so only FilesSection's
-    // upfront dot-segment check can flip `showHiddenFiles` synchronously before any walk.
+    // Turn hidden files off first while DirectoryTree is paused: persisted
+    // `showHiddenFiles` stays untouched until DirectoryTree actually walks.
     handle.toggleShowHiddenFiles()
     expect(handle.showHiddenFiles()).toBe(false)
 
     setReveal({ path: '/repo/.github/workflows', nonce: 1 })
-    expect(handle.showHiddenFiles()).toBe(true)
+    expect(handle.showHiddenFiles()).toBe(false)
 
     setEnabled(true)
     await waitFor(() => expect(handled).toEqual([1]))
 
-    expect(document.activeElement).toBe(rowFor('workflows'))
-    expect(rowFor('workflows')).toHaveAttribute('data-reveal-cue', 'true')
+    expect(handle.showHiddenFiles()).toBe(true)
+    expect(document.activeElement).toBe(findTreeRowByName('workflows'))
+    expect(findTreeRowByName('workflows')).toHaveAttribute('data-reveal-cue', 'true')
   })
 })

@@ -5,6 +5,7 @@ import {
   detectFlavor,
   extname,
   filesystemRoot,
+  fileUriToPath,
   flavorFromOs,
   isAbsolute,
   isFilesystemPath,
@@ -150,6 +151,12 @@ describe('join', () => {
     expect(join(['\\', 'foo'], 'win32')).toBe('\\foo')
     expect(join(['C:\\', 'Users', 'alice'], 'win32')).toBe('C:\\Users\\alice')
   })
+
+  it('preserves leading and trailing backslashes in posix filenames', () => {
+    expect(join(['/repo', '\\weird.txt'], 'posix')).toBe('/repo/\\weird.txt')
+    expect(join(['/repo/dir\\', 'file.txt'], 'posix')).toBe('/repo/dir\\/file.txt')
+    expect(join(['\\', 'a.txt'], 'posix')).toBe('\\/a.txt')
+  })
 })
 
 describe('cleanPath', () => {
@@ -185,6 +192,13 @@ describe('cleanPath', () => {
     expect(cleanPath('\\\\srv\\share', 'win32')).toBe('\\\\srv\\share\\')
     expect(cleanPath('\\..\\a', 'win32')).toBe('\\a')
     expect(cleanPath('a\\..', 'win32')).toBe('.')
+  })
+
+  it('preserves the drive prefix on win32 drive-relative paths', () => {
+    expect(cleanPath('C:foo\\..\\bar', 'win32')).toBe('C:bar')
+    expect(cleanPath('C:foo\\..', 'win32')).toBe('C:.')
+    expect(cleanPath('C:..\\bar', 'win32')).toBe('C:..\\bar')
+    expect(cleanPath('C:', 'win32')).toBe('C:.')
   })
 })
 
@@ -348,6 +362,11 @@ describe('untildify', () => {
     expect(untildify('~/proj', '/', 'posix')).toBe('/proj')
     expect(untildify('~', '/', 'posix')).toBe('/')
   })
+
+  it('preserves backslashes as literal filename characters on posix', () => {
+    expect(untildify('~/\\weird.txt', '/Users/alice', 'posix')).toBe('/Users/alice/\\weird.txt')
+    expect(untildify('~\\notes.md', '/Users/alice', 'posix')).toBe('~\\notes.md')
+  })
 })
 
 describe('filesystemRoot', () => {
@@ -451,6 +470,12 @@ describe('relativeUnder', () => {
   it('returns null for an empty path', () => {
     expect(relativeUnder('', '/', 'posix')).toBeNull()
     expect(relativeUnder('', '', 'posix')).toBeNull()
+  })
+
+  it('normalizes mixed separators on win32 while keeping backslashes literal on posix', () => {
+    expect(relativeUnder('C:/Users/alice/proj', 'C:\\Users\\alice', 'win32')).toBe('proj')
+    expect(relativeUnder('C:\\Users\\alice\\proj', 'C:/Users/alice', 'win32')).toBe('proj')
+    expect(relativeUnder('/home/alice/a\\b', '/home/alice', 'posix')).toBe('a\\b')
   })
 })
 
@@ -655,5 +680,17 @@ describe('relative filenames and ASCII URI schemes', () => {
     const path = 'K:結果.log'
     expect(isFilesystemPath(path)).toBe(false)
     expect(isFilesystemPath(path, true)).toBe(true)
+  })
+})
+
+describe('fileUriToPath', () => {
+  it('decodes valid percent escapes alongside literal percent signs', () => {
+    expect(fileUriToPath('file:///repo/my%20file%2050%off.png')).toBe('/repo/my file 50%off.png')
+    expect(fileUriToPath('file:///repo/my file 50%off.png')).toBe('/repo/my file 50%off.png')
+    expect(fileUriToPath('file:///repo/50%off.png')).toBe('/repo/50%off.png')
+  })
+
+  it('rejects encoded NUL bytes even when a malformed percent sequence is also present', () => {
+    expect(fileUriToPath('file:///repo/a%00%ZZ.png')).toBeUndefined()
   })
 })

@@ -3,7 +3,6 @@ import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { LocalLinkActivationSource } from './localLinkActivation'
 import type { SectionActions } from './sectionUtils'
 import type { WorkspaceOperations } from './useWorkspaceOperations'
-import type { MarkdownLocalLinkContextValue } from '~/components/chat/markdownLocalLinks'
 import type { DirectoryRevealRequest } from '~/components/tree/directoryReveal'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
 import type { AddTunnelTarget } from '~/components/workers/AddTunnelDialog'
@@ -26,7 +25,7 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
-import { MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
+import { createMarkdownLocalLinkContext, MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
 import { IconButton } from '~/components/common/IconButton'
 import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
@@ -413,31 +412,16 @@ export function buildSectionDef(
         )
       },
       content: () => {
-        const localLinkContext: MarkdownLocalLinkContextValue = {
-          get workerId() { return ctx.workerId },
-          get baseDir() { return ctx.workingDir },
-          get workingDir() { return ctx.workingDir },
-          get homeDir() { return ctx.homeDir },
-          get flavor() { return flavorFromOs(ctx.workerInfoFn(ctx.workerId)?.os) },
-          onActivate: (rawHref: string) => {
-            const workerId = ctx.workerId
-            const workingDir = ctx.workingDir
-            const homeDir = ctx.homeDir
-            ctx.onActivateLocalLink?.(rawHref, {
-              workerId,
-              baseDir: workingDir,
-              workingDir,
-              homeDir,
-              flavor: flavorFromOs(ctx.workerInfoFn(workerId)?.os),
-            })
-          },
-        }
+        const localLinkContext = createMarkdownLocalLinkContext({
+          workerId: () => ctx.workerId,
+          baseDir: () => ctx.workingDir,
+          workingDir: () => ctx.workingDir,
+          homeDir: () => ctx.homeDir,
+          workerOs: workerId => ctx.workerInfoFn(workerId)?.os,
+          getOnActivate: () => ctx.onActivateLocalLink,
+        })
         return (
-          <MarkdownLocalLinkProvider
-            value={ctx.onActivateLocalLink !== undefined
-              ? localLinkContext
-              : undefined}
-          >
+          <MarkdownLocalLinkProvider value={localLinkContext}>
             <GoalsAndTodos
               variant="sidebar"
               {...(ctx.activeGoal !== undefined

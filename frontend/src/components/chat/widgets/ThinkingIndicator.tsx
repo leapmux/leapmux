@@ -14,6 +14,11 @@ import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { goalStatusLabel } from '~/stores/chatGoal'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
+import {
+  MarkdownLocalLinkProvider,
+  useMarkdownLocalLinks,
+  withMarkdownLocalLinkBeforeActivate,
+} from '../markdownLocalLinks'
 import { getRandomVerb } from '../spinnerVerbs'
 import { ThinkingCompass } from './ThinkingCompass'
 import * as styles from './ThinkingIndicator.css'
@@ -274,9 +279,16 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // not an activation), which makes this the only thing that closes it on a
   // row click.
   let bgTasksPopoverEl: HTMLElement | undefined
-  // The to-dos popover element lets the Set action dismiss the card before it
-  // opens the modal goal editor.
+  // The to-dos popover element lets the Set action and local-link clicks inside
+  // goal objectives dismiss the card before opening a dialog or file viewer tab.
   let todosPopoverEl: HTMLElement | undefined
+  const parentLocalLinks = useMarkdownLocalLinks()
+  const todosLocalLinks = withMarkdownLocalLinkBeforeActivate(parentLocalLinks, () => {
+    try {
+      todosPopoverEl?.hidePopover()
+    }
+    catch {}
+  })
   let expandRafId = 0
   let tickRafId = 0
   let rotateIntervalId: ReturnType<typeof setInterval> | undefined
@@ -580,35 +592,37 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             </button>
           )}
         >
-          <GoalsAndTodos
-            variant="popover"
-            todos={props.todos ?? []}
-            // SET opens a modal dialog on top of this popover, and `as="card"`
-            // keeps a popover open on an inside click on purpose. If this
-            // handler does not dismiss the popover, the panel stays open under
-            // the dialog, and it remains there after the dialog closes. The
-            // other three actions update this panel, so they must keep it open.
-            //
-            // This component wraps the handler only when the host supplies one.
-            // The card renders its buttons because the handler is present. The
-            // rest of the surface passes through unchanged.
-            {...(props.goal
-              ? {
-                  goal: {
-                    ...props.goal,
-                    ...(props.goal.onAction
-                      ? {
-                          onAction: (action: GoalAction) => {
-                            if (action === 'set')
-                              todosPopoverEl?.hidePopover()
-                            props.goal?.onAction?.(action)
-                          },
-                        }
-                      : {}),
-                  },
-                }
-              : {})}
-          />
+          <MarkdownLocalLinkProvider value={todosLocalLinks}>
+            <GoalsAndTodos
+              variant="popover"
+              todos={props.todos ?? []}
+              // SET opens a modal dialog on top of this popover, and `as="card"`
+              // keeps a popover open on an inside click on purpose. If this
+              // handler does not dismiss the popover, the panel stays open under
+              // the dialog, and it remains there after the dialog closes. The
+              // other three actions update this panel, so they must keep it open.
+              //
+              // This component wraps the handler only when the host supplies one.
+              // The card renders its buttons because the handler is present. The
+              // rest of the surface passes through unchanged.
+              {...(props.goal
+                ? {
+                    goal: {
+                      ...props.goal,
+                      ...(props.goal.onAction
+                        ? {
+                            onAction: (action: GoalAction) => {
+                              if (action === 'set')
+                                todosPopoverEl?.hidePopover()
+                              props.goal?.onAction?.(action)
+                            },
+                          }
+                        : {}),
+                    },
+                  }
+                : {})}
+            />
+          </MarkdownLocalLinkProvider>
         </DropdownMenu>
       ),
     },

@@ -2,9 +2,9 @@ import type { PathFlavor } from './paths'
 import {
   cleanPath,
   filesystemRoot,
-  isAbsolute,
   isFilesystemRoot,
   resolvePath,
+  safeDecodeURIComponent,
   untildify,
 } from './paths'
 
@@ -45,12 +45,9 @@ const FILE_SCHEME_RE = /^file:/i
 const LOCAL_FILE_URI_RE = /^file:\/\/(?:localhost)?(\/.*)$/i
 const LEADING_SLASH_WIN_DRIVE_RE = /^\/[A-Z]:[\\/]/i
 const FILE_URI_DRIVE_RELATIVE_RE = /^\/?[A-Z]:(?![\\/])/i
-const WIN_DRIVE_PATH_RE = /^[A-Z]:[\\/]/i
-// `remark-rehype` (`mdast-util-to-hast`) percent-encodes `\` as `%5C` in link
-// hrefs and image srcs, so a Markdown Windows path like `C:\repo\x.png` arrives
-// here as `C:%5Crepo%5Cx.png`. Accept raw slash or percent-encoded slash here;
-// post-decode validation still rejects every drive-relative `C:foo` path.
-const WIN_DRIVE_RAW_PATH_RE = /^[A-Z]:(?:[\\/]|%5C|%2F)/i
+// Absolute Windows drive prefix (`C:\...`, `C:/...`), explicitly excluding URI
+// authorities such as `x://evil.example/a` via `/(?!\/)`.
+const WIN_DRIVE_ABSOLUTE_RE = /^[A-Z]:(?:\\|\/(?!\/))/i
 const WIN_DRIVE_RELATIVE_RE = /^[A-Z]:(?![\\/])/i
 const LINE_SUFFIX_RE = /:\d+(?::\d+|-\d+)?$/
 const FIRST_SEGMENT_LINE_RE = /^\d+(?::\d+|-\d+)?$/
@@ -65,16 +62,6 @@ function hasControlChar(value: string): boolean {
       return true
   }
   return false
-}
-
-/** Percent-decode `value`, falling back to the raw text on malformed escape sequences. */
-function safeDecodeURIComponent(value: string): string {
-  try {
-    return decodeURIComponent(value)
-  }
-  catch {
-    return value
-  }
 }
 
 /** Strip `?query` and `#fragment` from a non-URI local path string. */
@@ -175,27 +162,35 @@ export function parseLocalLinkHref(rawHref: string): ParsedLocalLink | null {
     return buildParsedLink(rawHref, decoded, true)
   }
 
-  if (!WIN_DRIVE_RAW_PATH_RE.test(trimmed)) {
-    if (WIN_DRIVE_RELATIVE_RE.test(trimmed))
-      return null
-    const firstSegment = firstSegmentOf(trimmed)
-    const colonIndex = firstSegment.indexOf(':')
-    if (colonIndex >= 0) {
-      const prefix = firstSegment.slice(0, colonIndex)
-      const remainder = firstSegment.slice(colonIndex + 1)
-      if (!prefix.includes('.') || !FIRST_SEGMENT_LINE_RE.test(remainder))
-        return null
-    }
-  }
-
   const stripped = stripQueryAndFragment(trimmed)
   if (!stripped)
     return null
   const decoded = safeDecodeURIComponent(stripped)
   if (!decoded || hasControlChar(decoded) || DOUBLE_SLASH_START_RE.test(decoded))
     return null
-  if (WIN_DRIVE_RELATIVE_RE.test(decoded))
+  if (FILE_SCHEME_RE.test(decoded))
     return null
+
+  // Validate schemes and colon-bearing first segments on the decoded path so
+  // percent-encoded schemes (`javascript%3a...`, `https%3a//...`) are rejected
+  // while percent-encoded Windows separators (`C:%5Crepo`, `src%5CMakefile:42`)
+  // are recognized uniformly.
+  if (!WIN_DRIVE_ABSOLUTE_RE.test(decoded)) {
+    if (WIN_DRIVE_RELATIVE_RE.test(decoded))
+      return null
+    const firstSegment = firstSegmentOf(decoded)
+    const colonIndex = firstSegment.indexOf(':')
+    if (colonIndex >= 0) {
+      // A colon in the first segment followed by a path separator is a URI
+      // scheme (`https://...`, `x://...`) or `host:port/path`, not `file:line`.
+      if (firstSegment.length < decoded.length)
+        return null
+      const prefix = firstSegment.slice(0, colonIndex)
+      const remainder = firstSegment.slice(colonIndex + 1)
+      if (!prefix.includes('.') || !FIRST_SEGMENT_LINE_RE.test(remainder))
+        return null
+    }
+  }
 
   return buildParsedLink(rawHref, decoded, false)
 }
@@ -222,14 +217,27 @@ function resolvePathVariant(
     results.push(candidate)
   }
 
-  if (parsed.isTilde) {
+  // On POSIX, `\` is a literal filename character, so `~\notes.md` is a
+  // relative filename rather than a home-directory prefix.
+  const expandsTilde = parsed.isTilde && (opts.flavor === 'win32' || !item.startsWith('~\\'))
+  if (expandsTilde) {
     if (!opts.homeDir)
       return results
     pushValid(cleanPath(untildify(item, opts.homeDir, opts.flavor), opts.flavor))
     return results
   }
 
-  if (!parsed.fromFileUri && item.startsWith('/') && !WIN_DRIVE_PATH_RE.test(item)) {
+  if (parsed.fromFileUri) {
+    // `file://` URIs are always absolute and must never resolve relative to baseDir.
+    // On POSIX, restore the leading `/` that `parseLocalLinkHref` stripped for Win32 drives.
+    const target = opts.flavor === 'posix' && !item.startsWith('/')
+      ? `/${item}`
+      : item
+    pushValid(cleanPath(target, opts.flavor))
+    return results
+  }
+
+  if (item.startsWith('/')) {
     if (opts.flavor === 'posix') {
       pushValid(cleanPath(item, 'posix'))
       if (opts.workingDir && !isFilesystemRoot(opts.workingDir, 'posix')) {
@@ -252,25 +260,13 @@ function resolvePathVariant(
     return results
   }
 
-  if (opts.flavor === 'posix') {
-    if (isAbsolute(item, 'posix')) {
-      pushValid(cleanPath(item, 'posix'))
-    }
-    else {
-      const base = opts.baseDir || opts.workingDir
-      if (base)
-        pushValid(resolvePath(base, item, 'posix'))
-    }
-    return results
-  }
-
-  if (filesystemRoot(item, 'win32') !== undefined) {
-    pushValid(cleanPath(item, 'win32'))
+  if (filesystemRoot(item, opts.flavor) !== undefined) {
+    pushValid(cleanPath(item, opts.flavor))
   }
   else {
     const base = opts.baseDir || opts.workingDir
     if (base)
-      pushValid(resolvePath(base, item, 'win32'))
+      pushValid(resolvePath(base, item, opts.flavor))
   }
   return results
 }
@@ -311,14 +307,13 @@ export function tooltipPathForLocalLink(rawHref: string, opts: LocalLinkResolveO
   const parsed = parseLocalLinkHref(rawHref)
   if (!parsed)
     return undefined
-  const candidates = resolveLocalLinkCandidates(rawHref, opts)
-  if (candidates.length === 0)
-    return undefined
-  if (parsed.pathWithoutLineSuffix !== undefined) {
-    for (const candidate of resolvePathVariant(parsed.pathWithoutLineSuffix, parsed, opts)) {
-      if (candidates.includes(candidate))
-        return candidate
-    }
+  const variants = parsed.pathWithoutLineSuffix !== undefined
+    ? [parsed.pathWithoutLineSuffix, parsed.path]
+    : [parsed.path]
+  for (const variant of variants) {
+    const first = resolvePathVariant(variant, parsed, opts)[0]
+    if (first !== undefined)
+      return first
   }
-  return candidates[0]
+  return undefined
 }

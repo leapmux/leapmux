@@ -141,14 +141,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 		f, err := os.Open(filePath)
 		if err != nil {
-			if os.IsNotExist(err) {
-				sendNotFoundError(sender, "file not found")
-			} else if os.IsPermission(err) {
-				sendPermissionDenied(sender, "permission denied")
-			} else {
-				slog.Error("failed to open file", "path", filePath, "error", err)
-				sendInternalError(sender, "failed to open file")
-			}
+			sendFileError(sender, "failed to open file", filePath, err)
 			return
 		}
 		defer func() { _ = f.Close() }()
@@ -218,14 +211,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 		info, err := os.Stat(filePath)
 		if err != nil {
-			if os.IsNotExist(err) {
-				sendNotFoundError(sender, "file not found")
-			} else if os.IsPermission(err) {
-				sendPermissionDenied(sender, "permission denied")
-			} else {
-				slog.Error("failed to stat file", "path", filePath, "error", err)
-				sendInternalError(sender, "failed to stat file")
-			}
+			sendFileError(sender, "failed to stat file", filePath, err)
 			return
 		}
 
@@ -234,6 +220,19 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 			CanonicalPath: pathutil.Canonicalize(filePath),
 		})
 	})
+}
+
+// sendFileError maps a filesystem open or stat error to its RPC error response.
+func sendFileError(sender channel.ResponseWriter, op, filePath string, err error) {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		sendNotFoundError(sender, "file not found")
+	case errors.Is(err, fs.ErrPermission):
+		sendPermissionDenied(sender, "permission denied")
+	default:
+		slog.Error(op, "path", filePath, "error", err)
+		sendInternalError(sender, op)
+	}
 }
 
 // modTimeLayout is the layout every modification time on the wire uses.

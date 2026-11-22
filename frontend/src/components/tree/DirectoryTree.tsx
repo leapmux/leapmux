@@ -25,6 +25,7 @@ import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { emptyState, warningText } from '~/styles/shared.css'
 import { createDirectoryListings } from './directoryListings'
+import { createDirectoryReveal, scrollRowIntoView } from './directoryReveal'
 import * as styles from './DirectoryTree.css'
 import {
   deserializeState,
@@ -158,17 +159,6 @@ export interface DirectoryTreeProps {
   onClearFilterRequired?: (() => void) | undefined
 }
 
-interface PendingRevealCue {
-  path: string
-  nonce: number
-  restartCue: boolean
-}
-
-interface ActiveRevealCue {
-  path: string
-  nonce: number
-}
-
 // -------------------------------------------------------------------------
 // Tree context — bundles stable, tree-wide values to avoid prop drilling
 // -------------------------------------------------------------------------
@@ -249,11 +239,11 @@ interface TreeContextValue {
   noteRowFocus: (path: string) => void
   /** Register a row's element, or forget it with `undefined`. */
   registerRow: (path: string, el: HTMLElement | undefined) => void
-  /** Pending directory reveal waiting for its target row to mount and settle. */
-  pendingRevealCue: () => PendingRevealCue | undefined
-  /** Currently highlighted directory reveal cue, if any. */
-  activeRevealCue: () => ActiveRevealCue | undefined
-  /** Consume `pendingRevealCue` for a mounted, settled row element. */
+  /** O(1) selector checking whether `path` has a pending reveal cue awaiting mount/settle. */
+  isPendingRevealCuePath: (path: string) => boolean
+  /** O(1) selector checking whether `path` is currently displaying the reveal visual cue. */
+  isActiveRevealCuePath: (path: string) => boolean
+  /** Consume the pending reveal cue for a mounted, settled row element. */
   consumeRevealCue: (path: string, el: HTMLElement) => void
 }
 
@@ -459,10 +449,7 @@ const TreeNode: Component<{
 
   const expanded = () => tree.isNodeExpanded(props.node.path)
   const isSelected = () => samePath(props.selectedPath, props.node.path, tree.flavor())
-  const isRevealCued = () => {
-    const cue = tree.activeRevealCue()
-    return cue !== undefined && cue.path === props.node.path
-  }
+  const isRevealCued = () => tree.isActiveRevealCuePath(props.node.path)
   const allChildren = () => tree.getChildren(props.node.path) ?? []
   // A memo, not a plain closure: `<For>`, the truncation notice, the empty
   // state and the auto-expand effect all read it, and each read would
@@ -672,21 +659,14 @@ const TreeNode: Component<{
       const container = tree.scrollContainer
       if (!container)
         return
-      requestAnimationFrame(() => {
-        const containerRect = container.getBoundingClientRect()
-        const nodeRect = nodeRef.getBoundingClientRect()
-        if (nodeRect.top < containerRect.top || nodeRect.bottom > containerRect.bottom) {
-          container.scrollTop += nodeRect.top - containerRect.top
-        }
-      })
+      requestAnimationFrame(() => scrollRowIntoView(container, nodeRef))
     }
   })
 
   // Consume a pending directory reveal once this row is mounted and every
   // ancestor child group above it has finished opening.
   createEffect(() => {
-    const pending = tree.pendingRevealCue()
-    if (!pending || pending.path !== props.node.path)
+    if (!tree.isPendingRevealCuePath(props.node.path))
       return
     if (!groupsSettled() || !nodeRef?.isConnected)
       return
@@ -875,11 +855,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       const selected = treeRef.querySelector(`.${styles.nodeSelected}`) as HTMLElement | null
       if (!selected)
         return
-      const containerRect = treeRef.getBoundingClientRect()
-      const nodeRect = selected.getBoundingClientRect()
-      if (nodeRect.top < containerRect.top || nodeRect.bottom > containerRect.bottom) {
-        treeRef.scrollTop += nodeRect.top - containerRect.top
-      }
+      scrollRowIntoView(treeRef, selected)
     })
     observer?.observe(treeRef)
     onCleanup(() => observer?.disconnect())
@@ -1059,9 +1035,11 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   }
 
   // Expose imperative handle via ref callback.
+  let cancelReveal: (() => void) | undefined
   createEffect(() => {
     props.ref?.({
       collapseAll: () => {
+        cancelReveal?.()
         setState(produce((s) => {
           const rp = props.rootPath
           for (const key of Object.keys(s.expandedPaths)) {
@@ -1279,268 +1257,29 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // -------------------------------------------------------------------------
   // Directory reveal: expand, scroll into view, focus, and pulse visual cue
   // -------------------------------------------------------------------------
-  const [pendingRevealCue, setPendingRevealCue] = createSignal<PendingRevealCue | undefined>(undefined)
-  const [activeRevealCue, setActiveRevealCue] = createSignal<ActiveRevealCue | undefined>(undefined)
-  let revealVersion = 0
-  let activeRevealNonce: number | undefined
-  let revealCueTimer: ReturnType<typeof setTimeout> | undefined
-
-  const clearRevealCueTimer = () => {
-    if (revealCueTimer !== undefined) {
-      clearTimeout(revealCueTimer)
-      revealCueTimer = undefined
-    }
-  }
-
-  const clearActiveRevealCue = () => {
-    clearRevealCueTimer()
-    setActiveRevealCue(undefined)
-  }
-
-  const cancelActiveReveal = () => {
-    ++revealVersion
-    const staleNonce = untrack(pendingRevealCue)?.nonce ?? activeRevealNonce
-    setPendingRevealCue(undefined)
-    activeRevealNonce = undefined
-    clearActiveRevealCue()
-    if (staleNonce !== undefined)
-      props.onDirectoryRevealHandled?.(staleNonce)
-  }
-
-  const consumeRevealCue = (path: string, el: HTMLElement) => {
-    const pending = untrack(pendingRevealCue)
-    if (!pending || pending.path !== path || !el.isConnected)
-      return
-    const { nonce, restartCue } = pending
-    // Clear pending state and activeRevealNonce before notifying the caller so
-    // clearing props.directoryReveal neither double-calls onDirectoryRevealHandled
-    // nor cuts short the active visual cue.
-    setPendingRevealCue(undefined)
-    activeRevealNonce = undefined
-    props.onDirectoryRevealHandled?.(nonce)
-
-    const container = treeRef
-    if (container) {
-      const containerRect = container.getBoundingClientRect()
-      const rowRect = el.getBoundingClientRect()
-      if (rowRect.top < containerRect.top || rowRect.bottom > containerRect.bottom) {
-        container.scrollTop += rowRect.top - containerRect.top
-      }
-    }
-
-    setFocusedPath(path)
-    el.focus()
-
-    // Because setActiveRevealCue(undefined) ran in the reveal trigger effect
-    // before Solid flushed render updates and ran this row consumption effect,
-    // styles.nodeRevealCue is already absent from the row. Force style
-    // resolution before re-applying so repeating the cue restarts the animation.
-    if (restartCue)
-      void el.offsetWidth
-
-    clearRevealCueTimer()
-    setActiveRevealCue({ path, nonce })
-    revealCueTimer = setTimeout(() => {
-      revealCueTimer = undefined
-      setActiveRevealCue(prev => (prev?.nonce === nonce
-        ? undefined
-        : prev))
-    }, styles.REVEAL_CUE_DURATION_MS)
-  }
-
-  const runRevealWalk = async (
-    req: DirectoryRevealRequest,
-    version: number,
-    prevCuePath: string | undefined,
-  ) => {
-    const flavor = untrack(workerFlavor)
-    const root = untrack(rootPath)
-    const targets = [
-      req.path,
-      ...(req.canonicalPath
-        ? [req.canonicalPath]
-        : []),
-    ]
-
-    // Prefer the logical target (`req.path`) over `req.canonicalPath` at each
-    // level so a symlink pointing to a sibling directory resolves to the
-    // symlink row itself, while macOS canonicalized listings still match via
-    // `req.canonicalPath`.
-    const findMatch = (
-      dirs: TreeNodeData[],
-      pred: (candidate: string, target: string) => boolean,
-    ): TreeNodeData | undefined => {
-      for (const target of targets) {
-        const found = dirs.find(c => pred(c.path, target))
-        if (found)
-          return found
-      }
-      return undefined
-    }
-
-    let resolvedPath: string | undefined
-    let cannotRender = false
-
-    const ensureEntryVisible = (entry: TreeNodeData) => {
-      if (entry.hidden && !untrack(showHidden)) {
-        if (props.onRevealHiddenRequired)
-          props.onRevealHiddenRequired()
-        else
-          cannotRender = true
-      }
-      const isVis = props.isVisible
-      if (isVis && !isVis(entry.path)) {
-        if (props.onClearFilterRequired)
-          props.onClearFilterRequired()
-        else
-          cannotRender = true
-      }
-    }
-
-    if (targets.some(t => samePath(root, t, flavor))) {
-      resolvedPath = root
-    }
-    else {
-      let current = root
-      for (let depth = 0; depth < 64; depth++) {
-        let children = untrack(() => getChildren(current))
-        if (children === undefined) {
-          await ensureChildren(current)
-          if (version !== revealVersion)
-            return
-          children = untrack(() => getChildren(current))
-        }
-        if (!children)
-          break
-
-        const dirs = children.filter(c => c.isDir)
-        const matchedLeaf = findMatch(dirs, (c, t) => samePath(c, t, flavor))
-          ?? findMatch(dirs, (c, t) => isDescendantPath(c, t, flavor))
-        if (matchedLeaf) {
-          ensureEntryVisible(matchedLeaf)
-          resolvedPath = matchedLeaf.path
-          break
-        }
-
-        const ancestor = findMatch(dirs, (c, t) => isDescendantPath(t, c, flavor))
-        if (!ancestor)
-          break
-
-        ensureEntryVisible(ancestor)
-        if (untrack(() => getChildren(ancestor.path)) === undefined && !untrack(() => unreadableReason(ancestor.path))) {
-          await ensureChildren(ancestor.path)
-          if (version !== revealVersion)
-            return
-        }
-        if (!untrack(() => unreadableReason(ancestor.path)) && untrack(() => getChildren(ancestor.path)) !== undefined)
-          setNodeExpanded(ancestor.path, true)
-        else
-          break
-        current = ancestor.path
-      }
-    }
-
-    if (version !== revealVersion)
-      return
-
-    if (!resolvedPath) {
-      activeRevealNonce = undefined
-      props.onDirectoryRevealHandled?.(req.nonce)
-      return
-    }
-
-    if (resolvedPath !== root) {
-      if (untrack(() => getChildren(resolvedPath)) === undefined && !untrack(() => unreadableReason(resolvedPath))) {
-        await ensureChildren(resolvedPath)
-        if (version !== revealVersion)
-          return
-      }
-      if (!untrack(() => unreadableReason(resolvedPath)) && untrack(() => getChildren(resolvedPath)) !== undefined)
-        setNodeExpanded(resolvedPath, true)
-    }
-
-    if (!samePath(untrack(() => props.selectedPath), resolvedPath, flavor))
-      props.onSelect(resolvedPath)
-
-    if (cannotRender) {
-      activeRevealNonce = undefined
-      props.onDirectoryRevealHandled?.(req.nonce)
-      return
-    }
-
-    setPendingRevealCue({
-      path: resolvedPath,
-      nonce: req.nonce,
-      restartCue: prevCuePath !== undefined && samePath(prevCuePath, resolvedPath, flavor),
-    })
-  }
-
-  // Memoize by value so dynamic JSX spreads on `<DirectoryTree>` (such as
-  // `FilesSection`'s `{...isVisibleProps()}`) do not spuriously re-fire reveal
-  // cleanup or restart a reveal when an unrelated spread prop toggles.
-  const revealScopeKey = createMemo(() => `${props.workerId}\0${rootPath()}`)
-  const revealTrigger = createMemo(
-    () => ({
-      req: props.directoryReveal,
-      enabled: props.enabled !== false,
-    }),
-    undefined,
-    {
-      equals: (a, b) => a.req === b.req && a.enabled === b.enabled,
-    },
-  )
-
-  // Registered BEFORE the reveal trigger effect so a simultaneous
-  // `[workerId, rootPath()]` + `directoryReveal` update clears only the prior
-  // reveal without cancelling the new one, while an intra-workspace switch that
-  // interrupts an in-flight walk or `!enabled` hold clears the stale request.
-  createEffect(on(
-    revealScopeKey,
-    () => {
-      cancelActiveReveal()
-    },
-    { defer: true },
-  ))
-  onCleanup(cancelActiveReveal)
-
-  // Scoped via `on(...)` so reactive reads during a cached walk and synchronous
-  // callbacks (`onRevealHiddenRequired`, `onClearFilterRequired`, `onSelect`)
-  // never re-trigger the reveal mid-walk or cancel `pendingRevealCue`.
-  createEffect(on(
-    revealTrigger,
-    ({ req, enabled }) => {
-      const version = ++revealVersion
-
-      if (!req) {
-        const pending = untrack(pendingRevealCue)
-        const prevNonce = pending?.nonce ?? activeRevealNonce
-        setPendingRevealCue(undefined)
-        activeRevealNonce = undefined
-        if (prevNonce !== undefined)
-          props.onDirectoryRevealHandled?.(prevNonce)
-        return
-      }
-
-      if (!enabled) {
-        activeRevealNonce = req.nonce
-        setPendingRevealCue(undefined)
-        return
-      }
-
-      const pending = untrack(pendingRevealCue)
-      const prevNonce = pending?.nonce ?? activeRevealNonce
-      if (prevNonce !== undefined && prevNonce !== req.nonce) {
-        setPendingRevealCue(undefined)
-        props.onDirectoryRevealHandled?.(prevNonce)
-      }
-      activeRevealNonce = req.nonce
-
-      const prevCuePath = untrack(activeRevealCue)?.path
-      clearActiveRevealCue()
-
-      void runRevealWalk(req, version, prevCuePath)
-    },
-  ))
+  const reveal = createDirectoryReveal({
+    workerId: () => props.workerId,
+    rootPath,
+    flavor: workerFlavor,
+    enabled: () => props.enabled !== false,
+    request: () => props.directoryReveal,
+    selectedPath: () => props.selectedPath,
+    showHidden,
+    isVisible: () => props.isVisible,
+    cueDurationMs: styles.REVEAL_CUE_DURATION_MS,
+    getScrollContainer: () => treeRef,
+    getChildren,
+    unreadableReason,
+    ensureChildren,
+    isNodeExpanded,
+    setNodeExpanded,
+    onSelect: path => props.onSelect(path),
+    setFocusedPath,
+    onHandled: nonce => props.onDirectoryRevealHandled?.(nonce),
+    onRevealHiddenRequired: () => props.onRevealHiddenRequired,
+    onClearFilterRequired: () => props.onClearFilterRequired,
+  })
+  cancelReveal = reveal.cancel
 
   // The root row has no chevron and cannot close, so it reports open whatever
   // the store says about it.
@@ -1637,17 +1376,14 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     onCleanup(() => registerRow(staticRoot, undefined))
   })
 
-  // Registered AFTER `registerRow` so `focusRow(rootPath())` always finds the
-  // live root element, and gated on `!loading() && !error() && enabled && isConnected`
-  // so it never consumes against a transient or detached root element.
+  // Consume a root-level reveal cue only once the root element is mounted,
+  // connected, enabled, and finished loading.
   createEffect(() => {
-    const pending = pendingRevealCue()
+    const pending = reveal.pendingCue()
     if (!pending || pending.path !== rootPath())
       return
     if (error()) {
-      setPendingRevealCue(undefined)
-      activeRevealNonce = undefined
-      props.onDirectoryRevealHandled?.(pending.nonce)
+      reveal.settlePending(pending.nonce)
       return
     }
     if (loading() || props.enabled === false)
@@ -1655,7 +1391,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     const el = rootNodeEl()
     if (!el || !el.isConnected)
       return
-    consumeRevealCue(rootPath(), el)
+    reveal.consumeCue(rootPath(), el)
   })
 
   /**
@@ -1743,10 +1479,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   ))
 
   const isRootSelected = () => samePath(props.selectedPath, rootPath(), workerFlavor())
-  const isRootRevealCued = () => {
-    const cue = activeRevealCue()
-    return cue !== undefined && cue.path === rootPath()
-  }
+  const isRootRevealCued = () => reveal.isActiveCuePath(rootPath())
 
   const rootDiffStats = createMemo<DiffStats | null>(() => {
     if (props.showGitStatus === false)
@@ -1785,9 +1518,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     focusRow,
     noteRowFocus: (path: string) => setFocusedPath(path),
     registerRow,
-    pendingRevealCue,
-    activeRevealCue,
-    consumeRevealCue,
+    isPendingRevealCuePath: reveal.isPendingCuePath,
+    isActiveRevealCuePath: reveal.isActiveCuePath,
+    consumeRevealCue: reveal.consumeCue,
   }
 
   return (

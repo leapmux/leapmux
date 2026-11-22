@@ -46,7 +46,7 @@ import { AgentInputRecoveryDialog } from '~/components/chat/AgentInputRecoveryDi
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
-import { MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
+import { createMarkdownLocalLinkContext, MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
 import { createMessageContextResolver } from '~/components/chat/messageContextResolver'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { readWorkerImage, readWorkerImageSize } from '~/components/chat/readWorkerImage'
@@ -60,7 +60,7 @@ import { AgentInputQueuePauseReason, AgentStatus } from '~/generated/proto/leapm
 import { GitFileStatusCode, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createStableKeys } from '~/lib/keyedRows'
-import { flavorFromOs, parentDirectory, relativizePath } from '~/lib/paths'
+import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { hasGoalSurface } from '~/stores/chatGoal'
@@ -335,27 +335,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const onActivateLocalLink = opts.onActivateLocalLink
     if (!onActivateLocalLink)
       return undefined
-    const flavor = () => flavorFromOs(workerInfoStore.getOs(spec.workerId()))
-    return {
-      get workerId() { return spec.workerId() },
-      get baseDir() { return spec.baseDir(flavor()) },
-      get workingDir() { return spec.workingDir() },
-      get homeDir() { return spec.homeDir() },
-      get flavor() { return flavor() },
-      onActivate: (rawHref: string) => {
-        const currentFlavor = flavor()
-        onActivateLocalLink(rawHref, {
-          workerId: spec.workerId(),
-          baseDir: spec.baseDir(currentFlavor),
-          workingDir: spec.workingDir(),
-          homeDir: spec.homeDir(),
-          flavor: currentFlavor,
-          ...(spec.activateSource
-            ? { activateSource: spec.activateSource }
-            : {}),
-        })
-      },
-    }
+    return createMarkdownLocalLinkContext({
+      workerId: spec.workerId,
+      baseDir: spec.baseDir,
+      workingDir: spec.workingDir,
+      homeDir: spec.homeDir,
+      workerOs: workerId => workerInfoStore.getOs(workerId),
+      getOnActivate: () => onActivateLocalLink,
+      ...(spec.activateSource
+        ? { activateSource: spec.activateSource }
+        : {}),
+    })
   }
 
   // Main-layout strategy: close the tile. Its per-tile selection entry is
@@ -908,6 +898,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
         ? t
         : null
     }
+    const activateTabSource = (getTab: () => Tab | null | undefined) => () => {
+      activateTile(tileId)
+      const current = getTab()
+      if (current)
+        selection.setActive(current)
+    }
     const terminalTab = () => {
       const t = tab()
       return t?.type === TabType.TERMINAL
@@ -919,12 +915,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       baseDir: () => terminalTab()?.workingDir ?? '',
       workingDir: () => terminalTab()?.workingDir ?? '',
       homeDir: () => workerInfoStore.getHomeDir(terminalTab()?.workerId ?? ''),
-      activateSource: () => {
-        activateTile(tileId)
-        const current = terminalTab()
-        if (current)
-          selection.setActive(current)
-      },
+      activateSource: activateTabSource(() => terminalTab()),
     })
     const fileTab = () => {
       const t = tab()
@@ -1172,12 +1163,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               baseDir: () => agent()?.workingDir ?? '',
               workingDir: () => agent()?.workingDir ?? '',
               homeDir: () => workerInfoStore.getHomeDir(agent()?.workerId ?? ''),
-              activateSource: () => {
-                activateTile(tileId)
-                const current = agent()
-                if (current)
-                  selection.setActive(current)
-              },
+              activateSource: activateTabSource(() => agent()),
             })
             let releaseViewportReader: (() => void) | undefined
             onCleanup(() => {
@@ -1294,12 +1280,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               baseDir: flavor => parentDirectory(filePath(), flavor),
               workingDir: fileRootPath,
               homeDir: fileHomeDir,
-              activateSource: () => {
-                activateTile(tileId)
-                const current = ft()
-                if (current)
-                  selection.setActive(current)
-              },
+              activateSource: activateTabSource(() => ft()),
             })
             // Single lookup shared by `gitFileStatus` and
             // `hasStagedAndUnstaged` so both props read from one memo

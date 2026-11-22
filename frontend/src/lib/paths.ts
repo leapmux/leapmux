@@ -5,24 +5,33 @@
 export type PathFlavor = 'win32' | 'posix'
 
 const DRIVE_LETTER_RE = /^[A-Z]:[\\/]/i
+const DRIVE_PREFIX_RE = /^[A-Z]:/i
 const SEP_SPLIT_RE = /[\\/]+/
 const LEADING_SEP_RE = /^[\\/]+/
+const LEADING_POSIX_SEP_RE = /^\/+/
 const TRAILING_SEP_RE = /[\\/]+$/
+const TRAILING_POSIX_SEP_RE = /\/+$/
 const FWD_SLASH_G = /\//g
 const BACK_SLASH_G = /\\/g
+const PERCENT_RUN_RE = /(?:%[0-9A-F]{2})+/gi
 
 function isSep(ch: string | undefined): boolean {
   return ch === '\\' || ch === '/'
 }
 
-// Remove every trailing separator. One spelling for a strip that four callers
-// need, so a base directory reduces the same way wherever it enters.
-//
-// Both separators, whatever the flavor: a win32 path reaches this file spelled
-// with `/` (a user types `C:/Users`), and a base that keeps one trailing
-// separator is a base that matches none of its own descendants.
-function stripTrailingSep(p: string): string {
-  return p.replace(TRAILING_SEP_RE, '')
+function stripLeadingSep(p: string, flavor: PathFlavor): string {
+  return p.replace(flavor === 'win32'
+    ? LEADING_SEP_RE
+    : LEADING_POSIX_SEP_RE, '')
+}
+
+// Remove every trailing separator for the flavor: both `/` and `\` on win32
+// (since a user can type `C:/Users`), and only `/` on posix (where `\` is a
+// legal filename character).
+function stripTrailingSep(p: string, flavor: PathFlavor): string {
+  return p.replace(flavor === 'win32'
+    ? TRAILING_SEP_RE
+    : TRAILING_POSIX_SEP_RE, '')
 }
 
 // Parse a \\server\share prefix. Returns the normalized `\\server\share`
@@ -47,13 +56,26 @@ function parseUncHead(p: string): { volume: string, rest: string } | null {
   }
 }
 
+// Split a rooted win32 volume (`C:` followed by a separator, or `\\server\share`)
+// from the remainder of `p`. Returns an empty volume when `p` has no rooted volume.
+function splitWin32Volume(p: string): { volume: string, rest: string } {
+  if (DRIVE_LETTER_RE.test(p)) {
+    return {
+      volume: p.slice(0, 2),
+      rest: p.slice(2),
+    }
+  }
+  const unc = parseUncHead(p)
+  if (unc)
+    return unc
+  return { volume: '', rest: p }
+}
+
 // The win32 volume of `p` (`C:` or `\\server\share`), WITHOUT a trailing
 // separator, or '' when the path has none. Private on purpose: a volume alone
 // is not a directory, and `filesystemRoot` is the answer callers want.
 function extractVolume(p: string): string {
-  if (DRIVE_LETTER_RE.test(p))
-    return p.slice(0, 2)
-  return parseUncHead(p)?.volume ?? ''
+  return splitWin32Volume(p).volume
 }
 
 export function detectFlavor(p: string): PathFlavor {
@@ -188,25 +210,51 @@ export function split(p: string, flavor?: PathFlavor): string[] {
     return []
   const f = flavorOf(p, flavor)
   if (f === 'win32') {
-    let volume = ''
-    let rest = p
-    if (DRIVE_LETTER_RE.test(p)) {
-      volume = p.slice(0, 2)
-      rest = p.slice(2)
-    }
-    else {
-      const unc = parseUncHead(p)
-      if (unc) {
-        volume = unc.volume
-        rest = unc.rest
-      }
-    }
+    const { volume, rest } = splitWin32Volume(p)
     const parts = rest.split(SEP_SPLIT_RE).filter(Boolean)
     return volume
       ? [volume, ...parts]
       : parts
   }
   return p.split('/').filter(Boolean)
+}
+
+/** Decode a contiguous run of `%XX` sequences, preserving invalid bytes without aborting valid neighbors. */
+function decodePercentRun(run: string): string {
+  try {
+    return decodeURIComponent(run)
+  }
+  catch {
+    let out = ''
+    let i = 0
+    while (i < run.length) {
+      let decoded: string | undefined
+      for (let bytes = Math.min(4, (run.length - i) / 3); bytes >= 1; bytes--) {
+        const slice = run.slice(i, i + bytes * 3)
+        try {
+          decoded = decodeURIComponent(slice)
+          i += bytes * 3
+          break
+        }
+        catch {}
+      }
+      if (decoded !== undefined) {
+        out += decoded
+      }
+      else {
+        out += run.slice(i, i + 3)
+        i += 3
+      }
+    }
+    return out
+  }
+}
+
+/** Percent-decode valid escape sequences in `value`, leaving malformed `%` sequences intact. */
+export function safeDecodeURIComponent(value: string): string {
+  if (!value.includes('%'))
+    return value
+  return value.replace(PERCENT_RUN_RE, decodePercentRun)
 }
 
 /** Decode a file URI for the worker's platform, independent of the browser's platform. */
@@ -217,14 +265,8 @@ export function fileUriToPath(uri: string): string | undefined {
     const url = new URL(uri)
     if (url.protocol !== 'file:')
       return undefined
-    const decode = (value: string): string => {
-      try {
-        return decodeURIComponent(value)
-      }
-      catch { return value }
-    }
-    const path = decode(url.pathname)
-    const host = decode(url.host)
+    const path = safeDecodeURIComponent(url.pathname)
+    const host = safeDecodeURIComponent(url.host)
     if (!path || path.includes('\0') || host.includes('\0'))
       return undefined
     return host
@@ -253,16 +295,16 @@ export function join(parts: string[], flavor?: PathFlavor): string {
   // RELATIVE, which is how a tree rooted at `/` lost its git decorations.
   // Win32 hides the defect: `C:\` strips to `C:`, which still identifies the
   // drive.
-  const rooted = stripTrailingSep(first) === ''
+  const rooted = stripTrailingSep(first, f) === ''
   const out: string[] = []
   for (let i = rooted ? 1 : 0; i < filtered.length; i++) {
     let piece = filtered[i]
     if (piece === undefined)
       continue
     if (i > 0)
-      piece = piece.replace(LEADING_SEP_RE, '')
+      piece = stripLeadingSep(piece, f)
     if (i < filtered.length - 1)
-      piece = stripTrailingSep(piece)
+      piece = stripTrailingSep(piece, f)
     if (piece !== '')
       out.push(piece)
   }
@@ -292,25 +334,19 @@ export function cleanPath(p: string, flavor?: PathFlavor): string {
 
   if (f === 'win32') {
     const normalized = normalizeSeparators(p, 'win32')
-    if (DRIVE_LETTER_RE.test(normalized)) {
-      volume = normalized.slice(0, 2)
+    const splitVol = splitWin32Volume(normalized)
+    if (splitVol.volume) {
+      volume = splitVol.volume
       rooted = true
+      rest = splitVol.rest
+    }
+    else if (DRIVE_PREFIX_RE.test(normalized)) {
+      volume = normalized.slice(0, 2)
       rest = normalized.slice(2)
     }
     else {
-      const unc = parseUncHead(normalized)
-      if (unc) {
-        volume = unc.volume
-        rooted = true
-        rest = unc.rest
-      }
-      else if (normalized.startsWith('\\')) {
-        rooted = true
-        rest = normalized
-      }
-      else {
-        rest = normalized
-      }
+      rooted = normalized.startsWith('\\')
+      rest = normalized
     }
   }
   else {
@@ -339,9 +375,10 @@ export function cleanPath(p: string, flavor?: PathFlavor): string {
       ? `${volume}${s}`
       : `${volume}${s}${stack.join(s)}`
   }
-  return stack.length === 0
+  const rel = stack.length === 0
     ? '.'
     : stack.join(s)
+  return `${volume}${rel}`
 }
 
 /**
@@ -495,8 +532,9 @@ export function pathEq(a: string, b: string, flavor: PathFlavor): boolean {
 }
 
 // Returns '' when abs === base, the slice after `base + sep` when abs is
-// strictly under base, or null otherwise. Both inputs must already use the
-// flavor's separator.
+// strictly under base, or null otherwise. Separators are normalized for
+// `flavor` first (forward slashes become `\` on win32; POSIX backslashes stay
+// literal).
 //
 // A TRAILING SEPARATOR on `base` is tolerated and stripped, because a
 // filesystem root is nothing but one (`/`, `C:\`, `\\srv\share\`). Without
@@ -505,23 +543,25 @@ export function pathEq(a: string, b: string, flavor: PathFlavor): boolean {
 export function relativeUnder(abs: string, base: string, flavor: PathFlavor): string | null {
   if (!abs)
     return null
+  const absNorm = normalizeSeparators(abs, flavor)
+  const baseNorm = normalizeSeparators(base, flavor)
   // A relative path is under no absolute base. The strip below is what makes
   // this necessary: it turns `C:\` into `C:`, and the equality test would then
   // report the drive-RELATIVE `C:` -- the current directory on drive C -- as
   // the drive's root. Every other spelling survives the strip unchanged.
-  if (isAbsolute(base, flavor) && !isAbsolute(abs, flavor))
+  if (isAbsolute(baseNorm, flavor) && !isAbsolute(absNorm, flavor))
     return null
   const s = sep(flavor)
-  const trimmed = stripTrailingSep(base)
-  if (pathEq(abs, base, flavor) || pathEq(abs, trimmed, flavor))
+  const trimmed = stripTrailingSep(baseNorm, flavor)
+  if (pathEq(absNorm, baseNorm, flavor) || pathEq(absNorm, trimmed, flavor))
     return ''
   // A root trims to '' (or to the bare volume), so the prefix IS the root.
   // `abs` may spell that root with more separators than `base` did.
   const prefix = `${trimmed}${s}`
-  if (pathEq(abs, prefix, flavor))
+  if (pathEq(absNorm, prefix, flavor))
     return ''
-  if (pathEq(abs.slice(0, prefix.length), prefix, flavor))
-    return abs.slice(prefix.length)
+  if (pathEq(absNorm.slice(0, prefix.length), prefix, flavor))
+    return absNorm.slice(prefix.length)
   return null
 }
 
@@ -531,10 +571,7 @@ export function tildify(absPath: string, homeDir?: string, flavor?: PathFlavor):
   if (!homeDir)
     return absPath
   const f = flavorOf(absPath, flavor)
-  const homeTrimmed = stripTrailingSep(homeDir)
-  const homeNorm = normalizeSeparators(homeTrimmed, f)
-  const absNorm = normalizeSeparators(absPath, f)
-  const rem = relativeUnder(absNorm, homeNorm, f)
+  const rem = relativeUnder(absPath, homeDir, f)
   if (rem === '')
     return '~'
   if (rem !== null)
@@ -550,11 +587,15 @@ export function untildify(value: string, homeDir?: string, flavor?: PathFlavor):
     return value
   if (value === '~')
     return homeDir
-  if (!(value.startsWith('~/') || value.startsWith('~\\')))
+  const f = flavorOf(homeDir, flavor)
+  const hasTildePrefix = f === 'win32'
+    ? (value.startsWith('~/') || value.startsWith('~\\'))
+    : value.startsWith('~/')
+  if (!hasTildePrefix)
     return value
-  const rest = value.slice(2).replace(LEADING_SEP_RE, '')
+  const rest = stripLeadingSep(value.slice(2), f)
   return rest
-    ? join([homeDir, rest], flavor)
+    ? join([homeDir, rest], f)
     : homeDir
 }
 
@@ -573,7 +614,7 @@ export function relativizePath(
   const f = flavorOf(absPath, flavor)
   const s = sep(f)
 
-  const wdTrimmed = stripTrailingSep(workingDir)
+  const wdTrimmed = stripTrailingSep(workingDir, f)
   const absNorm = normalizeSeparators(absPath, f)
   const wdNorm = normalizeSeparators(wdTrimmed, f)
 

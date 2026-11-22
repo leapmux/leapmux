@@ -6,7 +6,7 @@ import type { Tab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { DragDropProvider } from '@thisbeyond/solid-dnd'
-import { createRoot, createSignal, Show } from 'solid-js'
+import { createEffect, createRoot, createSignal, Show } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { useMarkdownLocalLinks } from '~/components/chat/markdownLocalLinks'
@@ -1726,5 +1726,31 @@ describe('MarkdownLocalLinkProvider wiring', () => {
     const editorCall = onActivateLocalLink.mock.calls.at(-1)!
     expect(editorCall[0]).toBe('./plan.md')
     expect(editorCall[1].workingDir).toBe('C:\\Repo2')
+
+    // Unrelated tab metadata updates (e.g. title rename) must NOT re-trigger
+    // reactive consumers reading the 5 memoized scalar context fields.
+    let runs = 0
+    const dispose = createRoot((d) => {
+      createEffect(() => {
+        const ctx = localLinkCaptures.chat
+        if (ctx) {
+          void ctx.workerId
+          void ctx.baseDir
+          void ctx.workingDir
+          void ctx.homeDir
+          void ctx.flavor
+        }
+        runs++
+      })
+      return d
+    })
+    try {
+      expect(runs).toBe(1)
+      s.metadata.patch('a1', { title: 'Renamed Agent Tab' })
+      expect(runs).toBe(1)
+    }
+    finally {
+      dispose()
+    }
   })
 })

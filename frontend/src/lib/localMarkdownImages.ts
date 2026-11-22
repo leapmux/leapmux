@@ -1,25 +1,24 @@
-import type { PathFlavor } from './paths'
-import { Code } from '@connectrpc/connect'
+import type { ImageDimensions } from './imageDimensions'
+import type { LocalLinkResolveOptions } from './localLinks'
 import { onStorageAccountChange } from './browserStorage'
-import { ChannelError } from './channelError'
-import { sniffImageMime } from './fileType'
-import { MAX_FILE_IMAGE_BYTES, RENDERABLE_IMAGE_MIME_TYPES } from './imageBlocks'
-import { sniffImageDimensionsFromBytes } from './imageDimensions'
+import { getImageMimeType, sniffImageMime } from './fileType'
+import { fileImageRefusal, MAX_FILE_IMAGE_BYTES, RENDERABLE_IMAGE_MIME_TYPES } from './imageBlocks'
+import { imageHeaderBytesNeeded, sniffImageDimensionsFromBytes } from './imageDimensions'
 import { resolveLocalLinkCandidates } from './localLinks'
-import { readWorkerFile } from './readWorkerFile'
+import { isLocalPathFallbackRpcError, localPathRpcErrorMessage } from './localPathRpc'
+import { lruGet, lruSet } from './mapLru'
+import { readWorkerFile, readWorkerFileHead } from './readWorkerFile'
 
 /** Maximum number of cached local Markdown image blob entries. */
 export const LOCAL_MARKDOWN_IMAGE_MAX_ENTRIES = 64
 /** Maximum total decoded byte footprint across cached local Markdown image entries. */
 export const LOCAL_MARKDOWN_IMAGE_MAX_BYTES = 32 * 1024 * 1024
+/** Initial header read size used for MIME sniffing on non-image extensions and premeasure sizing. */
+const LOCAL_IMAGE_HEAD_BYTES = 4096
 
-export interface LocalMarkdownImageRequest {
+export interface LocalMarkdownImageRequest extends LocalLinkResolveOptions {
   workerId: string
   rawSrc: string
-  baseDir: string
-  workingDir: string
-  homeDir: string
-  flavor: PathFlavor
 }
 
 export type LocalMarkdownImageResult
@@ -42,6 +41,7 @@ export interface LocalMarkdownImageLease {
 
 interface CacheEntry {
   key: string
+  workerId: string
   result: Extract<LocalMarkdownImageResult, { kind: 'ok' }>
   bytes: number
   refCount: number
@@ -63,9 +63,16 @@ interface InFlightEntry {
 function noopRelease(): void {}
 
 const cache = new Map<string, CacheEntry>()
+const byResolvedPath = new Map<string, CacheEntry>()
+const refusalCache = new Map<string, Extract<LocalMarkdownImageResult, { kind: 'error' }>>()
+const dimensionCache = new Map<string, ImageDimensions | null>()
 const inFlight = new Map<string, InFlightEntry>()
 let totalCachedBytes = 0
 let cacheEpoch = 0
+
+function resolvedPathIndexKey(workerId: string, resolvedPath: string): string {
+  return `${workerId}\0${resolvedPath}`
+}
 
 function cacheKeyFor(req: LocalMarkdownImageRequest): { key: string, candidates: string[] } | undefined {
   if (!req.workerId)
@@ -102,13 +109,25 @@ function createLease(entry: CacheEntry): LocalMarkdownImageLease {
   }
 }
 
-function touchEntry(entry: CacheEntry): void {
-  cache.delete(entry.key)
-  cache.set(entry.key, entry)
+function findCachedEntry(workerId: string, key: string, candidates: readonly string[]): CacheEntry | undefined {
+  const direct = lruGet(cache, key)
+  if (direct)
+    return direct
+  for (const candidate of candidates) {
+    const aliased = byResolvedPath.get(resolvedPathIndexKey(workerId, candidate))
+    if (aliased && !aliased.evicted) {
+      lruGet(cache, aliased.key)
+      return aliased
+    }
+  }
+  return undefined
 }
 
 function evictEntry(entry: CacheEntry): void {
   cache.delete(entry.key)
+  const aliasKey = resolvedPathIndexKey(entry.workerId, entry.result.resolvedPath)
+  if (byResolvedPath.get(aliasKey) === entry)
+    byResolvedPath.delete(aliasKey)
   totalCachedBytes -= entry.bytes
   entry.evicted = true
   if (entry.refCount === 0)
@@ -142,12 +161,6 @@ function evictIfNeeded(protectedKey: string): void {
   }
 }
 
-function isFallbackRpcError(error: unknown): boolean {
-  return error instanceof ChannelError
-    && error.source === 'rpc'
-    && (error.code === Code.NotFound || error.code === Code.PermissionDenied)
-}
-
 type ProbeOutcome
   = | {
     kind: 'ok'
@@ -160,6 +173,7 @@ type ProbeOutcome
   | {
     kind: 'error'
     reason: string
+    cacheable: boolean
   }
 
 async function probeCandidates(
@@ -170,24 +184,49 @@ async function probeCandidates(
   let lastError: unknown
   for (const path of candidates) {
     if (signal.aborted)
-      return { kind: 'error', reason: 'Image load aborted' }
+      return { kind: 'error', reason: 'Image load aborted', cacheable: false }
 
     try {
-      const resp = await readWorkerFile({
-        workerId,
-        path,
-        maxBytes: MAX_FILE_IMAGE_BYTES,
-        signal,
-      })
-      if (resp.totalSize > BigInt(MAX_FILE_IMAGE_BYTES))
-        return { kind: 'error', reason: 'Image too large to preview' }
-      if (resp.totalSize === 0n)
-        return { kind: 'error', reason: 'Image file is empty' }
+      // For files without a known renderable image extension, inspect the leading
+      // header first so non-image payloads (e.g. multi-MiB PDFs or videos) are
+      // refused without transferring up to MAX_FILE_IMAGE_BYTES.
+      let resp
+      if (!RENDERABLE_IMAGE_MIME_TYPES.has(getImageMimeType(path))) {
+        const head = await readWorkerFileHead({
+          workerId,
+          path,
+          bytes: LOCAL_IMAGE_HEAD_BYTES,
+          signal,
+        })
+        const headPath = head.path || path
+        const headMime = sniffImageMime(headPath, head.content)
+        const headRefusal = fileImageRefusal(head.totalSize, headMime)
+        if (headRefusal !== undefined)
+          return { kind: 'error', reason: headRefusal, cacheable: true }
+        resp = BigInt(head.content.length) === head.totalSize
+          ? head
+          : await readWorkerFile({
+              workerId,
+              path,
+              maxBytes: MAX_FILE_IMAGE_BYTES,
+              signal,
+            })
+      }
+      else {
+        resp = await readWorkerFile({
+          workerId,
+          path,
+          maxBytes: MAX_FILE_IMAGE_BYTES,
+          signal,
+        })
+      }
+
       const bytes = resp.content
       const resolvedPath = resp.path || path
       const mime = sniffImageMime(resolvedPath, bytes)
-      if (!RENDERABLE_IMAGE_MIME_TYPES.has(mime))
-        return { kind: 'error', reason: 'Unsupported image format' }
+      const refusal = fileImageRefusal(resp.totalSize, mime)
+      if (refusal !== undefined)
+        return { kind: 'error', reason: refusal, cacheable: true }
       const dims = sniffImageDimensionsFromBytes(bytes)
       return {
         kind: 'ok',
@@ -201,32 +240,116 @@ async function probeCandidates(
     }
     catch (error) {
       if (signal.aborted)
-        return { kind: 'error', reason: 'Image load aborted' }
+        return { kind: 'error', reason: 'Image load aborted', cacheable: false }
       lastError = error
-      if (isFallbackRpcError(error))
+      if (isLocalPathFallbackRpcError(error))
         continue
       break
     }
   }
 
-  if (lastError instanceof ChannelError && lastError.source === 'rpc' && lastError.message)
-    return { kind: 'error', reason: lastError.message }
-  return { kind: 'error', reason: 'Unable to load image' }
+  const rpcMsg = localPathRpcErrorMessage(lastError)
+  if (rpcMsg)
+    return { kind: 'error', reason: rpcMsg, cacheable: false }
+  return { kind: 'error', reason: 'Unable to load image', cacheable: false }
 }
 
 /**
- * Synchronously acquire a lease from the LRU cache if the image is already loaded.
- * Refreshes LRU recency on hit; returns `undefined` on cache miss or invalid request.
+ * Synchronously acquire a lease from the LRU cache if the image (or a deterministic
+ * content refusal) is already cached. Refreshes LRU recency on hit; returns
+ * `undefined` on cache miss or invalid request.
  */
 export function peekLocalMarkdownImage(req: LocalMarkdownImageRequest): LocalMarkdownImageLease | undefined {
   const resolved = cacheKeyFor(req)
   if (!resolved)
     return undefined
-  const entry = cache.get(resolved.key)
-  if (!entry)
+  const entry = findCachedEntry(req.workerId, resolved.key, resolved.candidates)
+  if (entry)
+    return createLease(entry)
+  const refused = lruGet(refusalCache, resolved.key)
+  if (refused)
+    return { result: refused, release: noopRelease }
+  return undefined
+}
+
+/**
+ * Read only the leading header bytes of a local Markdown image to determine its
+ * intrinsic dimensions for offscreen height premeasurement without transferring
+ * multi-megabyte payloads or evicting visible `blob:` cache entries.
+ */
+export async function probeLocalMarkdownImageDimensions(
+  req: LocalMarkdownImageRequest,
+  signal?: AbortSignal,
+): Promise<ImageDimensions | undefined> {
+  const resolved = cacheKeyFor(req)
+  if (!resolved || signal?.aborted)
     return undefined
-  touchEntry(entry)
-  return createLease(entry)
+
+  const cachedOk = findCachedEntry(req.workerId, resolved.key, resolved.candidates)
+  if (cachedOk) {
+    return cachedOk.result.width !== undefined && cachedOk.result.height !== undefined
+      ? { width: cachedOk.result.width, height: cachedOk.result.height }
+      : undefined
+  }
+  if (lruGet(refusalCache, resolved.key))
+    return undefined
+  const cachedDims = lruGet(dimensionCache, resolved.key)
+  if (cachedDims !== undefined)
+    return cachedDims ?? undefined
+
+  const epoch = cacheEpoch
+  for (const path of resolved.candidates) {
+    if (signal?.aborted)
+      return undefined
+    try {
+      const head = await readWorkerFileHead({
+        workerId: req.workerId,
+        path,
+        bytes: LOCAL_IMAGE_HEAD_BYTES,
+        ...(signal
+          ? { signal }
+          : {}),
+      })
+      if (signal?.aborted)
+        return undefined
+      const resolvedPath = head.path || path
+      const mime = sniffImageMime(resolvedPath, head.content)
+      const refusal = fileImageRefusal(head.totalSize, mime)
+      if (refusal !== undefined) {
+        if (epoch === cacheEpoch)
+          lruSet(refusalCache, resolved.key, { kind: 'error', reason: refusal }, LOCAL_MARKDOWN_IMAGE_MAX_ENTRIES)
+        return undefined
+      }
+      let dims = sniffImageDimensionsFromBytes(head.content)
+      if (!dims) {
+        const needed = imageHeaderBytesNeeded(head.content)
+        if (needed !== null && needed > head.content.length && head.totalSize > BigInt(head.content.length)) {
+          const longer = await readWorkerFileHead({
+            workerId: req.workerId,
+            path,
+            bytes: needed,
+            ...(signal
+              ? { signal }
+              : {}),
+          })
+          if (signal?.aborted)
+            return undefined
+          dims = sniffImageDimensionsFromBytes(longer.content)
+        }
+      }
+      if (epoch === cacheEpoch)
+        lruSet(dimensionCache, resolved.key, dims ?? null, LOCAL_MARKDOWN_IMAGE_MAX_ENTRIES)
+      return dims ?? undefined
+    }
+    catch (error) {
+      if (signal?.aborted)
+        return undefined
+      if (isLocalPathFallbackRpcError(error))
+        continue
+      return undefined
+    }
+  }
+  return undefined
 }
 
 /**
@@ -252,11 +375,13 @@ export function acquireLocalMarkdownImage(
     })
   }
 
-  const cached = cache.get(resolved.key)
-  if (cached) {
-    touchEntry(cached)
+  const cached = findCachedEntry(req.workerId, resolved.key, resolved.candidates)
+  if (cached)
     return Promise.resolve(createLease(cached))
-  }
+
+  const refused = lruGet(refusalCache, resolved.key)
+  if (refused)
+    return Promise.resolve({ result: refused, release: noopRelease })
 
   let flight = inFlight.get(resolved.key)
   if (!flight) {
@@ -279,8 +404,14 @@ export function acquireLocalMarkdownImage(
           waiter.detach()
 
         if (outcome.kind === 'error') {
+          const errorResult: Extract<LocalMarkdownImageResult, { kind: 'error' }> = {
+            kind: 'error',
+            reason: outcome.reason,
+          }
+          if (outcome.cacheable && startedFlight.epoch === cacheEpoch)
+            lruSet(refusalCache, resolved.key, errorResult, LOCAL_MARKDOWN_IMAGE_MAX_ENTRIES)
           for (const waiter of liveWaiters)
-            waiter.resolve({ result: outcome, release: noopRelease })
+            waiter.resolve({ result: errorResult, release: noopRelease })
           return
         }
 
@@ -288,37 +419,60 @@ export function acquireLocalMarkdownImage(
         if (liveWaiters.length === 0)
           return
 
-        const blob = new Blob([outcome.bytes as BlobPart], { type: outcome.mime })
-        const url = URL.createObjectURL(blob)
-        const result: Extract<LocalMarkdownImageResult, { kind: 'ok' }> = {
-          kind: 'ok',
-          url,
-          resolvedPath: outcome.resolvedPath,
-          ...(outcome.width !== undefined && outcome.height !== undefined
-            ? { width: outcome.width, height: outcome.height }
-            : {}),
-        }
-        const entry: CacheEntry = {
-          key: resolved.key,
-          result,
-          bytes: outcome.bytes.byteLength,
-          refCount: 0,
-          evicted: false,
-          revoked: false,
-        }
+        let entry: CacheEntry
+        try {
+          // Another spelling may have already populated the cache by resolvedPath while
+          // this probe was in flight: reuse that entry instead of allocating a duplicate Blob.
+          const aliasKey = resolvedPathIndexKey(req.workerId, outcome.resolvedPath)
+          const existingAlias = startedFlight.epoch === cacheEpoch
+            ? byResolvedPath.get(aliasKey)
+            : undefined
+          if (existingAlias && !existingAlias.evicted) {
+            lruGet(cache, existingAlias.key)
+            entry = existingAlias
+          }
+          else {
+            const blob = new Blob([outcome.bytes as BlobPart], { type: outcome.mime })
+            const url = URL.createObjectURL(blob)
+            const result: Extract<LocalMarkdownImageResult, { kind: 'ok' }> = {
+              kind: 'ok',
+              url,
+              resolvedPath: outcome.resolvedPath,
+              ...(outcome.width !== undefined && outcome.height !== undefined
+                ? { width: outcome.width, height: outcome.height }
+                : {}),
+            }
+            entry = {
+              key: resolved.key,
+              workerId: req.workerId,
+              result,
+              bytes: outcome.bytes.byteLength,
+              refCount: 0,
+              evicted: false,
+              revoked: false,
+            }
 
-        if (startedFlight.epoch === cacheEpoch) {
-          const existing = cache.get(resolved.key)
-          if (existing)
-            evictEntry(existing)
-          cache.set(resolved.key, entry)
-          totalCachedBytes += entry.bytes
-          evictIfNeeded(resolved.key)
+            if (startedFlight.epoch === cacheEpoch) {
+              cache.set(resolved.key, entry)
+              byResolvedPath.set(aliasKey, entry)
+              totalCachedBytes += entry.bytes
+              evictIfNeeded(resolved.key)
+            }
+            else {
+              // Cache was cleared while this probe was in flight: keep it out of the
+              // new epoch's cache and revoke as soon as all pre-clear waiters release.
+              entry.evicted = true
+            }
+          }
         }
-        else {
-          // Cache was cleared while this probe was in flight: keep it out of the
-          // new epoch's cache and revoke as soon as all pre-clear waiters release.
-          entry.evicted = true
+        catch {
+          const fallback: Extract<LocalMarkdownImageResult, { kind: 'error' }> = {
+            kind: 'error',
+            reason: 'Unable to load image',
+          }
+          for (const waiter of liveWaiters)
+            waiter.resolve({ result: fallback, release: noopRelease })
+          return
         }
 
         // Allocate all leases synchronously before resolving promises so an immediate
@@ -367,6 +521,9 @@ export function acquireLocalMarkdownImage(
 export function clearLocalMarkdownImageCache(): void {
   cacheEpoch++
   inFlight.clear()
+  byResolvedPath.clear()
+  refusalCache.clear()
+  dimensionCache.clear()
   for (const entry of Array.from(cache.values()))
     evictEntry(entry)
   totalCachedBytes = 0

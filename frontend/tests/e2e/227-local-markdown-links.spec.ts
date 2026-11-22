@@ -5,6 +5,7 @@ import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { test as base } from './fixtures'
+import { cssAttributeValue } from './helpers/cssAttribute'
 import { createTestDirectory } from './helpers/runDirectory'
 import { clearRecordedToasts, expectToastRecorded, getRecordedToasts } from './helpers/toast'
 import {
@@ -181,18 +182,19 @@ test.describe('local Markdown links, directory reveal, and inline local images',
     // Click the local directory link in the chat message.
     await assistantBubbles(page).locator('[data-local-link="./docs/nested"]').first().click()
 
-    // Right sidebar and Files section expand; docs and nested expand; nested gets focus and reveal cue.
-    await expect(filesHeader).toBeVisible()
-    await expect(filesHeader).not.toHaveAttribute('data-closed')
-
+    // Check the transient 1400ms reveal cue first so parallel shard load does not
+    // expire it while awaiting the persistent sidebar and expansion assertions.
     const docsRow = treeRow(page, 'docs')
     const nestedRow = treeRow(page, 'nested')
+    await expect(nestedRow).toHaveAttribute('data-reveal-cue', 'true')
+
+    await expect(filesHeader).toBeVisible()
+    await expect(filesHeader).not.toHaveAttribute('data-closed')
     await expect(docsRow).toBeVisible()
     await expect(docsRow).toHaveAttribute('aria-expanded', 'true')
     await expect(nestedRow).toBeVisible()
     await expect(nestedRow).toHaveAttribute('aria-expanded', 'true')
     await expect(nestedRow).toBeFocused()
-    await expect(nestedRow).toHaveAttribute('data-reveal-cue', 'true')
 
     // Visual cue clears automatically after the cue window.
     await expect(nestedRow).not.toHaveAttribute('data-reveal-cue')
@@ -201,19 +203,21 @@ test.describe('local Markdown links, directory reveal, and inline local images',
   test('shows a single-line warning toast for a directory outside the active file tree without re-rooting', async ({ page, authenticatedWorkspace, modelScript }) => {
     const workingDir = authenticatedWorkspace.workingDir!
     const outsideDir = realpathSync(createTestDirectory('local-md-outside-'))
+    const markdownOutsideDest = `<${outsideDir.replace(/\\/g, '%5C').replace(/>/g, '%3E')}>`
+    const expectedAttrHref = outsideDir.replace(/\\/g, '%5C').replace(/>/g, '%3E')
     try {
       await runMarkdownReply(
         page,
         modelScript,
         'Link an outside directory.',
-        `See [Outside dir](${outsideDir}).`,
+        `See [Outside dir](${markdownOutsideDest}).`,
       )
 
       const rootNode = page.locator('[data-testid="tree-root-node"]:visible').first()
       await expect(rootNode).toContainText(basename(workingDir))
 
       await clearRecordedToasts(page)
-      await assistantBubbles(page).locator(`[data-local-link="${outsideDir}"]`).first().click()
+      await assistantBubbles(page).locator(`[data-local-link="${cssAttributeValue(expectedAttrHref)}"]`).first().click()
 
       await expectToastRecorded(page, `Directory is outside the current file tree: ${outsideDir}`)
       const toasts = await getRecordedToasts(page)

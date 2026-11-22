@@ -102,7 +102,7 @@ export interface SidebarElementsOpts {
   /** Called once DirectoryTree handles or cancels a directory reveal request. */
   onDirectoryRevealHandled?: ((nonce: number) => void) | undefined
   /** Register/unregister each sidebar's section-expand function with AppShell. */
-  onExpandSectionRef?: ((side: Sidebar, fn: ((sectionId: string) => void) | undefined) => void) | undefined
+  onExpandSectionRef?: ((side: Sidebar, fn: (sectionId: string) => void) => (() => void) | void) | undefined
   /** Activate a local link clicked inside sidebar Markdown (Goals & To-dos). */
   onActivateLocalLink?: ((rawHref: string, source: LocalLinkActivationSource) => void) | undefined
 }

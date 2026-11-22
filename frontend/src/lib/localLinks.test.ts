@@ -72,6 +72,9 @@ describe('parseLocalLinkHref', () => {
     expect(parseLocalLinkHref('docs/my%20file.md?raw=1#L10')?.path).toBe('docs/my file.md')
     expect(parseLocalLinkHref('a%23b.txt')?.path).toBe('a#b.txt')
     expect(parseLocalLinkHref('bad%ZZname.txt')?.path).toBe('bad%ZZname.txt')
+    expect(parseLocalLinkHref('docs/My%20Report%2050%_final.md')?.path).toBe('docs/My Report 50%_final.md')
+    expect(parseLocalLinkHref('C:%5Crepo%5C50%_done.png')?.path).toBe('C:\\repo\\50%_done.png')
+    expect(parseLocalLinkHref('C:%5Crepo%5C50%FF_done.png')?.path).toBe('C:\\repo\\50%FF_done.png')
     expect(parseLocalLinkHref('file:///tmp/my%20doc.md?v=1#top')?.path).toBe('/tmp/my doc.md')
     expect(parseLocalLinkHref('file:///tmp/bad%ZZ.md')?.path).toBe('/tmp/bad%ZZ.md')
   })
@@ -93,6 +96,8 @@ describe('parseLocalLinkHref', () => {
     })
     expect(parseLocalLinkHref('app.ts:10-20')?.pathWithoutLineSuffix).toBe('app.ts')
     expect(parseLocalLinkHref('./Makefile:10')?.pathWithoutLineSuffix).toBe('./Makefile')
+    expect(parseLocalLinkHref('src%5CMakefile:42')?.pathWithoutLineSuffix).toBe('src\\Makefile')
+    expect(parseLocalLinkHref('~%5CREADME:10')?.pathWithoutLineSuffix).toBe('~\\README')
     expect(parseLocalLinkHref('C:\\repo\\app.ts:42')?.pathWithoutLineSuffix).toBe('C:\\repo\\app.ts')
   })
 
@@ -142,6 +147,13 @@ describe('parseLocalLinkHref', () => {
     'HttPs://a',
     'artifact:0',
     'localhost:3000',
+    'javascript%3aalert(1)',
+    'file%3a//evil.example/share/a',
+    'https%3a//evil.example/x.png',
+    'x://evil.example/a',
+    'x:%2f%2fevil.example/a',
+    'example.com:8080/x',
+    'example.com:8080/x.png',
   ])('rejects non-local, malformed, and dangerous href: %j', (href) => {
     expect(parseLocalLinkHref(href)).toBeNull()
     expect(isLocalLinkHref(href)).toBe(false)
@@ -213,6 +225,25 @@ describe('resolveLocalLinkCandidates', () => {
       '/Users/shared/doc.md',
     ])
     expect(resolveLocalLinkCandidates('~/notes.md', { ...POSIX_OPTS, homeDir: '' })).toEqual([])
+    // Backslash is a literal filename character on POSIX, not a tilde separator.
+    expect(resolveLocalLinkCandidates('~\\notes.md', POSIX_OPTS)).toEqual([
+      '/repo/docs/~\\notes.md',
+    ])
+    expect(resolveLocalLinkCandidates('~\\notes.md', { ...POSIX_OPTS, homeDir: '' })).toEqual([
+      '/repo/docs/~\\notes.md',
+    ])
+    expect(resolveLocalLinkCandidates('~\\notes.md', WIN32_OPTS)).toEqual([
+      'C:\\Users\\alice\\notes.md',
+    ])
+  })
+
+  it('never resolves an absolute file:///C:/... URI relative to baseDir on posix', () => {
+    expect(resolveLocalLinkCandidates('file:///C:/repo/a.md', POSIX_OPTS)).toEqual([
+      '/C:/repo/a.md',
+    ])
+    expect(resolveLocalLinkCandidates('file:///C:/repo/a.md', WIN32_OPTS)).toEqual([
+      'C:\\repo\\a.md',
+    ])
   })
 
   it('returns empty for relative paths when baseDir and workingDir are both empty', () => {

@@ -2,7 +2,7 @@ import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ImageDimensions } from '~/lib/imageDimensions'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { sniffImageMime } from '~/lib/fileType'
-import { MAX_FILE_IMAGE_BYTES, RENDERABLE_IMAGE_MIME_TYPES } from '~/lib/imageBlocks'
+import { fileImageRefusal, MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { imageHeaderBytesNeeded, sniffImageDimensionsFromBytes } from '~/lib/imageDimensions'
 import { fileUriToPath, isAbsolute, join } from '~/lib/paths'
 import { readWorkerFile, readWorkerFileHead } from '~/lib/readWorkerFile'
@@ -14,21 +14,6 @@ import { FileImageRefusedError } from './fileImageResolver'
  * AVIF headers end inside this read.
  */
 export const FILE_IMAGE_HEADER_BYTES = 4096
-
-/**
- * Why the chat shows no image for a file of `totalSize` bytes and of `mimeType`, or
- * undefined for a file that it shows. A new read of the same file gives the same
- * answer, so `readWorkerImage` throws it as a FileImageRefusedError.
- */
-function fileImageRefusal(totalSize: bigint, mimeType: string): string | undefined {
-  if (totalSize > BigInt(MAX_FILE_IMAGE_BYTES))
-    return 'The image file is too large to preview'
-  if (totalSize === 0n)
-    return 'The image file is empty'
-  if (!RENDERABLE_IMAGE_MIME_TYPES.has(mimeType))
-    return 'The image file format is not supported'
-  return undefined
-}
 
 /**
  * The absolute path on the worker of the image that a chat row gives as `path`:

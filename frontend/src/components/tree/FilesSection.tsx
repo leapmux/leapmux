@@ -21,7 +21,6 @@ import { RefreshButton } from '~/components/common/RefreshButton'
 import { PREFIX_FILES_SHOW_HIDDEN, PREFIX_FILES_SORT_ORDER } from '~/lib/browserStorage'
 import { createPersistedSignal, persistedBoolean } from '~/lib/createPersistedSignal'
 import { DEFAULT_FILE_SORT_ORDER, makeFileComparator, parseFileSortOrder } from '~/lib/fileSort'
-import { normalizeSeparators, relativeUnder, split } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { fileEntryToDiffStats, isUntrackedDirEntry } from '~/stores/repoGit.store'
 import { warningText } from '~/styles/shared.css'
@@ -298,9 +297,10 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
       : {}
   }
 
-  // Prepare FilesSection state before DirectoryTree processes a reveal:
-  // leave flat-list mode, clear a git filter that excludes the target, and
-  // enable hidden entries when any relative path segment starts with '.'.
+  // Exit flat-list mode when a directory reveal arrives so DirectoryTree mounts
+  // and handles the reveal. Hidden-file and git-filter visibility adjustments are
+  // driven authoritatively by DirectoryTree via onRevealHiddenRequired and
+  // onClearFilterRequired once enabled, avoiding premature preference mutations.
   createEffect(on(
     () => props.directoryReveal,
     (req) => {
@@ -308,24 +308,6 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
         return
       if (untrack(flatListMode))
         setFlatListMode(false)
-
-      const visibleFn = untrack(isVisible)
-      if (visibleFn && !visibleFn(req.path) && !(req.canonicalPath && visibleFn(req.canonicalPath)))
-        setActiveFilter('all')
-
-      if (!untrack(showHiddenFiles)) {
-        const root = untrack(treeRoot)
-        if (root) {
-          const flavor = props.flavor
-          const normRoot = normalizeSeparators(root, flavor)
-          const rel = relativeUnder(normalizeSeparators(req.path, flavor), normRoot, flavor)
-            ?? (req.canonicalPath
-              ? relativeUnder(normalizeSeparators(req.canonicalPath, flavor), normRoot, flavor)
-              : null)
-          if (rel && split(rel, flavor).some(segment => segment.startsWith('.')))
-            setShowHiddenFiles(true)
-        }
-      }
     },
   ))
 

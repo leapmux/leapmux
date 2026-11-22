@@ -24,6 +24,7 @@ import { setSyntaxTheme } from '~/lib/syntaxThemeStore'
 import { DEFAULT_THEME_ID } from '~/styles/themes'
 import { deferred } from '~/test-support/async'
 import { holdWorkerReplies, recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
+import { pngBytes } from '~/test-support/imageBytes'
 import { fillMarkdownRenderGate } from '~/test-support/markdownRenderGate'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { MarkdownLocalLinkProvider } from './markdownLocalLinks'
@@ -374,21 +375,7 @@ describe('MarkdownPrefetch', () => {
 /** Minimal valid PNG bytes with 24x12 IHDR dimensions. */
 function makePngBytes(width = 24, height = 12): Uint8Array {
   const bytes = new Uint8Array(64)
-  bytes.set([
-    0x89,
-    0x50,
-    0x4E,
-    0x47,
-    0x0D,
-    0x0A,
-    0x1A,
-    0x0A,
-  ], 0)
-  bytes[11] = 13
-  bytes.set([0x49, 0x48, 0x44, 0x52], 12)
-  const view = new DataView(bytes.buffer)
-  view.setUint32(16, width, false)
-  view.setUint32(20, height, false)
+  bytes.set(pngBytes(width, height), 0)
   return bytes
 }
 
@@ -416,12 +403,13 @@ function makeLocalLinkContext(
 describe('MarkdownText local links and images', () => {
   let blobCounter = 0
   let readFileSpy: ReturnType<typeof vi.spyOn>
+  let createObjectUrlSpy: ReturnType<typeof vi.spyOn>
   let revokeObjectUrlSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
     blobCounter = 0
     _resetLocalMarkdownImageCacheForTest()
-    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:test-local-img-${++blobCounter}`)
+    createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:test-local-img-${++blobCounter}`)
     revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     readFileSpy = vi.spyOn(workerFile, 'readFile').mockResolvedValue(makeReadFileResponse(makePngBytes()))
   })
@@ -629,28 +617,6 @@ describe('MarkdownText local links and images', () => {
     link.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: body }))
     vi.advanceTimersByTime(HIDE_DELAY_MS)
     expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
-  })
-
-  it('closes an enclosing open popover when a local link inside it is activated', async () => {
-    const onActivate = vi.fn()
-    const ctx = makeLocalLinkContext({ onActivate })
-    const { container } = render(() => (
-      <div popover="auto" data-testid="host-popover">
-        <MarkdownLocalLinkProvider value={ctx}>
-          <MarkdownText text="[Doc](./doc.md)" />
-        </MarkdownLocalLinkProvider>
-      </div>
-    ))
-    await settleWorkerReplies()
-
-    const popover = container.querySelector('[data-testid="host-popover"]') as HTMLElement
-    popover.showPopover()
-    const hideSpy = vi.spyOn(popover, 'hidePopover')
-    const link = popover.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement
-
-    fireEvent.click(link)
-    expect(hideSpy).toHaveBeenCalledTimes(1)
-    expect(onActivate).toHaveBeenCalledWith('./doc.md')
   })
 
   it('hydrates standalone local images into clickable inline images and keeps linked images non-clickable', async () => {
@@ -917,11 +883,19 @@ describe('MarkdownText local links and images', () => {
       expect(imgSpan.getAttribute('tabindex')).toBeNull()
       expect(readiness.pending()).toBe(true)
 
-      // Resolving the image settles readiness without unmounting the body div.
-      gate.resolve(makeReadFileResponse(makePngBytes()))
+      // Resolving the 4 KiB header read settles readiness with a sized premeasure
+      // box without downloading a full payload or creating a blob URL.
+      expect(readFileSpy).toHaveBeenCalledWith('w-1', expect.objectContaining({
+        path: '/repo/docs/photo.png',
+        limit: 4096n,
+      }), expect.anything())
+      gate.resolve(makeReadFileResponse(makePngBytes(24, 12)))
       await waitFor(() => expect(readiness.pending()).toBe(false))
       expect(container.querySelector(`.${markdownContent}`)).toBe(body)
-      expect(body.querySelector('img')).not.toBeNull()
+      const sizedBox = body.querySelector('[data-local-image-premeasure-box]') as HTMLElement | null
+      expect(sizedBox).not.toBeNull()
+      expect(sizedBox?.style.width).toBe('24px')
+      expect(createObjectUrlSpy).not.toHaveBeenCalled()
 
       // Hovering in premeasureMode mounts no tooltip.
       vi.useFakeTimers()
@@ -983,6 +957,73 @@ describe('MarkdownText local links and images', () => {
     }
     finally {
       disposeHung()
+    }
+  })
+
+  it('keeps an in-flight local image RPC alive across streaming HTML updates without restarting', async () => {
+    const gate = deferred<ReturnType<typeof makeReadFileResponse>>()
+    let capturedSignal: AbortSignal | undefined
+    readFileSpy.mockImplementationOnce((_workerId: string, _req: unknown, opts?: { signal?: AbortSignal }) => {
+      capturedSignal = opts?.signal
+      return gate.promise
+    })
+
+    const initial = '![Chart](./stream.png)\n\nChunk 1'
+    const updated = '![Chart](./stream.png)\n\nChunk 1 and Chunk 2'
+    requestMarkdownHtml(initial)
+    requestMarkdownHtml(updated)
+    await settleWorkerReplies()
+
+    const [text, setText] = createSignal(initial)
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={makeLocalLinkContext()}>
+        <MarkdownText text={text()} />
+      </MarkdownLocalLinkProvider>
+    ))
+
+    expect(readFileSpy).toHaveBeenCalledTimes(1)
+    expect(capturedSignal?.aborted).toBe(false)
+
+    // Streaming chunk replaces rendered HTML while the image fetch is still in flight.
+    setText(updated)
+    expect(capturedSignal?.aborted).toBe(false)
+    expect(readFileSpy).toHaveBeenCalledTimes(1)
+
+    gate.resolve(makeReadFileResponse(makePngBytes(40, 20)))
+    await waitFor(() => {
+      const img = container.querySelector('img') as HTMLImageElement | null
+      expect(img).not.toBeNull()
+      expect(img?.src).toBe('blob:test-local-img-1')
+    })
+  })
+
+  it('hydrates local links and local images even when mounted into a detached container', async () => {
+    readFileSpy.mockResolvedValueOnce(makeReadFileResponse(makePngBytes(30, 15)))
+    const md = '[Spec](./spec.md) ![Diagram](./diagram.png)'
+    requestMarkdownHtml(md)
+    await settleWorkerReplies()
+
+    const detached = document.createElement('div')
+    const { unmount } = render(() => (
+      <MarkdownLocalLinkProvider value={makeLocalLinkContext()}>
+        <MarkdownText text={md} />
+      </MarkdownLocalLinkProvider>
+    ), { container: detached })
+
+    try {
+      expect(detached.isConnected).toBe(false)
+      const link = detached.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement | null
+      expect(link?.getAttribute('role')).toBe('button')
+      expect(link?.getAttribute('tabindex')).toBe('0')
+
+      await waitFor(() => {
+        const img = detached.querySelector('img') as HTMLImageElement | null
+        expect(img).not.toBeNull()
+        expect(img?.src).toBe('blob:test-local-img-1')
+      })
+    }
+    finally {
+      unmount()
     }
   })
 })

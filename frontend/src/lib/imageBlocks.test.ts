@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { imageBlockToMarkdown, imageRenderInfo, MAX_INLINE_IMAGE_BASE64_LEN, parseImageBlock } from './imageBlocks'
+import {
+  fileImageRefusal,
+  imageBlockToMarkdown,
+  imageRenderInfo,
+  MAX_FILE_IMAGE_BYTES,
+  MAX_INLINE_IMAGE_BASE64_LEN,
+  parseImageBlock,
+} from './imageBlocks'
 
 describe('parseImageBlock', () => {
   it('parses an embedded MCP image resource for every provider', () => {
@@ -322,5 +329,18 @@ describe('imageBlockToMarkdown MIME allowlist', () => {
   it('still embeds a raster type', () => {
     expect(imageBlockToMarkdown({ data: 'AAAA', mimeType: 'image/png' }))
       .toBe('![image](data:image/png;base64,AAAA)')
+  })
+})
+
+describe('fileImageRefusal', () => {
+  it('refuses oversize, empty, and unsupported image files with size taking precedence', () => {
+    expect(fileImageRefusal(BigInt(MAX_FILE_IMAGE_BYTES + 1), 'image/png'))
+      .toBe('The image file is too large to preview')
+    expect(fileImageRefusal(0n, 'application/octet-stream'))
+      .toBe('The image file is empty')
+    expect(fileImageRefusal(64n, 'image/bmp'))
+      .toBe('The image file format is not supported')
+    expect(fileImageRefusal(BigInt(MAX_FILE_IMAGE_BYTES), 'image/png'))
+      .toBeUndefined()
   })
 })

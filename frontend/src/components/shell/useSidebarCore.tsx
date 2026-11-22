@@ -132,7 +132,7 @@ export interface SidebarCommonProps {
   // Local Markdown links and directory reveal
   directoryReveal?: DirectoryRevealRequest | undefined
   onDirectoryRevealHandled?: ((nonce: number) => void) | undefined
-  onExpandSectionRef?: ((side: Sidebar, fn: ((sectionId: string) => void) | undefined) => void) | undefined
+  onExpandSectionRef?: ((side: Sidebar, fn: (sectionId: string) => void) => (() => void) | void) | undefined
   onActivateLocalLink?: ((rawHref: string, source: LocalLinkActivationSource) => void) | undefined
 }
 
@@ -149,7 +149,11 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
 
   // Captured from CollapsibleSidebar's expandSectionRef callback.
   let expandSection: ((sectionId: string) => void) | undefined
-  onCleanup(() => props.onExpandSectionRef?.(side, undefined))
+  let unregisterExpandSection: (() => void) | undefined
+  onCleanup(() => {
+    unregisterExpandSection?.()
+    unregisterExpandSection = undefined
+  })
 
   // Handle for the FilesSection imperative API (e.g., collapseAll).
   // Declared as a signal so reactive reads (e.g., isFiltered in header
@@ -314,7 +318,8 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     buildSectionDefs,
     expandSectionRef: (fn: (sectionId: string) => void) => {
       expandSection = fn
-      props.onExpandSectionRef?.(side, fn)
+      unregisterExpandSection?.()
+      unregisterExpandSection = props.onExpandSectionRef?.(side, fn) ?? undefined
     },
   }
 }

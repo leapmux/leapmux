@@ -28,7 +28,6 @@ import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatErrorMessage } from '~/lib/errors'
 import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { LOCAL_IMAGE_ATTRIBUTE } from '~/lib/localLinks'
 import { createLogger } from '~/lib/logger'
 import { messageSpanIdentity } from '~/lib/messageSpan'
 import { formatChatQuote } from '~/lib/quoteUtils'
@@ -160,7 +159,7 @@ function injectCopyButton(pre: HTMLPreElement): (() => void) | undefined {
 function injectCopyButtons(
   pres: Iterator<HTMLPreElement>,
   deadline: IdleDeadline,
-  disposers: Array<() => void>,
+  disposers: Map<HTMLPreElement, () => void>,
 ): boolean {
   for (;;) {
     const next = pres.next()
@@ -168,10 +167,20 @@ function injectCopyButtons(
       return true
     const dispose = injectCopyButton(next.value)
     if (dispose !== undefined)
-      disposers.push(dispose)
+      disposers.set(next.value, dispose)
     if (deadline.timeRemaining() <= 0)
       return false
   }
+}
+
+function nodesContainPre(nodes: NodeList): boolean {
+  for (const node of nodes) {
+    if (!(node instanceof Element))
+      continue
+    if (node.tagName === 'PRE' || node.querySelector('pre') !== null)
+      return true
+  }
+  return false
 }
 
 /**
@@ -732,18 +741,18 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     if (!contentRef)
       return
     const el = contentRef
-    let disposers: Array<() => void> = []
+    const disposers = new Map<HTMLPreElement, () => void>()
     let idle: number | undefined
     let observer: MutationObserver | undefined
     // The <pre> elements of the current content that the injection has not reached
-    // yet. Undefined when the next slice must start over the current content.
+    // yet. Undefined when the next slice must reconcile against the current DOM.
     let pendingPres: Iterator<HTMLPreElement> | undefined
     let resumeAfterSelection = false
     const isTextSelectionActive = () => untrack(() => props.host?.textSelectionActive?.() ?? false)
     const disposeAll = () => {
-      for (const d of disposers)
+      for (const d of disposers.values())
         d()
-      disposers = []
+      disposers.clear()
     }
     // An injection under a live selection would move the selected nodes. While a
     // selection is active, return true, and resume the injection when it ends.
@@ -753,17 +762,23 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       resumeAfterSelection = true
       return true
     }
-    // Inject copy buttons into the CURRENT content for the rest of one idle period.
-    // Returns true when the content has no <pre> left. Disconnect the observer across
-    // the slice so our own appendChild(host) writes don't re-trigger it (which would
-    // loop). A new run disposes the prior roots first: an async re-render replaces the
-    // markdown <div>'s innerHTML wholesale, orphaning the old buttons' Solid roots, so
-    // we drop them and re-apply to the new <pre> elements.
+    // Reconcile copy buttons against the CURRENT `<pre>` elements for the rest of
+    // one idle period. Returns true when no un-injected `<pre>` remains. Disconnect
+    // the observer across the slice so our own appendChild(host) writes don't
+    // re-trigger it. Only buttons whose `<pre>` was removed from `el` are disposed;
+    // surviving `<pre>` elements keep their live copy buttons intact.
     const injectSlice = (deadline: IdleDeadline): boolean => {
       observer?.disconnect()
       if (pendingPres === undefined) {
-        disposeAll()
-        pendingPres = el.querySelectorAll('pre').values()
+        const currentPres = el.querySelectorAll('pre')
+        const liveSet = new Set(currentPres)
+        for (const [pre, dispose] of disposers) {
+          if (!liveSet.has(pre)) {
+            dispose()
+            disposers.delete(pre)
+          }
+        }
+        pendingPres = [...currentPres].filter(pre => !disposers.has(pre)).values()
       }
       const done = injectCopyButtons(pendingPres, deadline, disposers)
       observer?.observe(el, { childList: true, subtree: true })
@@ -806,26 +821,14 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       resumeAfterSelection = false
       requestSlice()
     })
-    // Re-apply on a CONTENT change, not just the first render: a Markdown body's HTML
-    // lands ASYNCHRONOUSLY from the worker (it replaces the body's pending skeleton, and a
-    // theme change replaces the HTML again, wiping the injected buttons). A one-shot
-    // injection raced that swap -- inject before it and the button is wiped; after it and
-    // the button lands -- so a code block "sometimes" had no copy button. Observing
-    // contentRef re-injects after the swap and after an expand-collapse change,
-    // regardless of timing.
-    //
-    // But IGNORE mutations caused by the copy buttons themselves (swapping the
-    // Copy<->Check icon on click) and by local Markdown image hydration
-    // (`[data-local-image]` swapping its fallback span for an `<img>` or error
-    // text). Re-injecting on those would dispose sibling copy buttons mid-click
-    // or churn every `<pre>` copy button when an image finishes loading.
+    // Reconcile only when a mutation adds or removes a `<pre>` element: a Markdown
+    // body's HTML arrives asynchronously from the worker, and theme changes or
+    // expand/collapse swap `<pre>` nodes. Unrelated DOM updates (copy-button icon
+    // swaps, local Markdown image hydration, or async widgets) add/remove no `<pre>`
+    // and never schedule work or disturb live copy buttons.
     const onMutations = (records: MutationRecord[]) => {
       for (const r of records) {
-        const node = r.target
-        const asEl = node instanceof Element
-          ? node
-          : node.parentElement
-        if (!asEl?.closest(`.copy-code-button, [${LOCAL_IMAGE_ATTRIBUTE}]`)) {
+        if (nodesContainPre(r.addedNodes) || nodesContainPre(r.removedNodes)) {
           schedule()
           return
         }

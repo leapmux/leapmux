@@ -19,7 +19,7 @@ import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { TabView } from '~/stores/tabView'
 import { useLocation, useSearchParams } from '@solidjs/router'
-import { createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { workerFile } from '~/api/workerRpc'
@@ -895,11 +895,12 @@ export const AppShell: Component = () => {
   const [directoryReveal, setDirectoryReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
   let directoryRevealNonce = 0
   const expandSectionBySide = new Map<Sidebar, (sectionId: string) => void>()
-  const registerExpandSection = (side: Sidebar, fn: ((sectionId: string) => void) | undefined) => {
-    if (fn)
-      expandSectionBySide.set(side, fn)
-    else
-      expandSectionBySide.delete(side)
+  const registerExpandSection = (side: Sidebar, fn: (sectionId: string) => void): (() => void) => {
+    expandSectionBySide.set(side, fn)
+    return () => {
+      if (expandSectionBySide.get(side) === fn)
+        expandSectionBySide.delete(side)
+    }
   }
   const focusEditorRef = createImperativeRef<() => void>()
   const getScrollStateRef = createImperativeRef<() => SavedViewportScroll | undefined>()
@@ -1544,14 +1545,16 @@ export const AppShell: Component = () => {
           ? expandLeftSidebarRef()
           : expandRightSidebarRef())?.()
       }
-      expandSectionBySide.get(filesSection.sidebar)?.(filesSection.id)
-      setFileTreePath(path)
-      setDirectoryReveal({
-        path,
-        ...(canonicalPath
-          ? { canonicalPath }
-          : {}),
-        nonce: ++directoryRevealNonce,
+      batch(() => {
+        expandSectionBySide.get(filesSection.sidebar)?.(filesSection.id)
+        setFileTreePath(path)
+        setDirectoryReveal({
+          path,
+          ...(canonicalPath
+            ? { canonicalPath }
+            : {}),
+          nonce: ++directoryRevealNonce,
+        })
       })
     },
     showWarning: (message, cause) => {
@@ -1568,11 +1571,14 @@ export const AppShell: Component = () => {
     setDirectoryReveal(undefined)
   }))
 
-  // Cancel any in-flight stat or pending reveal on workspace change; watch the
-  // scalar workspace id (never `activeWorkspace()`, whose row identity swaps on
-  // background workspace-list refreshes).
+  // Cancel any in-flight stat or pending reveal on workspace or active-tab change;
+  // watch scalar identities (never `activeWorkspace()` or `activeTab()`, whose object
+  // references rebuild on background metadata refreshes).
   createEffect(on(
-    () => workspace.activeWorkspaceId(),
+    () => [
+      workspace.activeWorkspaceId(),
+      activeTabIdentity(),
+    ] as const,
     () => {
       localLinkActivator.cancelPending()
       setDirectoryReveal(undefined)

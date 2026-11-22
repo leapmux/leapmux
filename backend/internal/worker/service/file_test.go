@@ -1744,3 +1744,62 @@ func TestListDirectory_ChainAppliesDirsOnlyToEveryListing(t *testing.T) {
 		}
 	}
 }
+
+func TestSendFileError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		err      error
+		wantCode int32
+		wantMsg  string
+	}{
+		{
+			name:     "not exist",
+			err:      &fs.PathError{Op: "open", Path: "/x", Err: fs.ErrNotExist},
+			wantCode: codeNotFound,
+			wantMsg:  "file not found",
+		},
+		{
+			name:     "permission denied",
+			err:      &fs.PathError{Op: "stat", Path: "/x", Err: fs.ErrPermission},
+			wantCode: codePermissionDenied,
+			wantMsg:  "permission denied",
+		},
+		{
+			name:     "other error",
+			err:      errors.New("i/o failure"),
+			wantCode: int32(13),
+			wantMsg:  "failed to open file",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := &testResponseWriter{}
+			sendFileError(w, "failed to open file", "/x", tc.err)
+			require.Len(t, w.errors, 1)
+			assert.Equal(t, tc.wantCode, w.errors[0].code)
+			assert.Equal(t, tc.wantMsg, w.errors[0].message)
+		})
+	}
+}
+
+func TestReadFileAndStatFile_NotFound(t *testing.T) {
+	t.Parallel()
+	svc, d, _ := setupTestService(t)
+	missing := filepath.Join(svc.HomeDir, "does-not-exist.txt")
+
+	rw := &testResponseWriter{}
+	dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{Path: missing}, rw)
+	require.Len(t, rw.errors, 1)
+	assert.Equal(t, codeNotFound, rw.errors[0].code)
+	assert.Equal(t, "file not found", rw.errors[0].message)
+
+	sw := &testResponseWriter{}
+	dispatch(d, leapmuxv1connect.WorkerFileServiceStatFileProcedure, &leapmuxv1.StatFileRequest{Path: missing}, sw)
+	require.Len(t, sw.errors, 1)
+	assert.Equal(t, codeNotFound, sw.errors[0].code)
+	assert.Equal(t, "file not found", sw.errors[0].message)
+}

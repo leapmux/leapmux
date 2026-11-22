@@ -1097,11 +1097,12 @@ describe('messageBubble rawJson', () => {
       const toolbar = screen.getByTestId('message-toolbar')
       expect(toolbar.querySelector('[data-testid="message-copy-json"]')).toBeInTheDocument()
 
-      // Raw JSON uses token spans. Run both injection paths before checking that no code button appears.
+      // Raw JSON uses token spans (no <pre>), so the initial pass injects nothing
+      // and non-<pre> mutations do not schedule further idle scans.
       expect(callbacks.runIdle()).toBeGreaterThan(0)
       content.appendChild(document.createTextNode(''))
       expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
-      expect(callbacks.runIdle()).toBeGreaterThan(0)
+      expect(callbacks.runIdle()).toBe(0)
       expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
       expect(content.querySelector(`.${codeCopyHostClass}`)).not.toBeInTheDocument()
     })
@@ -1461,6 +1462,14 @@ describe('MessageBubble copy buttons', () => {
         await waitFor(() => expect(content.querySelector('img[src="blob:bubble-local-img"]')).not.toBeNull())
 
         // Delivering the image-hydration mutations must not schedule a re-injection.
+        expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
+        expect(callbacks.runIdle()).toBe(0)
+        expect(content.querySelector('pre .copy-code-button')).toBe(copyButton)
+
+        // Any other unrelated non-<pre> DOM mutation must also leave live copy buttons intact.
+        const unrelatedWidget = document.createElement('div')
+        unrelatedWidget.textContent = 'async widget'
+        content.appendChild(unrelatedWidget)
         expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
         expect(callbacks.runIdle()).toBe(0)
         expect(content.querySelector('pre .copy-code-button')).toBe(copyButton)

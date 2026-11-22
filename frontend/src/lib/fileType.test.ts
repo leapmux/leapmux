@@ -64,7 +64,18 @@ describe('sniffImageMime', () => {
     expect(sniffImageMime('wrong.jpg', ascii('GIF89a....'))).toBe('image/gif')
     expect(sniffImageMime('noext', ascii('RIFF1234WEBP'))).toBe('image/webp')
     expect(sniffImageMime('noext', ascii('\0\0\0\x18ftypavif'))).toBe('image/avif')
-    expect(sniffImageMime('noext', ascii('\0\0\0\x18ftypmif1avis'))).toBe('image/avif')
+    expect(sniffImageMime('noext', ascii('\0\0\0\x18ftypmif1\0\0\0\0avis'))).toBe('image/avif')
+  })
+
+  it('ignores avif/avis bytes outside aligned ISO BMFF ftyp brands', () => {
+    // Bytes 12..15 are minor_version, not a compatible brand.
+    expect(sniffImageMime('video.mp4', ascii('\0\0\0\x18ftypisomavis\0\0\0\0isom'))).toBe('application/octet-stream')
+    // Straddles a 4-byte brand boundary starting at offset 17.
+    expect(sniffImageMime('video.mp4', ascii('\0\0\0\x1Cftypisom\0\0\0\0XavifXXX'))).toBe('application/octet-stream')
+    // Appears in a later box past the 16-byte ftyp box size.
+    expect(sniffImageMime('video.mp4', ascii('\0\0\0\x10ftypisom\0\0\0\0avif'))).toBe('application/octet-stream')
+    // Box size smaller than a valid ftyp header (< 12 bytes).
+    expect(sniffImageMime('video.mp4', ascii('\0\0\0\x08ftypavif'))).toBe('application/octet-stream')
   })
 
   it('falls back to the file extension for empty or short buffers', () => {
@@ -232,5 +243,23 @@ describe('detectFileViewMode', () => {
   it('prioritizes markdown extension over binary check', () => {
     const text = new TextEncoder().encode('# Title\n\nSome content')
     expect(detectFileViewMode('doc.md', text)).toBe('markdown')
+  })
+
+  it('returns "image" for extensionless or misnamed raster image bytes', () => {
+    const pngBytes = new Uint8Array([
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+      0x00,
+    ])
+    expect(detectFileViewMode('noext', pngBytes)).toBe('image')
+    expect(detectFileViewMode('photo.txt', pngBytes)).toBe('image')
+    // Markdown files stay in markdown mode even if binary bytes appear.
+    expect(detectFileViewMode('notes.md', pngBytes)).toBe('markdown')
   })
 })
