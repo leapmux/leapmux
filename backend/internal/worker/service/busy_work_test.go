@@ -3,13 +3,13 @@ package service
 import (
 	"bytes"
 	"context"
-	"path/filepath"
+	"fmt"
 	"slices"
-	"strings"
-	"sync"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -19,20 +19,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type liveBusyTestAgent struct {
-	agenttest.IdleAgent
-	agentID  string
-	stopped  chan struct{}
-	stopOnce sync.Once
-}
-
-func (a *liveBusyTestAgent) AgentID() string { return a.agentID }
-func (a *liveBusyTestAgent) Stop()           { a.stopOnce.Do(func() { close(a.stopped) }) }
-func (a *liveBusyTestAgent) Wait() error {
-	<-a.stopped
-	return nil
-}
 
 func startLiveBusyTestAgent(t *testing.T, svc *Service, agentID, title string) agent.ProviderServices {
 	t.Helper()
@@ -50,7 +36,7 @@ func startLiveBusyTestAgent(t *testing.T, svc *Service, agentID, title string) a
 		AgentID:    agentID,
 		WorkingDir: t.TempDir(),
 	}, sink, func(_ context.Context, opts agent.Options, _ agent.ProviderServices) (agent.Agent, error) {
-		return &liveBusyTestAgent{agentID: opts.AgentID, stopped: make(chan struct{})}, nil
+		return agenttest.NewRunningAgent(opts.AgentID), nil
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -89,28 +75,18 @@ func startLiveTestTerminal(t *testing.T, svc *Service, id, metaTitle string) {
 func startSleepDescendant(t *testing.T, svc *Service, terminalID string) string {
 	t.Helper()
 	line, want := testutil.TestSleepCommand()
-	send := func() {
-		assert.NoError(t, svc.Terminals.SendInput(terminalID, []byte(line+testutil.TestShellEnter())))
-	}
-	send()
-	sent := 1
-	testutil.RequireEventually(t, func() bool {
+	require.True(t, testutil.SendShellJobUntil(t, svc.Terminals, terminalID, line, func() bool {
 		got, err := svc.Terminals.DescendantProcesses(t.Context(), []string{terminalID})
-		if err == nil && len(got) == 1 {
-			for _, proc := range got[0].Processes {
-				name := strings.TrimSuffix(strings.ToLower(filepath.Base(proc.Name)), ".exe")
-				if name == want {
-					return true
-				}
+		if err != nil || len(got) != 1 {
+			return false
+		}
+		for _, proc := range got[0].Processes {
+			if testutil.NormalizeProcessName(proc.Name) == want {
+				return true
 			}
 		}
-		screen, _, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
-		if bytes.Count(screen, []byte("child setpgid")) >= sent {
-			send()
-			sent++
-		}
 		return false
-	}, "expected backgrounded sleep descendant in terminal %s", terminalID)
+	}, "expected backgrounded sleep descendant in terminal %s", terminalID))
 	return want
 }
 
@@ -236,9 +212,11 @@ func TestInspectBusyWork_TitleFallbacksCleaningAndSortOrder(t *testing.T) {
 	sinkZ := startLiveBusyTestAgent(t, svc, "agent-z", "zeta\x07\tplan")
 	sinkZ.SetTurnState(agent.TurnState{Active: true}, 1)
 
-	// Verify control-char cleaning directly on raw item labels as well.
+	// Verify control-char cleaning directly on raw item labels and process names.
 	assert.Equal(t, "run build", cleanBusyTaskLabel(bgtask.Item{Description: "run\x00\x07\nbuild"}))
 	assert.Equal(t, "Untitled", cleanBusyTaskLabel(bgtask.Item{RowKey: "\x00\x07"}))
+	assert.Equal(t, "node server", cleanBusyProcessName("  node\n\t\x07\u202eserver  "))
+	assert.Empty(t, cleanBusyProcessName("  \t\n\x00\u202e  "))
 
 	// Terminals: GetMeta title, DB title fallback, Quake Terminal fallback, plain Terminal fallback.
 	startLiveTestTerminal(t, svc, "term-meta", "  Alpha\x07Meta  ")
@@ -299,7 +277,7 @@ func TestInspectBusyWork_LiveTerminalWithDescendantProcess(t *testing.T) {
 	names := make([]string, 0, len(got.Terminals[0].Processes))
 	for _, proc := range got.Terminals[0].Processes {
 		assert.Positive(t, proc.PID)
-		names = append(names, strings.TrimSuffix(strings.ToLower(filepath.Base(proc.Name)), ".exe"))
+		names = append(names, testutil.NormalizeProcessName(proc.Name))
 	}
 	assert.True(t, slices.Contains(names, wantProc), "expected %q in %v", wantProc, names)
 }
@@ -339,4 +317,68 @@ func TestInspectBusyWork_NilSafetyNilQueriesAndCancelledContext(t *testing.T) {
 	require.Len(t, cancelledGot.Agents, 1)
 	assert.Equal(t, "Agent", cancelledGot.Agents[0].Title)
 	assert.Empty(t, cancelledGot.Terminals, "process scan fails open when context is cancelled")
+}
+
+func TestInspectBusyWork_CancelledContextSkipsColdBackgroundTaskDBLoad(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	startLiveBusyTestAgent(t, svc, "agent-cold-bg", "Cold cache agent")
+
+	// Insert an active background task directly into SQLite without seeding
+	// the in-memory bgTaskCache, then cancel the inspection context.
+	now := sqltime.NewSQLiteTime(time.Now().UTC())
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		OwnerAgentID: "agent-cold-bg",
+		RowKey:       "cold-task-1",
+		Seq:          1,
+		Role:         leapmuxv1.BackgroundTaskRole(bgtask.RoleTaskOutcome),
+		Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindShell),
+		Title:        "Long running job",
+		Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	})
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := svc.InspectBusyWork(cancelledCtx)
+	assert.Empty(t, got.Agents, "cancelled context must not seed cold background-task rows from SQLite")
+
+	// With a live context, the same cold row loads and reports the agent busy.
+	liveGot := svc.InspectBusyWork(context.Background())
+	require.Len(t, liveGot.Agents, 1)
+	assert.Equal(t, []string{"Long running job"}, liveGot.Agents[0].ActiveBackgroundTasks)
+}
+
+func TestInspectBusyWork_PreservesAllActiveTasksPastDisplayCap(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	sink := startLiveBusyTestAgent(t, svc, "agent-many-active", "Busy swarm")
+
+	const totalActive = bgtask.MaxTasks + 3
+	wantTitles := make([]string, 0, totalActive)
+	for i := range totalActive {
+		title := fmt.Sprintf("active-job-%02d", i)
+		wantTitles = append(wantTitles, title)
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("job-%02d", i),
+			Role:   bgtask.RoleTaskOutcome,
+			Kind:   bgtask.KindShell,
+			Title:  title,
+			Status: bgtask.StatusRunning,
+		}))
+	}
+
+	warm := svc.InspectBusyWork(context.Background())
+	require.Len(t, warm.Agents, 1)
+	assert.ElementsMatch(t, wantTitles, warm.Agents[0].ActiveBackgroundTasks)
+
+	// Drop the warm cache and verify cold seeding also preserves every active row.
+	svc.Output.bgtasks.Delete("agent-many-active")
+	cold := svc.InspectBusyWork(context.Background())
+	require.Len(t, cold.Agents, 1)
+	assert.ElementsMatch(t, wantTitles, cold.Agents[0].ActiveBackgroundTasks)
 }

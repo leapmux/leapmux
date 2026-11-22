@@ -9,7 +9,7 @@ import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema, RelayClos
 import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { deferred, settle } from '~/test-support/async'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
-import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseQuitConfirmEvent, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
@@ -2097,7 +2097,7 @@ describe('platformBridge startBrowserAuth', () => {
   })
 })
 
-describe('platformBridge inspectSoloBusyWork', () => {
+describe('platformBridge beginSwitchMode and switch-mode coordination', () => {
   let logs: ReturnType<typeof captureLoggerOutput>
 
   beforeEach(() => {
@@ -2110,25 +2110,25 @@ describe('platformBridge inspectSoloBusyWork', () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
-  it('returns empty busy work outside Tauri without invoking IPC', async () => {
+  it('proceeds without invoking IPC outside Tauri', async () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
-      agents: [],
-      terminals: [],
-    })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'proceed', switchId: 0 })
+    await expect(platformBridge.resolveSwitchModeConfirmation(1, true)).resolves.toBe(0)
+    await expect(platformBridge.resolveSwitchModeConfirmation(1, false)).resolves.toBeNull()
+    await expect(platformBridge.cancelSwitchMode(1)).resolves.toBeUndefined()
     expect(logs.messages('warn', 'platformBridge')).toEqual([])
   })
 
-  it('invokes inspect_solo_busy_work and normalizes full and partial payloads', async () => {
+  it('invokes begin_switch_mode and normalizes proceed, confirm, blocked, and malformed payloads', async () => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
     const invoked: string[] = []
-    let call = 0
-    mockIPC((cmd) => {
-      invoked.push(cmd)
-      call++
-      if (call === 1) {
-        return {
+    const responses: unknown[] = [
+      { kind: 'proceed', switchId: 5 },
+      {
+        kind: 'confirm',
+        promptId: 9,
+        busyWork: {
           agents: [
             {
               tabId: 'agent-1',
@@ -2147,134 +2147,108 @@ describe('platformBridge inspectSoloBusyWork', () => {
               totalCount: 2,
             },
           ],
-        }
-      }
-      return {
-        agents: [
-          { tabId: 'agent-2', title: 'Partial agent' },
-        ],
-        terminals: [
-          { tabId: 'term-2', title: 'Partial terminal' },
-        ],
-      }
-    })
-
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
-      agents: [
-        {
-          tabId: 'agent-1',
-          title: 'Refactor auth',
-          activeBackgroundTasks: ['Run unit tests'],
-          activeChildAgents: ['Codebase reviewer'],
         },
-      ],
-      terminals: [
-        {
-          tabId: 'term-1',
-          title: 'Dev server',
-          processes: [
-            { pid: 51234, name: 'node' },
-          ],
-          totalCount: 2,
-        },
-      ],
-    })
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
-      agents: [
-        {
-          tabId: 'agent-2',
-          title: 'Partial agent',
-          activeBackgroundTasks: [],
-          activeChildAgents: [],
-        },
-      ],
-      terminals: [
-        {
-          tabId: 'term-2',
-          title: 'Partial terminal',
-          processes: [],
-          totalCount: 0,
-        },
-      ],
-    })
-    expect(invoked).toEqual(['inspect_solo_busy_work', 'inspect_solo_busy_work'])
-  })
-
-  it('normalizes null, non-object, empty, and malformed busy-work payloads to safe defaults', async () => {
-    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
-    const responses: unknown[] = [
+      },
+      { kind: 'blocked' },
+      { kind: 'proceed', switchId: 0 },
+      {
+        kind: 'confirm',
+        promptId: 10,
+        busyWork: { agents: [], terminals: [] },
+      },
       null,
       'invalid',
-      {},
-      { agents: 'bad', terminals: 42 },
-      {
+    ]
+    let idx = 0
+    mockIPC((cmd) => {
+      invoked.push(cmd)
+      return responses[idx++]
+    })
+
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'proceed', switchId: 5 })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({
+      kind: 'confirm',
+      promptId: 9,
+      busyWork: {
         agents: [
-          null,
           {
-            tabId: 123,
-            title: null,
-            activeBackgroundTasks: ['Task A', 99, null],
-            activeChildAgents: [false, 'Child B'],
+            tabId: 'agent-1',
+            title: 'Refactor auth',
+            activeBackgroundTasks: ['Run unit tests'],
+            activeChildAgents: ['Codebase reviewer'],
           },
         ],
         terminals: [
-          'not-an-object',
           {
-            tabId: 'term-3',
-            title: 'Shell',
+            tabId: 'term-1',
+            title: 'Dev server',
             processes: [
-              null,
-              { pid: Number.NaN, name: 'proc-a' },
-              { pid: 77, name: 999 },
+              { pid: 51234, name: 'node' },
             ],
-            totalCount: Number.POSITIVE_INFINITY,
+            totalCount: 2,
           },
         ],
       },
-    ]
-    let idx = 0
-    mockIPC(() => responses[idx++])
-
-    const empty = { agents: [], terminals: [] }
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual(empty)
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual(empty)
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual(empty)
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual(empty)
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
-      agents: [
-        {
-          tabId: '',
-          title: '',
-          activeBackgroundTasks: ['Task A'],
-          activeChildAgents: ['Child B'],
-        },
-      ],
-      terminals: [
-        {
-          tabId: 'term-3',
-          title: 'Shell',
-          processes: [
-            { pid: 0, name: 'proc-a' },
-            { pid: 77, name: '' },
-          ],
-          totalCount: 2,
-        },
-      ],
     })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    expect(invoked).toHaveLength(7)
+    expect(invoked.every(cmd => cmd === 'begin_switch_mode')).toBe(true)
   })
 
-  it('fails open with empty busy work when IPC throws', async () => {
+  it('forwards resolve_switch_mode_confirmation, cancel_switch_mode, and switch_mode switchId', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: Array<[string, unknown]> = []
+    mockIPC((cmd, args) => {
+      invoked.push([cmd, args])
+      if (cmd === 'resolve_switch_mode_confirmation')
+        return (args as { confirm?: boolean }).confirm ? 17 : null
+      if (cmd === 'get_runtime_state')
+        return { shellMode: 'launcher', connected: false, hubUrl: '' }
+      return undefined
+    })
+
+    await expect(platformBridge.resolveSwitchModeConfirmation(4, true)).resolves.toBe(17)
+    await expect(platformBridge.resolveSwitchModeConfirmation(4, false)).resolves.toBeNull()
+    await platformBridge.cancelSwitchMode(17)
+    await platformBridge.switchMode(17)
+    await platformBridge.switchMode()
+
+    expect(invoked).toEqual([
+      [
+        'resolve_switch_mode_confirmation',
+        { promptId: 4, confirm: true },
+      ],
+      [
+        'resolve_switch_mode_confirmation',
+        { promptId: 4, confirm: false },
+      ],
+      [
+        'cancel_switch_mode',
+        { switchId: 17 },
+      ],
+      [
+        'switch_mode',
+        { switchId: 17 },
+      ],
+      ['get_runtime_state', {}],
+      ['switch_mode', {}],
+      ['get_runtime_state', {}],
+    ])
+  })
+
+  it('blocks cleanly when begin_switch_mode IPC throws', async () => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
     mockIPC(() => {
       throw new Error('sidecar unavailable')
     })
 
-    await expect(platformBridge.inspectSoloBusyWork()).resolves.toEqual({
-      agents: [],
-      terminals: [],
-    })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
     expect(logs.messages('warn', 'platformBridge')).toEqual([
-      'inspect_solo_busy_work failed; proceeding fail-open',
+      'begin_switch_mode failed',
     ])
   })
 })
@@ -2400,5 +2374,103 @@ describe('platformBridge resolveQuitConfirmation', () => {
     expect(logs.messages('warn', 'platformBridge')).toEqual([
       'resolve_quit_confirmation failed',
     ])
+  })
+})
+
+describe('parseQuitConfirmEvent', () => {
+  it('normalizes valid and partial entries and rejects empty or malformed payloads', () => {
+    expect(parseQuitConfirmEvent(null)).toBeNull()
+    expect(parseQuitConfirmEvent([])).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: 0,
+      busyWork: {
+        agents: [
+          { tabId: 'a1' },
+        ],
+        terminals: [],
+      },
+    })).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: -1,
+      busyWork: {
+        agents: [
+          { tabId: 'a1' },
+        ],
+        terminals: [],
+      },
+    })).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: Number.NaN,
+      busyWork: {
+        agents: [
+          { tabId: 'a1' },
+        ],
+        terminals: [],
+      },
+    })).toBeNull()
+    expect(parseQuitConfirmEvent({ promptId: 1, busyWork: null })).toBeNull()
+    expect(parseQuitConfirmEvent({ promptId: 1, busyWork: {} })).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: 1,
+      busyWork: { agents: [], terminals: [] },
+    })).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: 1,
+      busyWork: {
+        agents: [null, 'bad'],
+        terminals: [null],
+      },
+    })).toBeNull()
+
+    expect(parseQuitConfirmEvent({
+      promptId: 9,
+      busyWork: {
+        agents: [
+          null,
+          {
+            tabId: 'a1',
+            title: 'Agent 1',
+            activeBackgroundTasks: ['t1', 42],
+            activeChildAgents: null,
+          },
+        ],
+        terminals: [
+          null,
+          {
+            tabId: 'term-1',
+            title: 'Shell',
+            processes: [
+              null,
+              { pid: 123, name: 'vite' },
+              { pid: Number.POSITIVE_INFINITY, name: 99 },
+            ],
+            totalCount: 'bad',
+          },
+        ],
+      },
+    })).toEqual({
+      promptId: 9,
+      busyWork: {
+        agents: [
+          {
+            tabId: 'a1',
+            title: 'Agent 1',
+            activeBackgroundTasks: ['t1'],
+            activeChildAgents: [],
+          },
+        ],
+        terminals: [
+          {
+            tabId: 'term-1',
+            title: 'Shell',
+            processes: [
+              { pid: 123, name: 'vite' },
+              { pid: 0, name: '' },
+            ],
+            totalCount: 2,
+          },
+        ],
+      },
+    })
   })
 })

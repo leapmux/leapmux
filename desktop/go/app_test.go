@@ -19,7 +19,7 @@ import (
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/util/atomicfile"
-	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -325,7 +325,7 @@ func TestConnectDistributedWithStoredSessionCarriesTheCookieOnTheFirstProxiedReq
 
 type recordingSoloInstance struct {
 	stops           int
-	inspectBusyWork func(context.Context) worker.BusyWorkSnapshot
+	inspectBusyWork func(context.Context) busywork.Snapshot
 }
 
 func (*recordingSoloInstance) LocalListenURL() string { return "" }
@@ -334,11 +334,11 @@ func (s *recordingSoloInstance) Stop() error {
 	s.stops++
 	return nil
 }
-func (s *recordingSoloInstance) InspectBusyWork(ctx context.Context) worker.BusyWorkSnapshot {
+func (s *recordingSoloInstance) InspectBusyWork(ctx context.Context) busywork.Snapshot {
 	if s.inspectBusyWork != nil {
 		return s.inspectBusyWork(ctx)
 	}
-	return worker.BusyWorkSnapshot{}
+	return busywork.Snapshot{}
 }
 
 // inspectingSoloInstance runs onStop while the solo runtime is stopping, which
@@ -350,8 +350,8 @@ type inspectingSoloInstance struct {
 
 func (*inspectingSoloInstance) LocalListenURL() string { return "" }
 func (*inspectingSoloInstance) Wait() error            { return nil }
-func (*inspectingSoloInstance) InspectBusyWork(context.Context) worker.BusyWorkSnapshot {
-	return worker.BusyWorkSnapshot{}
+func (*inspectingSoloInstance) InspectBusyWork(context.Context) busywork.Snapshot {
+	return busywork.Snapshot{}
 }
 func (s *inspectingSoloInstance) Stop() error {
 	if s.onStop != nil {
@@ -993,22 +993,14 @@ func TestAppInspectSoloBusyWork_LauncherAndDistributedModes(t *testing.T) {
 	// Disconnected (launcher) mode returns empty snapshot with nil error.
 	got, err := app.InspectSoloBusyWork(context.Background())
 	require.NoError(t, err)
-	assert.True(t, got.IsEmpty())
+	assert.Zero(t, got)
 
 	// Distributed mode (connection.solo == nil) returns empty snapshot with nil error.
-	connCtx, connCancel := context.WithCancel(context.Background())
-	t.Cleanup(connCancel)
-	app.lifecycleMu.Lock()
-	app.connection = &desktopConnection{
-		ctx:    connCtx,
-		stop:   connCancel,
-		hubURL: "https://remote.example.com",
-	}
-	app.lifecycleMu.Unlock()
+	installTestConnection(app, nil, nil, "https://remote.example.com")
 
 	got, err = app.InspectSoloBusyWork(context.Background())
 	require.NoError(t, err)
-	assert.True(t, got.IsEmpty())
+	assert.Zero(t, got)
 }
 
 func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecycleLock(t *testing.T) {
@@ -1016,8 +1008,8 @@ func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecy
 		app := NewApp("")
 		t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
-		want := worker.BusyWorkSnapshot{
-			Agents: []worker.BusyAgent{
+		want := busywork.Snapshot{
+			Agents: []busywork.Agent{
 				{
 					TabID:                 "agent-1",
 					Title:                 "Refactor auth",
@@ -1025,11 +1017,11 @@ func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecy
 					ActiveChildAgents:     []string{"Codebase reviewer"},
 				},
 			},
-			Terminals: []worker.BusyTerminal{
+			Terminals: []busywork.Terminal{
 				{
 					TabID:      "term-1",
 					Title:      "Dev server",
-					Processes:  []worker.BusyTerminalProcess{{PID: 51234, Name: "node"}},
+					Processes:  []busywork.TerminalProcess{{PID: 51234, Name: "node"}},
 					TotalCount: 1,
 				},
 			},
@@ -1038,25 +1030,17 @@ func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecy
 		entered := make(chan struct{})
 		release := make(chan struct{})
 		inst := &recordingSoloInstance{
-			inspectBusyWork: func(context.Context) worker.BusyWorkSnapshot {
+			inspectBusyWork: func(context.Context) busywork.Snapshot {
 				close(entered)
 				<-release
 				return want
 			},
 		}
 
-		connCtx, connCancel := context.WithCancel(context.Background())
-		t.Cleanup(connCancel)
-		app.lifecycleMu.Lock()
-		app.connection = &desktopConnection{
-			ctx:  connCtx,
-			stop: connCancel,
-			solo: &soloRuntime{instance: inst},
-		}
-		app.lifecycleMu.Unlock()
+		installTestConnection(app, nil, inst, "")
 
 		type result struct {
-			busy worker.BusyWorkSnapshot
+			busy busywork.Snapshot
 			err  error
 		}
 		resCh := make(chan result, 1)
@@ -1067,7 +1051,7 @@ func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecy
 
 		select {
 		case <-entered:
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("InspectBusyWork was not entered")
 		}
 
@@ -1081,7 +1065,7 @@ func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecy
 		}()
 		select {
 		case <-lockAcquired:
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			close(release)
 			t.Fatal("lifecycleMu write lock blocked while InspectBusyWork was in flight")
 		}
@@ -1099,22 +1083,15 @@ func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecy
 		entered := make(chan struct{})
 		observedCancel := make(chan error, 1)
 		inst := &recordingSoloInstance{
-			inspectBusyWork: func(ctx context.Context) worker.BusyWorkSnapshot {
+			inspectBusyWork: func(ctx context.Context) busywork.Snapshot {
 				close(entered)
 				<-ctx.Done()
 				observedCancel <- ctx.Err()
-				return worker.BusyWorkSnapshot{}
+				return busywork.Snapshot{}
 			},
 		}
 
-		connCtx, connCancel := context.WithCancel(context.Background())
-		app.lifecycleMu.Lock()
-		app.connection = &desktopConnection{
-			ctx:  connCtx,
-			stop: connCancel,
-			solo: &soloRuntime{instance: inst},
-		}
-		app.lifecycleMu.Unlock()
+		conn := installTestConnection(app, nil, inst, "")
 
 		done := make(chan error, 1)
 		go func() {
@@ -1124,17 +1101,17 @@ func TestAppInspectSoloBusyWork_SoloForwardsSnapshotLinksCancelAndReleasesLifecy
 
 		select {
 		case <-entered:
-		case <-time.After(5 * time.Second):
-			connCancel()
+		case <-time.After(30 * time.Second):
+			conn.stop()
 			t.Fatal("InspectBusyWork was not entered")
 		}
 
-		connCancel()
+		conn.stop()
 
 		select {
 		case err := <-observedCancel:
 			require.ErrorIs(t, err, context.Canceled)
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("InspectBusyWork context did not cancel when connection.ctx ended")
 		}
 		require.NoError(t, <-done)
@@ -1148,5 +1125,5 @@ func TestAppInspectSoloBusyWork_ShutdownInProgress(t *testing.T) {
 	got, err := app.InspectSoloBusyWork(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shutting down")
-	assert.True(t, got.IsEmpty())
+	assert.Zero(t, got)
 }

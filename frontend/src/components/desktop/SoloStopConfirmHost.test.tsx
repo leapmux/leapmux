@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { SoloBusyWork } from '~/api/platformBridge'
+import type { SoloBusyWork, SwitchModeStartResult } from '~/api/platformBridge'
 import { cleanup, fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Dialog } from '~/components/common/Dialog'
@@ -11,14 +11,16 @@ import { SoloStopConfirmHost } from './SoloStopConfirmHost'
 
 const {
   ackQuitConfirmation,
-  inspectSoloBusyWork,
+  beginSwitchMode,
   onEvent,
   resolveQuitConfirmation,
+  resolveSwitchModeConfirmation,
 } = vi.hoisted(() => ({
   ackQuitConfirmation: vi.fn<(promptId: number) => Promise<boolean>>(),
-  inspectSoloBusyWork: vi.fn<() => Promise<SoloBusyWork>>(),
+  beginSwitchMode: vi.fn<() => Promise<SwitchModeStartResult>>(),
   onEvent: vi.fn<(event: string, callback: (payload: unknown) => void) => Promise<() => void>>(),
   resolveQuitConfirmation: vi.fn<(promptId: number, confirm: boolean) => Promise<void>>(),
+  resolveSwitchModeConfirmation: vi.fn<(promptId: number, confirm: boolean) => Promise<number | null>>(),
 }))
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
@@ -28,9 +30,10 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
     platformBridge: {
       ...actual.platformBridge,
       ackQuitConfirmation,
-      inspectSoloBusyWork,
+      beginSwitchMode,
       onEvent,
       resolveQuitConfirmation,
+      resolveSwitchModeConfirmation,
     },
   }
 })
@@ -75,21 +78,17 @@ beforeEach(() => {
   unlistenMock = vi.fn<() => void>()
   ackQuitConfirmation.mockReset()
   ackQuitConfirmation.mockResolvedValue(true)
-  inspectSoloBusyWork.mockReset()
-  inspectSoloBusyWork.mockResolvedValue(BUSY_WORK)
+  beginSwitchMode.mockReset()
+  beginSwitchMode.mockResolvedValue({ kind: 'confirm', promptId: 100, busyWork: BUSY_WORK })
   resolveQuitConfirmation.mockReset()
   resolveQuitConfirmation.mockResolvedValue(undefined)
+  resolveSwitchModeConfirmation.mockReset()
+  resolveSwitchModeConfirmation.mockImplementation(async (_promptId, confirm) => confirm ? 200 : null)
   onEvent.mockReset()
   onEvent.mockImplementation(async (event, callback) => {
     if (event === TAURI_EVENT_APP_CONFIRM_QUIT)
       eventHandler = callback
     return unlistenMock
-  })
-  HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
-    this.open = true
-  })
-  HTMLDialogElement.prototype.close = vi.fn(function (this: HTMLDialogElement) {
-    this.open = false
   })
 })
 
@@ -140,10 +139,45 @@ describe('SoloStopConfirmHost', () => {
     emitQuitEvent({ promptId: 12 })
     emitQuitEvent({ promptId: 13, busyWork: null })
     emitQuitEvent({ promptId: 14, busyWork: {} })
+    emitQuitEvent({
+      promptId: 15,
+      busyWork: { agents: [], terminals: [] },
+    })
     await settle()
 
     expect(ackQuitConfirmation).not.toHaveBeenCalled()
     expect(screen.queryByTestId('solo-stop-confirm-dialog')).toBeNull()
+  })
+
+  it('normalizes malformed entries in quit event payloads without crashing render', async () => {
+    render(() => <SoloStopConfirmHost />)
+    await settle()
+
+    emitQuitEvent({
+      promptId: 16,
+      busyWork: {
+        agents: [
+          null,
+          { tabId: 'a1', title: 'Partial agent' },
+        ],
+        terminals: [
+          null,
+          {
+            tabId: 't1',
+            title: 'Partial term',
+            processes: [
+              null,
+              { pid: 99, name: 'node' },
+            ],
+          },
+        ],
+      },
+    })
+
+    const dialog = await screen.findByTestId('solo-stop-confirm-dialog')
+    expect(within(dialog).getByText('Partial agent')).toBeInTheDocument()
+    expect(within(dialog).getByText('Partial term')).toBeInTheDocument()
+    expect(within(dialog).getByText('node (pid 99)')).toBeInTheDocument()
   })
 
   it('resolves false and closes the dialog when a quit event is cancelled', async () => {
@@ -166,7 +200,7 @@ describe('SoloStopConfirmHost', () => {
     const cancelDialog = await screen.findByTestId('solo-stop-confirm-dialog')
     expect(within(cancelDialog).getByRole('heading', { name: 'Switch mode' })).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('solo-stop-confirm-cancel'))
-    await expect(cancelled).resolves.toBe(false)
+    await expect(cancelled).resolves.toBeNull()
     expect(screen.queryByTestId('solo-stop-confirm-dialog')).toBeNull()
 
     const confirmed = confirmSoloSwitchMode()
@@ -174,16 +208,16 @@ describe('SoloStopConfirmHost', () => {
     const confirmBtn = screen.getByTestId('solo-stop-confirm-confirm')
     fireEvent.click(confirmBtn)
     fireEvent.click(confirmBtn)
-    await expect(confirmed).resolves.toBe(true)
+    await expect(confirmed).resolves.toBe(200)
     expect(screen.queryByTestId('solo-stop-confirm-dialog')).toBeNull()
 
-    // While a quit prompt is open, switch-mode resolves false immediately and
+    // While a quit prompt is open, switch-mode resolves null immediately and
     // leaves the quit prompt mounted.
     emitQuitEvent({ promptId: 23, busyWork: BUSY_WORK })
     await screen.findByTestId('solo-stop-confirm-dialog')
     expect(screen.getByRole('heading', { name: 'Quit LeapMux' })).toBeInTheDocument()
 
-    await expect(confirmSoloSwitchMode()).resolves.toBe(false)
+    await expect(confirmSoloSwitchMode()).resolves.toBeNull()
     expect(screen.getByRole('heading', { name: 'Quit LeapMux' })).toBeInTheDocument()
   })
 
@@ -212,7 +246,7 @@ describe('SoloStopConfirmHost', () => {
     emitQuitEvent({ promptId: 31, busyWork: BUSY_WORK })
     await flush()
 
-    await expect(firstSwitch).resolves.toBe(false)
+    await expect(firstSwitch).resolves.toBeNull()
     const firstQuitDialog = screen.getByTestId('solo-stop-confirm-dialog')
     expect(within(firstQuitDialog).getByRole('heading', { name: 'Quit LeapMux' })).toBeInTheDocument()
     expect(firstQuitDialog).not.toHaveAttribute('inert')
@@ -241,7 +275,7 @@ describe('SoloStopConfirmHost', () => {
     emitQuitEvent({ promptId: 32, busyWork: BUSY_WORK })
     await flush()
 
-    await expect(secondSwitch).resolves.toBe(false)
+    await expect(secondSwitch).resolves.toBeNull()
     const secondQuitDialog = screen.getByTestId('solo-stop-confirm-dialog')
     expect(within(secondQuitDialog).getByRole('heading', { name: 'Quit LeapMux' })).toBeInTheDocument()
     expect(secondQuitDialog).not.toHaveAttribute('data-closing')
@@ -277,6 +311,26 @@ describe('SoloStopConfirmHost', () => {
     fireEvent.click(screen.getByTestId('solo-stop-confirm-cancel'))
     expect(underlying).not.toHaveAttribute('inert')
     expect(document.activeElement).toBe(trigger)
+  })
+
+  it('preserves inert on underlying dialogs that another modal host already covered', async () => {
+    render(() => (
+      <>
+        <SurfaceDialog />
+        <SoloStopConfirmHost />
+      </>
+    ))
+    await settle()
+
+    const underlying = screen.getByRole('dialog', { name: 'Underlying modal' })
+    underlying.setAttribute('inert', '')
+
+    emitQuitEvent({ promptId: 42, busyWork: BUSY_WORK })
+    await screen.findByTestId('solo-stop-confirm-dialog')
+    expect(underlying).toHaveAttribute('inert')
+
+    fireEvent.click(screen.getByTestId('solo-stop-confirm-cancel'))
+    expect(underlying).toHaveAttribute('inert')
   })
 
   it('cancels an active quit prompt and releases covered dialogs on unmount and pagehide', async () => {

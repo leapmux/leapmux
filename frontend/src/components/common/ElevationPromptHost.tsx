@@ -3,6 +3,7 @@ import { useLocation } from '@solidjs/router'
 import { createSignal, onCleanup, Show } from 'solid-js'
 import { Dialog } from '~/components/common/Dialog'
 import { ElevateForm } from '~/components/common/ElevateForm'
+import { createModalCover } from '~/components/common/modalCover'
 import { BrowserStepUp } from '~/components/desktop/BrowserStepUp'
 import { setElevationPrompter } from '~/lib/elevationPrompt'
 import { ceremoniesRunInBrowser } from '~/lib/hubSite'
@@ -58,67 +59,22 @@ export const ElevationPromptHost: Component = () => {
    */
   const here = () => `${location.pathname}${location.search}${location.hash}`
 
-  /**
-   * The dialogs this prompt covers, and the element that held focus, recorded
-   * when the prompt opens.
-   */
-  let covered: Element[] = []
-  let focusedBefore: HTMLElement | null = null
-
-  /**
-   * Suppresses every dialog beneath this prompt, and records where focus was.
-   *
-   * `Dialog` uses the native modal `<dialog>`, so the browser already puts the
-   * newest one at the top of the top layer and marks everything else inert.
-   * This states the same thing on the elements themselves. Three reasons: it
-   * makes the suppression the HOST's, which is the point -- a surface no
-   * longer has to pre-empt the stack to keep a refusal from landing on top of
-   * its own dialog; it holds for a future non-native dialog; and it is
-   * observable, so a test can prove it.
-   *
-   * The query runs BEFORE `setResolve` renders this host's own dialog, so it
-   * cannot include it. The statement order is the whole guarantee -- there is
-   * no element to compare against yet.
-   */
-  const cover = () => {
-    focusedBefore = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null
-    covered = [
-      ...document.querySelectorAll('dialog[open]'),
-    ]
-    for (const dialog of covered)
-      dialog.setAttribute('inert', '')
-  }
-
-  /**
-   * Releases the covered dialogs and returns focus where the prompt found it.
-   *
-   * The release comes FIRST: focus does not move into an inert subtree, so
-   * restoring before it would silently do nothing. The recorded element can be
-   * detached by now (the surface that held it re-rendered), and `focus()` on a
-   * detached element is a no-op, which is the right answer.
-   */
-  const uncover = () => {
-    for (const dialog of covered)
-      dialog.removeAttribute('inert')
-    covered = []
-    const target = focusedBefore
-    focusedBefore = null
-    target?.focus()
-  }
+  // Suppresses every non-inert dialog beneath this prompt and restores focus on
+  // settle. `modalCover.cover()` must run BEFORE `setResolve` renders this
+  // host's own dialog so the query cannot include it.
+  const modalCover = createModalCover()
 
   const settle = (done: (proven: boolean) => void, proven: boolean) => {
     // A dismissed prompt can still be finishing an account refresh.
     if (resolve() !== done)
       return
     setResolve(null)
-    uncover()
+    modalCover.uncover()
     done(proven)
   }
 
   setElevationPrompter(() => new Promise<boolean>((done) => {
-    cover()
+    modalCover.cover()
     setResolve(() => done)
   }))
   onCleanup(() => {

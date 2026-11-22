@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,8 +21,8 @@ type waitingSoloInstance struct {
 func (waitingSoloInstance) LocalListenURL() string { return "" }
 func (waitingSoloInstance) Stop() error            { return nil }
 func (w waitingSoloInstance) Wait() error          { return w.err }
-func (waitingSoloInstance) InspectBusyWork(context.Context) worker.BusyWorkSnapshot {
-	return worker.BusyWorkSnapshot{}
+func (waitingSoloInstance) InspectBusyWork(context.Context) busywork.Snapshot {
+	return busywork.Snapshot{}
 }
 
 // captureSlog points the default logger at a buffer for the duration of fn.

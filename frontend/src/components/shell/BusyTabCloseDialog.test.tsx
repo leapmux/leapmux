@@ -1,22 +1,9 @@
 import type { TabBusyReason } from './tabBusyProbe'
 import { create } from '@bufbuild/protobuf'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { BusyTabCloseDialog } from './BusyTabCloseDialog'
-
-// jsdom implements neither showModal nor close on <dialog>. Same shim
-// ConfirmDialog.test.tsx installs, for the same reason.
-beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
-    this.setAttribute('open', '')
-  })
-  HTMLDialogElement.prototype.close = vi.fn(function (this: HTMLDialogElement) {
-    this.removeAttribute('open')
-    this.dispatchEvent(new Event('close'))
-  })
-})
 
 afterEach(cleanup)
 
@@ -100,7 +87,7 @@ describe('BusyTabCloseDialog', () => {
 
   describe('agent', () => {
     it('describes work without inferring an active root turn', () => {
-      renderDialog({ kind: 'agent-work', activeRows: [] })
+      renderDialog({ kind: 'agent-work', activeBackgroundTasks: [], activeChildAgents: [] })
 
       expect(screen.getByText('This agent is still working. Closing the tab stops it.')).toBeTruthy()
       expect(screen.queryByTestId('busy-background-tasks')).toBeNull()
@@ -109,16 +96,8 @@ describe('BusyTabCloseDialog', () => {
     it('lists the active background tasks', () => {
       renderDialog({
         kind: 'agent-work',
-        activeRows: [
-          {
-            role: BackgroundTaskRole.TASK_OUTCOME,
-            title: 'Research the API',
-          },
-          {
-            role: BackgroundTaskRole.TASK_OUTCOME,
-            title: 'npm test',
-          },
-        ],
+        activeBackgroundTasks: ['Research the API', 'npm test'],
+        activeChildAgents: [],
       })
 
       expect(screen.getByText('2 background tasks are active:')).toBeTruthy()
@@ -129,12 +108,8 @@ describe('BusyTabCloseDialog', () => {
     it('uses the singular for one task', () => {
       renderDialog({
         kind: 'agent-work',
-        activeRows: [
-          {
-            role: BackgroundTaskRole.TASK_OUTCOME,
-            title: 'One',
-          },
-        ],
+        activeBackgroundTasks: ['One'],
+        activeChildAgents: [],
       })
 
       expect(screen.getByText('1 background task is active:')).toBeTruthy()
@@ -147,12 +122,8 @@ describe('BusyTabCloseDialog', () => {
       // announcing it as "turn in progress" tells the user something false.
       renderDialog({
         kind: 'agent-work',
-        activeRows: [
-          {
-            role: BackgroundTaskRole.TASK_OUTCOME,
-            title: 'Research',
-          },
-        ],
+        activeBackgroundTasks: ['Research'],
+        activeChildAgents: [],
       })
 
       expect(screen.queryByText(/turn is in progress/)).toBeNull()
@@ -192,16 +163,8 @@ describe('BusyTabCloseDialog activity roles', () => {
   it('lists child activity separately from coordinator tasks', () => {
     renderDialog({
       kind: 'agent-work',
-      activeRows: [
-        {
-          role: BackgroundTaskRole.CHILD_ACTIVITY,
-          title: 'Child session',
-        },
-        {
-          role: BackgroundTaskRole.TASK_OUTCOME,
-          title: 'Coordinator task',
-        },
-      ],
+      activeBackgroundTasks: ['Coordinator task'],
+      activeChildAgents: ['Child session'],
     })
     expect(screen.getByText('1 background task is active:')).toBeTruthy()
     expect(screen.getByText('1 child agent is active:')).toBeTruthy()

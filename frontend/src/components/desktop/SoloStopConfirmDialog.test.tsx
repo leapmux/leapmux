@@ -1,17 +1,7 @@
 import type { SoloBusyWork } from '~/api/platformBridge'
 import { cleanup, fireEvent, render, screen, within } from '@solidjs/testing-library'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SoloStopConfirmDialog } from './SoloStopConfirmDialog'
-
-beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
-    this.setAttribute('open', '')
-  })
-  HTMLDialogElement.prototype.close = vi.fn(function (this: HTMLDialogElement) {
-    this.removeAttribute('open')
-    this.dispatchEvent(new Event('close'))
-  })
-})
 
 afterEach(cleanup)
 

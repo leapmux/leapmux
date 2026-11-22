@@ -2,7 +2,6 @@ import type { TabBusyAction } from './TabBusyDetails'
 import { create } from '@bufbuild/protobuf'
 import { cleanup, render, screen } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
-import { BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabBusyDetails } from './TabBusyDetails'
 
@@ -21,9 +20,8 @@ describe('TabBusyDetails', () => {
         <TabBusyDetails
           reason={{
             kind: 'agent-work',
-            activeRows: [
-              { role: BackgroundTaskRole.TASK_OUTCOME, title: 'Run tests' },
-            ],
+            activeBackgroundTasks: ['Run tests'],
+            activeChildAgents: [],
           }}
           {...(action !== undefined
             ? { action }

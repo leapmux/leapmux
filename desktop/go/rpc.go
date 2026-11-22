@@ -16,7 +16,7 @@ import (
 
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/version"
-	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 )
 
 type RPCSession struct {
@@ -822,7 +822,7 @@ func tunnelKeyMismatchToProto(m *TunnelKeyMismatch) *desktoppb.TunnelWorkerKeyMi
 	}
 }
 
-func busyWorkToProto(busy worker.BusyWorkSnapshot) *desktoppb.InspectSoloBusyWorkResponse {
+func busyWorkToProto(busy busywork.Snapshot) *desktoppb.InspectSoloBusyWorkResponse {
 	agents := make([]*desktoppb.BusyAgentWork, len(busy.Agents))
 	for i, a := range busy.Agents {
 		agents[i] = &desktoppb.BusyAgentWork{

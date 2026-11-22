@@ -93,9 +93,8 @@ describe('createTabBusyProbe', () => {
 
       expect(reason).toEqual({
         kind: 'agent-work',
-        activeRows: [
-          task(),
-        ],
+        activeBackgroundTasks: ['Research the API'],
+        activeChildAgents: [],
       })
       expect(mockListAgents).toHaveBeenCalledWith('w-1', {
         tabIds: ['a1'],
@@ -202,7 +201,11 @@ describe('createTabBusyProbe', () => {
       const { probe } = makeProbe()
       agentIs('a1', AgentActivityState.WORKING)
 
-      expect(await probe.probe(agentTab('a1'))).toEqual({ kind: 'agent-work', activeRows: [] })
+      expect(await probe.probe(agentTab('a1'))).toEqual({
+        kind: 'agent-work',
+        activeBackgroundTasks: [],
+        activeChildAgents: [],
+      })
     })
 
     it('warns about an agent waiting on a permission prompt', async () => {
@@ -216,9 +219,8 @@ describe('createTabBusyProbe', () => {
 
       expect(await probe.probe(agentTab('a1'))).toEqual({
         kind: 'agent-work',
-        activeRows: [
-          task(),
-        ],
+        activeBackgroundTasks: ['Research the API'],
+        activeChildAgents: [],
       })
     })
 
@@ -396,9 +398,32 @@ describe('createTabBusyProbe', () => {
     })
     const { probe } = makeProbe([marker])
     agentIs('a1', AgentActivityState.WORKING)
-    expect(await probe.probe(agentTab('a1'))).toMatchObject({
+    expect(await probe.probe(agentTab('a1'))).toEqual({
       kind: 'agent-work',
-      activeRows: [marker],
+      activeBackgroundTasks: [],
+      activeChildAgents: ['Child session'],
+    })
+  })
+
+  it('classifies CHILD_TASK as a background task rather than a child agent', async () => {
+    const childTask = task({
+      role: BackgroundTaskRole.CHILD_TASK,
+      rowKey: 'child-task',
+      childAgentId: 'child-2',
+      title: 'Run security audit',
+    })
+    const childActivity = task({
+      role: BackgroundTaskRole.CHILD_ACTIVITY,
+      rowKey: 'child-activity',
+      childAgentId: 'child-3',
+      title: 'Inspect logs',
+    })
+    const { probe } = makeProbe([childTask, childActivity])
+    agentIs('a1', AgentActivityState.WORKING)
+    expect(await probe.probe(agentTab('a1'))).toEqual({
+      kind: 'agent-work',
+      activeBackgroundTasks: ['Run security audit'],
+      activeChildAgents: ['Inspect logs'],
     })
   })
 })

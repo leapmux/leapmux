@@ -13,68 +13,10 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/drain"
+	"github.com/leapmux/leapmux/worker/busywork"
 )
-
-func TestBusyWorkSnapshot_IsEmptyAndFromService(t *testing.T) {
-	t.Parallel()
-
-	assert.True(t, (BusyWorkSnapshot{}).IsEmpty())
-	assert.False(t, (BusyWorkSnapshot{
-		Agents: []BusyAgent{{TabID: "agent-1", Title: "Refactor auth"}},
-	}).IsEmpty())
-	assert.False(t, (BusyWorkSnapshot{
-		Terminals: []BusyTerminal{{TabID: "term-1", Title: "Dev server"}},
-	}).IsEmpty())
-
-	src := service.BusyWorkSnapshot{
-		Agents: []service.BusyAgent{
-			{
-				TabID:                 "agent-1",
-				Title:                 "Refactor auth",
-				ActiveBackgroundTasks: []string{"Run unit tests"},
-				ActiveChildAgents:     []string{"Codebase reviewer"},
-			},
-		},
-		Terminals: []service.BusyTerminal{
-			{
-				TabID: "term-1",
-				Title: "Dev server",
-				Processes: []service.BusyTerminalProcess{
-					{PID: 51234, Name: "node"},
-					{PID: 51240, Name: "esbuild"},
-				},
-				TotalCount: 2,
-			},
-		},
-	}
-
-	got := busyWorkFromService(src)
-	assert.False(t, got.IsEmpty())
-	assert.Equal(t, BusyWorkSnapshot{
-		Agents: []BusyAgent{
-			{
-				TabID:                 "agent-1",
-				Title:                 "Refactor auth",
-				ActiveBackgroundTasks: []string{"Run unit tests"},
-				ActiveChildAgents:     []string{"Codebase reviewer"},
-			},
-		},
-		Terminals: []BusyTerminal{
-			{
-				TabID: "term-1",
-				Title: "Dev server",
-				Processes: []BusyTerminalProcess{
-					{PID: 51234, Name: "node"},
-					{PID: 51240, Name: "esbuild"},
-				},
-				TotalCount: 2,
-			},
-		},
-	}, got)
-}
 
 func TestRunBusyWorkInspector_LifecycleShutdownDrainAndRaceSafety(t *testing.T) {
 	root, err := lifecycle.CanonicalDir(t.TempDir())
@@ -98,7 +40,7 @@ func TestRunBusyWorkInspector_LifecycleShutdownDrainAndRaceSafety(t *testing.T) 
 	}
 
 	var inspectorMu sync.Mutex
-	var inspector BusyWorkInspector
+	var inspector busywork.Inspector
 	var gateOpenAtReady atomic.Bool
 	var gateOpenAtClose atomic.Bool
 	var callers sync.WaitGroup
@@ -124,7 +66,7 @@ func TestRunBusyWorkInspector_LifecycleShutdownDrainAndRaceSafety(t *testing.T) 
 			AuthToken:      "token",
 			WorkerID:       "worker",
 			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-			OnBusyWorkInspector: func(fn BusyWorkInspector) {
+			OnBusyWorkInspector: func(fn busywork.Inspector) {
 				record("inspector")
 				inspectorMu.Lock()
 				inspector = fn
@@ -179,5 +121,5 @@ func TestRunBusyWorkInspector_LifecycleShutdownDrainAndRaceSafety(t *testing.T) 
 	savedInspector := inspector
 	inspectorMu.Unlock()
 	require.NotNil(t, savedInspector)
-	assert.True(t, savedInspector(context.Background()).IsEmpty(), "post-shutdown inspector calls must return empty safely")
+	assert.Zero(t, savedInspector(context.Background()), "post-shutdown inspector calls must return empty safely")
 }

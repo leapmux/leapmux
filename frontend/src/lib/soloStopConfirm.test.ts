@@ -1,9 +1,10 @@
-import type { SoloBusyWork } from '~/api/platformBridge'
+import type { SoloBusyWork, SwitchModeStartResult } from '~/api/platformBridge'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { platformBridge } from '~/api/platformBridge'
 import {
   confirmSoloSwitchMode,
   isSoloBusyWorkEmpty,
+  requestDesktopSwitchMode,
   setSoloSwitchModePrompter,
 } from './soloStopConfirm'
 
@@ -46,60 +47,81 @@ describe('isSoloBusyWorkEmpty', () => {
 })
 
 describe('confirmSoloSwitchMode', () => {
-  it('resolves true without calling the prompter when busy work is empty', async () => {
-    vi.spyOn(platformBridge, 'inspectSoloBusyWork').mockResolvedValue(emptyWork)
+  it('returns the switchId without calling the prompter when Rust authorizes immediately', async () => {
+    vi.spyOn(platformBridge, 'beginSwitchMode').mockResolvedValue({ kind: 'proceed', switchId: 4 })
     const prompter = vi.fn(async () => false)
     setSoloSwitchModePrompter(prompter)
 
-    await expect(confirmSoloSwitchMode()).resolves.toBe(true)
+    await expect(confirmSoloSwitchMode()).resolves.toBe(4)
     expect(prompter).not.toHaveBeenCalled()
   })
 
-  it('forwards the registered prompter answer when busy work exists', async () => {
-    vi.spyOn(platformBridge, 'inspectSoloBusyWork').mockResolvedValue(busyWork)
+  it('returns null without calling the prompter when Rust blocks switch mode', async () => {
+    vi.spyOn(platformBridge, 'beginSwitchMode').mockResolvedValue({ kind: 'blocked' })
+    const prompter = vi.fn(async () => true)
+    setSoloSwitchModePrompter(prompter)
+
+    await expect(confirmSoloSwitchMode()).resolves.toBeNull()
+    expect(prompter).not.toHaveBeenCalled()
+  })
+
+  it('forwards the registered prompter answer to resolveSwitchModeConfirmation', async () => {
+    vi.spyOn(platformBridge, 'beginSwitchMode')
+      .mockResolvedValueOnce({ kind: 'confirm', promptId: 10, busyWork })
+      .mockResolvedValueOnce({ kind: 'confirm', promptId: 11, busyWork })
+    const resolveSpy = vi.spyOn(platformBridge, 'resolveSwitchModeConfirmation')
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(21)
     const prompter = vi.fn<(_busy: SoloBusyWork) => Promise<boolean>>()
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true)
     setSoloSwitchModePrompter(prompter)
 
-    await expect(confirmSoloSwitchMode()).resolves.toBe(false)
-    await expect(confirmSoloSwitchMode()).resolves.toBe(true)
+    await expect(confirmSoloSwitchMode()).resolves.toBeNull()
+    await expect(confirmSoloSwitchMode()).resolves.toBe(21)
     expect(prompter).toHaveBeenCalledTimes(2)
     expect(prompter).toHaveBeenCalledWith(busyWork)
+    expect(resolveSpy).toHaveBeenNthCalledWith(1, 10, false)
+    expect(resolveSpy).toHaveBeenNthCalledWith(2, 11, true)
   })
 
-  it('fails open when no prompter is registered or when the prompter throws or rejects', async () => {
-    vi.spyOn(platformBridge, 'inspectSoloBusyWork').mockResolvedValue(busyWork)
+  it('fails open to Rust resolution when no prompter is registered or when the prompter throws or rejects', async () => {
+    vi.spyOn(platformBridge, 'beginSwitchMode').mockResolvedValue({ kind: 'confirm', promptId: 3, busyWork })
+    const resolveSpy = vi.spyOn(platformBridge, 'resolveSwitchModeConfirmation')
+      .mockImplementation(async (_id, confirm) => confirm ? 9 : null)
 
     // No prompter registered.
-    await expect(confirmSoloSwitchMode()).resolves.toBe(true)
+    await expect(confirmSoloSwitchMode()).resolves.toBe(9)
 
     // Rejecting prompter fails open and clears inFlight.
     setSoloSwitchModePrompter(async () => {
       throw new Error('prompt failed asynchronously')
     })
-    await expect(confirmSoloSwitchMode()).resolves.toBe(true)
+    await expect(confirmSoloSwitchMode()).resolves.toBe(9)
 
     // Synchronously throwing prompter fails open and clears inFlight.
     setSoloSwitchModePrompter(() => {
       throw new Error('prompt failed synchronously')
     })
-    await expect(confirmSoloSwitchMode()).resolves.toBe(true)
+    await expect(confirmSoloSwitchMode()).resolves.toBe(9)
 
     // Healthy prompter works on the next call.
     const healthy = vi.fn(async () => false)
     setSoloSwitchModePrompter(healthy)
-    await expect(confirmSoloSwitchMode()).resolves.toBe(false)
+    await expect(confirmSoloSwitchMode()).resolves.toBeNull()
     expect(healthy).toHaveBeenCalledOnce()
+    expect(resolveSpy).toHaveBeenLastCalledWith(3, false)
   })
 
   it('coalesces concurrent calls and starts fresh after settlement', async () => {
-    let resolveInspect!: (value: SoloBusyWork) => void
-    const inspectSpy = vi.spyOn(platformBridge, 'inspectSoloBusyWork')
-      .mockImplementationOnce(() => new Promise<SoloBusyWork>((resolve) => {
-        resolveInspect = resolve
+    let resolveStart!: (value: SwitchModeStartResult) => void
+    const startSpy = vi.spyOn(platformBridge, 'beginSwitchMode')
+      .mockImplementationOnce(() => new Promise<SwitchModeStartResult>((resolve) => {
+        resolveStart = resolve
       }))
-      .mockResolvedValueOnce(busyWork)
+      .mockResolvedValueOnce({ kind: 'confirm', promptId: 2, busyWork })
+    vi.spyOn(platformBridge, 'resolveSwitchModeConfirmation')
+      .mockImplementation(async (_id, confirm) => confirm ? 7 : null)
 
     let resolvePrompt!: (confirmed: boolean) => void
     const prompter = vi.fn<(_busy: SoloBusyWork) => Promise<boolean>>()
@@ -112,17 +134,88 @@ describe('confirmSoloSwitchMode', () => {
     const first = confirmSoloSwitchMode()
     const second = confirmSoloSwitchMode()
     expect(first).toBe(second)
-    expect(inspectSpy).toHaveBeenCalledOnce()
+    expect(startSpy).toHaveBeenCalledOnce()
 
-    resolveInspect(busyWork)
+    resolveStart({ kind: 'confirm', promptId: 1, busyWork })
     await vi.waitFor(() => expect(prompter).toHaveBeenCalledOnce())
     resolvePrompt(false)
 
-    await expect(first).resolves.toBe(false)
-    await expect(second).resolves.toBe(false)
+    await expect(first).resolves.toBeNull()
+    await expect(second).resolves.toBeNull()
 
-    await expect(confirmSoloSwitchMode()).resolves.toBe(true)
-    expect(inspectSpy).toHaveBeenCalledTimes(2)
+    await expect(confirmSoloSwitchMode()).resolves.toBe(7)
+    expect(startSpy).toHaveBeenCalledTimes(2)
     expect(prompter).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('requestDesktopSwitchMode', () => {
+  it('coalesces concurrent switch-mode transitions into one fade and switchMode(switchId) call', async () => {
+    let resolvePrompt!: (confirmed: boolean) => void
+    vi.spyOn(platformBridge, 'beginSwitchMode').mockResolvedValue({ kind: 'confirm', promptId: 5, busyWork })
+    vi.spyOn(platformBridge, 'resolveSwitchModeConfirmation').mockResolvedValue(42)
+    setSoloSwitchModePrompter(() => new Promise<boolean>((resolve) => {
+      resolvePrompt = resolve
+    }))
+    const switchSpy = vi.spyOn(platformBridge, 'switchMode').mockResolvedValue(undefined)
+    const disconnectSpy = vi.fn()
+    const previousDisconnect = window.__leapmux_disconnectDesktop
+    window.__leapmux_disconnectDesktop = disconnectSpy
+    try {
+      const first = requestDesktopSwitchMode()
+      const second = requestDesktopSwitchMode()
+      expect(first).toBe(second)
+
+      await vi.waitFor(() => expect(resolvePrompt).toBeDefined())
+      resolvePrompt(true)
+      await first
+
+      expect(switchSpy).toHaveBeenCalledExactlyOnceWith(42)
+      expect(disconnectSpy).toHaveBeenCalledOnce()
+      expect(document.querySelector('[style*="2147483647"]')).toBeNull()
+    }
+    finally {
+      if (previousDisconnect === undefined)
+        delete window.__leapmux_disconnectDesktop
+      else
+        window.__leapmux_disconnectDesktop = previousDisconnect
+    }
+  })
+
+  it('catches switchMode failure, removes the overlay, and skips disconnect', async () => {
+    vi.spyOn(platformBridge, 'beginSwitchMode').mockResolvedValue({ kind: 'proceed', switchId: 8 })
+    vi.spyOn(platformBridge, 'switchMode').mockRejectedValueOnce(new Error('rpc failed'))
+    const disconnectSpy = vi.fn()
+    const previousDisconnect = window.__leapmux_disconnectDesktop
+    window.__leapmux_disconnectDesktop = disconnectSpy
+    try {
+      await expect(requestDesktopSwitchMode()).resolves.toBeUndefined()
+      expect(disconnectSpy).not.toHaveBeenCalled()
+      expect(document.querySelector('[style*="2147483647"]')).toBeNull()
+    }
+    finally {
+      if (previousDisconnect === undefined)
+        delete window.__leapmux_disconnectDesktop
+      else
+        window.__leapmux_disconnectDesktop = previousDisconnect
+    }
+  })
+
+  it('skips fade and switchMode when beginSwitchMode is blocked or confirmation resolution is superseded', async () => {
+    const switchSpy = vi.spyOn(platformBridge, 'switchMode').mockResolvedValue(undefined)
+    const beginSpy = vi.spyOn(platformBridge, 'beginSwitchMode')
+      .mockResolvedValueOnce({ kind: 'blocked' })
+      .mockResolvedValueOnce({ kind: 'confirm', promptId: 9, busyWork })
+    const resolveSpy = vi.spyOn(platformBridge, 'resolveSwitchModeConfirmation')
+      .mockResolvedValueOnce(null)
+    setSoloSwitchModePrompter(async () => true)
+
+    await requestDesktopSwitchMode()
+    await requestDesktopSwitchMode()
+
+    expect(beginSpy).toHaveBeenCalledTimes(2)
+    expect(resolveSpy).toHaveBeenCalledExactlyOnceWith(9, true)
+    expect(switchSpy).not.toHaveBeenCalled()
+    expect(document.querySelector('[style*="2147483647"]')).toBeNull()
   })
 })

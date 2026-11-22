@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,8 +21,8 @@ type failingSoloInstance struct {
 func (f failingSoloInstance) LocalListenURL() string { return "" }
 func (f failingSoloInstance) Wait() error            { return f.err }
 func (f failingSoloInstance) Stop() error            { return f.err }
-func (failingSoloInstance) InspectBusyWork(context.Context) worker.BusyWorkSnapshot {
-	return worker.BusyWorkSnapshot{}
+func (failingSoloInstance) InspectBusyWork(context.Context) busywork.Snapshot {
+	return busywork.Snapshot{}
 }
 
 func TestAppShutdownReturnsSoloError(t *testing.T) {
@@ -59,8 +59,8 @@ type blockingSoloInstance struct {
 
 func (b blockingSoloInstance) LocalListenURL() string { return "" }
 func (b blockingSoloInstance) Wait() error            { return nil }
-func (blockingSoloInstance) InspectBusyWork(context.Context) worker.BusyWorkSnapshot {
-	return worker.BusyWorkSnapshot{}
+func (blockingSoloInstance) InspectBusyWork(context.Context) busywork.Snapshot {
+	return busywork.Snapshot{}
 }
 func (b blockingSoloInstance) Stop() error {
 	close(b.entered)

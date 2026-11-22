@@ -221,7 +221,9 @@ use std::fs;
 use std::{ffi::OsStr, path::Path, time::Instant};
 #[cfg(target_os = "macos")]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, Window, WindowEvent,
+};
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(target_os = "macos")]
@@ -230,6 +232,8 @@ const APP_SUBMENU_ID: &str = "leapmux-app-menu";
 const SHOW_ABOUT_MENU_ID: &str = "show-about";
 #[cfg(target_os = "macos")]
 const SHOW_PREFERENCES_MENU_ID: &str = "show-preferences";
+#[cfg(target_os = "macos")]
+const QUIT_APP_MENU_ID: &str = "quit-app";
 #[cfg(target_os = "macos")]
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
 /// Write one diagnostic line from the shell to standard error.
@@ -454,13 +458,15 @@ struct TunnelConfigInput {
 
 /// Locks a mutex, recovering transparently from poisoning.
 ///
-/// This is the single policy for the three shallow bookkeeping locks in the
-/// crate -- `PendingMap`, `DesktopShell.state`, and `SaveStreamRegistry.handles`
-/// -- all of which today guard nothing more than HashMap ops, field assignment,
-/// or `Arc::clone`. A panic held across such a guard leaves the guarded state
-/// internally consistent, so returning the (poisoned) guard is sound: the
-/// alternative -- panicking on every subsequent access -- would wedge the shell
-/// permanently over a HashMap allocation edge case.
+/// This is the single policy for the shallow bookkeeping locks in the crate --
+/// `PendingMap`, `DesktopShell.state`, `QuitGuard.state`,
+/// `SaveStreamRegistry.handles`, `RawInvokeRegistry.cache`, and
+/// `RelayChannelSlot.receivers` -- all of which guard nothing more than
+/// HashMap ops, state transitions, field assignment, or `Arc::clone`. A panic
+/// held across such a guard leaves the guarded state internally consistent, so
+/// returning the (poisoned) guard is sound: the alternative -- panicking on
+/// every subsequent access -- would wedge the shell permanently over a HashMap
+/// allocation edge case.
 ///
 /// The per-handle `Arc<Mutex<File>>` in `SaveStreamRegistry::write_chunk` is
 /// deliberately NOT covered here: a panic mid-`write_all` corrupts the save
@@ -514,7 +520,7 @@ struct SidecarProcess {
 struct DesktopShell {
     app_handle: AppHandle,
     sidecar: SidecarProcess,
-    exit_in_progress: AtomicBool,
+    close_in_progress: AtomicBool,
     quit_guard: quit_guard::QuitGuard,
     webview_zoom: AtomicU64,
     // Locks recover from poisoning rather than wedging shell state; see the
@@ -599,7 +605,7 @@ impl DesktopShell {
                 pending,
                 next_id: AtomicU64::new(1),
             },
-            exit_in_progress: AtomicBool::new(false),
+            close_in_progress: AtomicBool::new(false),
             quit_guard: quit_guard::QuitGuard::default(),
             webview_zoom: AtomicU64::new(1.0f64.to_bits()),
             state: Mutex::new(ShellState {
@@ -768,17 +774,39 @@ impl DesktopShell {
 // convert that hang into per-command errors against a process that still holds
 // the solo Hub's DB lease, inviting a doomed reconnect loop. The bounded
 // exceptions are the initial handshake (SIDECAR_INITIAL_HANDSHAKE_TIMEOUT,
-// where the peer has not yet proven live) and Shutdown (request_shutdown_async,
-// where the caller is about to exit regardless). `proxy_http` in particular
-// must stay unbounded here: it carries Hub RPCs whose own server-side budgets
-// (agent startup, worktree creation) are the real timeouts.
+// where the peer has not yet proven live), Shutdown (request_shutdown_async,
+// where the caller is about to exit regardless), and Solo busy-work inspection
+// (inspect_solo_busy_work_async with BUSY_WORK_INSPECT_TIMEOUT, which fails
+// open so a wedged sidecar cannot block quitting or switching mode).
+// `proxy_http` in particular must stay unbounded here: it carries Hub RPCs
+// whose own server-side budgets (agent startup, worktree creation) are the
+// real timeouts.
 async fn send_sidecar_request(
     sidecar: &SidecarProcess,
     method: proto::request::Method,
 ) -> Result<proto::Response, String> {
+    struct PendingRequestGuard<'a> {
+        pending: &'a PendingMap,
+        id: u64,
+        armed: bool,
+    }
+
+    impl Drop for PendingRequestGuard<'_> {
+        fn drop(&mut self) {
+            if self.armed {
+                recover(self.pending).remove(&self.id);
+            }
+        }
+    }
+
     let id = sidecar.next_id.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = oneshot::channel();
     recover(&sidecar.pending).insert(id, tx);
+    let mut pending_guard = PendingRequestGuard {
+        pending: &sidecar.pending,
+        id,
+        armed: true,
+    };
 
     let frame = proto::Frame {
         message: Some(proto::frame::Message::Request(proto::Request {
@@ -787,12 +815,14 @@ async fn send_sidecar_request(
         })),
     };
     if sidecar.writer_tx.send(frame).is_err() {
-        recover(&sidecar.pending).remove(&id);
         return Err("desktop sidecar writer disconnected".to_string());
     }
 
-    rx.await
-        .map_err(|_| "desktop sidecar disconnected".to_string())?
+    let result = rx
+        .await
+        .map_err(|_| "desktop sidecar disconnected".to_string())?;
+    pending_guard.armed = false;
+    result
 }
 
 // --- Response helpers ---
@@ -2068,11 +2098,44 @@ pub(crate) fn decode_b64(b64: &str) -> Result<Vec<u8>, String> {
 // don't mangle Unicode names.
 //
 
+struct SwitchModeGuard {
+    shell: Arc<DesktopShell>,
+    switch_id: u64,
+}
+
+impl Drop for SwitchModeGuard {
+    fn drop(&mut self) {
+        self.shell.quit_guard.finish_switch(self.switch_id);
+    }
+}
+
+struct SwitchInspectGuard {
+    shell: Arc<DesktopShell>,
+    inspect_id: Option<u64>,
+}
+
+impl Drop for SwitchInspectGuard {
+    fn drop(&mut self) {
+        if let Some(inspect_id) = self.inspect_id.take() {
+            self.shell.quit_guard.cancel_switch_inspect(inspect_id);
+        }
+    }
+}
+
 #[tauri::command]
 async fn switch_mode(
     shell: State<'_, Arc<DesktopShell>>,
     window: WebviewWindow,
+    switch_id: Option<u64>,
 ) -> Result<(), String> {
+    let active_switch_id = shell
+        .quit_guard
+        .enter_switch_mode(shell.is_solo_connected(), switch_id)?;
+    let _switch_guard = SwitchModeGuard {
+        shell: shell.inner().clone(),
+        switch_id: active_switch_id,
+    };
+
     let response = shell
         .send_request_async(proto::request::Method::SwitchMode(
             proto::SwitchModeRequest {},
@@ -2309,9 +2372,10 @@ fn autostart_allowed() -> bool {
 /// Start a guarded shutdown: in connected Solo mode, inspect local busy work
 /// and confirm before draining the sidecar; otherwise drain and exit at once.
 ///
-/// Shared by the `quit_app` command and the tray menu's Quit item so the two
-/// spellings cannot drift. It never touches the window, so it cannot be
-/// diverted into the hide-to-tray branch of `CloseRequested`.
+/// Shared by the `quit_app` command, the macOS app menu Quit item, and the
+/// tray menu's Quit item so all three spellings cannot drift. It never touches
+/// the window, so it cannot be diverted into the hide-to-tray branch of
+/// `CloseRequested`.
 pub(crate) fn request_app_exit(app: &AppHandle) {
     if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
         request_guarded_exit(shell.inner().clone());
@@ -2326,10 +2390,49 @@ fn quit_app(app: AppHandle) {
 }
 
 #[tauri::command]
-async fn inspect_solo_busy_work(
+async fn begin_switch_mode(
     shell: State<'_, Arc<DesktopShell>>,
-) -> Result<quit_guard::SoloBusyWork, String> {
-    Ok(shell.inspect_solo_busy_work_async().await)
+) -> Result<quit_guard::BeginSwitchModeResult, String> {
+    match shell
+        .quit_guard
+        .begin_switch_inspect(shell.is_solo_connected())
+    {
+        quit_guard::SwitchInspectStart::Proceed(switch_id) => {
+            Ok(quit_guard::BeginSwitchModeResult::Proceed { switch_id })
+        }
+        quit_guard::SwitchInspectStart::Blocked => Ok(quit_guard::BeginSwitchModeResult::Blocked),
+        quit_guard::SwitchInspectStart::BlockedPrompting => {
+            tray::show_main_window(&shell.app_handle);
+            Ok(quit_guard::BeginSwitchModeResult::Blocked)
+        }
+        quit_guard::SwitchInspectStart::Inspect(inspect_id) => {
+            let mut inspect_guard = SwitchInspectGuard {
+                shell: shell.inner().clone(),
+                inspect_id: Some(inspect_id),
+            };
+            let busy = shell.inspect_solo_busy_work_async().await;
+            inspect_guard.inspect_id = None;
+            Ok(shell.quit_guard.complete_switch_inspect(
+                inspect_id,
+                shell.is_solo_connected(),
+                busy,
+            ))
+        }
+    }
+}
+
+#[tauri::command]
+fn resolve_switch_mode_confirmation(
+    shell: State<'_, Arc<DesktopShell>>,
+    prompt_id: u64,
+    confirm: bool,
+) -> Option<u64> {
+    shell.quit_guard.resolve_switch_prompt(prompt_id, confirm)
+}
+
+#[tauri::command]
+fn cancel_switch_mode(shell: State<'_, Arc<DesktopShell>>, switch_id: u64) {
+    shell.quit_guard.finish_switch(switch_id);
 }
 
 #[tauri::command]
@@ -2476,14 +2579,18 @@ fn open_main_web_inspector(app: &AppHandle) {
     }
 }
 
-/// Claim the exit for this route, and report whether the claim succeeded.
-///
-/// `exit_in_progress` runs the claim exactly once across every exit route: a
-/// route that arrives while another exit drains must not start a second
-/// sidecar shutdown or a second save-handle cleanup.
-fn claim_exit(flag: &AtomicBool) -> bool {
-    flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
+fn handle_main_window_close(shell: Arc<DesktopShell>, window: Window) {
+    if shell
+        .close_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let _ = window.close();
+    });
 }
 
 /// Start the ordinary shutdown -- claim the exit, drop the save handles, and
@@ -2501,16 +2608,15 @@ fn begin_app_exit(
     shell: Arc<DesktopShell>,
     finish: impl FnOnce(&AppHandle) + Send + 'static,
 ) -> bool {
-    if !claim_exit(&shell.exit_in_progress) {
+    if !shell.quit_guard.claim_exit() {
         return false;
     }
-    shell.quit_guard.cancel_all();
 
     // Drop every open save handle and remove its partial file BEFORE the
     // sidecar goes away. The claim above runs this exactly once.
     //
     // It lives here rather than in the `ExitRequested` arm because that arm is
-    // skipped once `exit_in_progress` is latched -- and `quit_app` latches it
+    // skipped once `QuitGuard` enters `Exiting` -- and `quit_app` claims it
     // first, so the menu's Quit used to leave the partials on disk. The tray's
     // Quit takes the same route, which is what made the gap worth closing.
     if let Some(registry) = shell.app_handle.try_state::<Arc<SaveStreamRegistry>>() {
@@ -2544,171 +2650,176 @@ enum GuardedExitAction {
     Ignore,
     ExitImmediately,
     ShowExistingPrompt,
-    Inspect,
+    Inspect(u64),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InspectOutcome {
+    Stale,
+    Exit,
+    Present(quit_guard::SoloBusyWork),
 }
 
 fn plan_guarded_exit(
-    exit_in_progress: bool,
     is_solo_connected: bool,
     quit_guard: &quit_guard::QuitGuard,
 ) -> GuardedExitAction {
-    if exit_in_progress {
+    if quit_guard.is_exiting() {
         return GuardedExitAction::Ignore;
     }
     if !is_solo_connected {
         return GuardedExitAction::ExitImmediately;
     }
     match quit_guard.begin_inspect() {
-        quit_guard::InspectStart::Started => GuardedExitAction::Inspect,
-        quit_guard::InspectStart::AlreadyInspecting => GuardedExitAction::Ignore,
+        quit_guard::InspectStart::Started(inspect_id) => GuardedExitAction::Inspect(inspect_id),
+        quit_guard::InspectStart::AlreadyInspecting | quit_guard::InspectStart::AlreadyExiting => {
+            GuardedExitAction::Ignore
+        }
         quit_guard::InspectStart::AlreadyPrompting => GuardedExitAction::ShowExistingPrompt,
+        quit_guard::InspectStart::SwitchingInProgress => GuardedExitAction::ExitImmediately,
     }
 }
 
-fn complete_guarded_exit(
-    exit_in_progress: bool,
+fn complete_guarded_inspect(
+    inspect_id: u64,
     is_solo_connected: bool,
     quit_guard: &quit_guard::QuitGuard,
     busy: quit_guard::SoloBusyWork,
-    present: impl FnOnce(quit_guard::SoloBusyWork),
-    exit: impl FnOnce(),
-) {
-    if exit_in_progress {
-        quit_guard.finish_inspect_idle();
-        return;
+) -> InspectOutcome {
+    if !quit_guard.is_inspecting(inspect_id) {
+        return InspectOutcome::Stale;
     }
     if !is_solo_connected || busy.is_empty() {
-        quit_guard.finish_inspect_idle();
-        exit();
-        return;
+        if quit_guard.finish_inspect_idle(inspect_id) {
+            return InspectOutcome::Exit;
+        }
+        return InspectOutcome::Stale;
     }
-    present(busy);
+    InspectOutcome::Present(busy)
 }
 
-fn request_guarded_exit(shell: Arc<DesktopShell>) {
-    match plan_guarded_exit(
-        shell.exit_in_progress.load(Ordering::SeqCst),
-        shell.is_solo_connected(),
-        &shell.quit_guard,
-    ) {
+fn request_guarded_exit_with(
+    shell: Arc<DesktopShell>,
+    on_exit: impl FnOnce(Arc<DesktopShell>) + Send + 'static,
+) {
+    match plan_guarded_exit(shell.is_solo_connected(), &shell.quit_guard) {
         GuardedExitAction::Ignore => {}
-        GuardedExitAction::ExitImmediately => handle_app_exit(shell),
+        GuardedExitAction::ExitImmediately => on_exit(shell),
         GuardedExitAction::ShowExistingPrompt => tray::show_main_window(&shell.app_handle),
-        GuardedExitAction::Inspect => {
+        GuardedExitAction::Inspect(inspect_id) => {
             tauri::async_runtime::spawn(async move {
                 let busy = shell.inspect_solo_busy_work_async().await;
-                let exit_in_progress = shell.exit_in_progress.load(Ordering::SeqCst);
                 let is_solo_connected = shell.is_solo_connected();
-                let present_shell = shell.clone();
-                let exit_shell = shell.clone();
-                complete_guarded_exit(
-                    exit_in_progress,
+                match complete_guarded_inspect(
+                    inspect_id,
                     is_solo_connected,
                     &shell.quit_guard,
                     busy,
-                    move |busy| quit_guard::present_quit_confirmation(present_shell, busy),
-                    move || handle_app_exit(exit_shell),
-                );
+                ) {
+                    InspectOutcome::Stale => {}
+                    InspectOutcome::Exit => on_exit(shell),
+                    InspectOutcome::Present(busy) => {
+                        quit_guard::present_quit_confirmation(shell, inspect_id, busy);
+                    }
+                }
             });
         }
     }
 }
 
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MacTerminateAction {
-    Reply(terminate_macos::TerminateDecision),
-    ClaimExitNow,
-    ShowExistingPromptAndCancel,
-    InspectAndHold,
+fn request_guarded_exit(shell: Arc<DesktopShell>) {
+    request_guarded_exit_with(shell, handle_app_exit);
 }
 
 #[cfg(target_os = "macos")]
-fn plan_macos_terminate(
-    exit_in_progress: bool,
-    is_solo_connected: bool,
-    quit_guard: &quit_guard::QuitGuard,
-) -> MacTerminateAction {
-    if exit_in_progress {
-        return MacTerminateAction::Reply(terminate_macos::TerminateDecision::Cancel);
-    }
-    if !is_solo_connected {
-        return MacTerminateAction::ClaimExitNow;
-    }
-    match quit_guard.begin_inspect() {
-        quit_guard::InspectStart::Started => MacTerminateAction::InspectAndHold,
-        quit_guard::InspectStart::AlreadyInspecting => {
-            MacTerminateAction::Reply(terminate_macos::TerminateDecision::Cancel)
+struct MacTerminateHoldGuard<F: FnOnce()> {
+    on_drop: Option<F>,
+}
+
+#[cfg(target_os = "macos")]
+impl<F: FnOnce()> MacTerminateHoldGuard<F> {
+    fn new(on_drop: F) -> Self {
+        Self {
+            on_drop: Some(on_drop),
         }
-        quit_guard::InspectStart::AlreadyPrompting => {
-            MacTerminateAction::ShowExistingPromptAndCancel
-        }
+    }
+
+    fn disarm(&mut self) {
+        self.on_drop = None;
     }
 }
 
 #[cfg(target_os = "macos")]
-fn complete_macos_terminate(
-    exit_in_progress: bool,
-    is_solo_connected: bool,
-    quit_guard: &quit_guard::QuitGuard,
-    busy: quit_guard::SoloBusyWork,
+impl<F: FnOnce()> Drop for MacTerminateHoldGuard<F> {
+    fn drop(&mut self) {
+        if let Some(on_drop) = self.on_drop.take() {
+            on_drop();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_macos_inspect_outcome(
+    outcome: InspectOutcome,
     begin_exit: impl FnOnce() -> bool,
     reply_terminate: impl FnOnce(bool),
-    present: impl FnOnce(quit_guard::SoloBusyWork),
+    reply_false_then_present: impl FnOnce(quit_guard::SoloBusyWork),
 ) {
-    if exit_in_progress {
-        quit_guard.finish_inspect_idle();
-        reply_terminate(false);
-        return;
-    }
-    if !is_solo_connected || busy.is_empty() {
-        quit_guard.finish_inspect_idle();
-        if !begin_exit() {
-            reply_terminate(false);
+    match outcome {
+        InspectOutcome::Stale => reply_terminate(false),
+        InspectOutcome::Exit => {
+            if !begin_exit() {
+                reply_terminate(false);
+            }
         }
-        return;
+        InspectOutcome::Present(busy) => {
+            // Release AppKit's NSTerminateLater hold on the main thread BEFORE
+            // presenting the confirmation dialog so a second terminate while
+            // the dialog is open does not bypass applicationShouldTerminate:.
+            reply_false_then_present(busy);
+        }
     }
-    // Release AppKit's NSTerminateLater hold BEFORE presenting the dialog so a
-    // second Cmd+Q while the dialog is open does not bypass
-    // applicationShouldTerminate: and force-kill the process.
-    reply_terminate(false);
-    present(busy);
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn handle_macos_terminate(
     shell: Arc<DesktopShell>,
 ) -> terminate_macos::TerminateDecision {
-    match plan_macos_terminate(
-        shell.exit_in_progress.load(Ordering::SeqCst),
-        shell.is_solo_connected(),
-        &shell.quit_guard,
-    ) {
-        MacTerminateAction::Reply(decision) => decision,
-        MacTerminateAction::ClaimExitNow => {
+    match plan_guarded_exit(shell.is_solo_connected(), &shell.quit_guard) {
+        GuardedExitAction::Ignore => terminate_macos::TerminateDecision::Cancel,
+        GuardedExitAction::ExitImmediately => {
             if begin_app_exit(shell, |app| terminate_macos::reply_to_terminate(app, true)) {
                 terminate_macos::TerminateDecision::Later
             } else {
                 terminate_macos::TerminateDecision::Cancel
             }
         }
-        MacTerminateAction::ShowExistingPromptAndCancel => {
+        GuardedExitAction::ShowExistingPrompt => {
             tray::show_main_window(&shell.app_handle);
             terminate_macos::TerminateDecision::Cancel
         }
-        MacTerminateAction::InspectAndHold => {
+        GuardedExitAction::Inspect(inspect_id) => {
             tauri::async_runtime::spawn(async move {
+                let guard_shell = shell.clone();
+                let mut hold_guard = MacTerminateHoldGuard::new(move || {
+                    guard_shell.quit_guard.finish_inspect_idle(inspect_id);
+                    terminate_macos::reply_to_terminate(&guard_shell.app_handle, false);
+                });
                 let busy = shell.inspect_solo_busy_work_async().await;
-                let exit_in_progress = shell.exit_in_progress.load(Ordering::SeqCst);
                 let is_solo_connected = shell.is_solo_connected();
-                let exit_shell = shell.clone();
-                let reply_app = shell.app_handle.clone();
-                let present_shell = shell.clone();
-                complete_macos_terminate(
-                    exit_in_progress,
+                let outcome = complete_guarded_inspect(
+                    inspect_id,
                     is_solo_connected,
                     &shell.quit_guard,
                     busy,
+                );
+                hold_guard.disarm();
+                let exit_shell = shell.clone();
+                let reply_app = shell.app_handle.clone();
+                let present_app = shell.app_handle.clone();
+                let present_shell = shell.clone();
+                dispatch_macos_inspect_outcome(
+                    outcome,
                     move || {
                         begin_app_exit(exit_shell, |app| {
                             terminate_macos::reply_to_terminate(app, true)
@@ -2717,7 +2828,11 @@ pub(crate) fn handle_macos_terminate(
                     move |should_terminate| {
                         terminate_macos::reply_to_terminate(&reply_app, should_terminate)
                     },
-                    move |busy| quit_guard::present_quit_confirmation(present_shell, busy),
+                    move |busy| {
+                        terminate_macos::reply_to_terminate_then(&present_app, false, move || {
+                            quit_guard::present_quit_confirmation(present_shell, inspect_id, busy);
+                        });
+                    },
                 );
             });
             terminate_macos::TerminateDecision::Later
@@ -2751,6 +2866,14 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
 
+    let quit_app_item = MenuItem::with_id(
+        app,
+        QUIT_APP_MENU_ID,
+        "Quit LeapMux Desktop",
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?;
+
     let app_menu = Submenu::with_id_and_items(
         app,
         APP_SUBMENU_ID,
@@ -2765,7 +2888,7 @@ fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, None)?,
+            &quit_app_item,
         ],
     )?;
 
@@ -2882,6 +3005,8 @@ fn main() {
                 let _ = app.emit(contracts_generated::EVENT_MENU_SHOW_ABOUT, ());
             } else if event.id() == SHOW_PREFERENCES_MENU_ID {
                 let _ = app.emit(contracts_generated::EVENT_MENU_SHOW_PREFERENCES, ());
+            } else if event.id() == QUIT_APP_MENU_ID {
+                request_app_exit(app);
             } else if event.id() == OPEN_WEB_INSPECTOR_MENU_ID {
                 open_main_web_inspector(app);
             }
@@ -2896,6 +3021,16 @@ fn main() {
             match event {
                 WindowEvent::CloseRequested { api, .. } => {
                     let app = window.app_handle();
+                    // The latch is read FIRST. `handle_main_window_close`
+                    // re-issues `window.close()`, which arrives here a second
+                    // time, and diverting THAT into the tray or quit guard
+                    // would strand a close already under way.
+                    let closing = app
+                        .try_state::<Arc<DesktopShell>>()
+                        .is_some_and(|shell| shell.close_in_progress.load(Ordering::SeqCst));
+                    if closing {
+                        return;
+                    }
                     if let Some(state) = app.try_state::<Arc<tray::TrayState>>() {
                         if state.window_action(tray::WindowIntent::CloseRequested)
                             == tray::WindowAction::HideWindow
@@ -2913,9 +3048,14 @@ fn main() {
                     }
                     if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
                         // Keep the window alive while the quit guard inspects
-                        // and prompts; confirming runs `handle_app_exit` -> `app.exit(0)`.
+                        // and prompts; when idle or non-Solo, close the window
+                        // through `handle_main_window_close` so `pagehide`
+                        // flushes client storage before `ExitRequested` drains.
                         api.prevent_close();
-                        request_guarded_exit(shell.inner().clone());
+                        let close_window = window.clone();
+                        request_guarded_exit_with(shell.inner().clone(), move |s| {
+                            handle_main_window_close(s, close_window);
+                        });
                     }
                 }
                 // Windows reports a minimize as a resize; see
@@ -3126,7 +3266,9 @@ fn main() {
             start_browser_auth,
             cancel_browser_auth,
             quit_app,
-            inspect_solo_busy_work,
+            begin_switch_mode,
+            resolve_switch_mode_confirmation,
+            cancel_switch_mode,
             ack_quit_confirmation,
             resolve_quit_confirmation,
             open_web_inspector,
@@ -3141,11 +3283,11 @@ fn main() {
             match event {
                 RunEvent::ExitRequested { api, .. } => {
                     if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
-                        if !shell.exit_in_progress.load(Ordering::SeqCst) {
+                        if !shell.quit_guard.is_exiting() {
                             // The save handles are dropped inside
                             // `handle_app_exit`, which every exit route reaches
-                            // -- including the ones that latch
-                            // `exit_in_progress` before this arm runs.
+                            // -- including the ones that claim `Exiting` before
+                            // this arm runs.
                             api.prevent_exit();
                             handle_app_exit(shell.inner().clone());
                         }
@@ -3213,16 +3355,16 @@ mod tests {
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     // The exit claim must admit exactly one route: a second route that
-    // arrives while the first drains must read the latched flag and bow out,
-    // or a quit and a Dock-hide race would run two sidecar shutdowns.
+    // arrives while the first drains must read the latched Exiting state and
+    // bow out, or a quit and a Dock-hide race would run two sidecar shutdowns.
     #[test]
     fn claim_exit_succeeds_once() {
-        let flag = AtomicBool::new(false);
+        let guard = quit_guard::QuitGuard::default();
 
-        assert!(claim_exit(&flag), "the first claim must succeed");
+        assert!(guard.claim_exit(), "the first claim must succeed");
         assert!(
-            !claim_exit(&flag),
-            "the second claim must read the latched flag"
+            !guard.claim_exit(),
+            "the second claim must observe the latched Exiting state"
         );
     }
 
@@ -5332,37 +5474,34 @@ mod tests {
 
         let payload = quit_guard::QuitConfirmPayload {
             prompt_id: 7,
-            busy_work: busy,
+            busy_work: busy.clone(),
         };
         let payload_json = serde_json::to_value(&payload).expect("serialize QuitConfirmPayload");
         assert_eq!(payload_json["promptId"], json!(7));
         assert_eq!(payload_json["busyWork"], busy_json);
+
+        assert_eq!(
+            serde_json::to_value(quit_guard::BeginSwitchModeResult::Proceed { switch_id: 3 })
+                .expect("serialize Proceed"),
+            json!({ "kind": "proceed", "switchId": 3 })
+        );
+        assert_eq!(
+            serde_json::to_value(quit_guard::BeginSwitchModeResult::Confirm {
+                prompt_id: 9,
+                busy_work: busy,
+            })
+            .expect("serialize Confirm"),
+            json!({ "kind": "confirm", "promptId": 9, "busyWork": busy_json })
+        );
+        assert_eq!(
+            serde_json::to_value(quit_guard::BeginSwitchModeResult::Blocked)
+                .expect("serialize Blocked"),
+            json!({ "kind": "blocked" })
+        );
     }
 
-    #[test]
-    fn plan_and_complete_guarded_exit_cover_all_branches() {
-        let guard = quit_guard::QuitGuard::default();
-
-        assert_eq!(
-            plan_guarded_exit(true, true, &guard),
-            GuardedExitAction::Ignore
-        );
-        assert_eq!(
-            plan_guarded_exit(false, false, &guard),
-            GuardedExitAction::ExitImmediately
-        );
-        assert_eq!(
-            plan_guarded_exit(false, true, &guard),
-            GuardedExitAction::Inspect
-        );
-        assert_eq!(
-            plan_guarded_exit(false, true, &guard),
-            GuardedExitAction::Ignore
-        );
-
-        // Post-inspect: exit_in_progress calls neither present nor exit and resets guard
-        // for both empty and busy payloads.
-        let busy = quit_guard::SoloBusyWork {
+    fn sample_busy_work() -> quit_guard::SoloBusyWork {
+        quit_guard::SoloBusyWork {
             agents: vec![quit_guard::BusyAgentWork {
                 tab_id: "a1".to_string(),
                 title: "Agent".to_string(),
@@ -5370,259 +5509,184 @@ mod tests {
                 active_child_agents: vec![],
             }],
             terminals: vec![],
-        };
-        let mut presented = false;
-        let mut exited = false;
-        complete_guarded_exit(
-            true,
-            true,
-            &guard,
-            quit_guard::SoloBusyWork::default(),
-            |_| presented = true,
-            || exited = true,
-        );
-        assert!(!presented);
-        assert!(!exited);
-        assert_eq!(
-            plan_guarded_exit(false, true, &guard),
-            GuardedExitAction::Inspect
-        );
+        }
+    }
 
-        complete_guarded_exit(
-            true,
-            true,
-            &guard,
-            busy.clone(),
-            |_| presented = true,
-            || exited = true,
-        );
-        assert!(!presented);
-        assert!(!exited);
+    #[test]
+    fn plan_and_complete_guarded_exit_cover_all_branches_and_stale_tokens() {
+        let guard = quit_guard::QuitGuard::default();
+
+        // Non-Solo exits immediately; Solo starts a tokenized inspection.
         assert_eq!(
-            plan_guarded_exit(false, true, &guard),
-            GuardedExitAction::Inspect
+            plan_guarded_exit(false, &guard),
+            GuardedExitAction::ExitImmediately
+        );
+        let GuardedExitAction::Inspect(inspect1) = plan_guarded_exit(true, &guard) else {
+            panic!("expected Inspect(1)");
+        };
+        assert_eq!(plan_guarded_exit(true, &guard), GuardedExitAction::Ignore);
+
+        // Stale inspection after switch_mode (cancel_all) must NOT exit or clobber a newer inspect.
+        guard.cancel_all();
+        assert_eq!(
+            complete_guarded_inspect(inspect1, false, &guard, quit_guard::SoloBusyWork::default()),
+            InspectOutcome::Stale
+        );
+        let GuardedExitAction::Inspect(inspect2) = plan_guarded_exit(true, &guard) else {
+            panic!("expected Inspect(2)");
+        };
+        assert_eq!(
+            complete_guarded_inspect(inspect1, true, &guard, quit_guard::SoloBusyWork::default()),
+            InspectOutcome::Stale
+        );
+        assert!(
+            guard.is_inspecting(inspect2),
+            "stale inspection must not reset newer active inspection"
         );
 
         // Post-inspect: disconnected exits and resets guard.
-        complete_guarded_exit(
-            false,
-            false,
-            &guard,
-            busy.clone(),
-            |_| presented = true,
-            || exited = true,
-        );
-        assert!(!presented);
-        assert!(exited);
         assert_eq!(
-            plan_guarded_exit(false, true, &guard),
-            GuardedExitAction::Inspect
+            complete_guarded_inspect(inspect2, false, &guard, sample_busy_work()),
+            InspectOutcome::Exit
         );
 
         // Post-inspect: idle exits and resets guard.
-        exited = false;
-        complete_guarded_exit(
-            false,
-            true,
-            &guard,
-            quit_guard::SoloBusyWork::default(),
-            |_| presented = true,
-            || exited = true,
-        );
-        assert!(!presented);
-        assert!(exited);
+        let GuardedExitAction::Inspect(inspect3) = plan_guarded_exit(true, &guard) else {
+            panic!("expected Inspect(3)");
+        };
         assert_eq!(
-            plan_guarded_exit(false, true, &guard),
-            GuardedExitAction::Inspect
+            complete_guarded_inspect(inspect3, true, &guard, quit_guard::SoloBusyWork::default()),
+            InspectOutcome::Exit
         );
 
-        // Post-inspect: busy presents confirmation without exiting.
-        exited = false;
-        let mut presented_busy = None;
-        complete_guarded_exit(
-            false,
-            true,
-            &guard,
-            busy.clone(),
-            |payload| {
-                let _ = guard.transition_to_prompt();
-                presented_busy = Some(payload);
-            },
-            || exited = true,
-        );
-        assert_eq!(presented_busy, Some(busy));
-        assert!(!exited);
+        // Post-inspect: busy returns Present and transitions to ShowExistingPrompt.
+        let GuardedExitAction::Inspect(inspect4) = plan_guarded_exit(true, &guard) else {
+            panic!("expected Inspect(4)");
+        };
+        let busy = sample_busy_work();
         assert_eq!(
-            plan_guarded_exit(false, true, &guard),
+            complete_guarded_inspect(inspect4, true, &guard, busy.clone()),
+            InspectOutcome::Present(busy)
+        );
+        let _ = guard
+            .transition_to_prompt(inspect4)
+            .expect("busy inspect transitions to prompt");
+        assert_eq!(
+            plan_guarded_exit(true, &guard),
             GuardedExitAction::ShowExistingPrompt
+        );
+
+        // Quitting while an authorized switch_mode is in flight exits immediately
+        // without double-prompting.
+        guard.cancel_all();
+        let quit_guard::SwitchInspectStart::Proceed(sw_token) = guard.begin_switch_inspect(false)
+        else {
+            panic!("expected switch proceed");
+        };
+        assert_eq!(
+            plan_guarded_exit(true, &guard),
+            GuardedExitAction::ExitImmediately
+        );
+        guard.finish_switch(sw_token);
+
+        // Once Exiting is claimed, both plan_guarded_exit and stale/active completions ignore.
+        guard.cancel_all();
+        let GuardedExitAction::Inspect(inspect5) = plan_guarded_exit(true, &guard) else {
+            panic!("expected Inspect(5)");
+        };
+        assert!(guard.claim_exit());
+        assert_eq!(plan_guarded_exit(true, &guard), GuardedExitAction::Ignore);
+        assert_eq!(
+            complete_guarded_inspect(inspect5, true, &guard, quit_guard::SoloBusyWork::default()),
+            InspectOutcome::Stale
+        );
+        assert_eq!(
+            complete_guarded_inspect(inspect5, true, &guard, sample_busy_work()),
+            InspectOutcome::Stale
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn plan_and_complete_macos_terminate_preserve_appkit_reply_order() {
-        let guard = quit_guard::QuitGuard::default();
-
-        assert_eq!(
-            plan_macos_terminate(true, true, &guard),
-            MacTerminateAction::Reply(terminate_macos::TerminateDecision::Cancel)
-        );
-        assert_eq!(
-            plan_macos_terminate(false, false, &guard),
-            MacTerminateAction::ClaimExitNow
-        );
-        assert_eq!(
-            plan_macos_terminate(false, true, &guard),
-            MacTerminateAction::InspectAndHold
-        );
-        assert_eq!(
-            plan_macos_terminate(false, true, &guard),
-            MacTerminateAction::Reply(terminate_macos::TerminateDecision::Cancel)
-        );
-
-        // Post-inspect: concurrent exit_in_progress releases NSTerminateLater with false
-        // for both empty and busy payloads without calling begin_exit or present.
-        let busy_work = quit_guard::SoloBusyWork {
-            agents: vec![quit_guard::BusyAgentWork {
-                tab_id: "a1".to_string(),
-                title: "Agent".to_string(),
-                active_background_tasks: vec![],
-                active_child_agents: vec![],
-            }],
-            terminals: vec![],
-        };
+    fn macos_inspect_dispatch_and_hold_guard_preserve_appkit_reply_order() {
         let events = std::cell::RefCell::new(Vec::new());
-        complete_macos_terminate(
-            true,
-            true,
-            &guard,
-            quit_guard::SoloBusyWork::default(),
+        let record_reply = |should_terminate: bool| {
+            events.borrow_mut().push(if should_terminate {
+                "reply_true"
+            } else {
+                "reply_false"
+            });
+        };
+
+        // Stale outcome replies false without beginning exit or presenting.
+        dispatch_macos_inspect_outcome(
+            InspectOutcome::Stale,
             || {
                 events.borrow_mut().push("begin_exit");
                 true
             },
-            |should_terminate| {
-                events.borrow_mut().push(if should_terminate {
-                    "reply_true"
-                } else {
-                    "reply_false"
-                });
-            },
-            |_| events.borrow_mut().push("present"),
+            record_reply,
+            |_| events.borrow_mut().push("reply_false_then_present"),
         );
         assert_eq!(*events.borrow(), vec!["reply_false"]);
 
-        assert_eq!(
-            plan_macos_terminate(false, true, &guard),
-            MacTerminateAction::InspectAndHold
-        );
+        // Exit where begin_exit succeeds lets finish callback send reply_true.
         events.borrow_mut().clear();
-        complete_macos_terminate(
-            true,
-            true,
-            &guard,
-            busy_work,
-            || {
-                events.borrow_mut().push("begin_exit");
-                true
-            },
-            |should_terminate| {
-                events.borrow_mut().push(if should_terminate {
-                    "reply_true"
-                } else {
-                    "reply_false"
-                });
-            },
-            |_| events.borrow_mut().push("present"),
-        );
-        assert_eq!(*events.borrow(), vec!["reply_false"]);
-
-        // Post-inspect: idle where begin_exit returns true lets finish callback send reply_true.
-        assert_eq!(
-            plan_macos_terminate(false, true, &guard),
-            MacTerminateAction::InspectAndHold
-        );
-        events.borrow_mut().clear();
-        complete_macos_terminate(
-            false,
-            true,
-            &guard,
-            quit_guard::SoloBusyWork::default(),
+        dispatch_macos_inspect_outcome(
+            InspectOutcome::Exit,
             || {
                 events.borrow_mut().push("begin_exit_true");
                 true
             },
-            |_| events.borrow_mut().push("reply"),
-            |_| events.borrow_mut().push("present"),
+            record_reply,
+            |_| events.borrow_mut().push("reply_false_then_present"),
         );
         assert_eq!(*events.borrow(), vec!["begin_exit_true"]);
 
-        // Post-inspect: idle where begin_exit returns false releases NSTerminateLater with false.
-        assert_eq!(
-            plan_macos_terminate(false, true, &guard),
-            MacTerminateAction::InspectAndHold
-        );
+        // Exit where begin_exit returns false releases NSTerminateLater with false.
         events.borrow_mut().clear();
-        complete_macos_terminate(
-            false,
-            true,
-            &guard,
-            quit_guard::SoloBusyWork::default(),
+        dispatch_macos_inspect_outcome(
+            InspectOutcome::Exit,
             || {
                 events.borrow_mut().push("begin_exit_false");
                 false
             },
-            |should_terminate| {
-                events.borrow_mut().push(if should_terminate {
-                    "reply_true"
-                } else {
-                    "reply_false"
-                });
-            },
-            |_| events.borrow_mut().push("present"),
+            record_reply,
+            |_| events.borrow_mut().push("reply_false_then_present"),
         );
         assert_eq!(*events.borrow(), vec!["begin_exit_false", "reply_false"]);
 
-        // Post-inspect: busy sends reply_false BEFORE presenting the confirmation dialog.
-        assert_eq!(
-            plan_macos_terminate(false, true, &guard),
-            MacTerminateAction::InspectAndHold
-        );
-        let busy = quit_guard::SoloBusyWork {
-            agents: vec![quit_guard::BusyAgentWork {
-                tab_id: "a1".to_string(),
-                title: "Agent".to_string(),
-                active_background_tasks: vec![],
-                active_child_agents: vec![],
-            }],
-            terminals: vec![],
-        };
+        // Present invokes reply_false_then_present so reply_false runs before present.
         events.borrow_mut().clear();
-        complete_macos_terminate(
-            false,
-            true,
-            &guard,
-            busy,
+        dispatch_macos_inspect_outcome(
+            InspectOutcome::Present(sample_busy_work()),
             || {
                 events.borrow_mut().push("begin_exit");
                 true
             },
-            |should_terminate| {
-                events.borrow_mut().push(if should_terminate {
-                    "reply_true"
-                } else {
-                    "reply_false"
-                });
-            },
-            |_| {
-                let _ = guard.transition_to_prompt();
-                events.borrow_mut().push("present");
-            },
+            record_reply,
+            |_| events.borrow_mut().push("reply_false_then_present"),
         );
-        assert_eq!(*events.borrow(), vec!["reply_false", "present"]);
-        assert_eq!(
-            plan_macos_terminate(false, true, &guard),
-            MacTerminateAction::ShowExistingPromptAndCancel
+        assert_eq!(*events.borrow(), vec!["reply_false_then_present"]);
+
+        // MacTerminateHoldGuard invokes its cleanup on drop unless disarmed.
+        let cleaned = std::cell::Cell::new(false);
+        {
+            let _guard = MacTerminateHoldGuard::new(|| cleaned.set(true));
+        }
+        assert!(
+            cleaned.get(),
+            "dropping an armed hold guard must run cleanup"
+        );
+
+        cleaned.set(false);
+        {
+            let mut guard = MacTerminateHoldGuard::new(|| cleaned.set(true));
+            guard.disarm();
+        }
+        assert!(
+            !cleaned.get(),
+            "dropping a disarmed hold guard must not run cleanup"
         );
     }
 
@@ -5631,16 +5695,20 @@ mod tests {
         let guard = quit_guard::QuitGuard::default();
 
         // Matching cancel does not call on_confirm.
-        assert_eq!(guard.begin_inspect(), quit_guard::InspectStart::Started);
-        let (id1, _rx1) = guard.transition_to_prompt().expect("prompt 1");
+        let quit_guard::InspectStart::Started(inspect1) = guard.begin_inspect() else {
+            panic!("expected inspect1");
+        };
+        let (id1, _rx1) = guard.transition_to_prompt(inspect1).expect("prompt 1");
         assert!(guard.acknowledge_webview(id1));
         let mut confirmed = false;
         apply_quit_confirmation_resolution(&guard, id1, false, || confirmed = true);
         assert!(!confirmed);
 
         // Stale prompt ID does not call on_confirm.
-        assert_eq!(guard.begin_inspect(), quit_guard::InspectStart::Started);
-        let (id2, _rx2) = guard.transition_to_prompt().expect("prompt 2");
+        let quit_guard::InspectStart::Started(inspect2) = guard.begin_inspect() else {
+            panic!("expected inspect2");
+        };
+        let (id2, _rx2) = guard.transition_to_prompt(inspect2).expect("prompt 2");
         assert!(guard.acknowledge_webview(id2));
         apply_quit_confirmation_resolution(&guard, id1, true, || confirmed = true);
         assert!(!confirmed);
@@ -5648,5 +5716,35 @@ mod tests {
         // Matching confirm calls on_confirm once.
         apply_quit_confirmation_resolution(&guard, id2, true, || confirmed = true);
         assert!(confirmed);
+    }
+
+    #[test]
+    fn send_sidecar_request_removes_pending_entry_when_dropped_on_timeout() {
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let (writer_tx, _writer_rx) = mpsc::unbounded_channel();
+        let sidecar = SidecarProcess {
+            _child: None,
+            writer_tx,
+            pending: pending.clone(),
+            next_id: AtomicU64::new(1),
+        };
+
+        let timed_out = tauri::async_runtime::block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                send_sidecar_request(
+                    &sidecar,
+                    proto::request::Method::InspectSoloBusyWork(
+                        proto::InspectSoloBusyWorkRequest {},
+                    ),
+                ),
+            )
+            .await
+        });
+        assert!(timed_out.is_err(), "request without reply must time out");
+        assert!(
+            pending.lock().unwrap().is_empty(),
+            "dropping a timed-out send_sidecar_request future must remove its pending entry"
+        );
     }
 }

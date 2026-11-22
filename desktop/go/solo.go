@@ -8,7 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/solo"
-	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 )
 
 type soloInstance interface {
@@ -18,7 +18,7 @@ type soloInstance interface {
 	// It is what gives a Hub that dies ON ITS OWN a reporter: Stop only covers the
 	// teardowns this process asked for.
 	Wait() error
-	InspectBusyWork(ctx context.Context) worker.BusyWorkSnapshot
+	InspectBusyWork(ctx context.Context) busywork.Snapshot
 }
 
 type soloRuntime struct {

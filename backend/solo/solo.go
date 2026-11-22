@@ -34,6 +34,7 @@ import (
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/atomicfile"
 	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/errwrap"
@@ -340,7 +341,7 @@ type Instance struct {
 	// busyInspector holds the embedded local Worker's busy-work inspector once
 	// the Worker wires it, and clears when the Worker exits. Usable at its zero
 	// value for bare &Instance{} tests and before deferred dev-mode bring-up.
-	busyInspector atomic.Pointer[worker.BusyWorkInspector]
+	busyInspector atomic.Pointer[busywork.Inspector]
 }
 
 type workerStartupPhase uint8
@@ -492,7 +493,7 @@ func (i *Instance) AccessURL() string {
 	return i.accessURL
 }
 
-func (i *Instance) setBusyInspector(fn worker.BusyWorkInspector) {
+func (i *Instance) setBusyInspector(fn busywork.Inspector) {
 	if fn == nil {
 		i.busyInspector.Store(nil)
 		return
@@ -503,13 +504,13 @@ func (i *Instance) setBusyInspector(fn worker.BusyWorkInspector) {
 // InspectBusyWork inspects the embedded local Worker for active agent or
 // terminal work. Returns an empty snapshot before the local Worker starts or
 // after it exits.
-func (i *Instance) InspectBusyWork(ctx context.Context) worker.BusyWorkSnapshot {
+func (i *Instance) InspectBusyWork(ctx context.Context) busywork.Snapshot {
 	if i == nil {
-		return worker.BusyWorkSnapshot{}
+		return busywork.Snapshot{}
 	}
 	inspector := i.busyInspector.Load()
 	if inspector == nil || *inspector == nil {
-		return worker.BusyWorkSnapshot{}
+		return busywork.Snapshot{}
 	}
 	return (*inspector)(ctx)
 }
@@ -1210,7 +1211,7 @@ type workerBringUp struct {
 	onExit          func(error)
 	onStarting      func(lifecycle.RegistrationStatus)
 	onConnection    func(worker.ConnectionState)
-	onBusyInspector func(worker.BusyWorkInspector)
+	onBusyInspector func(busywork.Inspector)
 }
 
 // bringUpLocalWorker loads (or creates, then persists) the local worker's

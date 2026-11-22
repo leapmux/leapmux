@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -20,32 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
-
-// runningTestAgent is an agent whose process runs until Stop. The Manager drops an
-// agent whose Wait returns, and agenttest.IdleAgent returns from Wait at once.
-type runningTestAgent struct {
-	agenttest.IdleAgent
-	stopOnce sync.Once
-	stopped  chan struct{}
-}
-
-func newRunningTestAgent() *runningTestAgent { return &runningTestAgent{stopped: make(chan struct{})} }
-
-func (a *runningTestAgent) Stop() { a.stopOnce.Do(func() { close(a.stopped) }) }
-
-func (a *runningTestAgent) Wait() error {
-	<-a.stopped
-	return nil
-}
-
-func (a *runningTestAgent) IsStopped() bool {
-	select {
-	case <-a.stopped:
-		return true
-	default:
-		return false
-	}
-}
 
 // installBlockingGit puts a `git` on PATH that records its start and then waits for a
 // release file. A git that answers at once would close the window between the rows
@@ -93,7 +66,7 @@ func TestListAgents_AnActiveAgentStatesTheSessionThatItsStartupStored(t *testing
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{AgentID: id, AgentProvider: provider, WorkingDir: t.TempDir()},
 		newTestRootOutputSink(t, svc.Output, id, provider),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
-			return newRunningTestAgent(), nil
+			return agenttest.NewRunningAgent(id), nil
 		})
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(id) })

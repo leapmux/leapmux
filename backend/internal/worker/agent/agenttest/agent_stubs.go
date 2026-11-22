@@ -1,6 +1,8 @@
 package agenttest
 
 import (
+	"sync"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -57,3 +59,46 @@ type GroupsAgent struct {
 }
 
 func (a GroupsAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup { return a.groups }
+
+// RunningAgent is an IdleAgent whose Wait blocks until Stop is called.
+// The Manager drops any agent whose Wait returns, so tests that need a live
+// registered agent embed or construct RunningAgent instead of IdleAgent.
+type RunningAgent struct {
+	IdleAgent
+	id       string
+	stopped  chan struct{}
+	stopOnce sync.Once
+}
+
+// NewRunningAgent returns a RunningAgent that blocks in Wait until Stop is called.
+func NewRunningAgent(id string) *RunningAgent {
+	return &RunningAgent{
+		id:      id,
+		stopped: make(chan struct{}),
+	}
+}
+
+func (a *RunningAgent) AgentID() string {
+	if a.id != "" {
+		return a.id
+	}
+	return a.IdleAgent.AgentID()
+}
+
+func (a *RunningAgent) Stop() {
+	a.stopOnce.Do(func() { close(a.stopped) })
+}
+
+func (a *RunningAgent) Wait() error {
+	<-a.stopped
+	return nil
+}
+
+func (a *RunningAgent) IsStopped() bool {
+	select {
+	case <-a.stopped:
+		return true
+	default:
+		return false
+	}
+}

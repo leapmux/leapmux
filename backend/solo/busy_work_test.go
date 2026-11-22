@@ -9,21 +9,22 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 )
 
 func TestInstanceInspectBusyWork_ZeroValue(t *testing.T) {
 	t.Parallel()
 
-	assert.True(t, (*Instance)(nil).InspectBusyWork(context.Background()).IsEmpty())
-	assert.True(t, (&Instance{}).InspectBusyWork(context.Background()).IsEmpty())
+	assert.Zero(t, (*Instance)(nil).InspectBusyWork(context.Background()))
+	assert.Zero(t, (&Instance{}).InspectBusyWork(context.Background()))
 }
 
 func TestInstanceInspectBusyWork_WiredInspectorAndExitCleanup(t *testing.T) {
 	cfg := soloStartEnv(t, false)
 	d := newTestDeps()
 
-	want := worker.BusyWorkSnapshot{
-		Agents: []worker.BusyAgent{
+	want := busywork.Snapshot{
+		Agents: []busywork.Agent{
 			{
 				TabID:                 "agent-1",
 				Title:                 "Refactor auth",
@@ -31,11 +32,11 @@ func TestInstanceInspectBusyWork_WiredInspectorAndExitCleanup(t *testing.T) {
 				ActiveChildAgents:     []string{"Codebase reviewer"},
 			},
 		},
-		Terminals: []worker.BusyTerminal{
+		Terminals: []busywork.Terminal{
 			{
 				TabID:      "term-1",
 				Title:      "Dev server",
-				Processes:  []worker.BusyTerminalProcess{{PID: 4242, Name: "node"}},
+				Processes:  []busywork.TerminalProcess{{PID: 4242, Name: "node"}},
 				TotalCount: 1,
 			},
 		},
@@ -51,7 +52,7 @@ func TestInstanceInspectBusyWork_WiredInspectorAndExitCleanup(t *testing.T) {
 			}
 		}()
 		require.NotNil(t, runCfg.OnBusyWorkInspector)
-		runCfg.OnBusyWorkInspector(func(context.Context) worker.BusyWorkSnapshot {
+		runCfg.OnBusyWorkInspector(func(context.Context) busywork.Snapshot {
 			return want
 		})
 		if runCfg.OnReady != nil {
@@ -100,5 +101,5 @@ func TestInstanceInspectBusyWork_WiredInspectorAndExitCleanup(t *testing.T) {
 		t.Fatal("worker work counter did not drain after stub worker exit")
 	}
 
-	assert.True(t, inst.InspectBusyWork(testCtx).IsEmpty(), "inspector must clear when the worker goroutine exits")
+	assert.Zero(t, inst.InspectBusyWork(testCtx), "inspector must clear when the worker goroutine exits")
 }

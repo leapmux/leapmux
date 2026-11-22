@@ -42,6 +42,12 @@ WHERE id = sqlc.arg(id);
 -- name: GetTerminalExitState :one
 SELECT is_quake, title FROM terminals WHERE id = ?;
 
+-- ListTerminalExitStatesByIDs batches GetTerminalExitState for busy-work
+-- inspection so quitting or switching mode avoids N+1 lookups while still
+-- skipping the 100KB screen BLOB.
+-- name: ListTerminalExitStatesByIDs :many
+SELECT id, is_quake, title FROM terminals WHERE id IN (sqlc.slice('ids'));
+
 -- name: UpdateTerminalTitle :exec
 UPDATE terminals SET title = ? WHERE id = ?;
 

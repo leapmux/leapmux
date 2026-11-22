@@ -46,35 +46,11 @@ func startShellPastInit(t *testing.T, m *Manager, id string) string {
 	return workingDir
 }
 
-// jobGroupFailure is the text that bash prints when a job did not get a process
-// group of its own.
-const jobGroupFailure = "child setpgid"
-
-// sendJobUntil sends a job command to the shell and waits for done. It sends the
-// command again each time the shell reports that the job did not get a process
-// group of its own.
-//
-// A job-control shell calls setpgid twice for each job, once in the parent and
-// once in the child, as POSIX requires. Darwin can fail these concurrent calls
-// with EPERM when the machine is busy, and the job then stays in the shell's own
-// group for its whole life. reportsAsWork correctly hides such a job, so no wait
-// can make it appear, but a new job gets a new chance.
+// sendJobUntil sends a job command to the shell and waits for done, retrying
+// on Darwin job-control setpgid races via testutil.SendShellJobUntil.
 func sendJobUntil(t *testing.T, m *Manager, id, line string, done func() bool, msgAndArgs ...any) bool {
 	t.Helper()
-	send := func() { assert.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter()))) }
-	send()
-	sent := 1
-	return testutil.AssertEventually(t, func() bool {
-		if done() {
-			return true
-		}
-		screen, _, _ := m.ScreenSnapshotSince(id, 0)
-		if bytes.Count(screen, []byte(jobGroupFailure)) >= sent {
-			send()
-			sent++
-		}
-		return false
-	}, msgAndArgs...)
+	return testutil.SendShellJobUntil(t, m, id, line, done, msgAndArgs...)
 }
 
 // namesOf normalizes each reported name so one assertion reads the same
@@ -83,8 +59,7 @@ func sendJobUntil(t *testing.T, m *Manager, id, line string, done func() bool, m
 func namesOf(procs []ProcessInfo) []string {
 	out := make([]string, 0, len(procs))
 	for _, p := range procs {
-		name := strings.ToLower(filepath.Base(p.Name))
-		out = append(out, strings.TrimSuffix(name, ".exe"))
+		out = append(out, testutil.NormalizeProcessName(p.Name))
 	}
 	return out
 }

@@ -23,7 +23,7 @@ import (
 
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/version"
-	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 )
 
 type blockingWriteCloser struct {
@@ -1400,41 +1400,31 @@ func TestRPCSessionInspectSoloBusyWork(t *testing.T) {
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 
-	connCtx, connCancel := context.WithCancel(context.Background())
-	t.Cleanup(connCancel)
-	app.lifecycleMu.Lock()
-	app.connection = &desktopConnection{
-		ctx:  connCtx,
-		stop: connCancel,
-		solo: &soloRuntime{
-			instance: &recordingSoloInstance{
-				inspectBusyWork: func(context.Context) worker.BusyWorkSnapshot {
-					return worker.BusyWorkSnapshot{
-						Agents: []worker.BusyAgent{
-							{
-								TabID:                 "agent-1",
-								Title:                 "Refactor auth",
-								ActiveBackgroundTasks: []string{"Run unit tests"},
-								ActiveChildAgents:     []string{"Codebase reviewer"},
-							},
-						},
-						Terminals: []worker.BusyTerminal{
-							{
-								TabID: "term-1",
-								Title: "Dev server",
-								Processes: []worker.BusyTerminalProcess{
-									{PID: 51234, Name: "node"},
-									{PID: 51240, Name: "esbuild"},
-								},
-								TotalCount: 5,
-							},
-						},
-					}
+	installTestConnection(app, nil, &recordingSoloInstance{
+		inspectBusyWork: func(context.Context) busywork.Snapshot {
+			return busywork.Snapshot{
+				Agents: []busywork.Agent{
+					{
+						TabID:                 "agent-1",
+						Title:                 "Refactor auth",
+						ActiveBackgroundTasks: []string{"Run unit tests"},
+						ActiveChildAgents:     []string{"Codebase reviewer"},
+					},
 				},
-			},
+				Terminals: []busywork.Terminal{
+					{
+						TabID: "term-1",
+						Title: "Dev server",
+						Processes: []busywork.TerminalProcess{
+							{PID: 51234, Name: "node"},
+							{PID: 51240, Name: "esbuild"},
+						},
+						TotalCount: 5,
+					},
+				},
+			}
 		},
-	}
-	app.lifecycleMu.Unlock()
+	}, "")
 
 	var output bytes.Buffer
 	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)

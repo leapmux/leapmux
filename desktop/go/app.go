@@ -19,7 +19,7 @@ import (
 	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/errwrap"
-	"github.com/leapmux/leapmux/worker"
+	"github.com/leapmux/leapmux/worker/busywork"
 )
 
 // operationDrainTimeout bounds Shutdown's wait for admitted operations after
@@ -914,21 +914,21 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 // Non-solo connections return an empty snapshot with nil error. It releases
 // lifecycleMu before calling the inspector so SwitchMode or Shutdown cannot
 // deadlock behind a terminal process scan.
-func (a *App) InspectSoloBusyWork(requestCtx context.Context) (worker.BusyWorkSnapshot, error) {
+func (a *App) InspectSoloBusyWork(requestCtx context.Context) (busywork.Snapshot, error) {
 	done, err := a.beginOperation()
 	if err != nil {
-		return worker.BusyWorkSnapshot{}, err
+		return busywork.Snapshot{}, err
 	}
 	defer done()
 
 	unlock, err := a.acquireLifecycleRLock()
 	if err != nil {
-		return worker.BusyWorkSnapshot{}, err
+		return busywork.Snapshot{}, err
 	}
 	connection := a.connection
 	if connection == nil || connection.solo == nil || connection.solo.instance == nil {
 		unlock()
-		return worker.BusyWorkSnapshot{}, nil
+		return busywork.Snapshot{}, nil
 	}
 	instance := connection.solo.instance
 	lifetimeCtx := connection.ctx

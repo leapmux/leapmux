@@ -29,7 +29,10 @@ import (
 	"github.com/leapmux/leapmux/util/clockjump"
 	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/drain"
+	"github.com/leapmux/leapmux/worker/busywork"
 )
+
+const busyWorkInspectDrainTimeout = 5 * time.Second
 
 // RunConfig holds configuration for running the worker as a library.
 type RunConfig struct {
@@ -91,7 +94,7 @@ type RunConfig struct {
 	// OnBusyWorkInspector, when non-nil, receives a shutdown-safe inspector for
 	// the wired Worker service before OnReady runs. In-process launchers use it
 	// to check whether quitting or switching mode would stop local work.
-	OnBusyWorkInspector func(BusyWorkInspector)
+	OnBusyWorkInspector func(busywork.Inspector)
 	// OnReady, when non-nil, runs after local database initialization
 	// and runtime wiring complete: the point at which the worker is
 	// locally ready whatever its Hub connection is doing. It runs at
@@ -310,7 +313,7 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 		ShutdownDeadline:        shutdownDeadline,
 	})
 
-	// Gate external busy-work inspections so shutdown closes and drains them
+	// Track external busy-work inspections so shutdown closes and drains them
 	// before wiring.Shutdown and before the deferred database close run.
 	inspectCtx, cancelInspect := context.WithCancel(context.WithoutCancel(ctx))
 	inspectGate := cleanup.inspectGate
@@ -330,15 +333,15 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 	defer stopInspect()
 
 	if cfg.OnBusyWorkInspector != nil {
-		cfg.OnBusyWorkInspector(func(reqCtx context.Context) BusyWorkSnapshot {
+		cfg.OnBusyWorkInspector(func(reqCtx context.Context) busywork.Snapshot {
 			release, ok := inspectGate.Begin(nil)
 			if !ok {
-				return BusyWorkSnapshot{}
+				return busywork.Snapshot{}
 			}
 			defer release()
 			linkedCtx, cancelLinked := ctxutil.WithLinkedCancel(inspectCtx, reqCtx)
 			defer cancelLinked()
-			return busyWorkFromService(wiring.Service.InspectBusyWork(linkedCtx))
+			return wiring.Service.InspectBusyWork(linkedCtx)
 		})
 	}
 

@@ -1,27 +1,43 @@
+import type { SoloBusyWork, SwitchModeStartResult } from '~/api/platformBridge'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setSoloSwitchModePrompter } from '~/lib/soloStopConfirm'
 import { deferred, settle } from '~/test-support/async'
 import { UserMenuItems } from './UserMenuItems'
 
 const {
-  confirmSoloSwitchMode,
+  beginSwitchMode,
+  cancelSwitchMode,
+  prompter,
+  resolveSwitchModeConfirmation,
   setShowAboutDialog,
   openPreferences,
   isDesktopApp,
   isAutoAuthenticated,
   switchMode,
 } = vi.hoisted(() => ({
-  confirmSoloSwitchMode: vi.fn<() => Promise<boolean>>(async () => true),
+  beginSwitchMode: vi.fn<() => Promise<SwitchModeStartResult>>(),
+  cancelSwitchMode: vi.fn<(switchId: number) => Promise<void>>(async () => {}),
+  prompter: vi.fn<(busy: SoloBusyWork) => Promise<boolean>>(),
+  resolveSwitchModeConfirmation: vi.fn<(promptId: number, confirm: boolean) => Promise<number | null>>(),
   setShowAboutDialog: vi.fn(),
   openPreferences: vi.fn(),
   isDesktopApp: { value: false },
   isAutoAuthenticated: { value: false },
-  switchMode: vi.fn<() => Promise<void>>(async () => {}),
+  switchMode: vi.fn<(switchId?: number) => Promise<void>>(async () => {}),
 }))
 
-vi.mock('~/lib/soloStopConfirm', () => ({
-  confirmSoloSwitchMode,
-}))
+const BUSY_WORK: SoloBusyWork = {
+  agents: [
+    {
+      tabId: 'agent-1',
+      title: 'Refactor auth',
+      activeBackgroundTasks: ['Run unit tests'],
+      activeChildAgents: [],
+    },
+  ],
+  terminals: [],
+}
 
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
@@ -55,6 +71,9 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
     desktopHub: () => null,
     platformBridge: {
       ...actual.platformBridge,
+      beginSwitchMode,
+      cancelSwitchMode,
+      resolveSwitchModeConfirmation,
       switchMode,
     },
   }
@@ -74,8 +93,15 @@ vi.mock('~/components/common/DropdownMenu', () => ({
 beforeEach(() => {
   isDesktopApp.value = false
   isAutoAuthenticated.value = false
-  confirmSoloSwitchMode.mockReset()
-  confirmSoloSwitchMode.mockResolvedValue(true)
+  beginSwitchMode.mockReset()
+  beginSwitchMode.mockResolvedValue({ kind: 'proceed', switchId: 1 })
+  cancelSwitchMode.mockReset()
+  cancelSwitchMode.mockResolvedValue(undefined)
+  resolveSwitchModeConfirmation.mockReset()
+  resolveSwitchModeConfirmation.mockImplementation(async (_promptId, confirm) => confirm ? 2 : null)
+  prompter.mockReset()
+  prompter.mockResolvedValue(true)
+  setSoloSwitchModePrompter(prompter)
   setShowAboutDialog.mockClear()
   openPreferences.mockClear()
   switchMode.mockReset()
@@ -84,6 +110,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  setSoloSwitchModePrompter(null)
 })
 
 describe('UserMenuItems', () => {
@@ -132,14 +159,17 @@ describe('UserMenuItems', () => {
 
   it('skips the fade overlay and switchMode when busy confirmation is cancelled', async () => {
     isDesktopApp.value = true
-    confirmSoloSwitchMode.mockResolvedValueOnce(false)
+    beginSwitchMode.mockResolvedValueOnce({ kind: 'confirm', promptId: 10, busyWork: BUSY_WORK })
+    prompter.mockResolvedValueOnce(false)
     render(() => <UserMenuItems />)
 
     const childCountBefore = document.body.children.length
     fireEvent.click(screen.getByRole('menuitem', { name: /Switch mode/ }))
     await settle()
 
-    expect(confirmSoloSwitchMode).toHaveBeenCalledOnce()
+    expect(beginSwitchMode).toHaveBeenCalledOnce()
+    expect(prompter).toHaveBeenCalledOnce()
+    expect(resolveSwitchModeConfirmation).toHaveBeenCalledExactlyOnceWith(10, false)
     expect(switchMode).not.toHaveBeenCalled()
     expect(document.body.children.length).toBe(childCountBefore)
     expect(document.querySelector('[style*="2147483647"]')).toBeNull()
@@ -152,7 +182,7 @@ describe('UserMenuItems', () => {
     render(() => <UserMenuItems />)
 
     fireEvent.click(screen.getByRole('menuitem', { name: /Switch mode/ }))
-    await vi.waitFor(() => expect(switchMode).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(switchMode).toHaveBeenCalledExactlyOnceWith(1))
     expect(document.querySelector('[style*="2147483647"]')).not.toBeNull()
 
     pendingSwitch.resolve(undefined)
@@ -162,8 +192,9 @@ describe('UserMenuItems', () => {
 
   it('ignores re-entrant Switch mode clicks while confirmation is pending', async () => {
     isDesktopApp.value = true
+    beginSwitchMode.mockResolvedValueOnce({ kind: 'confirm', promptId: 11, busyWork: BUSY_WORK })
     const pendingConfirm = deferred<boolean>()
-    confirmSoloSwitchMode.mockReturnValueOnce(pendingConfirm.promise)
+    prompter.mockReturnValueOnce(pendingConfirm.promise)
     render(() => <UserMenuItems />)
 
     const item = screen.getByRole('menuitem', { name: /Switch mode/ })
@@ -171,10 +202,62 @@ describe('UserMenuItems', () => {
     fireEvent.click(item)
     await settle()
 
-    expect(confirmSoloSwitchMode).toHaveBeenCalledOnce()
+    expect(beginSwitchMode).toHaveBeenCalledOnce()
+    expect(prompter).toHaveBeenCalledOnce()
 
     pendingConfirm.resolve(false)
     await settle()
     expect(switchMode).not.toHaveBeenCalled()
+  })
+
+  it('runs switchMode once when two UserMenuItems instances click concurrently', async () => {
+    isDesktopApp.value = true
+    beginSwitchMode.mockResolvedValue({ kind: 'confirm', promptId: 12, busyWork: BUSY_WORK })
+    const pendingConfirm = deferred<boolean>()
+    prompter.mockImplementation(() => pendingConfirm.promise)
+    const pendingSwitch = deferred<void>()
+    switchMode.mockReturnValueOnce(pendingSwitch.promise)
+
+    render(() => (
+      <>
+        <UserMenuItems />
+        <UserMenuItems />
+      </>
+    ))
+
+    const items = screen.getAllByRole('menuitem', { name: /Switch mode/ })
+    expect(items).toHaveLength(2)
+    fireEvent.click(items[0]!)
+    fireEvent.click(items[1]!)
+    await vi.waitFor(() => expect(prompter).toHaveBeenCalledOnce())
+    pendingConfirm.resolve(true)
+
+    await vi.waitFor(() => expect(switchMode).toHaveBeenCalledExactlyOnceWith(2))
+    expect(document.querySelectorAll('[style*="2147483647"]')).toHaveLength(1)
+
+    pendingSwitch.resolve(undefined)
+    await vi.waitFor(() => expect(document.querySelectorAll('[style*="2147483647"]')).toHaveLength(0))
+    expect(switchMode).toHaveBeenCalledTimes(1)
+  })
+
+  it('catches switchMode rejection cleanly without leaving a fade overlay behind', async () => {
+    isDesktopApp.value = true
+    switchMode.mockRejectedValueOnce(new Error('switch failed'))
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown) => {
+      unhandled.push(err)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      render(() => <UserMenuItems />)
+      fireEvent.click(screen.getByRole('menuitem', { name: /Switch mode/ }))
+      await vi.waitFor(() => expect(switchMode).toHaveBeenCalledOnce())
+      await settle()
+      expect(document.querySelector('[style*="2147483647"]')).toBeNull()
+      expect(unhandled).toEqual([])
+    }
+    finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 })

@@ -1,11 +1,10 @@
 import type { Component } from 'solid-js'
 import type { SoloBusyWork } from '~/api/platformBridge'
-import type { TabBusyActiveRow, TabBusyReason } from '~/components/shell/tabBusyProbe'
+import type { TabBusyReason } from '~/components/shell/tabBusyProbe'
 import { createMemo, For } from 'solid-js'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { TabBusyDetails } from '~/components/shell/TabBusyDetails'
 import { busyGroupList } from '~/components/shell/TabBusyDetails.css'
-import { BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pluralize } from '~/lib/plural'
 
 export type SoloStopIntent = 'quit' | 'switch-mode'
@@ -26,21 +25,12 @@ export const SoloStopConfirmDialog: Component<SoloStopConfirmDialogProps> = (pro
   const items = createMemo<BusyTabEntry[]>(() => {
     const out: BusyTabEntry[] = []
     for (const agent of props.busyWork.agents) {
-      const activeRows: TabBusyActiveRow[] = [
-        ...agent.activeBackgroundTasks.map(title => ({
-          role: BackgroundTaskRole.TASK_OUTCOME,
-          title,
-        })),
-        ...agent.activeChildAgents.map(title => ({
-          role: BackgroundTaskRole.CHILD_ACTIVITY,
-          title,
-        })),
-      ]
       out.push({
         title: agent.title || 'Agent',
         reason: {
           kind: 'agent-work',
-          activeRows,
+          activeBackgroundTasks: agent.activeBackgroundTasks,
+          activeChildAgents: agent.activeChildAgents,
         },
       })
     }

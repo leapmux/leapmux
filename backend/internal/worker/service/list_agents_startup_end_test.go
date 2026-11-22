@@ -16,6 +16,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -59,7 +60,7 @@ func startRunningTestProcess(ctx context.Context, t *testing.T, svc *Service, ag
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{AgentID: agentID, AgentProvider: provider, WorkingDir: t.TempDir()},
 		newTestRootOutputSink(t, svc.Output, agentID, provider),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
-			return newRunningTestAgent(), nil
+			return agenttest.NewRunningAgent(agentID), nil
 		})
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })

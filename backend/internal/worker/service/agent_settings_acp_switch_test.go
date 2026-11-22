@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -40,7 +41,7 @@ func TestUpdateAgentSettings_ModelSwitchGivesTheStoredEffortToARunningACPAgent(t
 		agent.Options{AgentID: row.ID, AgentProvider: provider, WorkingDir: row.WorkingDir},
 		newTestRootOutputSink(t, svc.Output, row.ID, provider),
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
-			return newRunningTestAgent(), nil
+			return agenttest.NewRunningAgent(row.ID), nil
 		})
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(row.ID) })

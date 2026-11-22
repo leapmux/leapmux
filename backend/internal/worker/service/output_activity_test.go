@@ -929,29 +929,25 @@ func unspentToolCount(h *OutputHandler, agentID string) *int32 {
 func TestActivity_ARootCountsTheRunningRowsTheCapHid(t *testing.T) {
 	t.Parallel()
 
-	// The cap is a DISPLAY limit. When a pool of 64 holds no finished row it
-	// gives up an ACTIVE one, and retention keeps that row running in the table.
-	// Reading the list alone then makes the root settle -- ringing the completion
-	// sound and letting the close guard pass -- while the subagent still runs.
+	// Active rows are never evicted past the cap, so every running subagent
+	// stays in the display list and counts toward root activity until process exit.
 	svc, sink, childID := setupRunningSubagent(t, "root-1", bgtask.StatusRunning)
 
-	// Every filler row is active too, so eviction has no finished row to take and
-	// gives up the oldest -- this child's.
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
 	require.NoError(t, err)
-	require.False(t, hasRegistryRowFor(displayed, childID),
-		"the display list must actually have dropped the row, or this proves nothing")
+	require.True(t, hasRegistryRowFor(displayed, childID),
+		"an active row is never dropped from the display list")
 
 	got := svc.Output.AgentActivitySnapshot("root-1", "root-1")
 
-	assert.True(t, got.Working(), "the evicted subagent is still running")
+	assert.True(t, got.Working(), "the subagent is still running")
 	assert.Equal(t, int32(bgtask.MaxTasks+1), got.ActiveTasks,
-		"the count adds back what the cap hid, so the root does not settle early")
+		"all running rows count toward root activity")
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
 	assert.Equal(t, int32(0), svc.Output.AgentActivitySnapshot("root-1", "root-1").ActiveTasks,
-		"the process exit closes hidden rows, so their cached active count must clear")
+		"the process exit closes all running rows, clearing the active count")
 }
 
 func TestActivity_APausedRowHiddenByTheCapStaysIdle(t *testing.T) {
@@ -973,7 +969,7 @@ func TestActivity_APausedRowHiddenByTheCapStaysIdle(t *testing.T) {
 
 	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
 	require.NoError(t, err)
-	require.False(t, hasRegistryRowFor(displayed, childID))
+	require.True(t, hasRegistryRowFor(displayed, childID), "paused non-final row is not evicted")
 	assert.Equal(t, int32(0), svc.Output.hiddenActiveTasks("root-1"))
 	assert.Equal(t, int32(bgtask.MaxTasks), svc.Output.AgentActivitySnapshot("root-1", "root-1").ActiveTasks)
 	assert.Equal(t, int32(0), svc.Output.AgentActivitySnapshot(childID, "root-1").ActiveTasks)
@@ -982,22 +978,12 @@ func TestActivity_APausedRowHiddenByTheCapStaysIdle(t *testing.T) {
 func TestActivity_AReadmittedRowStopsBeingCountedTwice(t *testing.T) {
 	t.Parallel()
 
-	// The hidden-active count corrects for what the DISPLAY list cannot see, so
-	// a row that comes BACK into the list must leave the correction. Otherwise
-	// the list and the correction both speak for it, the count drifts up on
-	// every re-admit, and the root can never settle.
-	//
-	// The pool is full here, so a re-admit necessarily evicts another active row
-	// and the hidden COUNT stays 1. Which row is hidden changes; how many are
-	// running does not.
 	svc, sink := setupRootSink(t, "root-1")
 	svc.Output.processRunning = func(string) bool { return true }
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildTask,
 		SpawnSpanID:  "spawn-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	// A CHANGED title each time, so the upsert is a real mutation. An identical
-	// one is a no-op the registry never re-admits.
 	upsertChild := func(title string) {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 			Role: bgtask.RoleChildTask,
@@ -1008,19 +994,18 @@ func TestActivity_AReadmittedRowStopsBeingCountedTwice(t *testing.T) {
 	}
 	upsertChild("SCAN")
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
-	require.Equal(t, int32(1), svc.Output.hiddenActiveTasks("root-1"), "the cap hid a row")
+	require.Equal(t, int32(0), svc.Output.hiddenActiveTasks("root-1"), "active rows are never hidden by the cap")
 	require.Equal(t, int32(bgtask.MaxTasks+1),
 		svc.Output.AgentActivitySnapshot("root-1", "root-1").ActiveTasks)
 
-	// Its next mutation re-admits it, twice over.
+	// Repeated updates on an active row past MaxTasks keep the count exact.
 	upsertChild("SCAN two")
 	upsertChild("SCAN three")
 
-	assert.Equal(t, int32(1), svc.Output.hiddenActiveTasks("root-1"),
-		"one row is hidden, not one more per re-admit")
+	assert.Equal(t, int32(0), svc.Output.hiddenActiveTasks("root-1"))
 	assert.Equal(t, int32(bgtask.MaxTasks+1),
 		svc.Output.AgentActivitySnapshot("root-1", "root-1").ActiveTasks,
-		"65 subagents run, however many times the cap swapped which one it hides")
+		"65 subagents run with no double-counting across updates")
 }
 
 func TestActivity_AStaleDerivationDoesNotLatchOverAFresherOne(t *testing.T) {
@@ -1432,17 +1417,15 @@ func TestActivity_AChildStaysBusyAfterTheCapDropsItsRow(t *testing.T) {
 	require.True(t, before.Working(), "the child is running before the cap moves")
 	require.Equal(t, int32(1), before.ActiveTasks)
 
-	// Every filler row is active too, so eviction has no finished row to take and
-	// gives up the oldest -- this child's.
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
 	require.NoError(t, err)
-	require.False(t, hasRegistryRowFor(displayed, childID),
-		"the display list must actually have dropped the row, or this proves nothing")
+	require.True(t, hasRegistryRowFor(displayed, childID),
+		"an active child row is never dropped from the display list")
 
 	after := svc.Output.AgentActivitySnapshot(childID, "root-1")
 
-	assert.True(t, after.Working(), "the row left the sidebar, not the machine")
+	assert.True(t, after.Working(), "the active child remains busy")
 	assert.Equal(t, int32(1), after.ActiveTasks)
 }
 
@@ -1530,7 +1513,7 @@ func TestActivity_APendingChildRowCountsAsWorkPastTheCap(t *testing.T) {
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
 	require.NoError(t, err)
-	require.False(t, hasRegistryRowFor(displayed, childID), "the cap must have dropped the row")
+	require.True(t, hasRegistryRowFor(displayed, childID), "a pending child row stays displayed past the cap")
 
 	got := svc.Output.AgentActivitySnapshot(childID, "root-1")
 
@@ -2354,7 +2337,7 @@ func TestBackgroundTaskRolesPreserveHiddenActivityWithoutAnotherTask(t *testing.
 	}
 	rows, err := svc.Output.LoadBackgroundTasks(t.Context(), "hidden-role-root")
 	require.NoError(t, err)
-	require.False(t, hasRegistryRowFor(rows, childID), "the activity marker must actually be hidden")
+	require.True(t, hasRegistryRowFor(rows, childID), "the active activity marker stays displayed past MaxTasks")
 	for index := range bgtask.MaxTasks {
 		require.NoError(t, sink.CloseBackgroundTask("filler-"+strconv.Itoa(index), bgtask.StatusSucceeded))
 	}

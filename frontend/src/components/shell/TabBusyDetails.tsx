@@ -1,7 +1,6 @@
 import type { Component } from 'solid-js'
 import type { TabBusyReason } from './tabBusyProbe'
-import { createMemo, For, Match, Show, Switch } from 'solid-js'
-import { BACKGROUND_TASK_ROLE_CAPABILITIES } from '~/generated/contracts/background-task-roles'
+import { For, Match, Show, Switch } from 'solid-js'
 import { pluralize } from '~/lib/plural'
 import { busyDetails } from './TabBusyDetails.css'
 
@@ -20,21 +19,17 @@ function actionPhraseFor(action: TabBusyAction): string {
 
 const AgentBusyDetails: Component<{
   reason: Extract<TabBusyReason, { kind: 'agent-work' }>
-  action: TabBusyAction
+  actionPhrase: string
 }> = (props) => {
-  const tasks = createMemo(() => props.reason.activeRows.filter(row => BACKGROUND_TASK_ROLE_CAPABILITIES[row.role]?.countsAsTask))
-  const childActivities = createMemo(() => props.reason.activeRows.filter((row) => {
-    const role = BACKGROUND_TASK_ROLE_CAPABILITIES[row.role]
-    return role?.canonicalChildActivity === true && !role.countsAsTask
-  }))
+  const tasks = () => props.reason.activeBackgroundTasks
+  const childActivities = () => props.reason.activeChildAgents
   const taskCount = () => tasks().length
   const childCount = () => childActivities().length
-  const actionPhrase = () => actionPhraseFor(props.action)
   return (
     <>
       {/* Exact working state can come from a root turn, a task, or child activity.
           The wire does not identify which one caused it. */}
-      <p>{`This agent is still working. ${actionPhrase()} stops it.`}</p>
+      <p>{`This agent is still working. ${props.actionPhrase} stops it.`}</p>
       <Show when={taskCount() > 0}>
         <p>
           {`${pluralize(taskCount(), 'background task')} ${taskCount() === 1
@@ -43,7 +38,7 @@ const AgentBusyDetails: Component<{
         </p>
         <ul class={busyDetails} data-testid="busy-background-tasks">
           <For each={tasks()}>
-            {task => <li>{task.title}</li>}
+            {title => <li>{title}</li>}
           </For>
         </ul>
       </Show>
@@ -54,7 +49,7 @@ const AgentBusyDetails: Component<{
             : 'are'} active:`}
         </p>
         <ul class={busyDetails} data-testid="busy-child-activities">
-          <For each={childActivities()}>{child => <li>{child.title}</li>}</For>
+          <For each={childActivities()}>{title => <li>{title}</li>}</For>
         </ul>
       </Show>
     </>
@@ -70,18 +65,17 @@ const AgentBusyDetails: Component<{
  *
  * Switch/Match rather than a Show with a fallback. The fallback form needs a
  * cast to name the other case, and that cast routes ANY future reason kind into
- * the agent branch, where reading its `activeRows` throws at render.
+ * the agent branch, where reading its `activeBackgroundTasks` throws at render.
  */
 export const TabBusyDetails: Component<{ reason: TabBusyReason, action?: TabBusyAction }> = (props) => {
-  const action = (): TabBusyAction => props.action ?? 'close-tab'
-  const actionPhrase = () => actionPhraseFor(action())
+  const actionPhrase = () => actionPhraseFor(props.action ?? 'close-tab')
   return (
     <Switch>
       <Match when={props.reason.kind === 'agent-work'
         ? props.reason
         : null}
       >
-        {reason => <AgentBusyDetails reason={reason()} action={action()} />}
+        {reason => <AgentBusyDetails reason={reason()} actionPhrase={actionPhrase()} />}
       </Match>
       <Match when={props.reason.kind === 'terminal-processes'
         ? props.reason

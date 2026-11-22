@@ -1,8 +1,10 @@
 package testutil
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,4 +70,37 @@ func RegisterTerminalCleanup(t *testing.T, mgr TerminalCleaner, id string) {
 		mgr.WaitForExit(id)
 		mgr.RemoveTerminal(id)
 	})
+}
+
+// TerminalJobRunner is the subset of terminal.Manager methods needed to send a
+// background job to a test shell and observe whether job-control setup failed.
+type TerminalJobRunner interface {
+	SendInput(id string, data []byte) error
+	ScreenSnapshotSince(id string, after int64) ([]byte, int64, bool)
+}
+
+// jobGroupFailure is the text that bash prints when a job did not get a process
+// group of its own.
+const jobGroupFailure = "child setpgid"
+
+// SendShellJobUntil sends a job command to a test terminal shell and waits for
+// done. It resends the command whenever the shell reports that the job did not
+// receive its own process group (Darwin can fail concurrent parent/child
+// setpgid calls with EPERM under load).
+func SendShellJobUntil(t *testing.T, mgr TerminalJobRunner, id, line string, done func() bool, msgAndArgs ...any) bool {
+	t.Helper()
+	send := func() { assert.NoError(t, mgr.SendInput(id, []byte(line+TestShellEnter()))) }
+	send()
+	sent := 1
+	return AssertEventually(t, func() bool {
+		if done() {
+			return true
+		}
+		screen, _, _ := mgr.ScreenSnapshotSince(id, 0)
+		if bytes.Count(screen, []byte(jobGroupFailure)) >= sent {
+			send()
+			sent++
+		}
+		return false
+	}, msgAndArgs...)
 }

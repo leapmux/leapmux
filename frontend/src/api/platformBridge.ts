@@ -7,6 +7,7 @@ import {
   LAUNCH_VISIBILITY_HIDDEN,
   LAUNCH_VISIBILITY_MINIMIZED,
   LAUNCH_VISIBILITY_NORMAL,
+  TAURI_EVENT_APP_CONFIRM_QUIT,
   TAURI_EVENT_SIDECAR_LOG,
   TAURI_IPC_HEADER_HEADERS,
   TAURI_IPC_HEADER_METHOD,
@@ -298,8 +299,15 @@ export interface QuitConfirmEvent {
   busyWork: SoloBusyWork
 }
 
-function emptySoloBusyWork(): SoloBusyWork {
-  return { agents: [], terminals: [] }
+export type SwitchModeStartResult
+  = | { kind: 'proceed', switchId: number }
+    | { kind: 'confirm', promptId: number, busyWork: SoloBusyWork }
+    | { kind: 'blocked' }
+
+function normalizePositiveId(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : null
 }
 
 function normalizeStringArray(value: unknown): string[] {
@@ -310,7 +318,7 @@ function normalizeStringArray(value: unknown): string[] {
 
 function normalizeSoloBusyWork(raw: unknown): SoloBusyWork {
   if (typeof raw !== 'object' || raw === null)
-    return emptySoloBusyWork()
+    return { agents: [], terminals: [] }
   const record = raw as Record<string, unknown>
   const agents: BusyAgentWork[] = Array.isArray(record.agents)
     ? record.agents.flatMap((entry) => {
@@ -371,6 +379,56 @@ function normalizeSoloBusyWork(raw: unknown): SoloBusyWork {
       })
     : []
   return { agents, terminals }
+}
+
+/**
+ * Validates and normalizes a raw `app:confirm-quit` event payload.
+ * Returns null for malformed payloads or empty busy-work snapshots so the UI
+ * never renders a broken or "0 tabs" confirmation dialog.
+ */
+export function parseQuitConfirmEvent(raw: unknown): QuitConfirmEvent | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+    return null
+  const record = raw as Record<string, unknown>
+  const promptId = normalizePositiveId(record.promptId)
+  if (promptId === null)
+    return null
+  if (typeof record.busyWork !== 'object' || record.busyWork === null || Array.isArray(record.busyWork))
+    return null
+  const rawBusy = record.busyWork as Record<string, unknown>
+  if (!Array.isArray(rawBusy.agents) || !Array.isArray(rawBusy.terminals))
+    return null
+  const busyWork = normalizeSoloBusyWork(rawBusy)
+  if (busyWork.agents.length === 0 && busyWork.terminals.length === 0)
+    return null
+  return {
+    promptId,
+    busyWork,
+  }
+}
+
+/**
+ * Validates and normalizes a raw `begin_switch_mode` response from Rust.
+ * Malformed responses resolve to `{ kind: 'blocked' }` so the UI never renders
+ * a broken dialog or calls `switch_mode` with an invalid token.
+ */
+export function parseSwitchModeStartResult(raw: unknown): SwitchModeStartResult {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+    return { kind: 'blocked' }
+  const record = raw as Record<string, unknown>
+  if (record.kind === 'proceed') {
+    const switchId = normalizePositiveId(record.switchId)
+    return switchId !== null
+      ? { kind: 'proceed', switchId }
+      : { kind: 'blocked' }
+  }
+  if (record.kind === 'confirm') {
+    const parsed = parseQuitConfirmEvent(record)
+    return parsed
+      ? { kind: 'confirm', promptId: parsed.promptId, busyWork: parsed.busyWork }
+      : { kind: 'blocked' }
+  }
+  return { kind: 'blocked' }
 }
 
 // Tagged unions the UI consumes. Mirror CliPathStatusResponse and
@@ -1443,20 +1501,47 @@ export const platformBridge = {
   async restart(): Promise<void> {
     await tauriInvoke('restart_app')
   },
-  async switchMode(): Promise<void> {
-    await tauriInvoke('switch_mode')
+  async switchMode(switchId?: number): Promise<void> {
+    await tauriInvoke('switch_mode', switchId !== undefined && switchId > 0
+      ? { switchId }
+      : undefined)
     await refreshRuntimeState()
   },
-  async inspectSoloBusyWork(): Promise<SoloBusyWork> {
+  async beginSwitchMode(): Promise<SwitchModeStartResult> {
     if (!isTauriApp())
-      return emptySoloBusyWork()
+      return { kind: 'proceed', switchId: 0 }
     try {
-      const raw = await tauriInvoke<unknown>('inspect_solo_busy_work')
-      return normalizeSoloBusyWork(raw)
+      const raw = await tauriInvoke<unknown>('begin_switch_mode')
+      return parseSwitchModeStartResult(raw)
     }
     catch (err) {
-      log.warn('inspect_solo_busy_work failed; proceeding fail-open', err)
-      return emptySoloBusyWork()
+      log.warn('begin_switch_mode failed', err)
+      return { kind: 'blocked' }
+    }
+  },
+  async resolveSwitchModeConfirmation(promptId: number, confirm: boolean): Promise<number | null> {
+    if (!isTauriApp()) {
+      return confirm
+        ? 0
+        : null
+    }
+    try {
+      const raw = await tauriInvoke<unknown>('resolve_switch_mode_confirmation', { promptId, confirm })
+      return normalizePositiveId(raw)
+    }
+    catch (err) {
+      log.warn('resolve_switch_mode_confirmation failed', err)
+      return null
+    }
+  },
+  async cancelSwitchMode(switchId: number): Promise<void> {
+    if (!isTauriApp() || switchId <= 0)
+      return
+    try {
+      await tauriInvoke('cancel_switch_mode', { switchId })
+    }
+    catch (err) {
+      log.warn('cancel_switch_mode failed', err)
     }
   },
   async ackQuitConfirmation(promptId: number): Promise<boolean> {
@@ -1480,6 +1565,13 @@ export const platformBridge = {
     catch (err) {
       log.warn('resolve_quit_confirmation failed', err)
     }
+  },
+  onQuitConfirmation(callback: (event: QuitConfirmEvent) => void): Promise<() => void> {
+    return this.onEvent(TAURI_EVENT_APP_CONFIRM_QUIT, (raw) => {
+      const parsed = parseQuitConfirmEvent(raw)
+      if (parsed)
+        callback(parsed)
+    })
   },
   setTunnelTrustScope,
   onTunnelResetStatusChange,
