@@ -1372,6 +1372,21 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   },
   {
     provider: Provider.ANTIGRAVITY_CLI,
+    name: 'textless tool-call planner response',
+    payload: {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      plannerResponse: {
+        toolCalls: [
+          { id: 'call', name: 'run_command', argumentsJson: '{}' },
+        ],
+        stopReason: 'STOP_REASON_STOP_PATTERN',
+      },
+    },
+    category: 'hidden',
+  },
+  {
+    provider: Provider.ANTIGRAVITY_CLI,
     name: 'command tool call',
     payload: {
       type: 'CORTEX_STEP_TYPE_RUN_COMMAND',

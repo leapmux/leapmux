@@ -177,7 +177,7 @@ func TestAntigravityConsumesTextlessPlannerStepsWithoutStoringRows(t *testing.T)
 		plannerStep(contracts.AntigravityStepStatusRunning, "a provisional reply"),
 	}))
 	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1, 2}, []json.RawMessage{
-		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"toolCalls":[{"name":"read_file"}],"stopReason":"STOP"},"metadata":{"modelUsage":{"inputTokens":"23","outputTokens":"5"}}}`),
+		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"toolCalls":[{"name":"read_file","thinkingSignature":"opaque"}],"stopReason":"STOP"},"metadata":{"modelUsage":{"inputTokens":"23","outputTokens":"5","responseHeader":{"sessionID":"-4651990807555912056"},"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"internalMetadata":{"statusTransitions":[]}}}`),
 		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"modifiedResponse":"  ","response":"\n","thinking":"\t"}}`),
 		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE"}`),
 	}))
@@ -197,6 +197,58 @@ func TestAntigravityConsumesTextlessPlannerStepsWithoutStoringRows(t *testing.T)
 	divider := rows[0]
 	require.True(t, divider.TurnEnd)
 	assert.JSONEq(t, `{"name":"antigravity_turn_end","num_tool_uses":0,"metadata":{"modelUsage":{"inputTokens":23,"outputTokens":5}}}`, string(divider.Content))
+}
+
+func TestAntigravityPlannerWithStructuredModelUsageSplitsScrubsAndCountsTokens(t *testing.T) {
+	a, sink := testAgent(t)
+	raw := json.RawMessage(`{
+		"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+		"status":"CORTEX_STEP_STATUS_DONE",
+		"metadata":{
+			"modelUsage":{
+				"model":"MODEL_PLACEHOLDER_M532",
+				"inputTokens":"2118",
+				"outputTokens":194,
+				"cacheReadTokens":"235445",
+				"nullMetric":null,
+				"responseHeader":{"sessionID":"-4651990807555912056"}
+			},
+			"internalMetadata":{"statusTransitions":[{"updatedStatus":"CORTEX_STEP_STATUS_DONE"}]}
+		},
+		"plannerResponse":{
+			"modifiedResponse":"visible answer",
+			"thinking":"private reasoning",
+			"toolCalls":[{"id":"call_1","name":"run_command","thinkingSignature":"opaque-signature"}]
+		}
+	}`)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{raw}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+
+	messages := transcriptMessages(sink)
+	require.Len(t, messages, 2)
+	for _, msg := range messages {
+		assert.NotContains(t, string(msg.Content), "internalMetadata")
+		assert.NotContains(t, string(msg.Content), "thinkingSignature")
+	}
+
+	rows := sink.Messages()
+	divider := rows[len(rows)-1]
+	require.True(t, divider.TurnEnd)
+	assert.JSONEq(t, `{"name":"antigravity_turn_end","num_tool_uses":0,"metadata":{"modelUsage":{"inputTokens":2118,"outputTokens":194,"cacheReadTokens":235445}}}`, string(divider.Content))
+}
+
+func TestAntigravityUnknownStepScrubsOpaqueFieldsWhenObject(t *testing.T) {
+	a, sink := testAgent(t)
+	objectRaw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_FUTURE","metadata":{"internalMetadata":{"secret":true}},"plannerResponse":{"toolCalls":[{"thinkingSignature":"sig"}]}}`)
+	require.NoError(t, a.persistUnknownStep(a.root, 0, objectRaw))
+	nonObjectRaw := json.RawMessage(`["not-an-object"]`)
+	require.NoError(t, a.persistUnknownStep(a.root, 1, nonObjectRaw))
+
+	messages := transcriptMessages(sink)
+	require.Len(t, messages, 2)
+	assert.NotContains(t, string(messages[0].Content), "internalMetadata")
+	assert.NotContains(t, string(messages[0].Content), "thinkingSignature")
+	assert.JSONEq(t, string(nonObjectRaw), string(messages[1].Content))
 }
 
 func TestAntigravityStoresOnlyNonblankPlannerContent(t *testing.T) {

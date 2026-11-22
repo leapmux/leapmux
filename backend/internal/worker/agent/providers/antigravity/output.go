@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -406,8 +405,12 @@ func (a *Agent) persistUnknownStep(state *cascadeState, index int, raw json.RawM
 	}
 	record.raw = append(json.RawMessage(nil), raw...)
 	a.Mu.Unlock()
+	payload := append(json.RawMessage(nil), raw...)
+	if cleaned, err := scrubStep(raw, ""); err == nil {
+		payload = cleaned
+	}
 	if err := state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
-		Original: append(json.RawMessage(nil), raw...), AgentSessionID: state.id,
+		Original: payload, AgentSessionID: state.id,
 		IdempotencyKey: fmt.Sprintf("antigravity:%s:%d", state.id, index),
 	}, agent.SpanInfo{}); !agent.OutputRetained(err) {
 		slog.Error("antigravity persist unknown step", "agent_id", a.AgentID(), "error", err)
@@ -620,6 +623,7 @@ func (a *Agent) flushOpenSteps(state *cascadeState, completion agent.MessageComp
 	for _, item := range pendingSteps {
 		step, err := decodeStep(item.raw)
 		if err != nil {
+			slog.Warn("antigravity decode open step failed; persisting raw step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", item.index, "error", err)
 			if err := a.persistUnknownStep(state, item.index, item.raw); err != nil {
 				return err
 			}
@@ -648,10 +652,7 @@ func (a *Agent) turnEndFrame(state *cascadeState, completion agent.MessageComple
 			uses++
 		}
 		for key, value := range record.modelUsage {
-			number, err := strconv.ParseInt(value, 10, 64)
-			if err == nil {
-				usage[key] += number
-			}
+			usage[key] += value
 		}
 	}
 	contextWindow, contextTokens := state.contextWindow, state.contextTokens

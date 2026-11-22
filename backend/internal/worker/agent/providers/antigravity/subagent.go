@@ -324,6 +324,7 @@ func (a *Agent) finishRemovedBackgroundTasks(state *cascadeState, tasks []backgr
 		raw := steps[offset]
 		step, err := decodeStep(raw)
 		if err != nil {
+			slog.Warn("antigravity decode background step failed; persisting raw step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", task.stepIndex, "error", err)
 			persistErr = errors.Join(persistErr, a.persistUnknownStep(state, task.stepIndex, raw))
 		} else {
 			persistErr = errors.Join(persistErr, a.applyStep(state, task.stepIndex, step, raw))

@@ -1,10 +1,12 @@
 package antigravity
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -127,6 +129,52 @@ type antigravityInputItem struct {
 	} `json:"item"`
 }
 
+// antigravityModelUsage decodes integer token counters from metadata.modelUsage
+// while ignoring non-counter fields such as model names and nested objects like
+// responseHeader.
+type antigravityModelUsage map[string]int64
+
+func (u *antigravityModelUsage) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*u = nil
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return err
+	}
+	parsed := make(antigravityModelUsage)
+	for key, value := range raw {
+		if number, ok := parseModelUsageCount(value); ok {
+			parsed[key] = number
+		}
+	}
+	if len(parsed) == 0 {
+		*u = nil
+		return nil
+	}
+	*u = parsed
+	return nil
+}
+
+func parseModelUsageCount(raw json.RawMessage) (int64, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return 0, false
+	}
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		number, parseErr := strconv.ParseInt(text, 10, 64)
+		return number, parseErr == nil
+	}
+	var number int64
+	if err := json.Unmarshal(trimmed, &number); err == nil {
+		return number, true
+	}
+	return 0, false
+}
+
 type antigravityStep struct {
 	Type     string `json:"type"`
 	Status   string `json:"status"`
@@ -136,8 +184,8 @@ type antigravityStep struct {
 			Name          string `json:"name"`
 			ArgumentsJSON string `json:"argumentsJson"`
 		} `json:"toolCall"`
-		ModelUsage  map[string]string `json:"modelUsage"`
-		ExecutionID string            `json:"executionId"`
+		ModelUsage  antigravityModelUsage `json:"modelUsage"`
+		ExecutionID string                `json:"executionId"`
 	} `json:"metadata"`
 	RequestedInteraction json.RawMessage            `json:"requestedInteraction"`
 	PlannerResponse      antigravityPlannerResponse `json:"plannerResponse"`
