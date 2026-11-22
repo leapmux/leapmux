@@ -9,6 +9,10 @@ import { uniqueMarker } from '../helpers/shellArguments'
 import { closeComposerMenus, expectSettingsOptionChosen, offeredSettingsOptions, openSettingsMenu, waitForNativeSettingsHydrated } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
+function googleWireModel(path: string): string | undefined {
+  return /\/models\/([^:]+):/.exec(path)?.[1]
+}
+
 antigravityTest('changes the native model and restores the selected model after reload', async ({ native }) => {
   await waitForNativeSettingsHydrated(native.page)
   const menu = await openSettingsMenu(native.page, 'model')
@@ -21,7 +25,7 @@ antigravityTest('changes the native model and restores the selected model after 
   const baseline = await sendNativeAnswer(native, `Preserve ${marker} before the model change.`, `The previous model preserved ${marker}.`)
   expect(baseline.protocol).toBe('google-generative-language')
   expect(baseline.path).toContain('/models/gemini-3.8-flash:')
-  const baselineModel = /\/models\/([^:]+):/.exec(baseline.path)?.[1]
+  const baselineModel = googleWireModel(baseline.path)
   expect(baselineModel).toBeDefined()
   await exerciseNativeOption(native, {
     groupId: 'model',
@@ -29,7 +33,7 @@ antigravityTest('changes the native model and restores the selected model after 
     nativeProof: async (request) => {
       expect(request.protocol).toBe('google-generative-language')
       expect(request.path).toContain('/models/gemini-3.1-pro-preview:')
-      expect(/\/models\/([^:]+):/.exec(request.path)?.[1]).not.toBe(baselineModel)
+      expect(googleWireModel(request.path)).not.toBe(baselineModel)
       expect(nativeModelContextText(request)).toContain(`Preserve ${marker} before the model change.`)
       expect(nativeModelContextText(request)).toContain(`The previous model preserved ${marker}.`)
       const current = await currentNativeAgent(native)
@@ -71,6 +75,6 @@ antigravityTest('resolves the account default launch to a concrete model and aut
 
   const request = await sendNativeAnswer(native, 'Reply on the default Antigravity model.', 'The default concrete model answered.')
   expect(request.protocol).toBe('google-generative-language')
-  const wireModel = /\/models\/([^:]+):/.exec(request.path)?.[1]
+  const wireModel = googleWireModel(request.path)
   expect(wireModel === settledModel || wireModel?.startsWith(`${settledModel}-`)).toBe(true)
 })

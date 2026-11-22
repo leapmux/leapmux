@@ -15,7 +15,7 @@ func Registration() agent.Registration {
 	return agent.Registration{
 		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI,
 		Plugin:   antigravityProvider{}, Start: Start, Locator: antigravityLocator,
-		DefaultModels: []*agent.ModelInfo{agent.AccountDefaultModelEntry("Use the model that Antigravity selects")},
+		DefaultModels: []*agent.ModelInfo{antigravityAccountDefaultModel()},
 		OptionGroups:  []*leapmuxv1.AvailableOptionGroup{antigravityModeGroup("")},
 		PermissionDefaults: agent.PermissionDefaults{
 			NewSession: map[string]string{agent.OptionIDPermissionMode: contracts.AntigravityModeDefault},

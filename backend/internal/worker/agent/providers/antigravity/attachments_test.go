@@ -30,7 +30,10 @@ func TestAntigravityAttachmentRefusesUnsupportedType(t *testing.T) {
 	_, _, err := a.buildMessageItems("", []*leapmuxv1.Attachment{{Filename: "image.gif", MimeType: "image/gif", Data: []byte{1}}}, "")
 	assert.ErrorContains(t, err, "image/gif")
 	a.model = "gpt-oss-120b"
-	a.catalog.families["gpt-oss-120b"] = catalogFamily{variants: map[string]catalogVariant{"medium": {token: "MODEL_GPT", mimeTypes: nil}}, defaultEffort: "medium"}
+	a.catalog = buildAntigravityCatalog(antigravityCatalogReply{ClientModelConfigs: []antigravityModelConfig{{
+		ModelID:      "gpt-oss-120b-medium",
+		ModelOrAlias: antigravityModelAlias{Model: "MODEL_GPT"},
+	}}})
 	_, _, err = a.buildMessageItems("", []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: []byte{1}}}, "")
 	assert.ErrorContains(t, err, "cannot read image/png")
 }

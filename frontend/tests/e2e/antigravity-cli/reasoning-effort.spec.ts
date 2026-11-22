@@ -1,17 +1,24 @@
+import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { expect } from '@playwright/test'
 import { antigravityTest } from '../antigravity-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { nativeOptionValue } from '../helpers/nativeScenario'
 import { chooseNativeModel, exerciseNativeOption, exerciseNativeOptionSequence, waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { chooseSettingsOption, expectSettingsOptionChosen, offeredSettingsOptions, waitForNativeSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+
+function expectGoogleThinkingLevel(request: MockModelRequestRecord, level: string, model?: string) {
+  expect(request.protocol).toBe('google-generative-language')
+  if (model !== undefined) {
+    expect(request.path).toContain(`/models/${model}:`)
+  }
+  expect(request.body).toHaveProperty('generationConfig.thinkingConfig.thinkingLevel', level)
+}
 
 antigravityTest('sends the selected native effort before and after reload', async ({ native }) => {
   await exerciseNativeOption(native, {
     groupId: 'effort',
     value: 'low',
     nativeProof: (request) => {
-      expect(request.protocol).toBe('google-generative-language')
-      expect(request.body).toHaveProperty('generationConfig.thinkingConfig.thinkingLevel', 'LOW')
+      expectGoogleThinkingLevel(request, 'LOW')
     },
   })
 })
@@ -30,13 +37,12 @@ antigravityTest('sends the chosen Neon reasoning variant and restores it after r
       { value: 'auto', via: 'reload' },
     ],
     nativeProof: (request, step) => {
-      expect(request.protocol).toBe('google-generative-language')
-      expect(request.path).toContain('/models/gemini-4-neon:')
-      expect(request.body).toHaveProperty(
-        'generationConfig.thinkingConfig.thinkingLevel',
+      expectGoogleThinkingLevel(
+        request,
         step.value === 'auto'
           ? 'HIGH'
           : step.value.toUpperCase(),
+        'gemini-4-neon',
       )
     },
   })
@@ -51,12 +57,9 @@ antigravityTest('resets an unsupported effort to auto when switching to a narrow
   await waitForNativeOptionApplied(native, 'effort', 'xhigh')
 
   await chooseNativeModel(native, 'gemini-3.8-flash')
-  const settled = await waitForNativeOptionApplied(native, 'effort', 'auto')
-  expect(nativeOptionValue(settled, 'effort')).toBe('auto')
+  await waitForNativeOptionApplied(native, 'effort', 'auto')
   await expectSettingsOptionChosen(native.page, 'effort-auto')
 
   const request = await sendNativeAnswer(native, 'Reply after switching to a narrower model.', 'The narrower model ran at its default effort.')
-  expect(request.protocol).toBe('google-generative-language')
-  expect(request.path).toContain('/models/gemini-3.8-flash:')
-  expect(request.body).toHaveProperty('generationConfig.thinkingConfig.thinkingLevel', 'HIGH')
+  expectGoogleThinkingLevel(request, 'HIGH', 'gemini-3.8-flash')
 })

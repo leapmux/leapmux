@@ -19,19 +19,25 @@ var antigravityAutoEffort = &agent.EffortInfo{
 	Description: "Use Antigravity's default reasoning effort for the model",
 }
 
+func antigravityAccountDefaultModel() *agent.ModelInfo {
+	return agent.AccountDefaultModelEntry("Use the model that Antigravity selects")
+}
+
 type antigravityCatalogReply struct {
 	ClientModelConfigs         []antigravityModelConfig `json:"clientModelConfigs"`
 	DefaultOverrideModelConfig *antigravityModelConfig  `json:"defaultOverrideModelConfig"`
 }
 
+type antigravityModelAlias struct {
+	Model string `json:"model"`
+}
+
 type antigravityModelConfig struct {
-	Label        string `json:"label"`
-	ModelID      string `json:"modelId"`
-	ModelOrAlias struct {
-		Model string `json:"model"`
-	} `json:"modelOrAlias"`
-	Disabled           bool            `json:"disabled"`
-	SupportedMimeTypes map[string]bool `json:"supportedMimeTypes"`
+	Label              string                `json:"label"`
+	ModelID            string                `json:"modelId"`
+	ModelOrAlias       antigravityModelAlias `json:"modelOrAlias"`
+	Disabled           bool                  `json:"disabled"`
+	SupportedMimeTypes map[string]bool       `json:"supportedMimeTypes"`
 }
 
 type catalogVariant struct {
@@ -44,6 +50,11 @@ type catalogFamily struct {
 	defaultEffort string
 }
 
+type catalogEntry struct {
+	family string
+	effort string
+}
+
 func (f catalogFamily) hasEfforts() bool {
 	for effort := range f.variants {
 		if effort != "" {
@@ -54,10 +65,9 @@ func (f catalogFamily) hasEfforts() bool {
 }
 
 type antigravityCatalog struct {
-	models          []*agent.ModelInfo
-	families        map[string]catalogFamily
-	defaultModel    string
-	fallbackDefault catalogVariant
+	models       []*agent.ModelInfo
+	families     map[string]catalogFamily
+	defaultModel string
 }
 
 func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
@@ -66,6 +76,7 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 	}
 	familiesInfo := map[string]*agent.ModelInfo{}
 	var familyOrder []string
+	var entries []catalogEntry
 	for _, config := range reply.ClientModelConfigs {
 		if config.Disabled || config.ModelID == "" || config.ModelOrAlias.Model == "" {
 			continue
@@ -79,9 +90,15 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 		}
 		_, exists := fam.variants[effort]
 		fam.variants[effort] = catalogVariant{token: config.ModelOrAlias.Model, mimeTypes: config.SupportedMimeTypes}
+		if effort == "" {
+			fam.defaultEffort = ""
+		}
 		catalog.families[family] = fam
-		if effort != "" && !exists {
-			familiesInfo[family].SupportedEfforts = append(familiesInfo[family].SupportedEfforts, providerkit.EffortTier(effort))
+		if !exists {
+			entries = append(entries, catalogEntry{family: family, effort: effort})
+			if effort != "" {
+				familiesInfo[family].SupportedEfforts = append(familiesInfo[family].SupportedEfforts, providerkit.EffortTier(effort))
+			}
 		}
 	}
 	for _, id := range familyOrder {
@@ -93,41 +110,30 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 		}
 	}
 	if override := reply.DefaultOverrideModelConfig; override != nil && !override.Disabled {
-		matchedFamily, matchedEffort, matched := "", "", false
-		if override.ModelOrAlias.Model != "" {
-			for _, config := range reply.ClientModelConfigs {
-				if config.Disabled || config.ModelID == "" || config.ModelOrAlias.Model == "" {
-					continue
-				}
-				family, effort := splitModelEffort(config.ModelID)
-				if catalog.families[family].variants[effort].token == override.ModelOrAlias.Model {
-					matchedFamily, matchedEffort, matched = family, effort, true
-					break
-				}
-			}
-		}
-		if !matched && override.ModelID != "" {
-			family, effort := splitModelEffort(override.ModelID)
-			if catalog.families[family].variants[effort].token != "" {
-				matchedFamily, matchedEffort, matched = family, effort, true
-			}
-		}
-		if matched {
+		if matchedFamily, matchedEffort, ok := matchDefaultOverride(override, entries, catalog.families); ok {
 			catalog.defaultModel = matchedFamily
 			fam := catalog.families[matchedFamily]
 			fam.defaultEffort = matchedEffort
 			catalog.families[matchedFamily] = fam
 			familiesInfo[matchedFamily].IsDefault = true
 		} else if override.ModelOrAlias.Model != "" {
-			catalog.fallbackDefault = catalogVariant{token: override.ModelOrAlias.Model, mimeTypes: override.SupportedMimeTypes}
+			catalog.families[agent.DefaultModelSentinel] = catalogFamily{
+				variants: map[string]catalogVariant{
+					"": {token: override.ModelOrAlias.Model, mimeTypes: override.SupportedMimeTypes},
+				},
+			}
+			catalog.defaultModel = agent.DefaultModelSentinel
+			entry := antigravityAccountDefaultModel()
+			if familiesInfo[agent.DefaultModelSentinel] != nil {
+				familiesInfo[agent.DefaultModelSentinel] = entry
+			} else {
+				catalog.models = append(catalog.models, entry)
+			}
 		}
 	}
-	if catalog.defaultModel == "" && catalog.fallbackDefault.token == "" && len(familyOrder) > 0 {
+	if catalog.defaultModel == "" && len(familyOrder) > 0 {
 		catalog.defaultModel = familyOrder[0]
 		familiesInfo[familyOrder[0]].IsDefault = true
-	}
-	if catalog.defaultModel == "" {
-		catalog.models = append(catalog.models, agent.AccountDefaultModelEntry("Use the model that Antigravity selects"))
 	}
 	for _, id := range familyOrder {
 		catalog.models = append(catalog.models, familiesInfo[id])
@@ -135,10 +141,34 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 	return catalog
 }
 
+func matchDefaultOverride(override *antigravityModelConfig, entries []catalogEntry, families map[string]catalogFamily) (string, string, bool) {
+	if override.ModelOrAlias.Model != "" {
+		if override.ModelID != "" {
+			family, effort := splitModelEffort(override.ModelID)
+			if families[family].variants[effort].token == override.ModelOrAlias.Model {
+				return family, effort, true
+			}
+		}
+		for _, entry := range entries {
+			if families[entry.family].variants[entry.effort].token == override.ModelOrAlias.Model {
+				return entry.family, entry.effort, true
+			}
+		}
+		return "", "", false
+	}
+	if override.ModelID != "" {
+		family, effort := splitModelEffort(override.ModelID)
+		if families[family].variants[effort].token != "" {
+			return family, effort, true
+		}
+	}
+	return "", "", false
+}
+
 func splitModelEffort(modelID string) (string, string) {
 	for _, suffix := range effortSuffixes {
-		if strings.HasSuffix(modelID, "-"+suffix) {
-			return strings.TrimSuffix(modelID, "-"+suffix), suffix
+		if family, ok := strings.CutSuffix(modelID, "-"+suffix); ok && family != "" {
+			return family, suffix
 		}
 	}
 	return modelID, ""
@@ -153,13 +183,10 @@ func modelFamilyLabel(label, effort string) string {
 
 func (c antigravityCatalog) resolveModel(model, effort string) (catalogVariant, string, error) {
 	if agent.UsesAccountDefaultModel(model) {
-		if c.defaultModel != "" {
-			return c.resolveModel(c.defaultModel, effort)
-		}
-		if c.fallbackDefault.token == "" {
+		if c.defaultModel == "" {
 			return catalogVariant{}, "", fmt.Errorf("the Antigravity catalog has no default model")
 		}
-		return c.fallbackDefault, "", nil
+		model = c.defaultModel
 	}
 	family, ok := c.families[model]
 	if !ok || len(family.variants) == 0 {
@@ -231,6 +258,9 @@ func (a *Agent) loadCatalog() error {
 		return err
 	}
 	catalog := buildAntigravityCatalog(reply)
+	if catalog.defaultModel == "" {
+		return fmt.Errorf("the Antigravity catalog has no usable models")
+	}
 	a.Mu.Lock()
 	a.catalog = catalog
 	a.model, a.effort = catalog.settleSelection(a.model, a.effort)
@@ -249,7 +279,7 @@ func (a *Agent) refreshAccountCatalog() {
 		return
 	}
 	catalog := buildAntigravityCatalog(reply)
-	if len(catalog.families) == 0 && catalog.fallbackDefault.token == "" {
+	if catalog.defaultModel == "" {
 		return
 	}
 	a.settingsMu.Lock()

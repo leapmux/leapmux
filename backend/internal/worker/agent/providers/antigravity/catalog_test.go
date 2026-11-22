@@ -8,9 +8,41 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func mustBuildCatalogJSON(t *testing.T, raw string) antigravityCatalog {
+	t.Helper()
+	var reply antigravityCatalogReply
+	require.NoError(t, json.Unmarshal([]byte(raw), &reply))
+	return buildAntigravityCatalog(reply)
+}
+
+func testCatalogSendRPC(t *testing.T, catalogBody string) (antigravityRPC, <-chan map[string]any) {
+	t.Helper()
+	sent := make(chan map[string]any, 1)
+	rpc := testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case languageServerService + "GetCascadeModelConfigData":
+			_, _ = w.Write([]byte(catalogBody))
+		case languageServerService + "SendUserCascadeMessage":
+			var request map[string]any
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			sent <- request
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			_, _ = w.Write([]byte(`{"response":{}}`))
+		}
+	})
+	return rpc, sent
+}
+
+func sentPlanModel(t *testing.T, sent <-chan map[string]any) any {
+	t.Helper()
+	return receiveTestValue(t, sent)["cascadeConfig"].(map[string]any)["plannerConfig"].(map[string]any)["planModel"]
+}
 
 func TestAntigravityCatalogEffortSplit(t *testing.T) {
 	for _, tc := range []struct{ id, family, effort string }{
@@ -28,12 +60,8 @@ func TestAntigravityCatalogEffortSplit(t *testing.T) {
 
 func TestAntigravityCatalogDropsDisabledAndResolvesDefault(t *testing.T) {
 	catalog := buildAntigravityCatalog(antigravityCatalogReply{ClientModelConfigs: []antigravityModelConfig{
-		{ModelID: "first-low", Label: "First", ModelOrAlias: struct {
-			Model string `json:"model"`
-		}{Model: "FIRST"}},
-		{ModelID: "disabled-high", Disabled: true, ModelOrAlias: struct {
-			Model string `json:"model"`
-		}{Model: "DISABLED"}},
+		{ModelID: "first-low", Label: "First", ModelOrAlias: antigravityModelAlias{Model: "FIRST"}},
+		{ModelID: "disabled-high", Disabled: true, ModelOrAlias: antigravityModelAlias{Model: "DISABLED"}},
 	}})
 	assert.Equal(t, "first", catalog.defaultModel)
 	assert.NotContains(t, catalog.families, "disabled")
@@ -43,19 +71,6 @@ func TestAntigravityCatalogDropsDisabledAndResolvesDefault(t *testing.T) {
 	assert.Equal(t, agent.EffortAuto, effort)
 	_, _, err = catalog.resolveModel("unknown", "")
 	assert.ErrorContains(t, err, "unknown is not in the Antigravity catalog")
-}
-
-func TestAntigravityEffortFallbackPrefersLowerOnATie(t *testing.T) {
-	family := catalogFamily{
-		variants:      map[string]catalogVariant{"low": {token: "LOW"}, "high": {token: "HIGH"}},
-		defaultEffort: "high",
-	}
-	wire, settled := settleAntigravityEffort(family, "medium")
-	assert.Equal(t, "low", wire)
-	assert.Equal(t, "low", settled)
-	wire, settled = settleAntigravityEffort(family, "max")
-	assert.Equal(t, "high", wire)
-	assert.Equal(t, "high", settled)
 }
 
 func TestAntigravityStrictConfigIsModeIndependent(t *testing.T) {
@@ -86,14 +101,12 @@ func TestAntigravityCatalogPreservesServerOrder(t *testing.T) {
 }
 
 func TestAntigravityCatalogSeparatesModelLabelsAndEffortTokens(t *testing.T) {
-	var reply antigravityCatalogReply
-	require.NoError(t, json.Unmarshal([]byte(`{"clientModelConfigs":[
+	catalog := mustBuildCatalogJSON(t, `{"clientModelConfigs":[
 		{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH"}},
 		{"modelId":"gemini-4-neon-xhigh","label":"Gemini 4 Neon (XHigh)","modelOrAlias":{"model":"NEON_XHIGH"}},
 		{"modelId":"claude-opus-5-5-low","label":"Claude Opus 5.5 (Low)","modelOrAlias":{"model":"OPUS_LOW"}},
 		{"modelId":"other","label":"Other (High)","modelOrAlias":{"model":"OTHER"}}
-	]}`), &reply))
-	catalog := buildAntigravityCatalog(reply)
+	]}`)
 	require.Len(t, catalog.models, 3)
 	assert.Equal(t, "Gemini 4 Neon", catalog.models[0].DisplayName)
 	assert.Equal(t, "Claude Opus 5.5", catalog.models[1].DisplayName)
@@ -135,42 +148,18 @@ func TestAntigravityAccountRefreshCannotDelayInactiveTurn(t *testing.T) {
 func TestAntigravityCatalogRefreshSettlesUnavailableSelection(t *testing.T) {
 	a, sink := testAgent(t)
 	a.model, a.effort = "gemini-test", "high"
-	sent := make(chan map[string]any, 1)
-	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case languageServerService + "GetCascadeModelConfigData":
-			_, _ = w.Write([]byte(`{"clientModelConfigs":[{"modelId":"gemini-new-low","modelOrAlias":{"model":"NEW_LOW"}}]}`))
-		case languageServerService + "SendUserCascadeMessage":
-			var request map[string]any
-			assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
-			sent <- request
-			_, _ = w.Write([]byte(`{}`))
-		default:
-			_, _ = w.Write([]byte(`{"response":{}}`))
-		}
-	})
+	rpc, sent := testCatalogSendRPC(t, `{"clientModelConfigs":[{"modelId":"gemini-new-low","modelOrAlias":{"model":"NEW_LOW"}}]}`)
+	a.rpc = rpc
 	a.refreshAccountCatalog()
 	require.NoError(t, a.SendInput("continue the session", nil))
-	assert.Equal(t, "NEW_LOW", receiveTestValue(t, sent)["cascadeConfig"].(map[string]any)["plannerConfig"].(map[string]any)["planModel"])
+	assert.Equal(t, "NEW_LOW", sentPlanModel(t, sent))
 	assert.Equal(t, "gemini-new", a.model)
 	assert.Equal(t, agent.EffortAuto, a.effort)
 	assert.Positive(t, sink.SettingsRefreshCount())
 }
 
-func effortIDsOf(model *agent.ModelInfo) []string {
-	if model == nil {
-		return nil
-	}
-	ids := make([]string, 0, len(model.SupportedEfforts))
-	for _, effort := range model.SupportedEfforts {
-		ids = append(ids, effort.GetId())
-	}
-	return ids
-}
-
 func TestAntigravityCatalogAutoEffortUsesServerDefaultVariant(t *testing.T) {
-	var reply antigravityCatalogReply
-	require.NoError(t, json.Unmarshal([]byte(`{"clientModelConfigs":[
+	catalog := mustBuildCatalogJSON(t, `{"clientModelConfigs":[
 		{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH"}},
 		{"modelId":"gemini-4-neon-xhigh","label":"Gemini 4 Neon (XHigh)","modelOrAlias":{"model":"NEON_XHIGH"}},
 		{"modelId":"gemini-4-neon-medium","label":"Gemini 4 Neon (Medium)","modelOrAlias":{"model":"NEON_MEDIUM"}},
@@ -178,18 +167,17 @@ func TestAntigravityCatalogAutoEffortUsesServerDefaultVariant(t *testing.T) {
 		{"modelId":"gemini-4-carbon-medium","label":"Gemini 4 Carbon (Medium)","modelOrAlias":{"model":"CARBON_MEDIUM"}},
 		{"modelId":"gemini-4-carbon-high","label":"Gemini 4 Carbon (High)","modelOrAlias":{"model":"CARBON_HIGH"}},
 		{"modelId":"gemini-4-carbon-low","label":"Gemini 4 Carbon (Low)","modelOrAlias":{"model":"CARBON_LOW"}}
-	]}`), &reply))
-	catalog := buildAntigravityCatalog(reply)
+	]}`)
 
 	neon := agent.FindAvailableModel(catalog.models, "gemini-4-neon")
 	require.NotNil(t, neon)
 	assert.Equal(t, agent.EffortAuto, neon.DefaultEffort)
-	assert.Equal(t, []string{agent.EffortAuto, "xhigh", "high", "medium", "low"}, effortIDsOf(neon))
+	assert.Equal(t, []string{agent.EffortAuto, "xhigh", "high", "medium", "low"}, agenttest.OptionIDs(neon.SupportedEfforts))
 
 	carbon := agent.FindAvailableModel(catalog.models, "gemini-4-carbon")
 	require.NotNil(t, carbon)
 	assert.Equal(t, agent.EffortAuto, carbon.DefaultEffort)
-	assert.Equal(t, []string{agent.EffortAuto, "high", "medium", "low"}, effortIDsOf(carbon))
+	assert.Equal(t, []string{agent.EffortAuto, "high", "medium", "low"}, agenttest.OptionIDs(carbon.SupportedEfforts))
 
 	for _, requested := range []string{agent.EffortAuto, ""} {
 		variant, settled, err := catalog.resolveModel("gemini-4-neon", requested)
@@ -217,24 +205,12 @@ func TestAntigravityLoadCatalogResolvesInitialDefaultModel(t *testing.T) {
 	a, _ := testAgent(t)
 	a.model = agent.DefaultModelSentinel
 	a.effort = agent.EffortAuto
-	sent := make(chan map[string]any, 1)
-	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case languageServerService + "GetCascadeModelConfigData":
-			_, _ = w.Write([]byte(`{"clientModelConfigs":[
-				{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH"}},
-				{"modelId":"gemini-4-neon-low","label":"Gemini 4 Neon (Low)","modelOrAlias":{"model":"NEON_LOW"}},
-				{"modelId":"gemini-3.8-flash-high","label":"Gemini 3.8 Flash (High)","modelOrAlias":{"model":"FLASH_HIGH"}}
-			]}`))
-		case languageServerService + "SendUserCascadeMessage":
-			var request map[string]any
-			assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
-			sent <- request
-			_, _ = w.Write([]byte(`{}`))
-		default:
-			_, _ = w.Write([]byte(`{}`))
-		}
-	})
+	rpc, sent := testCatalogSendRPC(t, `{"clientModelConfigs":[
+		{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH"}},
+		{"modelId":"gemini-4-neon-low","label":"Gemini 4 Neon (Low)","modelOrAlias":{"model":"NEON_LOW"}},
+		{"modelId":"gemini-3.8-flash-high","label":"Gemini 3.8 Flash (High)","modelOrAlias":{"model":"FLASH_HIGH"}}
+	]}`)
+	a.rpc = rpc
 
 	require.NoError(t, a.loadCatalog())
 	assert.Equal(t, "gemini-4-neon", a.model)
@@ -259,20 +235,18 @@ func TestAntigravityLoadCatalogResolvesInitialDefaultModel(t *testing.T) {
 	assert.Equal(t, agent.EffortAuto, effortGroup.GetDefaultValue())
 
 	require.NoError(t, a.SendInput("hello", nil))
-	assert.Equal(t, "NEON_HIGH", receiveTestValue(t, sent)["cascadeConfig"].(map[string]any)["plannerConfig"].(map[string]any)["planModel"])
+	assert.Equal(t, "NEON_HIGH", sentPlanModel(t, sent))
 }
 
 func TestAntigravityCatalogDeduplicatesRepeatedModelIDs(t *testing.T) {
-	var reply antigravityCatalogReply
-	require.NoError(t, json.Unmarshal([]byte(`{"clientModelConfigs":[
+	catalog := mustBuildCatalogJSON(t, `{"clientModelConfigs":[
 		{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH_1"}},
 		{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH_2"}},
 		{"modelId":"gemini-4-neon-low","label":"Gemini 4 Neon (Low)","modelOrAlias":{"model":"NEON_LOW"}}
-	]}`), &reply))
-	catalog := buildAntigravityCatalog(reply)
+	]}`)
 	neon := agent.FindAvailableModel(catalog.models, "gemini-4-neon")
 	require.NotNil(t, neon)
-	assert.Equal(t, []string{agent.EffortAuto, "high", "low"}, effortIDsOf(neon))
+	assert.Equal(t, []string{agent.EffortAuto, "high", "low"}, agenttest.OptionIDs(neon.SupportedEfforts))
 }
 
 func TestAntigravityCatalogDefaultOverrideSelectsFamilyAndAutoEffort(t *testing.T) {
@@ -307,9 +281,7 @@ func TestAntigravityCatalogDefaultOverrideSelectsFamilyAndAutoEffort(t *testing.
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var reply antigravityCatalogReply
-			require.NoError(t, json.Unmarshal([]byte(`{"clientModelConfigs":`+baseConfigs+`,"defaultOverrideModelConfig":`+tc.override+`}`), &reply))
-			catalog := buildAntigravityCatalog(reply)
+			catalog := mustBuildCatalogJSON(t, `{"clientModelConfigs":`+baseConfigs+`,"defaultOverrideModelConfig":`+tc.override+`}`)
 
 			for _, model := range catalog.models {
 				assert.Equal(t, model.Id == tc.wantModel, model.IsDefault, "model %s", model.Id)
@@ -344,20 +316,8 @@ func TestAntigravityCatalogRefreshIgnoresUnusableReply(t *testing.T) {
 			a, sink := testAgent(t)
 			a.model, a.effort = "gemini-test", "high"
 			beforeModels := a.catalog.models
-			sent := make(chan map[string]any, 1)
-			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case languageServerService + "GetCascadeModelConfigData":
-					_, _ = w.Write([]byte(tc.body))
-				case languageServerService + "SendUserCascadeMessage":
-					var request map[string]any
-					assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
-					sent <- request
-					_, _ = w.Write([]byte(`{}`))
-				default:
-					_, _ = w.Write([]byte(`{}`))
-				}
-			})
+			rpc, sent := testCatalogSendRPC(t, tc.body)
+			a.rpc = rpc
 
 			a.refreshAccountCatalog()
 			assert.Equal(t, "gemini-test", a.model)
@@ -365,17 +325,16 @@ func TestAntigravityCatalogRefreshIgnoresUnusableReply(t *testing.T) {
 			assert.True(t, agent.ModelInfosEqual(beforeModels, a.catalog.models))
 			assert.Zero(t, sink.SettingsRefreshCount())
 			require.NoError(t, a.SendInput("continue", nil))
-			assert.Equal(t, "MODEL_TEST", receiveTestValue(t, sent)["cascadeConfig"].(map[string]any)["plannerConfig"].(map[string]any)["planModel"])
+			assert.Equal(t, "MODEL_TEST", sentPlanModel(t, sent))
 		})
 	}
 }
 
 func TestAntigravityCatalogEmptyOverrideFallsBackToFirstFamily(t *testing.T) {
 	baseConfigs := []antigravityModelConfig{{
-		ModelID: "gemini-4-neon-high", Label: "Gemini 4 Neon (High)",
-		ModelOrAlias: struct {
-			Model string `json:"model"`
-		}{Model: "NEON_HIGH"},
+		ModelID:      "gemini-4-neon-high",
+		Label:        "Gemini 4 Neon (High)",
+		ModelOrAlias: antigravityModelAlias{Model: "NEON_HIGH"},
 	}}
 	for _, tc := range []struct {
 		name     string
@@ -411,18 +370,17 @@ func TestAntigravityCatalogUnlistedOverrideKeepsSentinelFallback(t *testing.T) {
 		{
 			name: "unrelated clientModelConfigs",
 			configs: []antigravityModelConfig{{
-				ModelID: "gemini-3.8-flash-high", Label: "Gemini 3.8 Flash (High)",
-				ModelOrAlias: struct {
-					Model string `json:"model"`
-				}{Model: "FLASH_HIGH"},
+				ModelID:      "gemini-3.8-flash-high",
+				Label:        "Gemini 3.8 Flash (High)",
+				ModelOrAlias: antigravityModelAlias{Model: "FLASH_HIGH"},
 			}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			override := &antigravityModelConfig{
+				ModelOrAlias:       antigravityModelAlias{Model: "HIDDEN_DEFAULT"},
 				SupportedMimeTypes: map[string]bool{"image/png": true},
 			}
-			override.ModelOrAlias.Model = "HIDDEN_DEFAULT"
 			catalog := buildAntigravityCatalog(antigravityCatalogReply{
 				ClientModelConfigs:         tc.configs,
 				DefaultOverrideModelConfig: override,
@@ -448,13 +406,11 @@ func TestAntigravityCatalogUnlistedOverrideKeepsSentinelFallback(t *testing.T) {
 }
 
 func TestAntigravityCatalogEffortlessModelHasNoEffortAxis(t *testing.T) {
-	var reply antigravityCatalogReply
-	require.NoError(t, json.Unmarshal([]byte(`{"clientModelConfigs":[
+	catalog := mustBuildCatalogJSON(t, `{"clientModelConfigs":[
 		{"modelId":"gemini-pro-orchestrator-neon","label":"Orchestrator (Neon)","modelOrAlias":{"model":"ORCH_NEON"}},
 		{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH"}},
 		{"modelId":"gemini-4-neon-low","label":"Gemini 4 Neon (Low)","modelOrAlias":{"model":"NEON_LOW"}}
-	]}`), &reply))
-	catalog := buildAntigravityCatalog(reply)
+	]}`)
 
 	orchestrator := agent.FindAvailableModel(catalog.models, "gemini-pro-orchestrator-neon")
 	require.NotNil(t, orchestrator)
@@ -468,13 +424,8 @@ func TestAntigravityCatalogEffortlessModelHasNoEffortAxis(t *testing.T) {
 	a, _ := testAgent(t)
 	a.catalog = catalog
 	a.model, a.effort = "gemini-4-neon", "high"
-	sent := make(chan map[string]any, 1)
-	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
-		var request map[string]any
-		assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
-		sent <- request
-		_, _ = w.Write([]byte(`{}`))
-	})
+	rpc, sent := testCatalogSendRPC(t, `{}`)
+	a.rpc = rpc
 
 	a.UpdateSettings(optionmap.Map{agent.OptionIDModel: "gemini-pro-orchestrator-neon"})
 	assert.Equal(t, "gemini-pro-orchestrator-neon", a.model)
@@ -485,7 +436,7 @@ func TestAntigravityCatalogEffortlessModelHasNoEffortAxis(t *testing.T) {
 	assert.Equal(t, "gemini-4-neon", a.model)
 	assert.Equal(t, agent.EffortAuto, a.effort)
 	require.NoError(t, a.SendInput("hello", nil))
-	assert.Equal(t, "NEON_HIGH", receiveTestValue(t, sent)["cascadeConfig"].(map[string]any)["plannerConfig"].(map[string]any)["planModel"])
+	assert.Equal(t, "NEON_HIGH", sentPlanModel(t, sent))
 }
 
 func TestAntigravityEffortSettlementBoundaries(t *testing.T) {
@@ -538,18 +489,146 @@ func TestAntigravityEffortSettlementBoundaries(t *testing.T) {
 func TestAntigravityCatalogEmptyReturnsError(t *testing.T) {
 	catalog := buildAntigravityCatalog(antigravityCatalogReply{
 		ClientModelConfigs: []antigravityModelConfig{
-			{ModelID: "disabled-low", Disabled: true, ModelOrAlias: struct {
-				Model string `json:"model"`
-			}{Model: "DISABLED"}},
-			{ModelID: "", ModelOrAlias: struct {
-				Model string `json:"model"`
-			}{Model: "NO_ID"}},
+			{ModelID: "disabled-low", Disabled: true, ModelOrAlias: antigravityModelAlias{Model: "DISABLED"}},
+			{ModelID: "", ModelOrAlias: antigravityModelAlias{Model: "NO_ID"}},
 			{ModelID: "no-token-high"},
 		},
 	})
+	assert.Empty(t, catalog.models)
 	model, effort := catalog.settleSelection("removed-model", "high")
 	assert.Equal(t, agent.DefaultModelSentinel, model)
 	assert.Empty(t, effort)
 	_, _, err := catalog.resolveModel(agent.DefaultModelSentinel, agent.EffortAuto)
 	assert.ErrorContains(t, err, "the Antigravity catalog has no default model")
+}
+
+func TestAntigravityLoadCatalogRejectsUnusableReply(t *testing.T) {
+	a, _ := testAgent(t)
+	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"clientModelConfigs":[{"modelId":"disabled-low","disabled":true,"modelOrAlias":{"model":"DISABLED"}}]}`))
+	})
+	err := a.loadCatalog()
+	require.Error(t, err)
+}
+
+func TestAntigravityCatalogOverridePreservesUnlistedTokenAndDisambiguatesSharedToken(t *testing.T) {
+	t.Run("unlisted override token wins over matching modelId", func(t *testing.T) {
+		catalog := mustBuildCatalogJSON(t, `{
+			"clientModelConfigs":[
+				{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH"}}
+			],
+			"defaultOverrideModelConfig":{
+				"modelId":"gemini-4-neon-high",
+				"modelOrAlias":{"model":"CANARY_TOKEN"},
+				"supportedMimeTypes":{"image/png":true}
+			}
+		}`)
+		model, effort := catalog.settleSelection(agent.DefaultModelSentinel, agent.EffortAuto)
+		assert.Equal(t, agent.DefaultModelSentinel, model)
+		assert.Empty(t, effort)
+		variant, settled, err := catalog.resolveModel(agent.DefaultModelSentinel, agent.EffortAuto)
+		require.NoError(t, err)
+		assert.Equal(t, "CANARY_TOKEN", variant.token)
+		assert.True(t, variant.mimeTypes["image/png"])
+		assert.Empty(t, settled)
+	})
+
+	t.Run("override modelId disambiguates shared wire token", func(t *testing.T) {
+		catalog := mustBuildCatalogJSON(t, `{
+			"clientModelConfigs":[
+				{"modelId":"first-low","label":"First (Low)","modelOrAlias":{"model":"SHARED"}},
+				{"modelId":"second-high","label":"Second (High)","modelOrAlias":{"model":"SHARED"}}
+			],
+			"defaultOverrideModelConfig":{
+				"modelId":"second-high",
+				"modelOrAlias":{"model":"SHARED"}
+			}
+		}`)
+		model, effort := catalog.settleSelection(agent.DefaultModelSentinel, agent.EffortAuto)
+		assert.Equal(t, "second", model)
+		assert.Equal(t, agent.EffortAuto, effort)
+		second := agent.FindAvailableModel(catalog.models, "second")
+		require.NotNil(t, second)
+		assert.True(t, second.IsDefault)
+	})
+
+	t.Run("overwritten duplicate token does not falsely match listed variant", func(t *testing.T) {
+		catalog := mustBuildCatalogJSON(t, `{
+			"clientModelConfigs":[
+				{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"OLD_TOKEN"}},
+				{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEW_TOKEN"}}
+			],
+			"defaultOverrideModelConfig":{
+				"modelOrAlias":{"model":"OLD_TOKEN"}
+			}
+		}`)
+		model, effort := catalog.settleSelection(agent.DefaultModelSentinel, agent.EffortAuto)
+		assert.Equal(t, agent.DefaultModelSentinel, model)
+		assert.Empty(t, effort)
+		variant, settled, err := catalog.resolveModel(agent.DefaultModelSentinel, agent.EffortAuto)
+		require.NoError(t, err)
+		assert.Equal(t, "OLD_TOKEN", variant.token)
+		assert.Empty(t, settled)
+	})
+}
+
+func TestAntigravityCatalogBareEffortSuffixKeepsNonEmptyFamily(t *testing.T) {
+	family, effort := splitModelEffort("-high")
+	assert.Equal(t, "-high", family)
+	assert.Empty(t, effort)
+
+	catalog := mustBuildCatalogJSON(t, `{"clientModelConfigs":[
+		{"modelId":"-high","label":"Dash High","modelOrAlias":{"model":"DASH_HIGH"}}
+	]}`)
+	assert.Equal(t, "-high", catalog.defaultModel)
+	variant, settled, err := catalog.resolveModel(agent.DefaultModelSentinel, agent.EffortAuto)
+	require.NoError(t, err)
+	assert.Equal(t, "DASH_HIGH", variant.token)
+	assert.Empty(t, settled)
+}
+
+func TestAntigravityCatalogMixedFamilyUsesUnsuffixedBaseForAutoRegardlessOfOrder(t *testing.T) {
+	catalog := mustBuildCatalogJSON(t, `{"clientModelConfigs":[
+		{"modelId":"foo-high","label":"Foo (High)","modelOrAlias":{"model":"FOO_HIGH"}},
+		{"modelId":"foo","label":"Foo","modelOrAlias":{"model":"FOO_BASE"}}
+	]}`)
+	for _, requested := range []string{"", agent.EffortAuto} {
+		variant, settled, err := catalog.resolveModel("foo", requested)
+		require.NoError(t, err)
+		assert.Equal(t, "FOO_BASE", variant.token)
+		assert.Equal(t, agent.EffortAuto, settled)
+	}
+	variant, settled, err := catalog.resolveModel("foo", "high")
+	require.NoError(t, err)
+	assert.Equal(t, "FOO_HIGH", variant.token)
+	assert.Equal(t, "high", settled)
+}
+
+func TestAntigravityCatalogSentinelFamilyDoesNotRecurse(t *testing.T) {
+	t.Run("listed sentinel family resolves without recursion", func(t *testing.T) {
+		catalog := mustBuildCatalogJSON(t, `{"clientModelConfigs":[
+			{"modelId":"default-high","label":"Default (High)","modelOrAlias":{"model":"DEFAULT_HIGH"}}
+		]}`)
+		require.Len(t, catalog.models, 1)
+		variant, settled, err := catalog.resolveModel(agent.DefaultModelSentinel, agent.EffortAuto)
+		require.NoError(t, err)
+		assert.Equal(t, "DEFAULT_HIGH", variant.token)
+		assert.Equal(t, agent.EffortAuto, settled)
+	})
+
+	t.Run("unlisted override replaces sentinel family entry without duplicate model", func(t *testing.T) {
+		catalog := mustBuildCatalogJSON(t, `{
+			"clientModelConfigs":[
+				{"modelId":"default-high","label":"Default (High)","modelOrAlias":{"model":"DEFAULT_HIGH"}}
+			],
+			"defaultOverrideModelConfig":{"modelOrAlias":{"model":"OVERRIDE_HIDDEN"}}
+		}`)
+		require.Len(t, catalog.models, 1)
+		assert.Equal(t, agent.DefaultModelSentinel, catalog.models[0].Id)
+		assert.Nil(t, catalog.models[0].SupportedEfforts)
+		variant, settled, err := catalog.resolveModel(agent.DefaultModelSentinel, agent.EffortAuto)
+		require.NoError(t, err)
+		assert.Equal(t, "OVERRIDE_HIDDEN", variant.token)
+		assert.Empty(t, settled)
+	})
 }
