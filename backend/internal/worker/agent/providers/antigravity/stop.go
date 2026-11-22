@@ -23,7 +23,7 @@ func (a *Agent) stop(expected *cascadeState) {
 		cancel()
 	}
 	a.awaitStreams(group, antigravityStopTimerTag)
-	a.quotaWork.CloseAndWait()
+	a.accountRefreshWork.CloseAndWait()
 	a.approvalWork.CloseAndWait()
 	completion := a.ProcessExitCompletion()
 	a.finishCascades(states, completion, agent.IncompleteTaskStatus(completion))
@@ -46,7 +46,7 @@ func (a *Agent) Wait() error {
 		cancel()
 	}
 	a.awaitStreams(group, antigravityStopTimerTag)
-	a.quotaWork.CloseAndWait()
+	a.accountRefreshWork.CloseAndWait()
 	a.approvalWork.CloseAndWait()
 	a.finishCascades(states, a.ProcessExitCompletion(), agent.IncompleteTaskStatus(a.ProcessExitCompletion()))
 	if a.rpc.endpoint != nil {

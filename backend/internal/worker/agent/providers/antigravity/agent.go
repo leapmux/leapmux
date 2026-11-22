@@ -40,14 +40,14 @@ type Agent struct {
 	agentDir   *agentdir.Dir
 	logPath    string
 
-	streamCtx    context.Context
-	streamCancel context.CancelFunc
-	streamWG     *sync.WaitGroup
-	inputWG      sync.WaitGroup
-	approvalWork providerkit.CoalescingWork
-	quotaWork    providerkit.CoalescingWork
-	settingsMu   sync.Mutex
-	childSetupMu sync.Mutex
+	streamCtx          context.Context
+	streamCancel       context.CancelFunc
+	streamWG           *sync.WaitGroup
+	inputWG            sync.WaitGroup
+	approvalWork       providerkit.CoalescingWork
+	accountRefreshWork providerkit.CoalescingWork
+	settingsMu         sync.Mutex
+	childSetupMu       sync.Mutex
 
 	// Mu protects streamCtx, streamCancel, streamWG, and every field below.
 	// No caller holds Mu across a sink call or an HTTP request.

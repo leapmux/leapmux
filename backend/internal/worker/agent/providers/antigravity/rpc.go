@@ -87,6 +87,14 @@ func (r antigravityRPC) modelConfig(ctx context.Context) (antigravityCatalogRepl
 	return reply, err
 }
 
+func (r antigravityRPC) quotaSummary(ctx context.Context) (antigravityQuotaSummary, error) {
+	var reply struct {
+		Response antigravityQuotaSummary `json:"response"`
+	}
+	err := r.do(ctx, "RetrieveUserQuotaSummary", map[string]any{"request": map[string]any{}}, &reply)
+	return reply.Response, err
+}
+
 func (r antigravityRPC) steps(ctx context.Context, cascadeID string, offset int) ([]json.RawMessage, error) {
 	var reply struct {
 		Steps []json.RawMessage `json:"steps"`

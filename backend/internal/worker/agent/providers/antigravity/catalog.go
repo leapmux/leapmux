@@ -1,13 +1,12 @@
 package antigravity
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"math"
 	"strings"
-	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -25,14 +24,8 @@ type antigravityModelConfig struct {
 	ModelOrAlias struct {
 		Model string `json:"model"`
 	} `json:"modelOrAlias"`
-	Disabled           bool                  `json:"disabled"`
-	SupportedMimeTypes map[string]bool       `json:"supportedMimeTypes"`
-	QuotaInfo          *antigravityQuotaInfo `json:"quotaInfo"`
-}
-
-type antigravityQuotaInfo struct {
-	RemainingFraction float64 `json:"remainingFraction"`
-	ResetTime         string  `json:"resetTime"`
+	Disabled           bool            `json:"disabled"`
+	SupportedMimeTypes map[string]bool `json:"supportedMimeTypes"`
 }
 
 type catalogVariant struct {
@@ -44,7 +37,6 @@ type antigravityCatalog struct {
 	models       []*agent.ModelInfo
 	variants     map[string]map[string]catalogVariant
 	defaultToken string
-	quota        []antigravityModelConfig
 }
 
 func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
@@ -69,9 +61,6 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 		}
 		if effort != "" {
 			families[family].SupportedEfforts = append(families[family].SupportedEfforts, providerkit.EffortTier(effort))
-		}
-		if config.QuotaInfo != nil {
-			catalog.quota = append(catalog.quota, config)
 		}
 	}
 	if reply.DefaultOverrideModelConfig != nil && reply.DefaultOverrideModelConfig.ModelOrAlias.Model != "" {
@@ -174,53 +163,19 @@ func (a *Agent) loadCatalog() error {
 	return nil
 }
 
-func (a *Agent) refreshRateLimits() {
-	a.Mu.Lock()
-	ctx, generation := a.streamCtx, a.generation
-	eligible := a.cascadeCurrentLocked(a.root) && !a.IsDiscardingOutput()
-	a.Mu.Unlock()
-	if !eligible || ctx.Err() != nil {
-		return
-	}
+func (a *Agent) refreshAccountCatalog(ctx context.Context, generation uint64) {
 	reply, err := a.rpc.modelConfig(ctx)
 	if err != nil {
-		slog.Debug("antigravity refresh model quota", "agent_id", a.AgentID(), "error", err)
+		slog.Debug("antigravity refresh model catalog", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	a.Mu.Lock()
-	if generation != a.generation || !a.cascadeCurrentLocked(a.root) || ctx.Err() != nil || a.IsDiscardingOutput() {
-		a.Mu.Unlock()
+	if len(reply.ClientModelConfigs) == 0 && reply.DefaultOverrideModelConfig == nil {
 		return
 	}
 	catalog := buildAntigravityCatalog(reply)
-	if len(reply.ClientModelConfigs) > 0 || reply.DefaultOverrideModelConfig != nil {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.accountRefreshCurrentLocked(ctx, generation) {
 		a.catalog = catalog
-	} else {
-		a.catalog.quota = nil
 	}
-	quota := catalog.quota
-	a.Mu.Unlock()
-	values := map[string]any{}
-	for _, config := range quota {
-		value := map[string]any{
-			contracts.RateLimitFieldLabel:       config.Label,
-			contracts.RateLimitFieldUtilization: (1 - config.QuotaInfo.RemainingFraction) * 100,
-			contracts.RateLimitFieldStatus:      contracts.RateLimitStatusAllowed,
-		}
-		if config.QuotaInfo.RemainingFraction <= 0 {
-			value[contracts.RateLimitFieldStatus] = contracts.RateLimitStatusExceeded
-		}
-		if config.QuotaInfo.ResetTime != "" {
-			if reset, err := time.Parse(time.RFC3339, config.QuotaInfo.ResetTime); err == nil {
-				value[contracts.RateLimitFieldResetsAt] = reset.Format(time.RFC3339)
-			} else {
-				value[contracts.RateLimitFieldResetsAt] = config.QuotaInfo.ResetTime
-			}
-		}
-		values[config.ModelID] = value
-	}
-	a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyRateLimits: map[string]any{
-		contracts.RateLimitUpdateFieldMode:   contracts.RateLimitUpdateModeReplace,
-		contracts.RateLimitUpdateFieldValues: values,
-	}})
 }

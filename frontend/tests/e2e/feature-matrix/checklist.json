@@ -3360,7 +3360,7 @@
       "antigravity-cli": {
         "support": "supported",
         "userNote": "Antigravity CLI reports quota for a Google sign-in. A session that uses an API key shows no window in Agent info.",
-        "detailNote": "The catalog holds quotaInfo values only on a signed-in account, so the mock cannot reach it. A Go test covers the mapping, and a manual check on a signed-in account covers the display.",
+        "detailNote": "The Worker reads the same native quota summary as the CLI. It shows each reported pool and window once. Go tests cover the signed-in response shape. The native browser test covers the API-key response, which contains no subscription buckets.",
         "spec": "frontend/tests/e2e/antigravity-cli/rate-limit-state.spec.ts",
         "audit": "source-verified",
         "verified": true,

@@ -503,7 +503,7 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 	} else {
 		providerkit.PublishTurnStateTo(a.sink, agent.TurnState{}, seq)
 		if a.cascadeCurrent(state) && !a.IsDiscardingOutput() {
-			a.quotaWork.Run("quota", a.refreshRateLimits)
+			a.accountRefreshWork.Run("account", a.refreshAccountState)
 		}
 	}
 	return nil

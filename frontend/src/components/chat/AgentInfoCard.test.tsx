@@ -184,6 +184,33 @@ describe('agent info card rate-limit rows', () => {
     return <div>{infoHoverCardContent()}</div>
   }
 
+  it('shows Antigravity quota windows by pool as percentages of the quota', () => {
+    const { container } = render(() => (
+      <InfoCardWithInfo
+        agent={agent(AgentProvider.ANTIGRAVITY_CLI, 's')}
+        agentSessionInfo={{
+          rateLimits: {
+            'gemini-weekly': {
+              label: 'Gemini Models · Weekly',
+              utilization: 0.1281,
+              status: 'allowed',
+              resetsAt: future(3600),
+            },
+            'gemini-5h': { label: 'Gemini Models · 5-hour', utilization: 0.25, status: 'allowed' },
+            '3p-weekly': { label: 'Claude and GPT models · Weekly', utilization: 0, status: 'allowed' },
+            '3p-5h': { label: 'Claude and GPT models · 5-hour', utilization: 1, status: 'exceeded' },
+          },
+        }}
+      />
+    ))
+
+    const rowText = (label: string) => within(container).getByText(label, { exact: true }).parentElement
+    expect(rowText('Gemini Models · Weekly')).toHaveTextContent(/Allowed, 13% used, resets in/)
+    expect(rowText('Gemini Models · 5-hour')).toHaveTextContent('Allowed, 25% used')
+    expect(rowText('Claude and GPT models · Weekly')).toHaveTextContent('Allowed, 0% used')
+    expect(rowText('Claude and GPT models · 5-hour')).toHaveTextContent('Exceeded')
+  })
+
   it('refreshes an open rate-limit countdown and removes it after the reset', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-27T00:00:00Z'))

@@ -2,11 +2,8 @@ package antigravity
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
-
-	"github.com/leapmux/leapmux/generated/contracts"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
@@ -76,49 +73,17 @@ func TestAntigravityCatalogPreservesServerOrder(t *testing.T) {
 		assert.Equal(t, []string{agent.DefaultModelSentinel, "z", "a", "m"}, ids)
 	}
 }
-func TestAntigravityQuotaMappingAndEmptyReplacement(t *testing.T) {
-	for _, tc := range []struct {
-		name, payload string
-		count         int
-		utilization   float64
-		status        string
-	}{
-		{"exhausted", `{"remainingFraction":0}`, 1, 100, contracts.RateLimitStatusExceeded},
-		{"partial", `{"remainingFraction":0.25,"resetTime":"2026-11-06T12:00:00Z"}`, 1, 75, contracts.RateLimitStatusAllowed},
-		{"unused", `{"remainingFraction":1}`, 1, 0, contracts.RateLimitStatusAllowed},
-		{"absent", `null`, 0, 0, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a, sink := testAgent(t)
-			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = fmt.Fprintf(w, `{"clientModelConfigs":[{"modelId":"model","label":"Model","modelOrAlias":{"model":"MODEL"},"quotaInfo":%s}]}`, tc.payload)
-			})
-			a.refreshRateLimits()
-			value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
-			require.True(t, ok)
-			update := value.(map[string]any)
-			assert.Equal(t, contracts.RateLimitUpdateModeReplace, update[contracts.RateLimitUpdateFieldMode])
-			values := update[contracts.RateLimitUpdateFieldValues].(map[string]any)
-			require.Len(t, values, tc.count)
-			if tc.count > 0 {
-				model := values["model"].(map[string]any)
-				assert.Equal(t, tc.utilization, model[contracts.RateLimitFieldUtilization])
-				assert.Equal(t, tc.status, model[contracts.RateLimitFieldStatus])
-			}
-			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
-			a.refreshRateLimits()
-			value, ok = sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
-			require.True(t, ok)
-			assert.Empty(t, value.(map[string]any)[contracts.RateLimitUpdateFieldValues])
-		})
-	}
-}
-
 func TestAntigravityQuotaRefreshCannotDelayInactiveTurn(t *testing.T) {
 	a, sink := testAgent(t)
 	entered := make(chan struct{})
 	release, unblock := newTestGate(t)
-	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) { close(entered); <-release; _, _ = w.Write([]byte(`{}`)) })
+	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == languageServerService+"RetrieveUserQuotaSummary" {
+			close(entered)
+			<-release
+		}
+		_, _ = w.Write([]byte(`{}`))
+	})
 	a.beginTurn(a.root)
 	done := make(chan error, 1)
 	go func() { done <- a.endTurn(a.root, agent.MessageCompletionComplete) }()
