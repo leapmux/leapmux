@@ -14,6 +14,12 @@ import (
 )
 
 func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
+	// Inherited GIT_EXTERNAL_DIFF takes precedence over repo diff.external;
+	// t.Setenv alone is insufficient because GIT_EXTERNAL_DIFF="" makes Git
+	// fail to execute an empty helper path, so unset it while keeping cleanup.
+	t.Setenv("GIT_EXTERNAL_DIFF", "")
+	require.NoError(t, os.Unsetenv("GIT_EXTERNAL_DIFF"))
+
 	repo := initRepo(t)
 	tracked := filepath.Join(repo, "tracked.txt")
 	require.NoError(t, os.WriteFile(tracked, []byte("before\n"), 0o600))
@@ -37,10 +43,26 @@ func TestDiffBytesDisablesExternalDiffAndTextconv(t *testing.T) {
 	_, err = os.Stat(marker)
 	require.NoError(t, err, "the positive control must execute textconv")
 	require.NoError(t, os.Remove(marker))
+
+	envMarker := filepath.Join(helperDir, "env-executed")
+	envProgram := filepath.Join(helperDir, "env-diff-helper")
+	t.Setenv("LEAPMUX_TEST_ENV_DIFF_MARKER", envMarker)
+	testutil.WriteExecutable(t, envProgram, "#!/bin/sh\nprintf ran > \"$LEAPMUX_TEST_ENV_DIFF_MARKER\"\nprintf env-converted\n")
+	t.Setenv("GIT_EXTERNAL_DIFF", envProgram)
+	_, err = Bytes(t.Context(), repo, "diff", "--no-textconv")
+	require.NoError(t, err)
+	_, err = os.Stat(envMarker)
+	require.NoError(t, err, "the positive control must execute GIT_EXTERNAL_DIFF")
+	_, err = os.Stat(marker)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.NoError(t, os.Remove(envMarker))
+
 	output, err := DiffBytes(t.Context(), repo)
 	require.NoError(t, err)
 	assert.Contains(t, string(output), "+after \t\n")
 	_, err = os.Stat(marker)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(envMarker)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
