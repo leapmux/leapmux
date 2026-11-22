@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { flush } from '~/test-support/async'
+import { stubRect } from '~/test-support/clipStub'
 import { pointerEvent } from '~/test-support/pointer'
+import { createMockVisualViewport } from '~/test-support/visualViewportStub'
 import { SelectionQuotePopover } from './SelectionQuotePopover'
 
 // `~/lib/clipboard` announces a failed write itself. Mocked here so the copy
@@ -390,5 +392,65 @@ describe('selection quote popover', () => {
       requestFrame.mockRestore()
       cancelFrame.mockRestore()
     }
+  })
+
+  it('clamps within visualViewport above the iOS keyboard and repositions live on viewport shifts', () => {
+    const vv = createMockVisualViewport(262, 452)
+    vi.stubGlobal('innerWidth', 390)
+    vi.stubGlobal('innerHeight', 262)
+    vi.stubGlobal('visualViewport', vv)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+
+    render(() => (
+      <SelectionQuotePopover onQuote={vi.fn()}>
+        <p data-testid="selectable">selected text</p>
+      </SelectionQuotePopover>
+    ))
+    const textNode = screen.getByTestId('selectable').firstChild!
+    let selectionRect = {
+      left: 20,
+      right: 120,
+      top: 600,
+      bottom: 620,
+    }
+    mockSelection({
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: textNode,
+      focusNode: textNode,
+      toString: () => 'selected text',
+      getRangeAt: () => ({
+        toString: () => 'selected text',
+        getClientRects: () => [
+          selectionRect,
+        ],
+      }) as unknown as Range,
+    })
+
+    fireEvent.mouseUp(screen.getByTestId('selectable'))
+    const popover = screen.getByTestId('quote-selection-popover')
+    stubRect(popover, { width: 140, height: 30 })
+
+    // Re-clamp against visible band [452, 714]: selection top 600 -> 566 stays inside [452, 714]
+    // instead of clamping off-screen to innerHeight - 30 = 232.
+    vv.dispatch('resize')
+    expect(popover.style.top).toBe('566px')
+    expect(popover.style.left).toBe('120px')
+
+    // Viewport scrolls and selection moves near the top of the visible band (offsetTop 520):
+    // top = 530 - 34 = 496 < 520 -> flips below to bottom + 4 = 554.
+    vv.offsetTop = 520
+    selectionRect = {
+      left: 20,
+      right: 320,
+      top: 530,
+      bottom: 550,
+    }
+    vv.dispatch('scroll')
+    expect(popover.style.top).toBe('554px')
+    // Right edge 320 + 140 = 460 > 390 -> clamps left to 250.
+    expect(popover.style.left).toBe('250px')
   })
 })

@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import { createSignal, onCleanup, onMount } from 'solid-js'
-import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { isSoftKeyboardTarget, setSoftKeyboardVisible } from '~/lib/softKeyboard'
+import { registerVisualViewportInsetUpdater, scheduleVisualViewportUpdate } from '~/lib/visualViewport'
 
 /**
  * Bridge `window.visualViewport` state into two CSS custom properties
@@ -125,7 +125,7 @@ export function useVisualViewportInset(): Accessor<boolean> {
     // viewport recovers, so a dismiss animation cannot invert the CSS pair.
     let keyboardWasUp = false
 
-    const apply = () => {
+    const apply = (): boolean => {
       const root = document.documentElement
       const vv = window.visualViewport
       const height = vv?.height ?? 0
@@ -154,6 +154,7 @@ export function useVisualViewportInset(): Accessor<boolean> {
       // is genuinely in the way. See `~/lib/softKeyboard`.
       setSoftKeyboardVisible(keyboardUp)
 
+      const prevVvh = lastVvh
       const nextVvh = keyboardUp && vv
         ? `${Math.round(height)}px`
         : ''
@@ -164,6 +165,7 @@ export function useVisualViewportInset(): Accessor<boolean> {
       // See the module comment for why the two keyboard states take
       // opposite signs, and why the keyboard-up sign is only correct
       // beside the `--vvh` height above.
+      const prevShift = lastShift
       const nextShift = offsetTop > 0.5 && !zoomed
         ? (keyboardUp
             ? `${offsetTop}px`
@@ -172,18 +174,18 @@ export function useVisualViewportInset(): Accessor<boolean> {
                 : `-${offsetTop}px`))
         : ''
       lastShift = writeRootVar(root, '--vv-shift', nextShift, lastShift)
+      return lastVvh !== prevVvh || lastShift !== prevShift
     }
 
-    const coalescer = createRafCoalescer<void>(apply)
-    const schedule = () => {
+    const scheduleInset = () => {
       if (live)
-        coalescer.push()
+        scheduleVisualViewportUpdate('inset')
     }
 
     const onFocusIn = (e: FocusEvent) => {
       if (isSoftKeyboardTarget(e.target as Element | null)) {
         editableFocused = true
-        schedule()
+        scheduleInset()
       }
     }
     const onFocusOut = () => {
@@ -194,7 +196,7 @@ export function useVisualViewportInset(): Accessor<boolean> {
           return
         if (!isSoftKeyboardTarget(document.activeElement)) {
           editableFocused = false
-          schedule()
+          scheduleInset()
         }
       })
     }
@@ -203,34 +205,24 @@ export function useVisualViewportInset(): Accessor<boolean> {
     // (or correctly omits one when nothing is focused).
     apply()
 
-    const vv = window.visualViewport
-    if (vv) {
-      vv.addEventListener('resize', schedule)
-      vv.addEventListener('scroll', schedule)
-    }
-    // Belt-and-braces: listen to window.resize too. On some iOS Chrome
-    // builds and embedded WebViews `visualViewport.resize` is silent
-    // when the virtual keyboard appears, but `window.resize` still
-    // fires. Cheap to attach; redundant when both fire (rAF dedupes).
-    window.addEventListener('resize', schedule)
+    // Register with the shared visual-viewport hub so `apply()` always runs in
+    // phase 1 before floating overlays measure and reposition in phase 2 of the
+    // same animation frame.
+    const unregisterHub = registerVisualViewportInsetUpdater(apply)
+
     // iOS quirk: returning from background (Safari → home → reopen)
     // can leave `offsetTop` dirty. `pageshow` fires after such a
     // restore (incl. bfcache) and gives us a chance to resync.
-    window.addEventListener('pageshow', schedule)
+    window.addEventListener('pageshow', scheduleInset)
     document.addEventListener('focusin', onFocusIn)
     document.addEventListener('focusout', onFocusOut)
 
     onCleanup(() => {
       live = false
-      if (vv) {
-        vv.removeEventListener('resize', schedule)
-        vv.removeEventListener('scroll', schedule)
-      }
-      window.removeEventListener('resize', schedule)
-      window.removeEventListener('pageshow', schedule)
+      unregisterHub()
+      window.removeEventListener('pageshow', scheduleInset)
       document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('focusout', onFocusOut)
-      coalescer.abort()
       // Remove the custom properties so test environments are isolated.
       // In production unmount is effectively unload, so this is a no-op.
       document.documentElement.style.removeProperty('--vvh')

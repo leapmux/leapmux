@@ -147,24 +147,29 @@ export function FilterableListbox(props: {
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault()
+        e.stopPropagation()
         setHighlightedIndex(i => Math.min(i + 1, items.length - 1))
         scrollHighlightedIntoView()
         break
       case 'ArrowUp':
         e.preventDefault()
+        e.stopPropagation()
         setHighlightedIndex(i => Math.max(i - 1, 0))
         scrollHighlightedIntoView()
         break
       case 'Enter': {
         e.preventDefault()
+        e.stopPropagation()
         const item = items[highlightedIndex()]
         if (item)
           props.onSelect(item.value)
         break
       }
       case 'Escape':
-        if (props.onEscape)
+        if (props.onEscape) {
+          e.stopPropagation()
           props.onEscape()
+        }
         break
     }
   }
@@ -195,7 +200,7 @@ export function FilterableListbox(props: {
                 onClick={() => props.onSelect(item.value)}
                 onMouseEnter={() => setHighlightedIndex(index())}
               >
-                <span>{highlightMatch(item.label, filter())}</span>
+                <span class={styles.comboboxItemLabel}>{highlightMatch(item.label, filter())}</span>
                 <Show when={item.secondary}>
                   <span class={styles.comboboxItemSecondary}>{highlightMatch(item.secondary!, filter())}</span>
                 </Show>

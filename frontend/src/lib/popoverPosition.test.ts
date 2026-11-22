@@ -1,26 +1,8 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { calcPopoverPosition } from './popoverPosition'
 
-/** Helper to create a mock trigger element with a given bounding rect. */
-function mockTrigger(rect: Partial<DOMRect>): Element {
-  return {
-    getBoundingClientRect: () => ({
-      top: 0,
-      left: 0,
-      bottom: 0,
-      right: 0,
-      width: 0,
-      height: 0,
-      x: 0,
-      y: 0,
-      toJSON: () => {},
-      ...rect,
-    }),
-  } as Element
-}
-
-/** Helper to create a mock popover element with a given bounding rect. */
-function mockPopover(rect: Partial<DOMRect>): HTMLElement {
+/** Create a mock DOM element with a given bounding rect (satisfies both Element and HTMLElement). */
+function mockElement(rect: Partial<DOMRect>): HTMLElement {
   return {
     getBoundingClientRect: () => ({
       top: 0,
@@ -42,8 +24,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerHeight', 800)
     vi.stubGlobal('innerWidth', 1200)
 
-    const trigger = mockTrigger({ top: 100, bottom: 130, left: 200 })
-    const popover = mockPopover({ width: 200, height: 150 })
+    const trigger = mockElement({ top: 100, bottom: 130, left: 200 })
+    const popover = mockElement({ width: 200, height: 150 })
 
     const result = calcPopoverPosition(trigger, popover)
 
@@ -57,8 +39,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerWidth', 1200)
 
     // Trigger near the bottom of viewport
-    const trigger = mockTrigger({ top: 300, bottom: 330, left: 50 })
-    const popover = mockPopover({ width: 200, height: 150 })
+    const trigger = mockElement({ top: 300, bottom: 330, left: 50 })
+    const popover = mockElement({ width: 200, height: 150 })
 
     const result = calcPopoverPosition(trigger, popover)
 
@@ -72,8 +54,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerWidth', 1200)
 
     // Trigger in the middle of a very small viewport, popover too tall for either side
-    const trigger = mockTrigger({ top: 80, bottom: 110, left: 50 })
-    const popover = mockPopover({ width: 200, height: 150 })
+    const trigger = mockElement({ top: 80, bottom: 110, left: 50 })
+    const popover = mockElement({ width: 200, height: 150 })
 
     const result = calcPopoverPosition(trigger, popover)
 
@@ -89,8 +71,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerWidth', 1200)
 
     // Trigger near bottom, more space above
-    const trigger = mockTrigger({ top: 150, bottom: 180, left: 50 })
-    const popover = mockPopover({ width: 200, height: 200 })
+    const trigger = mockElement({ top: 150, bottom: 180, left: 50 })
+    const popover = mockElement({ width: 200, height: 200 })
 
     const result = calcPopoverPosition(trigger, popover)
 
@@ -106,8 +88,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerWidth', 500)
 
     // Trigger near right edge
-    const trigger = mockTrigger({ top: 100, bottom: 130, left: 400 })
-    const popover = mockPopover({ width: 200, height: 150 })
+    const trigger = mockElement({ top: 100, bottom: 130, left: 400 })
+    const popover = mockElement({ width: 200, height: 150 })
 
     const result = calcPopoverPosition(trigger, popover)
 
@@ -120,8 +102,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerHeight', 800)
     vi.stubGlobal('innerWidth', 100)
 
-    const trigger = mockTrigger({ top: 100, bottom: 130, left: 50 })
-    const popover = mockPopover({ width: 200, height: 150 })
+    const trigger = mockElement({ top: 100, bottom: 130, left: 50 })
+    const popover = mockElement({ width: 200, height: 150 })
 
     const result = calcPopoverPosition(trigger, popover)
 
@@ -134,8 +116,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerHeight', 800)
     vi.stubGlobal('innerWidth', 1200)
 
-    const trigger = mockTrigger({ top: 300, bottom: 330, left: 100 })
-    const popover = mockPopover({ width: 200, height: 100 })
+    const trigger = mockElement({ top: 300, bottom: 330, left: 100 })
+    const popover = mockElement({ width: 200, height: 100 })
 
     const result = calcPopoverPosition(trigger, popover, { placement: 'above' })
 
@@ -147,8 +129,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerHeight', 800)
     vi.stubGlobal('innerWidth', 1200)
 
-    const trigger = mockTrigger({ top: 100, bottom: 130, left: 200 })
-    const popover = mockPopover({ width: 200, height: 150 })
+    const trigger = mockElement({ top: 100, bottom: 130, left: 200 })
+    const popover = mockElement({ width: 200, height: 150 })
 
     const result = calcPopoverPosition(trigger, popover, { offset: 8 })
 
@@ -159,8 +141,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerHeight', 800)
     vi.stubGlobal('innerWidth', 1200)
 
-    const trigger = mockTrigger({ top: 300, bottom: 330, left: 100 })
-    const popover = mockPopover({ width: 200, height: 100 })
+    const trigger = mockElement({ top: 300, bottom: 330, left: 100 })
+    const popover = mockElement({ width: 200, height: 100 })
 
     const result = calcPopoverPosition(trigger, popover, { placement: 'above', offset: 8 })
 
@@ -171,8 +153,8 @@ describe('calcPopoverPosition', () => {
     vi.stubGlobal('innerHeight', 800)
     vi.stubGlobal('innerWidth', 1200)
 
-    const trigger = mockTrigger({ top: 100, bottom: 130, left: 200 })
-    const popover = mockPopover({ width: 200, height: 150 })
+    const trigger = mockElement({ top: 100, bottom: 130, left: 200 })
+    const popover = mockElement({ width: 200, height: 150 })
 
     const result = calcPopoverPosition(trigger, popover)
 
@@ -186,7 +168,7 @@ describe('calcPopoverPosition', () => {
       vi.stubGlobal('innerHeight', 800)
       vi.stubGlobal('innerWidth', 1200)
 
-      const popover = mockPopover({ width: 200, height: 150 })
+      const popover = mockElement({ width: 200, height: 150 })
 
       const result = calcPopoverPosition({ top: 100, bottom: 122, left: 340 }, popover)
 
@@ -199,7 +181,7 @@ describe('calcPopoverPosition', () => {
       vi.stubGlobal('innerHeight', 400)
       vi.stubGlobal('innerWidth', 1200)
 
-      const popover = mockPopover({ width: 200, height: 150 })
+      const popover = mockElement({ width: 200, height: 150 })
 
       const result = calcPopoverPosition({ top: 300, bottom: 322, left: 50 }, popover)
 
@@ -211,7 +193,7 @@ describe('calcPopoverPosition', () => {
       vi.stubGlobal('innerHeight', 800)
       vi.stubGlobal('innerWidth', 500)
 
-      const popover = mockPopover({ width: 200, height: 150 })
+      const popover = mockElement({ width: 200, height: 150 })
 
       const result = calcPopoverPosition({ top: 100, bottom: 122, left: 460 }, popover)
 
@@ -223,7 +205,7 @@ describe('calcPopoverPosition', () => {
       vi.stubGlobal('innerHeight', 800)
       vi.stubGlobal('innerWidth', 1200)
 
-      const popover = mockPopover({ width: 200, height: 100 })
+      const popover = mockElement({ width: 200, height: 100 })
 
       const result = calcPopoverPosition(
         { top: 300, bottom: 322, left: 100 },
@@ -233,6 +215,156 @@ describe('calcPopoverPosition', () => {
 
       expect(result.top).toBe(192) // 300 - 100 - 8
       expect(result.flipped).toBe(true)
+    })
+  })
+
+  describe('visualViewport rectangle', () => {
+    function stubViewport(opts: {
+      innerWidth: number
+      innerHeight: number
+      visualViewport?: { width: number, height: number, offsetTop: number, offsetLeft: number } | null
+      vvShift?: string
+    }) {
+      vi.stubGlobal('innerWidth', opts.innerWidth)
+      vi.stubGlobal('innerHeight', opts.innerHeight)
+      if (opts.visualViewport !== undefined)
+        vi.stubGlobal('visualViewport', opts.visualViewport)
+      if (opts.vvShift !== undefined)
+        document.documentElement.style.setProperty('--vv-shift', opts.vvShift)
+      onTestFinished(() => {
+        vi.unstubAllGlobals()
+        document.documentElement.style.removeProperty('--vv-shift')
+      })
+    }
+
+    it('positions and clamps within visualViewport when iOS shifts offsetTop for the keyboard', () => {
+      // Measured iOS Safari keyboard-up geometry: window.innerHeight matches
+      // visualViewport.height (262), while the visible region sits at layout
+      // y in [452, 714]. Clamping against [0, 262] pushed the popover off the
+      // top of the visible screen.
+      stubViewport({
+        innerWidth: 390,
+        innerHeight: 262,
+        visualViewport: {
+          width: 390,
+          height: 262,
+          offsetTop: 452,
+          offsetLeft: 0,
+        },
+      })
+      const trigger = mockElement({ top: 680, bottom: 704, left: 40 })
+      const popover = mockElement({ width: 220, height: 200 })
+
+      const result = calcPopoverPosition(trigger, popover)
+
+      expect(result.top).toBe(480) // 680 - 200, inside [452, 714]
+      expect(result.left).toBe(40)
+      expect(result.flipped).toBe(true)
+    })
+
+    it('clamps to visualViewport.offsetTop when the popover is taller than the visible region', () => {
+      stubViewport({
+        innerWidth: 390,
+        innerHeight: 262,
+        visualViewport: {
+          width: 390,
+          height: 262,
+          offsetTop: 452,
+          offsetLeft: 0,
+        },
+      })
+      const trigger = mockElement({ top: 680, bottom: 704, left: 40 })
+      const popover = mockElement({ width: 220, height: 300 })
+
+      const result = calcPopoverPosition(trigger, popover)
+
+      expect(result.top).toBe(452)
+      expect(result.flipped).toBe(true)
+    })
+
+    it('clamps horizontally within visualViewport offsetLeft and width', () => {
+      stubViewport({
+        innerWidth: 800,
+        innerHeight: 800,
+        visualViewport: {
+          width: 300,
+          height: 400,
+          offsetTop: 0,
+          offsetLeft: 50,
+        },
+      })
+      const trigger = mockElement({ top: 100, bottom: 130, left: 260 })
+      const popover = mockElement({ width: 200, height: 120 })
+
+      const result = calcPopoverPosition(trigger, popover)
+
+      // Visible horizontal band is [50, 350]; right edge clamps left to 150.
+      expect(result.left).toBe(150)
+    })
+
+    it('follows negative --vv-shift on iOS 26 keyboard-down residual offsetTop', () => {
+      // On iOS 26 after dismissing the keyboard (FB19889436), visualViewport.offsetTop
+      // stays positive (120) while useVisualViewportInset translates body by -120px.
+      // Triggers sit in [-120, 680], so popovers must clamp and flip against [-120, 680].
+      stubViewport({
+        innerWidth: 390,
+        innerHeight: 800,
+        visualViewport: {
+          width: 390,
+          height: 800,
+          offsetTop: 120,
+          offsetLeft: 0,
+        },
+        vvShift: '-120px',
+      })
+
+      // Top-bar trigger shifted to y = -110..-86 stays attached rather than clamping to +120.
+      const topTrigger = mockElement({ top: -110, bottom: -86, left: 20 })
+      const topPopover = mockElement({ width: 200, height: 120 })
+      const topResult = calcPopoverPosition(topTrigger, topPopover)
+      expect(topResult.top).toBe(-86)
+      expect(topResult.flipped).toBe(false)
+
+      // Bottom composer chip shifted to y = 630..654 flips above rather than overflowing below 680.
+      const bottomTrigger = mockElement({ top: 630, bottom: 654, left: 20 })
+      const bottomPopover = mockElement({ width: 200, height: 200 })
+      const bottomResult = calcPopoverPosition(bottomTrigger, bottomPopover)
+      expect(bottomResult.top).toBe(430)
+      expect(bottomResult.flipped).toBe(true)
+    })
+
+    it('falls back atomically to window.innerWidth and innerHeight without stale visualViewport offsets', () => {
+      stubViewport({
+        innerWidth: 800,
+        innerHeight: 500,
+        visualViewport: {
+          width: 0,
+          height: 0,
+          offsetTop: 452,
+          offsetLeft: 80,
+        },
+      })
+      const trigger = mockElement({ top: 420, bottom: 450, left: 100 })
+      const popover = mockElement({ width: 200, height: 120 })
+
+      const result = calcPopoverPosition(trigger, popover)
+
+      expect(result.top).toBe(300)
+      expect(result.left).toBe(100)
+      expect(result.flipped).toBe(true)
+    })
+
+    it('handles an undefined window without throwing ReferenceError', () => {
+      vi.stubGlobal('window', undefined)
+      onTestFinished(() => {
+        vi.unstubAllGlobals()
+      })
+      const trigger = mockElement({ top: 100, bottom: 130, left: 40 })
+      const popover = mockElement({ width: 200, height: 120 })
+
+      const result = calcPopoverPosition(trigger, popover)
+
+      expect(result).toEqual({ top: 0, left: 0, flipped: true })
     })
   })
 })

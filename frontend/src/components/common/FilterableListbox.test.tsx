@@ -108,7 +108,11 @@ describe('FilterableListbox', () => {
     // secondary text shows no check icon, so weight is the only marker left.
     expect(selected.className).not.toBe(unselected.className)
 
-    // The secondary text is styled, not a bare span.
+    // The label and secondary text are both styled, not bare spans.
+    const label = within(selected).getByText('JavaScript')
+    expect(label.tagName).toBe('SPAN')
+    expect(label.className).not.toBe('')
+
     const secondary = within(selected).getByText('js')
     expect(secondary.tagName).toBe('SPAN')
     expect(secondary.className).not.toBe('')

@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { touchScrollContain } from '~/styles/popover.css'
 
 /** Shaped like the field it replaces, so a form row keeps its rhythm. */
 export const trigger = style({
@@ -52,12 +53,14 @@ export const triggerLabel = style({
  * content, so without this the list refuses to shrink, the popover overflows
  * instead, and the filter box scrolls away after all.
  */
-export const filteredList = style({
-  flex: '1 1 auto',
-  minHeight: 0,
-  overflow: 'auto',
-  overscrollBehavior: 'contain',
-})
+export const filteredList = style([
+  touchScrollContain,
+  {
+    flex: '1 1 auto',
+    minHeight: 0,
+    overflow: 'auto',
+  },
+])
 
 /** The heading `<optgroup label>` used to draw. */
 export const groupHeading = style({

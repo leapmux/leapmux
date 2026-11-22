@@ -1,6 +1,8 @@
 import type { JSX } from 'solid-js'
 import { createEffect, createMemo, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show, untrack } from 'solid-js'
 import { Portal } from 'solid-js/web'
+import { clamp } from '~/lib/clamp'
+import { readViewportRect, subscribeVisualViewport } from '~/lib/visualViewport'
 import { srOnly } from '~/styles/shared.css'
 import { holdIsOverMenu, touchReleaseOpensMenu } from './contextMenuGesture'
 import * as styles from './Tooltip.css'
@@ -120,27 +122,39 @@ function TooltipPopover(props: {
   )
 }
 
-/** Clamp a rendered tooltip horizontally to the viewport and flip below `triggerRect` if clipped at the top. */
+/** Compute a tooltip's viewport-clamped position relative to `triggerRect`. */
+function computeClampedTooltipPos(el: HTMLDivElement, triggerRect: DOMRect): TooltipPos {
+  const viewport = readViewportRect()
+  const tr = el.getBoundingClientRect()
+  let { top, left } = positionAboveRect(triggerRect)
+  const halfW = tr.width / 2
+  const minLeft = viewport.left + halfW + 4
+  const maxLeft = viewport.right - 4 - halfW
+  left = minLeft <= maxLeft
+    ? clamp(left, minLeft, maxLeft)
+    : viewport.left + (viewport.right - viewport.left) / 2
+  // Because `TooltipPopover` translates by `-100%` vertically, its rendered top
+  // edge when placed above the trigger is `top - tr.height`. Fall back to
+  // `tr.top` when `tr.height` is 0 (unstubbed jsdom layout).
+  const aboveTop = tr.height > 0
+    ? top - tr.height
+    : tr.top
+  if (aboveTop < viewport.top + 4)
+    top = triggerRect.bottom + 6 + tr.height
+  return { top, left }
+}
+
+/** Clamp a rendered tooltip horizontally to the visible viewport and flip below `triggerRect` if clipped at the top. */
 function schedulePositionClamp(
   getTooltipEl: () => HTMLDivElement | undefined,
   triggerRect: DOMRect,
-  getPos: () => TooltipPos,
   setPos: (next: TooltipPos) => void,
 ): void {
   requestAnimationFrame(() => {
     const el = getTooltipEl()
     if (!el || !el.isConnected)
       return
-    const tr = el.getBoundingClientRect()
-    let { top, left } = getPos()
-    const halfW = tr.width / 2
-    if (left - halfW < 4)
-      left = halfW + 4
-    else if (left + halfW > window.innerWidth - 4)
-      left = window.innerWidth - 4 - halfW
-    if (tr.top < 4)
-      top = triggerRect.bottom + 6 + tr.height
-    setPos({ top, left })
+    setPos(computeClampedTooltipPos(el, triggerRect))
   })
 }
 
@@ -584,8 +598,28 @@ export function Tooltip(props: TooltipProps) {
     document.addEventListener('pointermove', onPointerMove)
 
     // Clamp to viewport after the tooltip renders.
-    schedulePositionClamp(() => tooltipEl, rect, pos, setPos)
+    schedulePositionClamp(() => tooltipEl, rect, setPos)
   }
+
+  // Reposition the top-layer tooltip when the visual viewport resizes, scrolls,
+  // or updates `--vvh`/`--vv-shift` (after `useVisualViewportInset` runs in phase 1).
+  createEffect(() => {
+    if (!visible())
+      return
+    const unsubscribe = subscribeVisualViewport(() => {
+      const target = targetEl()
+      if (!target || !target.isConnected) {
+        dismiss()
+        return
+      }
+      const rect = target.getBoundingClientRect()
+      if (tooltipEl && tooltipEl.isConnected)
+        setPos(computeClampedTooltipPos(tooltipEl, rect))
+      else
+        setPos(positionAboveRect(rect))
+    })
+    onCleanup(unsubscribe)
+  })
 
   const show = () => {
     if (!hasTooltipContent())
@@ -917,8 +951,27 @@ export function createAnchoredTooltip(options?: AnchoredTooltipOptions): Anchore
       pointerMoveListening = true
       document.addEventListener('pointermove', onPointerMove)
     }
-    schedulePositionClamp(() => tooltipEl, rect, pos, setPos)
+    schedulePositionClamp(() => tooltipEl, rect, setPos)
   }
+
+  // Reposition the top-layer tooltip when the visual viewport shifts while open.
+  createEffect(() => {
+    if (!visible())
+      return
+    const unsubscribe = subscribeVisualViewport(() => {
+      const current = untrack(anchor)
+      if (!current || !current.target.isConnected) {
+        dismissInternal('dismiss')
+        return
+      }
+      const rect = current.target.getBoundingClientRect()
+      if (tooltipEl && tooltipEl.isConnected)
+        setPos(computeClampedTooltipPos(tooltipEl, rect))
+      else
+        setPos(positionAboveRect(rect))
+    })
+    onCleanup(unsubscribe)
+  })
 
   const show = (target: HTMLElement, text: string | (() => string | undefined)) => {
     if (!target.isConnected) {
@@ -992,7 +1045,7 @@ export function createAnchoredTooltip(options?: AnchoredTooltipOptions): Anchore
     }
     setDisplayText(text)
     if (untrack(visible)) {
-      schedulePositionClamp(() => tooltipEl, target.getBoundingClientRect(), pos, setPos)
+      schedulePositionClamp(() => tooltipEl, target.getBoundingClientRect(), setPos)
     }
     else if (!timers.hasShowTimer()) {
       timers.scheduleShow(present)

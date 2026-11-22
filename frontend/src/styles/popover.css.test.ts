@@ -1,8 +1,20 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { rows as backgroundTaskRows } from '~/components/backgroundtasks/BackgroundTaskPanel.css'
 import { previewCard } from '~/components/chat/ChatScrollRail.css'
+import { comboboxListbox } from '~/components/common/FilterableListbox.css'
+import { filteredList } from '~/components/common/LoadingMenu.css'
 import { tooltip } from '~/components/common/Tooltip.css'
-import { floatingCardSurface, popoverBase, popoverCard, popoverCardPadding } from '~/styles/popover.css'
+import { floatingCardSurface, popoverBase, popoverCard, popoverCardPadding, popoverColumnClamp, touchScrollContain } from '~/styles/popover.css'
 import { POPOVER_CARD_PADDING } from '~/styles/popoverTokens'
+import { extractStyleCallBlock } from '~/test-support/styleSource'
+
+const popoverCssSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'popover.css.ts'),
+  'utf8',
+)
 
 describe('popoverCard', () => {
   it('carries Oat\'s own card class, which is where the surface comes from', () => {
@@ -27,13 +39,13 @@ describe('popoverCard', () => {
 
   it('carries the positioning reset too, so a call site needs no second class', () => {
     // vanilla-extract emits every composed class, so the list is: Oat's `card`,
-    // popoverBase, the layout class that composes it, and the padding class.
-    // popoverBase is what resets the UA popover defaults and stops a CLOSED
-    // popover from swallowing the next click, and a bare `card` popover had
-    // neither -- which is the second half of what applying this class whole buys.
+    // popoverBase, touchScrollContain, the layout class that composes them, and
+    // the padding class. popoverBase is what resets the UA popover defaults and
+    // stops a CLOSED popover from swallowing the next click.
     const classes = popoverCard.split(' ')
     expect(classes).toContain(popoverBase)
-    expect(classes).toHaveLength(4)
+    expect(classes).toContain(touchScrollContain)
+    expect(classes).toHaveLength(5)
   })
 })
 
@@ -70,5 +82,25 @@ describe('popoverCardPadding', () => {
     // and the e2e spec measures this inset. If the spec restated the declaration instead, a
     // legitimate change to the inset would fail the spec while the app stayed correct.
     expect(POPOVER_CARD_PADDING).toBe('var(--space-2) var(--space-3)')
+  })
+})
+
+describe('popover viewport clamp', () => {
+  it('uses bodyHeight rather than bare vh units so popovers shrink above the iOS keyboard', () => {
+    expect(popoverCssSource).toMatch(/VIEWPORT_MAX_HEIGHT\s*=\s*`calc\(\$\{bodyHeight\}\s*-\s*var\(--space-6\)\s*\*\s*2\)`/)
+    expect(popoverCssSource).toMatch(/dialogHeight\s*=\s*`var\(\$\{DIALOG_HEIGHT_VAR\},\s*\$\{bodyHeight\}\)`/)
+    expect(extractStyleCallBlock(popoverCssSource, 'popoverPanelClamp')).toMatch(/maxHeight:\s*`calc\(\$\{bodyHeight\}\s*\*\s*0\.6\)`/)
+    expect(popoverCssSource).not.toMatch(/\b\d+vh\b/)
+  })
+
+  it('shares touchScrollContain across popoverColumnClamp and nested popover/panel scrollers', () => {
+    const block = extractStyleCallBlock(popoverCssSource, 'touchScrollContain')
+    expect(block).toMatch(/overscrollBehavior:\s*'contain'/)
+    expect(block).toMatch(/WebkitOverflowScrolling:\s*'touch'/)
+
+    expect(popoverColumnClamp.split(' ')).toContain(touchScrollContain)
+    expect(comboboxListbox.split(' ')).toContain(touchScrollContain)
+    expect(filteredList.split(' ')).toContain(touchScrollContain)
+    expect(backgroundTaskRows.split(' ')).toContain(touchScrollContain)
   })
 })

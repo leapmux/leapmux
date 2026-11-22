@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { POPOVER_CARD_PADDING } from '~/styles/popoverTokens'
+import { bodyHeight } from '~/styles/tokens'
 
 /**
  * A dropdown host produces NO BOX OF ITS OWN, whether or not it has a trigger.
@@ -68,7 +69,7 @@ globalStyle('ot-dropdown', {
  * clamp is the viewport term of a `min()`.
  */
 const VIEWPORT_MAX_WIDTH = 'calc(100vw - var(--space-4) * 2)'
-const VIEWPORT_MAX_HEIGHT = 'calc(100vh - var(--space-6) * 2)'
+const VIEWPORT_MAX_HEIGHT = `calc(${bodyHeight} - var(--space-6) * 2)`
 
 export const popoverBase = style({
   position: 'fixed',
@@ -81,6 +82,16 @@ export const popoverBase = style({
       pointerEvents: 'none',
     },
   },
+})
+
+/**
+ * Touch-scroll containment shared by scrollable popover surfaces and nested
+ * popover/panel lists. Keeps scroll momentum smooth on iOS WebKit and stops
+ * overscroll at either end from chaining into an enclosing popover or page.
+ */
+export const touchScrollContain = style({
+  overscrollBehavior: 'contain',
+  WebkitOverflowScrolling: 'touch',
 })
 
 /**
@@ -101,6 +112,7 @@ export const popoverBase = style({
  */
 export const popoverColumnClamp = style([
   popoverBase,
+  touchScrollContain,
   {
     flexDirection: 'column',
     maxWidth: VIEWPORT_MAX_WIDTH,
@@ -138,16 +150,13 @@ export const DIALOG_HEIGHT_VAR = '--dropdown-dialog-height'
  * Deliberately NO width rule. See `popoverFieldMenuClamp`.
  */
 const triggerWidth = `var(${TRIGGER_WIDTH_VAR}, 100vw)`
-const dialogHeight = `var(${DIALOG_HEIGHT_VAR}, 100vh)`
+const dialogHeight = `var(${DIALOG_HEIGHT_VAR}, ${bodyHeight})`
 
 export const popoverMenuClamp = style([
   popoverColumnClamp,
   {
     maxHeight: `min(${dialogHeight}, ${VIEWPORT_MAX_HEIGHT})`,
     overflow: 'auto',
-    // A swipe that reaches the end of the list must not carry on into whatever
-    // sits behind the menu.
-    overscrollBehavior: 'contain',
   },
 ])
 
@@ -232,8 +241,7 @@ export const floatingCardSurface = style([
 
 /**
  * The class list for a popover whose content is a CARD -- labelled rows, a list,
- * a panel -- and not a list of menu items. Apply it whole:
- * `<DropdownMenu as="div" class={popoverCard}>`.
+ * a panel -- and not a list of menu items. Apply it through `<DropdownMenu as="card">`.
  *
  * It is a class LIST, and every part is load-bearing. Oat's own `card` rule supplies the
  * surface (background, border, radius, shadow). `popoverCardPadding` supplies the inset, so
@@ -258,9 +266,9 @@ export const popoverCard = `card ${popoverColumnClamp} ${popoverCardPadding}`
  * registry and Goals & To-dos -- and two popovers of different widths beside
  * the same chip row read as a bug. The height matters as much: a long to-do
  * list under a prose objective otherwise runs to the full viewport height,
- * where the sibling registry stops at 60vh.
+ * where the sibling registry stops at 60% of `bodyHeight`.
  */
 export const popoverPanelClamp = style({
-  maxHeight: '60vh',
+  maxHeight: `calc(${bodyHeight} * 0.6)`,
   maxWidth: '360px',
 })

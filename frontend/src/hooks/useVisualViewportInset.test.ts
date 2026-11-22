@@ -1,60 +1,12 @@
 /**
  * @vitest-environment jsdom
  */
+import type { MockVisualViewport } from '~/test-support/visualViewportStub'
 import { renderHook } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isSoftKeyboardVisible } from '~/lib/softKeyboard'
+import { createMockVisualViewport } from '~/test-support/visualViewportStub'
 import { useVisualViewportInset } from './useVisualViewportInset'
-
-interface MockVisualViewport {
-  height: number
-  width: number
-  offsetTop: number
-  scale: number
-  pageTop: number
-  listeners: Map<string, Set<(ev: Event) => void>>
-  addEventListener: (type: string, fn: (ev: Event) => void) => void
-  removeEventListener: (type: string, fn: (ev: Event) => void) => void
-  dispatchResize: () => void
-  dispatchScroll: () => void
-}
-
-function makeMockVisualViewport(height: number, offsetTop = 0, scale = 1): MockVisualViewport {
-  const listeners = new Map<string, Set<(ev: Event) => void>>()
-  return {
-    height,
-    width: 390,
-    offsetTop,
-    scale,
-    pageTop: 0,
-    listeners,
-    addEventListener(type, fn) {
-      let set = listeners.get(type)
-      if (!set) {
-        set = new Set()
-        listeners.set(type, set)
-      }
-      set.add(fn)
-    },
-    removeEventListener(type, fn) {
-      listeners.get(type)?.delete(fn)
-    },
-    dispatchResize() {
-      const set = listeners.get('resize')
-      if (!set)
-        return
-      const ev = new Event('resize')
-      for (const fn of set) fn(ev)
-    },
-    dispatchScroll() {
-      const set = listeners.get('scroll')
-      if (!set)
-        return
-      const ev = new Event('scroll')
-      for (const fn of set) fn(ev)
-    },
-  }
-}
 
 // Microtask-deferred rAF stub. A truly-synchronous rAF (run the cb
 // inline before returning) misorders the hook's `rafId = rAF(apply)`
@@ -102,7 +54,7 @@ async function flush() {
  */
 async function openKeyboard(vv: MockVisualViewport, height = 380) {
   vv.height = height
-  vv.dispatchResize()
+  vv.dispatch('resize')
   await flush()
 }
 
@@ -178,7 +130,7 @@ describe('useVisualViewportInset', () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
     // iOS-26 post-keyboard-dismiss: visual viewport is back to full
     // height but stays translated up by ~120px until the next layout.
-    const vv = makeMockVisualViewport(800, 120)
+    const vv = createMockVisualViewport(800, 120)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -193,7 +145,7 @@ describe('useVisualViewportInset', () => {
 
   it('clears --vv-shift when offsetTop returns to 0', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800, 120)
+    const vv = createMockVisualViewport(800, 120)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -201,7 +153,7 @@ describe('useVisualViewportInset', () => {
       expect(document.documentElement.style.getPropertyValue('--vv-shift')).toBe('-120px')
 
       vv.offsetTop = 0
-      vv.dispatchScroll()
+      vv.dispatch('scroll')
       await flush()
 
       expect(document.documentElement.style.getPropertyValue('--vv-shift')).toBe('')
@@ -213,7 +165,7 @@ describe('useVisualViewportInset', () => {
 
   it('ignores sub-pixel offsetTop jitter', () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800, 0.333)
+    const vv = createMockVisualViewport(800, 0.333)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -236,7 +188,7 @@ describe('useVisualViewportInset', () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
     // Keyboard down, at the full height, with a residual offsetTop → the
     // keyboard-down correction. This height is also the shrink baseline.
-    const vv = makeMockVisualViewport(800, 60)
+    const vv = createMockVisualViewport(800, 60)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -257,7 +209,7 @@ describe('useVisualViewportInset', () => {
 
       // Now the keyboard opens: the viewport shrinks and iOS scrolls it down.
       vv.height = 380
-      vv.dispatchResize()
+      vv.dispatch('resize')
       await flush()
 
       // Both halves, or the shift alone would push the composer out of view.
@@ -268,7 +220,7 @@ describe('useVisualViewportInset', () => {
       // sign nor a height that no longer describes the visible region.
       input.blur()
       vv.height = 800
-      vv.dispatchResize()
+      vv.dispatch('resize')
       await flush()
 
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
@@ -284,7 +236,7 @@ describe('useVisualViewportInset', () => {
   // raises no keyboard for a programmatic focus.
   it('ignores a focus that no keyboard follows', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { result, cleanup } = renderHook(() => useVisualViewportInset())
@@ -307,26 +259,26 @@ describe('useVisualViewportInset', () => {
   // the height at mount.
   it('ignores a shrink too small to be a keyboard', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { result, cleanup } = renderHook(() => useVisualViewportInset())
     try {
       focusInput()
       vv.height = 700 // 100px: a toolbar, not a keyboard
-      vv.dispatchResize()
+      vv.dispatch('resize')
       await flush()
       expect(result()).toBe(false)
 
       // The 100px became the new baseline, so 20px more is still chrome.
       vv.height = 680
-      vv.dispatchResize()
+      vv.dispatch('resize')
       await flush()
       expect(result()).toBe(false)
 
       // 120px below the latest no-keyboard height (680) is a keyboard.
       vv.height = 560
-      vv.dispatchResize()
+      vv.dispatch('resize')
       await flush()
       expect(result()).toBe(true)
     }
@@ -337,14 +289,14 @@ describe('useVisualViewportInset', () => {
 
   it('treats a 120px shrink from the no-keyboard height as a keyboard', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { result, cleanup } = renderHook(() => useVisualViewportInset())
     try {
       focusInput()
       vv.height = 680
-      vv.dispatchResize()
+      vv.dispatch('resize')
       await flush()
       expect(result()).toBe(true)
     }
@@ -357,7 +309,7 @@ describe('useVisualViewportInset', () => {
   // the body would fight the user's own gesture.
   it('publishes neither property while the visual viewport is pinch-zoomed', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(380, 120, 2)
+    const vv = createMockVisualViewport(380, 120, 2)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -380,7 +332,7 @@ describe('useVisualViewportInset', () => {
   it('publishes the keyboard-up pair on a fine-pointer device when the viewport shrinks', async () => {
     stubPointer('fine')
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { result, cleanup } = renderHook(() => useVisualViewportInset())
@@ -398,7 +350,7 @@ describe('useVisualViewportInset', () => {
   // The signal `AppShell` hides the mobile tab bar on.
   it('reports the soft keyboard as up while it takes screen space, and not after', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { result, cleanup } = renderHook(() => useVisualViewportInset())
@@ -422,7 +374,7 @@ describe('useVisualViewportInset', () => {
   // what decides whether a completed send releases the composer.
   it('publishes the measured keyboard state to the softKeyboard module', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -453,7 +405,7 @@ describe('useVisualViewportInset', () => {
 
   it('clears the published keyboard state on cleanup', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -469,7 +421,7 @@ describe('useVisualViewportInset', () => {
   it('publishes --vv-shift when the host implements no matchMedia', () => {
     delete (window as unknown as { matchMedia?: unknown }).matchMedia
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800, 120)
+    const vv = createMockVisualViewport(800, 120)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -483,7 +435,7 @@ describe('useVisualViewportInset', () => {
 
   it('keeps --vvh after blur until the viewport recovers', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -501,7 +453,7 @@ describe('useVisualViewportInset', () => {
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('380px')
 
       vv.height = 800
-      vv.dispatchResize()
+      vv.dispatch('resize')
       await flush()
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
     }
@@ -513,7 +465,7 @@ describe('useVisualViewportInset', () => {
   it('does not treat a rotation while the composer is focused as a keyboard', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
     Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { result, cleanup } = renderHook(() => useVisualViewportInset())
@@ -524,7 +476,7 @@ describe('useVisualViewportInset', () => {
 
       Object.defineProperty(window, 'innerWidth', { value: 844, configurable: true })
       vv.height = 390
-      vv.dispatchResize()
+      vv.dispatch('resize')
       await flush()
 
       expect(result()).toBe(false)
@@ -537,7 +489,7 @@ describe('useVisualViewportInset', () => {
 
   it('does not treat a focused checkbox as a keyboard host', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { result, cleanup } = renderHook(() => useVisualViewportInset())
@@ -562,7 +514,7 @@ describe('useVisualViewportInset', () => {
   it('publishes --vvh for a focused editing host, whichever spelling it carries', async () => {
     for (const spelling of ['true', '', 'plaintext-only']) {
       Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-      const vv = makeMockVisualViewport(800)
+      const vv = createMockVisualViewport(800)
       Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
       const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -590,7 +542,7 @@ describe('useVisualViewportInset', () => {
   // keyboard comes up and nothing is published.
   it('publishes no --vvh for a focused contenteditable="false" element', async () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
-    const vv = makeMockVisualViewport(800)
+    const vv = createMockVisualViewport(800)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
 
     const { cleanup } = renderHook(() => useVisualViewportInset())
@@ -630,7 +582,7 @@ describe('useVisualViewportInset', () => {
     Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
     // No editable focused → the keyboard-down correction is published, so
     // cleanup has something to clear.
-    const vv = makeMockVisualViewport(800, 60)
+    const vv = createMockVisualViewport(800, 60)
     Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
     const removeSpy = vi.spyOn(vv, 'removeEventListener')
 
@@ -648,7 +600,7 @@ describe('useVisualViewportInset', () => {
     // After cleanup, further events must not write to either property.
     vv.height = 100
     vv.offsetTop = 200
-    vv.dispatchResize()
+    vv.dispatch('resize')
     await flush()
     expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
     expect(document.documentElement.style.getPropertyValue('--vv-shift')).toBe('')

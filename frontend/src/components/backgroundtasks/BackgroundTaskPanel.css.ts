@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { popoverPanelClamp } from '~/styles/popover.css'
+import { popoverPanelClamp, touchScrollContain } from '~/styles/popover.css'
 
 /**
  * The panel's shell: the tab bar, and the scrolling region it swaps.
@@ -46,12 +46,15 @@ export const popoverRoot = popoverPanelClamp
  * its own text, and this makes that structural: no descendant added later can
  * bring the sideways scroll back.
  */
-export const rows = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '2px',
-  padding: 'var(--space-1) var(--space-2)',
-  overflowY: 'auto',
-  overflowX: 'hidden',
-  minHeight: 0,
-})
+export const rows = style([
+  touchScrollContain,
+  {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    padding: 'var(--space-1) var(--space-2)',
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    minHeight: 0,
+  },
+])

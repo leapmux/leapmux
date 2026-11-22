@@ -1,10 +1,12 @@
 import type { Accessor, JSX, JSXElement } from 'solid-js'
 import type { ContextMenuPress } from './contextMenuGesture'
 import type { PopoverAnchor, PopoverPositionOptions } from '~/lib/popoverPosition'
+import type { VisualViewportChange } from '~/lib/visualViewport'
 import { createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
-import { createRafResizeObserver } from '~/lib/resizeObserver'
+import { createRafCoalescer } from '~/lib/rafCoalesce'
+import { subscribeVisualViewport } from '~/lib/visualViewport'
 import { DIALOG_HEIGHT_VAR, popoverCard, popoverFieldMenuClamp, popoverMenuClamp, TRIGGER_WIDTH_VAR } from '~/styles/popover.css'
 import { clippedText, menuItemContent, menuItemDetail } from '~/styles/shared.css'
 import { ClippedText } from './ClippedText'
@@ -423,13 +425,9 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
               no empty `data-testid` attribute to the span. */}
           <ClippedText text={props.label} {...labelTestIdProps()} />
         </Show>
-        {/* The callback form, and it is load-bearing: `Show` memoizes `when`,
-            so `props.detail` is read ONCE per tracking cycle. A caller whose
-            detail is an expression (`LoadingMenu` renders one from the option)
-            has a getter behind that prop, and a second read there builds a
-            second element -- one to test for presence and a different one on
-            screen. An empty detail draws nothing, which is what an option with
-            no note wants. */}
+        {/* `props.detail` is a renderer accessor (`() => JSX.Element`) passed
+            only when the row has a detail. Checking `!== undefined` mounts one
+            reactive slot and invokes the accessor once inside the `<span>`. */}
         <Show when={props.detail !== undefined}>
           <span class={menuItemDetail}>{props.detail?.()}</span>
         </Show>
@@ -456,6 +454,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // Captured on pointerdown so that the click handler knows whether the user
   // intended to close (toggle off) vs open (toggle on) the popover.
   let wasOpenOnPointerDown = false
+  let clearPointerDownReset: (() => void) | undefined
 
   // Where a right-click or long-press that opened this menu landed. Cleared when
   // the popover closes, so the next kebab click re-anchors to the kebab.
@@ -524,15 +523,22 @@ export function DropdownMenu(props: DropdownMenuProps) {
     const anchor = getAnchorElement()
     if (!anchor)
       return
-    // The width only where the caller says its trigger is a FIELD. A kebab is a
-    // 24px icon button, and capping its menu at that leaves every row
-    // unreadable -- so this is not something a menu may assume about its own
-    // trigger.
-    if (props.matchTriggerWidth)
-      popoverEl.style.setProperty(TRIGGER_WIDTH_VAR, `${anchor.getBoundingClientRect().width}px`)
+    // Read all geometry before writing custom properties so updating one var
+    // does not force a synchronous reflow before measuring the dialog.
+    // The width applies only where the caller marks its trigger as field-shaped
+    // (`matchTriggerWidth`); capping a 24px kebab menu to its trigger width
+    // would make every row unreadable.
+    const nextTriggerWidth = props.matchTriggerWidth
+      ? `${anchor.getBoundingClientRect().width}px`
+      : undefined
     const dialog = anchor.closest('dialog')
-    if (dialog)
-      popoverEl.style.setProperty(DIALOG_HEIGHT_VAR, `${dialog.getBoundingClientRect().height}px`)
+    const nextDialogHeight = dialog
+      ? `${dialog.getBoundingClientRect().height}px`
+      : undefined
+    if (nextTriggerWidth !== undefined && popoverEl.style.getPropertyValue(TRIGGER_WIDTH_VAR) !== nextTriggerWidth)
+      popoverEl.style.setProperty(TRIGGER_WIDTH_VAR, nextTriggerWidth)
+    if (nextDialogHeight !== undefined && popoverEl.style.getPropertyValue(DIALOG_HEIGHT_VAR) !== nextDialogHeight)
+      popoverEl.style.setProperty(DIALOG_HEIGHT_VAR, nextDialogHeight)
   }
 
   const reposition = () => {
@@ -542,13 +548,18 @@ export function DropdownMenu(props: DropdownMenuProps) {
 
     const opts = props.placement ?? { placement: 'auto' }
     const { top, left, flipped } = calcPopoverPosition(anchor, popoverEl, opts)
-    popoverEl.style.top = `${top}px`
-    popoverEl.style.left = `${left}px`
+    const nextTop = `${top}px`
+    const nextLeft = `${left}px`
+    if (popoverEl.style.top !== nextTop)
+      popoverEl.style.top = nextTop
+    if (popoverEl.style.left !== nextLeft)
+      popoverEl.style.left = nextLeft
 
-    if (flipped) {
+    const wasFlipped = popoverEl.hasAttribute('data-flipped')
+    if (flipped && !wasFlipped) {
       popoverEl.setAttribute('data-flipped', '')
     }
-    else {
+    else if (!flipped && wasFlipped) {
       popoverEl.removeAttribute('data-flipped')
     }
   }
@@ -565,7 +576,11 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // This prevents the popover from jumping when the user selects text
   // inside the popover content by dragging.
   const repositionOnExternalScroll = (e: Event) => {
-    if (popoverEl && e.target instanceof Node && popoverEl.contains(e.target)) {
+    if (!popoverEl?.matches(':popover-open')) {
+      detachOpenListeners()
+      return
+    }
+    if (e.target instanceof Node && popoverEl.contains(e.target)) {
       return
     }
     // A press menu stays at the position where the user pressed. Close it
@@ -575,15 +590,94 @@ export function DropdownMenu(props: DropdownMenuProps) {
       const row = contextMenuEl()
       const target = e.target
       if (target === window || (row && target instanceof Node && target.contains(row)))
-        popoverEl?.hidePopover()
+        popoverEl.hidePopover()
       return
     }
     // A caller-supplied point has no element to reposition against.
     if (!(getAnchor() instanceof Element)) {
-      popoverEl?.hidePopover()
+      popoverEl.hidePopover()
       return
     }
     reposition()
+  }
+
+  // Single rAF coalescer shared by `ResizeObserver` and the post-open layout
+  // refinement. Visual-viewport events and `--vvh`/`--vv-shift` updates arrive
+  // through `subscribeVisualViewport` in phase 2 of the hub's animation frame
+  // (guaranteed to run after `useVisualViewportInset` writes `--vvh` and
+  // `--vv-shift` onto `document.documentElement`), aborting any redundant
+  // pending `relayoutCoalescer` frame so at most one measure-and-position pass
+  // runs per frame.
+  let pendingCaps = false
+  const flushRelayout = (withCaps: boolean) => {
+    if (!popoverEl?.matches(':popover-open')) {
+      detachOpenListeners()
+      return
+    }
+    const shouldApplyCaps = withCaps || pendingCaps
+    pendingCaps = false
+    if (shouldApplyCaps)
+      applyCaps()
+    reposition()
+  }
+  const relayoutCoalescer = createRafCoalescer<void>(() => {
+    flushRelayout(false)
+  })
+  const scheduleRelayout = (withCaps: boolean) => {
+    if (!popoverEl?.matches(':popover-open')) {
+      detachOpenListeners()
+      return
+    }
+    if (withCaps)
+      pendingCaps = true
+    relayoutCoalescer.push()
+  }
+  const handleViewportChange = ({ resized }: VisualViewportChange) => {
+    if (!popoverEl?.matches(':popover-open')) {
+      detachOpenListeners()
+      return
+    }
+    // Frozen point anchors (right-click, touch long press, or rect anchorRef)
+    // cannot follow a shifted page; dismiss them rather than moving onto a
+    // different underlying row.
+    if (pressAnchor() || !(getAnchor() instanceof Element)) {
+      popoverEl.hidePopover()
+      return
+    }
+    relayoutCoalescer.abort()
+    flushRelayout(resized)
+  }
+  let unsubscribeViewport: (() => void) | undefined
+
+  function detachOpenListeners() {
+    window.removeEventListener('scroll', repositionOnExternalScroll, true)
+    unsubscribeViewport?.()
+    unsubscribeViewport = undefined
+    resizeObserver?.disconnect()
+    resizeObserver = undefined
+    pendingCaps = false
+    relayoutCoalescer.abort()
+  }
+
+  function attachOpenListeners() {
+    detachOpenListeners()
+    window.addEventListener('scroll', repositionOnExternalScroll, true)
+    unsubscribeViewport = subscribeVisualViewport(handleViewportChange)
+
+    // Re-anchor whenever the popover, its trigger, or its enclosing dialog
+    // changes size. Routing deliveries into `relayoutCoalescer` defers DOM
+    // writes to the next animation frame (avoiding ResizeObserver loop errors)
+    // and coalesces with concurrent viewport hub notifications.
+    if (popoverEl && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => scheduleRelayout(true))
+      resizeObserver.observe(popoverEl)
+      const anchor = getAnchorElement()
+      if (anchor)
+        resizeObserver.observe(anchor)
+      const dialog = anchor?.closest('dialog')
+      if (dialog)
+        resizeObserver.observe(dialog)
+    }
   }
 
   // --- keyboard navigation -------------------------------------------------
@@ -686,8 +780,11 @@ export function DropdownMenu(props: DropdownMenuProps) {
   }
 
   const handleMenuKeyDown = (e: KeyboardEvent) => {
+    if (e.defaultPrevented)
+      return
     if (e.key === 'Escape') {
       e.preventDefault()
+      e.stopPropagation()
       popoverEl?.hidePopover()
       return
     }
@@ -697,21 +794,32 @@ export function DropdownMenu(props: DropdownMenuProps) {
     if (props.as === 'card')
       return
 
+    const active = document.activeElement as HTMLElement | null
+    const typingIntoAField = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault()
+        e.stopPropagation()
         focusItemAt(focusedItemIndex() + 1)
         return
       case 'ArrowUp':
         e.preventDefault()
+        e.stopPropagation()
         focusItemAt(focusedItemIndex() - 1)
         return
       case 'Home':
+        if (typingIntoAField)
+          return
         e.preventDefault()
+        e.stopPropagation()
         focusItemAt(0)
         return
       case 'End':
+        if (typingIntoAField)
+          return
         e.preventDefault()
+        e.stopPropagation()
         focusItemAt(menuItems().length - 1)
         return
     }
@@ -720,11 +828,10 @@ export function DropdownMenu(props: DropdownMenuProps) {
     // combinations are shortcuts, and a filter box (which reads its own keys)
     // is where the character belongs when one has focus.
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== ' ') {
-      const active = document.activeElement as HTMLElement | null
-      const typingIntoAField = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
       if (typingIntoAField)
         return
       e.preventDefault()
+      e.stopPropagation()
       typeAhead(e.key)
     }
   }
@@ -732,7 +839,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
   /**
    * The outside-press dismissal a `manual` popover has to supply itself.
    *
-   * Armed only for a menu that a long press opened (see `showPressMenu`), and
+   * Armed only for a menu that a long press opened (see `showMenuPopover`), and
    * disarmed the moment it closes, so no listener remains while the app is
    * idle. On `pointerdown`, which is where the native pass acts too, and in the
    * CAPTURE phase so a row that swallows its own presses cannot hide one.
@@ -774,37 +881,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
     setIsOpen(opening)
 
     if (opening) {
-      window.addEventListener('scroll', repositionOnExternalScroll, true)
-
-      // Re-anchor whenever the content's measured size settles after the initial
-      // rAF (a large list paints over multiple frames; the filter shrinks it).
-      // ResizeObserver fires once on observe() with the current size, then on
-      // every change -- reposition() only moves the popover, never resizes it,
-      // so this can't loop.
-      if (popoverEl) {
-        resizeObserver?.disconnect()
-        // The SAME observer measures the caps below, so one delivery does one
-        // read-and-write pass. `createRafResizeObserver`, because `applyCaps`
-        // writes onto the popover this same observer watches: a write made
-        // inside the delivery phase resizes an observed element, which is the
-        // "ResizeObserver loop completed with undelivered notifications" case
-        // that helper defers a frame to avoid.
-        resizeObserver = createRafResizeObserver(() => {
-          applyCaps()
-          reposition()
-        })
-        resizeObserver?.observe(popoverEl)
-        // The anchor and the dialog that holds it, because a cap that is
-        // measured once at open is wrong the moment either changes -- a window
-        // dragged narrower, a dialog that relayouts under a phone's keyboard --
-        // and a stale cap is invisible until the day it is wrong.
-        const anchor = getAnchorElement()
-        if (anchor)
-          resizeObserver?.observe(anchor)
-        const dialog = anchor?.closest('dialog')
-        if (dialog)
-          resizeObserver?.observe(dialog)
-      }
+      attachOpenListeners()
       applyCaps()
 
       // Position BEFORE the browser paints. `showPopover` already made this
@@ -814,7 +891,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // This used to happen in a `requestAnimationFrame` ALONE, under a comment
       // about waiting for Oat's own positioning. Oat never positions it: its
       // `ot-dropdown` returns early without a `[popovertarget]`, and this
-      // component deliberately renders none (see the note by MENU_ITEM_SELECTOR).
+      // component deliberately renders none (see the keyboard navigation note
+      // above and `renderTrigger` below).
       // So the popover painted one whole frame at the UA default for
       // `position: fixed; margin: 0` -- the viewport's top-left corner -- and
       // then jumped to its anchor. A user sees that as a flash. A test that
@@ -823,9 +901,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
       reposition()
       // Again on the next frame, for content that lays out over more than one:
       // a long list, or a filter box that shrinks it once it renders.
-      requestAnimationFrame(() => {
-        reposition()
-      })
+      scheduleRelayout(false)
 
       getAnchorElement()?.setAttribute('aria-expanded', 'true')
 
@@ -855,9 +931,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // resume a search the user abandoned.
       clearTimeout(typeAheadTimer)
       typeAheadBuffer = ''
-      window.removeEventListener('scroll', repositionOnExternalScroll, true)
-      resizeObserver?.disconnect()
-      resizeObserver = undefined
+      detachOpenListeners()
 
       getAnchorElement()?.setAttribute('aria-expanded', 'false')
       // Drop the press so the next kebab click anchors to the kebab again. A menu
@@ -865,7 +939,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // trigger's own copy is reactive on `isOpen()` and falls with it.
       setPressAnchor(undefined)
       // Hand the popover back to the platform. A long press opened it as
-      // `manual` and dismissed it by hand (see `showPressMenu`); every other way
+      // `manual` and dismissed it by hand (see `showMenuPopover`); every other way
       // of opening this menu wants the native light dismiss, and the attribute
       // can only be swapped while it is closed -- which it now is.
       disarmPressDismiss?.()
@@ -968,8 +1042,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
   onCleanup(() => {
     popoverEl?.removeEventListener('beforetoggle', handleBeforeToggle)
     popoverEl?.removeEventListener('toggle', handleToggle)
-    window.removeEventListener('scroll', repositionOnExternalScroll, true)
-    resizeObserver?.disconnect()
+    clearPointerDownReset?.()
+    detachOpenListeners()
     // A menu unmounted while open never fires its closing `toggle`, so this
     // cleanup drops the document listener that dismisses a press-opened one too.
     disarmPressDismiss?.()
@@ -984,17 +1058,48 @@ export function DropdownMenu(props: DropdownMenuProps) {
     // signal, because showModal() on a <dialog> auto-dismisses
     // popover="auto" elements WITHOUT firing a toggle event, leaving
     // isOpen stale.
+    clearPointerDownReset?.()
     const actuallyOpen = popoverEl?.matches(':popover-open') ?? false
     if (isOpen() !== actuallyOpen) {
       setIsOpen(actuallyOpen)
+      if (!actuallyOpen)
+        detachOpenListeners()
     }
     wasOpenOnPointerDown = actuallyOpen
+    if (actuallyOpen) {
+      // If the user drags off the trigger before releasing, no click fires on
+      // the trigger to consume `wasOpenOnPointerDown`. Reset it after the
+      // pointer gesture finishes so a later keyboard Enter/Space still opens.
+      let resetTimer: ReturnType<typeof setTimeout> | undefined
+      const cleanup = () => {
+        window.removeEventListener('pointerup', onRelease, true)
+        window.removeEventListener('pointercancel', onCancel, true)
+        if (resetTimer !== undefined)
+          clearTimeout(resetTimer)
+        clearPointerDownReset = undefined
+      }
+      function onRelease() {
+        resetTimer = setTimeout(() => {
+          wasOpenOnPointerDown = false
+          cleanup()
+        }, 0)
+      }
+      function onCancel() {
+        wasOpenOnPointerDown = false
+        cleanup()
+      }
+      window.addEventListener('pointerup', onRelease, true)
+      window.addEventListener('pointercancel', onCancel, true)
+      clearPointerDownReset = cleanup
+    }
   }
 
   const handleTriggerClick = () => {
     // If the popover was open when the pointer went down, light-dismiss
     // already closed it — don't reopen it with togglePopover().
+    clearPointerDownReset?.()
     if (wasOpenOnPointerDown) {
+      wasOpenOnPointerDown = false
       return
     }
     popoverEl?.togglePopover()

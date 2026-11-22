@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { extractBalancedBlock } from '~/test-support/styleSource'
 
 // Modal <dialog> lives in the top layer, so it escapes body's
 // `padding-top: env(safe-area-inset-top)`. The panel must re-declare the
@@ -26,14 +27,10 @@ function standardModalBlock(): string {
   expect(start, 'dialog standard :modal globalStyle').toBeGreaterThanOrEqual(0)
   const open = source.indexOf('{', start + marker.length)
   expect(open, 'object literal after :modal selector').toBeGreaterThan(start)
-  let depth = 0
-  for (let i = open; i < source.length; i++) {
-    if (source[i] === '{')
-      depth++
-    else if (source[i] === '}' && --depth === 0)
-      return source.slice(open + 1, i)
-  }
-  throw new Error('unclosed dialog standard :modal block')
+  const block = extractBalancedBlock(source, open, '{', '}')
+  if (block === undefined)
+    throw new Error('unclosed dialog standard :modal block')
+  return block
 }
 
 describe('dialog safe-area insets (Dialog.css.ts)', () => {

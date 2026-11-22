@@ -1,3 +1,8 @@
+import { clamp } from '~/lib/clamp'
+import { readViewportRect } from '~/lib/visualViewport'
+
+export { readViewportRect, type ViewportRect } from '~/lib/visualViewport'
+
 export interface PopoverPositionOptions {
   /** 'auto' = flip upward if clipped; 'above' = always position above trigger */
   placement?: 'auto' | 'above'
@@ -28,8 +33,16 @@ export interface PopoverAnchorRect {
 export type PopoverAnchor = Element | PopoverAnchorRect
 
 /**
- * Calculate the top/left for a fixed-position popover so it doesn't
- * overflow the bottom of the viewport.
+ * Clamp a popover's start edge within `[start, end]` so a popover of `size`
+ * stays inside the span, pinning to `start` when `size > end - start`.
+ */
+function clampToSpan(position: number, size: number, start: number, end: number): number {
+  return clamp(position, start, Math.max(start, end - size))
+}
+
+/**
+ * Calculate the top/left for a fixed-position popover so it stays inside the
+ * visible viewport.
  */
 export function calcPopoverPosition(
   anchor: PopoverAnchor,
@@ -41,7 +54,7 @@ export function calcPopoverPosition(
     ? anchor.getBoundingClientRect()
     : anchor
   const popoverRect = popover.getBoundingClientRect()
-  const viewportHeight = window.innerHeight
+  const viewport = readViewportRect()
 
   let top: number
   let flipped = false
@@ -54,16 +67,16 @@ export function calcPopoverPosition(
     const belowTop = triggerRect.bottom + offset
     const belowBottom = belowTop + popoverRect.height
 
-    if (belowBottom > viewportHeight) {
+    if (belowBottom > viewport.bottom) {
       const aboveTop = triggerRect.top - popoverRect.height - offset
-      if (aboveTop >= 0) {
+      if (aboveTop >= viewport.top) {
         top = aboveTop
         flipped = true
       }
       else {
         // Not enough space either way -- pick the side with more room
-        const spaceBelow = viewportHeight - triggerRect.bottom
-        const spaceAbove = triggerRect.top
+        const spaceBelow = viewport.bottom - triggerRect.bottom
+        const spaceAbove = triggerRect.top - viewport.top
         if (spaceAbove > spaceBelow) {
           top = triggerRect.top - popoverRect.height - offset
           flipped = true
@@ -79,33 +92,11 @@ export function calcPopoverPosition(
   }
 
   // --- Horizontal positioning ---
-  // Start aligned with trigger's left edge, then clamp to viewport.
-  let left = triggerRect.left
-  const viewportWidth = window.innerWidth
+  // Start aligned with trigger's left edge, then clamp to the visible viewport.
+  let left = clampToSpan(triggerRect.left, popoverRect.width, viewport.left, viewport.right)
 
-  const rightOverflow = left + popoverRect.width - viewportWidth
-  if (rightOverflow > 0) {
-    left = Math.max(0, left - rightOverflow)
-  }
-  if (left < 0) {
-    left = 0
-  }
-
-  top += yOffset
-  left += xOffset
-
-  if (left + popoverRect.width > viewportWidth) {
-    left = Math.max(0, viewportWidth - popoverRect.width)
-  }
-  if (left < 0) {
-    left = 0
-  }
-  if (top + popoverRect.height > viewportHeight) {
-    top = Math.max(0, viewportHeight - popoverRect.height)
-  }
-  if (top < 0) {
-    top = 0
-  }
+  top = clampToSpan(top + yOffset, popoverRect.height, viewport.top, viewport.bottom)
+  left = clampToSpan(left + xOffset, popoverRect.width, viewport.left, viewport.right)
 
   return { top, left, flipped }
 }
