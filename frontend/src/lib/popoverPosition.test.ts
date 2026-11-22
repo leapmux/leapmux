@@ -235,4 +235,103 @@ describe('calcPopoverPosition', () => {
       expect(result.flipped).toBe(true)
     })
   })
+
+  describe('visualViewport rectangle', () => {
+    it('positions and clamps within visualViewport when iOS shifts offsetTop for the keyboard', () => {
+      // Measured iOS Safari keyboard-up geometry: window.innerHeight matches
+      // visualViewport.height (262), while the visible region sits at layout
+      // y in [452, 714]. Clamping against [0, 262] pushed the popover off the
+      // top of the visible screen.
+      vi.stubGlobal('innerHeight', 262)
+      vi.stubGlobal('innerWidth', 390)
+      vi.stubGlobal('visualViewport', {
+        width: 390,
+        height: 262,
+        offsetTop: 452,
+        offsetLeft: 0,
+      })
+      try {
+        const trigger = mockTrigger({ top: 680, bottom: 704, left: 40 })
+        const popover = mockPopover({ width: 220, height: 200 })
+
+        const result = calcPopoverPosition(trigger, popover)
+
+        expect(result.top).toBe(480) // 680 - 200, inside [452, 714]
+        expect(result.left).toBe(40)
+        expect(result.flipped).toBe(true)
+      }
+      finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('clamps to visualViewport.offsetTop when the popover is taller than the visible region', () => {
+      vi.stubGlobal('innerHeight', 262)
+      vi.stubGlobal('innerWidth', 390)
+      vi.stubGlobal('visualViewport', {
+        width: 390,
+        height: 262,
+        offsetTop: 452,
+        offsetLeft: 0,
+      })
+      try {
+        const trigger = mockTrigger({ top: 680, bottom: 704, left: 40 })
+        const popover = mockPopover({ width: 220, height: 300 })
+
+        const result = calcPopoverPosition(trigger, popover)
+
+        expect(result.top).toBe(452)
+        expect(result.flipped).toBe(true)
+      }
+      finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('clamps horizontally within visualViewport offsetLeft and width', () => {
+      vi.stubGlobal('innerHeight', 800)
+      vi.stubGlobal('innerWidth', 800)
+      vi.stubGlobal('visualViewport', {
+        width: 300,
+        height: 400,
+        offsetTop: 0,
+        offsetLeft: 50,
+      })
+      try {
+        const trigger = mockTrigger({ top: 100, bottom: 130, left: 260 })
+        const popover = mockPopover({ width: 200, height: 120 })
+
+        const result = calcPopoverPosition(trigger, popover)
+
+        // Visible horizontal band is [50, 350]; right edge clamps left to 150.
+        expect(result.left).toBe(150)
+      }
+      finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('falls back to window.innerWidth and innerHeight when visualViewport reports zero dimensions', () => {
+      vi.stubGlobal('innerHeight', 500)
+      vi.stubGlobal('innerWidth', 800)
+      vi.stubGlobal('visualViewport', {
+        width: 0,
+        height: 0,
+        offsetTop: 0,
+        offsetLeft: 0,
+      })
+      try {
+        const trigger = mockTrigger({ top: 420, bottom: 450, left: 100 })
+        const popover = mockPopover({ width: 200, height: 120 })
+
+        const result = calcPopoverPosition(trigger, popover)
+
+        expect(result.top).toBe(300)
+        expect(result.flipped).toBe(true)
+      }
+      finally {
+        vi.unstubAllGlobals()
+      }
+    })
+  })
 })

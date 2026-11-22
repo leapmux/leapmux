@@ -1,8 +1,16 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { previewCard } from '~/components/chat/ChatScrollRail.css'
 import { tooltip } from '~/components/common/Tooltip.css'
 import { floatingCardSurface, popoverBase, popoverCard, popoverCardPadding } from '~/styles/popover.css'
 import { POPOVER_CARD_PADDING } from '~/styles/popoverTokens'
+
+const popoverCssSource = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'popover.css.ts'),
+  'utf8',
+)
 
 describe('popoverCard', () => {
   it('carries Oat\'s own card class, which is where the surface comes from', () => {
@@ -70,5 +78,17 @@ describe('popoverCardPadding', () => {
     // and the e2e spec measures this inset. If the spec restated the declaration instead, a
     // legitimate change to the inset would fail the spec while the app stayed correct.
     expect(POPOVER_CARD_PADDING).toBe('var(--space-2) var(--space-3)')
+  })
+})
+
+describe('popover viewport clamp', () => {
+  it('uses bodyHeight rather than bare 100vh so popovers shrink above the iOS keyboard', () => {
+    expect(popoverCssSource).toMatch(/VIEWPORT_MAX_HEIGHT\s*=\s*`calc\(\$\{bodyHeight\}\s*-\s*var\(--space-6\)\s*\*\s*2\)`/)
+    expect(popoverCssSource).toMatch(/dialogHeight\s*=\s*`var\(\$\{DIALOG_HEIGHT_VAR\},\s*\$\{bodyHeight\}\)`/)
+    expect(popoverCssSource).not.toContain('100vh')
+  })
+
+  it('contains overscroll on popoverColumnClamp', () => {
+    expect(popoverCssSource).toMatch(/popoverColumnClamp\s*=\s*style\(\[[\s\S]*?overscrollBehavior:\s*'contain'/)
   })
 })

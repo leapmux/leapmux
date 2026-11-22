@@ -27,9 +27,54 @@ export interface PopoverAnchorRect {
 
 export type PopoverAnchor = Element | PopoverAnchorRect
 
+interface ViewportRect {
+  top: number
+  left: number
+  width: number
+  height: number
+  bottom: number
+  right: number
+}
+
 /**
- * Calculate the top/left for a fixed-position popover so it doesn't
- * overflow the bottom of the viewport.
+ * Resolve the visible viewport rectangle in layout-viewport coordinates.
+ *
+ * On iOS Safari with the on-screen keyboard up, `window.innerHeight` shrinks to
+ * `visualViewport.height` while `visualViewport.offsetTop` shifts the visible
+ * band down in layout coordinates. Top-layer `position: fixed` popovers and
+ * `getBoundingClientRect()` both use layout coordinates, so clamping against
+ * `[0, window.innerHeight]` pushes a popover above the visible band. Using the
+ * `visualViewport` rectangle keeps popovers inside the region actually on screen.
+ */
+function readViewportRect(): ViewportRect {
+  const vv = typeof window !== 'undefined'
+    ? window.visualViewport
+    : null
+  const width = vv && Number.isFinite(vv.width) && vv.width > 0
+    ? vv.width
+    : window.innerWidth
+  const height = vv && Number.isFinite(vv.height) && vv.height > 0
+    ? vv.height
+    : window.innerHeight
+  const left = vv && Number.isFinite(vv.offsetLeft)
+    ? vv.offsetLeft
+    : 0
+  const top = vv && Number.isFinite(vv.offsetTop)
+    ? vv.offsetTop
+    : 0
+  return {
+    top,
+    left,
+    width,
+    height,
+    bottom: top + height,
+    right: left + width,
+  }
+}
+
+/**
+ * Calculate the top/left for a fixed-position popover so it stays inside the
+ * visible viewport.
  */
 export function calcPopoverPosition(
   anchor: PopoverAnchor,
@@ -41,7 +86,7 @@ export function calcPopoverPosition(
     ? anchor.getBoundingClientRect()
     : anchor
   const popoverRect = popover.getBoundingClientRect()
-  const viewportHeight = window.innerHeight
+  const viewport = readViewportRect()
 
   let top: number
   let flipped = false
@@ -54,16 +99,16 @@ export function calcPopoverPosition(
     const belowTop = triggerRect.bottom + offset
     const belowBottom = belowTop + popoverRect.height
 
-    if (belowBottom > viewportHeight) {
+    if (belowBottom > viewport.bottom) {
       const aboveTop = triggerRect.top - popoverRect.height - offset
-      if (aboveTop >= 0) {
+      if (aboveTop >= viewport.top) {
         top = aboveTop
         flipped = true
       }
       else {
         // Not enough space either way -- pick the side with more room
-        const spaceBelow = viewportHeight - triggerRect.bottom
-        const spaceAbove = triggerRect.top
+        const spaceBelow = viewport.bottom - triggerRect.bottom
+        const spaceAbove = triggerRect.top - viewport.top
         if (spaceAbove > spaceBelow) {
           top = triggerRect.top - popoverRect.height - offset
           flipped = true
@@ -79,32 +124,31 @@ export function calcPopoverPosition(
   }
 
   // --- Horizontal positioning ---
-  // Start aligned with trigger's left edge, then clamp to viewport.
+  // Start aligned with trigger's left edge, then clamp to the visible viewport.
   let left = triggerRect.left
-  const viewportWidth = window.innerWidth
 
-  const rightOverflow = left + popoverRect.width - viewportWidth
+  const rightOverflow = left + popoverRect.width - viewport.right
   if (rightOverflow > 0) {
-    left = Math.max(0, left - rightOverflow)
+    left = Math.max(viewport.left, left - rightOverflow)
   }
-  if (left < 0) {
-    left = 0
+  if (left < viewport.left) {
+    left = viewport.left
   }
 
   top += yOffset
   left += xOffset
 
-  if (left + popoverRect.width > viewportWidth) {
-    left = Math.max(0, viewportWidth - popoverRect.width)
+  if (left + popoverRect.width > viewport.right) {
+    left = Math.max(viewport.left, viewport.right - popoverRect.width)
   }
-  if (left < 0) {
-    left = 0
+  if (left < viewport.left) {
+    left = viewport.left
   }
-  if (top + popoverRect.height > viewportHeight) {
-    top = Math.max(0, viewportHeight - popoverRect.height)
+  if (top + popoverRect.height > viewport.bottom) {
+    top = Math.max(viewport.top, viewport.bottom - popoverRect.height)
   }
-  if (top < 0) {
-    top = 0
+  if (top < viewport.top) {
+    top = viewport.top
   }
 
   return { top, left, flipped }

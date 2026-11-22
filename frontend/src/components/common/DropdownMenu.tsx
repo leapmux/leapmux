@@ -4,6 +4,7 @@ import type { PopoverAnchor, PopoverPositionOptions } from '~/lib/popoverPositio
 import { createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
+import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { DIALOG_HEIGHT_VAR, popoverCard, popoverFieldMenuClamp, popoverMenuClamp, TRIGGER_WIDTH_VAR } from '~/styles/popover.css'
 import { clippedText, menuItemContent, menuItemDetail } from '~/styles/shared.css'
@@ -586,6 +587,41 @@ export function DropdownMenu(props: DropdownMenuProps) {
     reposition()
   }
 
+  // Coalesce `visualViewport` resize/scroll and `window.resize` ticks into one
+  // re-measure and reposition per frame. On iOS, raising the soft keyboard
+  // updates `--vvh` and `--vv-shift` on `body` (moving the trigger without
+  // changing its size) while this top-layer popover stays outside `body`'s
+  // transform; listening here keeps the popover anchored to the shifted
+  // trigger and clamped inside the visible viewport.
+  const viewportReposition = createRafCoalescer<void>(() => {
+    if (!popoverEl?.matches(':popover-open'))
+      return
+    applyCaps()
+    reposition()
+  })
+  const scheduleViewportReposition = () => {
+    viewportReposition.push()
+  }
+  let boundVisualViewport: VisualViewport | null = null
+
+  const detachOpenListeners = () => {
+    window.removeEventListener('scroll', repositionOnExternalScroll, true)
+    window.removeEventListener('resize', scheduleViewportReposition)
+    boundVisualViewport?.removeEventListener('resize', scheduleViewportReposition)
+    boundVisualViewport?.removeEventListener('scroll', scheduleViewportReposition)
+    boundVisualViewport = null
+    viewportReposition.abort()
+  }
+
+  const attachOpenListeners = () => {
+    detachOpenListeners()
+    window.addEventListener('scroll', repositionOnExternalScroll, true)
+    window.addEventListener('resize', scheduleViewportReposition)
+    boundVisualViewport = window.visualViewport ?? null
+    boundVisualViewport?.addEventListener('resize', scheduleViewportReposition)
+    boundVisualViewport?.addEventListener('scroll', scheduleViewportReposition)
+  }
+
   // --- keyboard navigation -------------------------------------------------
   //
   // A native `<select>` supplied all of this for free, and its removal took all
@@ -774,7 +810,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
     setIsOpen(opening)
 
     if (opening) {
-      window.addEventListener('scroll', repositionOnExternalScroll, true)
+      attachOpenListeners()
 
       // Re-anchor whenever the content's measured size settles after the initial
       // rAF (a large list paints over multiple frames; the filter shrinks it).
@@ -855,7 +891,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // resume a search the user abandoned.
       clearTimeout(typeAheadTimer)
       typeAheadBuffer = ''
-      window.removeEventListener('scroll', repositionOnExternalScroll, true)
+      detachOpenListeners()
       resizeObserver?.disconnect()
       resizeObserver = undefined
 
@@ -968,7 +1004,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
   onCleanup(() => {
     popoverEl?.removeEventListener('beforetoggle', handleBeforeToggle)
     popoverEl?.removeEventListener('toggle', handleToggle)
-    window.removeEventListener('scroll', repositionOnExternalScroll, true)
+    detachOpenListeners()
     resizeObserver?.disconnect()
     // A menu unmounted while open never fires its closing `toggle`, so this
     // cleanup drops the document listener that dismisses a press-opened one too.

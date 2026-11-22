@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { POPOVER_CARD_PADDING } from '~/styles/popoverTokens'
+import { bodyHeight } from '~/styles/tokens'
 
 /**
  * A dropdown host produces NO BOX OF ITS OWN, whether or not it has a trigger.
@@ -68,7 +69,7 @@ globalStyle('ot-dropdown', {
  * clamp is the viewport term of a `min()`.
  */
 const VIEWPORT_MAX_WIDTH = 'calc(100vw - var(--space-4) * 2)'
-const VIEWPORT_MAX_HEIGHT = 'calc(100vh - var(--space-6) * 2)'
+const VIEWPORT_MAX_HEIGHT = `calc(${bodyHeight} - var(--space-6) * 2)`
 
 export const popoverBase = style({
   position: 'fixed',
@@ -106,6 +107,9 @@ export const popoverColumnClamp = style([
     maxWidth: VIEWPORT_MAX_WIDTH,
     maxHeight: VIEWPORT_MAX_HEIGHT,
     overflowY: 'auto',
+    // Keep touch scroll at the ends of the popover from chaining into the page behind it.
+    overscrollBehavior: 'contain',
+    WebkitOverflowScrolling: 'touch',
   },
 ])
 
@@ -138,16 +142,13 @@ export const DIALOG_HEIGHT_VAR = '--dropdown-dialog-height'
  * Deliberately NO width rule. See `popoverFieldMenuClamp`.
  */
 const triggerWidth = `var(${TRIGGER_WIDTH_VAR}, 100vw)`
-const dialogHeight = `var(${DIALOG_HEIGHT_VAR}, 100vh)`
+const dialogHeight = `var(${DIALOG_HEIGHT_VAR}, ${bodyHeight})`
 
 export const popoverMenuClamp = style([
   popoverColumnClamp,
   {
     maxHeight: `min(${dialogHeight}, ${VIEWPORT_MAX_HEIGHT})`,
     overflow: 'auto',
-    // A swipe that reaches the end of the list must not carry on into whatever
-    // sits behind the menu.
-    overscrollBehavior: 'contain',
   },
 ])
 

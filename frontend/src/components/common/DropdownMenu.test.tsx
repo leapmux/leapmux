@@ -1174,6 +1174,159 @@ describe('DropdownMenu size caps', () => {
   })
 })
 
+describe('DropdownMenu visualViewport repositioning', () => {
+  function createMockVisualViewport(height: number, offsetTop = 0) {
+    const listeners = new Map<string, Set<(ev: Event) => void>>()
+    const vv = {
+      width: 390,
+      height,
+      offsetTop,
+      offsetLeft: 0,
+      addEventListener(type: string, fn: (ev: Event) => void) {
+        let set = listeners.get(type)
+        if (!set) {
+          set = new Set()
+          listeners.set(type, set)
+        }
+        set.add(fn)
+      },
+      removeEventListener(type: string, fn: (ev: Event) => void) {
+        listeners.get(type)?.delete(fn)
+      },
+      dispatch(type: 'resize' | 'scroll') {
+        for (const fn of listeners.get(type) ?? [])
+          fn(new Event(type))
+      },
+      listenerCount(type: 'resize' | 'scroll') {
+        return listeners.get(type)?.size ?? 0
+      },
+    }
+    return vv
+  }
+
+  function flushFrames(): Promise<void> {
+    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  }
+
+  it('repositions an open popover when visualViewport resizes or scrolls for the iOS keyboard', async () => {
+    const vv = createMockVisualViewport(800, 0)
+    vi.stubGlobal('innerWidth', 390)
+    vi.stubGlobal('innerHeight', 800)
+    vi.stubGlobal('visualViewport', vv)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+
+    render(() => (
+      <DropdownMenu
+        data-testid="vv-menu"
+        trigger={p => <button {...p} type="button" data-testid="vv-trigger">Model</button>}
+      >
+        <button role="menuitem">Alpha</button>
+      </DropdownMenu>
+    ))
+
+    const trigger = screen.getByTestId('vv-trigger')
+    const popover = screen.getByTestId('vv-menu')
+    stubRect(trigger, {
+      top: 760,
+      bottom: 784,
+      left: 40,
+      width: 120,
+      height: 24,
+    })
+    stubRect(popover, { width: 220, height: 200 })
+
+    await fireEvent.click(trigger)
+    expect(popover.style.top).toBe('560px')
+
+    // iOS keyboard rises: visualViewport shrinks to 262px at offsetTop 452,
+    // and body's --vvh/--vv-shift moves the trigger to y = 680..704.
+    vv.height = 262
+    vv.offsetTop = 452
+    vi.stubGlobal('innerHeight', 262)
+    stubRect(trigger, {
+      top: 680,
+      bottom: 704,
+      left: 40,
+      width: 120,
+      height: 24,
+    })
+
+    vv.dispatch('resize')
+    await flushFrames()
+    expect(popover.style.top).toBe('480px')
+
+    // Subsequent visualViewport scroll adjusts position again.
+    vv.offsetTop = 420
+    stubRect(trigger, {
+      top: 650,
+      bottom: 674,
+      left: 40,
+      width: 120,
+      height: 24,
+    })
+    vv.dispatch('scroll')
+    await flushFrames()
+    expect(popover.style.top).toBe('450px')
+
+    // Closing detaches the visualViewport listeners.
+    popover.hidePopover()
+    expect(vv.listenerCount('resize')).toBe(0)
+    expect(vv.listenerCount('scroll')).toBe(0)
+  })
+
+  it('repositions an open popover on window resize and cleans up on unmount', async () => {
+    const vv = createMockVisualViewport(800, 0)
+    vi.stubGlobal('innerWidth', 390)
+    vi.stubGlobal('innerHeight', 800)
+    vi.stubGlobal('visualViewport', vv)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+
+    const { unmount } = render(() => (
+      <DropdownMenu
+        data-testid="resize-menu"
+        trigger={p => <button {...p} type="button" data-testid="resize-trigger">Model</button>}
+      >
+        <button role="menuitem">Alpha</button>
+      </DropdownMenu>
+    ))
+
+    const trigger = screen.getByTestId('resize-trigger')
+    const popover = screen.getByTestId('resize-menu')
+    stubRect(trigger, {
+      top: 760,
+      bottom: 784,
+      left: 40,
+      width: 120,
+      height: 24,
+    })
+    stubRect(popover, { width: 220, height: 200 })
+
+    await fireEvent.click(trigger)
+    expect(popover.style.top).toBe('560px')
+
+    vv.height = 500
+    vi.stubGlobal('innerHeight', 500)
+    stubRect(trigger, {
+      top: 460,
+      bottom: 484,
+      left: 40,
+      width: 120,
+      height: 24,
+    })
+    window.dispatchEvent(new Event('resize'))
+    await flushFrames()
+    expect(popover.style.top).toBe('260px')
+
+    unmount()
+    expect(vv.listenerCount('resize')).toBe(0)
+    expect(vv.listenerCount('scroll')).toBe(0)
+  })
+})
+
 // A nested menu renders INLINE, so its items are descendants of the enclosing
 // popover whether or not that nested menu is open -- and a popover that is not
 // showing is `display: none`. Arrowing onto such an item calls `.focus()` on a

@@ -13,6 +13,8 @@ import { style } from '@vanilla-extract/css'
 export const comboboxControl = style({
   display: 'flex',
   alignItems: 'center',
+  // Stay pinned at the foot of the popover when the listbox shrinks above a mobile keyboard.
+  flexShrink: 0,
   padding: 'var(--space-1) var(--space-2)',
   borderTop: '1px solid var(--border)',
 })
@@ -30,19 +32,27 @@ export const comboboxInput = style({
 /**
  * The filterable option list.
  *
- * `minHeight` matches `maxHeight` on purpose: the list must not resize while the
- * user types. Every popover that hosts it repositions on a content resize, so a
- * list that shrinks as the match count falls slides the panel out from under the
- * pointer mid-filter — and a filter that matches nothing collapses it to a bare
- * input. Holding one size costs some blank space on a short list and keeps the
- * panel still.
+ * `height` with `flex: 0 1 auto` and `minHeight: 0` holds a steady 200px while
+ * the user types — so narrowing the filter does not shrink the popover out from
+ * under the pointer — while still letting the list shrink inside a flex-column
+ * popover whose own `max-height` is shorter than 200px (for example, above the
+ * iOS on-screen keyboard).
+ *
+ * `overscrollBehavior: 'contain'` and `touchAction: 'pan-y'` keep touch swipes
+ * inside this vertical scroller instead of chaining out to the host popover or
+ * to `body`'s `touch-action: none` on iOS WebKit.
  */
 const COMBOBOX_LISTBOX_HEIGHT = '200px'
 
 export const comboboxListbox = style({
-  minHeight: COMBOBOX_LISTBOX_HEIGHT,
-  maxHeight: COMBOBOX_LISTBOX_HEIGHT,
+  height: COMBOBOX_LISTBOX_HEIGHT,
+  flex: '0 1 auto',
+  minHeight: 0,
   overflowY: 'auto',
+  overflowX: 'hidden',
+  overscrollBehavior: 'contain',
+  WebkitOverflowScrolling: 'touch',
+  touchAction: 'pan-y',
   padding: 'var(--space-1)',
 })
 
@@ -50,6 +60,7 @@ export const comboboxItem = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
+  minWidth: 0,
   fontSize: 'var(--text-7)',
   padding: 'var(--space-1) var(--space-2)',
   cursor: 'pointer',
