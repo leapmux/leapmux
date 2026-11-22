@@ -206,6 +206,23 @@ globalStyle(
   },
 )
 
+// Prepended Lucide icons on rendered Markdown links (injected on the main thread
+// by ~/components/chat/markdownLinkIcons). Unscoped so callers that override
+// MarkdownText's class (such as toolResultContent) receive the same styling, and
+// inline-block with em sizing so multi-word links keep `display: inline` wrapping.
+export const markdownLinkIconClass = 'markdown-link-icon'
+
+globalStyle(`.${markdownLinkIconClass}`, {
+  display: 'inline-block',
+  width: '0.9em',
+  height: '0.9em',
+  verticalAlign: '-0.125em',
+  marginInlineEnd: 'var(--space-1)',
+  flexShrink: 0,
+  userSelect: 'none',
+  pointerEvents: 'none',
+})
+
 // Local filesystem images: render as a subtle inline fallback pill before
 // hydration (or outside a worker context / on refusal), and swap to a
 // constrained inline `<img>` once hydrated from the worker RPC.

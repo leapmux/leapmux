@@ -140,7 +140,6 @@ function toPlaceholder(node: Element, src: string, alt: string): void {
       properties: {
         className: [BLOCKED_IMAGE_LABEL_CLASS],
         href: src,
-        title: src,
       },
       children: [
         { type: 'text', value: label },

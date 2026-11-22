@@ -113,6 +113,9 @@ function rehypeMarkdownLinks() {
         // every markdown render path already ends with, so a future path
         // cannot forget it -- the same argument `withHardeningTail` makes.
         node.properties[UNTRUSTED_LINK_ATTRIBUTE] = ''
+        // Strip CommonMark link titles so MarkdownText's custom URL tooltip
+        // never collides with a native browser tooltip or a spoofed title.
+        delete node.properties.title
         return undefined
       }
       if (typeof href === 'string' && isLocalLinkHref(href)) {

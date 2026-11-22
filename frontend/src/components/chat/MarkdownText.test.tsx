@@ -26,7 +26,8 @@ import { deferred } from '~/test-support/async'
 import { holdWorkerReplies, recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
 import { pngBytes } from '~/test-support/imageBytes'
 import { fillMarkdownRenderGate } from '~/test-support/markdownRenderGate'
-import { markdownContent } from './markdownEditor/markdownContent.css'
+import { markdownContent, markdownLinkIconClass } from './markdownEditor/markdownContent.css'
+import { MARKDOWN_LINK_ICON_ATTRIBUTE } from './markdownLinkIcons'
 import { MarkdownLocalLinkProvider } from './markdownLocalLinks'
 import { markdownCacheNamespace } from './markdownRendering'
 import { MarkdownPrefetch, MarkdownText } from './MarkdownText'
@@ -1025,5 +1026,333 @@ describe('MarkdownText local links and images', () => {
     finally {
       unmount()
     }
+  })
+})
+
+describe('MarkdownText remote link tooltips and link icons', () => {
+  let blobCounter = 0
+
+  beforeEach(() => {
+    blobCounter = 0
+    _resetLocalMarkdownImageCacheForTest()
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:test-remote-suite-img-${++blobCounter}`)
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    vi.spyOn(workerFile, 'readFile').mockResolvedValue(makeReadFileResponse(makePngBytes()))
+  })
+
+  afterEach(() => {
+    dismissActiveTooltip()
+    _resetLocalMarkdownImageCacheForTest()
+    window.getSelection()?.removeAllRanges()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('shows hover and focus tooltips for remote links without a provider, exposes IDN punycode, and dismisses on click', async () => {
+    const { container } = render(() => (
+      <MarkdownText text={'Visit [**Example** `docs`](https://example.com/docs "Ignored title") and [Site](https://bücher.example/docs)'} />
+    ))
+    await settleWorkerReplies()
+
+    vi.useFakeTimers()
+    const body = container.querySelector(`.${markdownContent}`) as HTMLElement
+    const anchors = Array.from(body.querySelectorAll<HTMLAnchorElement>('a[href]'))
+    const exampleLink = anchors.find(a => a.getAttribute('href') === 'https://example.com/docs') as HTMLAnchorElement
+    const idnLink = anchors.find(a => a.textContent === 'Site') as HTMLAnchorElement
+    expect(exampleLink).toBeDefined()
+    expect(idnLink).toBeDefined()
+    expect(exampleLink.hasAttribute('title')).toBe(false)
+    expect(idnLink.hasAttribute('title')).toBe(false)
+
+    const strong = exampleLink.querySelector('strong') as HTMLElement
+    const code = exampleLink.querySelector('code') as HTMLElement
+
+    // Touch pointerover does not open a tooltip.
+    exampleLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'touch' }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // Mouse pointerover shows the resolved URL after SHOW_DELAY_MS and stays open across child transitions.
+    exampleLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS / 2)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    strong.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: code }))
+    code.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: strong }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS / 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/docs')
+
+    strong.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: code }))
+    code.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: strong }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/docs')
+
+    // Leaving preserves the tooltip across HIDE_DELAY_MS; returning keeps it open.
+    exampleLink.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS / 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/docs')
+    exampleLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/docs')
+
+    // Primary click dismisses immediately without calling preventDefault, and post-click child
+    // transitions keep the tooltip closed.
+    const primaryClick = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    exampleLink.dispatchEvent(primaryClick)
+    expect(primaryClick.defaultPrevented).toBe(false)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    strong.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: code }))
+    code.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: strong }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // A capture-phase click listener cancelling the click (matching interceptUntrustedLinkClicks)
+    // still dismisses the tooltip and clears tracked state so immediate focusIn reopens it cleanly.
+    exampleLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/docs')
+
+    const cancelInCapture = (ev: MouseEvent) => ev.preventDefault()
+    container.addEventListener('click', cancelInCapture, { capture: true })
+    try {
+      const capturedClick = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+      exampleLink.dispatchEvent(capturedClick)
+      expect(capturedClick.defaultPrevented).toBe(true)
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    }
+    finally {
+      container.removeEventListener('click', cancelInCapture, { capture: true })
+    }
+
+    fireEvent.focusIn(exampleLink)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/docs')
+    exampleLink.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // Internationalized Domain Name hosts expose punycode via anchor.href.
+    idnLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://xn--bcher-kva.example/docs')
+  })
+
+  it('shows tooltips on blocked remote image anchors and image-wrapped remote links without invoking onActivate, and suppresses tooltips in premeasureMode', async () => {
+    const onActivate = vi.fn()
+    const ctx = makeLocalLinkContext({ onActivate })
+    const md = '[Web](https://example.com/page) ![diagram](https://evil.example/x.png) [![Logo](./logo.svg)](https://example.com/home)'
+
+    const normal = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text={md} />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    vi.useFakeTimers()
+    const body = normal.container.querySelector(`.${markdownContent}`) as HTMLElement
+    const webLink = body.querySelector('a[href="https://example.com/page"]') as HTMLAnchorElement
+    const blockedLink = body.querySelector('a[href="https://evil.example/x.png"]') as HTMLAnchorElement
+    const wrappedImgSpan = body.querySelector(`a[href="https://example.com/home"] [${LOCAL_IMAGE_ATTRIBUTE}="./logo.svg"]`) as HTMLElement
+
+    blockedLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://evil.example/x.png')
+
+    blockedLink.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: wrappedImgSpan }))
+    wrappedImgSpan.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: blockedLink }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/home')
+
+    const webClick = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    webLink.dispatchEvent(webClick)
+    expect(webClick.defaultPrevented).toBe(false)
+
+    const blockedClick = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    blockedLink.dispatchEvent(blockedClick)
+    expect(blockedClick.defaultPrevented).toBe(false)
+    expect(onActivate).not.toHaveBeenCalled()
+
+    vi.useRealTimers()
+    dismissActiveTooltip()
+    normal.unmount()
+
+    const premeasured = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text={md} context={{ premeasureMode: true }} />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    vi.useFakeTimers()
+    const preBody = premeasured.container.querySelector(`.${markdownContent}`) as HTMLElement
+    const preWebLink = preBody.querySelector('a[href="https://example.com/page"]') as HTMLAnchorElement
+    expect(preWebLink.querySelector(`svg[${MARKDOWN_LINK_ICON_ATTRIBUTE}="remote"]`)).not.toBeNull()
+    preWebLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: preBody }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('prepends the matching Lucide icon by kind and updates in place when flavor changes reactively', async () => {
+    const [flavor, setFlavor] = createSignal<'posix' | 'win32'>('posix')
+    const ctx: MarkdownLocalLinkContextValue = {
+      workerId: 'w-1',
+      baseDir: '/repo/docs',
+      workingDir: '/repo',
+      homeDir: '/home/alice',
+      get flavor() { return flavor() },
+      onActivate: vi.fn(),
+    }
+    const md = '[File](./guide.md) [Dir](./docs/) [Img](./arch.png) [Ambig](./docs/nested) [WinDir](docs\\\\) [Web](https://example.com) ![Blocked](https://evil.example/a.png)'
+
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text={md} />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    const iconKindOf = (selector: string) =>
+      container.querySelector(`${selector} > svg.${markdownLinkIconClass}`)?.getAttribute(MARKDOWN_LINK_ICON_ATTRIBUTE)
+
+    expect(iconKindOf(`[${LOCAL_LINK_ATTRIBUTE}="./guide.md"]`)).toBe('file')
+    expect(iconKindOf(`[${LOCAL_LINK_ATTRIBUTE}="./docs/"]`)).toBe('directory')
+    expect(iconKindOf(`[${LOCAL_LINK_ATTRIBUTE}="./arch.png"]`)).toBe('image')
+    expect(iconKindOf(`[${LOCAL_LINK_ATTRIBUTE}="./docs/nested"]`)).toBe('file')
+    expect(iconKindOf(`[${LOCAL_LINK_ATTRIBUTE}="docs%5C"]`)).toBe('file')
+    expect(iconKindOf('a[href="https://example.com"]')).toBe('remote')
+    expect(iconKindOf('a[href="https://evil.example/a.png"]')).toBe('remote')
+
+    setFlavor('win32')
+    const winDir = container.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="docs%5C"]`) as HTMLElement
+    expect(winDir.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(1)
+    expect(iconKindOf(`[${LOCAL_LINK_ATTRIBUTE}="docs%5C"]`)).toBe('directory')
+  })
+
+  it('skips prepending icons on image-only links, standalone local images, and empty links while keeping icons on mixed image-plus-text links', async () => {
+    const md = '[![Thumb](./thumb.png)](./doc.md) [![Logo](./logo.svg)](https://example.com) [![Pixel](data:image/png;base64,iVBORw0KGgo=)](https://example.com) [![Logo](./logo.svg) Docs](https://example.com/mixed) ![Solo](./solo.png) [](https://example.com/empty)'
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={makeLocalLinkContext()}>
+        <MarkdownText text={md} />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    const localImgLink = container.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./doc.md"]`) as HTMLElement
+    const remoteImgLinks = container.querySelectorAll<HTMLAnchorElement>('a[href="https://example.com"]')
+    const mixedLink = container.querySelector('a[href="https://example.com/mixed"]') as HTMLAnchorElement
+    const soloImg = container.querySelector(`[${LOCAL_IMAGE_ATTRIBUTE}="./solo.png"]`) as HTMLElement
+    const emptyLink = container.querySelector('a[href="https://example.com/empty"]') as HTMLAnchorElement
+
+    expect(remoteImgLinks).toHaveLength(2)
+    expect(localImgLink.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
+    expect(remoteImgLinks[0]!.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
+    expect(remoteImgLinks[1]!.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
+    expect(soloImg.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
+    expect(emptyLink.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
+
+    const mixedIcons = mixedLink.querySelectorAll(`.${markdownLinkIconClass}`)
+    expect(mixedIcons).toHaveLength(1)
+    expect(mixedIcons[0]?.getAttribute(MARKDOWN_LINK_ICON_ATTRIBUTE)).toBe('remote')
+  })
+
+  it('dismisses a local tooltip synchronously without disturbing an open remote tooltip across workerId transitions', async () => {
+    const [workerId, setWorkerId] = createSignal('w-1')
+    const ctx: MarkdownLocalLinkContextValue = {
+      get workerId() { return workerId() },
+      baseDir: '/repo/docs',
+      workingDir: '/repo',
+      homeDir: '/home/alice',
+      flavor: 'posix',
+      onActivate: vi.fn(),
+    }
+
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text="[Guide](./guide.md) [Web](https://example.com/keep)" />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    vi.useFakeTimers()
+    const body = container.querySelector(`.${markdownContent}`) as HTMLElement
+    const guideLink = body.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./guide.md"]`) as HTMLElement
+    const webLink = body.querySelector('a[href="https://example.com/keep"]') as HTMLAnchorElement
+
+    // 1. Deactivating dismisses an open local tooltip synchronously, removes the local icon,
+    // keeps the remote icon, and prevents a ghost tooltip when workerId reactivates.
+    guideLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/guide.md')
+
+    setWorkerId('')
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(guideLink.querySelector(`.${markdownLinkIconClass}`)).toBeNull()
+    expect(webLink.querySelector(`svg[${MARKDOWN_LINK_ICON_ATTRIBUTE}="remote"]`)).not.toBeNull()
+
+    setWorkerId('w-1')
+    vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(guideLink.querySelector(`svg[${MARKDOWN_LINK_ICON_ATTRIBUTE}="file"]`)).not.toBeNull()
+
+    // 2. Deactivating while a local tooltip is still visible during HIDE_DELAY_MS dismisses
+    // it synchronously instead of leaving the stale local tooltip up until the timer fires.
+    guideLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/guide.md')
+    guideLink.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS / 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/guide.md')
+
+    setWorkerId('')
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    setWorkerId('w-1')
+
+    // 3. Deactivating while a local link is hovered and a remote link is focused dismisses the
+    // local tooltip and hands tooltip ownership to the focused remote link.
+    fireEvent.focusIn(webLink)
+    guideLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/guide.md')
+
+    setWorkerId('')
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+    webLink.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    setWorkerId('w-1')
+
+    // 4. Deactivating while a remote tooltip is open leaves the remote tooltip and icon intact.
+    webLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+
+    setWorkerId('')
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+    expect(webLink.querySelector(`svg[${MARKDOWN_LINK_ICON_ATTRIBUTE}="remote"]`)).not.toBeNull()
+  })
+
+  it('dismisses an active remote link tooltip when HTML updates in place', async () => {
+    const firstMd = '[One](https://one.example/a)'
+    const secondMd = '[Two](https://two.example/b)'
+    requestMarkdownHtml(firstMd)
+    requestMarkdownHtml(secondMd)
+    await settleWorkerReplies()
+
+    const [text, setText] = createSignal(firstMd)
+    const { container } = render(() => <MarkdownText text={text()} />)
+
+    vi.useFakeTimers()
+    const body = container.querySelector(`.${markdownContent}`) as HTMLElement
+    const firstLink = body.querySelector('a[href="https://one.example/a"]') as HTMLAnchorElement
+    firstLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://one.example/a')
+
+    setText(secondMd)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    const secondLink = body.querySelector('a[href="https://two.example/b"]') as HTMLAnchorElement
+    expect(secondLink.querySelector(`svg[${MARKDOWN_LINK_ICON_ATTRIBUTE}="remote"]`)).not.toBeNull()
   })
 })

@@ -250,4 +250,31 @@ test.describe('local Markdown links, directory reveal, and inline local images',
     await expect(bubble.locator('a')).toHaveCount(0)
     await expect(bubble.locator('[data-local-link]')).toHaveCount(0)
   })
+
+  test('shows prepended Lucide icons by link kind and a custom hover tooltip for remote links', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    await runMarkdownReply(
+      page,
+      modelScript,
+      'Reply with local and remote links.',
+      '[Guide](./docs/guide.md), [Docs](./docs/), [Arch](./docs/arch.png), and [Example](https://example.com/docs "Ignored")',
+    )
+
+    const bubble = assistantBubbles(page).filter({ hasText: 'Example' }).first()
+    const fileLink = bubble.locator('[data-local-link="./docs/guide.md"]').first()
+    const dirLink = bubble.locator('[data-local-link="./docs/"]').first()
+    const imageLink = bubble.locator('[data-local-link="./docs/arch.png"]').first()
+    const remoteLink = bubble.locator('a[href="https://example.com/docs"]').first()
+
+    await expect(fileLink.locator('svg[data-markdown-link-icon="file"][aria-hidden="true"]')).toBeVisible()
+    await expect(dirLink.locator('svg[data-markdown-link-icon="directory"][aria-hidden="true"]')).toBeVisible()
+    await expect(imageLink.locator('svg[data-markdown-link-icon="image"][aria-hidden="true"]')).toBeVisible()
+    await expect(remoteLink.locator('svg[data-markdown-link-icon="remote"][aria-hidden="true"]')).toBeVisible()
+    await expect(remoteLink).not.toHaveAttribute('title')
+
+    await remoteLink.hover()
+    const tooltip = page.getByRole('tooltip')
+    await expect(tooltip).toBeVisible()
+    await expect(tooltip).toHaveText('https://example.com/docs')
+  })
 })

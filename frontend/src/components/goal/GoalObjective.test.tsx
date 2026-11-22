@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MARKDOWN_LINK_ICON_ATTRIBUTE } from '~/components/chat/markdownLinkIcons'
 import { MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
 import { LOCAL_LINK_ATTRIBUTE, LOCAL_LINKS_ACTIVE_ATTRIBUTE } from '~/lib/localLinks'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
@@ -209,6 +210,7 @@ describe('GoalObjective', () => {
       expect(box.querySelector(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}]`)).not.toBeNull()
       expect(mainLink.getAttribute('role')).toBe('button')
       expect(mainLink.getAttribute('tabindex')).toBe('0')
+      expect(mainLink.querySelector(`[${MARKDOWN_LINK_ICON_ATTRIBUTE}="file"]`)).not.toBeNull()
 
       statesLayout(box, 200, 84)
       triggerResizeObserversSync()
@@ -223,6 +225,7 @@ describe('GoalObjective', () => {
       expect(tipLink).not.toBeNull()
       expect(tipLink.getAttribute('role')).toBeNull()
       expect(tipLink.getAttribute('tabindex')).toBeNull()
+      expect(tipLink.querySelector(`[${MARKDOWN_LINK_ICON_ATTRIBUTE}]`)).toBeNull()
     })
   })
 })

@@ -1,8 +1,10 @@
 import type { PathFlavor } from './paths'
+import { isImageExtension } from './fileType'
 import {
   cleanPath,
   filesystemRoot,
   isFilesystemRoot,
+  lastSepIndex,
   resolvePath,
   safeDecodeURIComponent,
   untildify,
@@ -316,4 +318,38 @@ export function tooltipPathForLocalLink(rawHref: string, opts: LocalLinkResolveO
       return first
   }
   return undefined
+}
+
+export type LocalLinkKind = 'directory' | 'file' | 'image'
+
+/**
+ * Classify a local Markdown link target as a directory, image, or file using
+ * static path signals without issuing worker RPCs. Ambiguous paths without a
+ * trailing separator or image extension fall back to `'file'`.
+ */
+export function classifyLocalLinkKind(rawHref: string, flavor: PathFlavor): LocalLinkKind | undefined {
+  const parsed = parseLocalLinkHref(rawHref)
+  if (!parsed)
+    return undefined
+
+  if (parsed.pathWithoutLineSuffix !== undefined) {
+    return isImageExtension(parsed.pathWithoutLineSuffix)
+      ? 'image'
+      : 'file'
+  }
+
+  const path = parsed.path
+  const hasTrailingSep = path.endsWith('/') || (flavor === 'win32' && path.endsWith('\\'))
+  const sepIndex = lastSepIndex(path, flavor)
+  const finalSegment = sepIndex < 0
+    ? path
+    : path.slice(sepIndex + 1)
+
+  if (path === '~' || hasTrailingSep || finalSegment === '.' || finalSegment === '..')
+    return 'directory'
+
+  if (isImageExtension(path))
+    return 'image'
+
+  return 'file'
 }

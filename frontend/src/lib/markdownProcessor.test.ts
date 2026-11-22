@@ -631,6 +631,17 @@ describe('link hardening in both processors', () => {
     }
   })
 
+  it('strips native title attributes from http(s) links', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('[docs](https://example.com/a "Spoofed title")')
+      expect(html, name).toContain('href="https://example.com/a"')
+      expect(html, name).toContain('target="_blank"')
+      expect(html, name).toContain('rel="noopener noreferrer nofollow"')
+      expect(html, name).toContain(`${UNTRUSTED_LINK_ATTRIBUTE}=""`)
+      expect(html, name).not.toContain('title=')
+    }
+  })
+
   it('marks every surviving link untrusted, so a click reaches the prompt', async () => {
     for (const [name, render] of await processors()) {
       // An agent wrote both halves, so the text may state one address over a

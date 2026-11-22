@@ -92,6 +92,15 @@ describe('nodeToMarkdown', () => {
       .toBe('[`app.ts`](./src/app.ts)')
   })
 
+  it('ignores prepended decorative link icon svgs inside anchors and local link spans', () => {
+    expect(nodeToMarkdown(html(
+      '<a href="https://example.com"><svg class="markdown-link-icon" aria-hidden="true"><path d="M0 0"></path></svg>docs</a>',
+    ))).toBe('[docs](https://example.com)')
+    expect(nodeToMarkdown(html(
+      '<span data-local-link="./src/app.ts"><svg class="markdown-link-icon" aria-hidden="true"><path d="M0 0"></path></svg><code>app.ts</code></span>',
+    ))).toBe('[`app.ts`](./src/app.ts)')
+  })
+
   it('converts local image spans (hydrated and fallback) to ![alt](src)', () => {
     expect(nodeToMarkdown(html(
       '<span class="local-markdown-image" data-local-image="./img/chart.png" data-local-image-alt="Chart"><img src="blob:https://app/1" alt="Chart"></span>',
