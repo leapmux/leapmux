@@ -1,10 +1,12 @@
 import { style } from '@vanilla-extract/css'
+import { touchScrollContain } from '~/styles/popover.css'
+import { breakpoints } from '~/styles/tokens'
 
 /**
- * Styles for the filterable listbox in `./settingsShared.tsx`.
+ * Styles for `FilterableListbox` (`./FilterableListbox.tsx`).
  *
- * They live here rather than in `./markdownEditor/MarkdownEditor.css.ts` (their
- * first home) because three unrelated features render the widget: the composer's
+ * They live here rather than in `~/components/chat/markdownEditor/MarkdownEditor.css.ts`
+ * (their first home) because three unrelated features render the widget: the composer's
  * settings chips, the composer's `[+]` submenus, and the code-language popover.
  * `FilterableListbox` applies them itself, so no caller passes them in and no
  * caller can forget one.
@@ -24,6 +26,13 @@ export const comboboxInput = style({
   'fontSize': 'var(--text-7)',
   'color': 'var(--foreground)',
   'width': '100%',
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      // Match the mobile 16px floor in `~/styles/global.css.ts` so class specificity
+      // does not drop `<input>` below 16px and trigger iOS Safari auto-zoom.
+      fontSize: '16px',
+    },
+  },
   '::placeholder': {
     color: 'var(--faint-foreground)',
   },
@@ -38,34 +47,49 @@ export const comboboxInput = style({
  * popover whose own `max-height` is shorter than 200px (for example, above the
  * iOS on-screen keyboard).
  *
- * `overscrollBehavior: 'contain'` and `touchAction: 'pan-y'` keep touch swipes
- * inside this vertical scroller instead of chaining out to the host popover or
- * to `body`'s `touch-action: none` on iOS WebKit.
+ * `overscrollBehavior: 'contain'` keeps touch scroll at the ends of this list
+ * from chaining into the host popover, and `touchAction: 'pan-y'` narrows touch
+ * panning inside the list to its vertical scroll axis.
  */
 const COMBOBOX_LISTBOX_HEIGHT = '200px'
 
-export const comboboxListbox = style({
-  height: COMBOBOX_LISTBOX_HEIGHT,
-  flex: '0 1 auto',
-  minHeight: 0,
-  overflowY: 'auto',
-  overflowX: 'hidden',
-  overscrollBehavior: 'contain',
-  WebkitOverflowScrolling: 'touch',
-  touchAction: 'pan-y',
-  padding: 'var(--space-1)',
-})
+export const comboboxListbox = style([
+  touchScrollContain,
+  {
+    height: COMBOBOX_LISTBOX_HEIGHT,
+    flex: '0 1 auto',
+    minHeight: 0,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    touchAction: 'pan-y',
+    padding: 'var(--space-1)',
+  },
+])
 
 export const comboboxItem = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  minWidth: 0,
   fontSize: 'var(--text-7)',
   padding: 'var(--space-1) var(--space-2)',
   cursor: 'pointer',
   color: 'var(--foreground)',
   borderRadius: 'var(--radius-small)',
+})
+
+/**
+ * Primary option text inside `comboboxItem`.
+ *
+ * `minWidth: 0` with `overflow: 'hidden'` and ellipsis lets long unbroken
+ * option names shrink inside a narrow popover without pushing the trailing
+ * check icon or secondary identifier past the clipped right edge.
+ */
+export const comboboxItemLabel = style({
+  flex: '0 1 auto',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 })
 
 export const comboboxItemHighlighted = style({

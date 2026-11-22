@@ -1,3 +1,8 @@
+import { clamp } from '~/lib/clamp'
+import { readViewportRect } from '~/lib/visualViewport'
+
+export { readViewportRect, type ViewportRect } from '~/lib/visualViewport'
+
 export interface PopoverPositionOptions {
   /** 'auto' = flip upward if clipped; 'above' = always position above trigger */
   placement?: 'auto' | 'above'
@@ -27,49 +32,12 @@ export interface PopoverAnchorRect {
 
 export type PopoverAnchor = Element | PopoverAnchorRect
 
-interface ViewportRect {
-  top: number
-  left: number
-  width: number
-  height: number
-  bottom: number
-  right: number
-}
-
 /**
- * Resolve the visible viewport rectangle in layout-viewport coordinates.
- *
- * On iOS Safari with the on-screen keyboard up, `window.innerHeight` shrinks to
- * `visualViewport.height` while `visualViewport.offsetTop` shifts the visible
- * band down in layout coordinates. Top-layer `position: fixed` popovers and
- * `getBoundingClientRect()` both use layout coordinates, so clamping against
- * `[0, window.innerHeight]` pushes a popover above the visible band. Using the
- * `visualViewport` rectangle keeps popovers inside the region actually on screen.
+ * Clamp a popover's start edge within `[start, end]` so a popover of `size`
+ * stays inside the span, pinning to `start` when `size > end - start`.
  */
-function readViewportRect(): ViewportRect {
-  const vv = typeof window !== 'undefined'
-    ? window.visualViewport
-    : null
-  const width = vv && Number.isFinite(vv.width) && vv.width > 0
-    ? vv.width
-    : window.innerWidth
-  const height = vv && Number.isFinite(vv.height) && vv.height > 0
-    ? vv.height
-    : window.innerHeight
-  const left = vv && Number.isFinite(vv.offsetLeft)
-    ? vv.offsetLeft
-    : 0
-  const top = vv && Number.isFinite(vv.offsetTop)
-    ? vv.offsetTop
-    : 0
-  return {
-    top,
-    left,
-    width,
-    height,
-    bottom: top + height,
-    right: left + width,
-  }
+function clampToSpan(position: number, size: number, start: number, end: number): number {
+  return clamp(position, start, Math.max(start, end - size))
 }
 
 /**
@@ -125,31 +93,10 @@ export function calcPopoverPosition(
 
   // --- Horizontal positioning ---
   // Start aligned with trigger's left edge, then clamp to the visible viewport.
-  let left = triggerRect.left
+  let left = clampToSpan(triggerRect.left, popoverRect.width, viewport.left, viewport.right)
 
-  const rightOverflow = left + popoverRect.width - viewport.right
-  if (rightOverflow > 0) {
-    left = Math.max(viewport.left, left - rightOverflow)
-  }
-  if (left < viewport.left) {
-    left = viewport.left
-  }
-
-  top += yOffset
-  left += xOffset
-
-  if (left + popoverRect.width > viewport.right) {
-    left = Math.max(viewport.left, viewport.right - popoverRect.width)
-  }
-  if (left < viewport.left) {
-    left = viewport.left
-  }
-  if (top + popoverRect.height > viewport.bottom) {
-    top = Math.max(viewport.top, viewport.bottom - popoverRect.height)
-  }
-  if (top < viewport.top) {
-    top = viewport.top
-  }
+  top = clampToSpan(top + yOffset, popoverRect.height, viewport.top, viewport.bottom)
+  left = clampToSpan(left + xOffset, popoverRect.width, viewport.left, viewport.right)
 
   return { top, left, flipped }
 }

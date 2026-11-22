@@ -1,12 +1,14 @@
 import type { JSX } from 'solid-js'
 import Copy from 'lucide-solid/icons/copy'
 import Quote from 'lucide-solid/icons/quote'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { clamp } from '~/lib/clamp'
 import { copyTextToClipboard } from '~/lib/clipboard'
 import { extractLineRange, extractSelectionMarkdown } from '~/lib/quoteUtils'
 import { attachTapSelect } from '~/lib/tapSelect'
 import { selectionInside } from '~/lib/textSelection'
+import { readViewportRect, subscribeVisualViewport } from '~/lib/visualViewport'
 import * as styles from './SelectionQuotePopover.css'
 
 interface SelectionQuotePopoverProps {
@@ -83,6 +85,20 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     hidePopover()
   }
 
+  const computeClampedPosition = (
+    lastRect: Pick<DOMRect, 'top' | 'bottom' | 'right'>,
+    popover: HTMLDivElement,
+  ): { top: number, left: number } => {
+    const viewport = readViewportRect()
+    const rect = popover.getBoundingClientRect()
+    const left = clamp(lastRect.right, viewport.left, Math.max(viewport.left, viewport.right - rect.width))
+    let top = lastRect.top - 34
+    if (top < viewport.top)
+      top = lastRect.bottom + 4
+    top = clamp(top, viewport.top, Math.max(viewport.top, viewport.bottom - rect.height))
+    return { top, left }
+  }
+
   /**
    * Show the Copy/Quote buttons at the end of whatever is selected now.
    *
@@ -113,29 +129,48 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
       const lastRect = rects.at(-1)!
 
       // Place at the end of the selection, then clamp so it stays on-screen.
-      let left = lastRect.right
-      let top = lastRect.top - 34
+      const left = lastRect.right
+      const top = lastRect.top - 34
       setPosition({ top, left })
       setVisible(true)
 
-      // After the popover renders, clamp to viewport bounds.
+      // After the popover renders, clamp to the visible viewport rectangle.
       clampFrame = requestAnimationFrame(() => {
         clampFrame = undefined
         if (!popoverRef)
           return
-        const rect = popoverRef.getBoundingClientRect()
-        const vw = window.innerWidth
-        const vh = window.innerHeight
-        if (rect.right > vw)
-          left = Math.max(0, vw - rect.width)
-        if (top < 0)
-          top = lastRect.bottom + 4
-        if (top + rect.height > vh)
-          top = Math.max(0, vh - rect.height)
-        setPosition({ top, left })
+        setPosition(computeClampedPosition(lastRect, popoverRef))
       })
     })
   }
+
+  // Reposition the counter-translated fixed popover whenever the visual
+  // viewport resizes, scrolls, or updates `--vvh`/`--vv-shift` while visible.
+  createEffect(() => {
+    if (!visible())
+      return
+    const unsubscribe = subscribeVisualViewport(() => {
+      const selection = updateSelectionActive()
+      if (!selection) {
+        hidePopover()
+        return
+      }
+      const rects = [
+        ...selection.getRangeAt(0).getClientRects(),
+      ]
+      if (rects.length === 0) {
+        setSelectionActive(false)
+        hidePopover()
+        return
+      }
+      const lastRect = rects.at(-1)!
+      if (popoverRef)
+        setPosition(computeClampedPosition(lastRect, popoverRef))
+      else
+        setPosition({ top: lastRect.top - 34, left: lastRect.right })
+    })
+    onCleanup(unsubscribe)
+  })
 
   const handleCopyClick = async (e: MouseEvent) => {
     e.preventDefault()

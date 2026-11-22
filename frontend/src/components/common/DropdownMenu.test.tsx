@@ -1,14 +1,18 @@
 /// <reference types="vitest/globals" />
-import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
+import { cleanup, fireEvent, render, renderHook, screen } from '@solidjs/testing-library'
 import { createSignal, mergeProps } from 'solid-js'
 import { beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { DIALOG_HEIGHT_VAR, popoverCard, popoverFieldMenuClamp, popoverMenuClamp, TRIGGER_WIDTH_VAR } from '~/styles/popover.css'
 import { motion } from '~/styles/tokens'
 import { hoverForTooltip, stubClipped, stubRect } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
+import { createManualFrames } from '~/test-support/manualFrames'
 import { pointerEvent } from '~/test-support/pointer'
 import { installControllableResizeObserver, triggerResizeObserverForSync } from '~/test-support/resizeObserverStub'
+import { createMockVisualViewport } from '~/test-support/visualViewportStub'
 import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
+import { FilterableListbox } from './FilterableListbox'
 import { Tooltip } from './Tooltip'
 
 // The jsdom popover stubs (showPopover/hidePopover/togglePopover plus the
@@ -1175,49 +1179,25 @@ describe('DropdownMenu size caps', () => {
 })
 
 describe('DropdownMenu visualViewport repositioning', () => {
-  function createMockVisualViewport(height: number, offsetTop = 0) {
-    const listeners = new Map<string, Set<(ev: Event) => void>>()
-    const vv = {
-      width: 390,
-      height,
-      offsetTop,
-      offsetLeft: 0,
-      addEventListener(type: string, fn: (ev: Event) => void) {
-        let set = listeners.get(type)
-        if (!set) {
-          set = new Set()
-          listeners.set(type, set)
-        }
-        set.add(fn)
-      },
-      removeEventListener(type: string, fn: (ev: Event) => void) {
-        listeners.get(type)?.delete(fn)
-      },
-      dispatch(type: 'resize' | 'scroll') {
-        for (const fn of listeners.get(type) ?? [])
-          fn(new Event(type))
-      },
-      listenerCount(type: 'resize' | 'scroll') {
-        return listeners.get(type)?.size ?? 0
-      },
-    }
-    return vv
-  }
-
-  function flushFrames(): Promise<void> {
-    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
-  }
-
-  it('repositions an open popover when visualViewport resizes or scrolls for the iOS keyboard', async () => {
+  function setupViewportMenu(opts: { manualFrames?: boolean } = {}) {
     const vv = createMockVisualViewport(800, 0)
+    const frames = opts.manualFrames
+      ? createManualFrames()
+      : null
     vi.stubGlobal('innerWidth', 390)
     vi.stubGlobal('innerHeight', 800)
     vi.stubGlobal('visualViewport', vv)
+    if (frames) {
+      vi.stubGlobal('requestAnimationFrame', frames.requestFrame)
+      vi.stubGlobal('cancelAnimationFrame', frames.cancelFrame)
+    }
     onTestFinished(() => {
       vi.unstubAllGlobals()
+      document.documentElement.style.removeProperty('--vvh')
+      document.documentElement.style.removeProperty('--vv-shift')
     })
 
-    render(() => (
+    const { unmount } = render(() => (
       <DropdownMenu
         data-testid="vv-menu"
         trigger={p => <button {...p} type="button" data-testid="vv-trigger">Model</button>}
@@ -1237,7 +1217,20 @@ describe('DropdownMenu visualViewport repositioning', () => {
     })
     stubRect(popover, { width: 220, height: 200 })
 
+    return {
+      vv,
+      frames,
+      trigger,
+      popover,
+      unmount,
+    }
+  }
+
+  it('repositions an open popover when visualViewport resizes or scrolls for the iOS keyboard', async () => {
+    const { vv, frames, trigger, popover } = setupViewportMenu({ manualFrames: true })
+
     await fireEvent.click(trigger)
+    frames!.runFrames()
     expect(popover.style.top).toBe('560px')
 
     // iOS keyboard rises: visualViewport shrinks to 262px at offsetTop 452,
@@ -1253,8 +1246,13 @@ describe('DropdownMenu visualViewport repositioning', () => {
       height: 24,
     })
 
+    // Multiple events within one frame coalesce into a single rAF callback.
+    const callsBefore = frames!.requestFrame.mock.calls.length
     vv.dispatch('resize')
-    await flushFrames()
+    vv.dispatch('scroll')
+    expect(frames!.requestFrame.mock.calls.length - callsBefore).toBe(1)
+    expect(popover.style.top).toBe('560px')
+    frames!.runFrames()
     expect(popover.style.top).toBe('480px')
 
     // Subsequent visualViewport scroll adjusts position again.
@@ -1267,45 +1265,33 @@ describe('DropdownMenu visualViewport repositioning', () => {
       height: 24,
     })
     vv.dispatch('scroll')
-    await flushFrames()
+    frames!.runFrames()
     expect(popover.style.top).toBe('450px')
 
-    // Closing detaches the visualViewport listeners.
-    popover.hidePopover()
-    expect(vv.listenerCount('resize')).toBe(0)
-    expect(vv.listenerCount('scroll')).toBe(0)
-  })
-
-  it('repositions an open popover on window resize and cleans up on unmount', async () => {
-    const vv = createMockVisualViewport(800, 0)
-    vi.stubGlobal('innerWidth', 390)
-    vi.stubGlobal('innerHeight', 800)
-    vi.stubGlobal('visualViewport', vv)
-    onTestFinished(() => {
-      vi.unstubAllGlobals()
-    })
-
-    const { unmount } = render(() => (
-      <DropdownMenu
-        data-testid="resize-menu"
-        trigger={p => <button {...p} type="button" data-testid="resize-trigger">Model</button>}
-      >
-        <button role="menuitem">Alpha</button>
-      </DropdownMenu>
-    ))
-
-    const trigger = screen.getByTestId('resize-trigger')
-    const popover = screen.getByTestId('resize-menu')
+    // Closing detaches the visualViewport listeners and aborts any queued frame.
+    vv.offsetTop = 300
     stubRect(trigger, {
-      top: 760,
-      bottom: 784,
+      top: 520,
+      bottom: 544,
       left: 40,
       width: 120,
       height: 24,
     })
-    stubRect(popover, { width: 220, height: 200 })
+    vv.dispatch('scroll')
+    expect(frames!.pendingFrames()).toBe(1)
+    popover.hidePopover()
+    expect(frames!.pendingFrames()).toBe(0)
+    expect(vv.listenerCount('resize')).toBe(0)
+    expect(vv.listenerCount('scroll')).toBe(0)
+    frames!.runFrames()
+    expect(popover.style.top).toBe('450px')
+  })
+
+  it('repositions an open popover on window resize and aborts pending frames on unmount', async () => {
+    const { vv, frames, trigger, popover, unmount } = setupViewportMenu({ manualFrames: true })
 
     await fireEvent.click(trigger)
+    frames!.runFrames()
     expect(popover.style.top).toBe('560px')
 
     vv.height = 500
@@ -1318,12 +1304,191 @@ describe('DropdownMenu visualViewport repositioning', () => {
       height: 24,
     })
     window.dispatchEvent(new Event('resize'))
-    await flushFrames()
+    frames!.runFrames()
     expect(popover.style.top).toBe('260px')
 
+    // Pending resize frame is cancelled on unmount.
+    stubRect(trigger, {
+      top: 300,
+      bottom: 324,
+      left: 40,
+      width: 120,
+      height: 24,
+    })
+    window.dispatchEvent(new Event('resize'))
+    expect(frames!.pendingFrames()).toBe(1)
     unmount()
+    expect(frames!.pendingFrames()).toBe(0)
     expect(vv.listenerCount('resize')).toBe(0)
     expect(vv.listenerCount('scroll')).toBe(0)
+    frames!.runFrames()
+    expect(popover.style.top).toBe('260px')
+  })
+
+  it('dismisses a frozen rect-anchored menu when visualViewport shifts', async () => {
+    const vv = createMockVisualViewport(800, 0)
+    vi.stubGlobal('innerWidth', 390)
+    vi.stubGlobal('innerHeight', 800)
+    vi.stubGlobal('visualViewport', vv)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+
+    const [open, setOpen] = createSignal(true)
+    render(() => (
+      <DropdownMenu
+        data-testid="point-menu"
+        open={open}
+        anchorRef={() => ({ top: 200, bottom: 224, left: 40 })}
+        onToggle={isOpen => setOpen(isOpen)}
+      >
+        <button role="menuitem">Delete</button>
+      </DropdownMenu>
+    ))
+
+    const popover = screen.getByTestId('point-menu')
+    expect(popover.matches(':popover-open')).toBe(true)
+
+    vv.height = 350
+    vv.offsetTop = 200
+    vv.dispatch('resize')
+    expect(popover.matches(':popover-open')).toBe(false)
+  })
+
+  it('detaches viewport listeners when popover was silently dismissed without a toggle event', async () => {
+    const { vv, frames, trigger, popover } = setupViewportMenu({ manualFrames: true })
+
+    await fireEvent.click(trigger)
+    frames!.runFrames()
+    expect(vv.listenerCount('resize')).toBe(1)
+
+    // Simulate dialog.showModal() silently removing :popover-open without firing `toggle`.
+    const matchesSpy = vi.spyOn(popover, 'matches').mockImplementation(sel =>
+      sel === ':popover-open'
+        ? false
+        : HTMLElement.prototype.matches.call(popover, sel),
+    )
+    onTestFinished(() => {
+      matchesSpy.mockRestore()
+    })
+
+    // Viewport tick detects closed popover and detaches listeners.
+    vv.dispatch('resize')
+    frames!.runFrames()
+    expect(vv.listenerCount('resize')).toBe(0)
+    expect(vv.listenerCount('scroll')).toBe(0)
+
+    // Re-attach by clearing spy, reopen, silently dismiss again, and verify pointerdown detaches immediately.
+    matchesSpy.mockRestore()
+    popover.hidePopover()
+    await fireEvent.click(trigger)
+    frames!.runFrames()
+    expect(vv.listenerCount('resize')).toBe(1)
+
+    const matchesSpy2 = vi.spyOn(popover, 'matches').mockImplementation(sel =>
+      sel === ':popover-open'
+        ? false
+        : HTMLElement.prototype.matches.call(popover, sel),
+    )
+    onTestFinished(() => {
+      matchesSpy2.mockRestore()
+    })
+    fireEvent.pointerDown(trigger)
+    expect(vv.listenerCount('resize')).toBe(0)
+    expect(vv.listenerCount('scroll')).toBe(0)
+  })
+
+  it('repositions in the same frame after useVisualViewportInset updates --vv-shift on pageshow', async () => {
+    const { vv, frames, trigger, popover } = setupViewportMenu({ manualFrames: true })
+    const hook = renderHook(() => useVisualViewportInset())
+    onTestFinished(() => {
+      hook.cleanup()
+    })
+
+    await fireEvent.click(trigger)
+    frames!.runFrames()
+    expect(popover.style.top).toBe('560px')
+
+    // Simulate returning from background with residual iOS 26 offsetTop = 120:
+    // pageshow runs useVisualViewportInset (phase 1 -> --vv-shift: -120px) and
+    // then repositions DropdownMenu (phase 2) in one animation frame.
+    vv.offsetTop = 120
+    stubRect(trigger, {
+      top: 640,
+      bottom: 664,
+      left: 40,
+      width: 120,
+      height: 24,
+    })
+    window.dispatchEvent(new Event('pageshow'))
+    frames!.runFrames()
+    expect(document.documentElement.style.getPropertyValue('--vv-shift')).toBe('-120px')
+    expect(popover.style.top).toBe('440px')
+  })
+
+  it('reopens via keyboard click after closing with a pointer click on the trigger', () => {
+    render(() => (
+      <DropdownMenu
+        data-testid="kb-reopen-menu"
+        trigger={p => <button {...p} type="button" data-testid="kb-reopen-trigger">Menu</button>}
+      >
+        <button role="menuitem">Alpha</button>
+      </DropdownMenu>
+    ))
+
+    const trigger = screen.getByTestId('kb-reopen-trigger')
+    const popover = screen.getByTestId('kb-reopen-menu')
+
+    // Open with pointer.
+    fireEvent.pointerDown(trigger)
+    fireEvent.click(trigger)
+    expect(popover.matches(':popover-open')).toBe(true)
+
+    // Close with pointer (browser light-dismiss hides popover before click).
+    fireEvent.pointerDown(trigger)
+    popover.hidePopover()
+    fireEvent.click(trigger)
+    expect(popover.matches(':popover-open')).toBe(false)
+
+    // Keyboard Enter/Space fires click without pointerdown — must reopen!
+    fireEvent.click(trigger)
+    expect(popover.matches(':popover-open')).toBe(true)
+
+    // Pointerdown on open trigger followed by dragging off (pointerup without trigger click).
+    fireEvent.pointerDown(trigger)
+    popover.hidePopover()
+    window.dispatchEvent(new Event('pointerup'))
+    return new Promise<void>(resolve => setTimeout(() => {
+      fireEvent.click(trigger)
+      expect(popover.matches(':popover-open')).toBe(true)
+      resolve()
+    }, 0))
+  })
+
+  it('runs a single relayout pass when ResizeObserver and visualViewport resize fire in the same frame', async () => {
+    const { vv, frames, trigger, popover } = setupViewportMenu({ manualFrames: true })
+
+    await fireEvent.click(trigger)
+    frames!.runFrames()
+
+    vv.height = 500
+    vi.stubGlobal('innerHeight', 500)
+    stubRect(trigger, {
+      top: 460,
+      bottom: 484,
+      left: 40,
+      width: 120,
+      height: 24,
+    })
+    vv.dispatch('resize')
+    triggerResizeObserverForSync(popover)
+    // Spy after `triggerResizeObserverForSync`, which calls `getBoundingClientRect`
+    // itself to synthesize `ResizeObserverEntry.contentRect`.
+    const rectSpy = vi.spyOn(popover, 'getBoundingClientRect')
+
+    frames!.runFrames()
+    expect(popover.style.top).toBe('260px')
+    expect(rectSpy).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1383,5 +1548,86 @@ describe('DropdownMenu roving focus across a nested submenu', () => {
 
     fireEvent.keyDown(popover, { key: 'z' })
     expect(document.activeElement).toBe(screen.getByTestId('hidden-item'))
+  })
+
+  it('closes only the inner submenu when Escape is pressed inside it', () => {
+    const outer = renderNested()
+    fireEvent.click(screen.getByTestId('sub-trigger'))
+    const inner = screen.getByTestId('inner-popover')
+    expect(outer.matches(':popover-open')).toBe(true)
+    expect(inner.matches(':popover-open')).toBe(true)
+
+    fireEvent.keyDown(inner, { key: 'Escape' })
+    expect(inner.matches(':popover-open')).toBe(false)
+    expect(outer.matches(':popover-open')).toBe(true)
+  })
+
+  it('advances focus by one item on ArrowDown inside an open submenu without bubbling to the outer menu', () => {
+    render(() => (
+      <DropdownMenu
+        id="outer-arrows"
+        data-testid="outer-arrows-popover"
+        trigger={p => <button data-testid="outer-arrows-trigger" {...p}>Open</button>}
+      >
+        <button role="menuitem" data-testid="outer-first">Outer 1</button>
+        <DropdownMenu
+          id="inner-arrows"
+          data-testid="inner-arrows-popover"
+          trigger={p => <button role="menuitem" data-testid="inner-arrows-trigger" {...p}>Sub</button>}
+        >
+          <button role="menuitem" data-testid="sub-1">Sub 1</button>
+          <button role="menuitem" data-testid="sub-2">Sub 2</button>
+          <button role="menuitem" data-testid="sub-3">Sub 3</button>
+        </DropdownMenu>
+        <button role="menuitem" data-testid="outer-last">Outer 2</button>
+      </DropdownMenu>
+    ))
+    fireEvent.click(screen.getByTestId('outer-arrows-trigger'))
+    fireEvent.click(screen.getByTestId('inner-arrows-trigger'))
+    const inner = screen.getByTestId('inner-arrows-popover')
+    const sub1 = screen.getByTestId('sub-1')
+    sub1.focus()
+
+    fireEvent.keyDown(sub1, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(screen.getByTestId('sub-2'))
+    expect(inner.matches(':popover-open')).toBe(true)
+  })
+
+  it('keeps focus inside a nested FilterableListbox filter input on ArrowDown and Home', () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    render(() => (
+      <DropdownMenu
+        id="outer-listbox"
+        data-testid="outer-listbox-popover"
+        trigger={p => <button data-testid="outer-listbox-trigger" {...p}>Plus</button>}
+      >
+        <button role="menuitem" data-testid="outer-action">Action</button>
+        <DropdownMenu
+          id="inner-listbox"
+          data-testid="inner-listbox-popover"
+          as="div"
+          trigger={p => <button role="menuitem" data-testid="inner-listbox-trigger" {...p}>Model</button>}
+        >
+          <FilterableListbox
+            ariaLabel="Models"
+            testIdPrefix="nested-lb"
+            items={[
+              { label: 'Model A', value: 'a' },
+              { label: 'Model B', value: 'b' },
+            ]}
+            onSelect={vi.fn()}
+          />
+        </DropdownMenu>
+      </DropdownMenu>
+    ))
+    fireEvent.click(screen.getByTestId('outer-listbox-trigger'))
+    fireEvent.click(screen.getByTestId('inner-listbox-trigger'))
+    const input = screen.getByTestId('nested-lb-filter') as HTMLInputElement
+    input.focus()
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(input)
+    fireEvent.keyDown(input, { key: 'Home' })
+    expect(document.activeElement).toBe(input)
   })
 })

@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { stubRect } from '~/test-support/clipStub'
+import { createMockVisualViewport } from '~/test-support/visualViewportStub'
 import * as gesture from './contextMenuGesture'
 import { createAnchoredTooltip, dismissActiveTooltip, HIDE_DELAY_MS, SHOW_DELAY_MS, Tooltip } from './Tooltip'
 
@@ -69,6 +70,61 @@ describe('tooltip', () => {
     fireEvent.click(button)
     expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
     expect(button).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('repositions a visible tooltip live when visualViewport shifts', () => {
+    const vv = createMockVisualViewport(262, 452)
+    vi.stubGlobal('innerWidth', 390)
+    vi.stubGlobal('innerHeight', 262)
+    vi.stubGlobal('visualViewport', vv)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+
+    render(() => (
+      <Tooltip text="Live viewport tip">
+        <button type="button">Trigger</button>
+      </Tooltip>
+    ))
+    const button = screen.getByRole('button', { name: 'Trigger' })
+    stubRect(button, {
+      left: 100,
+      top: 560,
+      right: 140,
+      bottom: 584,
+      width: 40,
+      height: 24,
+    })
+
+    fireEvent.mouseEnter(button)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    const popover = screen.getByRole('tooltip', { hidden: true })
+    stubRect(popover, {
+      left: 70,
+      top: 532,
+      right: 170,
+      bottom: 554,
+      width: 100,
+      height: 22,
+    })
+    vi.advanceTimersByTime(32)
+    expect(popover.style.top).toBe('554px')
+
+    // Keyboard shifts trigger near the top of the visual viewport: flips below to 484 + 6 + 22 = 512.
+    stubRect(button, {
+      left: 100,
+      top: 460,
+      right: 140,
+      bottom: 484,
+      width: 40,
+      height: 24,
+    })
+    vv.dispatch('resize')
+    vi.advanceTimersByTime(32)
+    expect(popover.style.top).toBe('512px')
+
+    fireEvent.click(button)
+    expect(vv.listenerCount('resize')).toBe(0)
   })
 
   it('uses tooltip text as aria-label when ariaLabel is true', () => {
@@ -1195,5 +1251,65 @@ describe('createAnchoredTooltip', () => {
     tip.show(a, '/repo/a.ts')
     tip.dismiss()
     expect(onDismiss).toHaveBeenCalledTimes(3)
+  })
+
+  it('clamps and repositions live against visualViewport and --vv-shift while visible', () => {
+    const vv = createMockVisualViewport(262, 452)
+    vi.stubGlobal('innerWidth', 390)
+    vi.stubGlobal('innerHeight', 262)
+    vi.stubGlobal('visualViewport', vv)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+      document.documentElement.style.removeProperty('--vv-shift')
+    })
+
+    const a = makeAnchor('A')
+    stubRect(a, {
+      left: 100,
+      top: 460,
+      right: 140,
+      bottom: 484,
+      width: 40,
+      height: 24,
+    })
+    const { tip } = mountTooltip()
+    tip.show(a, 'Viewport tip')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+
+    const popover = screen.getByRole('tooltip', { hidden: true })
+    stubRect(popover, {
+      left: 70,
+      top: 432,
+      right: 170,
+      bottom: 454,
+      width: 100,
+      height: 22,
+    })
+    // Trigger sits near viewport.top (452): aboveTop = 460 - 6 - 22 = 432 < 456 -> flips below to 484 + 6 + 22 = 512.
+    vv.dispatch('resize')
+    vi.advanceTimersByTime(32)
+    expect(popover.style.top).toBe('512px')
+
+    // Keyboard dismisses on iOS 26 with residual offsetTop = 120 and --vv-shift = -120px:
+    // visible band is [-120, 680]; trigger at y = -50..-26 has room above (-50 - 6 - 22 = -78 >= -116),
+    // so live repositioning moves the tooltip back above at top = -56px.
+    vv.height = 800
+    vv.offsetTop = 120
+    vi.stubGlobal('innerHeight', 800)
+    document.documentElement.style.setProperty('--vv-shift', '-120px')
+    stubRect(a, {
+      left: 100,
+      top: -50,
+      right: 140,
+      bottom: -26,
+      width: 40,
+      height: 24,
+    })
+    vv.dispatch('resize')
+    vi.advanceTimersByTime(32)
+    expect(popover.style.top).toBe('-56px')
+
+    tip.dismiss()
+    expect(vv.listenerCount('resize')).toBe(0)
   })
 })

@@ -85,6 +85,16 @@ export const popoverBase = style({
 })
 
 /**
+ * Touch-scroll containment shared by scrollable popover surfaces and nested
+ * popover/panel lists. Keeps scroll momentum smooth on iOS WebKit and stops
+ * overscroll at either end from chaining into an enclosing popover or page.
+ */
+export const touchScrollContain = style({
+  overscrollBehavior: 'contain',
+  WebkitOverflowScrolling: 'touch',
+})
+
+/**
  * `popoverBase` plus a column layout clamped to the viewport.
  *
  * A popover sizes to its content, and content that grows without limit (a long
@@ -102,14 +112,12 @@ export const popoverBase = style({
  */
 export const popoverColumnClamp = style([
   popoverBase,
+  touchScrollContain,
   {
     flexDirection: 'column',
     maxWidth: VIEWPORT_MAX_WIDTH,
     maxHeight: VIEWPORT_MAX_HEIGHT,
     overflowY: 'auto',
-    // Keep touch scroll at the ends of the popover from chaining into the page behind it.
-    overscrollBehavior: 'contain',
-    WebkitOverflowScrolling: 'touch',
   },
 ])
 
@@ -233,8 +241,7 @@ export const floatingCardSurface = style([
 
 /**
  * The class list for a popover whose content is a CARD -- labelled rows, a list,
- * a panel -- and not a list of menu items. Apply it whole:
- * `<DropdownMenu as="div" class={popoverCard}>`.
+ * a panel -- and not a list of menu items. Apply it through `<DropdownMenu as="card">`.
  *
  * It is a class LIST, and every part is load-bearing. Oat's own `card` rule supplies the
  * surface (background, border, radius, shadow). `popoverCardPadding` supplies the inset, so
@@ -259,9 +266,9 @@ export const popoverCard = `card ${popoverColumnClamp} ${popoverCardPadding}`
  * registry and Goals & To-dos -- and two popovers of different widths beside
  * the same chip row read as a bug. The height matters as much: a long to-do
  * list under a prose objective otherwise runs to the full viewport height,
- * where the sibling registry stops at 60vh.
+ * where the sibling registry stops at 60% of `bodyHeight`.
  */
 export const popoverPanelClamp = style({
-  maxHeight: '60vh',
+  maxHeight: `calc(${bodyHeight} * 0.6)`,
   maxWidth: '360px',
 })
