@@ -2020,6 +2020,7 @@ export const AppShell: Component = () => {
         */}
           <tileRenderer.CloseDialogs />
           <tileRenderer.RecoveryDialog />
+          <tileRenderer.StartupPromptDialog />
 
           <Show when={cliPathInfo()}>
             {info => (

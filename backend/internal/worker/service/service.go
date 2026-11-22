@@ -1139,6 +1139,10 @@ func (svc *Service) shutdown() {
 	// what the screen bytes happen to end with. See broadcastTerminalsDisconnected.
 	notified := make(map[string]struct{})
 	svc.broadcastTerminalsDisconnected(notified)
+	// Cancel startups waiting on interactive user confirmation prompts before
+	// stopping creations, background loops, or waiting on inputQueueIdle so
+	// graceful shutdown never stalls behind an open modal dialog.
+	svc.AgentStartup.cancelPendingPromptsForShutdown()
 	svc.creations.stop()
 
 	// Stop the background loops before the drains below: the orphan reconciler,

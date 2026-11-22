@@ -257,6 +257,16 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
+  const handleRespondAgentStartupPrompt = async (agentId: string, promptId: string, proceed: boolean): Promise<void> => {
+    try {
+      await workerAgent.respondAgentStartupPrompt(getAgentWorkerId(agentId), { agentId, promptId, proceed })
+    }
+    catch (err) {
+      showWarnToast('Failed to send startup confirmation', err)
+      throw err
+    }
+  }
+
   /**
    * Ask the worker to stop the running turn and send its input again on a
    * faster model. It resolves true when the worker accepts the retry. A
@@ -540,6 +550,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     updateGoal,
     handleGoalAction,
     handleApproveAutoReviewDenial,
+    handleRespondAgentStartupPrompt,
     handleRetryTurn,
     handleAgentSettingChange,
     handleAgentClose,

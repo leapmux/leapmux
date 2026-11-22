@@ -19,6 +19,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 func TestZCodeCredentialSecret(t *testing.T) {
@@ -706,4 +708,457 @@ func TestZCodeCredentials_PinnedOSSkipsKeyringForEnvEntriesAndAvoidsMismatchLoop
 		require.NoError(t, err)
 		assert.Equal(t, "from-fallback", gotFallback)
 	})
+}
+
+func TestZCodeEvaluateDarwinKeychainACL(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		unlocked bool
+		acls     []zcodeDarwinACLInfo
+		want     zcodeOSKeyAccessState
+	}{
+		{
+			name:     "locked keychain always may prompt even with allow-all ACL",
+			unlocked: false,
+			acls: []zcodeDarwinACLInfo{{
+				authorizations: []string{"ACLAuthorizationDecrypt"},
+				allowAllApps:   true,
+			}},
+			want: zcodeOSKeyAccessMayPrompt,
+		},
+		{
+			name:     "unlocked allow-all ACL authorizing decrypt is silent",
+			unlocked: true,
+			acls: []zcodeDarwinACLInfo{{
+				authorizations: []string{"ACLAuthorizationDecrypt"},
+				allowAllApps:   true,
+			}},
+			want: zcodeOSKeyAccessSilent,
+		},
+		{
+			name:     "unlocked allow-all ACL authorizing any is silent",
+			unlocked: true,
+			acls: []zcodeDarwinACLInfo{{
+				authorizations: []string{"ACLAuthorizationAny"},
+				allowAllApps:   true,
+			}},
+			want: zcodeOSKeyAccessSilent,
+		},
+		{
+			name:     "unlocked ACL trusting /usr/bin/security is silent",
+			unlocked: true,
+			acls: []zcodeDarwinACLInfo{{
+				authorizations:  []string{"ACLAuthorizationDecrypt"},
+				trustedAppPaths: []string{"/Applications/ZCode.app", "/usr/bin/security"},
+			}},
+			want: zcodeOSKeyAccessSilent,
+		},
+		{
+			name:     "unlocked ACL trusting only ZCode.app may prompt",
+			unlocked: true,
+			acls: []zcodeDarwinACLInfo{{
+				authorizations:  []string{"ACLAuthorizationDecrypt"},
+				trustedAppPaths: []string{"/Applications/ZCode.app"},
+			}},
+			want: zcodeOSKeyAccessMayPrompt,
+		},
+		{
+			name:     "unlocked ACL requiring passphrase may prompt even for /usr/bin/security",
+			unlocked: true,
+			acls: []zcodeDarwinACLInfo{{
+				authorizations:  []string{"ACLAuthorizationDecrypt"},
+				trustedAppPaths: []string{"/usr/bin/security"},
+				promptSelector:  kSecKeychainPromptRequirePassphase,
+			}},
+			want: zcodeOSKeyAccessMayPrompt,
+		},
+		{
+			name:     "unlocked ACL authorizing only encrypt may prompt",
+			unlocked: true,
+			acls: []zcodeDarwinACLInfo{{
+				authorizations:  []string{"ACLAuthorizationEncrypt"},
+				trustedAppPaths: []string{"/usr/bin/security"},
+			}},
+			want: zcodeOSKeyAccessMayPrompt,
+		},
+		{
+			name:     "empty ACL list may prompt",
+			unlocked: true,
+			acls:     nil,
+			want:     zcodeOSKeyAccessMayPrompt,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, zcodeEvaluateDarwinKeychainACL(tc.unlocked, tc.acls))
+		})
+	}
+}
+
+func TestZCodeParseDarwinTrustedAppPath(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "", zcodeParseDarwinTrustedAppPath(nil))
+	assert.Equal(t, "", zcodeParseDarwinTrustedAppPath([]byte{0, 0}))
+	assert.Equal(t, "/usr/bin/security", zcodeParseDarwinTrustedAppPath([]byte("/usr/bin/security\x00")))
+	assert.Equal(t, "/usr/bin/security", zcodeParseDarwinTrustedAppPath([]byte("/usr/bin/security")))
+	assert.Equal(t, "/Applications/ZCode.app", zcodeParseDarwinTrustedAppPath([]byte("/Applications/ZCode.app\x00\x00")))
+}
+
+func TestZCodeCredentialStore_PrepareOSKeyForStartup(t *testing.T) {
+	t.Parallel()
+
+	writeCreds := func(t *testing.T, store zcodeCredentialStore, raw string) {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
+		require.NoError(t, os.WriteFile(store.path, []byte(raw), 0o600))
+	}
+
+	t.Run("1. missing, corrupt, or v1-only credentials.json returns nil without probing or prompting", func(t *testing.T) {
+		t.Parallel()
+		for _, mode := range []string{"missing", "corrupt", "v1-only"} {
+			home := t.TempDir()
+			store := newZCodeCredentialStore(home, nil)
+			store.osKeyCache = &zcodeOSKeyCache{}
+			store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+				t.Fatalf("%s: probe must not be called", mode)
+				return zcodeOSKeyAccessMayPrompt
+			}
+			store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+				t.Fatalf("%s: reader must not be called", mode)
+				return "", false, nil
+			}
+			switch mode {
+			case "corrupt":
+				writeCreds(t, store, "{invalid")
+			case "v1-only":
+				v1Key := sha256.Sum256([]byte("legacy"))
+				writeCreds(t, store, `{"k":"`+zcodeTestEncryptCredential(t, v1Key, "val")+`"}`)
+			}
+			err := store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+				t.Fatalf("%s: confirm must not be called", mode)
+				return false, nil
+			})
+			require.NoError(t, err, mode)
+		}
+	})
+
+	t.Run("2. explicit secret valid or misconfigured returns nil without probing or prompting", func(t *testing.T) {
+		t.Parallel()
+		osKey, _ := zcodeTestRandomOSKey(t)
+		ct := zcodeTestEncryptV2Credential(t, osKey, zcodeCredentialSourceOS, "tok")
+		for _, tc := range []struct {
+			name string
+			env  map[string]string
+		}{
+			{name: "valid env secret", env: map[string]string{zcodeCredentialSecretEnv: "explicit-secret"}},
+			{name: "misconfigured both env and file", env: map[string]string{zcodeCredentialSecretEnv: "s", zcodeCredentialSecretFileEnv: "/nonexistent"}},
+			{name: "missing secret file", env: map[string]string{zcodeCredentialSecretFileEnv: "/nonexistent"}},
+		} {
+			home := t.TempDir()
+			store := newZCodeCredentialStore(home, func(k string) string { return tc.env[k] })
+			store.osKeyCache = &zcodeOSKeyCache{}
+			store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+				t.Fatalf("%s: probe must not be called", tc.name)
+				return zcodeOSKeyAccessMayPrompt
+			}
+			store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+				t.Fatalf("%s: reader must not be called", tc.name)
+				return "", false, nil
+			}
+			writeCreds(t, store, `{"k":"`+ct+`"}`)
+			err := store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+				t.Fatalf("%s: confirm must not be called", tc.name)
+				return false, nil
+			})
+			require.NoError(t, err, tc.name)
+		}
+	})
+
+	t.Run("3. corrupt credential-source marker returns nil without probing or prompting", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		osKey, _ := zcodeTestRandomOSKey(t)
+		store := newZCodeCredentialStore(home, nil)
+		store.osKeyCache = &zcodeOSKeyCache{}
+		store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+			t.Fatal("probe must not be called")
+			return zcodeOSKeyAccessMayPrompt
+		}
+		store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			t.Fatal("reader must not be called")
+			return "", false, nil
+		}
+		writeCreds(t, store, `{"k":"`+zcodeTestEncryptV2Credential(t, osKey, zcodeCredentialSourceOS, "tok")+`"}`)
+		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(store.path), zcodeCredentialSourceFile), []byte("corrupt\n"), 0o600))
+		err := store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+			t.Fatal("confirm must not be called")
+			return false, nil
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("4. valid matching cached key skips probe, confirm, and reader", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		osKey, encoded := zcodeTestRandomOSKey(t)
+		cache := &zcodeOSKeyCache{}
+		store := newZCodeCredentialStore(home, nil)
+		store.osKeyCache = cache
+		writeCreds(t, store, `{"k":"`+zcodeTestEncryptV2Credential(t, osKey, zcodeCredentialSourceOS, "tok")+`"}`)
+		_, err := cache.load(t.Context(), store.resolvedAbsPath(), []string{zcodeKeyFingerprint(osKey)}, func(context.Context, string, string) (string, bool, error) {
+			return encoded, true, nil
+		})
+		require.NoError(t, err)
+
+		store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+			t.Fatal("probe must not be called when cache hits")
+			return zcodeOSKeyAccessMayPrompt
+		}
+		store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			t.Fatal("reader must not be called when cache hits")
+			return "", false, nil
+		}
+		err = store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+			t.Fatal("confirm must not be called when cache hits")
+			return false, nil
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("5. cached mismatched key with stale checkedKey runs probe and loadFresh reads rotated key", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		oldKey, oldEncoded := zcodeTestRandomOSKey(t)
+		newKey, newEncoded := zcodeTestRandomOSKey(t)
+		cache := &zcodeOSKeyCache{}
+		store := newZCodeCredentialStore(home, nil)
+		store.osKeyCache = cache
+		writeCreds(t, store, `{"k":"`+zcodeTestEncryptV2Credential(t, newKey, zcodeCredentialSourceOS, "tok")+`"}`)
+
+		// Seed cache with oldKey whose checkedKey already matches newKey's fingerprint.
+		_, err := cache.load(t.Context(), store.resolvedAbsPath(), []string{zcodeKeyFingerprint(newKey)}, func(context.Context, string, string) (string, bool, error) {
+			return oldEncoded, true, nil
+		})
+		require.NoError(t, err)
+		require.False(t, cache.hasValidKey(store.resolvedAbsPath(), []string{zcodeKeyFingerprint(newKey)}))
+		assert.NotEqual(t, zcodeKeyFingerprint(oldKey), zcodeKeyFingerprint(newKey))
+
+		var probeCalls, confirmCalls, readerCalls int
+		store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+			probeCalls++
+			return zcodeOSKeyAccessMayPrompt
+		}
+		store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			readerCalls++
+			return newEncoded, true, nil
+		}
+		err = store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+			confirmCalls++
+			return true, nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, probeCalls)
+		assert.Equal(t, 1, confirmCalls)
+		assert.Equal(t, 1, readerCalls)
+		assert.True(t, cache.hasValidKey(store.resolvedAbsPath(), []string{zcodeKeyFingerprint(newKey)}))
+	})
+
+	t.Run("6. silent access skips confirm, caches key, and preserves degraded startup on reader error", func(t *testing.T) {
+		t.Parallel()
+		osKey, encoded := zcodeTestRandomOSKey(t)
+		ct := zcodeTestEncryptV2Credential(t, osKey, zcodeCredentialSourceOS, "tok")
+
+		// Happy silent read.
+		home := t.TempDir()
+		store := newZCodeCredentialStore(home, nil)
+		store.osKeyCache = &zcodeOSKeyCache{}
+		store.osKeyProbe = func(string, string) zcodeOSKeyAccessState { return zcodeOSKeyAccessSilent }
+		readerCalls := 0
+		store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			readerCalls++
+			return encoded, true, nil
+		}
+		writeCreds(t, store, `{"k":"`+ct+`"}`)
+		require.NoError(t, store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+			t.Fatal("confirm must not be called on silent access")
+			return false, nil
+		}))
+		assert.Equal(t, 1, readerCalls)
+		assert.True(t, store.osKeyCache.hasValidKey(store.resolvedAbsPath(), []string{zcodeKeyFingerprint(osKey)}))
+
+		// Degraded startup when reader fails on silent access.
+		home2 := t.TempDir()
+		store2 := newZCodeCredentialStore(home2, nil)
+		store2.osKeyCache = &zcodeOSKeyCache{}
+		store2.osKeyProbe = func(string, string) zcodeOSKeyAccessState { return zcodeOSKeyAccessSilent }
+		store2.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			return "", false, errors.New("secret-tool missing")
+		}
+		writeCreds(t, store2, `{"k":"`+ct+`"}`)
+		require.NoError(t, store2.prepareOSKeyForStartup(t.Context(), nil))
+	})
+
+	t.Run("7. silent interactive recovery clears prior cached failure via loadFresh", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		osKey, encoded := zcodeTestRandomOSKey(t)
+		cache := &zcodeOSKeyCache{}
+		store := newZCodeCredentialStore(home, nil)
+		store.osKeyCache = cache
+		writeCreds(t, store, `{"k":"`+zcodeTestEncryptV2Credential(t, osKey, zcodeCredentialSourceOS, "tok")+`"}`)
+
+		// Seed cached failure.
+		_, err := cache.load(t.Context(), store.resolvedAbsPath(), []string{zcodeKeyFingerprint(osKey)}, func(context.Context, string, string) (string, bool, error) {
+			return "", false, errors.New("denied earlier")
+		})
+		require.Error(t, err)
+
+		readerCalls := 0
+		store.osKeyProbe = func(string, string) zcodeOSKeyAccessState { return zcodeOSKeyAccessSilent }
+		store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			readerCalls++
+			return encoded, true, nil
+		}
+		require.NoError(t, store.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) {
+			t.Fatal("confirm must not be called on silent access")
+			return false, nil
+		}))
+		assert.Equal(t, 1, readerCalls)
+		assert.True(t, cache.hasValidKey(store.resolvedAbsPath(), []string{zcodeKeyFingerprint(osKey)}))
+	})
+
+	t.Run("8-13. MayPrompt outcomes (nil confirm, cancel, error, proceed+cache, retry after failure, reader denial)", func(t *testing.T) {
+		t.Parallel()
+		osKey, encoded := zcodeTestRandomOSKey(t)
+		ct := zcodeTestEncryptV2Credential(t, osKey, zcodeCredentialSourceOS, "tok")
+
+		newStore := func() (zcodeCredentialStore, *int) {
+			home := t.TempDir()
+			s := newZCodeCredentialStore(home, nil)
+			s.osKeyCache = &zcodeOSKeyCache{}
+			s.osKeyProbe = func(string, string) zcodeOSKeyAccessState { return zcodeOSKeyAccessMayPrompt }
+			calls := 0
+			s.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+				calls++
+				return encoded, true, nil
+			}
+			writeCreds(t, s, `{"k":"`+ct+`"}`)
+			return s, &calls
+		}
+
+		// 8. confirm == nil (background start).
+		s8, r8 := newStore()
+		err := s8.prepareOSKeyForStartup(t.Context(), nil)
+		require.ErrorIs(t, err, agent.ErrStartupCanceled)
+		assert.Zero(t, *r8)
+
+		// 9. confirm returns (false, nil).
+		s9, r9 := newStore()
+		err = s9.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) { return false, nil })
+		require.ErrorIs(t, err, agent.ErrStartupCanceled)
+		assert.Zero(t, *r9)
+
+		// 10. confirm returns (false, context.Canceled).
+		s10, r10 := newStore()
+		err = s10.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) { return false, context.Canceled })
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Zero(t, *r10)
+
+		// 11. confirm returns (true, nil) -> caches key; subsequent call skips probe & confirm.
+		s11, r11 := newStore()
+		probeCalls := 0
+		s11.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+			probeCalls++
+			return zcodeOSKeyAccessMayPrompt
+		}
+		confirmCalls := 0
+		confirm := func(context.Context, agent.StartupPrompt) (bool, error) {
+			confirmCalls++
+			return true, nil
+		}
+		require.NoError(t, s11.prepareOSKeyForStartup(t.Context(), confirm))
+		assert.Equal(t, 1, probeCalls)
+		assert.Equal(t, 1, confirmCalls)
+		assert.Equal(t, 1, *r11)
+		require.NoError(t, s11.prepareOSKeyForStartup(t.Context(), confirm))
+		assert.Equal(t, 1, probeCalls, "second start hits cache without re-probing")
+		assert.Equal(t, 1, confirmCalls, "second start hits cache without re-prompting")
+		assert.Equal(t, 1, *r11)
+
+		// 12 & 13. reader denial fails with ErrStartupCanceled, then retry via Proceed clears cached failure via loadFresh and succeeds.
+		s12, _ := newStore()
+		failFirst := true
+		readerAttempts := 0
+		s12.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+			readerAttempts++
+			if failFirst {
+				return "", false, errors.New("user denied Keychain")
+			}
+			return encoded, true, nil
+		}
+		err = s12.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) { return true, nil })
+		require.ErrorIs(t, err, agent.ErrStartupCanceled)
+		assert.Equal(t, 1, readerAttempts)
+
+		failFirst = false
+		require.NoError(t, s12.prepareOSKeyForStartup(t.Context(), func(context.Context, agent.StartupPrompt) (bool, error) { return true, nil }))
+		assert.Equal(t, 2, readerAttempts)
+		assert.True(t, s12.osKeyCache.hasValidKey(s12.resolvedAbsPath(), []string{zcodeKeyFingerprint(osKey)}))
+	})
+}
+
+func TestZCodeCredentialStore_ResolveKeysSkipsPromptingOSReadAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	osKey, encoded := zcodeTestRandomOSKey(t)
+	ct := zcodeTestEncryptV2Credential(t, osKey, zcodeCredentialSourceOS, "secret-token")
+
+	cache := &zcodeOSKeyCache{}
+	store := newZCodeCredentialStore(home, nil)
+	store.osKeyCache = cache
+	probeCalls := 0
+	store.osKeyProbe = func(string, string) zcodeOSKeyAccessState {
+		probeCalls++
+		return zcodeOSKeyAccessMayPrompt
+	}
+	readerCalls := 0
+	store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+		readerCalls++
+		return encoded, true, nil
+	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
+	require.NoError(t, os.WriteFile(store.path, []byte(`{"zcodejwttoken":"`+ct+`"}`), 0o600))
+
+	// Uncached runtime readContext and decryptRaw must not invoke osKeyReader.
+	creds, err := store.readContext(t.Context())
+	require.NoError(t, err)
+	_, err = creds.get(zcodeCredentialZCodeJWT)
+	require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
+	_, err = store.decryptRaw(t.Context(), ct)
+	require.ErrorIs(t, err, errZCodeCredentialStoreUnavailable)
+	assert.Zero(t, readerCalls, "runtime read must never trigger a prompting Keychain read")
+	assert.Equal(t, 2, probeCalls)
+
+	// Once cached (for example after startup Proceed), both succeed without calling probe or reader.
+	_, err = cache.load(t.Context(), store.resolvedAbsPath(), []string{zcodeKeyFingerprint(osKey)}, func(context.Context, string, string) (string, bool, error) {
+		return encoded, true, nil
+	})
+	require.NoError(t, err)
+
+	creds, err = store.readContext(t.Context())
+	require.NoError(t, err)
+	val, err := creds.get(zcodeCredentialZCodeJWT)
+	require.NoError(t, err)
+	assert.Equal(t, "secret-token", val)
+	raw, err := store.decryptRaw(t.Context(), ct)
+	require.NoError(t, err)
+	assert.Equal(t, "secret-token", raw)
+	assert.Equal(t, 2, probeCalls, "cached key must skip probe")
+	assert.Zero(t, readerCalls, "cached key must skip reader")
 }

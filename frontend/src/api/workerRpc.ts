@@ -374,6 +374,9 @@ function createWorkerServiceClient<S extends DescService>(service: S): WorkerSer
  *   and it then stops the turn and starts the new one. The transcript reports a
  *   failure of those later steps, so a resolved call does not mean that the new
  *   turn started.
+ * - `respondAgentStartupPrompt` delivers the user's proceed or cancel decision
+ *   for a pending `AgentStartupPrompt` so a paused provider startup either
+ *   continues or stops cleanly.
  * - `listAgentSessions` lists the sessions this worker can offer to resume in
  *   one working directory. The worker merges its own records with the selected
  *   provider's on-disk session store, so the answer changes with BOTH the

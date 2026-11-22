@@ -970,8 +970,13 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           // This direct status patch does not call handleAgentInactive.
           // Clear the live indicators here before that patch.
           clearOfflineAgentState(tab.id, { chatStore, agentSessionStore, agentActivityStore })
+          const patch: Partial<AgentTab> = {}
           if (tab.agentStatus === AgentStatus.ACTIVE)
-            metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
+            patch.agentStatus = AgentStatus.INACTIVE
+          if (tab.startupPrompt != null)
+            patch.startupPrompt = null
+          if (Object.keys(patch).length > 0)
+            metadata.patch(tab.id, patch)
         }
       })
     })

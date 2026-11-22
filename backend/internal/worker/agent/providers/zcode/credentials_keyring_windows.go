@@ -75,3 +75,7 @@ func readZCodeOSKey(ctx context.Context, service, account string) (string, bool,
 	copy(raw, unsafe.Slice(cred.Blob, cred.BlobSize))
 	return zcodeDecodeWindowsCredentialBlob(raw), true, nil
 }
+
+func probeZCodeOSKeyAccess(string, string) zcodeOSKeyAccessState {
+	return zcodeOSKeyAccessSilent
+}

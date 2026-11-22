@@ -217,6 +217,7 @@ export function protoToAgentTabFields(
     workingDir: agent.workingDir,
     agentProvider: agent.agentProvider,
     agentStatus: agent.status,
+    startupPrompt: agent.startupPrompt ?? null,
     acceptsMessages: agent.acceptsMessages,
     acceptsInterrupt: agent.acceptsInterrupt,
     queueHeadDispatch: agent.queueHeadDispatch,
@@ -247,6 +248,7 @@ export const LIVE_STATUS_FIELDS = [
   'queueHeadDispatch',
   'startupError',
   'startupMessage',
+  'startupPrompt',
 ] as const satisfies readonly (keyof AgentTab)[]
 
 /**
@@ -577,6 +579,7 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     closedAt: '',
     startupError: tab.startupError ?? '',
     startupMessage: tab.startupMessage ?? '',
+    startupPrompt: tab.startupPrompt ?? undefined,
     parentAgentId: tab.parentAgentId ?? '',
     acceptsMessages: tab.acceptsMessages ?? false,
     acceptsInterrupt: tab.acceptsInterrupt ?? false,

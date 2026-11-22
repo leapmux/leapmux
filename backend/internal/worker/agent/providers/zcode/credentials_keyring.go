@@ -1,6 +1,7 @@
 package zcode
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +36,77 @@ var errZCodeOSKeyNotFound = errors.New("the OS credential store holds no ZCode e
 // zcodeOSKeyReader reads one secret from the OS credential store.
 // found is false when the entry is definitively absent.
 type zcodeOSKeyReader func(ctx context.Context, service, account string) (value string, found bool, err error)
+
+// zcodeOSKeyAccessState reports whether reading the OS credential store item
+// via the platform helper is expected to complete silently or prompt the user.
+type zcodeOSKeyAccessState uint8
+
+const (
+	// zcodeOSKeyAccessSilent means reading the item will not prompt the user
+	// (or the item is absent / the platform has no per-app Keychain prompt).
+	zcodeOSKeyAccessSilent zcodeOSKeyAccessState = iota
+	// zcodeOSKeyAccessMayPrompt means reading the item may show an interactive
+	// OS dialog (such as macOS Keychain authorization or unlock).
+	zcodeOSKeyAccessMayPrompt
+)
+
+// zcodeOSKeyAccessProbe silently inspects whether reading (service, account)
+// from the OS credential store may prompt the user.
+type zcodeOSKeyAccessProbe func(service, account string) zcodeOSKeyAccessState
+
+// zcodeDefaultOSKeyProbe is the package-level seam for probeZCodeOSKeyAccess,
+// analogous to zcodeLocator, so Start tests can control the silent Keychain
+// probe without touching the host Keychain.
+var zcodeDefaultOSKeyProbe zcodeOSKeyAccessProbe = probeZCodeOSKeyAccess
+
+const (
+	// kSecKeychainPromptRequirePassphase matches Apple's SecACL.h constant
+	// (SecKeychainPromptSelector bit 0) requiring a password prompt even for a
+	// trusted application.
+	kSecKeychainPromptRequirePassphase uint16 = 0x0001
+	darwinSecurityBinaryPath                  = "/usr/bin/security"
+)
+
+// zcodeDarwinACLInfo holds the decoded fields of one macOS SecACLRef needed to
+// decide whether /usr/bin/security can decrypt the item without prompting.
+type zcodeDarwinACLInfo struct {
+	authorizations  []string
+	allowAllApps    bool
+	trustedAppPaths []string
+	promptSelector  uint16
+}
+
+// zcodeEvaluateDarwinKeychainACL returns zcodeOSKeyAccessSilent only when the
+// keychain is unlocked and at least one ACL authorizes decryption (or any
+// operation) without requiring a passphrase and trusts either all applications
+// or /usr/bin/security.
+func zcodeEvaluateDarwinKeychainACL(unlocked bool, acls []zcodeDarwinACLInfo) zcodeOSKeyAccessState {
+	if !unlocked {
+		return zcodeOSKeyAccessMayPrompt
+	}
+	for _, acl := range acls {
+		if !slices.Contains(acl.authorizations, "ACLAuthorizationDecrypt") &&
+			!slices.Contains(acl.authorizations, "ACLAuthorizationAny") {
+			continue
+		}
+		if acl.promptSelector&kSecKeychainPromptRequirePassphase != 0 {
+			continue
+		}
+		if acl.allowAllApps || slices.Contains(acl.trustedAppPaths, darwinSecurityBinaryPath) {
+			return zcodeOSKeyAccessSilent
+		}
+	}
+	return zcodeOSKeyAccessMayPrompt
+}
+
+// zcodeParseDarwinTrustedAppPath decodes the NUL-terminated path returned by
+// SecTrustedApplicationCopyData.
+func zcodeParseDarwinTrustedAppPath(raw []byte) string {
+	if i := bytes.IndexByte(raw, 0); i >= 0 {
+		raw = raw[:i]
+	}
+	return string(raw)
+}
 
 // zcodeOSKeyringAccount returns the account identifier that ZCode stores its OS
 // encryption key under: the lowercase hex SHA-256 of the resolved credentials.json
@@ -129,6 +202,52 @@ type zcodeOSKeyCallKey struct {
 // zcodeProcessOSKeys is the process-wide OS keyring cache shared by all ZCode
 // agents using the default OS keyring reader.
 var zcodeProcessOSKeys zcodeOSKeyCache
+
+// hasValidKey reports whether c already holds a cached key for absPath whose
+// fingerprint matches every non-empty fingerprint in wantFingerprints. It
+// ignores entry.failed and entry.checkedKey so callers can decide whether a
+// fresh OS keyring lookup is needed.
+func (c *zcodeOSKeyCache) hasValidKey(absPath string, wantFingerprints []string) bool {
+	if absPath == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := c.entries[absPath]
+	if entry == nil || !entry.hasKey {
+		return false
+	}
+	for _, fp := range wantFingerprints {
+		if fp != "" && fp != entry.fingerprint {
+			return false
+		}
+	}
+	return true
+}
+
+// loadFresh clears any cached failure (and any stale checkedKey for a
+// mismatched cached key) for absPath before delegating to load, so an explicit
+// interactive retry recovers without restarting the Worker.
+func (c *zcodeOSKeyCache) loadFresh(ctx context.Context, absPath string, wantFingerprints []string, reader zcodeOSKeyReader) ([sha256.Size]byte, error) {
+	if absPath != "" {
+		c.mu.Lock()
+		if entry := c.entries[absPath]; entry != nil {
+			entry.failed = false
+			entry.failedCheckedKey = ""
+			entry.failedErr = nil
+			if entry.hasKey {
+				for _, fp := range wantFingerprints {
+					if fp != "" && fp != entry.fingerprint {
+						entry.checkedKey = ""
+						break
+					}
+				}
+			}
+		}
+		c.mu.Unlock()
+	}
+	return c.load(ctx, absPath, wantFingerprints, reader)
+}
 
 func (c *zcodeOSKeyCache) cachedLocked(absPath string, wantFingerprints []string, checkedKey string) ([sha256.Size]byte, error, bool) {
 	entry := c.entries[absPath]

@@ -62,6 +62,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	opts.HomeDir = accountEnvironment.home
 	credentials := accountEnvironment.credentials
+	if err := credentials.prepareOSKeyForStartup(ctx, opts.ConfirmStartupPrompt); err != nil {
+		return abortPreparation(err)
+	}
 	catalog, err := loadZCodeCatalog(opts.HomeDir)
 	if err != nil && !errors.Is(err, errZCodeConfigMissing) && !errors.Is(err, errZCodeConfigUnusable) {
 		return abortPreparation(err)

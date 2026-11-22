@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
@@ -110,6 +111,8 @@ type zcodeCredentialStore struct {
 	// readZCodeOSKey and zcodeProcessOSKeys serve production reads.
 	osKeyReader zcodeOSKeyReader
 	osKeyCache  *zcodeOSKeyCache
+	// osKeyProbe overrides the silent OS keyring access probe in tests.
+	osKeyProbe zcodeOSKeyAccessProbe
 }
 
 // newZCodeCredentialStore opens the store under homeDir with the environment
@@ -214,10 +217,14 @@ func (s zcodeCredentialStore) readContext(ctx context.Context) (zcodeCredentials
 		credentials.values = map[string]string{}
 	}
 
-	var hasV1, hasV2OS, hasV2Env bool
-	var osFingerprints []string
+	hasV1, hasV2OS, hasV2Env, osFingerprints := zcodeScanCredentialValues(credentials.values)
+	s.resolveKeys(ctx, &credentials, hasV1, hasV2OS, hasV2Env, osFingerprints)
+	return credentials, nil
+}
+
+func zcodeScanCredentialValues(values map[string]string) (hasV1, hasV2OS, hasV2Env bool, osFingerprints []string) {
 	seenOSFingerprints := map[string]struct{}{}
-	for _, raw := range credentials.values {
+	for _, raw := range values {
 		switch {
 		case strings.HasPrefix(raw, zcodeCredentialV2Prefix):
 			source, fp, _, ok := zcodeParseV2Ciphertext(raw)
@@ -239,8 +246,117 @@ func (s zcodeCredentialStore) readContext(ctx context.Context) (zcodeCredentials
 		}
 	}
 	slices.Sort(osFingerprints)
-	s.resolveKeys(ctx, &credentials, hasV1, hasV2OS, hasV2Env, osFingerprints)
-	return credentials, nil
+	return hasV1, hasV2OS, hasV2Env, osFingerprints
+}
+
+func (s zcodeCredentialStore) resolvedAbsPath() string {
+	absPath := s.path
+	if absPath != "" {
+		if resolved, err := filepath.Abs(absPath); err == nil {
+			absPath = resolved
+		}
+	}
+	return absPath
+}
+
+func (s zcodeCredentialStore) osKeyReaderAndCache() (zcodeOSKeyReader, *zcodeOSKeyCache) {
+	reader := s.osKeyReader
+	cache := s.osKeyCache
+	if reader == nil {
+		return readZCodeOSKey, &zcodeProcessOSKeys
+	}
+	if cache == nil {
+		cache = &zcodeOSKeyCache{}
+	}
+	return reader, cache
+}
+
+func (s zcodeCredentialStore) resolveOSKeyProbe() zcodeOSKeyAccessProbe {
+	if s.osKeyProbe != nil {
+		return s.osKeyProbe
+	}
+	if s.osKeyReader == nil {
+		return zcodeDefaultOSKeyProbe
+	}
+	// Tests that inject a fake osKeyReader without an explicit probe must not
+	// inspect the host machine's Keychain.
+	return func(string, string) zcodeOSKeyAccessState {
+		return zcodeOSKeyAccessSilent
+	}
+}
+
+func zcodeMacOSKeychainStartupPrompt() agent.StartupPrompt {
+	return agent.StartupPrompt{
+		Title:       "macOS Keychain access required",
+		Description: "ZCode stores its encrypted account key in the macOS login Keychain. LeapMux must read that key via Apple's /usr/bin/security tool to sign in to your ZCode account.",
+		Steps: []string{
+			"Click Proceed to trigger the macOS Keychain permission dialog.",
+			"In the macOS dialog, macOS shows \"security\" as the requesting program. Enter your macOS login password and click \"Always Allow\" so macOS does not ask again.",
+			"If you click Cancel or dismiss this dialog, ZCode startup stops without accessing Keychain.",
+		},
+		Note:           "If this Worker runs on another Mac, the macOS Keychain dialog opens on that Mac. For headless setups, set ZCODE_CREDENTIAL_SECRET_FILE instead.",
+		ConfirmLabel:   "Proceed",
+		CancelLabel:    "Cancel",
+		WaitingMessage: "Waiting for macOS Keychain confirmation…",
+		ProceedMessage: "Waiting for macOS Keychain authorization…",
+	}
+}
+
+// prepareOSKeyForStartup silently checks before spawning zcode app-server
+// whether reading an OS-backed v2 credential key may prompt the user. When a
+// prompt is expected, it asks confirm first and only invokes the OS keyring
+// reader after the user clicks Proceed. Degraded personal-provider startup
+// paths (missing/corrupt credentials.json, explicit secret, corrupt marker, or
+// silent keyring read failures) return nil so readAccountBindings handles them
+// without blocking personal API-key providers.
+func (s zcodeCredentialStore) prepareOSKeyForStartup(ctx context.Context, confirm agent.StartupPromptConfirmer) error {
+	if s.path == "" {
+		return nil
+	}
+	var values map[string]string
+	err := sessionstore.ReadSidecarFile(s.path, sessionstore.MaxSidecarBytes, func(data []byte) error {
+		return json.Unmarshal(data, &values)
+	})
+	if err != nil {
+		return nil
+	}
+	_, hasV2OS, _, osFingerprints := zcodeScanCredentialValues(values)
+	if !hasV2OS {
+		return nil
+	}
+	if _, hasExplicit, explicitErr := s.readExplicitManagedSecret(); hasExplicit || explicitErr != nil {
+		return nil
+	}
+	absPath := s.resolvedAbsPath()
+	if _, markerErr := zcodeReadOSSourceMarker(absPath); markerErr != nil {
+		return nil
+	}
+	reader, cache := s.osKeyReaderAndCache()
+	if cache.hasValidKey(absPath, osFingerprints) {
+		return nil
+	}
+	if s.resolveOSKeyProbe()(zcodeOSKeyringService, zcodeOSKeyringAccount(absPath)) == zcodeOSKeyAccessSilent {
+		if confirm != nil {
+			_, _ = cache.loadFresh(ctx, absPath, osFingerprints, reader)
+		} else {
+			_, _ = cache.load(ctx, absPath, osFingerprints, reader)
+		}
+		return nil
+	}
+	if confirm == nil {
+		return fmt.Errorf("%w: macOS Keychain access for ZCode credentials requires interactive authorization; open the agent or send a message to authorize, or configure ZCODE_CREDENTIAL_SECRET_FILE", agent.ErrStartupCanceled)
+	}
+	proceed, err := confirm(ctx, zcodeMacOSKeychainStartupPrompt())
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return fmt.Errorf("%w: macOS Keychain access was not authorized", agent.ErrStartupCanceled)
+	}
+	if _, err := cache.loadFresh(ctx, absPath, osFingerprints, reader); err != nil {
+		return fmt.Errorf("%w: authorize macOS Keychain access for ZCode credentials: %w", agent.ErrStartupCanceled, err)
+	}
+	return nil
 }
 
 // decryptRaw decrypts one ciphertext value against the store's configured key
@@ -274,12 +390,7 @@ func (s zcodeCredentialStore) decryptRaw(ctx context.Context, value string) (str
 }
 
 func (s zcodeCredentialStore) resolveKeys(ctx context.Context, out *zcodeCredentials, hasV1, hasV2OS, hasV2Env bool, osFingerprints []string) {
-	absPath := s.path
-	if absPath != "" {
-		if resolved, err := filepath.Abs(absPath); err == nil {
-			absPath = resolved
-		}
-	}
+	absPath := s.resolvedAbsPath()
 	out.identity.path = absPath
 
 	if !hasV1 && !hasV2OS && !hasV2Env {
@@ -360,21 +471,19 @@ func (s zcodeCredentialStore) resolveKeys(ctx context.Context, out *zcodeCredent
 	// If the directory is pinned to OS storage and only enc:v2:env: entries exist,
 	// fail closed without triggering an OS keyring prompt.
 	if hasV2OS {
-		reader := s.osKeyReader
-		cache := s.osKeyCache
-		if reader == nil {
-			reader = readZCodeOSKey
-			cache = &zcodeProcessOSKeys
-		} else if cache == nil {
-			cache = &zcodeOSKeyCache{}
-		}
-		key, err := cache.load(ctx, absPath, osFingerprints, reader)
-		if err != nil {
-			out.v2Err = err
+		reader, cache := s.osKeyReaderAndCache()
+		if !cache.hasValidKey(absPath, osFingerprints) &&
+			s.resolveOSKeyProbe()(zcodeOSKeyringService, zcodeOSKeyringAccount(absPath)) == zcodeOSKeyAccessMayPrompt {
+			out.v2Err = fmt.Errorf("%w: macOS Keychain authorization is required; reopen or restart the ZCode agent to authorize", errZCodeCredentialStoreUnavailable)
 		} else {
-			out.hasV2Key = true
-			out.v2Source = zcodeCredentialSourceOS
-			out.v2Key = key
+			key, err := cache.load(ctx, absPath, osFingerprints, reader)
+			if err != nil {
+				out.v2Err = err
+			} else {
+				out.hasV2Key = true
+				out.v2Source = zcodeCredentialSourceOS
+				out.v2Key = key
+			}
 		}
 	} else if hasV2Env {
 		out.v2Err = fmt.Errorf("%w: credential directory is pinned to OS storage", errZCodeCredentialStoreUnavailable)

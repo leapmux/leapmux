@@ -765,6 +765,7 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 		{leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure, &leapmuxv1.UpdateAgentGoalRequest{AgentId: agentID, Action: leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET, Objective: "after"}},
 		{leapmuxv1connect.WorkerAgentServiceApproveAutoReviewDenialProcedure, &leapmuxv1.ApproveAutoReviewDenialRequest{AgentId: agentID, MessageId: "message-1", ReviewId: "review-1"}},
 		{leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, &leapmuxv1.RetryAgentTurnRequest{AgentId: agentID, TurnId: "turn-1", Model: "gpt-6-luna"}},
+		{leapmuxv1connect.WorkerAgentServiceRespondAgentStartupPromptProcedure, &leapmuxv1.RespondAgentStartupPromptRequest{AgentId: agentID, PromptId: "prompt-1", Proceed: true}},
 		{leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{AgentId: agentID}},
 		{leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{TerminalId: terminalID, Title: "after"}},
 		{leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: terminalTabIdent(terminalID)}},

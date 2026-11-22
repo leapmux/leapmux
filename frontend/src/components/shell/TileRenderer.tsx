@@ -43,6 +43,7 @@ import { workerAgent } from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { queueHeadAction } from '~/components/chat/agentInputQueuePolicy'
 import { AgentInputRecoveryDialog } from '~/components/chat/AgentInputRecoveryDialog'
+import { AgentStartupPromptDialog } from '~/components/chat/AgentStartupPromptDialog'
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
@@ -1077,6 +1078,20 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get agentStatus() { return agent()?.agentStatus },
               get startupError() { return agent()?.startupError },
               get startupMessage() { return agent()?.startupMessage },
+              get onOpenStartupPrompt() {
+                if (isActiveWorkspaceArchived())
+                  return undefined
+                const current = agent()
+                if (
+                  current === undefined
+                  || current.agentStatus !== AgentStatus.STARTING
+                  || current.startupPrompt == null
+                  || !workerOnline.isOnline(current.workerId ?? '')
+                ) {
+                  return undefined
+                }
+                return () => activateTile(tileId)
+              },
               get providerLabel() { return agentProviderLabel(agent()?.agentProvider) },
               get backgroundTasks() { return chipTasks() },
               // A getter keeps the goal reactive. Absence means that the
@@ -1408,6 +1423,24 @@ export function createTileRenderer(opts: TileRendererOpts) {
    */
   const focusedQuakeTab = createMemo<Tab | null>(resolveFocusedTab)
 
+  const focusedStartupPromptKey = createMemo<string | undefined>(() => {
+    if (isActiveWorkspaceArchived())
+      return undefined
+    const agentId = focusedAgentId()
+    if (!agentId)
+      return undefined
+    const tab = view.getAgentTab(agentId)
+    if (
+      tab === undefined
+      || tab.agentStatus !== AgentStatus.STARTING
+      || tab.startupPrompt == null
+      || !workerOnline.isOnline(tab.workerId ?? '')
+    ) {
+      return undefined
+    }
+    return `${agentId}:${tab.startupPrompt.promptId}`
+  })
+
   // The composer delegates queue requests and snapshot updates to agentInputQueueOperations.
   const queueOps = createAgentInputQueueOperations({
     view,
@@ -1691,6 +1724,31 @@ export function createTileRenderer(opts: TileRendererOpts) {
       <Portal>
         <Show when={inputRecoveryTarget()} keyed>
           {target => <AgentInputRecoveryDialog current={target} actions={inputRecoveryOps} onClose={() => setInputRecoveryTarget()} />}
+        </Show>
+      </Portal>
+    ),
+    StartupPromptDialog: () => (
+      <Portal>
+        <Show when={focusedStartupPromptKey()} keyed>
+          {(_key) => {
+            const prompt = createMemo(() => {
+              const id = focusedAgentId()
+              return id
+                ? view.getAgentTab(id)?.startupPrompt ?? undefined
+                : undefined
+            })
+            const agentId = createMemo(() => focusedAgentId() ?? '')
+            return (
+              <Show when={prompt()}>
+                {currentPrompt => (
+                  <AgentStartupPromptDialog
+                    prompt={currentPrompt()}
+                    onRespond={proceed => agentOps.handleRespondAgentStartupPrompt(agentId(), currentPrompt().promptId, proceed)}
+                  />
+                )}
+              </Show>
+            )
+          }}
         </Show>
       </Portal>
     ),

@@ -719,10 +719,10 @@ func TestEnsureAgentRunning_RefusesAnAgentWhoseStartupFailed(t *testing.T) {
 				assert.ErrorIs(t, err, errAgentStartupFailed)
 				assert.Empty(t, rec.ids(), "a cold start repeated a startup that failed")
 				row := requireAgentRow(t, svc, "agent-1")
-				status, startupError, _ := deriveAgentStatus(&row, svc.agentLivenessOf(&row))
-				assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status,
+				derived := deriveAgentStatus(&row, svc.agentLivenessOf(&row))
+				assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, derived.status,
 					"the refused cold start must keep the record of the failure")
-				assert.Equal(t, failure, startupError)
+				assert.Equal(t, failure, derived.startupError)
 			})
 		}
 	}

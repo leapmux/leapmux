@@ -6,11 +6,11 @@ import type { Tab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { DragDropProvider } from '@thisbeyond/solid-dnd'
-import { createEffect, createRoot, createSignal, Show } from 'solid-js'
+import { createEffect, createRoot, createSignal, For, Show } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { useMarkdownLocalLinks } from '~/components/chat/markdownLocalLinks'
-import { AgentInputKind, AgentInputProcessRecoverySchema, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentInputState, AgentProvider, AgentStatus, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputProcessRecoverySchema, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentInputState, AgentProvider, AgentStartupPromptSchema, AgentStatus, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { setCRDTBridge } from '~/lib/crdt'
@@ -207,6 +207,12 @@ interface RenderRendererOptions {
   composerShown?: () => boolean
   /** The agent operation that records an approval of a denied auto-review. */
   handleApproveAutoReviewDenial?: (agentId: string, messageId: string, reviewId: string) => Promise<void>
+  /** The agent operation that responds to a pre-flight startup prompt. */
+  handleRespondAgentStartupPrompt?: (agentId: string, promptId: string, proceed: boolean) => Promise<void>
+  /** Optional worker online store so tests can toggle offline state. */
+  workerOnline?: ReturnType<typeof createWorkerOnlineStore>
+  /** Extra tiles to mount beside focusedTileId for split-pane tests. */
+  extraTileIds?: string[]
   onActivateLocalLink?: NonNullable<Parameters<typeof createTileRenderer>[0]['onActivateLocalLink']>
 }
 
@@ -236,7 +242,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
         repoGitStore: createRepoGitStore(),
-        workerOnline: createWorkerOnlineStore(),
+        workerOnline: options.workerOnline ?? createWorkerOnlineStore(),
       },
       // The shell builds this once and shares it with the close guard, so the
       // chip and the prompt cannot scope "this tab's rows" differently.
@@ -264,6 +270,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
           handleAgentSettingChange: () => {},
           handleInterrupt: () => {},
           handleApproveAutoReviewDenial: options.handleApproveAutoReviewDenial ?? (async () => {}),
+          handleRespondAgentStartupPrompt: options.handleRespondAgentStartupPrompt ?? (async () => {}),
         } as any,
         termOps: {
           availableShells: () => ['/bin/test-shell'],
@@ -323,6 +330,9 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
     return (
       <>
         {r.renderTile(focusedTileId)}
+        <For each={options.extraTileIds ?? []}>
+          {tileId => r.renderTile(tileId)}
+        </For>
         {options.withComposer
           ? (
               <Show when={options.composerShown?.() ?? true}>
@@ -332,6 +342,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
           : null}
         {r.CloseDialogs()}
         <r.RecoveryDialog />
+        <r.StartupPromptDialog />
       </>
     )
   }, {
@@ -1752,5 +1763,141 @@ describe('MarkdownLocalLinkProvider wiring', () => {
     finally {
       dispose()
     }
+  })
+})
+
+describe('StartupPromptDialog', () => {
+  function makeStartupPrompt(promptId = 'prompt-1') {
+    return create(AgentStartupPromptSchema, {
+      promptId,
+      title: 'Allow macOS Keychain access',
+      description: 'ZCode stores account credentials in your macOS Keychain.',
+      steps: ['Click Proceed below.', 'Click Always Allow in macOS Keychain.'],
+      note: 'Canceling stops startup.',
+      confirmLabel: 'Proceed',
+      cancelLabel: 'Cancel',
+    })
+  }
+
+  it('opens automatically for a focused online STARTING agent tab and forwards proceed and cancel', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    const handleRespond = vi.fn(async () => {})
+    s.addAgent('zcode-1', tileId, 'ZCode', 'worker-1')
+    s.metadata.patch('zcode-1', {
+      agentStatus: AgentStatus.STARTING,
+      startupMessage: 'Waiting for macOS Keychain confirmation…',
+      startupPrompt: makeStartupPrompt('prompt-1'),
+    })
+
+    renderRenderer(s, tileId, { handleRespondAgentStartupPrompt: handleRespond })
+
+    const dialog = await screen.findByTestId('agent-startup-prompt-dialog')
+    expect(dialog).toBeInTheDocument()
+    expect(within(dialog).getByText('Allow macOS Keychain access')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('agent-startup-prompt-proceed'))
+    await waitFor(() => {
+      expect(handleRespond).toHaveBeenCalledWith('zcode-1', 'prompt-1', true)
+    })
+
+    // Swap to a second prompt ID to verify Cancel forwarding cleanly.
+    s.metadata.patch('zcode-1', {
+      startupPrompt: makeStartupPrompt('prompt-2'),
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-startup-prompt-cancel')).not.toBeDisabled()
+    })
+    fireEvent.click(screen.getByTestId('agent-startup-prompt-cancel'))
+    await waitFor(() => {
+      expect(handleRespond).toHaveBeenCalledWith('zcode-1', 'prompt-2', false)
+    })
+  })
+
+  it('keeps the dialog mounted across unrelated tab metadata updates', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('zcode-1', tileId, 'ZCode', 'worker-1')
+    s.metadata.patch('zcode-1', {
+      agentStatus: AgentStatus.STARTING,
+      startupPrompt: makeStartupPrompt('prompt-stable'),
+    })
+
+    renderRenderer(s, tileId)
+
+    const dialogBefore = await screen.findByTestId('agent-startup-prompt-dialog')
+    s.metadata.patch('zcode-1', { title: 'Renamed ZCode', gitToplevel: '/repo' })
+    await waitFor(() => {
+      expect(s.view.getAgentTab('zcode-1')?.title).toBe('Renamed ZCode')
+    })
+
+    expect(screen.getByTestId('agent-startup-prompt-dialog')).toBe(dialogBefore)
+  })
+
+  it('does not auto-open for an unfocused split tile and opens when clicking Review instructions', async () => {
+    const s = createSetup()
+    const initialTile = s.layoutStore.focusedTileId()!
+    const rightTile = s.layoutStore.splitTile(initialTile, 'horizontal')!
+    const leftTile = s.layoutStore.owner().findHeirTile(rightTile)!
+
+    s.addAgent('focused-agent', leftTile, 'Focused', 'worker-1')
+    s.addAgent('prompting-agent', rightTile, 'Prompting', 'worker-1')
+    s.metadata.patch('prompting-agent', {
+      agentStatus: AgentStatus.STARTING,
+      startupMessage: 'Waiting for macOS Keychain confirmation…',
+      startupPrompt: makeStartupPrompt('prompt-split'),
+    })
+    s.layoutStore.setFocusedTile(leftTile, s.workspaceId)
+    s.selection.setActiveById(TabType.AGENT, 'focused-agent')
+
+    renderRenderer(s, leftTile, {
+      extraTileIds: [rightTile],
+    })
+
+    expect(screen.queryByTestId('agent-startup-prompt-dialog')).not.toBeInTheDocument()
+    const openBtn = await screen.findByTestId('agent-startup-prompt-open')
+    fireEvent.click(openBtn)
+
+    await waitFor(() => {
+      expect(s.layoutStore.focusedTileId()).toBe(rightTile)
+      expect(screen.getByTestId('agent-startup-prompt-dialog')).toBeInTheDocument()
+    })
+  })
+
+  it('suppresses the modal and Review instructions button when the workspace is archived or the worker is offline', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    const workerOnline = createWorkerOnlineStore()
+    const [archived, setArchived] = createSignal(false)
+
+    s.addAgent('zcode-1', tileId, 'ZCode', 'worker-1')
+    s.metadata.patch('zcode-1', {
+      agentStatus: AgentStatus.STARTING,
+      startupMessage: 'Waiting for macOS Keychain confirmation…',
+      startupPrompt: makeStartupPrompt('prompt-guard'),
+    })
+
+    renderRenderer(s, tileId, {
+      workerOnline,
+      isActiveWorkspaceArchived: archived,
+    })
+
+    expect(await screen.findByTestId('agent-startup-prompt-dialog')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-startup-prompt-open')).toBeInTheDocument()
+
+    setArchived(true)
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-startup-prompt-dialog')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('agent-startup-prompt-open')).not.toBeInTheDocument()
+    })
+
+    setArchived(false)
+    expect(await screen.findByTestId('agent-startup-prompt-dialog')).toBeInTheDocument()
+
+    workerOnline.setOnline('worker-1', false)
+    await waitFor(() => {
+      expect(screen.queryByTestId('agent-startup-prompt-dialog')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('agent-startup-prompt-open')).not.toBeInTheDocument()
+    })
   })
 })

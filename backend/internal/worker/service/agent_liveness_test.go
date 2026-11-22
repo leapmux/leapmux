@@ -63,8 +63,8 @@ func TestSampleAgentLiveness_ReadsTheRegistryBeforeTheProcess(t *testing.T) {
 			}
 
 			assert.Equal(t, 1, probes, "the sample must ask for the process exactly once")
-			status, _, _ := deriveAgentStatus(&db.Agent{ID: id}, live)
-			assert.Equal(t, tc.wantStatus, status)
+			derived := deriveAgentStatus(&db.Agent{ID: id}, live)
+			assert.Equal(t, tc.wantStatus, derived.status)
 		})
 	}
 }
@@ -116,8 +116,8 @@ func TestSampleAgentLiveness_ReadsStartingForAReplacementThatBeginsDuringTheSamp
 			})
 
 			assert.Equal(t, 1, probes, "the sample must ask for the process exactly once")
-			status, _, _ := deriveAgentStatus(&db.Agent{ID: id}, live)
-			assert.Equal(t, tc.wantStatus, status)
+			derived := deriveAgentStatus(&db.Agent{ID: id}, live)
+			assert.Equal(t, tc.wantStatus, derived.status)
 		})
 	}
 }
@@ -134,11 +134,11 @@ func TestSampleAgentLiveness_CarriesTheFailureOfAStartup(t *testing.T) {
 	svc.AgentStartup.fail(handle, "claude: command not found")
 	svc.AgentStartup.finishEntry(handle)
 
-	status, startupError, startupMessage := deriveAgentStatus(&db.Agent{ID: "agent-1"}, liveness(svc, "agent-1", false))
+	derived := deriveAgentStatus(&db.Agent{ID: "agent-1"}, liveness(svc, "agent-1", false))
 
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)
-	assert.Equal(t, "claude: command not found", startupError)
-	assert.Empty(t, startupMessage)
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, derived.status)
+	assert.Equal(t, "claude: command not found", derived.startupError)
+	assert.Empty(t, derived.startupMessage)
 }
 
 // The message of a startup in flight reaches the reply, so a client that opens a
@@ -151,10 +151,10 @@ func TestSampleAgentLiveness_CarriesTheMessageOfAStartupInFlight(t *testing.T) {
 	require.NotNil(t, handle)
 	svc.AgentStartup.setMessage("agent-1", "Starting Claude Code…")
 
-	status, startupError, startupMessage := deriveAgentStatus(&db.Agent{ID: "agent-1"}, liveness(svc, "agent-1", false))
+	derived := deriveAgentStatus(&db.Agent{ID: "agent-1"}, liveness(svc, "agent-1", false))
 
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, status)
-	assert.Empty(t, startupError)
-	assert.Equal(t, "Starting Claude Code…", startupMessage)
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, derived.status)
+	assert.Empty(t, derived.startupError)
+	assert.Equal(t, "Starting Claude Code…", derived.startupMessage)
 	svc.AgentStartup.abandon(handle)
 }

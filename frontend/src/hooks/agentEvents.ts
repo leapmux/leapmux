@@ -738,12 +738,12 @@ export function buildAgentStatusTabUpdate(
     ...(sc.status === AgentStatus.ACTIVE
       ? { startupError: '' }
       : {}),
-    // Show the startup phase while the status is STARTING.
-    // Clear it on another explicit status. Retain it when the event supplies no status.
+    // Show the startup phase and any pending prompt while the status is STARTING.
+    // Clear both on another explicit status. Retain them when the event supplies no status.
     ...(sc.status === AgentStatus.STARTING
-      ? { startupMessage: sc.startupMessage }
+      ? { startupMessage: sc.startupMessage, startupPrompt: sc.startupPrompt ?? null }
       : hasStatus
-        ? { startupMessage: '' }
+        ? { startupMessage: '', startupPrompt: null }
         : {}),
     // Include the confirmed catalog and the current values after pending-axis suppression.
     ...settingsFields,
@@ -975,6 +975,14 @@ export function handleAgentStatusChange(
     stores.agentSessionStore.clearModelAPIRetry(agentId, statusMetadataDelivery(catchUpPhase, replayId))
   }
   applyAgentStatusTabUpdate(agentId, sc, stores, settingsLoading, streamWorkerId)
+  if (
+    catchUpPhase === 'live'
+    && sc.status === AgentStatus.STARTING
+    && sc.startupPrompt !== undefined
+    && !isAgentTabOnScreen(agentId, stores.view, stores.selection, stores.getActiveWorkspaceId)
+  ) {
+    stores.metadata.patch(agentId, { hasNotification: true })
+  }
   if (!pendingSettings)
     settingsLoading.stop()
   if (sc.status === AgentStatus.INACTIVE)

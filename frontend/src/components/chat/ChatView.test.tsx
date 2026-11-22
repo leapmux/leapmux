@@ -2228,6 +2228,28 @@ describe('ChatView', () => {
       </PreferencesProvider>
     ))
     expect(screen.getByTestId('agent-startup-overlay')).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-startup-prompt-open')).not.toBeInTheDocument()
+  })
+
+  it('renders Review instructions button when STARTING with onOpenStartupPrompt and invokes it on click', () => {
+    const onOpenStartupPrompt = vi.fn()
+    render(() => (
+      <PreferencesProvider>
+        <ChatView
+          messages={[]}
+          agentLifecycle={{
+            agentStatus: AgentStatus.STARTING,
+            providerLabel: 'ZCode',
+            startupMessage: 'Waiting for macOS Keychain confirmation…',
+            onOpenStartupPrompt,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    const button = screen.getByTestId('agent-startup-prompt-open')
+    expect(button).toHaveTextContent('Review instructions')
+    fireEvent.click(button)
+    expect(onOpenStartupPrompt).toHaveBeenCalledOnce()
   })
 
   it('renders empty state when all messages are hidden', () => {

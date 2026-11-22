@@ -36,34 +36,34 @@ func TestDeriveAgentStatus_AllBranches(t *testing.T) {
 	agentHandle := beginForTest(t, &svc.AgentStartup.startupCore, "agent-1")
 	require.NotNil(t, agentHandle)
 	dbAgent.StartupError = "stale error"
-	status, errStr, _ := deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", true))
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status)
-	assert.Empty(t, errStr)
+	derived := deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", true))
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, derived.status)
+	assert.Empty(t, derived.startupError)
 
 	// 2. Registry STARTING: isRunning=false + registry populated.
 	dbAgent.StartupError = ""
-	status, errStr, _ = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, status)
-	assert.Empty(t, errStr)
+	derived = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, derived.status)
+	assert.Empty(t, derived.startupError)
 
 	// 3. Registry STARTUP_FAILED: fail() wins over DB column.
 	dbAgent.StartupError = "stale db error"
 	svc.AgentStartup.fail(agentHandle, "registry error")
-	status, errStr, _ = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)
-	assert.Equal(t, "registry error", errStr)
+	derived = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, derived.status)
+	assert.Equal(t, "registry error", derived.startupError)
 
 	// 4. Clear the registry; DB column now drives STARTUP_FAILED.
 	svc.AgentStartup.cancelAndClear("agent-1", keepWorktreeOnClose)
-	status, errStr, _ = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)
-	assert.Equal(t, "stale db error", errStr)
+	derived = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, derived.status)
+	assert.Equal(t, "stale db error", derived.startupError)
 
 	// 5. No registry entry, no DB column, not running → INACTIVE.
 	dbAgent.StartupError = ""
-	status, errStr, _ = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, status)
-	assert.Empty(t, errStr)
+	derived = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, derived.status)
+	assert.Empty(t, derived.startupError)
 }
 
 // TestDeriveTerminalStatus_AllBranches is the terminal analogue: registry >
@@ -474,9 +474,9 @@ func TestDeriveAgentStatus_ActiveClearsLingeringDBError(t *testing.T) {
 	t.Parallel()
 
 	dbAgent := db.Agent{ID: "agent-a", StartupError: "lingering"}
-	status, errStr, _ := deriveAgentStatus(&dbAgent, agentLiveness{running: true})
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status)
-	assert.Empty(t, errStr, "runtime ACTIVE must suppress a lingering DB error")
+	derived := deriveAgentStatus(&dbAgent, agentLiveness{running: true})
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, derived.status)
+	assert.Empty(t, derived.startupError, "runtime ACTIVE must suppress a lingering DB error")
 }
 
 // Sanity: confirm an agent row with ClosedAt set isn't reanimated by a

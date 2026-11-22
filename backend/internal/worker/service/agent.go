@@ -813,6 +813,9 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.RetryAgentTurnResponse{})
 		})
 
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceRespondAgentStartupPromptProcedure,
+		svc.handleRespondAgentStartupPrompt)
+
 	// WatchWorkerPrivateEvents streams this worker's private tab events
 	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked, QuakePanelCommand)
 	// over the existing E2EE channel. The bootstrap-replay sends one
@@ -1197,13 +1200,13 @@ func (svc *Service) replayAgentCatchUp(
 	if !live.running {
 		svc.Agents.PreloadCache(agentID, parseOptionGroups(dbAgent.OptionGroups))
 	}
-	status, startupError, startupMessage := deriveAgentStatus(&dbAgent, live)
+	derived := deriveAgentStatus(&dbAgent, live)
 	var statusChange *leapmuxv1.AgentStatusChange
-	switch status {
+	switch derived.status {
 	case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
-		statusChange = buildAgentStartingStatus(&dbAgent, startupMessage, gitStatus)
+		statusChange = buildAgentStartingStatus(&dbAgent, derived.startupMessage, gitStatus, derived.startupPrompt)
 	case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
-		statusChange = buildAgentFailedStatus(&dbAgent, startupError, gitStatus)
+		statusChange = buildAgentFailedStatus(&dbAgent, derived.startupError, gitStatus)
 	case leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE:
 		statusChange = svc.buildAgentActiveStatus(&dbAgent, gitStatus)
 	default:
@@ -1326,6 +1329,16 @@ type agentStartupSnapshot struct {
 	status         leapmuxv1.AgentStatus
 	startupError   string
 	startupMessage string
+	startupPrompt  *leapmuxv1.AgentStartupPrompt
+}
+
+// derivedAgentStatus holds the full lifecycle status derived for an agent from
+// its runtime Manager presence, in-memory startup registry, and persisted row.
+type derivedAgentStatus struct {
+	status         leapmuxv1.AgentStatus
+	startupError   string
+	startupMessage string
+	startupPrompt  *leapmuxv1.AgentStartupPrompt
 }
 
 // agentLiveness is what the Worker's runtime says about one agent: a snapshot of
@@ -1368,11 +1381,16 @@ func (svc *Service) sampleAgentLiveness(agentID string, processRuns func() bool)
 // readAgentStartup reads the startup registry entry of agentID. It returns nil
 // when the registry holds none.
 func (svc *Service) readAgentStartup(agentID string) *agentStartupSnapshot {
-	status, startupError, startupMessage, tracked := svc.AgentStartup.status(agentID)
+	snap, tracked := svc.AgentStartup.readSnapshot(agentID)
 	if !tracked {
 		return nil
 	}
-	return &agentStartupSnapshot{status: status, startupError: startupError, startupMessage: startupMessage}
+	return &agentStartupSnapshot{
+		status:         snap.status,
+		startupError:   snap.startupError,
+		startupMessage: snap.startupMessage,
+		startupPrompt:  snap.startupPrompt,
+	}
 }
 
 // agentLivenessOf is sampleAgentLiveness for the process that feeds the agent in
@@ -1381,30 +1399,43 @@ func (svc *Service) agentLivenessOf(a *db.Agent) agentLiveness {
 	return svc.sampleAgentLiveness(a.ID, func() bool { return svc.agentProcessRunning(a) })
 }
 
-// deriveAgentStatus computes (status, startupError, startupMessage) for
-// an agent, in priority order:
+// deriveAgentStatus computes status, startupError, startupMessage, and
+// startupPrompt for an agent, in priority order:
 //  1. runtime Manager — if the agent is currently running, ACTIVE wins.
 //  2. in-memory startup registry — STARTING / STARTUP_FAILED while a
 //     startup is in flight or has just failed. The current phase
-//     message is surfaced so a WatchEvents subscriber that arrived
-//     after the initial STARTING broadcast still sees the right label.
+//     message and any pending startup prompt are surfaced so a
+//     WatchEvents subscriber that arrived after the initial STARTING
+//     broadcast still sees the right label and confirmation dialog.
 //  3. persisted startup_error column — surfaces a prior failure across
 //     worker restarts (the in-memory registry is wiped on restart).
 //  4. INACTIVE otherwise.
 //
 // It reads nothing from the runtime itself. live holds both runtime reads, so
 // the two cannot come from different moments in the wrong order.
-func deriveAgentStatus(a *db.Agent, live agentLiveness) (status leapmuxv1.AgentStatus, startupError, startupMessage string) {
+func deriveAgentStatus(a *db.Agent, live agentLiveness) derivedAgentStatus {
 	if live.running {
-		return leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "", ""
+		return derivedAgentStatus{status: leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE}
 	}
 	if startup := live.startup; startup != nil {
-		return startup.status, startup.startupError, startup.startupMessage
+		var prompt *leapmuxv1.AgentStartupPrompt
+		if startup.status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTING {
+			prompt = startup.startupPrompt
+		}
+		return derivedAgentStatus{
+			status:         startup.status,
+			startupError:   startup.startupError,
+			startupMessage: startup.startupMessage,
+			startupPrompt:  prompt,
+		}
 	}
 	if a.StartupError != "" {
-		return leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, a.StartupError, ""
+		return derivedAgentStatus{
+			status:       leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED,
+			startupError: a.StartupError,
+		}
 	}
-	return leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, "", ""
+	return derivedAgentStatus{status: leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE}
 }
 
 // errAgentStartupFailed refuses work for an agent whose last startup failed.
@@ -1443,11 +1474,11 @@ func (svc *Service) agentStartupFailed(a *db.Agent) bool {
 // startup_error, and startup_message are derived via deriveAgentStatus.
 func (svc *Service) agentToProto(a *db.Agent, live agentLiveness, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentInfo {
 	isRunning := live.running
-	status, startupError, startupMessage := deriveAgentStatus(a, live)
+	derived := deriveAgentStatus(a, live)
 	info := &leapmuxv1.AgentInfo{
 		Id:                a.ID,
 		Title:             a.Title,
-		Status:            status,
+		Status:            derived.status,
 		WorkingDir:        a.WorkingDir,
 		AgentSessionId:    a.AgentSessionID,
 		WorkerId:          svc.WorkerID,
@@ -1455,8 +1486,9 @@ func (svc *Service) agentToProto(a *db.Agent, live agentLiveness, gs *leapmuxv1.
 		GitStatus:         gs,
 		AgentProvider:     a.AgentProvider,
 		OptionGroups:      svc.optionGroupsForAgent(a),
-		StartupError:      startupError,
-		StartupMessage:    startupMessage,
+		StartupError:      derived.startupError,
+		StartupMessage:    derived.startupMessage,
+		StartupPrompt:     derived.startupPrompt,
 		QueueHeadDispatch: svc.queueHeadDispatch(a, isRunning),
 	}
 
@@ -1633,7 +1665,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	// label via catch-up replay rather than seeing a generic fallback.
 	phase1Msg := "Checking Git status…"
 	svc.AgentStartup.setMessage(agentID, phase1Msg)
-	svc.broadcastAgentStarting(&dbAgent, phase1Msg, nil)
+	svc.broadcastAgentStarting(&dbAgent, phase1Msg, nil, nil)
 	gitStatus := gitutil.GetGitStatus(ctx, agentOpts.WorkingDir)
 	// initialOpts captures the launch-time settings. applyDBSettingsToAgentOptions
 	// (called below) assigns a fresh Options map to agentOpts, so this
@@ -1650,11 +1682,12 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	} else {
 		slog.Warn("agent startup: failed to refresh settings before start", "agent_id", agentID, "error", err)
 	}
+	agentOpts.ConfirmStartupPrompt = svc.startupPromptConfirmer(agentID, h, gitStatus)
 
 	// Phase 2: spawn the subprocess and run the init handshake.
 	phase2Msg := agentStartupLabel("Starting", agentOpts.AgentProvider)
 	svc.AgentStartup.setMessage(agentID, phase2Msg)
-	svc.broadcastAgentStarting(&dbAgent, phase2Msg, gitStatus)
+	svc.broadcastAgentStarting(&dbAgent, phase2Msg, gitStatus, nil)
 	agent.TraceStartupPhase(agentID, "before_start_agent")
 	startedOpts := agentOpts
 	confirmedSettings, startErr := svc.startAgent(ctx, agentOpts, sink)
@@ -1775,6 +1808,9 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 		return
 	case interruptionNone:
 	}
+	if !running && (svc.AgentStartup.shutdownStopped(h) || svc.shuttingDown.Load()) {
+		return
+	}
 
 	activeOptions := loadOptions(svc.Agents.Registry(), activeDbAgent.Options, activeDbAgent.AgentProvider)
 	slog.Info("agent started",
@@ -1839,7 +1875,10 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
 		// Hold the startup before the stop. The caller announces the outcome.
-		defer svc.holdRelaunch(agentID, provider).release()
+		hold := svc.holdRelaunch(agentID, provider)
+		defer hold.release()
+		// Overwrite runAgentStartup's retired confirmer (even when hold.handle is nil).
+		opts.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, hold.handle)
 		sink, sourceErr := svc.Output.NewRootSink(agentID, provider)
 		if sourceErr != nil {
 			return nil, false, sourceErr
@@ -1944,11 +1983,13 @@ func baseAgentStatusChange(dbAgent *db.Agent, status leapmuxv1.AgentStatus, gitS
 }
 
 // buildAgentStartingStatus builds a STARTING AgentStatusChange carrying
-// the current phase label. gitStatus is populated once phase 1 has
-// finished computing it; earlier phases pass nil.
-func buildAgentStartingStatus(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentStatusChange {
+// the current phase label and any pending startup confirmation prompt.
+// gitStatus is populated once phase 1 has finished computing it; earlier phases
+// pass nil.
+func buildAgentStartingStatus(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.GitRepoStatus, prompt *leapmuxv1.AgentStartupPrompt) *leapmuxv1.AgentStatusChange {
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, gitStatus)
 	sc.StartupMessage = message
+	sc.StartupPrompt = prompt
 	return sc
 }
 
@@ -2002,9 +2043,117 @@ func (svc *Service) broadcastStatusChange(agentID string, sc *leapmuxv1.AgentSta
 
 // broadcastAgentStarting fans out a STARTING AgentStatusChange to all
 // subscribers. Used by the OpenAgent startup goroutine for each phase
-// label transition.
-func (svc *Service) broadcastAgentStarting(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.GitRepoStatus) {
-	svc.broadcastStatusChange(dbAgent.ID, buildAgentStartingStatus(dbAgent, message, gitStatus))
+// label transition and startup confirmation prompt update.
+func (svc *Service) broadcastAgentStarting(dbAgent *db.Agent, message string, gitStatus *leapmuxv1.GitRepoStatus, prompt *leapmuxv1.AgentStartupPrompt) {
+	svc.broadcastStatusChange(dbAgent.ID, buildAgentStartingStatus(dbAgent, message, gitStatus, prompt))
+}
+
+func (svc *Service) promptInterruptionError(h *startupEntry, closedInDB, archivedInDB bool, ctx context.Context) error {
+	switch svc.AgentStartup.interruptionOf(h, closedInDB, archivedInDB) {
+	case interruptionClosed:
+		return errAgentClosedDuringLaunch
+	case interruptionArchived:
+		return errAgentArchivedDuringLaunch
+	case interruptionNone:
+	}
+	if svc.AgentStartup.shutdownStopped(h) || svc.shuttingDown.Load() {
+		return errWorkerShuttingDown
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errors.New("agent startup is no longer active")
+}
+
+func (svc *Service) relaunchStartupPromptConfirmer(agentID string, h *startupEntry) agent.StartupPromptConfirmer {
+	if h != nil {
+		return svc.startupPromptConfirmer(agentID, h, nil)
+	}
+	if svc.shuttingDown.Load() {
+		return func(context.Context, agent.StartupPrompt) (bool, error) {
+			return false, errWorkerShuttingDown
+		}
+	}
+	return nil
+}
+
+// startupPromptConfirmer returns an agent.StartupPromptConfirmer bound to the
+// startup goroutine's claim h. All STARTING broadcasts for opening and clearing
+// the prompt occur synchronously on the startup goroutine so no RPC broadcast
+// can race and overwrite STARTUP_FAILED, INACTIVE, or ACTIVE.
+func (svc *Service) startupPromptConfirmer(agentID string, h *startupEntry, gitStatus *leapmuxv1.GitRepoStatus) agent.StartupPromptConfirmer {
+	return func(ctx context.Context, prompt agent.StartupPrompt) (bool, error) {
+		promptID := id.Generate()
+		protoPrompt := &leapmuxv1.AgentStartupPrompt{
+			PromptId:     promptID,
+			Title:        prompt.Title,
+			Description:  prompt.Description,
+			Steps:        append([]string(nil), prompt.Steps...),
+			Note:         prompt.Note,
+			ConfirmLabel: prompt.ConfirmLabel,
+			CancelLabel:  prompt.CancelLabel,
+		}
+		decisionCh, effectiveWaitingMsg, ok := svc.AgentStartup.setPrompt(h, protoPrompt, prompt.WaitingMessage, prompt.ProceedMessage)
+		if !ok {
+			return false, svc.promptInterruptionError(h, false, false, ctx)
+		}
+		defer svc.AgentStartup.clearPrompt(h, promptID)
+
+		dbAgent, err := svc.getAgentByID(bgCtx(), agentID)
+		if err != nil {
+			return false, err
+		}
+		if svc.AgentStartup.interruptionOf(h, dbAgent.ClosedAt.Valid, dbAgent.WorkspaceArchived) != interruptionNone ||
+			svc.AgentStartup.shutdownStopped(h) || ctx.Err() != nil {
+			return false, svc.promptInterruptionError(h, dbAgent.ClosedAt.Valid, dbAgent.WorkspaceArchived, ctx)
+		}
+
+		svc.broadcastAgentStarting(&dbAgent, effectiveWaitingMsg, gitStatus, protoPrompt)
+
+		select {
+		case proceed := <-decisionCh:
+			if svc.AgentStartup.interruptionOf(h, false, false) != interruptionNone ||
+				svc.AgentStartup.shutdownStopped(h) || ctx.Err() != nil {
+				return false, svc.promptInterruptionError(h, false, false, ctx)
+			}
+			if proceed {
+				nextMsg := prompt.ProceedMessage
+				if nextMsg == "" {
+					nextMsg = effectiveWaitingMsg
+				}
+				svc.broadcastAgentStarting(&dbAgent, nextMsg, gitStatus, nil)
+				return true, nil
+			}
+			svc.broadcastAgentStarting(&dbAgent, effectiveWaitingMsg, gitStatus, nil)
+			return false, nil
+		case <-ctx.Done():
+			return false, svc.promptInterruptionError(h, false, false, ctx)
+		case <-h.done:
+			return false, svc.promptInterruptionError(h, false, false, ctx)
+		}
+	}
+}
+
+// handleRespondAgentStartupPrompt delivers the user's decision for a pending
+// AgentStartupPrompt. It never acquires svc.Agents.LockAgent(agentID) because
+// interactive restart paths hold LockAgent while blocked inside startAgent, and
+// it emits no broadcast because the woken startup goroutine owns broadcast
+// ordering.
+func (svc *Service) handleRespondAgentStartupPrompt(_ context.Context, _ channel.Caller, r *leapmuxv1.RespondAgentStartupPromptRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
+	promptID := strings.TrimSpace(r.GetPromptId())
+	if promptID == "" {
+		sendInvalidArgument(sender, "prompt_id is required")
+		return
+	}
+	if dbAgent.ParentAgentID.Valid {
+		sendFailedPrecondition(sender, "only a root agent supports startup confirmations")
+		return
+	}
+	if err := svc.AgentStartup.resolvePrompt(dbAgent.ID, promptID, r.GetProceed()); err != nil {
+		sendFailedPrecondition(sender, err.Error())
+		return
+	}
+	sendProtoResponse(sender, &leapmuxv1.RespondAgentStartupPromptResponse{})
 }
 
 // broadcastAgentFailed fans out a STARTUP_FAILED AgentStatusChange.
@@ -2643,19 +2792,22 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		}
 		// Hold the startup before the stop, and announce the outcome after the
 		// entry is back. The hold ends before the lifecycle lock does.
-		defer svc.holdRelaunch(agentID, current.AgentProvider).settle()
+		hold := svc.holdRelaunch(agentID, current.AgentProvider)
+		defer hold.settle()
 		resumeSessionID = svc.resolveResumeSessionIDForAgent(agentID, current)
 		options := optionsFor(current)
 		agentOpts := svc.baseAgentOptions(agentID, current.WorkingDir, current.AgentProvider)
 		agentOpts.ResumeSessionID = resumeSessionID
 		agentOpts.Options = options
 		agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(svc.Agents.Registry(), options, current.AgentProvider)
+		agentOpts.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, hold.handle)
 		sink, sourceErr := svc.Output.NewRootSink(agentID, current.AgentProvider)
 		if sourceErr != nil {
 			return nil, false, sourceErr
 		}
 		confirmed, launched, launchErr := svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
 		if launchErr != nil {
+			rowUnavailable = errors.Is(launchErr, errAgentClosedDuringLaunch) || errors.Is(launchErr, errAgentArchivedDuringLaunch)
 			return confirmed, launched, launchErr
 		}
 		// A database writer that does not take the lifecycle lock can close the
@@ -2688,7 +2840,7 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		if _, pauseErr := svc.InputQueue.Pause(bgCtx(), agentID, reason); pauseErr != nil {
 			slog.Error("failed to pause input after restart row changed", "agent_id", agentID, "error", pauseErr)
 		}
-	} else if err != nil && turnEnd == restartTurnEndObserved {
+	} else if err != nil && turnEnd == restartTurnEndObserved && !errors.Is(err, errWorkerShuttingDown) {
 		// The native callback already consumed the turn end. A failed restart
 		// cannot send queued input through the old process or wait for another
 		// end event that will never arrive.
@@ -2710,15 +2862,16 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		}
 	}
 	if err != nil {
-		if errors.Is(err, errAgentClosedDuringLaunch) || errors.Is(err, errAgentArchivedDuringLaunch) {
+		if errors.Is(err, errAgentClosedDuringLaunch) || errors.Is(err, errAgentArchivedDuringLaunch) || errors.Is(err, errWorkerShuttingDown) {
 			return "", err
 		}
 		slog.Error(messages.restartFailedLog, "agent_id", agentID, "error", err)
 		// A failed mint or prelaunch read leaves the old process running. A
 		// postlaunch read fault stops the replacement, but cannot prove that
-		// the native session is stale. A control cleanup refusal also proves
-		// that no provider start ran. Preserve the saved ID in these cases.
-		if launched && !rowReadFailed && !errors.Is(err, errAgentProcessStartBlocked) {
+		// the native session is stale. A control cleanup refusal or canceled
+		// startup confirmation also proves that no provider start ran. Preserve
+		// the saved ID in these cases.
+		if launched && !rowReadFailed && !errors.Is(err, errAgentProcessStartBlocked) && !errors.Is(err, agent.ErrStartupCanceled) {
 			svc.clearAgentSessionID(agentID)
 		}
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
@@ -3018,23 +3171,6 @@ func (r clearRecovery) launchContext() context.Context {
 	return r.ctx
 }
 
-// interruption reports which lifecycle event, if any, ended the claim of this
-// recovery. Such a launch failed because of that event, not on its own, so it
-// records no startup failure. A close beats an archive, as interruptionOf states.
-func (r clearRecovery) interruption(svc *Service) startupInterruption {
-	if r.handle == nil {
-		return interruptionNone
-	}
-	return svc.AgentStartup.interruptionOf(r.handle, false, false)
-}
-
-// stoppedByShutdown reports whether the shutdown deadline ended the claim of
-// this recovery (see startupCore.cancelForShutdown). Such a launch failed
-// because the worker is going away, so it records no startup failure.
-func (r clearRecovery) stoppedByShutdown(svc *Service) bool {
-	return r.handle != nil && svc.AgentStartup.shutdownStopped(r.handle)
-}
-
 // end retires the claim after a launch that produced a running process. The
 // launch context stays alive, because it is the lifetime of that process.
 // succeed is identity-guarded, so a claim that a close already retired leaves
@@ -3200,7 +3336,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		hold = svc.holdRelaunch(agentID, dbAgent.AgentProvider)
 	}
 	defer hold.release()
-	svc.broadcastAgentStarting(&dbAgent, startingMsg, nil)
+	svc.broadcastAgentStarting(&dbAgent, startingMsg, nil, nil)
 
 	// Stop the running agent and wait for it to fully exit so that
 	// StartAgent below doesn't fail with "agent already running".
@@ -3229,6 +3365,11 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// is what makes a clear the recovery from a refused native resume, which a
 	// repeated resume could damage further.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
+	promptHandle := recovery.handle
+	if promptHandle == nil {
+		promptHandle = hold.handle
+	}
+	launchOptions.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, promptHandle)
 	confirmedSettings, err := func() (map[string]string, error) {
 		sink, sourceErr := svc.Output.NewRootSink(agentID, dbAgent.AgentProvider)
 		if sourceErr != nil {
@@ -3239,7 +3380,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	}()
 	if err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
-		switch recovery.interruption(svc) {
+		switch svc.AgentStartup.interruptionOf(promptHandle, errors.Is(err, errAgentClosedDuringLaunch), errors.Is(err, errAgentArchivedDuringLaunch)) {
 		case interruptionClosed:
 			// The close cancelled the launch. The tab is going away, so this
 			// is not a startup failure to record.
@@ -3253,10 +3394,10 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 			return nil, errAgentArchivedDuringLaunch
 		case interruptionNone:
 		}
-		if recovery.stoppedByShutdown(svc) {
-			// The shutdown deadline cancelled the launch. That is not a
-			// startup failure either: the agent keeps the failure that it had
-			// before this clear, and the user can clear again after the
+		if svc.AgentStartup.shutdownStopped(promptHandle) || errors.Is(err, errWorkerShuttingDown) {
+			// The shutdown deadline or prompt cancel ended the launch. That is
+			// not a startup failure either: the agent keeps the failure that it
+			// had before this clear, and the user can clear again after the
 			// restart.
 			recovery.abandon(svc)
 			return nil, fmt.Errorf("clear context: %w", errWorkerShuttingDown)
@@ -3272,7 +3413,11 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		// states.
 		errMsg := err.Error()
 		svc.persistAgentStartupError(agentID, errMsg)
-		recovery.fail(svc, errMsg)
+		if recovery.handle != nil {
+			recovery.fail(svc, errMsg)
+		} else if hold.handle != nil {
+			svc.AgentStartup.succeed(agentID, hold.handle)
+		}
 		svc.broadcastAgentFailed(&dbAgent, errMsg, nil)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
@@ -3482,6 +3627,9 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 			return nil
 		}
 	}
+	if svc.shuttingDown.Load() {
+		return fmt.Errorf("agent %s takes no new process: %w", agentID, errWorkerShuttingDown)
+	}
 
 	creationCtx, cancelCreationWait := context.WithTimeout(bgCtx(), priority.inFlightStartupLimit(svc))
 	creationErr := svc.awaitCreationStartup(creationCtx, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
@@ -3501,6 +3649,9 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 	defer unlock()
 	if svc.Agents.HasAgent(agentID) {
 		return nil
+	}
+	if svc.shuttingDown.Load() {
+		return fmt.Errorf("agent %s takes no new process: %w", agentID, errWorkerShuttingDown)
 	}
 
 	// Through the seam. The resume sweep reads the row through this same
@@ -3588,7 +3739,7 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 	// silent — the bubble pulses but no progress affordance is shown.
 	startingMsg := agentStartupLabel("Starting", dbAgent.AgentProvider)
 	svc.AgentStartup.setMessage(agentID, startingMsg)
-	svc.broadcastAgentStarting(&dbAgent, startingMsg, nil)
+	svc.broadcastAgentStarting(&dbAgent, startingMsg, nil, nil)
 
 	// A cold start is a fresh process, so it needs its own control socket: the
 	// open path's env vars belonged to a process that is gone (or to a previous
@@ -3596,6 +3747,9 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 	// comes up with no `leapmux control` at all.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	launchOptions.ResumeSessionID = resumeSessionID
+	if priority != backgroundStart {
+		launchOptions.ConfirmStartupPrompt = svc.startupPromptConfirmer(agentID, handle, nil)
+	}
 	confirmedSettings, err := func() (map[string]string, error) {
 		sink, sourceErr := svc.Output.NewRootSink(agentID, dbAgent.AgentProvider)
 		if sourceErr != nil {
@@ -3897,7 +4051,8 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 	dbAgent = current
 	// Hold the startup before the stop, and announce the outcome after the entry
 	// is back.
-	defer svc.holdRelaunch(agentID, dbAgent.AgentProvider).settle()
+	hold := svc.holdRelaunch(agentID, dbAgent.AgentProvider)
+	defer hold.settle()
 	// DiscardOutput before stop so shutdown noise ("stream closed") does not
 	// land in the persisted chat history.
 	svc.Agents.DiscardOutputAndStopAgent(agentID)
@@ -3924,6 +4079,7 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 	// applyDBSettingsToAgentOptions populated a fresh Options map, so writing the
 	// key here is safe (no shared aliasing).
 	launchOptions.Options[agent.OptionIDPermissionMode] = targetMode
+	launchOptions.ConfirmStartupPrompt = svc.relaunchStartupPromptConfirmer(agentID, hold.handle)
 	// A fresh process needs a fresh control socket -- see remintAgentControlIPC.
 	// mintAndLaunch keeps a failed mint and a failed start on one exit, so the
 	// notice and the session-id reset are written by one piece of code.
@@ -3936,8 +4092,13 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 		return svc.mintAndLaunch(bgCtx(), "restart", launchOptions, sink, svc.startAgent)
 	}()
 	if err != nil {
+		if errors.Is(err, errAgentClosedDuringLaunch) || errors.Is(err, errAgentArchivedDuringLaunch) || errors.Is(err, errWorkerShuttingDown) {
+			return "", err
+		}
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
-		svc.clearAgentSessionID(agentID)
+		if !errors.Is(err, agent.ErrStartupCanceled) {
+			svc.clearAgentSessionID(agentID)
+		}
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
 			contracts.NotificationFieldError: "Failed to restart agent for plan execution: " + err.Error(),

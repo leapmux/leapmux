@@ -185,6 +185,8 @@ export interface AgentLifecycleProps {
   startupError?: string | undefined
   /** Phase label from AgentStatusChange.startup_message while STARTING (e.g. "Checking Git status…"). */
   startupMessage?: string | undefined
+  /** Open the pending startup confirmation prompt for this tab (defined only when one is pending and actionable). */
+  onOpenStartupPrompt?: (() => void) | undefined
   /** Human-readable label for the agent provider (e.g. "Claude Code"). */
   providerLabel?: string
   /** Full registry (active + past) for the chip and the popover it opens. */
@@ -1254,7 +1256,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Startup banner (AgentStartupBanner phase labels + error text): a late phase-label
   // or error change does NOT move the auto-scroll signature (agentStatus stays
   // STARTING/STARTUP_FAILED across phases, and the banner text isn't in the signature).
-  createEffect(on(() => [props.agentLifecycle?.startupMessage, props.agentLifecycle?.startupError], restickAfterCommit))
+  createEffect(on(() => [
+    props.agentLifecycle?.startupMessage,
+    props.agentLifecycle?.startupError,
+    Boolean(props.agentLifecycle?.onOpenStartupPrompt),
+  ], restickAfterCommit))
 
   // Thinking indicator: while agentWorking stays true and the indicator is already
   // shown, its thinking-token count climbs (a frequent reasoning-only-turn signal) and
@@ -1360,6 +1366,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       providerLabel={props.agentLifecycle?.providerLabel}
                       startupError={props.agentLifecycle?.startupError}
                       startupMessage={props.agentLifecycle?.startupMessage}
+                      onOpenStartupPrompt={props.agentLifecycle?.onOpenStartupPrompt}
                       containerClass={styles.emptyChat}
                     />
                   </Match>
@@ -1633,6 +1640,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       providerLabel={props.agentLifecycle?.providerLabel}
                       startupError={props.agentLifecycle?.startupError}
                       startupMessage={props.agentLifecycle?.startupMessage}
+                      onOpenStartupPrompt={props.agentLifecycle?.onOpenStartupPrompt}
                       containerClass={styles.startupPanelInline}
                     />
                   </Show>

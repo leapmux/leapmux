@@ -37,6 +37,9 @@ service WorkerAgentService {
   rpc RetryAgentTurn(RetryAgentTurnRequest) returns (RetryAgentTurnResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
   }
+  rpc RespondAgentStartupPrompt(RespondAgentStartupPromptRequest) returns (RespondAgentStartupPromptResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
   rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
   }
@@ -411,6 +414,31 @@ message AgentInfo {
   int32 active_background_tasks = 22;
   // The stable native key of a virtual child. A provider can omit its spawn span.
   string provider_child_key = 23;
+  // Populated while status=AGENT_STATUS_STARTING and the provider waits for
+  // user confirmation before continuing startup.
+  AgentStartupPrompt startup_prompt = 24;
+}
+
+// AgentStartupPrompt describes a one-time user confirmation that a provider
+// requests before continuing subprocess startup (for example, explaining an OS
+// Keychain permission dialog before triggering it).
+message AgentStartupPrompt {
+  // Unique identifier for this pending prompt instance. Echoed in
+  // RespondAgentStartupPromptRequest so a stale response cannot resolve a
+  // newer startup attempt.
+  string prompt_id = 1;
+  // Dialog heading.
+  string title = 2;
+  // Introductory explanation shown above the steps.
+  string description = 3;
+  // Ordered guidance steps shown to the user before proceeding.
+  repeated string steps = 4;
+  // Optional secondary note (for example, remote Worker or headless guidance).
+  string note = 5;
+  // Primary button label (defaults to "Proceed" when empty).
+  string confirm_label = 6;
+  // Cancel button label (defaults to "Cancel" when empty).
+  string cancel_label = 7;
 }
 
 // AvailableOption describes a single selectable value within an option group
@@ -795,6 +823,9 @@ message AgentStatusChange {
   GitRepoStatus git_status = 7; // Git status for the agent's working directory
   // See AgentInfo.queue_head_dispatch.
   QueueHeadDispatch queue_head_dispatch = 8;
+  // Populated while status=AGENT_STATUS_STARTING and the provider waits for
+  // user confirmation. Unset clears any previously displayed prompt.
+  AgentStartupPrompt startup_prompt = 9;
 }
 
 // AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/common.proto.
@@ -1375,3 +1406,14 @@ message RetryAgentTurnRequest {
 
 // Empty: the new turn and the model change arrive through the normal events.
 message RetryAgentTurnResponse {}
+
+// RespondAgentStartupPrompt delivers the user's decision for a pending
+// AgentStartupPrompt. Proceed lets startup continue; cancel stops startup.
+message RespondAgentStartupPromptRequest {
+  string agent_id = 1;
+  string prompt_id = 2;
+  bool proceed = 3;
+}
+
+// Empty: the cleared prompt and next startup phase arrive through status events.
+message RespondAgentStartupPromptResponse {}

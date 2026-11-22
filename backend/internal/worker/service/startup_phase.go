@@ -171,7 +171,7 @@ func (svc *Service) finishStartupAfterClose(reg *startupCore, h *startupEntry, t
 func (svc *Service) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv1.GitRepoStatus, h *startupEntry) startupCallbacks {
 	return startupCallbacks{
 		setMessage:        func(label string) { svc.AgentStartup.setMessage(dbAgent.ID, label) },
-		broadcastStarting: func(label string) { svc.broadcastAgentStarting(dbAgent, label, nil) },
+		broadcastStarting: func(label string) { svc.broadcastAgentStarting(dbAgent, label, nil, nil) },
 		persistError:      func(errMsg string) { svc.persistAgentStartupError(dbAgent.ID, errMsg) },
 		broadcastFailed:   func(errMsg string) { svc.broadcastAgentFailed(dbAgent, errMsg, gitStatus) },
 		registryFail:      func(errMsg string) { svc.AgentStartup.fail(h, errMsg) },

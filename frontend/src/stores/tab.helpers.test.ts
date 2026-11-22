@@ -6,7 +6,7 @@ import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { __resetProviderRegistryForTest, registerProvider } from '~/components/chat/providers/registry'
 import { resolvedCurrent } from '~/components/chat/settingsGroups'
-import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider, AgentStartupPromptSchema, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
@@ -1570,6 +1570,7 @@ describe('withoutLiveStatusFields', () => {
     queueHeadDispatch: QueueHeadDispatch.STEER,
     startupError: 'e',
     startupMessage: 'Starting Claude Code…',
+    startupPrompt: create(AgentStartupPromptSchema, { promptId: 'p1', title: 'Keychain' }),
     optionValues: { model: 'opus' },
   }
 
@@ -1615,6 +1616,45 @@ describe('withoutLiveStatusFields', () => {
     for (const key of LIVE_STATUS_FIELDS)
       expect(key in kept, `${key} stays out`).toBe(false)
     expect(kept.title).toBe('Agent Liz')
+  })
+
+  it('copies startupPrompt when present, clears to null when absent, and forwards it via agentTabToInfo', () => {
+    const prompt = create(AgentStartupPromptSchema, {
+      promptId: 'p-1',
+      title: 'macOS Keychain access required',
+      steps: ['Click Proceed.'],
+    })
+    const withPrompt = protoToAgentTabFields(createRepoGitStore(), 'w1', create(AgentInfoSchema, {
+      id: 'a1',
+      status: AgentStatus.STARTING,
+      startupPrompt: prompt,
+    }))
+    expect(withPrompt.startupPrompt).toEqual(prompt)
+
+    const withoutPrompt = protoToAgentTabFields(createRepoGitStore(), 'w1', create(AgentInfoSchema, {
+      id: 'a1',
+      status: AgentStatus.STARTING,
+    }))
+    expect(withoutPrompt.startupPrompt).toBeNull()
+    expect(LIVE_STATUS_FIELDS).toContain('startupPrompt')
+
+    const info = agentTabToInfo({
+      type: TabType.AGENT,
+      id: 'a1',
+      workspaceId: 'ws-1',
+      agentProvider: AgentProvider.ZCODE,
+      agentStatus: AgentStatus.STARTING,
+      startupPrompt: prompt,
+    })
+    expect(info?.startupPrompt).toEqual(prompt)
+    expect(agentTabToInfo({
+      type: TabType.AGENT,
+      id: 'a1',
+      workspaceId: 'ws-1',
+      agentProvider: AgentProvider.ZCODE,
+      agentStatus: AgentStatus.STARTING,
+      startupPrompt: null,
+    })?.startupPrompt).toBeUndefined()
   })
 })
 
