@@ -155,7 +155,7 @@ func TestAntigravityQuotaFailureKeepsLastSnapshotAndRefreshesCatalog(t *testing.
 	after, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
 	require.True(t, ok)
 	assert.Equal(t, before, after)
-	assert.Contains(t, a.catalog.variants, "gemini-updated")
+	assert.Contains(t, a.catalog.families, "gemini-updated")
 }
 
 func TestAntigravityKeepsQuotaWhenResponseIsMissing(t *testing.T) {
