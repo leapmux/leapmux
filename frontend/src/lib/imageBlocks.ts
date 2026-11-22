@@ -200,6 +200,21 @@ export const MAX_INLINE_IMAGE_BASE64_LEN = 7 * 1024 * 1024
 /** Raw byte limit that corresponds to the shared inline image limit. */
 export const MAX_FILE_IMAGE_BYTES = Math.floor(MAX_INLINE_IMAGE_BASE64_LEN / 4) * 3
 
+/**
+ * Why a worker image file is refused before display, or undefined for a file
+ * that can render inline. A new read of the same unchanged file gives the same
+ * answer, so callers can cache or throw this refusal as deterministic.
+ */
+export function fileImageRefusal(totalSize: bigint, mimeType: string): string | undefined {
+  if (totalSize > BigInt(MAX_FILE_IMAGE_BYTES))
+    return 'The image file is too large to preview'
+  if (totalSize === 0n)
+    return 'The image file is empty'
+  if (!RENDERABLE_IMAGE_MIME_TYPES.has(mimeType))
+    return 'The image file format is not supported'
+  return undefined
+}
+
 /** True for the URL schemes the image renderer knows how to act on. */
 function isRenderableUrl(value: string): boolean {
   return value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')

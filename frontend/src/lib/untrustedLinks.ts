@@ -15,7 +15,7 @@ const log = createLogger('untrustedLinks')
  * Each surface also refuses them upstream, and this is the gate that holds
  * when one of those stops: xterm drops a non-http(s) URI in `OscLinkProvider`,
  * but only while `ILinkHandler.allowNonHttpProtocols` stays unset, and
- * `rehypeExternalLinks` unwraps the anchor entirely, but only for what runs
+ * `rehypeMarkdownLinks` unwraps non-local anchors entirely, but only for what runs
  * through the markdown pipeline.
  */
 const ALLOWED_LINK_PROTOCOLS: readonly string[] = ['http:', 'https:']

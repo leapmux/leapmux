@@ -1,11 +1,15 @@
+import type { DirectoryRevealRequest } from './directoryReveal'
 import type { FilesSectionHandle } from './FilesSection'
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { createSignal } from 'solid-js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { workerFile } from '~/api/workerRpc'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { localStorageGet, localStorageSet, PREFIX_FILES_SORT_ORDER } from '~/lib/browserStorage'
 import { DEFAULT_FILE_SORT_ORDER } from '~/lib/fileSort'
+import { findTreeRowByName, makeDirFixture } from '~/test-support/treeTestHelpers'
 import { FilesSection, FilesSectionHeaderActions } from './FilesSection'
 
 vi.mock('~/api/workerRpc', () => ({
@@ -416,5 +420,312 @@ describe('FilesSection tree root', () => {
     // A tick, so this cannot pass merely because the tree has not painted yet.
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(document.querySelector('[data-testid="tree-root-node"]')).toBeNull()
+  })
+})
+
+describe('FilesSection directory reveal', () => {
+  afterEach(() => {
+    vi.mocked(workerFile.listDirectory).mockImplementation(async () => ({
+      listings: [
+        {
+          path: '',
+          entries: [],
+          truncated: false,
+          totalEntries: 0,
+        },
+      ],
+    }) as never)
+  })
+
+  it('exits flatListMode on directoryReveal so DirectoryTree mounts and reveals the target', async () => {
+    vi.mocked(workerFile.listDirectory).mockImplementation((async (_workerId: string, req: { path: string }) => {
+      if (req.path === WORKING_DIR) {
+        return {
+          listings: [
+            {
+              path: WORKING_DIR,
+              entries: [
+                makeDirFixture('/repo/src', 'src'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
+      return {
+        listings: [
+          {
+            path: req.path,
+            entries: [],
+            truncated: false,
+            totalEntries: 0,
+          },
+        ],
+      }
+    }) as never)
+
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+    let handle!: FilesSectionHandle
+    render(() => (
+      <FilesSection
+        workerId={WORKER_ID}
+        workingDir={WORKING_DIR}
+        homeDir="/home/alice"
+        flavor="posix"
+        fileTreePath={WORKING_DIR}
+        onFileSelect={() => {}}
+        gitStatusStore={fakeGitStore(FILES)}
+        hasActiveFileTab={false}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+        ref={(h) => { handle = h }}
+      />
+    ))
+
+    fireEvent.click(screen.getByTestId('files-filter-changed'))
+    handle.toggleFlatListMode()
+    expect(screen.getByTestId('files-flat-list')).toBeInTheDocument()
+
+    setReveal({ path: '/repo/src', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+
+    expect(screen.queryByTestId('files-flat-list')).toBeNull()
+    expect(handle.flatListMode()).toBe(false)
+    expect(findTreeRowByName('src')).toHaveAttribute('data-reveal-cue', 'true')
+    expect(document.activeElement).toBe(findTreeRowByName('src'))
+  })
+
+  it('resets the Changed git filter only when the target directory is excluded by the filter', async () => {
+    vi.mocked(workerFile.listDirectory).mockImplementation((async (_workerId: string, req: { path: string }) => {
+      if (req.path === WORKING_DIR) {
+        return {
+          listings: [
+            {
+              path: WORKING_DIR,
+              entries: [
+                makeDirFixture('/repo/src', 'src'),
+                makeDirFixture('/repo/docs', 'docs'),
+              ],
+              truncated: false,
+              totalEntries: 2,
+            },
+          ],
+        }
+      }
+      return {
+        listings: [
+          {
+            path: req.path,
+            entries: [],
+            truncated: false,
+            totalEntries: 0,
+          },
+        ],
+      }
+    }) as never)
+
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const [enabled, setEnabled] = createSignal(true)
+    const handled: number[] = []
+    let handle!: FilesSectionHandle
+    render(() => (
+      <FilesSection
+        workerId={WORKER_ID}
+        workingDir={WORKING_DIR}
+        homeDir="/home/alice"
+        flavor="posix"
+        fileTreePath={WORKING_DIR}
+        onFileSelect={() => {}}
+        gitStatusStore={fakeGitStore(FILES)}
+        hasActiveFileTab={false}
+        enabled={enabled()}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+        ref={(h) => { handle = h }}
+      />
+    ))
+
+    // Switch to Changed filter (src is changed; docs is unchanged).
+    fireEvent.click(screen.getByTestId('files-filter-changed'))
+    expect(handle.isFiltered()).toBe(true)
+
+    // Revealing changed `/repo/src` keeps Changed active.
+    setReveal({ path: '/repo/src', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+    expect(handle.isFiltered()).toBe(true)
+
+    // While DirectoryTree is paused (enabled=false), FilesSection must NOT
+    // prematurely clear the active filter; once enabled, DirectoryTree clears
+    // it authoritatively via onClearFilterRequired.
+    setEnabled(false)
+    setReveal({ path: '/repo/docs', nonce: 2 })
+    expect(handle.isFiltered()).toBe(true)
+
+    setEnabled(true)
+    await waitFor(() => expect(handled).toEqual([1, 2]))
+    expect(handle.isFiltered()).toBe(false)
+    expect(findTreeRowByName('docs')).toHaveAttribute('data-reveal-cue', 'true')
+  })
+
+  it('resets the git filter via onClearFilterRequired when a symlink logical row is filtered out even though canonicalPath matches Changed', async () => {
+    vi.mocked(workerFile.listDirectory).mockImplementation((async (_workerId: string, req: { path: string }) => {
+      if (req.path === WORKING_DIR) {
+        return {
+          listings: [
+            {
+              path: WORKING_DIR,
+              entries: [
+                makeDirFixture('/repo/src', 'src'),
+                makeDirFixture('/repo/link-src', 'link-src'),
+              ],
+              truncated: false,
+              totalEntries: 2,
+            },
+          ],
+        }
+      }
+      return {
+        listings: [
+          {
+            path: req.path,
+            entries: [],
+            truncated: false,
+            totalEntries: 0,
+          },
+        ],
+      }
+    }) as never)
+
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+    let handle!: FilesSectionHandle
+    render(() => (
+      <FilesSection
+        workerId={WORKER_ID}
+        workingDir={WORKING_DIR}
+        homeDir="/home/alice"
+        flavor="posix"
+        fileTreePath={WORKING_DIR}
+        onFileSelect={() => {}}
+        gitStatusStore={fakeGitStore(FILES)}
+        hasActiveFileTab={false}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+        ref={(h) => { handle = h }}
+      />
+    ))
+
+    // Changed filter includes `/repo/src` (canonicalPath) but excludes `/repo/link-src`.
+    fireEvent.click(screen.getByTestId('files-filter-changed'))
+    expect(handle.isFiltered()).toBe(true)
+
+    setReveal({ path: '/repo/link-src', canonicalPath: '/repo/src', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+
+    expect(handle.isFiltered()).toBe(false)
+    const linkRow = findTreeRowByName('link-src')
+    expect(linkRow).toHaveAttribute('data-reveal-cue', 'true')
+    expect(document.activeElement).toBe(linkRow)
+  })
+
+  it('enables showHiddenFiles when revealing a path with a dot-prefixed segment', async () => {
+    vi.mocked(workerFile.listDirectory).mockImplementation((async (_workerId: string, req: { path: string }) => {
+      if (req.path === WORKING_DIR) {
+        return {
+          listings: [
+            {
+              path: WORKING_DIR,
+              entries: [
+                makeDirFixture('/repo/.github', '.github', true),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
+      if (req.path === '/repo/.github') {
+        return {
+          listings: [
+            {
+              path: '/repo/.github',
+              entries: [
+                makeDirFixture('/repo/.github/workflows', 'workflows'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
+      return {
+        listings: [
+          {
+            path: req.path,
+            entries: [],
+            truncated: false,
+            totalEntries: 0,
+          },
+        ],
+      }
+    }) as never)
+
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const [enabled, setEnabled] = createSignal(false)
+    const handled: number[] = []
+    let handle!: FilesSectionHandle
+    render(() => (
+      <FilesSection
+        workerId={WORKER_ID}
+        workingDir={WORKING_DIR}
+        homeDir="/home/alice"
+        flavor="posix"
+        fileTreePath={WORKING_DIR}
+        onFileSelect={() => {}}
+        gitStatusStore={fakeGitStore([])}
+        hasActiveFileTab={false}
+        enabled={enabled()}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+        ref={(h) => { handle = h }}
+      />
+    ))
+
+    // Turn hidden files off first while DirectoryTree is paused: persisted
+    // `showHiddenFiles` stays untouched until DirectoryTree actually walks.
+    handle.toggleShowHiddenFiles()
+    expect(handle.showHiddenFiles()).toBe(false)
+
+    setReveal({ path: '/repo/.github/workflows', nonce: 1 })
+    expect(handle.showHiddenFiles()).toBe(false)
+
+    setEnabled(true)
+    await waitFor(() => expect(handled).toEqual([1]))
+
+    expect(handle.showHiddenFiles()).toBe(true)
+    expect(document.activeElement).toBe(findTreeRowByName('workflows'))
+    expect(findTreeRowByName('workflows')).toHaveAttribute('data-reveal-cue', 'true')
   })
 })

@@ -87,6 +87,20 @@ describe('nodeToMarkdown', () => {
       .toBe('[link](https://example.com)')
   })
 
+  it('converts local link spans to [text](href)', () => {
+    expect(nodeToMarkdown(html('<span data-local-link="./src/app.ts" role="button"><code>app.ts</code></span>')))
+      .toBe('[`app.ts`](./src/app.ts)')
+  })
+
+  it('converts local image spans (hydrated and fallback) to ![alt](src)', () => {
+    expect(nodeToMarkdown(html(
+      '<span class="local-markdown-image" data-local-image="./img/chart.png" data-local-image-alt="Chart"><img src="blob:https://app/1" alt="Chart"></span>',
+    ))).toBe('![Chart](./img/chart.png)')
+    expect(nodeToMarkdown(html(
+      '<span class="local-markdown-image" data-local-image="./img/missing.png" data-local-image-alt="Missing"><span class="local-markdown-image-fallback">Missing</span><span class="local-markdown-image-error">(Not found)</span></span>',
+    ))).toBe('![Missing](./img/missing.png)')
+  })
+
   it('handles <a> without href', () => {
     expect(nodeToMarkdown(html('<a>text</a>'))).toBe('text')
   })

@@ -250,12 +250,11 @@ export const FileViewer: Component<{
     flavor,
   })
 
-  // Derived: an image file too large to preview inline. No bytes are
-  // fetched up front for this case; "Show anyway" triggers the first
-  // ReadFile call. Split so the extension check only re-runs on
-  // filePath change — the totalSize signal updates more frequently.
-  const isImagePath = createMemo(() => isImageExt(ext()))
-  const oversizeImage = createMemo(() => isImagePath() && totalSize() > MAX_FILE_IMAGE_BYTES)
+  // Derived: an image file (by extension or magic-byte sniffing) too large to
+  // preview inline. For extension-identified images no bytes are fetched up
+  // front; "Show anyway" triggers the first ReadFile call (or reuses the probe
+  // chunk already fetched for a sniffed extensionless image).
+  const oversizeImage = createMemo(() => viewMode() === 'image' && totalSize() > MAX_FILE_IMAGE_BYTES)
 
   // The last ref or diff mode load. One signal holds both versions of a diff, so
   // a reader never sees one version of a load beside the other of an older one.
@@ -396,12 +395,57 @@ export const FileViewer: Component<{
           resolveBytes(null)
           return
         }
-        const bytes = new Uint8Array(readResp.content)
+        let bytes = new Uint8Array(readResp.content)
+        let finalTotalSize = respTotalSize
+        let finalModTime = readResp.modTime
+        const detectedMode = detectFileViewModeFromExt(fileExt, bytes)
+
+        // Extensionless or misnamed raster image sniffed from the probe chunk:
+        // enforce MAX_FILE_IMAGE_BYTES and fetch the complete image if it
+        // exceeds the initial 256 KiB chunk limit.
+        if (!isImageExt(fileExt) && detectedMode === 'image') {
+          if (finalTotalSize > MAX_FILE_IMAGE_BYTES) {
+            batch(() => {
+              setContent(bytes)
+              setTotalSize(finalTotalSize)
+              setModTime(finalModTime)
+              setViewMode('image')
+              setLoading(false)
+            })
+            resolveBytes(null)
+            return
+          }
+          if (finalTotalSize > bytes.length) {
+            const fullResp = await readWorkerFile({
+              workerId,
+              path: filePath,
+              maxBytes: MAX_FILE_IMAGE_BYTES,
+              signal: controller.signal,
+            })
+            if (!active)
+              return
+            finalTotalSize = Number(fullResp.totalSize)
+            finalModTime = fullResp.modTime
+            if (finalTotalSize > MAX_FILE_IMAGE_BYTES) {
+              batch(() => {
+                setContent(bytes)
+                setTotalSize(finalTotalSize)
+                setModTime(finalModTime)
+                setViewMode('image')
+                setLoading(false)
+              })
+              resolveBytes(null)
+              return
+            }
+            bytes = new Uint8Array(fullResp.content)
+          }
+        }
+
         batch(() => {
           setContent(bytes)
-          setTotalSize(respTotalSize)
-          setModTime(readResp.modTime)
-          setViewMode(detectFileViewModeFromExt(fileExt, bytes))
+          setTotalSize(finalTotalSize)
+          setModTime(finalModTime)
+          setViewMode(detectedMode)
         })
         resolveBytes(bytes)
       }

@@ -159,6 +159,8 @@ interface DesktopLayoutProps {
   fileDropDisabled?: boolean
   setToggleLeftSidebar?: (fn: () => void) => void
   setToggleRightSidebar?: (fn: () => void) => void
+  setExpandLeftSidebar?: (fn: (() => void) | undefined) => void
+  setExpandRightSidebar?: (fn: (() => void) | undefined) => void
   setLeftSidebarVisible?: (visible: boolean) => void
   setRightSidebarVisible?: (visible: boolean) => void
 }
@@ -216,7 +218,7 @@ function useSidebarDrag(opts: {
  * sides' fields together) so the hook does not directly touch
  * storage.
  */
-function useSidebarSide(opts: {
+export function useSidebarSide(opts: {
   side: 'left' | 'right'
   initWidth: number
   initCollapsed: boolean
@@ -237,6 +239,8 @@ function useSidebarSide(opts: {
     opts.onSave()
   }
   const expand = () => {
+    if (!collapsed())
+      return
     setAutoCollapsed(false)
     setCollapsed(false)
     setWidth(widthBeforeCollapse)
@@ -365,6 +369,8 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   onMount(() => {
     props.setToggleLeftSidebar?.(leftSide.toggle)
     props.setToggleRightSidebar?.(rightSide.toggle)
+    props.setExpandLeftSidebar?.(leftSide.expand)
+    props.setExpandRightSidebar?.(rightSide.expand)
   })
   createEffect(() => props.setLeftSidebarVisible?.(!leftSide.collapsed()))
   createEffect(() => props.setRightSidebarVisible?.(!rightSide.collapsed()))
@@ -405,6 +411,8 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     if (resizeRafId !== null)
       cancelAnimationFrame(resizeRafId)
     saveSidebarState.flush()
+    props.setExpandLeftSidebar?.(undefined)
+    props.setExpandRightSidebar?.(undefined)
   })
 
   // Computed widths for CSS.

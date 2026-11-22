@@ -1,3 +1,9 @@
+import {
+  LOCAL_IMAGE_ALT_ATTRIBUTE,
+  LOCAL_IMAGE_ATTRIBUTE,
+  LOCAL_LINK_ATTRIBUTE,
+} from './localLinks'
+
 /**
  * Format a file quote with path, line range, and selected text in a fenced code block blockquote.
  */
@@ -79,6 +85,26 @@ export function nodeToMarkdown(node: Node): string {
       return href
         ? `[${childMd()}](${href})`
         : childMd()
+    }
+    case 'span': {
+      const el = node as HTMLElement
+      const localImage = el.getAttribute(LOCAL_IMAGE_ATTRIBUTE)
+      if (localImage) {
+        const alt = el.getAttribute(LOCAL_IMAGE_ALT_ATTRIBUTE) ?? ''
+        return `![${alt}](${localImage})`
+      }
+      const localLink = el.getAttribute(LOCAL_LINK_ATTRIBUTE)
+      if (localLink)
+        return `[${childMd()}](${localLink})`
+      return childMd()
+    }
+    case 'img': {
+      const el = node as HTMLImageElement
+      const alt = el.getAttribute('alt') ?? ''
+      const src = el.getAttribute('src') ?? ''
+      if (!src || src.startsWith('blob:') || src.startsWith('data:'))
+        return alt
+      return `![${alt}](${src})`
     }
     case 'br':
       return '\n'

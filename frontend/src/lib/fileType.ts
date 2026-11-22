@@ -143,9 +143,59 @@ export function isImageExtension(path: string): boolean {
   return isImageExt(extname(path))
 }
 
+const IMAGE_HEADER_DECODER = new TextDecoder('latin1')
+
 /** MIME type for an image path; see `imageMimeFromExt`. */
 export function getImageMimeType(path: string): string {
   return imageMimeFromExt(extname(path))
+}
+
+function isAvifFtypBox(bytes: Uint8Array, head: string): boolean {
+  if (bytes.length < 12 || head.slice(4, 8) !== 'ftyp')
+    return false
+  const boxSize = (((bytes[0] ?? 0) << 24) | ((bytes[1] ?? 0) << 16) | ((bytes[2] ?? 0) << 8) | (bytes[3] ?? 0)) >>> 0
+  if (boxSize !== 0 && boxSize < 12)
+    return false
+  const majorBrand = head.slice(8, 12)
+  if (majorBrand === 'avif' || majorBrand === 'avis')
+    return true
+  // Bytes 12..15 are minor_version; compatible brands are 4-byte aligned from offset 16.
+  const limit = Math.min(boxSize === 0
+    ? head.length
+    : boxSize, head.length)
+  for (let offset = 16; offset + 4 <= limit; offset += 4) {
+    const brand = head.slice(offset, offset + 4)
+    if (brand === 'avif' || brand === 'avis')
+      return true
+  }
+  return false
+}
+
+/** Recognize common raster image signatures from leading magic bytes, or undefined if unrecognized. */
+function sniffRasterImageMime(bytes: Uint8Array): string | undefined {
+  if (bytes.length < 3)
+    return undefined
+  const head = IMAGE_HEADER_DECODER.decode(bytes.subarray(0, 64))
+  if (bytes.length >= 4 && bytes[0] === 0x89 && head.slice(1, 4) === 'PNG')
+    return 'image/png'
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF)
+    return 'image/jpeg'
+  if (bytes.length >= 6 && (head.startsWith('GIF87a') || head.startsWith('GIF89a')))
+    return 'image/gif'
+  if (bytes.length >= 12 && head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP')
+    return 'image/webp'
+  if (isAvifFtypBox(bytes, head))
+    return 'image/avif'
+  return undefined
+}
+
+/**
+ * Recognize common raster image signatures from the leading magic bytes,
+ * falling back to `getImageMimeType(path)` for extension-identified formats
+ * (such as SVG, ICO, and BMP) or short/empty buffers.
+ */
+export function sniffImageMime(path: string, bytes: Uint8Array): string {
+  return sniffRasterImageMime(bytes) ?? getImageMimeType(path)
 }
 
 /** Check if a file path has a markdown extension. */
@@ -191,6 +241,8 @@ export function detectFileViewModeFromExt(ext: string, content: Uint8Array): Fil
     return 'image'
   if (isMarkdownExt(ext))
     return 'markdown'
+  if (sniffRasterImageMime(content) !== undefined)
+    return 'image'
   if (isBinaryContent(content))
     return 'binary'
   return 'text'

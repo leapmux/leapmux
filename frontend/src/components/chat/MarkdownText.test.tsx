@@ -1,19 +1,37 @@
+import type { MarkdownLocalLinkContextValue } from './markdownLocalLinks'
 import type { RenderReadinessScope } from './renderReadiness'
-import { render } from '@solidjs/testing-library'
-import { createRoot, createSignal, Show } from 'solid-js'
+import { create } from '@bufbuild/protobuf'
+import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { createEffect, createRoot, createSignal, Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { workerFile } from '~/api/workerRpc'
+import { dismissActiveTooltip, HIDE_DELAY_MS, SHOW_DELAY_MS } from '~/components/common/Tooltip'
+import { ReadFileResponseSchema } from '~/generated/proto/leapmux/v1/file_pb'
+import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
+import {
+  LOCAL_IMAGE_ATTRIBUTE,
+  LOCAL_IMAGE_CLICKABLE_ATTRIBUTE,
+  LOCAL_IMAGE_ERROR_CLASS,
+  LOCAL_IMAGE_FALLBACK_CLASS,
+  LOCAL_LINK_ATTRIBUTE,
+  LOCAL_LINKS_ACTIVE_ATTRIBUTE,
+} from '~/lib/localLinks'
+import { _resetLocalMarkdownImageCacheForTest, acquireLocalMarkdownImage, clearLocalMarkdownImageCache } from '~/lib/localMarkdownImages'
 import { _resetMarkdownCache, getCachedMarkdownHtml, requestMarkdownHtml } from '~/lib/renderMarkdown'
 import { shikiHighlighter } from '~/lib/shikiSyncHighlighter'
 import { syntaxPairFor } from '~/lib/syntaxThemes'
 import { setSyntaxTheme } from '~/lib/syntaxThemeStore'
 import { DEFAULT_THEME_ID } from '~/styles/themes'
+import { deferred } from '~/test-support/async'
 import { holdWorkerReplies, recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
+import { pngBytes } from '~/test-support/imageBytes'
 import { fillMarkdownRenderGate } from '~/test-support/markdownRenderGate'
 import { markdownContent } from './markdownEditor/markdownContent.css'
+import { MarkdownLocalLinkProvider } from './markdownLocalLinks'
 import { markdownCacheNamespace } from './markdownRendering'
 import { MarkdownPrefetch, MarkdownText } from './MarkdownText'
 import { createMessageRenderCacheStore, getCachedRenderValueForString } from './messageRenderCache'
-import { createRenderReadinessScope } from './renderReadiness'
+import { createRenderReadinessScope, READINESS_REQUEST_LIMIT_MS } from './renderReadiness'
 import { SKELETON_LINE_PITCH_PX } from './widgets/ChatRowSkeleton'
 
 // Every body renders in the real Markdown worker, which the stand-in Worker runs
@@ -351,5 +369,661 @@ describe('MarkdownPrefetch', () => {
 
     expect(requested()).toEqual([])
     expect(getCachedMarkdownHtml('collapsed body')).toBeUndefined()
+  })
+})
+
+/** Minimal valid PNG bytes with 24x12 IHDR dimensions. */
+function makePngBytes(width = 24, height = 12): Uint8Array {
+  const bytes = new Uint8Array(64)
+  bytes.set(pngBytes(width, height), 0)
+  return bytes
+}
+
+function makeReadFileResponse(bytes: Uint8Array, totalSize?: bigint) {
+  return create(ReadFileResponseSchema, {
+    content: bytes,
+    totalSize: totalSize ?? BigInt(bytes.length),
+  })
+}
+
+function makeLocalLinkContext(
+  overrides: Partial<MarkdownLocalLinkContextValue> = {},
+): MarkdownLocalLinkContextValue {
+  return {
+    workerId: 'w-1',
+    baseDir: '/repo/docs',
+    workingDir: '/repo',
+    homeDir: '/home/alice',
+    flavor: 'posix',
+    onActivate: vi.fn(),
+    ...overrides,
+  }
+}
+
+describe('MarkdownText local links and images', () => {
+  let blobCounter = 0
+  let readFileSpy: ReturnType<typeof vi.spyOn>
+  let createObjectUrlSpy: ReturnType<typeof vi.spyOn>
+  let revokeObjectUrlSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    blobCounter = 0
+    _resetLocalMarkdownImageCacheForTest()
+    createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:test-local-img-${++blobCounter}`)
+    revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    readFileSpy = vi.spyOn(workerFile, 'readFile').mockResolvedValue(makeReadFileResponse(makePngBytes()))
+  })
+
+  afterEach(() => {
+    dismissActiveTooltip()
+    _resetLocalMarkdownImageCacheForTest()
+    window.getSelection()?.removeAllRanges()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('keeps local links and local images inert without a provider or with an empty workerId', async () => {
+    const onActivate = vi.fn()
+    const first = render(() => <MarkdownText text="[Guide](./guide.md) ![Diagram](./arch.png)" />)
+    await settleWorkerReplies()
+
+    const bodyNoProvider = first.container.querySelector(`.${markdownContent}`) as HTMLElement
+    expect(bodyNoProvider.hasAttribute(LOCAL_LINKS_ACTIVE_ATTRIBUTE)).toBe(false)
+    const link = bodyNoProvider.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement
+    expect(link.getAttribute('role')).toBeNull()
+    expect(link.getAttribute('tabindex')).toBeNull()
+    fireEvent.click(link)
+    expect(readFileSpy).not.toHaveBeenCalled()
+    expect(bodyNoProvider.querySelector('img')).toBeNull()
+    expect(bodyNoProvider.querySelector(`.${LOCAL_IMAGE_FALLBACK_CLASS}`)?.textContent).toBe('Diagram')
+    first.unmount()
+
+    const emptyWorkerCtx = makeLocalLinkContext({ workerId: '', onActivate })
+    const second = render(() => (
+      <MarkdownLocalLinkProvider value={emptyWorkerCtx}>
+        <MarkdownText text="[Guide](./guide.md) ![Diagram](./arch.png)" />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    const bodyEmpty = second.container.querySelector(`.${markdownContent}`) as HTMLElement
+    expect(bodyEmpty.hasAttribute(LOCAL_LINKS_ACTIVE_ATTRIBUTE)).toBe(false)
+    const linkEmpty = bodyEmpty.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement
+    expect(linkEmpty.getAttribute('role')).toBeNull()
+    expect(linkEmpty.getAttribute('tabindex')).toBeNull()
+    fireEvent.click(linkEmpty)
+    expect(onActivate).not.toHaveBeenCalled()
+    expect(readFileSpy).not.toHaveBeenCalled()
+  })
+
+  it('activates local links on primary click, Enter, and Space while ignoring blocked inputs and selections', async () => {
+    const onActivate = vi.fn()
+    const ctx = makeLocalLinkContext({ onActivate })
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text="Before [Open `guide`](./guide.md) after" />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    const body = container.querySelector(`.${markdownContent}`) as HTMLElement
+    expect(body.hasAttribute(LOCAL_LINKS_ACTIVE_ATTRIBUTE)).toBe(true)
+    const link = body.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./guide.md"]`) as HTMLElement
+    expect(link.getAttribute('role')).toBe('button')
+    expect(link.getAttribute('tabindex')).toBe('0')
+
+    // Primary click on nested `<code>` activates the enclosing local link.
+    fireEvent.click(link.querySelector('code')!)
+    expect(onActivate).toHaveBeenCalledTimes(1)
+    expect(onActivate).toHaveBeenLastCalledWith('./guide.md')
+
+    // Enter and Space prevent default and stop propagation.
+    const parentKeySpy = vi.fn()
+    container.addEventListener('keydown', parentKeySpy)
+
+    const enterEv = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    link.dispatchEvent(enterEv)
+    expect(enterEv.defaultPrevented).toBe(true)
+    expect(parentKeySpy).not.toHaveBeenCalled()
+    expect(onActivate).toHaveBeenCalledTimes(2)
+
+    const spaceEv = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    link.dispatchEvent(spaceEv)
+    expect(spaceEv.defaultPrevented).toBe(true)
+    expect(parentKeySpy).not.toHaveBeenCalled()
+    expect(onActivate).toHaveBeenCalledTimes(3)
+    container.removeEventListener('keydown', parentKeySpy)
+
+    // Ignored clicks: non-primary button and defaultPrevented.
+    fireEvent.click(link, { button: 1 })
+    const preventedClick = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    preventedClick.preventDefault()
+    link.dispatchEvent(preventedClick)
+    expect(onActivate).toHaveBeenCalledTimes(3)
+
+    // Ignored keydowns: repeat, modifiers, and Shift+Space.
+    fireEvent.keyDown(link, { key: 'Enter', repeat: true })
+    fireEvent.keyDown(link, { key: 'Enter', ctrlKey: true })
+    fireEvent.keyDown(link, { key: 'Enter', metaKey: true })
+    fireEvent.keyDown(link, { key: 'Enter', altKey: true })
+    fireEvent.keyDown(link, { key: ' ', shiftKey: true })
+    expect(onActivate).toHaveBeenCalledTimes(3)
+
+    // Ignored click when a non-collapsed text selection anchors or focuses inside the body.
+    const p = body.querySelector('p')!
+    const beforeOutside = document.createElement('span')
+    beforeOutside.textContent = 'before text'
+    document.body.prepend(beforeOutside)
+    const afterOutside = document.createElement('span')
+    afterOutside.textContent = 'after text'
+    document.body.appendChild(afterOutside)
+    try {
+      // Cross-element selection ending inside the body (focusNode inside, anchorNode outside).
+      const sel = window.getSelection()!
+      const intoBody = document.createRange()
+      intoBody.setStart(beforeOutside.firstChild!, 0)
+      intoBody.setEnd(p.firstChild!, 4)
+      sel.removeAllRanges()
+      sel.addRange(intoBody)
+      expect(sel.isCollapsed).toBe(false)
+      fireEvent.click(link)
+      expect(onActivate).toHaveBeenCalledTimes(3)
+
+      // Cross-element selection starting inside the body (anchorNode inside, focusNode outside).
+      const outOfBody = document.createRange()
+      outOfBody.setStart(p.firstChild!, 0)
+      outOfBody.setEnd(afterOutside.firstChild!, 5)
+      sel.removeAllRanges()
+      sel.addRange(outOfBody)
+      expect(sel.isCollapsed).toBe(false)
+      fireEvent.click(link)
+      expect(onActivate).toHaveBeenCalledTimes(3)
+    }
+    finally {
+      window.getSelection()?.removeAllRanges()
+      beforeOutside.remove()
+      afterOutside.remove()
+    }
+  })
+
+  it('delegates hover and focus tooltips with HIDE_DELAY_MS, ignores touch and child transitions, and dismisses on click', async () => {
+    const onActivate = vi.fn()
+    const ctx = makeLocalLinkContext({ onActivate })
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text="See [`app.ts` **entry**](./app.ts:42)" />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    vi.useFakeTimers()
+    const body = container.querySelector(`.${markdownContent}`) as HTMLElement
+    const link = body.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement
+    const code = link.querySelector('code') as HTMLElement
+    const strong = link.querySelector('strong') as HTMLElement
+    expect(link.hasAttribute('title')).toBe(false)
+
+    // Touch pointerover does not open a tooltip.
+    link.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'touch' }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // Mouse pointerover opens tooltip after SHOW_DELAY_MS without resetting when moving across nested children.
+    link.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS / 2)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    code.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: strong }))
+    strong.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: code }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS / 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/app.ts')
+
+    // Moving across child nodes inside the same link keeps the visible tooltip open.
+    code.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: strong }))
+    strong.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: code }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/app.ts')
+
+    // Leaving the link preserves the tooltip across HIDE_DELAY_MS; returning keeps it open without SHOW_DELAY_MS.
+    link.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS / 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/app.ts')
+    link.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/app.ts')
+
+    // Focus keeps tooltip open even after pointer leaves.
+    fireEvent.focusIn(link)
+    link.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/app.ts')
+
+    // Clicking dismisses the tooltip immediately, and inner child transitions do not re-arm it.
+    fireEvent.click(link)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(onActivate).toHaveBeenCalledWith('./app.ts:42')
+    code.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: strong }))
+    strong.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: code }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // Keyboard focusIn opens the tooltip from a closed state after SHOW_DELAY_MS, ignores
+    // intra-element focusOut to a child, and closes after HIDE_DELAY_MS on focusOut outside.
+    fireEvent.focusIn(link)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/app.ts')
+    link.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: code }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/app.ts')
+    link.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('hydrates standalone local images into clickable inline images and keeps linked images non-clickable', async () => {
+    const onActivate = vi.fn()
+    const ctx = makeLocalLinkContext({ onActivate })
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text="![Solo](./solo.png) [![External](./ext.png)](https://example.com) [![Local](./loc.png)](./doc.md)" />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('img')).toHaveLength(3)
+    })
+
+    const soloSpan = container.querySelector(`[${LOCAL_IMAGE_ATTRIBUTE}="./solo.png"]`) as HTMLElement
+    expect(soloSpan.hasAttribute(LOCAL_IMAGE_CLICKABLE_ATTRIBUTE)).toBe(true)
+    expect(soloSpan.getAttribute('role')).toBe('button')
+    expect(soloSpan.getAttribute('tabindex')).toBe('0')
+    const soloImg = soloSpan.querySelector('img') as HTMLImageElement
+    expect(soloImg.getAttribute('src')).toMatch(/^blob:test-local-img-/u)
+    expect(soloImg.getAttribute('alt')).toBe('Solo')
+    expect(soloImg.getAttribute('width')).toBe('24')
+    expect(soloImg.getAttribute('height')).toBe('12')
+
+    fireEvent.click(soloImg)
+    expect(onActivate).toHaveBeenLastCalledWith('./solo.png')
+    fireEvent.keyDown(soloSpan, { key: 'Enter' })
+    expect(onActivate).toHaveBeenCalledTimes(2)
+    fireEvent.keyDown(soloSpan, { key: ' ' })
+    expect(onActivate).toHaveBeenCalledTimes(3)
+
+    // Hovering standalone image opens tooltip with resolved path.
+    vi.useFakeTimers()
+    soloSpan.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/solo.png')
+    vi.useRealTimers()
+
+    // Image inside external <a> has no local-image clickable attributes and does not trigger local onActivate.
+    const extSpan = container.querySelector(`[${LOCAL_IMAGE_ATTRIBUTE}="./ext.png"]`) as HTMLElement
+    expect(extSpan.hasAttribute(LOCAL_IMAGE_CLICKABLE_ATTRIBUTE)).toBe(false)
+    expect(extSpan.getAttribute('role')).toBeNull()
+    expect(extSpan.getAttribute('tabindex')).toBeNull()
+    const extAnchor = extSpan.closest('a') as HTMLAnchorElement
+    extAnchor.addEventListener('click', e => e.preventDefault())
+    fireEvent.click(extSpan.querySelector('img')!)
+    expect(onActivate).toHaveBeenCalledTimes(3)
+
+    // Image inside local link delegates clicks to the enclosing local link.
+    const locSpan = container.querySelector(`[${LOCAL_IMAGE_ATTRIBUTE}="./loc.png"]`) as HTMLElement
+    expect(locSpan.hasAttribute(LOCAL_IMAGE_CLICKABLE_ATTRIBUTE)).toBe(false)
+    expect(locSpan.getAttribute('role')).toBeNull()
+    fireEvent.click(locSpan.querySelector('img')!)
+    expect(onActivate).toHaveBeenCalledTimes(4)
+    expect(onActivate).toHaveBeenLastCalledWith('./doc.md')
+  })
+
+  it('hydrates an already-cached local image synchronously without reporting readiness pending', async () => {
+    const ctx = makeLocalLinkContext()
+    const pre = await acquireLocalMarkdownImage({
+      workerId: ctx.workerId,
+      rawSrc: './cached.png',
+      baseDir: ctx.baseDir,
+      workingDir: ctx.workingDir,
+      homeDir: ctx.homeDir,
+      flavor: ctx.flavor,
+    })
+    expect(pre.result.kind).toBe('ok')
+    pre.release()
+
+    readFileSpy.mockClear()
+    requestMarkdownHtml('![Cached](./cached.png)')
+    await settleWorkerReplies()
+
+    let everPending = false
+    let readiness!: RenderReadinessScope
+    const disposeRoot = createRoot((dispose) => {
+      readiness = createRenderReadinessScope()
+      createEffect(() => {
+        if (readiness.pending())
+          everPending = true
+      })
+      return dispose
+    })
+    try {
+      const { container } = render(() => (
+        <MarkdownLocalLinkProvider value={ctx}>
+          <MarkdownText text="![Cached](./cached.png)" context={{ readiness }} />
+        </MarkdownLocalLinkProvider>
+      ))
+      expect(readiness.pending()).toBe(false)
+      expect(everPending).toBe(false)
+      expect(container.querySelector('img')?.getAttribute('src')).toMatch(/^blob:test-local-img-/u)
+      expect(readFileSpy).not.toHaveBeenCalled()
+    }
+    finally {
+      disposeRoot()
+    }
+  })
+
+  it('shows fallback label and error reason when a local image is oversized or unreadable', async () => {
+    readFileSpy.mockResolvedValue(
+      makeReadFileResponse(new Uint8Array(0), BigInt(MAX_FILE_IMAGE_BYTES + 1)),
+    )
+    const ctx = makeLocalLinkContext()
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text="![Huge diagram](./huge.png)" />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    await waitFor(() => {
+      expect(container.querySelector(`.${LOCAL_IMAGE_ERROR_CLASS}`)).not.toBeNull()
+    })
+    expect(container.querySelector(`.${LOCAL_IMAGE_FALLBACK_CLASS}`)?.textContent).toBe('Huge diagram')
+    expect(container.querySelector(`.${LOCAL_IMAGE_ERROR_CLASS}`)?.textContent).toContain('too large')
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  it('restores inert links and fallback images and dismisses tooltips when workerId deactivates', async () => {
+    readFileSpy.mockImplementation(async (_workerId: string, req: { path?: string }) => {
+      if (req.path?.endsWith('broken.png'))
+        return makeReadFileResponse(new Uint8Array(), 0n)
+      return makeReadFileResponse(makePngBytes())
+    })
+
+    const [workerId, setWorkerId] = createSignal('w-1')
+    const ctx: MarkdownLocalLinkContextValue = {
+      get workerId() { return workerId() },
+      baseDir: '/repo/docs',
+      workingDir: '/repo',
+      homeDir: '/home/alice',
+      flavor: 'posix',
+      onActivate: vi.fn(),
+    }
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text="[Note](./note.md) ![Chart](./chart.png) ![Broken](./broken.png)" />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+    const chartSpan = container.querySelector(`[${LOCAL_IMAGE_ATTRIBUTE}="./chart.png"]`) as HTMLElement
+    const brokenSpan = container.querySelector(`[${LOCAL_IMAGE_ATTRIBUTE}="./broken.png"]`) as HTMLElement
+    await waitFor(() => {
+      expect(chartSpan.querySelector('img')).not.toBeNull()
+      expect(brokenSpan.querySelector(`.${LOCAL_IMAGE_ERROR_CLASS}`)).not.toBeNull()
+    })
+
+    vi.useFakeTimers()
+    const link = container.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement
+    link.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/note.md')
+
+    setWorkerId('')
+
+    const body = container.querySelector(`.${markdownContent}`) as HTMLElement
+    expect(body.hasAttribute(LOCAL_LINKS_ACTIVE_ATTRIBUTE)).toBe(false)
+    expect(link.getAttribute('role')).toBeNull()
+    expect(link.getAttribute('tabindex')).toBeNull()
+
+    expect(chartSpan.hasAttribute(LOCAL_IMAGE_CLICKABLE_ATTRIBUTE)).toBe(false)
+    expect(chartSpan.getAttribute('role')).toBeNull()
+    expect(chartSpan.getAttribute('tabindex')).toBeNull()
+    expect(chartSpan.querySelector('img')).toBeNull()
+    expect(chartSpan.querySelector(`.${LOCAL_IMAGE_FALLBACK_CLASS}`)?.textContent).toBe('Chart')
+
+    expect(brokenSpan.hasAttribute(LOCAL_IMAGE_CLICKABLE_ATTRIBUTE)).toBe(false)
+    expect(brokenSpan.getAttribute('role')).toBeNull()
+    expect(brokenSpan.getAttribute('tabindex')).toBeNull()
+    expect(brokenSpan.querySelector(`.${LOCAL_IMAGE_ERROR_CLASS}`)).toBeNull()
+    expect(brokenSpan.querySelector(`.${LOCAL_IMAGE_FALLBACK_CLASS}`)?.textContent).toBe('Broken')
+
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('re-upgrades links, re-hydrates images, releases prior leases, and clears detached tooltip targets on HTML updates', async () => {
+    const [text, setText] = createSignal('[One](./one.md) ![First](./first.png)')
+    const ctx = makeLocalLinkContext()
+    const { container, unmount } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text={text()} />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
+    const firstUrl = container.querySelector('img')!.getAttribute('src')!
+
+    vi.useFakeTimers()
+    const linkOne = container.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./one.md"]`) as HTMLElement
+    linkOne.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/one.md')
+    vi.useRealTimers()
+
+    // In-place replacement: pre-render next HTML so the body stays mounted without entering pending.
+    const nextText = '[Two](./two.md) ![Second](./second.png)'
+    requestMarkdownHtml(nextText)
+    await settleWorkerReplies()
+    setText(nextText)
+
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    const linkTwo = container.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./two.md"]`) as HTMLElement
+    expect(linkTwo.getAttribute('role')).toBe('button')
+    expect(linkTwo.getAttribute('tabindex')).toBe('0')
+    await waitFor(() => expect(container.querySelector('img')?.getAttribute('alt')).toBe('Second'))
+    const secondUrl = container.querySelector('img')!.getAttribute('src')!
+
+    // Transition through pending (unmount and remount of the body <div>).
+    const hold = holdMarkdownRenders()
+    setText('[Three](./three.md) ![Third](./third.png)')
+    expect(container.querySelector('[data-testid="markdown-pending"]')).toBeInTheDocument()
+    await hold.release()
+
+    const linkThree = container.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./three.md"]`) as HTMLElement
+    expect(linkThree.getAttribute('role')).toBe('button')
+    expect(linkThree.getAttribute('tabindex')).toBe('0')
+    await waitFor(() => expect(container.querySelector('img')?.getAttribute('alt')).toBe('Third'))
+    const thirdUrl = container.querySelector('img')!.getAttribute('src')!
+
+    // Clearing the cache immediately revokes evicted entries whose leases were released,
+    // while keeping the currently mounted image's lease alive until unmount.
+    clearLocalMarkdownImageCache()
+    expect(revokeObjectUrlSpy).toHaveBeenCalledWith(firstUrl)
+    expect(revokeObjectUrlSpy).toHaveBeenCalledWith(secondUrl)
+    expect(revokeObjectUrlSpy).not.toHaveBeenCalledWith(thirdUrl)
+
+    unmount()
+    expect(revokeObjectUrlSpy).toHaveBeenCalledWith(thirdUrl)
+  })
+
+  it('tracks cache-miss image readiness in premeasureMode, omits tabindex and tooltip, and releases at READINESS_REQUEST_LIMIT_MS', async () => {
+    const gate = deferred<ReturnType<typeof makeReadFileResponse>>()
+    readFileSpy.mockReturnValueOnce(gate.promise)
+
+    const ctx = makeLocalLinkContext()
+    requestMarkdownHtml('[Guide](./guide.md) ![Photo](./photo.png)')
+    await settleWorkerReplies()
+
+    let readiness!: RenderReadinessScope
+    const disposeRoot = createRoot((dispose) => {
+      readiness = createRenderReadinessScope()
+      return dispose
+    })
+    try {
+      const { container } = render(() => (
+        <MarkdownLocalLinkProvider value={ctx}>
+          <MarkdownText
+            text="[Guide](./guide.md) ![Photo](./photo.png)"
+            context={{ readiness, premeasureMode: true }}
+          />
+        </MarkdownLocalLinkProvider>
+      ))
+
+      const body = container.querySelector(`.${markdownContent}`) as HTMLElement
+      expect(body).not.toBeNull()
+      const link = body.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement
+      const imgSpan = body.querySelector(`[${LOCAL_IMAGE_ATTRIBUTE}]`) as HTMLElement
+      expect(link.getAttribute('role')).toBe('button')
+      expect(link.getAttribute('tabindex')).toBeNull()
+      expect(imgSpan.getAttribute('tabindex')).toBeNull()
+      expect(readiness.pending()).toBe(true)
+
+      // Resolving the 4 KiB header read settles readiness with a sized premeasure
+      // box without downloading a full payload or creating a blob URL.
+      expect(readFileSpy).toHaveBeenCalledWith('w-1', expect.objectContaining({
+        path: '/repo/docs/photo.png',
+        limit: 4096n,
+      }), expect.anything())
+      gate.resolve(makeReadFileResponse(makePngBytes(24, 12)))
+      await waitFor(() => expect(readiness.pending()).toBe(false))
+      expect(container.querySelector(`.${markdownContent}`)).toBe(body)
+      const sizedBox = body.querySelector('[data-local-image-premeasure-box]') as HTMLElement | null
+      expect(sizedBox).not.toBeNull()
+      expect(sizedBox?.style.width).toBe('24px')
+      expect(createObjectUrlSpy).not.toHaveBeenCalled()
+
+      // Hovering in premeasureMode mounts no tooltip.
+      vi.useFakeTimers()
+      link.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse' }))
+      vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+      vi.useRealTimers()
+    }
+    finally {
+      disposeRoot()
+    }
+
+    // Failing image settles readiness cleanly too.
+    readFileSpy.mockResolvedValueOnce(makeReadFileResponse(new Uint8Array(0), 0n))
+    requestMarkdownHtml('![Broken](./broken.png)')
+    await settleWorkerReplies()
+    let failReadiness!: RenderReadinessScope
+    const disposeFail = createRoot((dispose) => {
+      failReadiness = createRenderReadinessScope()
+      return dispose
+    })
+    try {
+      render(() => (
+        <MarkdownLocalLinkProvider value={ctx}>
+          <MarkdownText
+            text="![Broken](./broken.png)"
+            context={{ readiness: failReadiness, premeasureMode: true }}
+          />
+        </MarkdownLocalLinkProvider>
+      ))
+      await waitFor(() => expect(failReadiness.pending()).toBe(false))
+    }
+    finally {
+      disposeFail()
+    }
+
+    // Hung read stops holding readiness after READINESS_REQUEST_LIMIT_MS.
+    vi.useFakeTimers()
+    readFileSpy.mockReturnValueOnce(new Promise(() => {}))
+    requestMarkdownHtml('![Hung](./hung.png)')
+    await settleWorkerReplies()
+    let hungReadiness!: RenderReadinessScope
+    const disposeHung = createRoot((dispose) => {
+      hungReadiness = createRenderReadinessScope()
+      return dispose
+    })
+    try {
+      render(() => (
+        <MarkdownLocalLinkProvider value={ctx}>
+          <MarkdownText
+            text="![Hung](./hung.png)"
+            context={{ readiness: hungReadiness, premeasureMode: true }}
+          />
+        </MarkdownLocalLinkProvider>
+      ))
+      expect(hungReadiness.pending()).toBe(true)
+      vi.advanceTimersByTime(READINESS_REQUEST_LIMIT_MS)
+      expect(hungReadiness.pending()).toBe(false)
+    }
+    finally {
+      disposeHung()
+    }
+  })
+
+  it('keeps an in-flight local image RPC alive across streaming HTML updates without restarting', async () => {
+    const gate = deferred<ReturnType<typeof makeReadFileResponse>>()
+    let capturedSignal: AbortSignal | undefined
+    readFileSpy.mockImplementationOnce((_workerId: string, _req: unknown, opts?: { signal?: AbortSignal }) => {
+      capturedSignal = opts?.signal
+      return gate.promise
+    })
+
+    const initial = '![Chart](./stream.png)\n\nChunk 1'
+    const updated = '![Chart](./stream.png)\n\nChunk 1 and Chunk 2'
+    requestMarkdownHtml(initial)
+    requestMarkdownHtml(updated)
+    await settleWorkerReplies()
+
+    const [text, setText] = createSignal(initial)
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={makeLocalLinkContext()}>
+        <MarkdownText text={text()} />
+      </MarkdownLocalLinkProvider>
+    ))
+
+    expect(readFileSpy).toHaveBeenCalledTimes(1)
+    expect(capturedSignal?.aborted).toBe(false)
+
+    // Streaming chunk replaces rendered HTML while the image fetch is still in flight.
+    setText(updated)
+    expect(capturedSignal?.aborted).toBe(false)
+    expect(readFileSpy).toHaveBeenCalledTimes(1)
+
+    gate.resolve(makeReadFileResponse(makePngBytes(40, 20)))
+    await waitFor(() => {
+      const img = container.querySelector('img') as HTMLImageElement | null
+      expect(img).not.toBeNull()
+      expect(img?.src).toBe('blob:test-local-img-1')
+    })
+  })
+
+  it('hydrates local links and local images even when mounted into a detached container', async () => {
+    readFileSpy.mockResolvedValueOnce(makeReadFileResponse(makePngBytes(30, 15)))
+    const md = '[Spec](./spec.md) ![Diagram](./diagram.png)'
+    requestMarkdownHtml(md)
+    await settleWorkerReplies()
+
+    const detached = document.createElement('div')
+    const { unmount } = render(() => (
+      <MarkdownLocalLinkProvider value={makeLocalLinkContext()}>
+        <MarkdownText text={md} />
+      </MarkdownLocalLinkProvider>
+    ), { container: detached })
+
+    try {
+      expect(detached.isConnected).toBe(false)
+      const link = detached.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement | null
+      expect(link?.getAttribute('role')).toBe('button')
+      expect(link?.getAttribute('tabindex')).toBe('0')
+
+      await waitFor(() => {
+        const img = detached.querySelector('img') as HTMLImageElement | null
+        expect(img).not.toBeNull()
+        expect(img?.src).toBe('blob:test-local-img-1')
+      })
+    }
+    finally {
+      unmount()
+    }
   })
 })

@@ -68,6 +68,7 @@ export function createMobileOverlayState() {
       setOverlay(prev => (prev === side
         ? 'none'
         : side)),
+    openDrawer: (side: 'left' | 'right') => setOverlay(side),
     toggleSheet: () =>
       setOverlay(prev => (prev === 'sheet'
         ? 'none'

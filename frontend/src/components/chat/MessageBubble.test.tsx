@@ -2,11 +2,13 @@ import type { MessageContextResolver } from '~/components/chat/messageContextRes
 import type { MessageUiKey } from '~/components/chat/messageUiKeys'
 import type { RenderReadinessScope } from '~/components/chat/renderReadiness'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import { create } from '@bufbuild/protobuf'
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { workerAgent } from '~/api/workerRpc'
+import { workerAgent, workerFile } from '~/api/workerRpc'
 import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
+import { MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { MessageContextMenuHostProvider } from '~/components/chat/MessageContextMenuHost'
@@ -19,7 +21,9 @@ import { PreferencesProvider, usePreferences } from '~/context/PreferencesContex
 import { MESSAGE_METADATA_FIELD, MESSAGE_SUPPLEMENT_FIELD, TOOL_OUTCOME } from '~/generated/contracts/worker-vocab'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ReadFileResponseSchema } from '~/generated/proto/leapmux/v1/file_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
+import { _resetLocalMarkdownImageCacheForTest } from '~/lib/localMarkdownImages'
 import { deferred } from '~/test-support/async'
 import { classSelector } from '~/test-support/composedClass'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
@@ -1093,11 +1097,12 @@ describe('messageBubble rawJson', () => {
       const toolbar = screen.getByTestId('message-toolbar')
       expect(toolbar.querySelector('[data-testid="message-copy-json"]')).toBeInTheDocument()
 
-      // Raw JSON uses token spans. Run both injection paths before checking that no code button appears.
+      // Raw JSON uses token spans (no <pre>), so the initial pass injects nothing
+      // and non-<pre> mutations do not schedule further idle scans.
       expect(callbacks.runIdle()).toBeGreaterThan(0)
       content.appendChild(document.createTextNode(''))
       expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
-      expect(callbacks.runIdle()).toBeGreaterThan(0)
+      expect(callbacks.runIdle()).toBe(0)
       expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
       expect(content.querySelector(`.${codeCopyHostClass}`)).not.toBeInTheDocument()
     })
@@ -1398,6 +1403,82 @@ describe('MessageBubble copy buttons', () => {
       for (const pre of pres)
         expect(pre.querySelector('.copy-code-button')).toBeNull()
     })
+  })
+
+  it('keeps the injected copy button mounted when a sibling local Markdown image hydrates', async () => {
+    _resetLocalMarkdownImageCacheForTest()
+    const bytes = Uint8Array.from(atob(pngBase64(16, 16)), ch => ch.charCodeAt(0))
+    const imageGate = deferred<ReturnType<typeof create<typeof ReadFileResponseSchema>>>()
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:bubble-local-img')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    vi.spyOn(workerFile, 'readFile').mockReturnValue(imageGate.promise)
+
+    try {
+      await withControlledCopyCallbacks(async (callbacks) => {
+        const message = makeMsg({
+          source: MessageSource.AGENT,
+          content: rawContent({
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'text',
+                  text: '```js\nconst value = 1\n```\n\n![Architecture](./arch.png)',
+                },
+              ],
+            },
+          }),
+        })
+        render(() => (
+          <PreferencesProvider>
+            <MarkdownLocalLinkProvider
+              value={{
+                workerId: 'w-1',
+                baseDir: '/repo',
+                workingDir: '/repo',
+                homeDir: '/home/alice',
+                flavor: 'posix',
+                onActivate: () => {},
+              }}
+            >
+              <MessageBubble message={message} />
+            </MarkdownLocalLinkProvider>
+          </PreferencesProvider>
+        ))
+        await settleWorkerReplies()
+        const content = screen.getByTestId('message-content')
+        // Flush the initial Markdown HTML mutations and inject the code-block copy button.
+        callbacks.deliverMutations(content)
+        runIdleUntilDone(callbacks)
+
+        const copyButton = content.querySelector('pre .copy-code-button')
+        expect(copyButton).not.toBeNull()
+
+        // Hydrate the local Markdown image while the sibling copy button is mounted.
+        imageGate.resolve(create(ReadFileResponseSchema, {
+          content: bytes,
+          totalSize: BigInt(bytes.length),
+        }))
+        await waitFor(() => expect(content.querySelector('img[src="blob:bubble-local-img"]')).not.toBeNull())
+
+        // Delivering the image-hydration mutations must not schedule a re-injection.
+        expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
+        expect(callbacks.runIdle()).toBe(0)
+        expect(content.querySelector('pre .copy-code-button')).toBe(copyButton)
+
+        // Any other unrelated non-<pre> DOM mutation must also leave live copy buttons intact.
+        const unrelatedWidget = document.createElement('div')
+        unrelatedWidget.textContent = 'async widget'
+        content.appendChild(unrelatedWidget)
+        expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
+        expect(callbacks.runIdle()).toBe(0)
+        expect(content.querySelector('pre .copy-code-button')).toBe(copyButton)
+      })
+    }
+    finally {
+      _resetLocalMarkdownImageCacheForTest()
+      vi.restoreAllMocks()
+    }
   })
 })
 

@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import { createEffect, createMemo, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show, untrack } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import { srOnly } from '~/styles/shared.css'
 import { holdIsOverMenu, touchReleaseOpensMenu } from './contextMenuGesture'
@@ -21,6 +21,127 @@ let activeHide: (() => void) | undefined
 /** Hide the visible tooltip, if any. A menu that is about to open calls this. */
 export function dismissActiveTooltip(): void {
   activeHide?.()
+}
+
+interface TooltipPos {
+  top: number
+  left: number
+}
+
+/** Position a tooltip above `rect`, horizontally centered (`translate(-50%, -100%)`). */
+function positionAboveRect(rect: DOMRect): TooltipPos {
+  return {
+    top: rect.top - 6,
+    left: rect.left + rect.width / 2,
+  }
+}
+
+/** True when `(x, y)` lies outside `rect` expanded by `HOVER_MARGIN_PX`. */
+function isOutsideHoverRect(x: number, y: number, rect: DOMRect): boolean {
+  return (
+    x < rect.left - HOVER_MARGIN_PX
+    || x > rect.right + HOVER_MARGIN_PX
+    || y < rect.top - HOVER_MARGIN_PX
+    || y > rect.bottom + HOVER_MARGIN_PX
+  )
+}
+
+/** True when `el` or a descendant currently holds keyboard focus. */
+function isElementFocused(el: Element | undefined): boolean {
+  const active = document.activeElement
+  return Boolean(el && active && (active === el || el.contains(active)))
+}
+
+/** Shared show/hide timer controller for Tooltip and createAnchoredTooltip. */
+function createTooltipTimers() {
+  let showTimer: ReturnType<typeof setTimeout> | undefined
+  let hideTimer: ReturnType<typeof setTimeout> | undefined
+
+  const clear = () => {
+    clearTimeout(showTimer)
+    clearTimeout(hideTimer)
+    showTimer = undefined
+    hideTimer = undefined
+  }
+
+  return {
+    clear,
+    hasShowTimer: () => showTimer !== undefined,
+    scheduleShow: (fn: () => void) => {
+      clear()
+      showTimer = setTimeout(() => {
+        showTimer = undefined
+        fn()
+      }, SHOW_DELAY_MS)
+    },
+    scheduleHide: (fn: () => void) => {
+      clear()
+      hideTimer = setTimeout(() => {
+        hideTimer = undefined
+        fn()
+      }, HIDE_DELAY_MS)
+    },
+  }
+}
+
+/** Top-layer popover surface shared by Tooltip and createAnchoredTooltip. */
+function TooltipPopover(props: {
+  id: string
+  pos: TooltipPos
+  onMountEl: (el: HTMLDivElement | undefined) => void
+  children: JSX.Element
+}): JSX.Element {
+  return (
+    <Portal>
+      <div
+        id={props.id}
+        ref={(el) => {
+          props.onMountEl(el)
+          onCleanup(() => props.onMountEl(undefined))
+          // Enter the top layer so the tooltip renders above native
+          // popover="auto" elements (e.g. DropdownMenu).
+          requestAnimationFrame(() => {
+            if (el.isConnected)
+              el.showPopover()
+          })
+        }}
+        popover="manual"
+        role="tooltip"
+        class={styles.tooltip}
+        style={{
+          top: `${props.pos.top}px`,
+          left: `${props.pos.left}px`,
+          transform: 'translate(-50%, -100%)',
+        }}
+      >
+        {props.children}
+      </div>
+    </Portal>
+  )
+}
+
+/** Clamp a rendered tooltip horizontally to the viewport and flip below `triggerRect` if clipped at the top. */
+function schedulePositionClamp(
+  getTooltipEl: () => HTMLDivElement | undefined,
+  triggerRect: DOMRect,
+  getPos: () => TooltipPos,
+  setPos: (next: TooltipPos) => void,
+): void {
+  requestAnimationFrame(() => {
+    const el = getTooltipEl()
+    if (!el || !el.isConnected)
+      return
+    const tr = el.getBoundingClientRect()
+    let { top, left } = getPos()
+    const halfW = tr.width / 2
+    if (left - halfW < 4)
+      left = halfW + 4
+    else if (left + halfW > window.innerWidth - 4)
+      left = window.innerWidth - 4 - halfW
+    if (tr.top < 4)
+      top = triggerRect.bottom + 6 + tr.height
+    setPos({ top, left })
+  })
 }
 
 export interface TooltipProps {
@@ -309,8 +430,7 @@ export function Tooltip(props: TooltipProps) {
   const [targetRefusesPointer, setTargetRefusesPointer] = createSignal(false)
   const [pos, setPos] = createSignal({ top: 0, left: 0 })
   const [targetEl, setTargetEl] = createSignal<TooltipTarget | undefined>()
-  let showTimer: ReturnType<typeof setTimeout> | undefined
-  let hideTimer: ReturnType<typeof setTimeout> | undefined
+  const timers = createTooltipTimers()
   let warnedInvalidChild = false
 
   /**
@@ -354,13 +474,6 @@ export function Tooltip(props: TooltipProps) {
       return undefined
     }
     return node as TooltipTarget
-  }
-
-  const clearTimers = () => {
-    clearTimeout(showTimer)
-    clearTimeout(hideTimer)
-    showTimer = undefined
-    hideTimer = undefined
   }
 
   /**
@@ -416,7 +529,7 @@ export function Tooltip(props: TooltipProps) {
 
   /** Dismiss this tooltip immediately. */
   const dismiss = () => {
-    clearTimers()
+    timers.clear()
     if (activeHide === dismiss)
       activeHide = undefined
     // eslint-disable-next-line ts/no-use-before-define -- mutual recursion between dismiss and onPointerMove
@@ -430,18 +543,16 @@ export function Tooltip(props: TooltipProps) {
    * working around unreliable mouseleave on display:contents elements.
    */
   const onPointerMove = (e: PointerEvent) => {
+    const target = targetEl()
+    if (isElementFocused(target))
+      return
     const rect = getTriggerRect()
     if (!rect) {
       dismiss()
       return
     }
     const { clientX: x, clientY: y } = e
-    if (
-      x < rect.left - HOVER_MARGIN_PX
-      || x > rect.right + HOVER_MARGIN_PX
-      || y < rect.top - HOVER_MARGIN_PX
-      || y > rect.bottom + HOVER_MARGIN_PX
-    ) {
+    if (isOutsideHoverRect(x, y, rect)) {
       dismiss()
     }
   }
@@ -466,41 +577,24 @@ export function Tooltip(props: TooltipProps) {
     // Position above the trigger, centered horizontally.
     // transform: translate(-50%, -100%) places the tooltip's
     // bottom-center at this point.
-    setPos({ top: rect.top - 6, left: rect.left + rect.width / 2 })
+    setPos(positionAboveRect(rect))
     setVisible(true)
 
     // Start watching pointer position as a fallback for mouseleave.
     document.addEventListener('pointermove', onPointerMove)
 
     // Clamp to viewport after the tooltip renders.
-    requestAnimationFrame(() => {
-      if (!tooltipEl)
-        return
-      const tr = tooltipEl.getBoundingClientRect()
-      let { top, left } = pos()
-      // Clamp horizontally
-      const halfW = tr.width / 2
-      if (left - halfW < 4)
-        left = halfW + 4
-      else if (left + halfW > window.innerWidth - 4)
-        left = window.innerWidth - 4 - halfW
-      // If tooltip would go above viewport, flip below the trigger
-      if (tr.top < 4)
-        top = rect.bottom + 6 + tr.height
-      setPos({ top, left })
-    })
+    schedulePositionClamp(() => tooltipEl, rect, pos, setPos)
   }
 
   const show = () => {
     if (!hasTooltipContent())
       return
-    clearTimers()
-    showTimer = setTimeout(present, SHOW_DELAY_MS)
+    timers.scheduleShow(present)
   }
 
   const hide = () => {
-    clearTimers()
-    hideTimer = setTimeout(dismiss, HIDE_DELAY_MS)
+    timers.scheduleHide(dismiss)
   }
 
   onMount(() => {
@@ -677,31 +771,223 @@ export function Tooltip(props: TooltipProps) {
         <span id={ownDescriptionId} class={srOnly}>{props.text}</span>
       </Show>
       <Show when={visible() && hasTooltipContent()}>
-        <Portal>
-          <div
-            id={`tooltip-${tooltipId}`}
-            ref={(el) => {
-              tooltipEl = el
-              // Enter the top layer so the tooltip renders above native
-              // popover="auto" elements (e.g. DropdownMenu).
-              requestAnimationFrame(() => {
-                if (el.isConnected)
-                  el.showPopover()
-              })
-            }}
-            popover="manual"
-            role="tooltip"
-            class={styles.tooltip}
-            style={{
-              top: `${pos().top}px`,
-              left: `${pos().left}px`,
-              transform: 'translate(-50%, -100%)',
-            }}
-          >
-            {contentEl() ?? props.text}
-          </div>
-        </Portal>
+        <TooltipPopover
+          id={`tooltip-${tooltipId}`}
+          pos={pos()}
+          onMountEl={(el) => { tooltipEl = el }}
+        >
+          {contentEl() ?? props.text}
+        </TooltipPopover>
       </Show>
     </>
   )
+}
+
+export interface AnchoredTooltipHandle {
+  /** Anchor the tooltip to `target` with static text or a reactive text accessor. */
+  show: (target: HTMLElement, text: string | (() => string | undefined)) => void
+  /** Hide after HIDE_DELAY_MS; calling `show` on the same target before it elapses cancels the hide. */
+  hide: () => void
+  /** Hide immediately, clearing timers, listeners, active anchor, and `aria-describedby`. */
+  dismiss: () => void
+  /** Top-layer popover portal rendered while visible. */
+  Popover: () => JSX.Element
+}
+
+interface AnchoredState {
+  target: HTMLElement
+  getText: () => string | undefined
+}
+
+/**
+ * Imperative delegated tooltip anchored to a tracked DOM element (for example
+ * spans inside raw HTML rendered via `cachedInnerHtml`). Shares the timing,
+ * single-active-tooltip coordination, top-layer popover, viewport clamping, and
+ * `aria-describedby` contract of {@link Tooltip}.
+ */
+export function createAnchoredTooltip(): AnchoredTooltipHandle {
+  const tooltipId = createUniqueId()
+  const domId = `tooltip-${tooltipId}`
+  const [visible, setVisible] = createSignal(false)
+  const [pos, setPos] = createSignal<TooltipPos>({ top: 0, left: 0 })
+  const [anchor, setAnchor] = createSignal<AnchoredState | undefined>(undefined)
+  const [displayText, setDisplayText] = createSignal('')
+  const timers = createTooltipTimers()
+
+  let tooltipEl: HTMLDivElement | undefined
+  let hiding = false
+  let pointerMoveListening = false
+  let describedTarget: HTMLElement | undefined
+  let originalDescribedBy: string | null = null
+
+  const detachDescribedBy = () => {
+    if (!describedTarget)
+      return
+    if (originalDescribedBy != null)
+      describedTarget.setAttribute('aria-describedby', originalDescribedBy)
+    else
+      describedTarget.removeAttribute('aria-describedby')
+    describedTarget = undefined
+    originalDescribedBy = null
+  }
+
+  const attachDescribedBy = (target: HTMLElement) => {
+    if (describedTarget === target)
+      return
+    detachDescribedBy()
+    describedTarget = target
+    originalDescribedBy = target.getAttribute('aria-describedby')
+    const tokens = (originalDescribedBy ?? '')
+      .split(WHITESPACE_RE)
+      .filter(Boolean)
+      .filter(id => id !== domId)
+    tokens.push(domId)
+    target.setAttribute('aria-describedby', tokens.join(' '))
+  }
+
+  const hideNow = () => {
+    timers.clear()
+    hiding = false
+    detachDescribedBy()
+    if (pointerMoveListening) {
+      pointerMoveListening = false
+      // eslint-disable-next-line ts/no-use-before-define -- mutual recursion between hideNow and onPointerMove
+      document.removeEventListener('pointermove', onPointerMove)
+    }
+    // eslint-disable-next-line ts/no-use-before-define -- activeHide points at dismiss
+    if (activeHide === dismiss)
+      activeHide = undefined
+    setVisible(false)
+  }
+
+  const dismiss = () => {
+    hideNow()
+    setAnchor(undefined)
+    setDisplayText('')
+  }
+
+  const onPointerMove = (e: PointerEvent) => {
+    const current = untrack(anchor)
+    if (!current?.target.isConnected) {
+      dismiss()
+      return
+    }
+    if (isElementFocused(current.target))
+      return
+    if (isOutsideHoverRect(e.clientX, e.clientY, current.target.getBoundingClientRect()))
+      dismiss()
+  }
+
+  const present = () => {
+    if (holdIsOverMenu() || touchReleaseOpensMenu())
+      return
+    const current = untrack(anchor)
+    const text = current
+      ? untrack(current.getText)
+      : ''
+    if (!current || !current.target.isConnected || !text)
+      return
+
+    const rect = current.target.getBoundingClientRect()
+    activeHide?.()
+    activeHide = dismiss
+    attachDescribedBy(current.target)
+    setDisplayText(text)
+    setPos(positionAboveRect(rect))
+    setVisible(true)
+    if (!pointerMoveListening) {
+      pointerMoveListening = true
+      document.addEventListener('pointermove', onPointerMove)
+    }
+    schedulePositionClamp(() => tooltipEl, rect, pos, setPos)
+  }
+
+  const show = (target: HTMLElement, text: string | (() => string | undefined)) => {
+    if (!target.isConnected) {
+      dismiss()
+      return
+    }
+    const getText = typeof text === 'function'
+      ? text
+      : () => text
+    const current = untrack(anchor)
+    if (current && current.target === target) {
+      if (hiding) {
+        timers.clear()
+        hiding = false
+        setAnchor({ target, getText })
+        return
+      }
+      if (current.getText !== getText)
+        setAnchor({ target, getText })
+      return
+    }
+    dismiss()
+    setAnchor({ target, getText })
+  }
+
+  const hide = () => {
+    const current = untrack(anchor)
+    if (!untrack(visible) || !current || !current.target.isConnected) {
+      dismiss()
+      return
+    }
+    if (hiding)
+      return
+    hiding = true
+    timers.scheduleHide(dismiss)
+  }
+
+  // Match Tooltip's click dismissal so clicking or drag-selecting on the active
+  // anchor hides the tooltip immediately instead of lingering over a selection.
+  createEffect(() => {
+    const target = anchor()?.target
+    if (!target)
+      return
+    const handleClick = () => dismiss()
+    target.addEventListener('click', handleClick)
+    onCleanup(() => target.removeEventListener('click', handleClick))
+  })
+
+  createEffect(() => {
+    const current = anchor()
+    if (!current || hiding)
+      return
+    const { target, getText } = current
+    const text = getText() || ''
+    if (!target.isConnected) {
+      dismiss()
+      return
+    }
+    if (!text) {
+      if (untrack(visible))
+        hideNow()
+      else
+        timers.clear()
+      return
+    }
+    setDisplayText(text)
+    if (untrack(visible)) {
+      schedulePositionClamp(() => tooltipEl, target.getBoundingClientRect(), pos, setPos)
+    }
+    else if (!timers.hasShowTimer()) {
+      timers.scheduleShow(present)
+    }
+  })
+
+  onCleanup(dismiss)
+
+  const Popover = (): JSX.Element => (
+    <Show when={visible() && Boolean(displayText())}>
+      <TooltipPopover
+        id={domId}
+        pos={pos()}
+        onMountEl={(el) => { tooltipEl = el }}
+      >
+        {displayText()}
+      </TooltipPopover>
+    </Show>
+  )
+
+  return { show, hide, dismiss, Popover }
 }

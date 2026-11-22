@@ -7,9 +7,11 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentGoalSchema, AgentGoalStatus, BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
+import { LOCAL_LINK_ATTRIBUTE } from '~/lib/localLinks'
 import { protoGoalToStore } from '~/stores/chatGoal'
 import { motion } from '~/styles/tokens'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { MarkdownLocalLinkProvider } from '../markdownLocalLinks'
 import { ROTATION_FADE_MS, ROTATION_INTERVAL_MS, ThinkingIndicator } from './ThinkingIndicator'
 
 // The token count requires a positive estimate and a visible indicator.
@@ -770,5 +772,59 @@ describe('thinking indicator verb rotation', () => {
     unmount()
 
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('thinking indicator todo popover local links', () => {
+  it('hides the todo-list popover before forwarding local-link activation from a goal objective', async () => {
+    const order: string[] = []
+    const onActivate = vi.fn((href: string) => order.push(`activate:${href}`))
+    const realRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
+    let rendered!: ReturnType<typeof render>
+    try {
+      rendered = render(() => (
+        <MarkdownLocalLinkProvider
+          value={{
+            workerId: 'w-1',
+            baseDir: '/repo',
+            workingDir: '/repo',
+            homeDir: '/home/alice',
+            flavor: 'posix',
+            onActivate,
+          }}
+        >
+          <ThinkingIndicator
+            visible={true}
+            paused={true}
+            goal={{
+              current: {
+                objective: 'Inspect [spec](./docs/spec.md)',
+                status: 'active',
+              },
+              progress: {},
+              actions: [],
+            }}
+          />
+        </MarkdownLocalLinkProvider>
+      ))
+    }
+    finally {
+      globalThis.requestAnimationFrame = realRaf
+    }
+
+    await settleWorkerReplies()
+    const popover = rendered.getByTestId('todo-list-popover')
+    const hideSpy = vi.spyOn(popover, 'hidePopover').mockImplementation(() => {
+      order.push('hidePopover')
+    })
+
+    const link = popover.querySelector(`[${LOCAL_LINK_ATTRIBUTE}]`) as HTMLElement
+    expect(link).not.toBeNull()
+    fireEvent.click(link)
+
+    expect(hideSpy).toHaveBeenCalledTimes(1)
+    expect(onActivate).toHaveBeenCalledWith('./docs/spec.md')
+    expect(order).toEqual(['hidePopover', 'activate:./docs/spec.md'])
   })
 })

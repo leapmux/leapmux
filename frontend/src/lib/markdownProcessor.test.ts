@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { LOCAL_IMAGE_ATTRIBUTE, LOCAL_IMAGE_CLASS, LOCAL_LINK_ATTRIBUTE } from '~/lib/localLinks'
 import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor, renderPlainOrSource, renderWithPlainFallback } from '~/lib/markdownProcessor'
 import { MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE, MARKDOWN_SOURCE_FALLBACK_NOTICE } from '~/lib/markdownSourceFallback'
 import { BLOCKED_IMAGE_CHIP_TEXT } from '~/lib/rehypeBlockRemoteImages'
@@ -514,8 +515,31 @@ describe('remote-image blocking in both processors', () => {
       expect(html, name).not.toContain('<img')
       expect(html, name).toContain(BLOCKED_IMAGE_CHIP_TEXT)
       expect(html, name).toContain('shot')
-      // rehypeExternalLinks unwraps the non-http(s) href, so the label is plain text.
+      // rehypeMarkdownLinks unwraps the non-http(s) href, so the label is plain text.
       expect(html, name).not.toContain('href="//evil.example/x.png"')
+    }
+  })
+
+  it('keeps a local image inside an external link hardened as an external anchor wrapping the local image marker', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('[![Logo](./logo.svg)](https://example.com)')
+      expect(html, name).toContain('href="https://example.com"')
+      expect(html, name).toContain(`${UNTRUSTED_LINK_ATTRIBUTE}=""`)
+      expect(html, name).toContain(`class="${LOCAL_IMAGE_CLASS}"`)
+      expect(html, name).toContain(`${LOCAL_IMAGE_ATTRIBUTE}="./logo.svg"`)
+      expect(html, name).not.toContain('<img')
+      expect(html, name).not.toContain('src=')
+    }
+  })
+
+  it('keeps a local image inside a local link wrapped by the local-link marker span', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('[![Thumb](./thumb.png)](./doc.md)')
+      expect(html, name).toContain(`${LOCAL_LINK_ATTRIBUTE}="./doc.md"`)
+      expect(html, name).toContain(`class="${LOCAL_IMAGE_CLASS}"`)
+      expect(html, name).toContain(`${LOCAL_IMAGE_ATTRIBUTE}="./thumb.png"`)
+      expect(html, name).not.toContain('<a')
+      expect(html, name).not.toContain('<img')
     }
   })
 
@@ -627,19 +651,51 @@ describe('link hardening in both processors', () => {
     }
   })
 
-  it('unwraps a non-http(s) link to its text instead of hardening it', async () => {
-    // The else-branch: anything that is not http(s) -- mailto:, tel:, and the
-    // javascript: vector agent-authored markdown could smuggle in -- loses the
-    // anchor entirely rather than becoming a hardened clickable link.
+  it('turns local file and directory links into data-local-link spans while preserving formatted children', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['[readme](./README.md)', './README.md', '>readme<'],
+      ['[`src/app.ts`](src/app.ts)', 'src/app.ts', '<code>src/app.ts</code>'],
+      ['[**docs**](../docs/)', '../docs/', '<strong>docs</strong>'],
+      ['[abs](/tmp/a.txt)', '/tmp/a.txt', '>abs<'],
+      ['[uri](file:///tmp/a.txt)', 'file:///tmp/a.txt', '>uri<'],
+    ]
+    for (const [name, render] of await processors()) {
+      for (const [md, href, expectedChild] of cases) {
+        const html = render(md)
+        expect(html, `${name}: ${md}`).toContain(`<span ${LOCAL_LINK_ATTRIBUTE}="${href}">`)
+        expect(html, `${name}: ${md}`).toContain(expectedChild)
+        expect(html, `${name}: ${md}`).not.toContain('<a')
+        expect(html, `${name}: ${md}`).not.toContain('href=')
+        expect(html, `${name}: ${md}`).not.toContain(UNTRUSTED_LINK_ATTRIBUTE)
+      }
+    }
+  })
+
+  it('unwraps non-http(s), non-local, and dangerous links to plain text', async () => {
+    // Anything that is neither lowercase http(s) nor a safe local path loses its
+    // anchor entirely rather than becoming an external or local action link.
     for (const [name, render] of await processors()) {
       for (const href of [
         'mailto:a@b.example',
         'tel:+15551234',
         'javascript:alert(1)',
         '//evil.example/x',
+        'file://evil.example/x',
+        'file:////evil.example/share/x',
+        // CommonMark unescapes `\\` in link destinations to `\`, so literal `\\srv\share\x`
+        // requires four leading backslashes in Markdown source.
+        '\\\\\\\\srv\\\\share\\\\x',
+        '/\\evil.example/share/x',
+        '%5c%5cevil.example%5cshare%5cx',
+        'HttPs://a.example',
+        '#section',
+        'javascript%3aalert(1)',
+        'x://evil.example/a',
+        'example.com:8080/x',
       ]) {
         const html = render(`[label](${href})`)
         expect(html, `${name}: ${href}`).not.toContain('<a')
+        expect(html, `${name}: ${href}`).not.toContain(LOCAL_LINK_ATTRIBUTE)
         expect(html, `${name}: ${href}`).not.toContain(href)
         // Unwrapping keeps the author's own text; it must not delete content.
         expect(html, `${name}: ${href}`).toContain('label')

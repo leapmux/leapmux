@@ -120,6 +120,11 @@ message StatFileRequest {
 
 message StatFileResponse {
   FileInfo info = 1;
+  // Symlink-resolved path of info.path (from pathutil.Canonicalize), falling back
+  // to filepath.Clean(path) when symlink resolution cannot resolve the path. Lets
+  // callers match logical symlinks and symlinked ancestors against a canonicalized
+  // directory tree without a second RPC.
+  string canonical_path = 2;
 }
 
 // ListFilesystemRoots enumerates the roots of the worker's own filesystem, so

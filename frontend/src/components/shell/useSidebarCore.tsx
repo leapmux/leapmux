@@ -1,6 +1,8 @@
 import type { SectionDefContext } from './buildSectionDef'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
+import type { LocalLinkActivationSource } from './localLinkActivation'
 import type { SectionActions } from './sectionUtils'
+import type { DirectoryRevealRequest } from '~/components/tree/directoryReveal'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
 import type { AddTunnelTarget } from '~/components/workers/AddTunnelDialog'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
@@ -126,6 +128,12 @@ export interface SidebarCommonProps {
   onDeregisterWorker: (worker: Worker) => void
   /** Open the "register a new worker" dialog from the Workers section header. */
   onRegisterWorker: () => void
+
+  // Local Markdown links and directory reveal
+  directoryReveal?: DirectoryRevealRequest | undefined
+  onDirectoryRevealHandled?: ((nonce: number) => void) | undefined
+  onExpandSectionRef?: ((side: Sidebar, fn: (sectionId: string) => void) => (() => void) | void) | undefined
+  onActivateLocalLink?: ((rawHref: string, source: LocalLinkActivationSource) => void) | undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +149,11 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
 
   // Captured from CollapsibleSidebar's expandSectionRef callback.
   let expandSection: ((sectionId: string) => void) | undefined
+  let unregisterExpandSection: (() => void) | undefined
+  onCleanup(() => {
+    unregisterExpandSection?.()
+    unregisterExpandSection = undefined
+  })
 
   // Handle for the FilesSection imperative API (e.g., collapseAll).
   // Declared as a signal so reactive reads (e.g., isFiltered in header
@@ -284,6 +297,9 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     onAddTunnel: props.onAddTunnel,
     onDeregisterWorker: props.onDeregisterWorker,
     onRegisterWorker: props.onRegisterWorker,
+    get directoryReveal() { return props.directoryReveal },
+    get onDirectoryRevealHandled() { return props.onDirectoryRevealHandled },
+    get onActivateLocalLink() { return props.onActivateLocalLink },
   })
 
   /** Build `SidebarSectionDef[]` from the current section groups. */
@@ -300,6 +316,10 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     sections,
     sectionGroups,
     buildSectionDefs,
-    expandSectionRef: (fn: (sectionId: string) => void) => { expandSection = fn },
+    expandSectionRef: (fn: (sectionId: string) => void) => {
+      expandSection = fn
+      unregisterExpandSection?.()
+      unregisterExpandSection = props.onExpandSectionRef?.(side, fn) ?? undefined
+    },
   }
 }

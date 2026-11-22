@@ -3,6 +3,7 @@ import { createEffect, createMemo, on, onCleanup, Show } from 'solid-js'
 import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { hasScrollRoom } from './chatScrollGeometry'
 import * as styles from './ChatScrollRail.css'
+import { MarkdownLocalLinkProvider } from './markdownLocalLinks'
 import { MarkdownText } from './MarkdownText'
 
 // ---------------------------------------------------------------------------
@@ -273,7 +274,12 @@ export function DotPreviewCard(props: DotPreviewCardProps) {
       >
         <Show when={preview()} fallback={<span>{markLabel(props.dot.type)}</span>}>
           <div class={styles.dotPreviewMarkdown}>
-            <MarkdownText text={preview()!} />
+            {/* Keep transient scroll-rail dot previews inert so Tab focus stays on
+                the rail dots, hover scrubbing triggers no worker image RPCs, and
+                clicking never hides ChatView mid-hover. */}
+            <MarkdownLocalLinkProvider value={undefined}>
+              <MarkdownText text={preview()!} />
+            </MarkdownLocalLinkProvider>
           </div>
         </Show>
       </Show>

@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { DirectoryRevealRequest } from './directoryReveal'
 import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import type { SyncLocalKey } from '~/lib/browserStorage'
@@ -12,7 +13,7 @@ import FileIcon from 'lucide-solid/icons/file'
 import FolderTree from 'lucide-solid/icons/folder-tree'
 import List from 'lucide-solid/icons/list'
 import LocateFixed from 'lucide-solid/icons/locate-fixed'
-import { createEffect, createMemo, createSignal, createUniqueId, For, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show, untrack } from 'solid-js'
 import { FilterTabBar } from '~/components/common/FilterTabBar'
 import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
@@ -66,6 +67,10 @@ export interface FilesSectionProps {
   enabled?: boolean
   /** Ref callback for imperative actions (collapse all). */
   ref?: (handle: FilesSectionHandle) => void
+  /** Imperative request to expand, focus, and visually cue a directory row. */
+  directoryReveal?: DirectoryRevealRequest | undefined
+  /** Called once DirectoryTree handles or cancels a directory reveal request. */
+  onDirectoryRevealHandled?: ((nonce: number) => void) | undefined
 }
 
 export interface FilesSectionHeaderActionsProps {
@@ -292,6 +297,20 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
       : {}
   }
 
+  // Exit flat-list mode when a directory reveal arrives so DirectoryTree mounts
+  // and handles the reveal. Hidden-file and git-filter visibility adjustments are
+  // driven authoritatively by DirectoryTree via onRevealHiddenRequired and
+  // onClearFilterRequired once enabled, avoiding premature preference mutations.
+  createEffect(on(
+    () => props.directoryReveal,
+    (req) => {
+      if (!req)
+        return
+      if (untrack(flatListMode))
+        setFlatListMode(false)
+    },
+  ))
+
   return (
     // `data-working-dir` carries the tab's own dir, which is empty until the
     // tab hydrates -- unlike the tree below, which roots at the worker's home
@@ -359,6 +378,10 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
                     {...(props.enabled !== undefined
                       ? { enabled: props.enabled }
                       : {})}
+                    directoryReveal={props.directoryReveal}
+                    onDirectoryRevealHandled={props.onDirectoryRevealHandled}
+                    onRevealHiddenRequired={() => setShowHiddenFiles(true)}
+                    onClearFilterRequired={() => setActiveFilter('all')}
                     ref={(h) => { treeHandle = h }}
                   />
                 )}

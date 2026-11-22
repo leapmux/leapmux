@@ -1,5 +1,12 @@
 import type { Element, ElementContent, Root } from 'hast'
 import { visit } from 'unist-util-visit'
+import {
+  isLocalLinkHref,
+  LOCAL_IMAGE_ALT_ATTRIBUTE,
+  LOCAL_IMAGE_ATTRIBUTE,
+  LOCAL_IMAGE_CLASS,
+  LOCAL_IMAGE_FALLBACK_CLASS,
+} from './localLinks'
 
 /**
  * Marker classes on the placeholder that replaces a blocked image. Plain string
@@ -40,21 +47,19 @@ const INLINE_IMAGE_SRC_RE = /^(?:data|blob):/i
  * navigates the webview to the remote hub) and the browser build were never protected.
  * Accepted cost: remote markdown images no longer render anywhere, including web.
  *
- * The rule is an allowlist of two schemes, so every other src form is blocked by
- * construction rather than by enumeration:
- *   - absolute `https://host/x.png`  -> blocked (third-party fetch; the exfil vector)
- *   - protocol-relative `//host/x.png` -> blocked (a remote fetch that merely LOOKS relative)
- *   - relative / root-relative `./x.png`, `/x.png`, `x.png` -> blocked. These resolve
- *     against whatever origin is hosting the app, which for desktop-distributed IS the
- *     remote hub; nothing in the product rewrites them to a real file-fetch URL, so they
- *     could only ever 404 into a broken glyph. The placeholder is strictly better.
- *   - empty/missing src -> blocked (an empty src re-fetches the current document URL).
+ * The rule keeps three cases in order:
+ *   - `data:` / `blob:` -> keep `<img>` untouched (inline payloads with no fetch).
+ *   - safe local filesystem path / local `file:` URI (`isLocalLinkHref`) -> rewrite to a
+ *     `local-markdown-image` placeholder span with no `<img>` or `src=`, so the main thread
+ *     can fetch bytes over the worker E2EE RPC when an associated tab context is active.
+ *   - everything else (`https://`, `http://`, protocol-relative `//host`, remote `file://host`,
+ *     UNC `\\...`, empty src) -> blocked remote-image placeholder.
  *
- * The placeholder keeps the author's alt text visible (it is the whole fallback) and
+ * The blocked placeholder keeps the author's alt text visible (it is the whole fallback) and
  * renders the src as an `<a href>` so the user can still open the image deliberately.
- * That anchor is left for the sibling `rehypeExternalLinks` pass to harden, which is why
+ * That anchor is left for the sibling `rehypeMarkdownLinks` pass to harden, which is why
  * this plugin must run BEFORE it: http(s) srcs become `target="_blank"` links, and every
- * other scheme (`javascript:`, `file:`, protocol-relative) is unwrapped to plain text by
+ * other scheme (`javascript:`, remote `file:`, protocol-relative) is unwrapped to plain text by
  * that same single-sourced link rule instead of a second URL policy living here.
  */
 export function rehypeBlockRemoteImages() {
@@ -62,21 +67,53 @@ export function rehypeBlockRemoteImages() {
     visit(tree, 'element', (node) => {
       if (node.tagName !== 'img')
         return
-      const src = node.properties?.src
-      if (typeof src === 'string' && INLINE_IMAGE_SRC_RE.test(src))
+      const rawSrc = node.properties?.src
+      const src = typeof rawSrc === 'string'
+        ? rawSrc
+        : ''
+      if (src && INLINE_IMAGE_SRC_RE.test(src))
         return
-      const alt = node.properties?.alt
+      const rawAlt = node.properties?.alt
+      const alt = typeof rawAlt === 'string'
+        ? rawAlt
+        : ''
       // Rewrite in place (tagName + properties + children) rather than splicing into the
       // parent: `<img>` is phrasing content inside a `<p>`, the `<span>` placeholder keeps
       // that valid, and an in-place swap needs no parent/index and can't be skipped for a
       // root-level image node.
-      toPlaceholder(node, typeof src === 'string'
-        ? src
-        : '', typeof alt === 'string'
-        ? alt
-        : '')
+      if (src && isLocalLinkHref(src)) {
+        toLocalImagePlaceholder(node, src, alt)
+        return
+      }
+      toPlaceholder(node, src, alt)
     })
   }
+}
+
+/**
+ * Turn `node` into a context-independent local image placeholder span with no `<img>` or `src=`:
+ * `<span class="local-markdown-image" data-local-image="..." data-local-image-alt="..."><span class="local-markdown-image-fallback"><label></span></span>`.
+ */
+function toLocalImagePlaceholder(node: Element, src: string, alt: string): void {
+  const label = alt.trim() || src
+  node.tagName = 'span'
+  node.properties = {
+    className: [LOCAL_IMAGE_CLASS],
+    [LOCAL_IMAGE_ATTRIBUTE]: src,
+    [LOCAL_IMAGE_ALT_ATTRIBUTE]: alt,
+  }
+  node.children = [
+    {
+      type: 'element',
+      tagName: 'span',
+      properties: {
+        className: [LOCAL_IMAGE_FALLBACK_CLASS],
+      },
+      children: [
+        { type: 'text', value: label },
+      ],
+    },
+  ]
 }
 
 /** Turn `node` into `<span class="blocked-remote-image">[chip][alt-or-url link]</span>`. */

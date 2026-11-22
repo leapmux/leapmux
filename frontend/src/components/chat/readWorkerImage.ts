@@ -1,8 +1,8 @@
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ImageDimensions } from '~/lib/imageDimensions'
 import { uint8ArrayToBase64 } from '~/lib/base64'
-import { getImageMimeType } from '~/lib/fileType'
-import { MAX_FILE_IMAGE_BYTES, RENDERABLE_IMAGE_MIME_TYPES } from '~/lib/imageBlocks'
+import { sniffImageMime } from '~/lib/fileType'
+import { fileImageRefusal, MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { imageHeaderBytesNeeded, sniffImageDimensionsFromBytes } from '~/lib/imageDimensions'
 import { fileUriToPath, isAbsolute, join } from '~/lib/paths'
 import { readWorkerFile, readWorkerFileHead } from '~/lib/readWorkerFile'
@@ -14,37 +14,6 @@ import { FileImageRefusedError } from './fileImageResolver'
  * AVIF headers end inside this read.
  */
 export const FILE_IMAGE_HEADER_BYTES = 4096
-
-/** Recognize common image signatures when the file has no useful extension. */
-function fileImageMime(path: string, bytes: Uint8Array): string {
-  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 64))
-  if (bytes[0] === 0x89 && head.slice(1, 4) === 'PNG')
-    return 'image/png'
-  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF)
-    return 'image/jpeg'
-  if (head.startsWith('GIF87a') || head.startsWith('GIF89a'))
-    return 'image/gif'
-  if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP')
-    return 'image/webp'
-  if (head.slice(4, 8) === 'ftyp' && /avif|avis/.test(head.slice(8)))
-    return 'image/avif'
-  return getImageMimeType(path)
-}
-
-/**
- * Why the chat shows no image for a file of `totalSize` bytes and of `mimeType`, or
- * undefined for a file that it shows. A new read of the same file gives the same
- * answer, so `readWorkerImage` throws it as a FileImageRefusedError.
- */
-function fileImageRefusal(totalSize: bigint, mimeType: string): string | undefined {
-  if (totalSize > BigInt(MAX_FILE_IMAGE_BYTES))
-    return 'The image file is too large to preview'
-  if (totalSize === 0n)
-    return 'The image file is empty'
-  if (!RENDERABLE_IMAGE_MIME_TYPES.has(mimeType))
-    return 'The image file format is not supported'
-  return undefined
-}
 
 /**
  * The absolute path on the worker of the image that a chat row gives as `path`:
@@ -84,7 +53,7 @@ export async function readWorkerImageSize(workerId: string, path: string, workin
     signal,
   })
   // With no size, the row reads the image, and draws the refusal of that read.
-  if (fileImageRefusal(head.totalSize, fileImageMime(filePath, head.content)) !== undefined)
+  if (fileImageRefusal(head.totalSize, sniffImageMime(filePath, head.content)) !== undefined)
     return undefined
   const size = sniffImageDimensionsFromBytes(head.content)
   if (size)
@@ -119,7 +88,7 @@ export async function readWorkerImage(workerId: string, path: string, workingDir
   // readWorkerFile gives no content for a file above the limit, and never more content
   // than the size of the file. So the size of the file alone states "too large".
   const content = response.content
-  const mimeType = fileImageMime(filePath, content)
+  const mimeType = sniffImageMime(filePath, content)
   const refusal = fileImageRefusal(response.totalSize, mimeType)
   if (refusal !== undefined)
     throw new FileImageRefusedError(refusal)

@@ -1,11 +1,15 @@
+import type { DirectoryRevealRequest } from './directoryReveal'
 import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { FileSortOrder } from '~/lib/fileSort'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { batch, createSignal, untrack } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PREFIX_DIRECTORY_TREE, sessionStorageClearForTests, sessionStorageGet, sessionStorageSet, setStorageAccountForTests } from '~/lib/browserStorage'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { deferred } from '~/test-support/async'
+import { findTreeRowByName, makeDirFixture } from '~/test-support/treeTestHelpers'
 import { DirectoryTree } from './DirectoryTree'
+import { nodeRevealCue, REVEAL_CUE_DURATION_MS } from './DirectoryTree.css'
 import { DIRECTORY_TREE_STATE_VERSION } from './directoryTreeState'
 import { CHILDREN_TRANSITION_MS, childrenWrapperExpanded } from './sharedTree.css'
 
@@ -99,12 +103,7 @@ async function settleUntil(ready: () => boolean, turns = 100): Promise<void> {
   throw new Error(`The condition did not hold within ${turns} microtasks.`)
 }
 
-function rowFor(name: string): Element | undefined {
-  return [
-    ...document.querySelectorAll('[data-testid="tree-row"]'),
-  ]
-    .find(el => el.querySelector('[data-testid="tree-row-name"]')?.textContent === name)
-}
+const rowFor = findTreeRowByName
 
 /**
  * The rendered row names, in order. Reads the name hook rather than the row's
@@ -213,6 +212,166 @@ describe('DirectoryTree', () => {
 
     expect(rowFor('a.txt')).toHaveAttribute('data-active', 'true')
     expect(rowFor('b.txt')).toHaveAttribute('data-active', 'false')
+  })
+
+  it('matches selected child directory on win32 despite differing letter case', async () => {
+    const root = 'C:\\Repo'
+    listDirectory.mockResolvedValue(oneListing([
+      {
+        name: 'Src',
+        path: 'C:\\Repo\\Src',
+        isDir: true,
+        hidden: false,
+        size: 0n,
+        modTime: '2026-01-01T00:00:00Z',
+      },
+    ]))
+
+    render(() => (
+      <DirectoryTree
+        workerId="w-win"
+        flavor="win32"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath="c:\repo\src"
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('Src')).toBeTruthy())
+
+    const row = rowFor('Src') as HTMLElement
+    expect(row).toHaveAttribute('data-active', 'true')
+    expect(row).toHaveAttribute('aria-selected', 'true')
+    expect(row.tabIndex).toBe(0)
+  })
+
+  it('matches selected child directory on win32 with forward-slash separators', async () => {
+    const root = 'C:\\Repo'
+    listDirectory.mockResolvedValue(oneListing([
+      {
+        name: 'Src',
+        path: 'C:\\Repo\\Src',
+        isDir: true,
+        hidden: false,
+        size: 0n,
+        modTime: '2026-01-01T00:00:00Z',
+      },
+    ]))
+
+    render(() => (
+      <DirectoryTree
+        workerId="w-win"
+        flavor="win32"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath="c:/repo/src"
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('Src')).toBeTruthy())
+
+    const row = rowFor('Src') as HTMLElement
+    expect(row).toHaveAttribute('data-active', 'true')
+    expect(row).toHaveAttribute('aria-selected', 'true')
+    expect(row.tabIndex).toBe(0)
+  })
+
+  it('matches selected root row on win32 despite differing letter case', async () => {
+    const root = 'C:\\Repo'
+    listDirectory.mockResolvedValue(oneListing([
+      {
+        name: 'Src',
+        path: 'C:\\Repo\\Src',
+        isDir: true,
+        hidden: false,
+        size: 0n,
+        modTime: '2026-01-01T00:00:00Z',
+      },
+    ]))
+
+    const { getByTestId } = render(() => (
+      <DirectoryTree
+        workerId="w-win"
+        flavor="win32"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath="c:\repo"
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('Src')).toBeTruthy())
+
+    const rootRow = getByTestId('tree-root-node') as HTMLElement
+    expect(rootRow).toHaveAttribute('data-active', 'true')
+    expect(rootRow).toHaveAttribute('aria-selected', 'true')
+    expect(rootRow.tabIndex).toBe(0)
+  })
+
+  it('scrolls an offscreen selected file into view on win32 despite differing letter case', async () => {
+    const root = 'C:\\Repo'
+    listDirectory.mockResolvedValue(oneListing([
+      {
+        name: 'App.ts',
+        path: 'C:\\Repo\\App.ts',
+        isDir: false,
+        hidden: false,
+        size: 10n,
+        modTime: '2026-01-01T00:00:00Z',
+      },
+    ]))
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      cb(0)
+      return 0
+    })
+
+    try {
+      const [selected, setSelected] = createSignal('')
+      const { container } = render(() => (
+        <DirectoryTree
+          workerId="w-win"
+          flavor="win32"
+          showFiles
+          gitStatusStore={gitStatusStore}
+          rootPath={root}
+          selectedPath={selected()}
+          onSelect={() => {}}
+        />
+      ))
+      await waitFor(() => expect(rowFor('App.ts')).toBeTruthy())
+
+      const fileRow = rowFor('App.ts') as HTMLElement
+      const scrollContainer = container.querySelector('[role="tree"]')?.parentElement as HTMLElement
+      scrollContainer.scrollTop = 0
+      vi.spyOn(scrollContainer, 'getBoundingClientRect').mockReturnValue({
+        top: 0,
+        bottom: 100,
+        left: 0,
+        right: 200,
+        width: 200,
+        height: 100,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect)
+      vi.spyOn(fileRow, 'getBoundingClientRect').mockReturnValue({
+        top: 240,
+        bottom: 264,
+        left: 0,
+        right: 200,
+        width: 200,
+        height: 24,
+        x: 0,
+        y: 240,
+        toJSON: () => ({}),
+      } as DOMRect)
+
+      setSelected('c:\\repo\\app.ts')
+
+      expect(scrollContainer.scrollTop).toBe(240)
+    }
+    finally {
+      rafSpy.mockRestore()
+    }
   })
 })
 
@@ -1914,9 +2073,8 @@ describe('DirectoryTree win32 separators', () => {
   /**
    * `PathInput` submits whatever the user typed, so a win32 selection reaches
    * the tree spelled `C:/Users/alice` while the worker's own listings spell it
-   * `C:\Users\alice`. `relativeUnder` requires one separator on both sides, so
-   * an un-normalized comparison answered "not under" and collapsed the whole
-   * reveal: no chain request, no node expanded, no row selected.
+   * `C:\Users\alice`. `relativeUnder` normalizes separators for `win32` so the
+   * reveal expands, chains, and selects the row cleanly.
    */
   it('reveals a target typed with forward slashes on a win32 tree', async () => {
     mockChain({
@@ -2976,5 +3134,1010 @@ describe('DirectoryTree closed directories and persistence', () => {
       await waitFor(() => expect(rowFor('lib')).toBeTruthy())
       expect(rowFor('src')!.getAttribute('aria-expanded')).toBe('true')
     })
+  })
+})
+
+describe('DirectoryTree directory reveal', () => {
+  const root = '/repo'
+
+  function mockDirs(map: Record<string, ReturnType<typeof makeDirFixture>[]>) {
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      const entries = map[req.path]
+      if (!entries)
+        throw new Error(`unexpected path ${req.path}`)
+      return oneListing(entries)
+    })
+  }
+
+  it('defers reveal while disabled and does not self-cancel when enabled toggles while waiting for groupsSettled', async () => {
+    await withFakeTimeouts(async () => {
+      mockDirs({
+        '/repo': [
+          makeDirFixture('/repo/src', 'src'),
+        ],
+        '/repo/src': [
+          makeDirFixture('/repo/src/lib', 'lib'),
+        ],
+        '/repo/src/lib': [
+          makeDirFixture('/repo/src/lib/core', 'core'),
+        ],
+      })
+      const [enabled, setEnabled] = createSignal(false)
+      const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>({
+        path: '/repo/src/lib',
+        nonce: 1,
+      })
+      const [selected, setSelected] = createSignal('')
+      const handled: number[] = []
+
+      render(() => (
+        <DirectoryTree
+          workerId="w1"
+          gitStatusStore={gitStatusStore}
+          rootPath={root}
+          selectedPath={selected()}
+          onSelect={setSelected}
+          enabled={enabled()}
+          directoryReveal={reveal()}
+          onDirectoryRevealHandled={(nonce) => {
+            handled.push(nonce)
+            setReveal(prev => (prev?.nonce === nonce
+              ? undefined
+              : prev))
+          }}
+        />
+      ))
+      await settle()
+      expect(listDirectory).not.toHaveBeenCalled()
+      expect(handled).toEqual([])
+
+      // Enable: walk expands `src` and `lib`, then waits for `src`'s TreeChildGroup to settle.
+      setEnabled(true)
+      await settleUntil(() => rowFor('lib') !== undefined)
+      expect(handled).toEqual([])
+
+      // Toggling enabled false -> true while pendingRevealCue waits for groupsSettled must not cancel nonce 1.
+      setEnabled(false)
+      await settle()
+      expect(handled).toEqual([])
+      expect(untrack(reveal)?.nonce).toBe(1)
+
+      setEnabled(true)
+      await settleUntil(() => rowFor('lib') !== undefined)
+      // Advance past child-group open transition fallback so groupsSettled flips true.
+      vi.advanceTimersByTime(CHILDREN_TRANSITION_MS + 150)
+      await settle()
+
+      const libRow = rowFor('lib') as HTMLElement
+      expect(document.activeElement).toBe(libRow)
+      expect(libRow).toHaveAttribute('data-reveal-cue', 'true')
+      expect(handled).toEqual([1])
+      expect(untrack(reveal)).toBeUndefined()
+    })
+  })
+
+  it('handles simultaneous rootPath and directoryReveal without consuming on the detached prior root element', async () => {
+    const repoBGate = deferred<ReturnType<typeof oneListing>>()
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === '/repoA') {
+        return oneListing([
+          makeDirFixture('/repoA/a', 'a'),
+        ])
+      }
+      if (req.path === '/repoB')
+        return repoBGate.promise
+      return oneListing([])
+    })
+
+    const [treeRoot, setTreeRoot] = createSignal('/repoA')
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const [selected, setSelected] = createSignal('')
+    const handled: number[] = []
+
+    const { getByTestId } = render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={treeRoot()}
+        selectedPath={selected()}
+        onSelect={setSelected}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('a')).toBeTruthy())
+    const oldRoot = getByTestId('tree-root-node')
+
+    // Simultaneously switch to uncached /repoB and request reveal of /repoB.
+    batch(() => {
+      setTreeRoot('/repoB')
+      setReveal({ path: '/repoB', nonce: 1 })
+    })
+    await settle()
+
+    // While /repoB is loading, oldRoot is detached and the reveal must NOT have been consumed yet.
+    expect(oldRoot.isConnected).toBe(false)
+    expect(handled).toEqual([])
+
+    repoBGate.resolve(oneListing([
+      makeDirFixture('/repoB/b', 'b'),
+    ]))
+    await waitFor(() => expect(rowFor('b')).toBeTruthy())
+
+    const newRoot = getByTestId('tree-root-node')
+    expect(newRoot).not.toBe(oldRoot)
+    expect(document.activeElement).toBe(newRoot)
+    expect(newRoot).toHaveAttribute('data-reveal-cue', 'true')
+    expect(handled).toEqual([1])
+  })
+
+  it('clears a stale in-flight or disabled reveal via onDirectoryRevealHandled when rootPath or workerId changes', async () => {
+    const srcGate = deferred<ReturnType<typeof oneListing>>()
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === '/repoA') {
+        return oneListing([
+          makeDirFixture('/repoA/src', 'src'),
+        ])
+      }
+      if (req.path === '/repoA/src')
+        return srcGate.promise
+      if (req.path === '/repoB') {
+        return oneListing([
+          makeDirFixture('/repoB/other', 'other'),
+        ])
+      }
+      return oneListing([])
+    })
+
+    const [treeRoot, setTreeRoot] = createSignal('/repoA')
+    const [enabled, setEnabled] = createSignal(true)
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={treeRoot()}
+        selectedPath=""
+        onSelect={() => {}}
+        enabled={enabled()}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+
+    // Start an in-flight walk into /repoA/src, then switch rootPath before it resolves.
+    setReveal({ path: '/repoA/src/sub', nonce: 10 })
+    await settle()
+    expect(handled).toEqual([])
+
+    setTreeRoot('/repoB')
+    await waitFor(() => expect(rowFor('other')).toBeTruthy())
+    expect(handled).toEqual([10])
+    expect(untrack(reveal)).toBeUndefined()
+
+    // Now test a !enabled hold interrupted by rootPath change: stale reveal must clear and not replay.
+    setEnabled(false)
+    setReveal({ path: '/repoB/other', nonce: 11 })
+    await settle()
+    expect(handled).toEqual([10])
+
+    setTreeRoot('/repoA')
+    await settle()
+    expect(handled).toEqual([10, 11])
+    expect(untrack(reveal)).toBeUndefined()
+
+    setEnabled(true)
+    srcGate.resolve(oneListing([]))
+    await settle()
+    expect(handled).toEqual([10, 11])
+  })
+
+  it('focuses and cues the root row directly without scanning children', async () => {
+    const rootGate = deferred<ReturnType<typeof oneListing>>()
+    listDirectory.mockReturnValueOnce(rootGate.promise)
+
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>({
+      path: '/repo',
+      nonce: 1,
+    })
+    const handled: number[] = []
+    const { getByTestId } = render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+
+    await settle()
+    expect(handled).toEqual([])
+
+    rootGate.resolve(oneListing([
+      makeDirFixture('/repo/src', 'src'),
+    ]))
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+
+    const rootRow = getByTestId('tree-root-node')
+    expect(document.activeElement).toBe(rootRow)
+    expect(rootRow).toHaveAttribute('data-reveal-cue', 'true')
+    expect(handled).toEqual([1])
+    expect(listDirectory).toHaveBeenCalledTimes(1)
+  })
+
+  it('expands a deep collapsed target, scrolls into view, focuses, cues for REVEAL_CUE_DURATION_MS, and clears cleanly', async () => {
+    await withFakeTimeouts(async () => {
+      reducedMotion.on = true
+      mockDirs({
+        '/repo': [
+          makeDirFixture('/repo/src', 'src'),
+        ],
+        '/repo/src': [
+          makeDirFixture('/repo/src/lib', 'lib'),
+        ],
+        '/repo/src/lib': [
+          makeDirFixture('/repo/src/lib/deep', 'deep'),
+        ],
+      })
+      const [selected, setSelected] = createSignal('')
+      const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+      const handled: number[] = []
+
+      const { container } = render(() => (
+        <DirectoryTree
+          workerId="w1"
+          gitStatusStore={gitStatusStore}
+          rootPath={root}
+          selectedPath={selected()}
+          onSelect={setSelected}
+          directoryReveal={reveal()}
+          onDirectoryRevealHandled={(nonce) => {
+            handled.push(nonce)
+            setReveal(prev => (prev?.nonce === nonce
+              ? undefined
+              : prev))
+          }}
+        />
+      ))
+      await settleUntil(() => rowFor('src') !== undefined)
+
+      const scrollContainer = container.querySelector('[role="tree"]')?.parentElement as HTMLElement
+      scrollContainer.scrollTop = 0
+      vi.spyOn(scrollContainer, 'getBoundingClientRect').mockReturnValue({
+        top: 0,
+        bottom: 80,
+        left: 0,
+        right: 200,
+        width: 200,
+        height: 80,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect)
+      const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (this === scrollContainer) {
+          return {
+            top: 0,
+            bottom: 80,
+            left: 0,
+            right: 200,
+            width: 200,
+            height: 80,
+            x: 0,
+            y: 0,
+            toJSON: () => ({}),
+          } as DOMRect
+        }
+        const top = 220 - scrollContainer.scrollTop
+        return {
+          top,
+          bottom: top + 24,
+          left: 0,
+          right: 200,
+          width: 200,
+          height: 24,
+          x: 0,
+          y: top,
+          toJSON: () => ({}),
+        } as DOMRect
+      })
+
+      try {
+        setReveal({ path: '/repo/src/lib', nonce: 1 })
+        await settleUntil(() => handled.length === 1)
+
+        const srcRow = rowFor('src') as HTMLElement
+        const libRow = rowFor('lib') as HTMLElement
+        expect(srcRow).toHaveAttribute('aria-expanded', 'true')
+        expect(libRow).toHaveAttribute('aria-expanded', 'true')
+        expect(scrollContainer.scrollTop).toBe(220)
+        expect(document.activeElement).toBe(libRow)
+        expect(libRow).toHaveAttribute('data-reveal-cue', 'true')
+        expect(libRow.classList.contains(nodeRevealCue)).toBe(true)
+        expect(untrack(reveal)).toBeUndefined()
+        expect(handled).toEqual([1])
+
+        // Clearing directoryReveal inside onDirectoryRevealHandled must keep the cue alive for REVEAL_CUE_DURATION_MS.
+        vi.advanceTimersByTime(REVEAL_CUE_DURATION_MS - 1)
+        expect(libRow).toHaveAttribute('data-reveal-cue', 'true')
+        vi.advanceTimersByTime(1)
+        expect(libRow).not.toHaveAttribute('data-reveal-cue')
+        expect(handled).toEqual([1])
+      }
+      finally {
+        rectSpy.mockRestore()
+      }
+    })
+  })
+
+  it('skips redundant ListDirectory RPC on cached target and survives synchronous callbacks during a cached walk', async () => {
+    reducedMotion.on = true
+    mockDirs({
+      '/repo': [
+        makeDirFixture('/repo/.hidden', '.hidden', true),
+      ],
+      '/repo/.hidden': [],
+    })
+    const [showHidden, setShowHidden] = createSignal(true)
+    const [filtered, setFiltered] = createSignal(false)
+    const [selected, setSelected] = createSignal('')
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+    let handle!: DirectoryTreeHandle
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath={selected()}
+        onSelect={setSelected}
+        showHiddenFiles={showHidden()}
+        {...(filtered()
+          ? {
+              isVisible: () => false,
+            }
+          : {})}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+        onRevealHiddenRequired={() => setShowHidden(true)}
+        onClearFilterRequired={() => setFiltered(false)}
+        ref={(h) => { handle = h }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('.hidden')).toBeTruthy())
+
+    // Pre-cache .hidden by expanding then collapsing it, then hide + filter it.
+    fireEvent.click(rowFor('.hidden')!)
+    await waitFor(() => expect(rowFor('.hidden')).toHaveAttribute('aria-expanded', 'true'))
+    handle.collapseAll()
+    setShowHidden(false)
+    setFiltered(true)
+    listDirectory.mockClear()
+
+    // Reveal cached .hidden: synchronous callbacks flip showHidden & filtered without cancelling the reveal.
+    setReveal({ path: '/repo/.hidden', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+
+    expect(listDirectory).not.toHaveBeenCalled()
+    expect(untrack(showHidden)).toBe(true)
+    expect(untrack(filtered)).toBe(false)
+    expect(untrack(selected)).toBe('/repo/.hidden')
+    const row = rowFor('.hidden') as HTMLElement
+    expect(document.activeElement).toBe(row)
+    expect(row).toHaveAttribute('data-reveal-cue', 'true')
+  })
+
+  it('keeps an unreadable target directory collapsed while still focusing, cueing, and reporting handled', async () => {
+    reducedMotion.on = true
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === '/repo') {
+        return oneListing([
+          makeDirFixture('/repo/secret', 'secret'),
+        ])
+      }
+      throw new Error('permission denied')
+    })
+
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('secret')).toBeTruthy())
+
+    setReveal({ path: '/repo/secret', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+
+    const secretRow = rowFor('secret') as HTMLElement
+    expect(secretRow).toHaveAttribute('aria-expanded', 'false')
+    expect(document.activeElement).toBe(secretRow)
+    expect(secretRow).toHaveAttribute('data-reveal-cue', 'true')
+  })
+
+  it('reports handled cleanly when the target directory is absent from the listing', async () => {
+    mockDirs({
+      '/repo': [
+        makeDirFixture('/repo/src', 'src'),
+      ],
+    })
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+
+    setReveal({ path: '/repo/missing', nonce: 7 })
+    await waitFor(() => expect(handled).toEqual([7]))
+    expect(untrack(reveal)).toBeUndefined()
+  })
+
+  it('re-triggers focus, synchronous layout read, and cue duration timer on repeated reveal with a higher nonce', async () => {
+    await withFakeTimeouts(async () => {
+      reducedMotion.on = true
+      mockDirs({
+        '/repo': [
+          makeDirFixture('/repo/src', 'src'),
+        ],
+        '/repo/src': [],
+      })
+      const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+      const handled: number[] = []
+
+      render(() => (
+        <DirectoryTree
+          workerId="w1"
+          gitStatusStore={gitStatusStore}
+          rootPath={root}
+          selectedPath=""
+          onSelect={() => {}}
+          directoryReveal={reveal()}
+          onDirectoryRevealHandled={(nonce) => {
+            handled.push(nonce)
+            setReveal(prev => (prev?.nonce === nonce
+              ? undefined
+              : prev))
+          }}
+        />
+      ))
+      await settleUntil(() => rowFor('src') !== undefined)
+
+      setReveal({ path: '/repo/src', nonce: 1 })
+      await settleUntil(() => handled.length === 1)
+      const srcRow = rowFor('src') as HTMLElement
+      expect(srcRow).toHaveAttribute('data-reveal-cue', 'true')
+
+      // Advance partway through the first cue, blur focus, and spy on offsetWidth.
+      vi.advanceTimersByTime(REVEAL_CUE_DURATION_MS / 2)
+      srcRow.blur()
+      const offsetWidthSpy = vi.spyOn(srcRow, 'offsetWidth', 'get').mockReturnValue(120)
+
+      setReveal({ path: '/repo/src', nonce: 2 })
+      await settleUntil(() => handled.length === 2)
+
+      expect(offsetWidthSpy).toHaveBeenCalled()
+      expect(document.activeElement).toBe(srcRow)
+      expect(srcRow).toHaveAttribute('data-reveal-cue', 'true')
+      expect(handled).toEqual([1, 2])
+
+      // Old timer deadline passes while the fresh timer keeps the cue active.
+      vi.advanceTimersByTime(REVEAL_CUE_DURATION_MS / 2 + 10)
+      expect(srcRow).toHaveAttribute('data-reveal-cue', 'true')
+
+      // Full fresh duration elapses and clears the cue.
+      vi.advanceTimersByTime(REVEAL_CUE_DURATION_MS / 2)
+      expect(srcRow).not.toHaveAttribute('data-reveal-cue')
+      offsetWidthSpy.mockRestore()
+    })
+  })
+
+  it('resolves a merged single-child directory, syncs selection, expands, focuses, and cues it', async () => {
+    reducedMotion.on = true
+    mockDirs({
+      '/repo': [
+        makeDirFixture('/repo/src/main/java', 'src/main/java'),
+      ],
+      '/repo/src/main/java': [],
+    })
+    const [selected, setSelected] = createSignal('')
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath={selected()}
+        onSelect={setSelected}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('src/main/java')).toBeTruthy())
+
+    setReveal({ path: '/repo/src', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+
+    const mergedRow = rowFor('src/main/java') as HTMLElement
+    expect(untrack(selected)).toBe('/repo/src/main/java')
+    expect(mergedRow).toHaveAttribute('aria-expanded', 'true')
+    expect(document.activeElement).toBe(mergedRow)
+    expect(mergedRow).toHaveAttribute('data-reveal-cue', 'true')
+  })
+
+  it('matches canonicalized child paths under a symlinked macOS root', async () => {
+    reducedMotion.on = true
+    mockDirs({
+      '/tmp/repo': [
+        makeDirFixture('/private/tmp/repo/sub', 'sub'),
+      ],
+      '/private/tmp/repo/sub': [],
+    })
+    const [selected, setSelected] = createSignal('')
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath="/tmp/repo"
+        selectedPath={selected()}
+        onSelect={setSelected}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('sub')).toBeTruthy())
+
+    setReveal({ path: '/tmp/repo/sub', canonicalPath: '/private/tmp/repo/sub', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+
+    const subRow = rowFor('sub') as HTMLElement
+    expect(document.activeElement).toBe(subRow)
+    expect(subRow).toHaveAttribute('data-reveal-cue', 'true')
+    expect(untrack(selected)).toBe('/private/tmp/repo/sub')
+  })
+
+  it('invokes onRevealHiddenRequired for hidden directory targets when showHiddenFiles is false', async () => {
+    reducedMotion.on = true
+    mockDirs({
+      '/repo': [
+        makeDirFixture('/repo/.github', '.github', true),
+      ],
+      '/repo/.github': [],
+    })
+    const [showHidden, setShowHidden] = createSignal(false)
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const onRevealHiddenRequired = vi.fn(() => setShowHidden(true))
+    const handled: number[] = []
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        showHiddenFiles={showHidden()}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+        onRevealHiddenRequired={onRevealHiddenRequired}
+      />
+    ))
+    await waitFor(() => expect(listDirectory).toHaveBeenCalledTimes(1))
+    expect(rowFor('.github')).toBeUndefined()
+
+    setReveal({ path: '/repo/.github', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+
+    expect(onRevealHiddenRequired).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(rowFor('.github'))
+  })
+
+  it('invokes onClearFilterRequired for filtered rows and reports handled immediately when no clear callback is supplied', async () => {
+    reducedMotion.on = true
+    mockDirs({
+      '/repo': [
+        makeDirFixture('/repo/link-dir', 'link-dir'),
+      ],
+      '/repo/link-dir': [],
+    })
+    const [filtered, setFiltered] = createSignal(true)
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const onClearFilterRequired = vi.fn(() => setFiltered(false))
+    const handled: number[] = []
+
+    const first = render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        {...(filtered()
+          ? {
+              isVisible: () => false,
+            }
+          : {})}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+        onClearFilterRequired={onClearFilterRequired}
+      />
+    ))
+    await waitFor(() => expect(listDirectory).toHaveBeenCalledTimes(1))
+    expect(rowFor('link-dir')).toBeUndefined()
+
+    setReveal({ path: '/repo/link-dir', nonce: 1 })
+    await waitFor(() => expect(handled).toEqual([1]))
+    expect(onClearFilterRequired).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(rowFor('link-dir'))
+    first.unmount()
+
+    // Without onClearFilterRequired, filtered-out target resolves handled immediately instead of stranding.
+    const handledWithoutClear: number[] = []
+    const [reveal2, setReveal2] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        isVisible={() => false}
+        directoryReveal={reveal2()}
+        onDirectoryRevealHandled={(nonce) => {
+          handledWithoutClear.push(nonce)
+          setReveal2(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await waitFor(() => expect(listDirectory).toHaveBeenCalledTimes(2))
+    setReveal2({ path: '/repo/link-dir', nonce: 2 })
+    await waitFor(() => expect(handledWithoutClear).toEqual([2]))
+    expect(untrack(reveal2)).toBeUndefined()
+  })
+
+  it('supersedes an in-flight first reveal when a second reveal arrives', async () => {
+    reducedMotion.on = true
+    const firstGate = deferred<ReturnType<typeof oneListing>>()
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === '/repo') {
+        return oneListing([
+          makeDirFixture('/repo/first', 'first'),
+          makeDirFixture('/repo/second', 'second'),
+        ])
+      }
+      if (req.path === '/repo/first')
+        return firstGate.promise
+      return oneListing([])
+    })
+
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('first')).toBeTruthy())
+
+    setReveal({ path: '/repo/first', nonce: 1 })
+    await settle()
+    setReveal({ path: '/repo/second', nonce: 2 })
+    await waitFor(() => expect(handled).toContain(2))
+
+    firstGate.resolve(oneListing([]))
+    await settle()
+
+    expect(handled).toEqual([1, 2])
+    expect(document.activeElement).toBe(rowFor('second'))
+    expect(rowFor('second')).toHaveAttribute('data-reveal-cue', 'true')
+    expect(rowFor('first')).not.toHaveAttribute('data-reveal-cue')
+  })
+
+  it('sets data-reveal-cue, focuses the row, and clears after REVEAL_CUE_DURATION_MS under reduced motion', async () => {
+    await withFakeTimeouts(async () => {
+      reducedMotion.on = true
+      mockDirs({
+        '/repo': [
+          makeDirFixture('/repo/docs', 'docs'),
+        ],
+        '/repo/docs': [],
+      })
+      const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+      const handled: number[] = []
+
+      render(() => (
+        <DirectoryTree
+          workerId="w1"
+          gitStatusStore={gitStatusStore}
+          rootPath={root}
+          selectedPath=""
+          onSelect={() => {}}
+          directoryReveal={reveal()}
+          onDirectoryRevealHandled={(nonce) => {
+            handled.push(nonce)
+            setReveal(prev => (prev?.nonce === nonce
+              ? undefined
+              : prev))
+          }}
+        />
+      ))
+      await settleUntil(() => rowFor('docs') !== undefined)
+
+      setReveal({ path: '/repo/docs', nonce: 1 })
+      await settleUntil(() => handled.length === 1)
+
+      const docsRow = rowFor('docs') as HTMLElement
+      expect(document.activeElement).toBe(docsRow)
+      expect(docsRow).toHaveAttribute('data-reveal-cue', 'true')
+      vi.advanceTimersByTime(REVEAL_CUE_DURATION_MS)
+      expect(docsRow).not.toHaveAttribute('data-reveal-cue')
+    })
+  })
+
+  it('does not hijack a symlink-to-ancestor reveal onto an unrelated sibling or merged directory', async () => {
+    reducedMotion.on = true
+    const repoRoot = '/home/alice/repo'
+    mockDirs({
+      '/home/alice/repo': [
+        makeDirFixture('/home/alice/repo/alpha', 'alpha'),
+        makeDirFixture('/home/alice/repo/src/main/java', 'src/main/java'),
+        makeDirFixture('/home/alice/repo/sub', 'sub'),
+      ],
+      '/home/alice/repo/alpha': [],
+      '/home/alice/repo/src/main/java': [],
+      '/home/alice/repo/sub': [
+        makeDirFixture('/home/alice/repo/sub/home-link', 'home-link'),
+      ],
+      '/home/alice/repo/sub/home-link': [],
+    })
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={repoRoot}
+        selectedPath=""
+        onSelect={() => {}}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await settleUntil(() => rowFor('alpha') !== undefined)
+
+    setReveal({
+      path: '/home/alice/repo/sub/home-link',
+      canonicalPath: '/home/alice',
+      nonce: 1,
+    })
+    await settleUntil(() => handled.length === 1)
+
+    expect(rowFor('alpha')).not.toHaveAttribute('data-reveal-cue')
+    expect(rowFor('src/main/java')).not.toHaveAttribute('data-reveal-cue')
+    expect(rowFor('home-link')).toHaveAttribute('data-reveal-cue', 'true')
+    expect(document.activeElement).toBe(rowFor('home-link'))
+
+    // Even when logical lookup misses, canonical ancestor `/home/alice` must not
+    // hijack the sibling merged directory `src/main/java`.
+    setReveal({
+      path: '/home/alice/repo/missing-link',
+      canonicalPath: '/home/alice',
+      nonce: 2,
+    })
+    await settleUntil(() => handled.length === 2)
+    expect(rowFor('alpha')).not.toHaveAttribute('data-reveal-cue')
+    expect(rowFor('src/main/java')).not.toHaveAttribute('data-reveal-cue')
+  })
+
+  it('reveals logical symlinks pointing to the repo root or an ancestor inside the repo', async () => {
+    reducedMotion.on = true
+    mockDirs({
+      '/repo': [
+        makeDirFixture('/repo/self-link', 'self-link'),
+        makeDirFixture('/repo/sub', 'sub'),
+      ],
+      '/repo/self-link': [],
+      '/repo/sub': [
+        makeDirFixture('/repo/sub/parent-link', 'parent-link'),
+      ],
+      '/repo/sub/parent-link': [],
+    })
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+      />
+    ))
+    await settleUntil(() => rowFor('self-link') !== undefined)
+
+    // Symlink to repo root must focus self-link, not the root row.
+    setReveal({
+      path: '/repo/self-link',
+      canonicalPath: '/repo',
+      nonce: 1,
+    })
+    await settleUntil(() => handled.length === 1)
+    expect(rowFor('self-link')).toHaveAttribute('data-reveal-cue', 'true')
+    expect(document.activeElement).toBe(rowFor('self-link'))
+
+    // Symlink to ancestor `/repo/sub` must descend into `sub` and focus `parent-link`.
+    setReveal({
+      path: '/repo/sub/parent-link',
+      canonicalPath: '/repo/sub',
+      nonce: 2,
+    })
+    await settleUntil(() => handled.length === 2)
+    expect(rowFor('sub')).not.toHaveAttribute('data-reveal-cue')
+    expect(rowFor('parent-link')).toHaveAttribute('data-reveal-cue', 'true')
+    expect(document.activeElement).toBe(rowFor('parent-link'))
+  })
+
+  it('settles onDirectoryRevealHandled without stranding pendingRevealCue when collapseAll runs mid-walk', async () => {
+    let resolveNested!: () => void
+    const nestedGate = new Promise<void>((r) => {
+      resolveNested = r
+    })
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === '/repo') {
+        return oneListing([
+          makeDirFixture('/repo/docs', 'docs'),
+        ])
+      }
+      if (req.path === '/repo/docs') {
+        return oneListing([
+          makeDirFixture('/repo/docs/nested', 'nested'),
+        ])
+      }
+      if (req.path === '/repo/docs/nested') {
+        await nestedGate
+        return oneListing([])
+      }
+      throw new Error(`unexpected path ${req.path}`)
+    })
+
+    const [reveal, setReveal] = createSignal<DirectoryRevealRequest | undefined>(undefined)
+    const handled: number[] = []
+    let handle: { collapseAll: () => void } | undefined
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath=""
+        onSelect={() => {}}
+        directoryReveal={reveal()}
+        onDirectoryRevealHandled={(nonce) => {
+          handled.push(nonce)
+          setReveal(prev => (prev?.nonce === nonce
+            ? undefined
+            : prev))
+        }}
+        ref={(h) => { handle = h }}
+      />
+    ))
+    await settleUntil(() => rowFor('docs') !== undefined)
+
+    setReveal({ path: '/repo/docs/nested', nonce: 1 })
+    await settleUntil(() => listDirectory.mock.calls.some(c => c[1].path === '/repo/docs/nested'))
+
+    // User collapses all ancestors while leaf listing is still in flight.
+    handle!.collapseAll()
+    resolveNested()
+    await settleUntil(() => handled.length === 1)
+
+    expect(handled).toEqual([1])
+    expect(untrack(reveal)).toBeUndefined()
   })
 })

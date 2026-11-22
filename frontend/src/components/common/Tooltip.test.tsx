@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { stubRect } from '~/test-support/clipStub'
 import * as gesture from './contextMenuGesture'
-import { dismissActiveTooltip, Tooltip } from './Tooltip'
+import { createAnchoredTooltip, dismissActiveTooltip, HIDE_DELAY_MS, SHOW_DELAY_MS, Tooltip } from './Tooltip'
 
 describe('tooltip', () => {
   beforeEach(() => {
@@ -772,5 +773,377 @@ describe('tooltip on a disabled control', () => {
     fireEvent.mouseEnter(wrapperOf(button))
     vi.advanceTimersByTime(700)
     expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Saving...')
+  })
+})
+
+describe('createAnchoredTooltip', () => {
+  const createdAnchors: HTMLElement[] = []
+
+  function makeAnchor(label: string, describedBy?: string): HTMLButtonElement {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.textContent = label
+    if (describedBy !== undefined)
+      btn.setAttribute('aria-describedby', describedBy)
+    document.body.appendChild(btn)
+    createdAnchors.push(btn)
+    stubRect(btn, {
+      left: 100,
+      top: 100,
+      right: 200,
+      bottom: 120,
+      width: 100,
+      height: 20,
+    })
+    return btn
+  }
+
+  function mountTooltip() {
+    let tip!: ReturnType<typeof createAnchoredTooltip>
+    const rendered = render(() => {
+      tip = createAnchoredTooltip()
+      return <tip.Popover />
+    })
+    return { tip, unmount: rendered.unmount }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(HTMLElement.prototype, 'showPopover').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    dismissActiveTooltip()
+    for (const anchor of createdAnchors.splice(0))
+      anchor.remove()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('opens after SHOW_DELAY_MS, preserves pre-existing aria-describedby tokens, and restores them on hide and unmount', () => {
+    const a = makeAnchor('A', 'existing-hint')
+    const { tip, unmount } = mountTooltip()
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS - 1)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    vi.advanceTimersByTime(1)
+    const popover = screen.getByRole('tooltip', { hidden: true })
+    expect(popover).toHaveTextContent('/repo/a.ts')
+    expect(a.getAttribute('aria-describedby')).toBe(`existing-hint ${popover.id}`)
+
+    // Hide via hide() and letting HIDE_DELAY_MS elapse.
+    tip.hide()
+    vi.advanceTimersByTime(HIDE_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(a.getAttribute('aria-describedby')).toBe('existing-hint')
+
+    // Re-open and unmount while visible: aria-describedby still restores.
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    unmount()
+    expect(a.getAttribute('aria-describedby')).toBe('existing-hint')
+  })
+
+  it('stays hidden when text is empty or undefined and opens after SHOW_DELAY_MS when text becomes non-empty on the same target', () => {
+    const a = makeAnchor('A')
+    const [text, setText] = createSignal<string | undefined>(undefined)
+    const { tip } = mountTooltip()
+
+    // eslint-disable-next-line solid/reactivity -- createAnchoredTooltip tracks the accessor inside its createEffect
+    tip.show(a, () => text())
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    setText('')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    setText('/repo/later.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS - 1)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    vi.advanceTimersByTime(1)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/later.ts')
+  })
+
+  it('cancels the pending show timer when hide is called before SHOW_DELAY_MS', () => {
+    const a = makeAnchor('A')
+    const { tip } = mountTooltip()
+
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS / 2)
+    tip.hide()
+    vi.advanceTimersByTime(SHOW_DELAY_MS * 2)
+
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('cleans aria-describedby on A and opens for B after a fresh delay when switching targets', () => {
+    const a = makeAnchor('A')
+    const b = makeAnchor('B')
+    const { tip } = mountTooltip()
+
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(a.getAttribute('aria-describedby')).toBeTruthy()
+
+    tip.show(b, '/repo/b.ts')
+    expect(a).not.toHaveAttribute('aria-describedby')
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    const popover = screen.getByRole('tooltip', { hidden: true })
+    expect(popover).toHaveTextContent('/repo/b.ts')
+    expect(b.getAttribute('aria-describedby')).toBe(popover.id)
+  })
+
+  it('keeps tooltip visible across HIDE_DELAY_MS and handles A -> hide -> A and A -> hide -> B', () => {
+    const a = makeAnchor('A')
+    const b = makeAnchor('B')
+    const { tip } = mountTooltip()
+
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/a.ts')
+
+    tip.hide()
+
+    // Pointer move inside HOVER_MARGIN_PX keeps the tooltip open during HIDE_DELAY_MS.
+    vi.advanceTimersByTime(HIDE_DELAY_MS / 2)
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 150, clientY: 110 }))
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/a.ts')
+
+    // Returning to A within HIDE_DELAY_MS cancels the hide timer and keeps it open.
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/a.ts')
+
+    // Leaving A then arriving on B within HIDE_DELAY_MS dismisses A immediately and delays B.
+    tip.hide()
+    vi.advanceTimersByTime(HIDE_DELAY_MS / 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/a.ts')
+
+    tip.show(b, '/repo/b.ts')
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(a).not.toHaveAttribute('aria-describedby')
+
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/b.ts')
+  })
+
+  it('dismisses immediately and detaches pointermove when reactive text clears while anchored', () => {
+    const addSpy = vi.spyOn(document, 'addEventListener')
+    const removeSpy = vi.spyOn(document, 'removeEventListener')
+    const a = makeAnchor('A')
+    const [text, setText] = createSignal<string | undefined>('/repo/a.ts')
+    const { tip } = mountTooltip()
+
+    // eslint-disable-next-line solid/reactivity -- createAnchoredTooltip tracks the accessor inside its createEffect
+    tip.show(a, () => text())
+
+    // Before SHOW_DELAY_MS elapses: clearing text cancels the timer without attaching pointermove.
+    vi.advanceTimersByTime(SHOW_DELAY_MS / 2)
+    setText('')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(addSpy.mock.calls.filter(c => c[0] === 'pointermove')).toHaveLength(0)
+
+    // Open, then clear text while target remains anchored: hides immediately and removes pointermove.
+    setText('/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    expect(addSpy.mock.calls.filter(c => c[0] === 'pointermove')).toHaveLength(1)
+
+    setText(undefined)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(removeSpy.mock.calls.filter(c => c[0] === 'pointermove')).toHaveLength(1)
+  })
+
+  it('hides immediately when dismiss or dismissActiveTooltip is called', () => {
+    const a = makeAnchor('A')
+    const { tip } = mountTooltip()
+
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    tip.dismiss()
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // Re-open, then hide via dismissActiveTooltip().
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    dismissActiveTooltip()
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('suppresses opening when holdIsOverMenu or touchReleaseOpensMenu is true', () => {
+    const a = makeAnchor('A')
+    const holdSpy = vi.spyOn(gesture, 'holdIsOverMenu').mockReturnValue(true)
+    const touchSpy = vi.spyOn(gesture, 'touchReleaseOpensMenu').mockReturnValue(false)
+    const { tip } = mountTooltip()
+
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    holdSpy.mockReturnValue(false)
+    touchSpy.mockReturnValue(true)
+    tip.dismiss()
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    touchSpy.mockReturnValue(false)
+    tip.dismiss()
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+  })
+
+  it('dismisses on global pointermove outside HOVER_MARGIN_PX', () => {
+    const a = makeAnchor('A')
+    const { tip } = mountTooltip()
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 500, clientY: 500 }))
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('aborts or dismisses immediately when the target disconnects before show, before hide, or on pointermove', () => {
+    const { tip } = mountTooltip()
+
+    // 1. Disconnected before SHOW_DELAY_MS fires -> never opens.
+    const a = makeAnchor('A')
+    tip.show(a, '/repo/a.ts')
+    a.remove()
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // 2. Disconnected while visible then hide() -> dismisses immediately without HIDE_DELAY_MS.
+    const b = makeAnchor('B')
+    tip.show(b, '/repo/b.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    b.remove()
+    tip.hide()
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // 3. Disconnected while visible -> pointermove over its zeroed (0, 0) rect still dismisses immediately.
+    const c = makeAnchor('C')
+    tip.show(c, '/repo/c.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    c.remove()
+    stubRect(c, {
+      left: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: 0,
+      height: 0,
+    })
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 0, clientY: 0 }))
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // 4. Disconnected during HIDE_DELAY_MS -> pointermove dismisses immediately.
+    const d = makeAnchor('D')
+    tip.show(d, '/repo/d.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    tip.hide()
+    d.remove()
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 150, clientY: 110 }))
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('keeps a keyboard-focused tooltip open when the pointer moves elsewhere on the page', () => {
+    const a = makeAnchor('A')
+    a.focus()
+    const { tip } = mountTooltip()
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 500, clientY: 500 }))
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+  })
+
+  it('does not re-arm showTimer after explicit dismissal when reactive text updates', () => {
+    const a = makeAnchor('A')
+    const [text, setText] = createSignal('/repo/a.ts')
+    const { tip } = mountTooltip()
+    // eslint-disable-next-line solid/reactivity -- createAnchoredTooltip tracks the accessor inside its createEffect
+    tip.show(a, () => text())
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    tip.dismiss()
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+    // Updating reactive text after dismiss must not pop the tooltip back open.
+    setText('/repo/a-updated.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS * 2)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('re-clamps viewport position when text changes while visible on the same target', () => {
+    const a = makeAnchor('A')
+    stubRect(a, {
+      left: 10,
+      top: 100,
+      right: 30,
+      bottom: 120,
+      width: 20,
+      height: 20,
+    })
+    const [text, setText] = createSignal('/a')
+    const { tip } = mountTooltip()
+    // eslint-disable-next-line solid/reactivity -- createAnchoredTooltip tracks the accessor inside its createEffect
+    tip.show(a, () => text())
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    const popover = screen.getByRole('tooltip', { hidden: true })
+    // Simulate narrow initial width, then wider width after text grows.
+    stubRect(popover, {
+      left: 0,
+      top: 70,
+      right: 40,
+      bottom: 92,
+      width: 40,
+      height: 22,
+    })
+    vi.advanceTimersByTime(32)
+    const initialLeft = Number.parseFloat(popover.style.left)
+
+    stubRect(popover, {
+      left: -90,
+      top: 70,
+      right: 110,
+      bottom: 92,
+      width: 200,
+      height: 22,
+    })
+    setText('/very/long/resolved/path/file.ts')
+    vi.advanceTimersByTime(32)
+    const clampedLeft = Number.parseFloat(popover.style.left)
+    expect(clampedLeft).toBeGreaterThan(initialLeft)
+  })
+
+  it('dismisses immediately when the anchored target receives a click', () => {
+    const a = makeAnchor('A')
+    const { tip } = mountTooltip()
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    fireEvent.click(a)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
   })
 })

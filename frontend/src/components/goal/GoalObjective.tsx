@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import { createEffect, createSignal, createUniqueId, on, onCleanup, onMount, Show } from 'solid-js'
+import { MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
 import { MarkdownText } from '~/components/chat/MarkdownText'
 import { CollapsibleToggle } from '~/components/common/CollapsibleToggle'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -112,7 +113,12 @@ export const GoalObjective: Component<GoalObjectiveProps> = (props) => {
         content={overflows() && !expanded()
           ? (
               <div class={styles.tooltipBody}>
-                <MarkdownText text={props.objective} />
+                {/* Non-interactive hover peek: opt out of any ancestor local-link
+                    provider so the tooltip never exposes focusable buttons or
+                    starts duplicate worker image reads. */}
+                <MarkdownLocalLinkProvider value={undefined}>
+                  <MarkdownText text={props.objective} />
+                </MarkdownLocalLinkProvider>
               </div>
             )
           : undefined}

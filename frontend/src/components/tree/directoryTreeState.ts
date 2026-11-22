@@ -177,15 +177,10 @@ export function wellFormedCachedChildren(cache: Record<string, TreeNodeData[]> |
 // Visibility helpers
 // -------------------------------------------------------------------------
 
-// `relativeUnder` requires both inputs to already use the flavor's separator,
-// and nothing upstream guarantees that: `PathInput` submits whatever the user
-// typed, so a win32 selection reaches the tree spelled `C:/Users/alice` while
-// the worker's own listings spell it `C:\Users\alice`. Comparing the two
-// answers "not under", which collapses the whole reveal -- no chain request,
-// no node expanded, no row selected. Normalize at the comparison, the way
-// `relativizePath` already does.
+// `relativeUnder` normalizes separators for `flavor`, so a win32 selection
+// typed as `C:/Users/alice` matches worker listings spelled `C:\Users\alice`.
 export function isDescendantPath(child: string, parent: string, flavor: PathFlavor): boolean {
-  const rel = relativeUnder(normalizeSeparators(child, flavor), normalizeSeparators(parent, flavor), flavor)
+  const rel = relativeUnder(child, parent, flavor)
   return rel !== null && rel !== ''
 }
 

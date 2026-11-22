@@ -1,12 +1,15 @@
 import type { Accessor, JSX } from 'solid-js'
+import type { LocalLinkActivationSource } from './localLinkActivation'
 import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import type { SectionActions } from './sectionUtils'
 import type { TabContext } from './tabContext'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { DirectoryRevealRequest } from '~/components/tree/directoryReveal'
 import type { AddTunnelTarget } from '~/components/workers/AddTunnelDialog'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
+import type { Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -94,6 +97,14 @@ export interface SidebarElementsOpts {
   branchActions?: BranchRefActions
   /** Open a new agent / terminal at one of a workspace's checkouts. */
   workspaceStartActions?: WorkspaceStartActions
+  /** Imperative request to expand, focus, and cue a directory in the Files tree. */
+  directoryReveal?: DirectoryRevealRequest | undefined
+  /** Called once DirectoryTree handles or cancels a directory reveal request. */
+  onDirectoryRevealHandled?: ((nonce: number) => void) | undefined
+  /** Register/unregister each sidebar's section-expand function with AppShell. */
+  onExpandSectionRef?: ((side: Sidebar, fn: (sectionId: string) => void) => (() => void) | void) | undefined
+  /** Activate a local link clicked inside sidebar Markdown (Goals & To-dos). */
+  onActivateLocalLink?: ((rawHref: string, source: LocalLinkActivationSource) => void) | undefined
 }
 
 interface SidebarDisplayOpts {

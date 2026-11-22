@@ -1,7 +1,9 @@
 import type { Accessor } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
+import type { LocalLinkActivationSource } from './localLinkActivation'
 import type { SectionActions } from './sectionUtils'
 import type { WorkspaceOperations } from './useWorkspaceOperations'
+import type { DirectoryRevealRequest } from '~/components/tree/directoryReveal'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
 import type { AddTunnelTarget } from '~/components/workers/AddTunnelDialog'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
@@ -23,6 +25,7 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
+import { createMarkdownLocalLinkContext, MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
 import { IconButton } from '~/components/common/IconButton'
 import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
@@ -145,6 +148,11 @@ export interface SectionDefContext {
   onAddTunnel: (target: AddTunnelTarget) => void
   onDeregisterWorker: (worker: Worker) => void
   onRegisterWorker: () => void
+
+  // Local Markdown links and directory reveal
+  directoryReveal: DirectoryRevealRequest | undefined
+  onDirectoryRevealHandled: ((nonce: number) => void) | undefined
+  onActivateLocalLink: ((rawHref: string, source: LocalLinkActivationSource) => void) | undefined
 }
 
 /**
@@ -370,6 +378,8 @@ export function buildSectionDef(
               ? { turnEndTrigger: ctx.turnEndTrigger }
               : {})}
             enabled={ctx.activeTabReady}
+            directoryReveal={ctx.directoryReveal}
+            onDirectoryRevealHandled={ctx.onDirectoryRevealHandled}
             ref={ctx.setFilesSectionHandle}
           />
         </Show>
@@ -401,16 +411,28 @@ export function buildSectionDef(
           </Show>
         )
       },
-      content: () => (
-        <GoalsAndTodos
-          variant="sidebar"
-          {...(ctx.activeGoal !== undefined
-            ? { goal: ctx.activeGoal }
-            : {})}
-          todos={ctx.activeTodos}
-          announceGoal
-        />
-      ),
+      content: () => {
+        const localLinkContext = createMarkdownLocalLinkContext({
+          workerId: () => ctx.workerId,
+          baseDir: () => ctx.workingDir,
+          workingDir: () => ctx.workingDir,
+          homeDir: () => ctx.homeDir,
+          workerOs: workerId => ctx.workerInfoFn(workerId)?.os,
+          getOnActivate: () => ctx.onActivateLocalLink,
+        })
+        return (
+          <MarkdownLocalLinkProvider value={localLinkContext}>
+            <GoalsAndTodos
+              variant="sidebar"
+              {...(ctx.activeGoal !== undefined
+                ? { goal: ctx.activeGoal }
+                : {})}
+              todos={ctx.activeTodos}
+              announceGoal
+            />
+          </MarkdownLocalLinkProvider>
+        )
+      },
     }
   }
 

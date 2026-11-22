@@ -488,6 +488,75 @@ func TestReadFile_CarriesModTime(t *testing.T) {
 	})
 }
 
+func TestStatFile_CanonicalPath(t *testing.T) {
+	t.Parallel()
+
+	statFile := func(t *testing.T, d *testServiceDispatcher, path string) *leapmuxv1.StatFileResponse {
+		t.Helper()
+		w := &testResponseWriter{channelID: testChannelID}
+		dispatch(d, leapmuxv1connect.WorkerFileServiceStatFileProcedure, &leapmuxv1.StatFileRequest{Path: path}, w)
+		require.Empty(t, w.errors)
+		require.Len(t, w.responses, 1)
+		var resp leapmuxv1.StatFileResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		return &resp
+	}
+
+	t.Run("regular file", func(t *testing.T) {
+		t.Parallel()
+		svc, d, _ := setupTestService(t)
+		path := filepath.Join(svc.HomeDir, "note.md")
+		require.NoError(t, os.WriteFile(path, []byte("hello"), 0o644))
+
+		resp := statFile(t, d, path)
+		assert.Equal(t, path, resp.GetInfo().GetPath())
+		assert.Equal(t, pathutil.Canonicalize(path), resp.GetCanonicalPath())
+		assert.False(t, resp.GetInfo().GetIsDir())
+	})
+
+	t.Run("symlinked file", func(t *testing.T) {
+		t.Parallel()
+		requireSymlinkSupport(t)
+		svc, d, _ := setupTestService(t)
+
+		targetPath := filepath.Join(svc.HomeDir, "target.md")
+		linkPath := filepath.Join(svc.HomeDir, "link.md")
+		require.NoError(t, os.WriteFile(targetPath, []byte("target"), 0o644))
+		require.NoError(t, os.Symlink(targetPath, linkPath))
+
+		resp := statFile(t, d, linkPath)
+		assert.Equal(t, linkPath, resp.GetInfo().GetPath())
+		assert.Equal(t, pathutil.Canonicalize(targetPath), resp.GetCanonicalPath())
+		assert.False(t, resp.GetInfo().GetIsDir())
+	})
+
+	t.Run("symlinked directory and file inside symlinked ancestor", func(t *testing.T) {
+		t.Parallel()
+		requireSymlinkSupport(t)
+		svc, d, _ := setupTestService(t)
+
+		realDir := filepath.Join(svc.HomeDir, "real-dir")
+		subDir := filepath.Join(realDir, "sub")
+		realFile := filepath.Join(subDir, "a.txt")
+		require.NoError(t, os.MkdirAll(subDir, 0o755))
+		require.NoError(t, os.WriteFile(realFile, []byte("nested"), 0o644))
+
+		aliasDir := filepath.Join(svc.HomeDir, "alias-dir")
+		require.NoError(t, os.Symlink(realDir, aliasDir))
+
+		dirResp := statFile(t, d, aliasDir)
+		assert.Equal(t, aliasDir, dirResp.GetInfo().GetPath())
+		assert.Equal(t, pathutil.Canonicalize(realDir), dirResp.GetCanonicalPath())
+		assert.True(t, dirResp.GetInfo().GetIsDir())
+
+		aliasFile := filepath.Join(aliasDir, "sub", "a.txt")
+		fileResp := statFile(t, d, aliasFile)
+		assert.Equal(t, aliasFile, fileResp.GetInfo().GetPath())
+		assert.Equal(t, pathutil.Canonicalize(realFile), fileResp.GetCanonicalPath())
+		assert.False(t, fileResp.GetInfo().GetIsDir())
+	})
+}
+
 func TestReadFile_MetaOnlyIfTruncated(t *testing.T) {
 	t.Parallel()
 
@@ -1674,4 +1743,63 @@ func TestListDirectory_ChainAppliesDirsOnlyToEveryListing(t *testing.T) {
 			assert.True(t, e.GetIsDir(), "listing %q returned a file: %s", listing.GetPath(), e.GetName())
 		}
 	}
+}
+
+func TestSendFileError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		err      error
+		wantCode int32
+		wantMsg  string
+	}{
+		{
+			name:     "not exist",
+			err:      &fs.PathError{Op: "open", Path: "/x", Err: fs.ErrNotExist},
+			wantCode: codeNotFound,
+			wantMsg:  "file not found",
+		},
+		{
+			name:     "permission denied",
+			err:      &fs.PathError{Op: "stat", Path: "/x", Err: fs.ErrPermission},
+			wantCode: codePermissionDenied,
+			wantMsg:  "permission denied",
+		},
+		{
+			name:     "other error",
+			err:      errors.New("i/o failure"),
+			wantCode: int32(13),
+			wantMsg:  "failed to open file",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := &testResponseWriter{}
+			sendFileError(w, "failed to open file", "/x", tc.err)
+			require.Len(t, w.errors, 1)
+			assert.Equal(t, tc.wantCode, w.errors[0].code)
+			assert.Equal(t, tc.wantMsg, w.errors[0].message)
+		})
+	}
+}
+
+func TestReadFileAndStatFile_NotFound(t *testing.T) {
+	t.Parallel()
+	svc, d, _ := setupTestService(t)
+	missing := filepath.Join(svc.HomeDir, "does-not-exist.txt")
+
+	rw := &testResponseWriter{}
+	dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{Path: missing}, rw)
+	require.Len(t, rw.errors, 1)
+	assert.Equal(t, codeNotFound, rw.errors[0].code)
+	assert.Equal(t, "file not found", rw.errors[0].message)
+
+	sw := &testResponseWriter{}
+	dispatch(d, leapmuxv1connect.WorkerFileServiceStatFileProcedure, &leapmuxv1.StatFileRequest{Path: missing}, sw)
+	require.Len(t, sw.errors, 1)
+	assert.Equal(t, codeNotFound, sw.errors[0].code)
+	assert.Equal(t, "file not found", sw.errors[0].message)
 }

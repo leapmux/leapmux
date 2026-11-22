@@ -1,4 +1,12 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import {
+  LOCAL_IMAGE_CLASS,
+  LOCAL_IMAGE_CLICKABLE_ATTRIBUTE,
+  LOCAL_IMAGE_ERROR_CLASS,
+  LOCAL_IMAGE_FALLBACK_CLASS,
+  LOCAL_LINK_ATTRIBUTE,
+  LOCAL_LINKS_ACTIVE_ATTRIBUTE,
+} from '~/lib/localLinks'
 import { MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE, MARKDOWN_SOURCE_FALLBACK_CLASS } from '~/lib/markdownSourceFallback'
 import {
   BLOCKED_IMAGE_CHIP_CLASS,
@@ -124,25 +132,31 @@ globalStyle(`.${codeCopyHostClass} .copy-code-button:hover`, {
   color: 'var(--foreground)',
 })
 
-// Placeholder for an image the markdown pipeline refused to fetch (see
-// rehypeBlockRemoteImages: only `data:`/`blob:` images render, because a remote image URL
-// exfiltrates conversation content and the user's IP with no click).
+// Placeholder for a remote image the markdown pipeline refused to fetch (see
+// rehypeBlockRemoteImages: remote URLs are blocked because fetching them would
+// exfiltrate conversation content and the user's IP with no click, whereas
+// `data:`/`blob:` images render inline and local filesystem images hydrate over
+// the worker RPC via the `LOCAL_IMAGE_CLASS` rules below).
 //
 // Keyed to the marker classes the rehype plugin emits -- NOT scoped under
 // `.markdownContent` -- for the same reason `code-copy-host` is: the rendered HTML is
 // injected in several contexts and the placeholder must look intentional in all of them.
 // The class names live in the plugin module rather than here because that module is
 // bundled into the markdown Worker, which must not import a `.css.ts`.
-globalStyle(`.${BLOCKED_IMAGE_CLASS}`, {
-  display: 'inline-flex',
-  alignItems: 'baseline',
-  gap: 'var(--space-2)',
-  maxWidth: '100%',
+const dashedCardPill = {
   padding: 'var(--space-1) var(--space-2)',
   borderRadius: 'var(--radius-small)',
   border: '1px dashed var(--border)',
   backgroundColor: 'var(--card)',
   verticalAlign: 'baseline',
+} as const
+
+globalStyle(`.${BLOCKED_IMAGE_CLASS}`, {
+  display: 'inline-flex',
+  alignItems: 'baseline',
+  gap: 'var(--space-2)',
+  maxWidth: '100%',
+  ...dashedCardPill,
 })
 
 globalStyle(`.${BLOCKED_IMAGE_CHIP_CLASS}`, {
@@ -162,9 +176,67 @@ globalStyle(`.${BLOCKED_IMAGE_CHIP_CLASS}`, {
 // `globalStyle` keyed on a FIXED class name that the rehype plugin writes into
 // the rendered HTML. Reaching the shared rule would mean the plugin emitting the
 // hashed class too, which couples a markdown transform to a stylesheet.
-globalStyle(`.${BLOCKED_IMAGE_LABEL_CLASS}`, {
+globalStyle(`.${BLOCKED_IMAGE_LABEL_CLASS}, .${LOCAL_IMAGE_FALLBACK_CLASS}`, {
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   color: 'var(--muted-foreground)',
+})
+
+// Interactive local filesystem links when rendered inside a tab-associated
+// MarkdownLocalLinkProvider (`data-local-links-active` on the body wrapper).
+// Outside any provider the attribute is absent and `[data-local-link]` stays
+// visually indistinguishable from ordinary text.
+globalStyle(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] [${LOCAL_LINK_ATTRIBUTE}]`, {
+  color: 'var(--primary)',
+  textDecoration: 'underline',
+  cursor: 'pointer',
+  borderRadius: 'var(--radius-small)',
+})
+
+globalStyle(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] [${LOCAL_LINK_ATTRIBUTE}]:hover`, {
+  backgroundColor: 'color-mix(in srgb, var(--primary) 12%, transparent)',
+})
+
+globalStyle(
+  `[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] [${LOCAL_LINK_ATTRIBUTE}]:focus-visible, [${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] .${LOCAL_IMAGE_CLASS}[${LOCAL_IMAGE_CLICKABLE_ATTRIBUTE}]:focus-visible`,
+  {
+    outline: '2px solid var(--ring)',
+    outlineOffset: '2px',
+  },
+)
+
+// Local filesystem images: render as a subtle inline fallback pill before
+// hydration (or outside a worker context / on refusal), and swap to a
+// constrained inline `<img>` once hydrated from the worker RPC.
+globalStyle(`.${LOCAL_IMAGE_CLASS}`, {
+  display: 'inline-flex',
+  alignItems: 'baseline',
+  maxWidth: '100%',
+  verticalAlign: 'middle',
+})
+
+globalStyle(`.${LOCAL_IMAGE_CLASS}:has(> .${LOCAL_IMAGE_FALLBACK_CLASS})`, {
+  gap: 'var(--space-1)',
+  ...dashedCardPill,
+})
+
+globalStyle(`.${LOCAL_IMAGE_ERROR_CLASS}`, {
+  color: 'var(--muted-foreground)',
+  fontSize: 'var(--text-8)',
+})
+
+globalStyle(`.${LOCAL_IMAGE_CLASS} > img`, {
+  display: 'block',
+  maxWidth: '100%',
+  maxHeight: '480px',
+  width: 'auto',
+  height: 'auto',
+  objectFit: 'contain',
+  borderRadius: 'var(--radius-small)',
+})
+
+globalStyle(`[${LOCAL_LINKS_ACTIVE_ATTRIBUTE}] .${LOCAL_IMAGE_CLASS}[${LOCAL_IMAGE_CLICKABLE_ATTRIBUTE}]`, {
+  cursor: 'pointer',
+  borderRadius: 'var(--radius-small)',
 })

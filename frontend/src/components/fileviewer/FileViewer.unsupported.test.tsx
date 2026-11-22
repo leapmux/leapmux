@@ -1388,3 +1388,69 @@ describe('FileViewer diff of versions past the read limit', () => {
     expect(screen.queryByText(/Truncated at/i)).not.toBeInTheDocument()
   })
 })
+
+describe('FileViewer sniffed raster images', () => {
+  const pngHeader = new Uint8Array([
+    0x89,
+    0x50,
+    0x4E,
+    0x47,
+    0x0D,
+    0x0A,
+    0x1A,
+    0x0A,
+    0x00,
+    0x00,
+  ])
+
+  beforeEach(() => {
+    statFileImpl.mockReset()
+    readFileImpl.mockReset()
+  })
+
+  it('renders an extensionless PNG under the initial chunk limit directly in ImageFileView', async () => {
+    readFileImpl.mockResolvedValueOnce(readResp(pngHeader))
+
+    render(() => <FileViewer workerId="w-1" filePath="/repo/diagram" />)
+
+    const imageView = await screen.findByTestId('image-view')
+    expect(imageView).toHaveTextContent('/repo/diagram')
+    expect(imageView).toHaveAttribute('data-first-byte', String(0x89))
+    expect(readFileImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('fetches the complete image when an extensionless PNG exceeds 256 KiB but fits within MAX_FILE_IMAGE_BYTES', async () => {
+    const firstChunk = new Uint8Array(MAX)
+    firstChunk.set(pngHeader)
+    const fullSize = MAX + 1024
+    const secondChunk = new Uint8Array(1024).fill(0x42)
+
+    readFileImpl
+      .mockResolvedValueOnce(readResp(firstChunk, fullSize))
+      .mockResolvedValueOnce(readResp(firstChunk, fullSize))
+      .mockResolvedValueOnce(readResp(secondChunk, fullSize))
+
+    render(() => <FileViewer workerId="w-1" filePath="/repo/large-diagram" />)
+
+    const imageView = await screen.findByTestId('image-view')
+    expect(imageView).toHaveTextContent('/repo/large-diagram')
+    expect(readFileImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('shows the oversize image unsupported card and reuses the probe chunk on Show anyway when an extensionless PNG exceeds MAX_FILE_IMAGE_BYTES', async () => {
+    const firstChunk = new Uint8Array(MAX)
+    firstChunk.set(pngHeader)
+    const hugeSize = MAX_FILE_IMAGE_BYTES + 1024
+
+    readFileImpl.mockResolvedValueOnce(readResp(firstChunk, hugeSize))
+
+    render(() => <FileViewer workerId="w-1" filePath="/repo/huge-diagram" />)
+
+    await screen.findByText(/too large to preview/i)
+    expect(readFileImpl).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByTestId('unsupported-show-anyway-button'))
+    expect(await screen.findByTestId('hex-view')).toHaveTextContent(`hex ${hugeSize}`)
+    expect(readFileImpl).toHaveBeenCalledTimes(1)
+  })
+})
