@@ -5,7 +5,7 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 export function antigravityAgentRequest(step: AntigravityStep): AgentRequest {
   const conversationId = pickString(step.args, 'conversationId')
   return {
-    description: pickString(step.args, 'Role') || 'Subagent',
+    description: pickString(step.args, 'Role').trim() || 'Subagent',
     agentType: pickString(step.args, 'TypeName'),
     prompt: pickString(step.args, 'Prompt'),
     promptFormat: 'markdown',
@@ -18,7 +18,7 @@ export function antigravityAgentRequest(step: AntigravityStep): AgentRequest {
 }
 
 /**
- * The subagent runs one finished `invoke_subagent` step launched.
+ * Build the launched `AgentRun` entries for a finished `invoke_subagent` step.
  *
  * Antigravity finishes this step as soon as the child cascade starts, so the step
  * reports a launch rather than a finished child run. The child's own transcript and
@@ -32,17 +32,18 @@ export function antigravityAgentResult(step: AntigravityStep, request: AgentRequ
   const results = Array.isArray(invoke?.results)
     ? invoke.results
     : []
+  const fallbackDescription = request.description.trim()
   const agents: AgentRun[] = []
   for (const [position, result] of results.entries()) {
     if (!isObject(result))
       continue
     const subagent = subagents[position]
     const role = isObject(subagent)
-      ? pickString(subagent, 'role')
+      ? pickString(subagent, 'role').trim()
       : ''
     const conversationId = pickString(result, 'conversationId')
     agents.push({
-      description: role || request.description,
+      description: role || fallbackDescription,
       ...(conversationId
         ? {
             registryKey: conversationId,

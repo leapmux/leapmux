@@ -36,17 +36,24 @@ describe('antigravityAgentRequest', () => {
     })
   })
 
-  it('defaults the description to Subagent and omits registryKey when conversationId is absent', () => {
-    const step = invokeStep({
+  it('defaults the description to Subagent when Role is absent or whitespace-only', () => {
+    const absent = invokeStep({
       TypeName: 'self',
       Prompt: 'Inspect the build.',
     })
-    expect(antigravityAgentRequest(step)).toEqual({
+    expect(antigravityAgentRequest(absent)).toEqual({
       description: 'Subagent',
       agentType: 'self',
       prompt: 'Inspect the build.',
       promptFormat: 'markdown',
     })
+
+    const blank = invokeStep({
+      Role: '   ',
+      TypeName: 'self',
+      Prompt: 'Inspect the build.',
+    })
+    expect(antigravityAgentRequest(blank).description).toBe('Subagent')
   })
 })
 
@@ -166,6 +173,25 @@ describe('antigravityAgentResult', () => {
         },
       ],
     })
+  })
+
+  it('trims whitespace-only subagent roles before falling back to request.description', () => {
+    const step = invokeStep(
+      {
+        Role: 'Fallback Role',
+        Prompt: 'Run verifier.',
+      },
+      {
+        subagents: [
+          { typeName: 'research', role: '   ' },
+        ],
+        results: [
+          { conversationId: 'child-blank' },
+        ],
+      },
+    )
+    const request = antigravityAgentRequest(step)
+    expect(antigravityAgentResult(step, request).agents[0]?.description).toBe('Fallback Role')
   })
 
   it.each([undefined, null, 'invalid', {}])('returns an empty agent list when invokeSubagent.results is %j', (results) => {
