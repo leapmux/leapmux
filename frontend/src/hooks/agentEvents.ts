@@ -738,12 +738,12 @@ export function buildAgentStatusTabUpdate(
     ...(sc.status === AgentStatus.ACTIVE
       ? { startupError: '' }
       : {}),
-    // Show the startup phase while the status is STARTING.
-    // Clear it on another explicit status. Retain it when the event supplies no status.
+    // Show the startup phase and any pending prompt while the status is STARTING.
+    // Clear both on another explicit status. Retain them when the event supplies no status.
     ...(sc.status === AgentStatus.STARTING
-      ? { startupMessage: sc.startupMessage }
+      ? { startupMessage: sc.startupMessage, startupPrompt: sc.startupPrompt ?? null }
       : hasStatus
-        ? { startupMessage: '' }
+        ? { startupMessage: '', startupPrompt: null }
         : {}),
     // Include the confirmed catalog and the current values after pending-axis suppression.
     ...settingsFields,
@@ -785,7 +785,7 @@ export function handleControlRequest(
   catchUpPhase: CatchUpPhase,
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
 ): void {
-  const { view, metadata, selection, getActiveWorkspaceId, controlStore } = stores
+  const { view, controlStore } = stores
   if (cr.responseState === ControlResponseState.COMPLETED || cr.responseState === ControlResponseState.CANCELED) {
     controlStore.cancelRequest(agentId, cr)
     return
@@ -841,8 +841,7 @@ export function handleControlRequest(
   if (catchUpPhase === 'live') {
     // Set the hidden tab's badge when its agent needs an answer.
     // Use the same tile visibility rule as FULL watch mode.
-    if (!isAgentTabOnScreen(agentId, view, selection, getActiveWorkspaceId))
-      metadata.patch(agentId, { hasNotification: true })
+    badgeOffScreenAgentTab(agentId, stores)
     // A control request can change WORKING to WAITING_FOR_USER.
     // handleAgentSettled plays that alert once.
     // onTurnEndRefresh refreshes git and the directory tree after the turn ends.
@@ -861,6 +860,14 @@ export function isAgentTabOnScreen(
   getActiveWorkspaceId: () => string | null,
 ): boolean {
   return isTabOnScreen(view.getAgentTab(agentId), getActiveWorkspaceId(), tileId => selection.activeKeyForTile(tileId))
+}
+
+function badgeOffScreenAgentTab(
+  agentId: string,
+  stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'>,
+): void {
+  if (!isAgentTabOnScreen(agentId, stores.view, stores.selection, stores.getActiveWorkspaceId))
+    stores.metadata.patch(agentId, { hasNotification: true })
 }
 
 /**
@@ -913,11 +920,9 @@ export function handleAgentSettled(
     onAgentSettled?: (agentId: string, numToolUses?: number) => void
   },
 ): void {
-  const { metadata, selection, getActiveWorkspaceId, view } = stores
-  if (!view.getAgentTab(agentId))
+  if (!stores.view.getAgentTab(agentId))
     return
-  if (!isAgentTabOnScreen(agentId, view, selection, getActiveWorkspaceId))
-    metadata.patch(agentId, { hasNotification: true })
+  badgeOffScreenAgentTab(agentId, stores)
   stores.onAgentSettled?.(agentId, numToolUses)
 }
 
@@ -975,6 +980,13 @@ export function handleAgentStatusChange(
     stores.agentSessionStore.clearModelAPIRetry(agentId, statusMetadataDelivery(catchUpPhase, replayId))
   }
   applyAgentStatusTabUpdate(agentId, sc, stores, settingsLoading, streamWorkerId)
+  if (
+    catchUpPhase === 'live'
+    && sc.status === AgentStatus.STARTING
+    && sc.startupPrompt !== undefined
+  ) {
+    badgeOffScreenAgentTab(agentId, stores)
+  }
   if (!pendingSettings)
     settingsLoading.stop()
   if (sc.status === AgentStatus.INACTIVE)

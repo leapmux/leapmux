@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -62,6 +61,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	opts.HomeDir = accountEnvironment.home
 	credentials := accountEnvironment.credentials
+	if err := credentials.prepareOSKeyForStartup(ctx, opts.ConfirmStartupPrompt); err != nil {
+		return abortPreparation(err)
+	}
 	catalog, err := loadZCodeCatalog(opts.HomeDir)
 	if err != nil && !errors.Is(err, errZCodeConfigMissing) && !errors.Is(err, errZCodeConfigUnusable) {
 		return abortPreparation(err)
@@ -166,19 +168,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.sink.BroadcastStatusActive(sessionID)
 
 	return a, nil
-}
-
-// zcodeLaunchEnvValue reads the final value of one launch variable. The final
-// duplicate is the value that an exec environment applies.
-func zcodeLaunchEnvValue(env []string, key string) string {
-	for i := len(env) - 1; i >= 0; i-- {
-		entry := env[i]
-		name, value, ok := strings.Cut(entry, "=")
-		if ok && name == key {
-			return value
-		}
-	}
-	return ""
 }
 
 // pushProviderRegistry hands the app-server the model providers it may use.

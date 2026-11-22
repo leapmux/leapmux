@@ -1162,7 +1162,7 @@ func TestBuildAgentStatusChange(t *testing.T) {
 
 	t.Run("STARTING carries startupMessage and gitStatus, no option groups", func(t *testing.T) {
 		gs := &leapmuxv1.GitRepoStatus{Branch: "main", OriginUrl: "https://example.com/repo.git"}
-		sc := buildAgentStartingStatus(dbAgent, "Checking Git status…", gs)
+		sc := buildAgentStartingStatus(dbAgent, "Checking Git status…", gs, nil)
 		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, sc.GetStatus())
 		assert.Equal(t, "Checking Git status…", sc.GetStartupMessage())
 		assert.Empty(t, sc.GetStartupError())
@@ -1183,7 +1183,7 @@ func TestBuildAgentStatusChange(t *testing.T) {
 	})
 
 	t.Run("STARTING with empty message and nil gitStatus", func(t *testing.T) {
-		sc := buildAgentStartingStatus(dbAgent, "", nil)
+		sc := buildAgentStartingStatus(dbAgent, "", nil, nil)
 		assert.Nil(t, sc.GetGitStatus(), "nil gitStatus must flow through unchanged (no auto-fetch)")
 		assert.Empty(t, sc.GetStartupMessage())
 		assert.Empty(t, sc.GetStartupError())
@@ -1205,7 +1205,7 @@ func TestBuildAgentStatusChange(t *testing.T) {
 	// BroadcastGitStatus).
 	t.Run("every full status states the queue-head dispatch", func(t *testing.T) {
 		for name, sc := range map[string]*leapmuxv1.AgentStatusChange{
-			"STARTING":       buildAgentStartingStatus(dbAgent, "", nil),
+			"STARTING":       buildAgentStartingStatus(dbAgent, "", nil, nil),
 			"STARTUP_FAILED": buildAgentFailedStatus(dbAgent, "boom", nil),
 			"INACTIVE":       buildAgentInactiveStatus(dbAgent, nil),
 			// The Manager holds no process for this agent.

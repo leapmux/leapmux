@@ -136,6 +136,9 @@ var agentHandlerCases = []agentHandlerCase{
 	{leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, func(id string) proto.Message {
 		return &leapmuxv1.RetryAgentTurnRequest{AgentId: id, TurnId: "turn-1", Model: "gpt-6-luna"}
 	}},
+	{leapmuxv1connect.WorkerAgentServiceRespondAgentStartupPromptProcedure, func(id string) proto.Message {
+		return &leapmuxv1.RespondAgentStartupPromptRequest{AgentId: id, PromptId: "prompt-1", Proceed: true}
+	}},
 	{leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, func(id string) proto.Message {
 		return &leapmuxv1.ListAgentMessagesRequest{AgentId: id}
 	}},

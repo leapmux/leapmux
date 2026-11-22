@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -12,6 +14,29 @@ import (
 // DefaultAPITimeout is the fallback timeout for JSON-RPC requests to the
 // agent process, used when no configured value is provided.
 const DefaultAPITimeout = config.DefaultAPITimeout
+
+// ErrStartupCanceled reports that a provider stopped startup before spawning
+// because a required startup confirmation was canceled, unavailable, or denied.
+// Session-preserving restart paths keep any stored native session ID when they
+// receive an error wrapping ErrStartupCanceled.
+var ErrStartupCanceled = errors.New("agent startup canceled")
+
+// StartupPrompt describes a one-time user confirmation that a provider asks
+// for before continuing subprocess startup.
+type StartupPrompt struct {
+	Title          string
+	Description    string
+	Steps          []string
+	Note           string
+	ConfirmLabel   string
+	CancelLabel    string
+	WaitingMessage string
+	ProceedMessage string
+}
+
+// StartupPromptConfirmer presents a StartupPrompt to the user and blocks until
+// the user proceeds, cancels, or the launch context/lifecycle ends.
+type StartupPromptConfirmer func(ctx context.Context, prompt StartupPrompt) (bool, error)
 
 // Options configures one agent process start.
 type Options struct {
@@ -45,6 +70,10 @@ type Options struct {
 	// directories that PrepareAgentDirs prepared. nil when the worker prepared
 	// none; a provider that needs a directory then refuses to start.
 	AgentDirs *agentdir.Dirs
+	// ConfirmStartupPrompt presents a provider-supplied confirmation guide
+	// before continuing startup. nil on non-interactive launches such as
+	// boot-time background resume.
+	ConfirmStartupPrompt StartupPromptConfirmer
 }
 
 // Get returns the resolved value of an option-group id, or "" if absent. The

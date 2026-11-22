@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +81,102 @@ func TestZCodeAccountRequestAuth_MintsACodingPlanTokenFromTheSignIn(t *testing.T
 	usage, err := a.accountRequestAuth(ctx, zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan", Reason: "usage"})
 	require.NoError(t, err)
 	assert.Empty(t, usage.AccountScope, "a usage readout carries no scope")
+}
+
+func TestZCodeAccountRequestAuth_MintsFromV2OSKeyringStore(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	key, encoded := zcodeTestRandomOSKey(t)
+	store := newZCodeCredentialStore(home, nil)
+	store.osKeyCache = &zcodeOSKeyCache{}
+	store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+		return encoded, true, nil
+	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(store.path), zcodeCredentialSourceFile), []byte(zcodeCredentialOSSourceMarker), 0o600))
+	data, err := json.Marshal(map[string]string{
+		zcodeOAuthAccessTokenKey("zai"): zcodeTestEncryptV2Credential(t, key, zcodeCredentialSourceOS, "v2-login"),
+		zcodeOAuthUserInfoKey("zai"):    zcodeTestEncryptV2Credential(t, key, zcodeCredentialSourceOS, zcodeTestUserInfo("user-v2")),
+		zcodeCredentialZCodeJWT:         zcodeTestEncryptV2Credential(t, key, zcodeCredentialSourceOS, "v2-jwt"),
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(store.path, data, 0o600))
+
+	a, api := zcodeAccountTestAgent(t, "", store)
+	auth, err := a.accountRequestAuth(t.Context(), zcodeRuntimeHeadersRequest{
+		ProviderID: "account:zai-individual-coding-plan",
+		Reason:     "model-request",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "token-1", auth.APIKey)
+	assert.Equal(t, "key-1", auth.APIKeyID)
+	assert.Equal(t, 1, api.count("GET /api/biz/customer/getCustomerInfo auth=v2-login "))
+}
+
+func TestAnswerCredentialCipher_DecryptsReadOnlyAndRejectsEncrypt(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	key, encoded := zcodeTestRandomOSKey(t)
+	store := newZCodeCredentialStore(home, nil)
+	store.osKeyCache = &zcodeOSKeyCache{}
+	store.osKeyReader = func(context.Context, string, string) (string, bool, error) {
+		return encoded, true, nil
+	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(store.path), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(store.path), zcodeCredentialSourceFile), []byte(zcodeCredentialOSSourceMarker), 0o600))
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	a.credentials = store
+	stdin := a.StdinForTest().(*zcodeRecordedStdin)
+
+	v2 := zcodeTestEncryptV2Credential(t, key, zcodeCredentialSourceOS, " raw-jwt ")
+	a.HandleOutput(zcodeRequestLine(t, 31, MethodRequestCredentialCipher,
+		fmt.Sprintf(`{"requestId":"00000000-0000-4000-8000-000000000001","operation":"decrypt","value":%q}`, v2)))
+	a.HandleOutput(zcodeRequestLine(t, 32, MethodRequestCredentialCipher,
+		`{"requestId":"00000000-0000-4000-8000-000000000002","operation":"decrypt","value":"enc:v2:os:bad:a.b.c"}`))
+	a.HandleOutput(zcodeRequestLine(t, 33, MethodRequestCredentialCipher,
+		`{"requestId":"00000000-0000-4000-8000-000000000003","operation":"encrypt","value":"hello"}`))
+
+	replies := zcodeAwaitReplies(t, stdin, 3)
+	var okReply struct {
+		RequestID string `json:"requestId"`
+		Result    struct {
+			OK    bool   `json:"ok"`
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(replies[0].Result, &okReply))
+	assert.Equal(t, "00000000-0000-4000-8000-000000000001", okReply.RequestID)
+	assert.True(t, okReply.Result.OK)
+	assert.Equal(t, " raw-jwt ", okReply.Result.Value, "bridge decrypt preserves raw plaintext without trimming")
+
+	var decryptErrReply struct {
+		RequestID string `json:"requestId"`
+		Result    struct {
+			OK    bool `json:"ok"`
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(replies[1].Result, &decryptErrReply))
+	assert.False(t, decryptErrReply.Result.OK)
+	assert.Equal(t, "ZCODE_CREDENTIAL_DECRYPT_FAILED", decryptErrReply.Result.Error.Code)
+
+	var encryptErrReply struct {
+		RequestID string `json:"requestId"`
+		Result    struct {
+			OK    bool `json:"ok"`
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(replies[2].Result, &encryptErrReply))
+	assert.False(t, encryptErrReply.Result.OK)
+	assert.Equal(t, "CREDENTIAL_SECURE_STORAGE_UNAVAILABLE", encryptErrReply.Result.Error.Code)
 }
 
 // A mint is a network call, so the answer must not hold the output reader: the

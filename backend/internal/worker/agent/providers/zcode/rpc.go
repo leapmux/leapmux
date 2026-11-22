@@ -249,6 +249,8 @@ func (a *Agent) handleServerRequest(line *providerkit.ParsedLine) {
 		a.handleUserInputRequest(id, params, line.Raw)
 	case MethodRequestOfficialMcpAuthHeaders:
 		a.answerOfficialMcpAuthHeaders(id)
+	case MethodRequestCredentialCipher:
+		a.answerCredentialCipher(id, params)
 	default:
 		// LeapMux must still answer an unknown request, or the app-server's work behind
 		// it never resumes. Method-not-found is the honest answer.

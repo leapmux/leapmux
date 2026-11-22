@@ -64,7 +64,7 @@ func (a *Agent) readAccountBindings(rules []zcodeBuiltinProviderRule) []zcodeAcc
 	selection, selectionErr := loadZCodeAccountSelection(a.homeDir)
 	entitlements, entitlementErr := loadZCodeCodingPlanEntitlements(a.homeDir)
 	providers, providerErr := loadZCodeRegistryProviders(a.homeDir)
-	credentials := a.readAccountCredentials()
+	credentials := a.readAccountCredentialsContext(a.Context())
 	a.Mu.Lock()
 	if selectionErr == nil {
 		a.catalog.accountSelection = selection
@@ -213,7 +213,7 @@ func (a *Agent) accountRequestAuth(ctx context.Context, req zcodeRuntimeHeadersR
 		return zcodeRequestAuth{}, fmt.Errorf("the coding plan for provider %q is not available: %s",
 			req.ProviderID, binding.entitlement.UnavailableReason)
 	}
-	credentials := a.readAccountCredentials()
+	credentials := a.readAccountCredentialsContext(ctx)
 	session, _, err := credentials.session(binding.family())
 	a.warnCredentialStoreError(err)
 	binding.session = session
@@ -269,7 +269,7 @@ func (a *Agent) accountRequestAuth(ctx context.Context, req zcodeRuntimeHeadersR
 	}
 	if scoped {
 		// The sign-in must not have changed while the token was minted.
-		current, err := a.credentials.read()
+		current, err := a.credentials.readContext(ctx)
 		if err != nil || !credentials.sameSignIn(current, binding.family(), session) {
 			return zcodeRequestAuth{}, errZCodeScopeInvalidated
 		}
@@ -321,15 +321,19 @@ func zcodeAccountScope(binding zcodeAccountBinding, team *zcodeTeamProject, sess
 	if session.zcodeJWT != "" {
 		jwt = session.zcodeJWT
 	}
-	return zcodeSHA256Hex(zcodeJSONStringify([]any{binding.family(), binding.rule.mode(), teamIDs, session.accessToken, jwt}))
+	var revision any
+	if session.sessionRevision != "" {
+		revision = session.sessionRevision
+	}
+	return zcodeSHA256Hex(zcodeJSONStringify([]any{binding.family(), binding.rule.mode(), teamIDs, session.accessToken, jwt, revision}))
 }
 
 func zcodeMissingCredentialError(providerID string) error {
 	return fmt.Errorf("leapmux holds no credential for provider %q; sign in with ZCode again", providerID)
 }
 
-func (a *Agent) readAccountCredentials() zcodeCredentials {
-	credentials, err := a.credentials.read()
+func (a *Agent) readAccountCredentialsContext(ctx context.Context) zcodeCredentials {
+	credentials, err := a.credentials.readContext(ctx)
 	a.warnCredentialStoreError(err)
 	return credentials
 }

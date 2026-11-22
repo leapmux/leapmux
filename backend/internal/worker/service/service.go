@@ -792,6 +792,21 @@ func (svc *Service) startAgentWithTurnReset(ctx context.Context, opts agent.Opti
 	if err := svc.retireStoppedProcessControls(opts.AgentID); err != nil {
 		return nil, fmt.Errorf("%w: %w", errAgentProcessStartBlocked, notReadyStoreFault(err))
 	}
+	// Release ConfirmStartupPrompt's captured startupEntry/GitRepoStatus once
+	// startup returns, because several providers retain opts by value for the
+	// running agent's lifetime.
+	if opts.ConfirmStartupPrompt != nil {
+		var active atomic.Pointer[agent.StartupPromptConfirmer]
+		fn := opts.ConfirmStartupPrompt
+		active.Store(&fn)
+		defer active.Store(nil)
+		opts.ConfirmStartupPrompt = func(promptCtx context.Context, prompt agent.StartupPrompt) (bool, error) {
+			if cur := active.Load(); cur != nil {
+				return (*cur)(promptCtx, prompt)
+			}
+			return false, errors.New("agent startup is no longer active")
+		}
+	}
 	// A new process owns no turn. See NoteAgentProcessStarted for why this does
 	// not wait for the old process's exit handler to have said so.
 	svc.Output.NoteAgentProcessStarted(opts.AgentID)
@@ -1139,6 +1154,10 @@ func (svc *Service) shutdown() {
 	// what the screen bytes happen to end with. See broadcastTerminalsDisconnected.
 	notified := make(map[string]struct{})
 	svc.broadcastTerminalsDisconnected(notified)
+	// Cancel startups waiting on interactive user confirmation prompts before
+	// stopping creations, background loops, or waiting on inputQueueIdle so
+	// graceful shutdown never stalls behind an open modal dialog.
+	svc.AgentStartup.cancelPendingPromptsForShutdown()
 	svc.creations.stop()
 
 	// Stop the background loops before the drains below: the orphan reconciler,

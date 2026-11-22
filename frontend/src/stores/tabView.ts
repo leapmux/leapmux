@@ -409,6 +409,7 @@ export function createTabView(opts: CreateTabViewOpts) {
           optionGroups: m.optionGroups,
           startupError: m.startupError,
           startupMessage: m.startupMessage,
+          startupPrompt: m.startupPrompt,
           parentAgentId: m.parentAgentId,
           acceptsMessages: m.acceptsMessages,
           acceptsInterrupt: m.acceptsInterrupt,

@@ -28,7 +28,10 @@ func resolveZCodeAccountEnvironment(ctx context.Context, opts agent.Options, env
 	snapshot, result := launch.ShellEnv(ctx, launch.ShellEnvOptions{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, WorkingDir: opts.WorkingDir,
 		Env: environment, Variables: []string{homeVariable, zcodeCredentialSecretEnv},
-		PathVariables: map[string]string{zcodeBuiltinProviderConfigEnv: zcodeJSWhitespaceChars},
+		PathVariables: map[string]string{
+			zcodeBuiltinProviderConfigEnv: zcodeJSWhitespaceChars,
+			zcodeCredentialSecretFileEnv:  "",
+		},
 	})
 	if result != launch.ProbeYes {
 		if err := ctx.Err(); err != nil {
@@ -45,8 +48,13 @@ func resolveZCodeAccountEnvironment(ctx context.Context, opts agent.Options, env
 		}
 	}
 	return zcodeAccountEnvironment{
-		home:                      home,
-		credentials:               newZCodeCredentialStore(home, func(key string) string { return values[key] }),
+		home: home,
+		credentials: newZCodeCredentialStore(home, func(key string) string {
+			if key == zcodeCredentialSecretFileEnv {
+				return snapshot.Paths[zcodeCredentialSecretFileEnv]
+			}
+			return values[key]
+		}),
 		builtinProviderConfigPath: snapshot.Paths[zcodeBuiltinProviderConfigEnv],
 	}, nil
 }

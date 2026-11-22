@@ -500,3 +500,39 @@ func TestZCodeNushellLaunchFilesFollowTheProcessOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestStart_FailsBeforeSpawningSubprocessWhenStartupPromptCanceled(t *testing.T) {
+	opts, calls := zcodeStartupFixture(t, "")
+	t.Setenv(zcodeCredentialSecretEnv, "")
+	t.Setenv(zcodeCredentialSecretFileEnv, "")
+
+	osKey, _ := zcodeTestRandomOSKey(t)
+	ct := zcodeTestEncryptV2Credential(t, osKey, zcodeCredentialSourceOS, "oauth-token")
+	credPath := filepath.Join(opts.HomeDir, ".zcode", "v2", "credentials.json")
+	require.NoError(t, os.WriteFile(credPath, []byte(`{"zcodejwttoken":"`+ct+`"}`), 0o600))
+
+	prevProbe := zcodeDefaultOSKeyProbe
+	zcodeDefaultOSKeyProbe = func(string, string) zcodeOSKeyAccessState {
+		return zcodeOSKeyAccessMayPrompt
+	}
+	t.Cleanup(func() { zcodeDefaultOSKeyProbe = prevProbe })
+
+	promptCalled := false
+	opts.ConfirmStartupPrompt = func(_ context.Context, prompt agent.StartupPrompt) (bool, error) {
+		promptCalled = true
+		assert.Equal(t, "macOS Keychain access required", prompt.Title)
+		assert.Equal(t, "Proceed", prompt.ConfirmLabel)
+		assert.Equal(t, "Cancel", prompt.CancelLabel)
+		assert.NotEmpty(t, prompt.Steps)
+		return false, nil
+	}
+
+	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+	if started != nil {
+		t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+	}
+	require.Nil(t, started)
+	require.ErrorIs(t, err, agent.ErrStartupCanceled)
+	assert.True(t, promptCalled)
+	assert.NoFileExists(t, calls, "zcode app-server must never be spawned when startup confirmation is canceled")
+}

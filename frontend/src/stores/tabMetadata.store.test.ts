@@ -4,7 +4,7 @@ import { create } from '@bufbuild/protobuf'
 import { batch, createEffect, createRoot, createSignal } from 'solid-js'
 import { unwrap } from 'solid-js/store'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStartupPromptSchema, AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, setStorageAccountForTests, storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
@@ -210,6 +210,69 @@ describe('tabMetadata', () => {
         expect(runs).toBe(baseline)
         dispose()
       })
+    })
+
+    it('reuses an equal startupPrompt reference and writes when promptId, title, steps, or null changes', () => {
+      const m = createTabMetadataStore()
+      const first = create(AgentStartupPromptSchema, {
+        promptId: 'p1',
+        title: 'Keychain access',
+        description: 'Need access',
+        steps: ['Step 1', 'Step 2'],
+        note: 'Note',
+        confirmLabel: 'Proceed',
+        cancelLabel: 'Cancel',
+      })
+      m.patch('a1', { startupPrompt: first })
+      const stored = unwrap(m.get('a1')!).startupPrompt
+
+      m.patch('a1', {
+        startupPrompt: create(AgentStartupPromptSchema, {
+          promptId: 'p1',
+          title: 'Keychain access',
+          description: 'Need access',
+          steps: ['Step 1', 'Step 2'],
+          note: 'Note',
+          confirmLabel: 'Proceed',
+          cancelLabel: 'Cancel',
+        }),
+      })
+      expect(unwrap(m.get('a1')!).startupPrompt).toBe(stored)
+
+      // Changed step lands as a new reference.
+      m.patch('a1', {
+        startupPrompt: create(AgentStartupPromptSchema, {
+          promptId: 'p1',
+          title: 'Keychain access',
+          description: 'Need access',
+          steps: ['Step 1', 'Step 2 updated'],
+          note: 'Note',
+          confirmLabel: 'Proceed',
+          cancelLabel: 'Cancel',
+        }),
+      })
+      expect(unwrap(m.get('a1')!).startupPrompt).not.toBe(stored)
+      expect(m.get('a1')?.startupPrompt?.steps).toEqual(['Step 1', 'Step 2 updated'])
+
+      // Changed promptId / title lands.
+      const afterStep = unwrap(m.get('a1')!).startupPrompt
+      m.patch('a1', {
+        startupPrompt: create(AgentStartupPromptSchema, {
+          promptId: 'p2',
+          title: 'Updated title',
+          description: 'Need access',
+          steps: ['Step 1', 'Step 2 updated'],
+          note: 'Note',
+          confirmLabel: 'Proceed',
+          cancelLabel: 'Cancel',
+        }),
+      })
+      expect(unwrap(m.get('a1')!).startupPrompt).not.toBe(afterStep)
+      expect(m.get('a1')?.startupPrompt?.promptId).toBe('p2')
+
+      // Explicit null clears.
+      m.patch('a1', { startupPrompt: null })
+      expect(m.get('a1')?.startupPrompt).toBeNull()
     })
   })
 

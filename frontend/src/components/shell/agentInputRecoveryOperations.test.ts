@@ -3,6 +3,7 @@ import type { InputRecoveryTarget } from '~/models/agentInputRecovery'
 import type { AgentTab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { AgentInputProcessRecoverySchema, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { deferred } from '~/test-support/async'
@@ -78,14 +79,20 @@ describe('createAgentInputRecoveryOperations', () => {
       snapshot: create(AgentInputQueueSnapshotSchema, { revision: 2n }),
     })
     await actions.recoverTargets([target])
-    expect(rpc.recoverAgentInputProcess).toHaveBeenCalledExactlyOnceWith('worker-a', {
-      agentId: 'current',
-      recovery: expect.objectContaining({
-        outputGeneration: 9_007_199_254_740_993n,
-        agentSessionId: 'session-9007199254740993',
-        processInstanceId: 'process-9007199254740993',
-      }),
-    })
+    expect(rpc.recoverAgentInputProcess).toHaveBeenCalledExactlyOnceWith(
+      'worker-a',
+      {
+        agentId: 'current',
+        recovery: expect.objectContaining({
+          outputGeneration: 9_007_199_254_740_993n,
+          agentSessionId: 'session-9007199254740993',
+          processInstanceId: 'process-9007199254740993',
+        }),
+      },
+      {
+        timeoutMs: workspaceBootstrapTimeoutMs(),
+      },
+    )
   })
 
   it('discovers all known workers without retargeting the original process', async () => {

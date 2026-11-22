@@ -13,7 +13,7 @@ import { createRoot, mapArray } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchEventsViaChannel, workerAgent } from '~/api/workerRpc'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, AgentTodoSnapshotSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageCompletion, MessagePageAnchor, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStartupPromptSchema, AgentStatus, AgentStatusChangeSchema, AgentTodoSnapshotSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageCompletion, MessagePageAnchor, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import {
@@ -931,6 +931,69 @@ describe('buildAgentStatusTabUpdate', () => {
       {},
     )
     expect(failed.startupError).toBe('spawn failed')
+  })
+
+  it('stores startupPrompt on STARTING, clears it when unset or on non-STARTING statuses, and leaves it untouched on UNSPECIFIED', () => {
+    const prompt = create(AgentStartupPromptSchema, {
+      promptId: 'prompt-1',
+      title: 'Allow macOS Keychain access',
+      description: 'ZCode needs macOS Keychain access.',
+      steps: ['Click Proceed'],
+      note: 'Choose Always Allow.',
+      confirmLabel: 'Proceed',
+      cancelLabel: 'Cancel',
+    })
+
+    const withPrompt = buildAgentStatusTabUpdate(
+      create(AgentStatusChangeSchema, {
+        status: AgentStatus.STARTING,
+        startupMessage: 'Waiting for macOS Keychain confirmation…',
+        startupPrompt: prompt,
+      }),
+      true,
+      {},
+    )
+    expect(withPrompt.startupPrompt).toEqual(prompt)
+
+    const clearedWhileStarting = buildAgentStatusTabUpdate(
+      create(AgentStatusChangeSchema, {
+        status: AgentStatus.STARTING,
+        startupMessage: 'Reading credentials from macOS Keychain…',
+      }),
+      true,
+      {},
+    )
+    expect(clearedWhileStarting.startupPrompt).toBeNull()
+
+    const active = buildAgentStatusTabUpdate(
+      create(AgentStatusChangeSchema, {
+        status: AgentStatus.ACTIVE,
+        startupPrompt: prompt,
+      }),
+      true,
+      {},
+    )
+    expect(active.startupPrompt).toBeNull()
+
+    const failed = buildAgentStatusTabUpdate(
+      create(AgentStatusChangeSchema, {
+        status: AgentStatus.STARTUP_FAILED,
+        startupError: 'canceled',
+        startupPrompt: prompt,
+      }),
+      true,
+      {},
+    )
+    expect(failed.startupPrompt).toBeNull()
+
+    const unspecified = buildAgentStatusTabUpdate(
+      create(AgentStatusChangeSchema, {
+        status: AgentStatus.UNSPECIFIED,
+      }),
+      false,
+      {},
+    )
+    expect('startupPrompt' in unspecified).toBe(false)
   })
 
   // withoutLiveStatusFields removes LIVE_STATUS_FIELDS from an older ListAgents reply after a live event.
@@ -2802,6 +2865,46 @@ describe('extracted handleAgentEvent branch handlers', () => {
         dispose()
       })
     })
+
+    it('badges only a hidden tab on live STARTING with a startupPrompt', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('visible-agent', { agentStatus: AgentStatus.ACTIVE })
+        s.tabs.addAgent('hidden-agent', { agentStatus: AgentStatus.STARTING }, { activate: false })
+        s.tabs.selection.setActiveById(TabType.AGENT, 'visible-agent')
+
+        const prompt = create(AgentStartupPromptSchema, {
+          promptId: 'prompt-1',
+          title: 'Allow macOS Keychain access',
+        })
+        const promptChange = create(AgentStatusChangeSchema, {
+          status: AgentStatus.STARTING,
+          startupMessage: 'Waiting for confirmation…',
+          startupPrompt: prompt,
+        })
+        const noPromptChange = create(AgentStatusChangeSchema, {
+          status: AgentStatus.STARTING,
+          startupMessage: 'Starting ZCode…',
+        })
+
+        // Catch-up replay must not badge the hidden tab.
+        handleAgentStatusChange('hidden-agent', promptChange, 'catchingUp', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.tabs.view.getAgentTab('hidden-agent')?.hasNotification).not.toBe(true)
+
+        // A live STARTING status without a prompt must not badge the hidden tab.
+        handleAgentStatusChange('hidden-agent', noPromptChange, 'live', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.tabs.view.getAgentTab('hidden-agent')?.hasNotification).not.toBe(true)
+
+        // A live STARTING status with a prompt must not badge a visible on-screen tab.
+        handleAgentStatusChange('visible-agent', promptChange, 'live', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.tabs.view.getAgentTab('visible-agent')?.hasNotification).not.toBe(true)
+
+        // A live STARTING status with a prompt badges the hidden tab.
+        handleAgentStatusChange('hidden-agent', promptChange, 'live', s, createLoadingSignal(), () => {}, undefined)
+        expect(s.tabs.view.getAgentTab('hidden-agent')?.hasNotification).toBe(true)
+        dispose()
+      })
+    })
   })
 })
 
@@ -3133,6 +3236,57 @@ describe('clearOfflineAgentState', () => {
       expect(() => clearOfflineAgentState('never-ran', s)).not.toThrow()
       dispose()
     })
+  })
+})
+
+describe('useWorkspaceConnection offline worker cleanup', () => {
+  it('clears startupPrompt on tabs hosted by a worker that goes offline while keeping online tabs intact', () => {
+    const prompt = create(AgentStartupPromptSchema, {
+      promptId: 'prompt-offline',
+      title: 'Allow macOS Keychain access',
+    })
+    const tabs = makeTabStores()
+    const workerOnline = createWorkerOnlineStore()
+    tabs.addAgent('offline-agent', {
+      workerId: 'w-offline',
+      agentStatus: AgentStatus.STARTING,
+      startupPrompt: prompt,
+    })
+    tabs.addAgent('online-agent', {
+      workerId: 'w-online',
+      agentStatus: AgentStatus.STARTING,
+      startupPrompt: prompt,
+    }, { activate: false })
+
+    let dispose!: () => void
+    createRoot((d) => {
+      dispose = d
+      useWorkspaceConnection({
+        workerOnline,
+        chatStore: createChatStore(),
+        agentInputQueueStore: createAgentInputQueueStore(),
+        view: tabs.view,
+        metadata: tabs.metadata,
+        selection: tabs.selection,
+        controlStore: createControlStore(),
+        quakeStore: createTestQuakeStore(),
+        getActiveQuakeKeyId: () => null,
+        agentSessionStore: createAgentSessionStore(),
+        agentActivityStore: createAgentActivityStore(),
+        repoGitStore: createRepoGitStore(),
+        settingsLoading: createLoadingSignal(),
+        getActiveWorkspaceId: () => WS,
+      })
+    })
+
+    try {
+      workerOnline.setOnline('w-offline', false)
+      expect(tabs.view.getAgentTab('offline-agent')?.startupPrompt).toBeNull()
+      expect(tabs.view.getAgentTab('online-agent')?.startupPrompt).toEqual(prompt)
+    }
+    finally {
+      dispose()
+    }
   })
 })
 

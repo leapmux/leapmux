@@ -1,11 +1,13 @@
 import type { FileDiffBase, FileOpenSource, FileViewMode } from './tab.types'
-import type { AgentProvider, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, AgentStartupPrompt, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { StorageAccount } from '~/lib/browserStorage'
 import type { TabPayloadView } from '~/lib/tabPayload'
+import { equals, isMessage } from '@bufbuild/protobuf'
 import { batch, createEffect, createMemo, getOwner, onCleanup } from 'solid-js'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
+import { AgentStartupPromptSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_TAB_MRU, onStorageAccountChange, sessionStorageGet, sessionStorageSet, storageAccountId, storageAccountUserId } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { assignDefined } from '~/lib/jsonPick'
@@ -107,6 +109,8 @@ export interface AgentMeta {
   queueHeadDispatch?: QueueHeadDispatch | undefined
   /** The root agent that owns this agent's process and notification streams. */
   rootAgentId?: string | undefined
+  /** Pending one-time startup confirmation prompt while STARTING (`null` clears). */
+  startupPrompt?: AgentStartupPrompt | null | undefined
 }
 
 export interface TerminalMeta {
@@ -331,6 +335,8 @@ function sameStoredValue(prev: unknown, next: unknown): boolean {
     return false
   if (Array.isArray(prev) && Array.isArray(next))
     return shallowEqualArrays(prev, next)
+  if (isMessage(prev, AgentStartupPromptSchema) && isMessage(next, AgentStartupPromptSchema))
+    return equals(AgentStartupPromptSchema, prev, next)
   return shallowEqual(prev, next)
 }
 

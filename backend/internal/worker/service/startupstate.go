@@ -10,6 +10,7 @@ import (
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/drain"
+	"google.golang.org/protobuf/proto"
 )
 
 // failedEntryTTL limits how long a FINISHED failure entry stays in the
@@ -58,7 +59,16 @@ type startupEntry struct {
 	// the initial STARTING broadcast already fired — can surface it
 	// through catch-up replay instead of showing a generic fallback.
 	startupMessage string
-	cancel         context.CancelFunc
+	// prompt holds the provider's active one-time startup confirmation dialog
+	// while startup pauses for user input. Nil whenever no prompt is pending.
+	prompt *pendingStartupPrompt
+	// prompted records that this claim opened an interactive startup prompt.
+	// Replacements keep their launch context uncanceled on close/archive unless
+	// prompted is true, so post-Proceed OS dialogs (such as macOS Keychain)
+	// abort immediately while non-prompted replacements preserve the
+	// validateLaunchedAgent late-process stop invariant.
+	prompted bool
+	cancel   context.CancelFunc
 	// evictTimer fires failedEntryTTL after fail() to drop the entry.
 	// Stored so cancelAndClear/succeed can Stop() it and release the
 	// runtime timer slot early.
@@ -216,6 +226,10 @@ type startupCore struct {
 	// else in the registry enforced it.
 	claimsClosed   bool
 	claimsClosedCh chan struct{}
+	// promptsClosed latches true when graceful shutdown begins canceling
+	// pending startup prompts (or when closeClaims runs) so a late setPrompt
+	// cannot park on a dialog after shutdown started draining.
+	promptsClosed bool
 }
 
 func newStartupCore(clock quartz.Clock) startupCore {
@@ -300,14 +314,23 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 	return entry
 }
 
+type pendingStartupPrompt struct {
+	proto          *leapmuxv1.AgentStartupPrompt
+	proceedMessage string
+	decision       chan bool
+}
+
 // beginReplacement is begin for a process replacement. See startupEntry.replacement.
 //
 // It refuses a FAILED entry, as beginColdStart does, because a replacement must
 // not erase the record of a startup that failed. It returns nil when the claim
 // is refused, and the caller then replaces the process with no entry. The holder
 // of the id already keeps the agent from reading INACTIVE, or a close holds it.
-func (r *startupCore) beginReplacement(id string) *startupEntry {
-	entry, _ := r.claim(id, func() {}, claimMode{replacement: true})
+func (r *startupCore) beginReplacement(id string, cancel context.CancelFunc) *startupEntry {
+	if cancel == nil {
+		cancel = func() {}
+	}
+	entry, _ := r.claim(id, cancel, claimMode{replacement: true})
 	return entry
 }
 
@@ -375,6 +398,7 @@ func (r *startupCore) beginColdStart(id string, cancel context.CancelFunc) (*sta
 // goroutines that were in flight when the latch closed.
 func (r *startupCore) closeClaims() {
 	r.mu.Lock()
+	r.promptsClosed = true
 	if !r.claimsClosed {
 		r.claimsClosed = true
 		close(r.claimsClosedCh)
@@ -580,6 +604,36 @@ func (r *startupCore) drainForShutdown(deadline *drain.Deadline) []string {
 // restart and make the resume sweep skip the tab. failStartup reads the
 // stamp and records nothing, so the next boot finds the tab as a process
 // that ended with the worker.
+func stampShutdownClaim(e *startupEntry) {
+	if !e.closeRaced && !e.archiveStopped {
+		e.shutdownStopped = true
+	}
+}
+
+func (e *startupEntry) unfinishedClaimsLocked() []*startupEntry {
+	reached := []*startupEntry{e}
+	for behind := e.unfinishedEnclosing(); behind != nil; behind = behind.unfinishedEnclosing() {
+		reached = append(reached, behind)
+	}
+	return reached
+}
+
+// detachEntryLocked stamps entry and its unfinished enclosing claims, clears
+// any pending prompt, removes entry from r.entries if it is still live, and
+// releases entry.done. The caller holds r.mu.
+func (r *startupCore) detachEntryLocked(entry *startupEntry, stamp func(*startupEntry)) []*startupEntry {
+	reached := entry.unfinishedClaimsLocked()
+	for _, claim := range reached {
+		stamp(claim)
+	}
+	entry.prompt = nil
+	if r.entries[entry.id] == entry {
+		delete(r.entries, entry.id)
+		entry.release()
+	}
+	return reached
+}
+
 func (r *startupCore) cancelForShutdown() []string {
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.inflight))
@@ -589,9 +643,7 @@ func (r *startupCore) cancelForShutdown() []string {
 	r.mu.Unlock()
 	slices.Sort(ids)
 	for _, id := range ids {
-		r.cancelStartup(id, false, func(e *startupEntry) {
-			e.shutdownStopped = true
-		})
+		r.cancelStartup(id, false, stampShutdownClaim)
 	}
 	return ids
 }
@@ -605,6 +657,107 @@ func (r *startupCore) setMessage(id, message string) {
 	defer r.mu.Unlock()
 	if entry, ok := r.entries[id]; ok {
 		entry.startupMessage = message
+	}
+}
+
+var (
+	errStartupPromptNotFound = errors.New("no startup confirmation prompt is pending")
+	errStartupPromptMismatch = errors.New("startup confirmation prompt id does not match")
+)
+
+// setPrompt attaches a pending startup confirmation prompt to the live,
+// identity-matched entry h and returns a buffered decision channel plus the
+// effective waiting message. When shutdown has already closed prompts, it
+// stamps shutdownStopped on h and its unfinished enclosing claims, retires h
+// from entries, releases h.done, and returns ok=false.
+func (r *startupCore) setPrompt(h *startupEntry, prompt *leapmuxv1.AgentStartupPrompt, waitingMsg, proceedMsg string) (decisionCh <-chan bool, effectiveWaitingMsg string, ok bool) {
+	if h == nil || prompt == nil {
+		return nil, "", false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.entries[h.id] != h || h.failed || h.closeRaced || h.archiveStopped || h.shutdownStopped {
+		return nil, "", false
+	}
+	if r.promptsClosed || r.claimsClosed {
+		r.detachEntryLocked(h, stampShutdownClaim)
+		return nil, "", false
+	}
+	cloned, _ := proto.Clone(prompt).(*leapmuxv1.AgentStartupPrompt)
+	ch := make(chan bool, 1)
+	h.prompted = true
+	h.prompt = &pendingStartupPrompt{
+		proto:          cloned,
+		proceedMessage: proceedMsg,
+		decision:       ch,
+	}
+	if waitingMsg != "" {
+		h.startupMessage = waitingMsg
+	}
+	return ch, h.startupMessage, true
+}
+
+// clearPrompt drops h's pending prompt when h is still the live entry and the
+// active prompt matches promptID.
+func (r *startupCore) clearPrompt(h *startupEntry, promptID string) {
+	if h == nil || promptID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.entries[h.id] != h {
+		return
+	}
+	if h.prompt != nil && h.prompt.proto.GetPromptId() == promptID {
+		h.prompt = nil
+	}
+}
+
+// resolvePrompt delivers the user's proceed/cancel decision to the pending
+// prompt matching (id, promptID) and atomically clears the prompt from the
+// registry before waking the startup goroutine.
+func (r *startupCore) resolvePrompt(id, promptID string, proceed bool) error {
+	if id == "" || promptID == "" {
+		return errStartupPromptNotFound
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found := r.entries[id]
+	if !found || entry.failed || entry.prompt == nil {
+		return errStartupPromptNotFound
+	}
+	if entry.prompt.proto.GetPromptId() != promptID {
+		return errStartupPromptMismatch
+	}
+	pending := entry.prompt
+	entry.prompt = nil
+	if proceed && pending.proceedMessage != "" {
+		entry.startupMessage = pending.proceedMessage
+	}
+	pending.decision <- proceed
+	return nil
+}
+
+// cancelPendingPromptsForShutdown latches promptsClosed and unblocks every
+// startup currently waiting on a user confirmation prompt so graceful shutdown
+// never stalls behind a modal dialog or records a spurious STARTUP_FAILED.
+func (r *startupCore) cancelPendingPromptsForShutdown() {
+	r.mu.Lock()
+	r.promptsClosed = true
+	var toCancel []context.CancelFunc
+	for _, entry := range r.entries {
+		if entry == nil || entry.failed || entry.prompt == nil {
+			continue
+		}
+		for _, claim := range r.detachEntryLocked(entry, stampShutdownClaim) {
+			if claim.cancel != nil && (!claim.replacement || claim.prompted) {
+				toCancel = append(toCancel, claim.cancel)
+			}
+		}
+	}
+	r.mu.Unlock()
+	for _, cancel := range toCancel {
+		cancel()
 	}
 }
 
@@ -748,25 +901,21 @@ func (r *startupCore) cancelStartup(id string, preferFinished bool, stamp func(*
 		entry = r.inflight[id]
 	}
 	var reached []*startupEntry
+	var toCancel []context.CancelFunc
 	if entry != nil {
-		reached = append(reached, entry)
-		for behind := entry.unfinishedEnclosing(); behind != nil; behind = behind.unfinishedEnclosing() {
-			reached = append(reached, behind)
-		}
+		reached = r.detachEntryLocked(entry, stamp)
 		for _, claim := range reached {
-			stamp(claim)
-		}
-		if r.entries[id] == entry {
-			delete(r.entries, id)
-			entry.release()
+			if claim.cancel != nil && (!claim.replacement || claim.prompted) {
+				toCancel = append(toCancel, claim.cancel)
+			}
 		}
 	}
 	r.mu.Unlock()
 	for _, claim := range reached {
 		claim.stopEviction()
-		if claim.cancel != nil {
-			claim.cancel()
-		}
+	}
+	for _, cancel := range toCancel {
+		cancel()
 	}
 	return entry
 }
@@ -998,17 +1147,6 @@ func (r *startupCore) dispositionOf(h *startupEntry) (closeWorktreeDisposition, 
 	return h.closeDisposition, h.closeRaced
 }
 
-// snapshot returns (failed, startupError, startupMessage, ok) for the given id.
-func (r *startupCore) snapshot(id string) (failed bool, startupError, startupMessage string, ok bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	entry, found := r.entries[id]
-	if !found {
-		return false, "", "", false
-	}
-	return entry.failed, entry.startupError, entry.startupMessage, true
-}
-
 // startupRegistry wraps startupCore with typed status accessors for a
 // specific proto enum (AgentStatus, TerminalStatus). Callers supply the
 // three enum values at construction time so each registry instance
@@ -1029,19 +1167,48 @@ func newStartupRegistry[S ~int32](clock quartz.Clock, unspec, starting, failed S
 	}
 }
 
+// startupState is one atomic snapshot of a tracked entry in startupRegistry.
+type startupState[S ~int32] struct {
+	status         S
+	startupError   string
+	startupMessage string
+	startupPrompt  *leapmuxv1.AgentStartupPrompt
+}
+
+// readSnapshot returns the tracked status, startupError, startupMessage, and a
+// cloned startupPrompt (only while STARTING) atomically under r.mu. ok=false
+// means the id is not in the registry.
+func (r *startupRegistry[S]) readSnapshot(id string) (startupState[S], bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found := r.entries[id]
+	if !found {
+		return startupState[S]{status: r.unspecifiedStatus}, false
+	}
+	if entry.failed {
+		return startupState[S]{status: r.failedStatus, startupError: entry.startupError}, true
+	}
+	var prompt *leapmuxv1.AgentStartupPrompt
+	if entry.prompt != nil {
+		prompt, _ = proto.Clone(entry.prompt.proto).(*leapmuxv1.AgentStartupPrompt)
+	}
+	return startupState[S]{
+		status:         r.startingStatus,
+		startupMessage: entry.startupMessage,
+		startupPrompt:  prompt,
+	}, true
+}
+
 // status returns the status override, startup_error, and the current
 // phase message for an id, if one is currently tracked. ok=false means
 // the id is not in the registry and the caller should derive status
 // from the runtime Manager (agents) or default to READY (terminals).
 func (r *startupRegistry[S]) status(id string) (status S, startupError, startupMessage string, ok bool) {
-	failed, errStr, msg, found := r.snapshot(id)
+	snap, found := r.readSnapshot(id)
 	if !found {
 		return r.unspecifiedStatus, "", "", false
 	}
-	if failed {
-		return r.failedStatus, errStr, "", true
-	}
-	return r.startingStatus, "", msg, true
+	return snap.status, snap.startupError, snap.startupMessage, true
 }
 
 func newAgentStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.AgentStatus] {

@@ -6,6 +6,7 @@ import { Code, ConnectError } from '@connectrpc/connect'
 
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { workerAgent } from '~/api/workerRpc'
 import { clearScheduleDraft, getScheduleDraft, setScheduleDraft } from '~/components/chat/composer/scheduleDrafts'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
@@ -36,6 +37,7 @@ const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
 const mockUpdateAgentGoal = vi.fn()
 const mockApproveAutoReviewDenial = vi.fn()
+const mockRespondAgentStartupPrompt = vi.fn()
 const mockRetryAgentTurn = vi.fn()
 
 vi.mock('~/api/workerRpc', async (importOriginal) => {
@@ -63,6 +65,7 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
       updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
       updateAgentGoal: (...args: unknown[]) => mockUpdateAgentGoal(...args),
       approveAutoReviewDenial: (...args: unknown[]) => mockApproveAutoReviewDenial(...args),
+      respondAgentStartupPrompt: (...args: unknown[]) => mockRespondAgentStartupPrompt(...args),
       retryAgentTurn: (...args: unknown[]) => mockRetryAgentTurn(...args),
       listAvailableProviders: (...args: unknown[]) => mockListAvailableProviders(...args),
     },
@@ -718,12 +721,18 @@ describe('useAgentOperations', () => {
           })
 
           // One RPC carrying the uniform `{ options: { [groupKey]: value } }` payload.
-          expect(mockUpdateAgentSettings).toHaveBeenCalledWith('w-1', {
-            agentId: 'a-1',
-            settings: {
-              options: { opencode_mode: 'fast' },
+          expect(mockUpdateAgentSettings).toHaveBeenCalledWith(
+            'w-1',
+            {
+              agentId: 'a-1',
+              settings: {
+                options: { opencode_mode: 'fast' },
+              },
             },
-          })
+            {
+              timeoutMs: workspaceBootstrapTimeoutMs(),
+            },
+          )
           // The failed change rolls back to the prior current value ('safe').
           expect(view.getAgentTab('a-1')?.optionValues?.opencode_mode).toBe('safe')
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to change Execution Mode', expect.any(Error))
@@ -1549,6 +1558,44 @@ describe('useAgentOperations', () => {
           mockApproveAutoReviewDenial.mockRejectedValueOnce(refusal)
           await expect(ops.handleApproveAutoReviewDenial('a1', 'm1', 'r1')).rejects.toBe(refusal)
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to approve the action', refusal)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
+  describe('handleRespondAgentStartupPrompt', () => {
+    it('sends the prompt decision to the agent\'s worker', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, add } = setup()
+          add({ id: 'a1', workerId: 'w-7', agentProvider: AgentProvider.ZCODE })
+          mockShowWarnToast.mockClear()
+          mockRespondAgentStartupPrompt.mockReset()
+          mockRespondAgentStartupPrompt.mockResolvedValueOnce({})
+          await expect(ops.handleRespondAgentStartupPrompt('a1', 'prompt-1', true)).resolves.toBeUndefined()
+          expect(mockRespondAgentStartupPrompt).toHaveBeenCalledWith('w-7', { agentId: 'a1', promptId: 'prompt-1', proceed: true })
+          expect(mockShowWarnToast).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('shows a warning toast and re-throws when the confirmation RPC fails', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, add } = setup()
+          add({ id: 'a1', workerId: 'w-7', agentProvider: AgentProvider.ZCODE })
+          mockShowWarnToast.mockClear()
+          const failure = new Error('prompt expired')
+          mockRespondAgentStartupPrompt.mockReset()
+          mockRespondAgentStartupPrompt.mockRejectedValueOnce(failure)
+          await expect(ops.handleRespondAgentStartupPrompt('a1', 'prompt-1', false)).rejects.toBe(failure)
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to send startup confirmation', failure)
         }
         finally {
           dispose()

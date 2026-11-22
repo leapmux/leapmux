@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/util/drain"
 )
@@ -975,7 +976,7 @@ func TestStartupCore_ReplacementIsNoStartupWindow(t *testing.T) {
 	t.Parallel()
 
 	core := newTestStartupCore(t)
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement)
 	_, _, _, tracked := core.snapshot("tab-1")
 	assert.True(t, tracked, "a replacement must make the agent read STARTING")
@@ -1026,7 +1027,7 @@ func TestStartupCore_ReplacementRefusesAnIDThatIsHeld(t *testing.T) {
 			wasTracked := func() bool { _, _, _, tracked := core.snapshot("tab-1"); return tracked }
 			before := wasTracked()
 
-			assert.Nil(t, core.beginReplacement("tab-1"))
+			assert.Nil(t, core.beginReplacement("tab-1", func() {}))
 
 			assert.Equal(t, before, wasTracked(), "a refused replacement must leave the holder's entry alone")
 			end()
@@ -1057,7 +1058,7 @@ func TestStartupCore_ACloseReachesTheStartupBehindAReplacement(t *testing.T) {
 
 	core := newTestStartupCore(t)
 	open, openCancelled := beginEndedStartup(t, &core, "tab-1")
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement, "an ended startup leaves the id free for a replacement")
 
 	core.cancelAndClear("tab-1", removeWorktreeOnClose)
@@ -1084,7 +1085,7 @@ func TestStartupCore_AnArchiveStopsAndWaitsForTheStartupBehindAReplacement(t *te
 	synctest.Test(t, func(t *testing.T) {
 		core := newTestStartupCore(t)
 		open, _ := beginEndedStartup(t, &core, "tab-1")
-		replacement := core.beginReplacement("tab-1")
+		replacement := core.beginReplacement("tab-1", func() {})
 		require.NotNil(t, replacement)
 
 		archived := core.cancelForArchive("tab-1")
@@ -1123,7 +1124,7 @@ func TestStartupCore_AReplacementThatEndsLeavesTheStartupBehindItReachable(t *te
 
 	core := newTestStartupCore(t)
 	open, _ := beginEndedStartup(t, &core, "tab-1")
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement)
 	core.abandon(replacement)
 
@@ -1141,7 +1142,7 @@ func TestStartupCore_ClaimsOfOneIDThatReturnOutOfOrderLeaveNothingBehind(t *test
 
 	core := newTestStartupCore(t)
 	open, _ := beginEndedStartup(t, &core, "tab-1")
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement)
 
 	core.finishEntry(open)
@@ -1161,7 +1162,7 @@ func TestClaimRefusedAfterCloseClaims(t *testing.T) {
 	core.closeClaims()
 
 	assert.Nil(t, core.begin("a", nil), "begin must be refused")
-	assert.Nil(t, core.beginReplacement("b"), "beginReplacement must be refused")
+	assert.Nil(t, core.beginReplacement("b", func() {}), "beginReplacement must be refused")
 	entry, outcome := core.beginColdStart("c", nil)
 	assert.Nil(t, entry, "beginColdStart must be refused")
 	assert.Equal(t, claimRefusedShuttingDown, outcome)
@@ -1652,7 +1653,7 @@ func TestStartupCoreCancelForShutdownReachesEnclosingClaims(t *testing.T) {
 
 	core := newTestStartupCore(t)
 	open, openCancelled := beginEndedStartup(t, &core, "tab-1")
-	replacement := core.beginReplacement("tab-1")
+	replacement := core.beginReplacement("tab-1", func() {})
 	require.NotNil(t, replacement)
 
 	ids := core.cancelForShutdown()
@@ -1661,4 +1662,164 @@ func TestStartupCoreCancelForShutdownReachesEnclosingClaims(t *testing.T) {
 	assert.True(t, core.shutdownStopped(replacement), "the newest claim must learn that the shutdown stopped it")
 	assert.True(t, core.shutdownStopped(open), "the claim behind it must learn that too")
 	assert.True(t, *openCancelled, "the goroutine behind the newest claim must be cancelled too")
+}
+
+func (r *startupCore) snapshot(id string) (failed bool, startupError, startupMessage string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, found := r.entries[id]
+	if !found {
+		return false, "", "", false
+	}
+	return entry.failed, entry.startupError, entry.startupMessage, true
+}
+
+func TestStartupCore_PromptGuardsAndShutdownCancel(t *testing.T) {
+	t.Parallel()
+
+	samplePrompt := func(id string) *leapmuxv1.AgentStartupPrompt {
+		return &leapmuxv1.AgentStartupPrompt{
+			PromptId:     id,
+			Title:        "Keychain access",
+			Description:  "Need access",
+			Steps:        []string{"Step 1"},
+			ConfirmLabel: "Proceed",
+			CancelLabel:  "Cancel",
+		}
+	}
+
+	t.Run("setPrompt rejects retired, failed, and closed handles and clearPrompt/resolvePrompt validate promptID", func(t *testing.T) {
+		t.Parallel()
+		reg := newAgentStartupRegistry(testutil.NewQuartzMock(t))
+
+		// Retired handle after succeed.
+		h1 := reg.begin("tab-1", func() {})
+		require.NotNil(t, h1)
+		reg.succeed("tab-1", h1)
+		reg.finishEntry(h1)
+		_, _, ok := reg.setPrompt(h1, samplePrompt("p-retired"), "waiting", "proceeding")
+		assert.False(t, ok)
+
+		// Active handle with prompt.
+		h2 := reg.begin("tab-1", func() {})
+		require.NotNil(t, h2)
+		ch, msg, ok := reg.setPrompt(h2, samplePrompt("p-1"), "Waiting for confirmation…", "Proceeding…")
+		require.True(t, ok)
+		assert.Equal(t, "Waiting for confirmation…", msg)
+
+		snap, tracked := reg.readSnapshot("tab-1")
+		require.True(t, tracked)
+		assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, snap.status)
+		assert.Equal(t, "Waiting for confirmation…", snap.startupMessage)
+		require.NotNil(t, snap.startupPrompt)
+		assert.Equal(t, "p-1", snap.startupPrompt.GetPromptId())
+
+		// Wrong promptID does not clear or resolve.
+		reg.clearPrompt(h2, "p-wrong")
+		assert.ErrorIs(t, reg.resolvePrompt("tab-1", "", true), errStartupPromptNotFound)
+		assert.ErrorIs(t, reg.resolvePrompt("tab-1", "p-wrong", true), errStartupPromptMismatch)
+
+		// Matching resolve wakes channel, clears prompt, updates proceed message, rejects duplicate.
+		require.NoError(t, reg.resolvePrompt("tab-1", "p-1", true))
+		assert.True(t, <-ch)
+		snap, tracked = reg.readSnapshot("tab-1")
+		require.True(t, tracked)
+		assert.Nil(t, snap.startupPrompt)
+		assert.Equal(t, "Proceeding…", snap.startupMessage)
+		assert.ErrorIs(t, reg.resolvePrompt("tab-1", "p-1", true), errStartupPromptNotFound)
+
+		// clearPrompt with matching promptID clears a pending prompt.
+		_, _, ok = reg.setPrompt(h2, samplePrompt("p-2"), "Waiting again…", "")
+		require.True(t, ok)
+		reg.clearPrompt(h2, "p-2")
+		assert.ErrorIs(t, reg.resolvePrompt("tab-1", "p-2", false), errStartupPromptNotFound)
+
+		// Failed handle rejects setPrompt.
+		reg.fail(h2, "boom")
+		reg.finishEntry(h2)
+		_, _, ok = reg.setPrompt(h2, samplePrompt("p-failed"), "waiting", "")
+		assert.False(t, ok)
+
+		// Closed handle rejects setPrompt.
+		h3 := reg.begin("tab-2", func() {})
+		require.NotNil(t, h3)
+		reg.cancelAndClear("tab-2", keepWorktreeOnClose)
+		reg.finishEntry(h3)
+		_, _, ok = reg.setPrompt(h3, samplePrompt("p-closed"), "waiting", "")
+		assert.False(t, ok)
+	})
+
+	t.Run("cancelPendingPromptsForShutdown stamps enclosing claims, clears prompt, releases done, and cancels ctx", func(t *testing.T) {
+		t.Parallel()
+		core := newTestStartupCore(t)
+
+		open, openCanceled := beginEndedStartup(t, &core, "tab-1")
+		replacement := core.beginReplacement("tab-1", func() {})
+		require.NotNil(t, replacement)
+		_, _, ok := core.setPrompt(replacement, samplePrompt("p-open"), "Waiting…", "")
+		require.True(t, ok)
+
+		// A separate startup with no pending prompt must be left untouched.
+		other := core.begin("tab-other", func() {})
+		require.NotNil(t, other)
+
+		core.cancelPendingPromptsForShutdown()
+
+		assert.True(t, core.shutdownStopped(replacement))
+		assert.True(t, core.shutdownStopped(open))
+		assert.True(t, *openCanceled)
+		select {
+		case <-replacement.done:
+		default:
+			t.Fatal("replacement.done was not closed")
+		}
+		_, _, _, tracked := core.snapshot("tab-1")
+		assert.False(t, tracked)
+
+		// Untouched startup remains tracked and not shutdownStopped.
+		_, _, _, otherTracked := core.snapshot("tab-other")
+		assert.True(t, otherTracked)
+		assert.False(t, core.shutdownStopped(other))
+
+		// Late setPrompt on other after promptsClosed stamps shutdownStopped, deletes from entries, and closes done.
+		_, _, ok = core.setPrompt(other, samplePrompt("p-late"), "Waiting…", "")
+		assert.False(t, ok)
+		assert.True(t, core.shutdownStopped(other))
+		select {
+		case <-other.done:
+		default:
+			t.Fatal("other.done was not closed on late setPrompt after promptsClosed")
+		}
+		_, _, _, otherTracked = core.snapshot("tab-other")
+		assert.False(t, otherTracked)
+
+		core.finishEntry(replacement)
+		core.finishEntry(open)
+		core.finishEntry(other)
+	})
+
+	t.Run("late setPrompt after closeClaims stamps enclosing claim and releases done", func(t *testing.T) {
+		t.Parallel()
+		core := newTestStartupCore(t)
+
+		open, _ := beginEndedStartup(t, &core, "tab-1")
+		replacement := core.beginReplacement("tab-1", func() {})
+		require.NotNil(t, replacement)
+
+		core.closeClaims()
+		_, _, ok := core.setPrompt(replacement, samplePrompt("p-after-close-claims"), "Waiting…", "")
+		assert.False(t, ok)
+		assert.True(t, core.shutdownStopped(replacement))
+		assert.True(t, core.shutdownStopped(open))
+		select {
+		case <-replacement.done:
+		default:
+			t.Fatal("replacement.done was not closed")
+		}
+		_, _, _, tracked := core.snapshot("tab-1")
+		assert.False(t, tracked)
+
+		core.finishEntry(replacement)
+		core.finishEntry(open)
+	})
 }

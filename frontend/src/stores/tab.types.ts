@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, AgentStartupPrompt, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
@@ -98,6 +98,8 @@ export interface AgentTab extends BaseTab {
   startupError?: string | undefined
   /** Phase label carried while AgentStatus.STARTING (e.g. "Starting Claude…"). */
   startupMessage?: string | undefined
+  /** Pending one-time startup confirmation prompt while AgentStatus.STARTING (`null` clears). */
+  startupPrompt?: AgentStartupPrompt | null | undefined
   /**
    * Subagent linkage. parentAgentId is set only for virtual child agents
    * (subagent transcripts fed by the parent provider's process). A child tab

@@ -21,7 +21,7 @@ import type { TabView } from '~/stores/tabView'
 import { useLocation, useSearchParams } from '@solidjs/router'
 import { batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridge'
-import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
+import { workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { workerFile } from '~/api/workerRpc'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { pluginFor } from '~/components/chat/providers/registry'
@@ -278,7 +278,7 @@ export const AppShell: Component = () => {
   const [newAgentLoadingProvider, setNewAgentLoadingProvider] = createSignal<AgentProvider | null>(null)
   const [newTerminalLoading, setNewTerminalLoading] = createSignal(false)
   const [newShellLoading, setNewShellLoading] = createSignal(false)
-  const settingsLoading = createLoadingSignal(apiLoadingTimeoutMs())
+  const settingsLoading = createLoadingSignal(workspaceBootstrapTimeoutMs())
   // Dialog handles owned by AppShell. `lastTabConfirm` is owned by
   // useTabOperations (it drives the close flow) and joined into the
   // shared `dialogs` record below once tabOps exists.
@@ -2020,6 +2020,7 @@ export const AppShell: Component = () => {
         */}
           <tileRenderer.CloseDialogs />
           <tileRenderer.RecoveryDialog />
+          <tileRenderer.StartupPromptDialog />
 
           <Show when={cliPathInfo()}>
             {info => (
