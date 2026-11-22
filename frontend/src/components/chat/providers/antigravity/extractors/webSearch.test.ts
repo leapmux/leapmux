@@ -62,6 +62,24 @@ describe('antigravityWebSearchRequest', () => {
     const step = makeSearchStep({})
     expect(antigravityWebSearchRequest(step)).toEqual({ query: '' })
   })
+
+  it('trims whitespace-only tool argument query before falling back to searchWeb.query', () => {
+    const stepWithBlankArg = makeSearchStep(
+      {
+        searchWeb: { query: '  from step  ' },
+      },
+      JSON.stringify({ query: '   ' }),
+    )
+    const stepWithBothBlank = makeSearchStep(
+      {
+        searchWeb: { query: '\t\n ' },
+      },
+      JSON.stringify({ query: '   ' }),
+    )
+
+    expect(antigravityWebSearchRequest(stepWithBlankArg)).toEqual({ query: 'from step' })
+    expect(antigravityWebSearchRequest(stepWithBothBlank)).toEqual({ query: '' })
+  })
 })
 
 describe('antigravityWebSearchResult', () => {

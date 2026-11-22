@@ -5,6 +5,8 @@ import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { clippedText } from '~/styles/shared.css'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { markdownContent } from '../markdownEditor/markdownContent.css'
 import { toolMetaRow } from '../toolStyles.css'
 import { WebSearchQueries, WebSearchResultsBody } from './webSearchResults'
 
@@ -45,6 +47,57 @@ describe('WebSearchResultsBody', () => {
     const { container } = renderResults()
     expect(container.textContent).toContain(LONG_TITLE)
     expect(container.textContent).toContain('example.com')
+  })
+
+  it('renders non-http, mixed-case, malformed, and relative urls as plain text while keeping http and https anchors', () => {
+    const { container } = render(() => (
+      <WebSearchResultsBody
+        source={{
+          links: [
+            { title: 'Script Link', url: 'javascript:alert(1)' },
+            { title: 'Data Link', url: 'data:text/html,hi' },
+            { title: 'File Link', url: 'file:///etc/passwd' },
+            { title: 'Relative Route', url: '/settings' },
+            { title: 'Mixed Case', url: 'HttPs://example.com/mixed' },
+            { title: 'Malformed Scheme', url: 'https://' },
+            { title: 'Plain HTTP', url: 'http://example.com/plain' },
+          ],
+          summary: '',
+        }}
+        context={{
+          getMessageUiState: () => true,
+        }}
+      />
+    ))
+    const anchors = Array.from(container.querySelectorAll('a'))
+    expect(anchors.map(anchor => ({
+      text: anchor.textContent,
+      href: anchor.getAttribute('href'),
+    }))).toEqual([
+      { text: 'Plain HTTP', href: 'http://example.com/plain' },
+    ])
+    expect(container.textContent).toContain('Script Link')
+    expect(container.textContent).toContain('Data Link')
+    expect(container.textContent).toContain('File Link')
+    expect(container.textContent).toContain('Relative Route')
+    expect(container.textContent).toContain('Mixed Case')
+    expect(container.textContent).toContain('Malformed Scheme')
+  })
+
+  it('keeps the markdownContent class on the expanded summary container', async () => {
+    const { container } = render(() => (
+      <WebSearchResultsBody
+        source={{
+          links: [],
+          summary: '```rust\nlet x = 1;\n```',
+        }}
+        context={{
+          getMessageUiState: () => true,
+        }}
+      />
+    ))
+    await settleWorkerReplies()
+    expect(container.querySelector(classSelector(markdownContent))).toBeTruthy()
   })
 
   /**

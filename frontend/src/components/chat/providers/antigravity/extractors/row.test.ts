@@ -514,4 +514,61 @@ describe('antigravityExtractRow', () => {
     })
     expect(call?.result).toEqual({ links: [], summary: '' })
   })
+
+  it('infers web_search and execute kinds from step.type when metadata.toolCall.name is absent', () => {
+    const searchCall = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      searchWeb: {
+        query: 'LeapMux',
+        summary: 'Search summary.',
+        webDocuments: [
+          { title: 'LeapMux Docs', url: 'https://leapmux.dev/docs' },
+        ],
+      },
+    })
+    expect(searchCall).toMatchObject({
+      kind: 'web_search',
+      status: 'completed',
+      request: { query: 'LeapMux' },
+      result: {
+        links: [
+          { title: 'LeapMux Docs', url: 'https://leapmux.dev/docs' },
+        ],
+        summary: 'Search summary.',
+      },
+    })
+
+    const commandCall = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      runCommand: {
+        commandLine: 'echo probe',
+        exitCode: 0,
+        combinedOutput: { full: 'probe\n' },
+      },
+    })
+    expect(commandCall).toMatchObject({
+      kind: 'execute',
+      status: 'completed',
+      request: { command: 'echo probe' },
+      result: {
+        commands: [
+          { output: 'probe\n', exitCode: 0 },
+        ],
+      },
+    })
+
+    const unknownNamedSearch = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: {
+        toolCall: { id: 'custom-1', name: 'custom_search_tool' },
+      },
+      generic: {
+        result: { result: 'custom output' },
+      },
+    })
+    expect(unknownNamedSearch?.kind).toBe('other')
+  })
 })

@@ -19,6 +19,7 @@ import { failedResult, proseResult, readToolCallSpec, unparsedResult } from '../
 import { deriveToolCallStatus } from '../../../model/toolCallLifecycle'
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome, retainedRowIsFinal } from '../../registry'
+import { extractWebSearchLinks } from '../../webSearchLinks'
 import { OH_MY_PI_DEVICE_SCHEME, OH_MY_PI_MCP_TOOL_PREFIX, OH_MY_PI_READ_KIND_URL, OH_MY_PI_YIELD_STATUS_ABORTED } from '../protocol'
 import { ohMyPiToolKind } from '../toolKinds'
 import { ohMyPiAgentRequest, ohMyPiAgentRuns } from './agent'
@@ -351,19 +352,8 @@ function declaredOnly<K extends ToolKind>(kind: K): (facts: OhMyPiToolFacts) => 
 /** The links and the summary one `web_search` result states in its details. */
 function webSearchLinks(details: Record<string, unknown>): { links: WebSearchLink[], summary: string } {
   const response = pickObject(details, 'response')
-  const sources = Array.isArray(response?.sources)
-    ? response.sources.filter(isObject)
-    : []
-  const links = sources.flatMap((source) => {
-    const url = pickString(source, 'url')
-    return url
-      ? [
-          { title: pickString(source, 'title') || url, url },
-        ]
-      : []
-  })
   return {
-    links,
+    links: extractWebSearchLinks(response?.sources),
     summary: pickString(response, 'answer'),
   }
 }

@@ -1,3 +1,4 @@
+import type { WebSearchLink } from '../../model/tools/webSearch'
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
@@ -6,6 +7,13 @@ import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { COLLAPSED_RESULT_ROWS } from '../collapse'
 import { ToolMessage } from '../ToolMessage'
 import { toolCallMeta } from './meta'
+
+const COLLAPSED = {
+  getMessageUiState: () => false,
+}
+const EXPANDED = {
+  getMessageUiState: () => true,
+}
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
 beforeAll(() => {
@@ -48,9 +56,6 @@ describe('web_search queries', () => {
       { title: 'Found page', url: 'https://example.com/found' },
     ],
     summary: '',
-  }
-  const EXPANDED = {
-    getMessageUiState: () => true,
   }
 
   function draw(row: ReturnType<typeof toolRow>) {
@@ -112,21 +117,16 @@ describe('web_search queries', () => {
 describe('web_search result expandability', () => {
   const request = { query: 'LeapMux' }
   const oneLink = { title: 'LeapMux Docs', url: 'https://leapmux.dev/docs' }
-  const COLLAPSED = {
-    getMessageUiState: () => false,
-  }
-  const EXPANDED = {
-    getMessageUiState: () => true,
+
+  function resultRow(links: WebSearchLink[], summary: string) {
+    return toolRow(toolCallFixture('web_search', {
+      request,
+      result: { links, summary },
+    }), 'result', { request: true })
   }
 
   it('marks a result with one link and a short summary as collapsible', async () => {
-    const row = toolRow(toolCallFixture('web_search', {
-      request,
-      result: {
-        links: [oneLink],
-        summary: 'Short summary.',
-      },
-    }), 'result', { request: true })
+    const row = resultRow([oneLink], 'Short summary.')
     expect(toolCallMeta(row).collapsible).toBe(true)
 
     const collapsed = render(() => <ToolMessage row={row} context={COLLAPSED} />).container
@@ -139,25 +139,20 @@ describe('web_search result expandability', () => {
   })
 
   it('marks a summary-only result with no links as collapsible', () => {
-    const row = toolRow(toolCallFixture('web_search', {
-      request,
-      result: {
-        links: [],
-        summary: 'Short summary.',
-      },
-    }), 'result', { request: true })
+    const row = resultRow([], 'Short summary.')
     expect(toolCallMeta(row).collapsible).toBe(true)
   })
 
   it('keeps an empty result with no links and no summary non-collapsible', () => {
-    const row = toolRow(toolCallFixture('web_search', {
-      request,
-      result: {
-        links: [],
-        summary: '',
-      },
-    }), 'result', { request: true })
+    const row = resultRow([], '')
     expect(toolCallMeta(row).collapsible).toBe(false)
+  })
+
+  it('treats a whitespace-only summary as non-collapsible and falls back to links for copy text', () => {
+    const row = resultRow([oneLink], '  \n\t ')
+    const meta = toolCallMeta(row)
+    expect(meta.collapsible).toBe(false)
+    expect(meta.copyableContent?.()).toBe('LeapMux Docs\nhttps://leapmux.dev/docs')
   })
 
   it('enforces the collapsed link threshold when summary is empty', () => {
@@ -165,20 +160,8 @@ describe('web_search result expandability', () => {
       title: `Result ${index + 1}`,
       url: `https://leapmux.dev/r/${index + 1}`,
     }))
-    const atLimit = toolRow(toolCallFixture('web_search', {
-      request,
-      result: {
-        links: makeLinks(COLLAPSED_RESULT_ROWS),
-        summary: '',
-      },
-    }), 'result', { request: true })
-    const aboveLimit = toolRow(toolCallFixture('web_search', {
-      request,
-      result: {
-        links: makeLinks(COLLAPSED_RESULT_ROWS + 1),
-        summary: '',
-      },
-    }), 'result', { request: true })
+    const atLimit = resultRow(makeLinks(COLLAPSED_RESULT_ROWS), '')
+    const aboveLimit = resultRow(makeLinks(COLLAPSED_RESULT_ROWS + 1), '')
 
     expect(toolCallMeta(atLimit).collapsible).toBe(false)
     expect(toolCallMeta(aboveLimit).collapsible).toBe(true)

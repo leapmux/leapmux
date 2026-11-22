@@ -7,6 +7,7 @@ import { pluralize } from '~/lib/plural'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { extractDomain } from '~/lib/url'
 import { clippedText } from '~/styles/shared.css'
+import { markdownContent } from '../markdownEditor/markdownContent.css'
 import { MarkdownPrefetch, MarkdownText } from '../MarkdownText'
 import { getToolResultExpanded } from '../messageRenderers'
 import {
@@ -54,9 +55,28 @@ export function WebSearchQueries(props: { request: WebSearchRequest, context?: T
   )
 }
 
-/** Whether a web search result hides extra links or a summary when collapsed. */
+const HTTP_URL_RE = /^https?:\/\//
+
+function isHttpUrl(url: string): boolean {
+  if (!HTTP_URL_RE.test(url))
+    return false
+  try {
+    const { protocol } = new URL(url)
+    return protocol === 'http:' || protocol === 'https:'
+  }
+  catch {
+    return false
+  }
+}
+
+/** Trimmed summary text of a web search result; empty when blank. */
+export function webSearchSummary(source: Pick<WebSearchResult, 'summary'>): string {
+  return source.summary.trim()
+}
+
+/** Whether a web search result hides extra links or a non-blank summary when collapsed. */
 export function webSearchResultCollapsible(source: WebSearchResult): boolean {
-  return source.links.length > COLLAPSED_RESULT_ROWS || source.summary.length > 0
+  return source.links.length > COLLAPSED_RESULT_ROWS || webSearchSummary(source).length > 0
 }
 
 /** What a search found: its links and its summary. */
@@ -66,6 +86,7 @@ export function WebSearchResultsBody(props: {
 }): JSX.Element {
   const expanded = () => getToolResultExpanded(props.context)
   const links = () => props.source.links
+  const summary = () => webSearchSummary(props.source)
   const { isCollapsed, displayItems: displayLinks } = useCollapsedItems<WebSearchLink>({ items: links, expanded })
 
   return (
@@ -89,24 +110,28 @@ export function WebSearchResultsBody(props: {
                     this panel, so the tooltip is the only route to the rest. */}
                 <Tooltip text={link.title} showWhen="clipped">
                   <span class={clippedText}>
-                    {/* The title comes from a search result, so the text and
-                        the address are two different strangers' words. */}
-                    <a href={link.url} target="_blank" rel="noopener noreferrer nofollow" {...{ [UNTRUSTED_LINK_ATTRIBUTE]: '' }}>{link.title}</a>
+                    <Show when={isHttpUrl(link.url)} fallback={link.title}>
+                      {/* The title comes from a search result, so the text and
+                          the address are two different strangers' words. */}
+                      <a href={link.url} target="_blank" rel="noopener noreferrer nofollow" {...{ [UNTRUSTED_LINK_ATTRIBUTE]: '' }}>{link.title}</a>
+                    </Show>
                   </span>
                 </Tooltip>
-                <span class={webSearchLinkDomain}>{extractDomain(link.url)}</span>
+                <Show when={isHttpUrl(link.url)}>
+                  <span class={webSearchLinkDomain}>{extractDomain(link.url)}</span>
+                </Show>
               </div>
             )}
           </For>
         </div>
       </Show>
       <Show
-        when={expanded() && props.source.summary}
-        fallback={<MarkdownPrefetch text={props.source.summary} context={props.context} />}
+        when={expanded() && summary()}
+        fallback={<MarkdownPrefetch text={summary()} context={props.context} />}
       >
         <MarkdownText
-          text={props.source.summary}
-          class={toolResultContent}
+          text={summary()}
+          class={`${markdownContent} ${toolResultContent}`}
           context={props.context}
         />
       </Show>

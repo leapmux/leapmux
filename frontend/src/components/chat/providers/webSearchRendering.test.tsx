@@ -4,16 +4,13 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
-import './claude/plugin'
-import './codex/plugin'
 import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
 
-function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
+function renderToolResult(provider: AgentProvider, parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
-  return render(() => result)
+  return render(() => renderMessageContent(parsed, context, category, provider))
 }
 
 function makeResult(toolUseResult: Record<string, unknown> | undefined, content: string) {
@@ -34,8 +31,7 @@ function makeResult(toolUseResult: Record<string, unknown> | undefined, content:
 function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
-  return render(() => result)
+  return render(() => renderMessageContent(parsed, context, category, AgentProvider.CODEX))
 }
 
 describe('claude WebSearch tool_result rendering', () => {
@@ -53,7 +49,7 @@ describe('claude WebSearch tool_result rendering', () => {
         'final markdown summary',
       ],
     }, '')
-    const { container } = renderClaudeToolResult(parsed, { spanType: 'WebSearch' })
+    const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, parsed, { spanType: 'WebSearch' })
     const text = container.textContent ?? ''
     expect(text).toContain('2 results')
     expect(text).toContain('WebSearchTitleA')
@@ -88,12 +84,6 @@ describe('codex webSearch action rendering', () => {
   })
 })
 
-function renderAntigravitySearchWeb(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
-  const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(parsed, context, category, AgentProvider.ANTIGRAVITY_CLI)
-  return render(() => result)
-}
-
 describe('antigravity searchWeb rendering', () => {
   const payload = {
     type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
@@ -123,7 +113,7 @@ describe('antigravity searchWeb rendering', () => {
   }
 
   it('renders the query, result count, first three links with hrefs and domains, and hides the summary when collapsed', () => {
-    const { container } = renderAntigravitySearchWeb(payload, { spanType: 'antigravity_step' })
+    const { container } = renderToolResult(AgentProvider.ANTIGRAVITY_CLI, payload, { spanType: 'antigravity_step' })
     const text = container.textContent ?? ''
     expect(text).toContain('windows credential blob rust')
     expect(text).toContain('5 results')
@@ -149,7 +139,7 @@ describe('antigravity searchWeb rendering', () => {
   })
 
   it('renders all five links and the markdown summary when expanded', async () => {
-    const { container } = renderAntigravitySearchWeb(payload, {
+    const { container } = renderToolResult(AgentProvider.ANTIGRAVITY_CLI, payload, {
       spanType: 'antigravity_step',
       getMessageUiState: () => true,
     })

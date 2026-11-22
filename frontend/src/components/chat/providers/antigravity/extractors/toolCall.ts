@@ -1,12 +1,12 @@
 import type { ToolCall, ToolCallEnvelope, ToolCallSpecReaderTable, ToolCallSpecVariant, UnparsedToolResult } from '../../../model/toolCall'
 import type { ToolCallStatus } from '../../../model/toolCallStatus'
 import type { ToolKind } from '../../../model/toolKind'
-import type { ToolRequestByKind } from '../../../model/tools'
+import type { ToolRequestByKind, ToolResultByKind } from '../../../model/tools'
 import type { FileChangeResult } from '../../../model/tools/fileChange'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { AntigravityStep } from './toolCommon'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { ANTIGRAVITY_STEP_STATUS } from '~/generated/contracts/antigravity-protocol'
+import { ANTIGRAVITY_STEP_STATUS, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/antigravity-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
 import { failedResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
@@ -167,6 +167,21 @@ function genericFallback(facts: AntigravityToolFacts, payload: string): Unparsed
     : undefined
 }
 
+function structuredReader<K extends ToolKind>(
+  kind: K,
+  payload: string,
+  readResult: (step: AntigravityStep) => ToolResultByKind[K],
+): (facts: AntigravityToolFacts) => ToolCallSpecVariant<K> {
+  return (facts): ToolCallSpecVariant<K> => {
+    const request = requestFor(kind, facts)
+    return early(kind, facts, request) ?? {
+      kind,
+      request,
+      result: genericFallback(facts, payload) ?? readResult(facts.step),
+    }
+  }
+}
+
 function fileChangeReader<K extends 'edit' | 'write'>(kind: K): (facts: AntigravityToolFacts) => ToolCallSpecVariant<K> {
   return (facts): ToolCallSpecVariant<K> => {
     const request = requestFor(kind, facts)
@@ -248,14 +263,7 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
       result: genericFallback(facts, 'invokeSubagent') ?? antigravityAgentResult(facts.step, request),
     }
   },
-  mcp: (facts): ToolCallSpecVariant<'mcp'> => {
-    const request = requestFor('mcp', facts)
-    return early('mcp', facts, request) ?? {
-      kind: 'mcp',
-      request,
-      result: genericFallback(facts, 'mcpTool') ?? antigravityMcpResult(facts.step),
-    }
-  },
+  mcp: structuredReader('mcp', 'mcpTool', antigravityMcpResult),
   question: (facts): ToolCallSpecVariant<'question'> => {
     const request = requestFor('question', facts)
     const nativeResult = antigravityQuestionResult(facts.step)
@@ -273,14 +281,7 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
         : {}),
     }
   },
-  web_search: (facts): ToolCallSpecVariant<'web_search'> => {
-    const request = requestFor('web_search', facts)
-    return early('web_search', facts, request) ?? {
-      kind: 'web_search',
-      request,
-      result: genericFallback(facts, 'searchWeb') ?? antigravityWebSearchResult(facts.step),
-    }
-  },
+  web_search: structuredReader('web_search', 'searchWeb', antigravityWebSearchResult),
   fetch: declared('fetch'),
   grep: declared('grep'),
   search: declared('search'),
@@ -315,6 +316,15 @@ export function antigravityToolRow(own: AntigravityStep, completion?: MessageCom
   }
 }
 
+const STEP_TYPE_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind>([
+  [ANTIGRAVITY_STEP_TYPE.RunCommand, 'execute'],
+  [ANTIGRAVITY_STEP_TYPE.ViewFile, 'read'],
+  [ANTIGRAVITY_STEP_TYPE.AskQuestion, 'question'],
+  [ANTIGRAVITY_STEP_TYPE.McpTool, 'mcp'],
+  [ANTIGRAVITY_STEP_TYPE.InvokeSubagent, 'agent'],
+  [ANTIGRAVITY_STEP_TYPE.SearchWeb, 'web_search'],
+])
+
 function antigravityToolCall(row: AntigravityToolRow): ToolCall {
   const step = row.own
   const facts = antigravityToolFacts(row)
@@ -323,7 +333,11 @@ function antigravityToolCall(row: AntigravityToolRow): ToolCall {
     name: antigravityToolName(step),
     lifecycle: facts.lifecycle,
   }
-  return createToolCall(envelope, readToolCallSpec(ANTIGRAVITY_TOOL_READERS, antigravityToolKind(envelope.name), facts))
+  const namedKind = antigravityToolKind(envelope.name)
+  const kind = namedKind === 'unspecified'
+    ? (STEP_TYPE_KINDS.get(step.type) ?? namedKind)
+    : namedKind
+  return createToolCall(envelope, readToolCallSpec(ANTIGRAVITY_TOOL_READERS, kind, facts))
 }
 
 export { antigravityToolCall }
