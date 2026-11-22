@@ -299,6 +299,20 @@ describe('ElevationPromptHost', () => {
     expect(surface).not.toHaveAttribute('inert')
   })
 
+  it('preserves inert on underlying dialogs that another modal host already covered', async () => {
+    renderHost('/', SurfaceDialog)
+    const surface = screen.getByRole('dialog', { name: 'Add passkey' })
+    surface.setAttribute('inert', '')
+
+    const answered = promptForElevation()
+    await screen.findByRole('dialog', { name: 'Verify your identity' })
+    expect(surface).toHaveAttribute('inert')
+
+    dismissPrompt()
+    await expect(answered).resolves.toBe(false)
+    expect(surface).toHaveAttribute('inert')
+  })
+
   it('returns focus where the prompt found it', async () => {
     renderHost('/', SurfaceDialog)
     const trigger = screen.getByTestId('surface-continue')

@@ -39,14 +39,25 @@ FROM agent_background_tasks AS source
 WHERE source.owner_agent_id = sqlc.arg(old_root_id)
   AND source.row_key = sqlc.arg(row_key);
 
--- ListAgentBackgroundTasksByKindNewestFirst is the per-POOL seed. The registry
--- caps each kind independently, so one global window is the wrong shape: an
--- owner whose newest N rows are all shells seeds an EMPTY subagent pool, and the
--- subagent rows are the ones carrying a transcript worth reopening.
--- name: ListAgentBackgroundTasksByKindNewestFirst :many
+-- ListActiveAgentBackgroundTasksByKind loads every active row in one kind pool
+-- for cold-start seeding. Active rows are never evicted from the display cache,
+-- so seeding always admits all of them regardless of bgtask.MaxTasks.
+-- name: ListActiveAgentBackgroundTasksByKind :many
 SELECT * FROM agent_background_tasks
-WHERE owner_agent_id = ? AND kind = ?
-ORDER BY seq DESC LIMIT ?;
+WHERE owner_agent_id = sqlc.arg(owner_agent_id)
+  AND kind = sqlc.arg(kind)
+  AND status < sqlc.arg(min_final_status)
+ORDER BY seq DESC;
+
+-- ListFinishedAgentBackgroundTasksByKindNewestFirst loads the newest finished
+-- rows that fit into the remaining cap slots of one kind pool after all active
+-- rows are loaded.
+-- name: ListFinishedAgentBackgroundTasksByKindNewestFirst :many
+SELECT * FROM agent_background_tasks
+WHERE owner_agent_id = sqlc.arg(owner_agent_id)
+  AND kind = sqlc.arg(kind)
+  AND status >= sqlc.arg(min_final_status)
+ORDER BY seq DESC LIMIT sqlc.arg(finished_limit);
 
 -- DeleteFinishedAgentBackgroundTasksBelowSeq reclaims the rows a pool's seed
 -- window left behind.

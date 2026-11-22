@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/drain"
 )
 
@@ -697,17 +699,33 @@ func (h *OutputHandler) AgentBusy(agentID, rootAgentID string) bool {
 // surface -- the thinking indicator, the Interrupt button, the close guard in
 // the browser and in the CLI -- resolves to this one rule.
 //
-// It returns all three answers together because every caller that wants one
-// wants another: AgentInfo carries all three, and the CLI's refusal message
-// states two. Asking separately read the registry twice per agent, on a path
-// that runs for every row of a ListAgents reply.
+// It returns State and ActiveTasks together because callers that read the
+// activity state also need the active background-task count (for AgentInfo and
+// CLI refusal messages). Asking separately read the registry twice per agent,
+// on a path that runs for every row of a ListAgents reply.
 //
 // The order is not arbitrary. A dead process is idle whatever else is recorded.
-// An agent blocked on a permission prompt is idle even mid-turn, because the
-// user is the one holding it up. Only then does running work count.
+// An agent blocked on a permission prompt reports WAITING_FOR_USER (not
+// WORKING, because the user is holding it up, while InterruptsWork still treats
+// it as active work). Only then does running work report WORKING.
 func (h *OutputHandler) AgentActivitySnapshot(agentID, rootAgentID string) AgentActivity {
+	activity, _ := h.agentActivityWithRows(agentID, rootAgentID)
+	return activity
+}
+
+// agentActivityWithRows resolves rootAgentID, reads the root's background-task
+// rows once, and returns both the derived activity and the rows slice.
+func (h *OutputHandler) agentActivityWithRows(agentID, rootAgentID string) (AgentActivity, []bgtask.Item) {
+	return h.agentActivityWithRowsCtx(context.Background(), agentID, rootAgentID)
+}
+
+// agentActivityWithRowsCtx is agentActivityWithRows with an optional caller
+// context linked to shutdown so an external inspection cancels cold-cache
+// SQLite loads promptly when the caller or shutdown cancels.
+func (h *OutputHandler) agentActivityWithRowsCtx(ctx context.Context, agentID, rootAgentID string) (AgentActivity, []bgtask.Item) {
 	rootAgentID = h.resolveRoot(agentID, rootAgentID)
-	return h.activitySnapshotFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID))
+	rows := h.backgroundTaskRowsCtx(ctx, rootAgentID)
+	return h.activitySnapshotFrom(agentID, rootAgentID, rows), rows
 }
 
 // AgentActivityPublished is the last state this Worker BROADCAST for agentID,
@@ -841,11 +859,21 @@ func (h *OutputHandler) isProcessRunning(rootAgentID string) bool {
 // A CHILD's question is different, and the cap changes it sooner: see the miss
 // path in AgentActivitySnapshot.
 func (h *OutputHandler) backgroundTaskRows(rootAgentID string) []bgtask.Item {
+	return h.backgroundTaskRowsCtx(context.Background(), rootAgentID)
+}
+
+func (h *OutputHandler) backgroundTaskRowsCtx(ctx context.Context, rootAgentID string) []bgtask.Item {
 	if h.queries == nil {
 		// No store, so no registry: there is no work to report.
 		return nil
 	}
-	rows, err := h.LoadBackgroundTasks(h.bgTaskCtx(), rootAgentID)
+	loadCtx := h.bgTaskCtx()
+	if ctx != nil && ctx.Done() != nil {
+		linked, cancel := ctxutil.WithLinkedCancel(loadCtx, ctx)
+		defer cancel()
+		loadCtx = linked
+	}
+	rows, err := h.LoadBackgroundTasks(loadCtx, rootAgentID)
 	if err != nil {
 		// This display read remains best effort when seeding fails. Raw turn
 		// state is independent. Process recovery requires explicit approval

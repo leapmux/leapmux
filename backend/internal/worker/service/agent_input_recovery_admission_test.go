@@ -187,10 +187,16 @@ func TestInputRecoveryKeepsHiddenWorkUntilApproval(t *testing.T) {
 				rows, err := svc.Output.LoadBackgroundTasks(t.Context(), id)
 				require.NoError(t, err)
 				require.Len(t, rows, bgtask.MaxTasks)
+				var sawActiveTask0 bool
 				for _, row := range rows {
-					assert.NotEqual(t, "task-0", row.RowKey)
-					assert.True(t, row.Status.IsFinished())
+					if row.RowKey == "task-0" {
+						sawActiveTask0 = true
+						assert.False(t, row.Status.IsFinished())
+					} else {
+						assert.True(t, row.Status.IsFinished())
+					}
 				}
+				assert.True(t, sawActiveTask0, "active task-0 must never be evicted")
 				err = svc.ensureAgentReadyForInput(id)
 				require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
 				assert.Equal(t, 1, starts.count())

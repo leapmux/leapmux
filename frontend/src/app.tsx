@@ -10,6 +10,7 @@ import { renderErrorFallback } from '~/components/common/ErrorFallback'
 import { SetupGate } from '~/components/common/SetupGate'
 import { SignInRecoveryGate } from '~/components/common/SignInRecoveryGate'
 import { LauncherView } from '~/components/desktop/LauncherView'
+import { SoloStopConfirmHost } from '~/components/desktop/SoloStopConfirmHost'
 import { AboutDialog } from '~/components/shell/AboutDialog'
 import { DesktopMinimalChrome, DesktopRouteChrome } from '~/components/shell/DesktopChrome'
 import { UserMenuDialogs } from '~/components/shell/UserMenu'
@@ -364,6 +365,7 @@ export default function App() {
         <Show when={showAboutDialog()}>
           <AboutDialog onClose={() => setShowAboutDialog(false)} />
         </Show>
+        <SoloStopConfirmHost />
       </div>
     </ErrorBoundary>
   )

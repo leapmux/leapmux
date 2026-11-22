@@ -124,7 +124,7 @@ describe('createCloseFlow', () => {
       {
         tab: tab('a1'),
         title: 'a1',
-        reason: { kind: 'agent-work' as const, activeRows: [] },
+        reason: { kind: 'agent-work' as const, activeBackgroundTasks: [], activeChildAgents: [] },
       },
     ]
     const flow = createCloseFlow<TestCtx>({
@@ -205,7 +205,7 @@ describe('createCloseFlow', () => {
         {
           tab: tab('a1'),
           title: 'a1',
-          reason: { kind: 'agent-work' as const, activeRows: [] },
+          reason: { kind: 'agent-work' as const, activeBackgroundTasks: [], activeChildAgents: [] },
         },
       ],
       handleTabClose: () => Promise.resolve(true),

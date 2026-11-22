@@ -14,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -77,7 +78,7 @@ func (r *processChangeRig) registerProcess(ctx context.Context, opts agent.Optio
 	r.t.Helper()
 	confirmed, err := r.svc.Agents.StartAgentWith(ctx, opts, sink,
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
-			return newRunningTestAgent(), nil
+			return agenttest.NewRunningAgent(opts.AgentID), nil
 		})
 	require.NoError(r.t, err)
 	return confirmed

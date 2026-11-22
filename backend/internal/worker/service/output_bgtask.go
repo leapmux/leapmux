@@ -90,17 +90,32 @@ func backgroundTaskNeedsRetention(item bgtask.Item) bool {
 func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item, string] {
 	return registryOps[bgtask.Item, string]{
 		listRows: func(ctx context.Context, q *db.Queries, ownerID string, bucket int64, limit int32) ([]seedEntry[bgtask.Item], error) {
-			rows, err := q.ListAgentBackgroundTasksByKindNewestFirst(ctx, db.ListAgentBackgroundTasksByKindNewestFirstParams{
-				OwnerAgentID: ownerID,
-				Kind:         leapmuxv1.BackgroundTaskKind(bucket),
-				Limit:        int64(limit),
+			activeRows, err := q.ListActiveAgentBackgroundTasksByKind(ctx, db.ListActiveAgentBackgroundTasksByKindParams{
+				OwnerAgentID:   ownerID,
+				Kind:           leapmuxv1.BackgroundTaskKind(bucket),
+				MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 			})
 			if err != nil {
-				return nil, fmt.Errorf("list agent_background_tasks: %w", err)
+				return nil, fmt.Errorf("list active agent_background_tasks: %w", err)
 			}
-			entries := make([]seedEntry[bgtask.Item], len(rows))
-			for i, r := range rows {
-				entries[i] = seedEntry[bgtask.Item]{item: bgItemFromRow(r), seq: r.Seq}
+			var finishedRows []db.AgentBackgroundTask
+			if remaining := int(limit) - len(activeRows); remaining > 0 {
+				finishedRows, err = q.ListFinishedAgentBackgroundTasksByKindNewestFirst(ctx, db.ListFinishedAgentBackgroundTasksByKindNewestFirstParams{
+					OwnerAgentID:   ownerID,
+					Kind:           leapmuxv1.BackgroundTaskKind(bucket),
+					MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+					FinishedLimit:  int64(remaining),
+				})
+				if err != nil {
+					return nil, fmt.Errorf("list finished agent_background_tasks: %w", err)
+				}
+			}
+			entries := make([]seedEntry[bgtask.Item], 0, len(activeRows)+len(finishedRows))
+			for _, r := range activeRows {
+				entries = append(entries, seedEntry[bgtask.Item]{item: bgItemFromRow(r), seq: r.Seq})
+			}
+			for _, r := range finishedRows {
+				entries = append(entries, seedEntry[bgtask.Item]{item: bgItemFromRow(r), seq: r.Seq})
 			}
 			return entries, nil
 		},
@@ -249,8 +264,7 @@ func (h *OutputHandler) LoadBackgroundTasks(ctx context.Context, rootAgentID str
 type registryChange struct {
 	rows []bgtask.Item
 	// changed reports visible state. An ownership-only claim can still write storage.
-	changed  bool
-	eviction *backgroundTaskEviction
+	changed bool
 }
 
 // applyBackgroundTaskUpsert is the persist-mutate-broadcast for an upsert. It
@@ -372,6 +386,11 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, ge
 		reg.cache.Rows[idx].ActiveForm = activeForm
 		reg.cache.Rows[idx].UpdatedAt = now
 		reg.cache.Rows[idx].EndedAt = endedAt
+		if status.IsFinished() {
+			if err := reg.trimFinishedToCapLocked(ctx, int64(existing.Kind)); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }
@@ -401,7 +420,7 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, gen
 			return errBackgroundTaskSuperseded
 		}
 		reg.cache.Rows[idx].Status, reg.cache.Rows[idx].EndedAt, reg.cache.Rows[idx].UpdatedAt = status, now, now
-		return nil
+		return reg.trimFinishedToCapLocked(ctx, int64(existing.Kind))
 	})
 }
 
@@ -667,7 +686,6 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 	reg := cache.on(s.h.queries, s.rootAgentID)
 	var childID string
 	var change registryChange
-	var eviction *backgroundTaskEviction
 	err := reg.inTransactionLocked(ctx, s.h.db, func(tx bgTaskView) error {
 		if rowKey != "" {
 			// Reject a superseded source before seeding or changing child identity.
@@ -741,14 +759,11 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 			} else if err := mutateBackgroundTaskUpsertLocked(ctx, tx, s.outputGeneration, bgtask.Upsert{
 				RowKey: rowKey, Role: spec.RegistryRole, Kind: bgtask.KindSubagent, ChildAgentID: childID,
 				ParentAgentID: s.agentID, Title: spec.Title, Status: bgtask.StatusRunning,
-			}, &eviction); err != nil {
+			}); err != nil {
 				return fmt.Errorf("store the child registry linkage: %w", err)
 			}
 		}
 		change = registryChange{rows: cache.snapshot(), changed: !bgTaskVisibleRowsEqual(before, cache.Rows)}
-		if change.changed {
-			change.eviction = eviction
-		}
 		return nil
 	})
 	cache.Mu.Unlock()
@@ -763,7 +778,6 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 		// Linking changes the child's activity. Refresh after the cache lock is released because refresh reads that cache.
 		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
 	}
-	s.logRegistryEviction(change)
 	return childID, nil
 }
 
@@ -1237,7 +1251,6 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 		// same cache.
 		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
 	}
-	s.logRegistryEviction(change)
 	return nil
 }
 
@@ -1507,13 +1520,12 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 				if _, err := reg.deleteRowLocked(ctx, oldKey, true); err != nil {
 					return err
 				}
-				var eviction *backgroundTaskEviction
 				return mutateBackgroundTaskUpsertLocked(ctx, reg, s.outputGeneration, bgtask.Upsert{
 					RowKey: newKey, Role: resolvedTarget.Role, Kind: resolvedTarget.Kind, ChildAgentID: resolvedTarget.ChildAgentID,
 					ParentAgentID: resolvedTarget.ParentAgentID, GroupKey: resolvedTarget.GroupKey, GroupLabel: resolvedTarget.GroupLabel,
 					Title: resolvedTarget.Title, TitleIsCommand: resolvedTarget.TitleIsCommand, Description: resolvedTarget.Description,
 					ActiveForm: resolvedTarget.ActiveForm, Status: resolvedTarget.Status,
-				}, &eviction)
+				})
 			}
 			_, err := reg.deleteRowLocked(ctx, oldKey, sourceSuperseded)
 			return err
@@ -1546,19 +1558,14 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 // A test handler without that handle restores its cache only.
 // The caller must hold cache.Mu.
 func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, rootAgentID string, generation int64, task bgtask.Upsert) (registryChange, error) {
-	var eviction *backgroundTaskEviction
-	change, err := h.mutateBackgroundTaskRegistryLocked(cache, rootAgentID, generation, []string{task.RowKey}, func(ctx context.Context, reg bgTaskView) error {
-		return mutateBackgroundTaskUpsertLocked(ctx, reg, generation, task, &eviction)
+	return h.mutateBackgroundTaskRegistryLocked(cache, rootAgentID, generation, []string{task.RowKey}, func(ctx context.Context, reg bgTaskView) error {
+		return mutateBackgroundTaskUpsertLocked(ctx, reg, generation, task)
 	})
-	if change.changed {
-		change.eviction = eviction
-	}
-	return change, err
 }
 
 // mutateBackgroundTaskUpsertLocked preserves the existing replay and finished-state rules.
 // The caller owns the transaction, cache mirror, and cache mutex.
-func mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, generation int64, task bgtask.Upsert, eviction **backgroundTaskEviction) error {
+func mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, generation int64, task bgtask.Upsert) error {
 	task = task.Clean()
 	cache := reg.cache
 	existing, found, err := claimBackgroundTaskGenerationLocked(ctx, reg, task.RowKey, generation)
@@ -1595,20 +1602,23 @@ func mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, gener
 			}
 		}
 	} else {
-		// Each kind retains its existing independent display cap and child-index policy.
-		evicted, dropped, err := reg.makeRoomLocked(ctx, int64(merged.Kind))
-		if err != nil {
+		// Each kind retains its independent display cap for finished rows while
+		// never evicting active rows.
+		if err := reg.makeRoomLocked(ctx, int64(merged.Kind)); err != nil {
 			return err
-		}
-		if dropped && !evicted.Status.IsFinished() {
-			*eviction = &backgroundTaskEviction{incomingKey: task.RowKey, row: evicted}
 		}
 		merged.CreatedAt = now
 	}
 	if merged.Status.IsFinished() && merged.EndedAt.IsZero() {
 		merged.EndedAt = now
 	}
-	return writeBackgroundTaskItemLocked(ctx, reg, generation, merged, idx)
+	if err := writeBackgroundTaskItemLocked(ctx, reg, generation, merged, idx); err != nil {
+		return err
+	}
+	if merged.Status.IsFinished() {
+		return reg.trimFinishedToCapLocked(ctx, int64(merged.Kind))
+	}
+	return nil
 }
 
 // writeBackgroundTaskItemLocked publishes one fully resolved row to storage and
@@ -1638,21 +1648,6 @@ func writeBackgroundTaskItemLocked(ctx context.Context, reg bgTaskView, generati
 		cache.Rows[idx] = merged
 	}
 	return nil
-}
-
-type backgroundTaskEviction struct {
-	incomingKey string
-	row         bgtask.Item
-}
-
-func (s *agentOutputSink) logRegistryEviction(change registryChange) {
-	if change.eviction == nil {
-		return
-	}
-	eviction := change.eviction
-	slog.Warn("The background task registry reached its display cap. It drops the oldest active display row because no row finished.",
-		"owner", s.rootAgentID, "row_key", eviction.incomingKey, "kind", int64(eviction.row.Kind), "cap", bgtask.MaxTasks,
-		"evicted_row_key", eviction.row.RowKey, "retained_in_store", backgroundTaskNeedsRetention(eviction.row))
 }
 
 var errBackgroundTaskSuperseded = errors.New("a newer physical output writer owns this background task")

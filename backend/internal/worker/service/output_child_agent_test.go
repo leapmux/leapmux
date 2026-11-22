@@ -1518,9 +1518,8 @@ func TestMarkBackgroundTasksExited_ClosesASubagentPastTheDisplayCap(t *testing.T
 
 	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
 	require.NoError(t, err)
-	for _, item := range displayed {
-		require.NotEqual(t, "task-1", item.RowKey, "the row leaves the display list")
-	}
+	require.Len(t, displayed, bgtask.MaxTasks+1, "all active subagent rows stay displayed past MaxTasks")
+	require.True(t, hasRegistryRowFor(displayed, childID), "active row stays displayed")
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
 
@@ -1530,6 +1529,9 @@ func TestMarkBackgroundTasksExited_ClosesASubagentPastTheDisplayCap(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), stored.Status)
 	assert.True(t, stored.EndedAt.Valid)
+	displayedAfter, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
+	require.NoError(t, err)
+	assert.Len(t, displayedAfter, bgtask.MaxTasks, "process exit trims finished rows back to MaxTasks")
 }
 
 // An explicit process stop retains its distinct registry outcome.

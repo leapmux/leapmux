@@ -40,3 +40,12 @@ func TestShellOutputCommandRejectsUnsafeOrAmbiguousMarkers(t *testing.T) {
 		assert.Empty(t, line)
 	}
 }
+
+func TestNormalizeProcessName(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "ping", NormalizeProcessName("PING.EXE"))
+	assert.Equal(t, "node", NormalizeProcessName("Node.Exe"))
+	assert.Equal(t, "sh", NormalizeProcessName("/bin/sh"))
+	assert.Equal(t, "sleep", NormalizeProcessName("sleep"))
+	assert.Equal(t, ".", NormalizeProcessName(""))
+}

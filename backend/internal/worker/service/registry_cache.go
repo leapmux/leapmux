@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"sync"
 
@@ -269,12 +270,18 @@ func (v registryView[T, K]) ensureSeededLocked(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if c.ops.reclaimFinishedBelowSeq != nil && int32(len(entries)) == c.ops.cap {
-			// The window is full, so anything older than its oldest member is
-			// surplus. Reclaim only when it IS full: a short window means the
-			// pool already fits, and there is nothing behind it.
-			oldest := entries[len(entries)-1].seq
-			if err := c.ops.reclaimFinishedBelowSeq(ctx, q, ownerID, bucket, oldest); err != nil {
+		if c.ops.reclaimFinishedBelowSeq != nil && int32(len(entries)) >= c.ops.cap {
+			// The window is full (or exceeded by active rows, which are never
+			// evicted). Reclaim finished unlinked rows older than the oldest
+			// finished row kept in the window, or all unlinked finished rows
+			// when active rows alone fill the cap.
+			cutoff := int64(math.MaxInt64)
+			for _, e := range entries {
+				if c.ops.isFinished(e.item) && e.seq < cutoff {
+					cutoff = e.seq
+				}
+			}
+			if err := c.ops.reclaimFinishedBelowSeq(ctx, q, ownerID, bucket, cutoff); err != nil {
 				slog.Warn("reclaim registry surplus", "registry", c.ops.label, "owner", ownerID, "pool", bucket, "error", err)
 			}
 		}
@@ -398,7 +405,7 @@ func (v registryView[T, K]) findRowLocked(ctx context.Context, key K) (T, int, b
 // the next worker restart.
 func (v registryView[T, K]) admitRowLocked(ctx context.Context, row T) (int, error) {
 	c, q, ownerID := v.cache, v.queries, v.ownerID
-	if _, _, err := v.makeRoomLocked(ctx, c.bucket(row)); err != nil {
+	if err := v.makeRoomLocked(ctx, c.bucket(row)); err != nil {
 		return -1, err
 	}
 	if c.ops.retention != nil && c.ops.retention.reseq != nil {
@@ -451,23 +458,37 @@ func (v registryView[T, K]) deleteRowLocked(ctx context.Context, key K, supersed
 	return true, nil
 }
 
-// makeRoomLocked frees one slot in a full cap pool so an insert keeps the
-// display list at its bound, and does nothing when the pool has room. It owns
-// the whole eviction preference: the oldest FINISHED row first, and the oldest
-// row of any status when the pool holds none. RETURNS the evicted row (ok=false
-// when nothing was evicted), so a caller can report which case it got by testing
-// isFinished on it rather than by re-deriving the preference. Caller must hold
-// cache.Mu.
-func (v registryView[T, K]) makeRoomLocked(ctx context.Context, bucket int64) (T, bool, error) {
-	if !v.cache.atCapForBucket(bucket) {
-		var zero T
-		return zero, false, nil
+// makeRoomLocked frees slots in a full cap pool by evicting the oldest FINISHED
+// rows until the pool has room for one more row or holds no finished rows.
+// Active rows are NEVER evicted: if active rows fill or exceed the cap, they
+// all remain in the display list until they finish. Caller must hold cache.Mu.
+func (v registryView[T, K]) makeRoomLocked(ctx context.Context, bucket int64) error {
+	for v.cache.atCapForBucket(bucket) {
+		_, ok, err := v.evictOldestFinishedInBucketLocked(ctx, bucket)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
 	}
-	evicted, ok, err := v.evictOldestFinishedInBucketLocked(ctx, bucket)
-	if err != nil || ok {
-		return evicted, ok, err
+	return nil
+}
+
+// trimFinishedToCapLocked evicts oldest finished rows from a bucket that grew
+// past its cap with active rows once rows transition to a finished state.
+// Active rows are never evicted. Caller must hold cache.Mu.
+func (v registryView[T, K]) trimFinishedToCapLocked(ctx context.Context, bucket int64) error {
+	for v.cache.countInBucket(bucket) > int(v.cache.ops.cap) {
+		_, ok, err := v.evictOldestFinishedInBucketLocked(ctx, bucket)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
 	}
-	return v.evictOldestInBucketLocked(ctx, bucket)
+	return nil
 }
 
 // evictOldestFinishedInBucketLocked removes the first finished row (by slice
@@ -487,17 +508,6 @@ func (v registryView[T, K]) evictOldestFinishedInBucketLocked(ctx context.Contex
 	return v.evictFirstMatchLocked(ctx, func(r T) bool {
 		return c.inBucket(r, bucket) && c.ops.isFinished(r)
 	})
-}
-
-// evictOldestInBucketLocked removes the first row (by slice order) of ONE cap
-// pool whatever its status, for an insert into a pool that holds no finished row
-// at all. The cap is a bound on the DISPLAY list, so the oldest entry leaves it
-// even while it runs; ops.retention decides whether the persisted row goes with
-// it. Same bucket and return contract as
-// evictOldestFinishedInBucketLocked. Caller must hold cache.Mu.
-func (v registryView[T, K]) evictOldestInBucketLocked(ctx context.Context, bucket int64) (T, bool, error) {
-	c := v.cache
-	return v.evictFirstMatchLocked(ctx, func(r T) bool { return c.inBucket(r, bucket) })
 }
 
 // evictFirstMatchLocked evicts the first row the predicate accepts, or reports
@@ -612,15 +622,21 @@ func (c *registryCache[T, K]) dropRowLocked(key K) bool {
 	return true
 }
 
-// atCapForBucket reports whether one cap pool is full, so an insert into that
-// pool knows it must evict before appending. Pass 0 for a single-pool registry
-// (bucketOf nil), where every row shares one pool. Caller must hold c.Mu.
-func (c *registryCache[T, K]) atCapForBucket(bucket int64) bool {
+// countInBucket counts the rows currently displayed in one cap pool.
+// Caller must hold c.Mu.
+func (c *registryCache[T, K]) countInBucket(bucket int64) int {
 	n := 0
 	for _, r := range c.Rows {
 		if c.inBucket(r, bucket) {
 			n++
 		}
 	}
-	return n >= int(c.ops.cap)
+	return n
+}
+
+// atCapForBucket reports whether one cap pool is full, so an insert into that
+// pool knows it must evict before appending. Pass 0 for a single-pool registry
+// (bucketOf nil), where every row shares one pool. Caller must hold c.Mu.
+func (c *registryCache[T, K]) atCapForBucket(bucket int64) bool {
+	return c.countInBucket(bucket) >= int(c.ops.cap)
 }

@@ -1566,28 +1566,6 @@ func TestShutdown_HangsUpTerminals(t *testing.T) {
 		"the shell must be ended by the time Shutdown returns")
 }
 
-type shutdownWaitAgent struct {
-	agenttest.IdleAgent
-	id      string
-	stopped chan struct{}
-	once    sync.Once
-}
-
-func (a *shutdownWaitAgent) AgentID() string { return a.id }
-
-func (a *shutdownWaitAgent) Stop() { a.once.Do(func() { close(a.stopped) }) }
-
-func (a *shutdownWaitAgent) Wait() error { <-a.stopped; return nil }
-
-func (a *shutdownWaitAgent) IsStopped() bool {
-	select {
-	case <-a.stopped:
-		return true
-	default:
-		return false
-	}
-}
-
 func TestShutdownStopsAgentsAndTerminalsConcurrently(t *testing.T) {
 	t.Parallel()
 	svc, d, w := setupTestService(t)
@@ -1606,9 +1584,9 @@ func TestShutdownStopsAgentsAndTerminalsConcurrently(t *testing.T) {
 		close(agentExited)
 		<-agentRelease
 	})
-	provider := &shutdownWaitAgent{id: "shutdown-agent", stopped: make(chan struct{})}
+	provider := agenttest.NewRunningAgent("shutdown-agent")
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
-		AgentID: provider.id, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, WorkingDir: t.TempDir(),
+		AgentID: provider.AgentID(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, WorkingDir: t.TempDir(),
 	}, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
 		return provider, nil
 	})

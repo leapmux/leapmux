@@ -3,6 +3,7 @@ package testutil
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -89,4 +90,12 @@ func TestNestedSleepCommand() (line, grandchildName string) {
 	// this helper exists to create never appears. A compound command defeats
 	// that, so the shell stays and forks.
 	return "/bin/sh -c 'sleep 60; true' &", "sleep"
+}
+
+// NormalizeProcessName normalizes an OS-reported process name so test
+// assertions read the same across platforms: Windows reports uppercase image
+// names with a `.exe` suffix (`PING.EXE`) and macOS can report an `argv[0]`
+// path (`/bin/sh`).
+func NormalizeProcessName(name string) string {
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(name)), ".exe")
 }

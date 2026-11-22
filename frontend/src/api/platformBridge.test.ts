@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserAuthKind, HeaderValuesSchema, ProxyHttpResponseSchema, RelayCloseSchema, RelayReadResponseSchema } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { storageAccountFor, TEST_HUB } from '~/lib/browserStorage'
 import { deferred, settle } from '~/test-support/async'
-import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { captureLoggerOutput } from '~/test-support/loggerCapture'
+import { decodeProxyResponse as decodeProxyResponseEnvelope, desktopFetch, desktopHub, getCapabilities, observeWindowMode, openExternalUrl, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseQuitConfirmEvent, parseRelayClosePayload, platformBridge, readClipboardImage, resetPlatformRuntimeState, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 import { TauriRelayWebSocket } from './tauriRelaySocket'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
@@ -2093,5 +2094,383 @@ describe('platformBridge startBrowserAuth', () => {
         { kind: BrowserAuthKind.STEP_UP },
       ],
     ])
+  })
+})
+
+describe('platformBridge beginSwitchMode and switch-mode coordination', () => {
+  let logs: ReturnType<typeof captureLoggerOutput>
+
+  beforeEach(() => {
+    logs = captureLoggerOutput()
+  })
+
+  afterEach(() => {
+    logs.restore()
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('proceeds without invoking IPC outside Tauri', async () => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'proceed', switchId: 0 })
+    await expect(platformBridge.resolveSwitchModeConfirmation(1, true)).resolves.toBe(0)
+    await expect(platformBridge.resolveSwitchModeConfirmation(1, false)).resolves.toBeNull()
+    await expect(platformBridge.cancelSwitchMode(1)).resolves.toBeUndefined()
+    expect(logs.messages('warn', 'platformBridge')).toEqual([])
+  })
+
+  it('invokes begin_switch_mode and normalizes proceed, confirm, blocked, and malformed payloads', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: string[] = []
+    const responses: unknown[] = [
+      { kind: 'proceed', switchId: 5 },
+      {
+        kind: 'confirm',
+        promptId: 9,
+        busyWork: {
+          agents: [
+            {
+              tabId: 'agent-1',
+              title: 'Refactor auth',
+              activeBackgroundTasks: ['Run unit tests'],
+              activeChildAgents: ['Codebase reviewer'],
+            },
+          ],
+          terminals: [
+            {
+              tabId: 'term-1',
+              title: 'Dev server',
+              processes: [
+                { pid: 51234, name: 'node' },
+              ],
+              totalCount: 2,
+            },
+          ],
+        },
+      },
+      { kind: 'blocked' },
+      { kind: 'proceed', switchId: 0 },
+      {
+        kind: 'confirm',
+        promptId: 10,
+        busyWork: { agents: [], terminals: [] },
+      },
+      null,
+      'invalid',
+    ]
+    let idx = 0
+    mockIPC((cmd) => {
+      invoked.push(cmd)
+      return responses[idx++]
+    })
+
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'proceed', switchId: 5 })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({
+      kind: 'confirm',
+      promptId: 9,
+      busyWork: {
+        agents: [
+          {
+            tabId: 'agent-1',
+            title: 'Refactor auth',
+            activeBackgroundTasks: ['Run unit tests'],
+            activeChildAgents: ['Codebase reviewer'],
+          },
+        ],
+        terminals: [
+          {
+            tabId: 'term-1',
+            title: 'Dev server',
+            processes: [
+              { pid: 51234, name: 'node' },
+            ],
+            totalCount: 2,
+          },
+        ],
+      },
+    })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    expect(invoked).toHaveLength(7)
+    expect(invoked.every(cmd => cmd === 'begin_switch_mode')).toBe(true)
+  })
+
+  it('forwards resolve_switch_mode_confirmation, cancel_switch_mode, and switch_mode switchId', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: Array<[string, unknown]> = []
+    mockIPC((cmd, args) => {
+      invoked.push([cmd, args])
+      if (cmd === 'resolve_switch_mode_confirmation')
+        return (args as { confirm?: boolean }).confirm ? 17 : null
+      if (cmd === 'get_runtime_state')
+        return { shellMode: 'launcher', connected: false, hubUrl: '' }
+      return undefined
+    })
+
+    await expect(platformBridge.resolveSwitchModeConfirmation(4, true)).resolves.toBe(17)
+    await expect(platformBridge.resolveSwitchModeConfirmation(4, false)).resolves.toBeNull()
+    await platformBridge.cancelSwitchMode(17)
+    await platformBridge.switchMode(17)
+    await platformBridge.switchMode()
+
+    expect(invoked).toEqual([
+      [
+        'resolve_switch_mode_confirmation',
+        { promptId: 4, confirm: true },
+      ],
+      [
+        'resolve_switch_mode_confirmation',
+        { promptId: 4, confirm: false },
+      ],
+      [
+        'cancel_switch_mode',
+        { switchId: 17 },
+      ],
+      [
+        'switch_mode',
+        { switchId: 17 },
+      ],
+      ['get_runtime_state', {}],
+      ['switch_mode', {}],
+      ['get_runtime_state', {}],
+    ])
+  })
+
+  it('blocks cleanly when begin_switch_mode IPC throws', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    mockIPC(() => {
+      throw new Error('sidecar unavailable')
+    })
+
+    await expect(platformBridge.beginSwitchMode()).resolves.toEqual({ kind: 'blocked' })
+    expect(logs.messages('warn', 'platformBridge')).toEqual([
+      'begin_switch_mode failed',
+    ])
+  })
+})
+
+describe('platformBridge ackQuitConfirmation', () => {
+  let logs: ReturnType<typeof captureLoggerOutput>
+
+  beforeEach(() => {
+    logs = captureLoggerOutput()
+  })
+
+  afterEach(() => {
+    logs.restore()
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('returns false outside Tauri without invoking IPC', async () => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+
+    await expect(platformBridge.ackQuitConfirmation(1)).resolves.toBe(false)
+    expect(logs.messages('warn', 'platformBridge')).toEqual([])
+  })
+
+  it('forwards promptId and coerces strictly to boolean true', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: Array<[string, unknown]> = []
+    const responses: unknown[] = [true, false, null, 'true']
+    let idx = 0
+    mockIPC((cmd, args) => {
+      invoked.push([cmd, args])
+      return responses[idx++]
+    })
+
+    await expect(platformBridge.ackQuitConfirmation(1)).resolves.toBe(true)
+    await expect(platformBridge.ackQuitConfirmation(2)).resolves.toBe(false)
+    await expect(platformBridge.ackQuitConfirmation(3)).resolves.toBe(false)
+    await expect(platformBridge.ackQuitConfirmation(4)).resolves.toBe(false)
+
+    expect(invoked).toEqual([
+      [
+        'ack_quit_confirmation',
+        { promptId: 1 },
+      ],
+      [
+        'ack_quit_confirmation',
+        { promptId: 2 },
+      ],
+      [
+        'ack_quit_confirmation',
+        { promptId: 3 },
+      ],
+      [
+        'ack_quit_confirmation',
+        { promptId: 4 },
+      ],
+    ])
+  })
+
+  it('returns false without throwing when IPC throws', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    mockIPC(() => {
+      throw new Error('ack failed')
+    })
+
+    await expect(platformBridge.ackQuitConfirmation(7)).resolves.toBe(false)
+    expect(logs.messages('warn', 'platformBridge')).toEqual([
+      'ack_quit_confirmation failed',
+    ])
+  })
+})
+
+describe('platformBridge resolveQuitConfirmation', () => {
+  let logs: ReturnType<typeof captureLoggerOutput>
+
+  beforeEach(() => {
+    logs = captureLoggerOutput()
+  })
+
+  afterEach(() => {
+    logs.restore()
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('does nothing outside Tauri without invoking IPC', async () => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+
+    await expect(platformBridge.resolveQuitConfirmation(1, true)).resolves.toBeUndefined()
+    expect(logs.messages('warn', 'platformBridge')).toEqual([])
+  })
+
+  it('forwards promptId and confirm to resolve_quit_confirmation', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    const invoked: Array<[string, unknown]> = []
+    mockIPC((cmd, args) => {
+      invoked.push([cmd, args])
+      return null
+    })
+
+    await expect(platformBridge.resolveQuitConfirmation(5, true)).resolves.toBeUndefined()
+    await expect(platformBridge.resolveQuitConfirmation(6, false)).resolves.toBeUndefined()
+
+    expect(invoked).toEqual([
+      [
+        'resolve_quit_confirmation',
+        { promptId: 5, confirm: true },
+      ],
+      [
+        'resolve_quit_confirmation',
+        { promptId: 6, confirm: false },
+      ],
+    ])
+  })
+
+  it('resolves without throwing when IPC throws', async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    mockIPC(() => {
+      throw new Error('resolve failed')
+    })
+
+    await expect(platformBridge.resolveQuitConfirmation(5, false)).resolves.toBeUndefined()
+    expect(logs.messages('warn', 'platformBridge')).toEqual([
+      'resolve_quit_confirmation failed',
+    ])
+  })
+})
+
+describe('parseQuitConfirmEvent', () => {
+  it('normalizes valid and partial entries and rejects empty or malformed payloads', () => {
+    expect(parseQuitConfirmEvent(null)).toBeNull()
+    expect(parseQuitConfirmEvent([])).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: 0,
+      busyWork: {
+        agents: [
+          { tabId: 'a1' },
+        ],
+        terminals: [],
+      },
+    })).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: -1,
+      busyWork: {
+        agents: [
+          { tabId: 'a1' },
+        ],
+        terminals: [],
+      },
+    })).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: Number.NaN,
+      busyWork: {
+        agents: [
+          { tabId: 'a1' },
+        ],
+        terminals: [],
+      },
+    })).toBeNull()
+    expect(parseQuitConfirmEvent({ promptId: 1, busyWork: null })).toBeNull()
+    expect(parseQuitConfirmEvent({ promptId: 1, busyWork: {} })).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: 1,
+      busyWork: { agents: [], terminals: [] },
+    })).toBeNull()
+    expect(parseQuitConfirmEvent({
+      promptId: 1,
+      busyWork: {
+        agents: [null, 'bad'],
+        terminals: [null],
+      },
+    })).toBeNull()
+
+    expect(parseQuitConfirmEvent({
+      promptId: 9,
+      busyWork: {
+        agents: [
+          null,
+          {
+            tabId: 'a1',
+            title: 'Agent 1',
+            activeBackgroundTasks: ['t1', 42],
+            activeChildAgents: null,
+          },
+        ],
+        terminals: [
+          null,
+          {
+            tabId: 'term-1',
+            title: 'Shell',
+            processes: [
+              null,
+              { pid: 123, name: 'vite' },
+              { pid: Number.POSITIVE_INFINITY, name: 99 },
+            ],
+            totalCount: 'bad',
+          },
+        ],
+      },
+    })).toEqual({
+      promptId: 9,
+      busyWork: {
+        agents: [
+          {
+            tabId: 'a1',
+            title: 'Agent 1',
+            activeBackgroundTasks: ['t1'],
+            activeChildAgents: [],
+          },
+        ],
+        terminals: [
+          {
+            tabId: 'term-1',
+            title: 'Shell',
+            processes: [
+              { pid: 123, name: 'vite' },
+              { pid: 0, name: '' },
+            ],
+            totalCount: 2,
+          },
+        ],
+      },
+    })
   })
 })

@@ -27,8 +27,12 @@ import (
 	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/clockjump"
+	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/drain"
+	"github.com/leapmux/leapmux/worker/busywork"
 )
+
+const busyWorkInspectDrainTimeout = 5 * time.Second
 
 // RunConfig holds configuration for running the worker as a library.
 type RunConfig struct {
@@ -87,6 +91,10 @@ type RunConfig struct {
 	// Run still joins the callback before closing storage.
 	// Run drains, calls Drained, and returns callback or cleanup failures.
 	OnDeregister func() error
+	// OnBusyWorkInspector, when non-nil, receives a shutdown-safe inspector for
+	// the wired Worker service before OnReady runs. In-process launchers use it
+	// to check whether quitting or switching mode would stop local work.
+	OnBusyWorkInspector func(busywork.Inspector)
 	// OnReady, when non-nil, runs after local database initialization
 	// and runtime wiring complete: the point at which the worker is
 	// locally ready whatever its Hub connection is doing. It runs at
@@ -122,6 +130,7 @@ type ConnectionState struct {
 }
 
 type runCleanup struct {
+	inspectGate    *drain.Gate
 	closeDatabase  func(*sql.DB) error
 	closeDirectory func(*lifecycle.DirectoryLease) error
 }
@@ -304,6 +313,38 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 		ShutdownDeadline:        shutdownDeadline,
 	})
 
+	// Track external busy-work inspections so shutdown closes and drains them
+	// before wiring.Shutdown and before the deferred database close run.
+	inspectCtx, cancelInspect := context.WithCancel(context.WithoutCancel(ctx))
+	inspectGate := cleanup.inspectGate
+	if inspectGate == nil {
+		inspectGate = new(drain.Gate)
+	}
+	var stopInspectOnce sync.Once
+	stopInspect := func() {
+		stopInspectOnce.Do(func() {
+			inspectGate.Close(cancelInspect)
+			inspectGate.Drain(
+				shutdownDeadline.Cap(busyWorkInspectDrainTimeout),
+				"worker busy-work inspection did not finish before shutdown",
+			)
+		})
+	}
+	defer stopInspect()
+
+	if cfg.OnBusyWorkInspector != nil {
+		cfg.OnBusyWorkInspector(func(reqCtx context.Context) busywork.Snapshot {
+			release, ok := inspectGate.Begin(nil)
+			if !ok {
+				return busywork.Snapshot{}
+			}
+			defer release()
+			linkedCtx, cancelLinked := ctxutil.WithLinkedCancel(inspectCtx, reqCtx)
+			defer cancelLinked()
+			return wiring.Service.InspectBusyWork(linkedCtx)
+		})
+	}
+
 	// Local readiness: the database is open, migrated, and wired. A
 	// registered worker with an unavailable Hub is ready HERE, and its
 	// connection state says reconnecting -- local readiness and Hub
@@ -323,6 +364,7 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 	runShutdown := func() {
 		shutdownOnce.Do(func() {
 			slog.Info("draining worker state for graceful shutdown")
+			stopInspect()
 			wiring.Shutdown()
 			slog.Info("worker state drained")
 		})

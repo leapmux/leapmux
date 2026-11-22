@@ -1,8 +1,8 @@
 import type { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { TerminalProcess } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { Tab } from '~/stores/tab.types'
 import { workerAgent, workerTerminal } from '~/api/workerRpc'
+import { BACKGROUND_TASK_ROLE_CAPABILITIES } from '~/generated/contracts/background-task-roles'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createLogger } from '~/lib/logger'
 import { activityInterruptsWork } from '~/stores/agentActivity.store'
@@ -11,10 +11,19 @@ import { isSubagentTab, tabDisplayLabel } from '~/stores/tab.helpers'
 
 const log = createLogger('tabBusyProbe')
 
-/** Why closing a tab would interrupt work, and what that work is. */
+export interface TabBusyTerminalProcess {
+  readonly pid: number
+  readonly name: string
+}
+
+/** Why stopping a tab or app would interrupt work, and what that work is. */
 export type TabBusyReason
-  = | { kind: 'agent-work', activeRows: BackgroundTaskItem[] }
-    | { kind: 'terminal-processes', processes: TerminalProcess[], totalCount: number }
+  = | {
+    kind: 'agent-work'
+    activeBackgroundTasks: readonly string[]
+    activeChildAgents: readonly string[]
+  }
+  | { kind: 'terminal-processes', processes: readonly TabBusyTerminalProcess[], totalCount: number }
 
 /** One busy tab and the reason, for the aggregated bulk-close prompt. */
 export interface BusyTab {
@@ -108,11 +117,23 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
           deps.seedActivity(info.id, info.publishedActivityState)
           if (!activityInterruptsWork(info.activityState))
             continue
+          const activeBackgroundTasks: string[] = []
+          const activeChildAgents: string[] = []
+          // Every working row matters to closing, including activity-only children.
+          // Partition once by role so callers receive task and child-agent titles directly.
+          for (const row of deps.tasksFor(info.id)) {
+            if (!isActiveBackgroundTaskStatus(row.status))
+              continue
+            const role = BACKGROUND_TASK_ROLE_CAPABILITIES[row.role]
+            if (role?.countsAsTask)
+              activeBackgroundTasks.push(row.title)
+            else if (role?.canonicalChildActivity === true)
+              activeChildAgents.push(row.title)
+          }
           out.set(info.id, {
             kind: 'agent-work',
-            // Every working row matters to closing, including activity-only children.
-            // The dialog separates task counters from child activity through roles.
-            activeRows: deps.tasksFor(info.id).filter(t => isActiveBackgroundTaskStatus(t.status)),
+            activeBackgroundTasks,
+            activeChildAgents,
           })
         }
       }

@@ -1,13 +1,12 @@
 import type { Component } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
 import { Show } from 'solid-js'
-import { platformBridge } from '~/api/platformBridge'
 import { DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { useAuth } from '~/context/AuthContext'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
+import { requestDesktopSwitchMode } from '~/lib/soloStopConfirm'
 import { isAutoAuthenticated, isDesktopApp } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
-import { motion } from '~/styles/tokens'
 import { openPreferences, setShowAboutDialog } from './UserMenuState'
 
 export const AppAboutMenuItem: Component = () => (
@@ -29,29 +28,8 @@ export const UserMenuItems: Component = () => {
     navigate('/login', { replace: true })
   }
 
-  const handleSwitchMode = async () => {
-    const overlay = document.createElement('div')
-    const bg = getComputedStyle(document.documentElement).getPropertyValue('--background').trim() || '#000'
-    overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;background:${bg};opacity:0;transition:opacity var(--transition)`
-    document.body.appendChild(overlay)
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => {
-        overlay.style.opacity = '1'
-      })
-      const fallback = setTimeout(resolve, motion.medium + 100)
-      overlay.addEventListener('transitionend', () => {
-        clearTimeout(fallback)
-        resolve()
-      }, { once: true })
-    })
-
-    try {
-      await platformBridge.switchMode()
-    }
-    finally {
-      overlay.remove()
-    }
-    window.__leapmux_disconnectDesktop?.()
+  const handleSwitchMode = () => {
+    void requestDesktopSwitchMode()
   }
 
   return (

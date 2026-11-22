@@ -1,23 +1,27 @@
 //! macOS: route every `terminate:` into the cooperative shutdown.
 //!
-//! The Quit item of the macOS menu bar is `PredefinedMenuItem::quit`, whose
-//! action IS `-[NSApplication terminate:]`. The Dock's Quit, Cmd+Q,
-//! an AppleScript `quit`, and a logout reach the same selector. tao
-//! implements `applicationWillTerminate:` and not `applicationShouldTerminate:`,
-//! and its wry runtime maps the `terminate:` path onto Tauri's `RunEvent::Exit`,
-//! never onto `ExitRequested` -- so the cooperative shutdown that main.rs
-//! arms for `ExitRequested` never runs, the shell leaves at once, and the
-//! sidecar loses the Hub's runtime lease. One override on the delegate's
-//! class covers every one of those routes, for the same reason one override
-//! of `miniaturize:` covers every minimize (see tray/minimize_macos.rs, whose
-//! install shape this module follows).
+//! Dock Quit, an AppleScript `quit`, and a system logout or restart reach
+//! `-[NSApplication terminate:]` (while the app menu's Quit item and Cmd+Q use
+//! a custom `MenuItem` handled by `.on_menu_event` so repeated Cmd+Q presses
+//! during a busy-work scan never trigger AppKit's double-`terminate:` bypass).
+//! tao implements `applicationWillTerminate:` and not
+//! `applicationShouldTerminate:`, and its wry runtime maps the `terminate:`
+//! path onto Tauri's `RunEvent::Exit`, never onto `ExitRequested` -- so the
+//! cooperative shutdown that main.rs arms for `ExitRequested` never runs, the
+//! shell leaves at once, and the sidecar loses the Hub's runtime lease. One
+//! override on the delegate's class covers every `terminate:` route, for the
+//! same reason one override of `miniaturize:` covers every minimize (see
+//! tray/minimize_macos.rs, whose install shape this module follows).
 //!
-//! The hook answers `NSTerminateLater` while `begin_app_exit` drains, and the
-//! `finish` closure of that call sends `replyToApplicationShouldTerminate:YES`
-//! on the main thread, which commits the quit AppKit is holding. An exit that
-//! another route (`quit_app`, the tray) already started answers
-//! `NSTerminateCancel`: the running exit still ends the application, and a
-//! logout that landed in the same seconds is left for the user to repeat.
+//! The hook delegates to `handle_macos_terminate`, which returns
+//! `TerminateDecision::Later` while inspecting solo-mode busy work or while
+//! `begin_app_exit` drains, and sends `replyToApplicationShouldTerminate:YES`
+//! on the main thread when committing the quit, or
+//! `replyToApplicationShouldTerminate:NO` before showing a busy-work
+//! confirmation dialog (or when a concurrent exit already runs). An exit that
+//! another route (`quit_app`, the app menu, the tray) already started or a
+//! duplicate terminate during inspection or prompting answers
+//! `NSTerminateCancel`.
 //!
 //! Two things limit the hold. A SECOND `terminate:` during `NSTerminateLater`
 //! skips the delegate and ends the process at once; that is AppKit's own
@@ -39,7 +43,13 @@ use objc2::ffi::class_addMethod;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{msg_send, sel};
 
-use super::{begin_app_exit, DesktopShell};
+use super::{handle_macos_terminate, DesktopShell};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminateDecision {
+    Later,
+    Cancel,
+}
 
 /// The Objective-C type encoding of `-[NSApplication
 /// applicationShouldTerminate:]`: an `NSUInteger` return (`NSTerminateReply`),
@@ -66,13 +76,12 @@ const NSTERMINATE_LATER: usize = 2;
 /// before it publishes a second hook, so the field always describes the one
 /// delegate class that it hooked.
 struct TerminateHook {
-    /// Claims the exit through `begin_app_exit`. True means this hook holds
-    /// the quit; false means an exit that another route started already runs.
+    /// Decides how `applicationShouldTerminate:` responds to AppKit.
     ///
     /// A closure over the `DesktopShell` that `install` received, so the hook
     /// acts on the shell it was given. It is also the seam the tests drive: a
     /// `DesktopShell` needs a running application, and a stub claim does not.
-    claim: Box<dyn Fn() -> bool + Send + Sync>,
+    claim: Box<dyn Fn() -> TerminateDecision + Send + Sync>,
 }
 
 static HOOK: OnceLock<TerminateHook> = OnceLock::new();
@@ -104,9 +113,7 @@ pub(crate) fn install(shell: Arc<DesktopShell>) -> Result<(), String> {
     // `terminate:` that reaches the override never finds the hook missing.
     if HOOK
         .set(TerminateHook {
-            claim: Box::new(move || {
-                begin_app_exit(shell.clone(), reply_to_terminate_after_shutdown)
-            }),
+            claim: Box::new(move || handle_macos_terminate(shell.clone())),
         })
         .is_err()
     {
@@ -216,10 +223,10 @@ extern "C-unwind" fn application_should_terminate(
 /// own callbacks (`stop_app_on_panic`). A panic answers `NSTerminateNow`
 /// rather than `NSTerminateCancel`, because a quit must not be refused: the
 /// shell leaves at once, and the sidecar finishes its drain by itself.
-fn terminate_reply(claim: &dyn Fn() -> bool) -> usize {
+fn terminate_reply(claim: &dyn Fn() -> TerminateDecision) -> usize {
     match catch_unwind(AssertUnwindSafe(claim)) {
-        Ok(true) => NSTERMINATE_LATER,
-        Ok(false) => NSTERMINATE_CANCEL,
+        Ok(TerminateDecision::Later) => NSTERMINATE_LATER,
+        Ok(TerminateDecision::Cancel) => NSTERMINATE_CANCEL,
         Err(_) => {
             crate::shell_log!(
                 "the quit claim panicked; the app terminates now and the sidecar finishes by itself"
@@ -229,21 +236,37 @@ fn terminate_reply(claim: &dyn Fn() -> bool) -> usize {
     }
 }
 
-/// Commit the quit that `NSTerminateLater` is holding.
+/// Complete or cancel the quit that `NSTerminateLater` is holding.
 ///
-/// AppKit requires `replyToApplicationShouldTerminate:YES` on the MAIN thread
-/// before it proceeds past a delegate that answered `NSTerminateLater`, so the
-/// reply is scheduled there. The tao event-loop proxy wakes the main thread
-/// during the hold, which a probe confirmed.
-fn reply_to_terminate_after_shutdown(app: &crate::AppHandle) {
-    let scheduled = app.run_on_main_thread(|| {
-        let Some(ns_app) = shared_application() else {
+/// AppKit requires `replyToApplicationShouldTerminate:` on the MAIN thread
+/// before it proceeds past or releases a delegate that answered
+/// `NSTerminateLater`, so the reply is scheduled there. The tao event-loop
+/// proxy wakes the main thread during the hold, which a probe confirmed.
+pub(crate) fn reply_to_terminate(app: &crate::AppHandle, should_terminate: bool) {
+    reply_to_terminate_then(app, should_terminate, || {});
+}
+
+/// Sends `replyToApplicationShouldTerminate:` on the main thread and runs
+/// `after` immediately after the reply completes.
+pub(crate) fn reply_to_terminate_then(
+    app: &crate::AppHandle,
+    should_terminate: bool,
+    after: impl FnOnce() + Send + 'static,
+) {
+    let mut after = Some(after);
+    let scheduled = app.run_on_main_thread(move || {
+        if let Some(ns_app) = shared_application() {
+            // SAFETY: the reply goes to the application that sent `terminate:`,
+            // on the main thread, and passes YES to commit or NO to release the
+            // held quit.
+            let _: () =
+                unsafe { msg_send![ns_app, replyToApplicationShouldTerminate: should_terminate] };
+        } else {
             crate::shell_log!("NSApplication is gone; the quit reply is lost");
-            return;
-        };
-        // SAFETY: the reply goes to the application that sent `terminate:`,
-        // on the main thread, and takes YES to commit the held quit.
-        let _: () = unsafe { msg_send![ns_app, replyToApplicationShouldTerminate: true] };
+        }
+        if let Some(callback) = after.take() {
+            callback();
+        }
     });
     if let Err(err) = scheduled {
         crate::shell_log!("the quit reply could not be scheduled on the main thread: {err}");
@@ -272,8 +295,8 @@ mod tests {
     use objc2::{msg_send, sel, ClassType};
 
     use super::{
-        add_hook, defines_terminate, terminate_reply, HOOK, NSTERMINATE_CANCEL, NSTERMINATE_LATER,
-        NSTERMINATE_NOW,
+        add_hook, defines_terminate, terminate_reply, TerminateDecision, HOOK, NSTERMINATE_CANCEL,
+        NSTERMINATE_LATER, NSTERMINATE_NOW,
     };
 
     extern "C-unwind" fn count_terminate(
@@ -343,7 +366,7 @@ mod tests {
         HOOK.set(super::TerminateHook {
             claim: Box::new(|| {
                 CLAIM_REPLIED.store(true, Ordering::SeqCst);
-                true
+                TerminateDecision::Later
             }),
         })
         .unwrap_or_else(|_| panic!("only this test publishes the hook"));
@@ -372,7 +395,10 @@ mod tests {
     // A first `terminate:` claims the exit and holds the quit open.
     #[test]
     fn reply_defers_a_first_terminate() {
-        assert_eq!(terminate_reply(&|| true), NSTERMINATE_LATER);
+        assert_eq!(
+            terminate_reply(&|| TerminateDecision::Later),
+            NSTERMINATE_LATER
+        );
     }
 
     // A `terminate:` that lands while an exit another route started already
@@ -380,7 +406,10 @@ mod tests {
     // second drain must not start.
     #[test]
     fn reply_cancels_a_terminate_during_an_exit() {
-        assert_eq!(terminate_reply(&|| false), NSTERMINATE_CANCEL);
+        assert_eq!(
+            terminate_reply(&|| TerminateDecision::Cancel),
+            NSTERMINATE_CANCEL
+        );
     }
 
     // A panic inside the claim must not cross the `extern "C-unwind"` boundary
@@ -388,7 +417,7 @@ mod tests {
     // proceeds, and the sidecar finishes its drain by itself.
     #[test]
     fn reply_answers_now_after_a_panic() {
-        let panicking = || -> bool {
+        let panicking = || -> TerminateDecision {
             panic!("the quit claim failed");
         };
         let reply = catch_unwind(AssertUnwindSafe(|| terminate_reply(&panicking)))

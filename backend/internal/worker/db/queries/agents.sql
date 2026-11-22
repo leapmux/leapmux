@@ -71,6 +71,12 @@ SELECT id, workspace_archived FROM agents WHERE id = ?;
 -- name: GetAgentTitle :one
 SELECT title FROM agents WHERE id = ?;
 
+-- ListAgentTitlesByIDs batches GetAgentTitle for busy-work inspection so
+-- quitting or switching mode avoids N+1 title queries while still skipping
+-- options and option_groups JSON blobs.
+-- name: ListAgentTitlesByIDs :many
+SELECT id, title FROM agents WHERE id IN (sqlc.slice('ids'));
+
 -- name: ListAllOpenAgentIDs :many
 SELECT id FROM agents WHERE closed_at IS NULL;
 

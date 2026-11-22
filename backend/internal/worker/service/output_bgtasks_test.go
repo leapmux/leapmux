@@ -468,26 +468,32 @@ func TestBgTask_CapNoFinishedRowEvictsOldestActive(t *testing.T) {
 	}
 	require.Len(t, listRows(), bgtask.MaxTasks)
 
-	// Insert one more at the cap with no finished row: the oldest ACTIVE row
-	// (task-1) is evicted so the new spawn links instead of being dropped --
-	// dropping would orphan an already-created child agent row.
+	// Insert one more at the cap with no finished row: active rows are NEVER
+	// evicted, so task-1 stays displayed alongside task-new until rows finish.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-new", Kind: bgtask.KindSubagent, Title: "fresh", Status: bgtask.StatusRunning,
 	}))
 	rows := listRows()
 	require.Len(t, rows, bgtask.MaxTasks+1, "active rows remain in storage")
 	keys := displayedRowKeys(t, svc, ownerID)
-	require.Len(t, keys, bgtask.MaxTasks, "the display keeps its cap")
-	assert.NotContains(t, keys, "task-1", "oldest active row evicted at cap with no finished row")
+	require.Len(t, keys, bgtask.MaxTasks+1, "active rows are never evicted at the cap")
+	assert.Contains(t, keys, "task-1", "oldest active row stays displayed")
 	assert.Contains(t, keys, "task-new", "new row linked")
 	assert.Contains(t, rowKeySet(rows), "task-1")
 	assert.EqualValues(t, bgtask.MaxTasks+1, svc.Output.AgentActivitySnapshot(ownerID, ownerID).ActiveTasks)
+
+	// Once an active row finishes while the pool is over cap, the oldest
+	// finished row is trimmed back down to MaxTasks.
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
+	keysAfterClose := displayedRowKeys(t, svc, ownerID)
+	require.Len(t, keysAfterClose, bgtask.MaxTasks, "finishing a row trims the pool back to MaxTasks")
+	assert.NotContains(t, keysAfterClose, "task-1", "the finished row is trimmed once the pool exceeds cap")
+	assert.Contains(t, keysAfterClose, "task-new")
 }
 
 // TestBgTask_CapAllActiveLinkedHoldsTheDisplayCap verifies that a pool full of
-// linked ACTIVE rows still respects the cap on the display list. The cap used to
-// be exceeded here to keep a linked row's index alive; that trade is gone,
-// because the row now survives eviction in the table on its own.
+// linked ACTIVE rows keeps every active row displayed and linked without
+// evicting any active row.
 func TestBgTask_CapAllActiveLinkedHoldsTheDisplayCap(t *testing.T) {
 	t.Parallel()
 
@@ -517,28 +523,25 @@ func TestBgTask_CapAllActiveLinkedHoldsTheDisplayCap(t *testing.T) {
 	}))
 
 	displayed := displayedRowKeys(t, svc, ownerID)
-	assert.Len(t, displayed, bgtask.MaxTasks, "the display list holds its cap")
-	assert.NotContains(t, displayed, "task-1", "the oldest row left the display list")
+	assert.Len(t, displayed, bgtask.MaxTasks+1, "all active linked rows stay displayed")
+	assert.Contains(t, displayed, "task-1", "oldest active row stays displayed")
 	assert.Contains(t, displayed, "task-new")
 
 	// The table keeps every row, so no child lost its index.
-	assert.Len(t, listRows(), bgtask.MaxTasks+1, "the evicted row is retained in the table")
+	assert.Len(t, listRows(), bgtask.MaxTasks+1, "every row stays in the table")
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		_, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, fmt.Sprintf("child-%d", i))
 		assert.NoError(t, err, "child-%d linkage preserved", i)
 	}
 }
 
-// TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries verifies the rule that
-// replaced "prefer an unlinked row": at the cap with no finished row, the OLDEST
-// active row leaves the display list, and its linkage alone decides whether the
-// persisted row goes with it.
+// TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries verifies that when
+// every row in the pool is active, neither linked nor unlinked active rows are
+// evicted.
 func TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries(t *testing.T) {
 	t.Parallel()
 
 	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
-	// task-1: linked and oldest. task-2: unlinked, and under the old rule it
-	// the old rule evicted it in task-1's place.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		Role: bgtask.RoleChildTask,
 
@@ -562,15 +565,15 @@ func TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries(t *testing.T) {
 	}))
 
 	displayed := displayedRowKeys(t, svc, ownerID)
-	require.Len(t, displayed, bgtask.MaxTasks, "the display list holds its cap")
-	assert.NotContains(t, displayed, "task-1", "the OLDEST active row leaves the list, linked or not")
-	assert.Contains(t, displayed, "task-2", "an unlinked younger row is not preferred as the victim")
+	require.Len(t, displayed, bgtask.MaxTasks+1, "no active row is evicted")
+	assert.Contains(t, displayed, "task-1", "the oldest active linked row stays displayed")
+	assert.Contains(t, displayed, "task-2", "the unlinked active row stays displayed")
+	assert.Contains(t, displayed, "task-new")
 
-	// task-1 left the list but keeps its row, because it carries a transcript.
-	assert.Contains(t, rowKeySet(listRows()), "task-1", "a linked row is retained in the table")
+	assert.Contains(t, rowKeySet(listRows()), "task-1", "a linked row stays in the table")
 	childID, status, ok, err := sink.LookupBackgroundTask("task-1")
 	require.NoError(t, err)
-	require.True(t, ok, "the retained row still resolves by key")
+	require.True(t, ok, "the row resolves by key")
 	assert.Equal(t, "child-1", childID)
 	assert.Equal(t, bgtask.StatusRunning, status)
 }
@@ -1456,9 +1459,9 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 	ctx := context.Background()
 	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 
-	// Fill the subagent pool with rows that each carry a child, which is the
-	// state that outgrows the cap: eviction hides them, it does not delete them.
-	// Go past the pool's cap so the seed's LIMIT genuinely has to choose.
+	// Fill the subagent pool with finished linked rows so the table outgrows
+	// the cap: finished linked rows are retained in storage after eviction, so
+	// the seed's LIMIT genuinely chooses the newest finished rows.
 	const overflow = 8
 	newest := fmt.Sprintf("agent-%03d", bgtask.MaxTasks+overflow)
 	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
@@ -1467,11 +1470,12 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 			RegistryRole: bgtask.RoleChildTask,
 			SpawnSpanID:  fmt.Sprintf("span-%03d", i), ProviderChildKey: rowKey, Title: "SCAN"})
 		require.NoError(t, err)
+		require.NoError(t, sink.CloseBackgroundTask(rowKey, bgtask.StatusSucceeded))
 	}
 	require.Len(t, listRows(), bgtask.MaxTasks+overflow,
 		"the table must actually outgrow the cap, or this test proves nothing")
 	require.Len(t, displayedRowKeys(t, svc, ownerID), bgtask.MaxTasks,
-		"the display list holds the cap all the same")
+		"the display list holds the cap for finished rows")
 
 	// Drop the warm cache so the next read seeds from the DB.
 	svc.Output.CleanupAgent("agent-1")
@@ -1547,9 +1551,7 @@ func TestBgTask_ReplayedRunningUpsertCannotResurrectARetainedRow(t *testing.T) {
 	assert.Equal(t, endedAt, row.EndedAt, "ended_at survives the replay")
 }
 
-// A progress update for a retained row has to land on it. Dropping it left the
-// row Running in the table for the life of the process, and a reseed then put a
-// stale Running subagent back in the sidebar.
+// A final status update for a retained finished row lands on it cleanly.
 func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
 	t.Parallel()
 
@@ -1558,16 +1560,20 @@ func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
 		RegistryRole: bgtask.RoleChildTask,
 		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
-		"the row leaves the display list")
+		"the finished linked row leaves the display list")
 
-	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusFailed, "late failure detail"))
 
-	assert.Equal(t, "running Bash", storedRow(t, svc, ownerID, "task-1").ActiveForm)
+	row := storedRow(t, svc, ownerID, "task-1")
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusFailed), row.Status)
+	assert.Equal(t, "late failure detail", row.ActiveForm)
 }
 
-// A close records the outcome of a retained child without changing its transcript.
+// Active rows stay displayed past MaxTasks and closing one records its outcome
+// without changing its transcript while trimming the pool back to MaxTasks.
 func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -1577,14 +1583,15 @@ func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
 		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
-	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
-		"the row leaves the display list")
+	require.Contains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"an active row is never evicted from the display list")
 
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	row := storedRow(t, svc, ownerID, "task-1")
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), row.Status)
 	assert.True(t, row.EndedAt.Valid, "the close stamps ended_at")
+	assert.Len(t, displayedRowKeys(t, svc, ownerID), bgtask.MaxTasks, "closing trims the over-cap pool back to MaxTasks")
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Empty(t, msgs, "registry completion leaves the child transcript unchanged")
@@ -1614,9 +1621,10 @@ func TestBgTask_ReviveReachesARetainedRow(t *testing.T) {
 	assert.False(t, row.EndedAt.Valid, "the revive clears ended_at")
 }
 
-// Re-admission is what makes a mutation reach a retained row, and it must not
-// buy that by growing the list. The row comes back at the END, because a row a
-// mutation just touched is the newest activity the registry has.
+// Re-admission is what makes a mutation reach a retained finished row, and when
+// the pool holds finished rows it evicts the oldest finished filler so the pool
+// stays at its cap. The row comes back at the END, because a row a mutation
+// just touched is the newest activity the registry has.
 func TestBgTask_ReAdmittingARetainedRowHoldsTheDisplayCap(t *testing.T) {
 	t.Parallel()
 
@@ -1625,17 +1633,23 @@ func TestBgTask_ReAdmittingARetainedRowHoldsTheDisplayCap(t *testing.T) {
 		RegistryRole: bgtask.RoleChildTask,
 		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
+	for i := 0; i < bgtask.MaxTasks; i++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("filler-%d", i), Kind: bgtask.KindSubagent,
+			Title: fmt.Sprintf("filler %d", i), Status: bgtask.StatusSucceeded,
+		}))
+	}
 	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1")
 
-	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
 
 	displayed := displayedRowKeys(t, svc, ownerID)
-	assert.Len(t, displayed, bgtask.MaxTasks, "the cap holds across a re-admission")
+	assert.Len(t, displayed, bgtask.MaxTasks, "the cap holds across a re-admission when finished rows exist")
 	require.NotEmpty(t, displayed)
 	assert.Equal(t, "task-1", displayed[len(displayed)-1],
 		"the touched row is the newest entry in the list")
-	assert.NotContains(t, displayed, "filler-0", "the oldest entry left to make room")
+	assert.NotContains(t, displayed, "filler-0", "the oldest finished entry left to make room")
 }
 
 // A registry with no retention (agent_todos) must not gain a store fallback:
@@ -1791,15 +1805,27 @@ func TestBgTask_AReviveOfADeletedRowBroadcastsWithoutIt(t *testing.T) {
 func TestBgTask_AReviveThatMatchesNothingSparesTheDisplayListForARetainedRow(t *testing.T) {
 	t.Parallel()
 
+	ctx := context.Background()
 	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildTask,
 		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	// The row is ACTIVE in the table, so the revive's UPDATE matches nothing.
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 	before := displayedRowKeys(t, svc, ownerID)
-	require.NotContains(t, before, "task-1", "the row leaves the display list")
+	require.NotContains(t, before, "task-1", "the finished linked row leaves the display list")
+	// Flip the retained row back to Running directly in SQLite so the revive's
+	// UPDATE (which filters on a final status) matches nothing.
+	_, err = svc.Queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
+		OutputGeneration: storedRow(t, svc, ownerID, "task-1").OutputGeneration,
+		Status:           leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+		MinFinalStatus:   leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		UpdatedAt:        sqltime.NewSQLiteTime(nowMillis()),
+		OwnerAgentID:     ownerID,
+		RowKey:           "task-1",
+	})
+	require.NoError(t, err)
 	beforeRows := len(listRows())
 
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
@@ -1877,5 +1903,61 @@ func TestBgTask_ActiveUpsertsKeepTheirEndStampNull(t *testing.T) {
 		stored := rows()
 		require.Len(t, stored, 1)
 		assert.False(t, stored[0].EndedAt.Valid, "every open state leaves its nullable end stamp empty")
+	}
+}
+
+func TestBgTask_ColdSeedWithCapFullOfActiveRowsReclaimsUnlinkedFinishedRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, ownerID, listRows := setupBgTaskTestWithService(t)
+	now := sqltime.NewSQLiteTime(nowMillis())
+
+	// Seed 3 unlinked finished rows plus MaxTasks+2 active rows directly in SQLite
+	// so cold seeding fills the window with active rows alone and reclaims the
+	// unlinked finished surplus via cutoff=math.MaxInt64.
+	var seq int64 = 1
+	for i := range 3 {
+		writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+			OwnerAgentID: ownerID,
+			RowKey:       fmt.Sprintf("finished-%d", i),
+			Seq:          seq,
+			Role:         leapmuxv1.BackgroundTaskRole(bgtask.RoleTaskOutcome),
+			Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindShell),
+			Title:        fmt.Sprintf("finished %d", i),
+			Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
+			CreatedAt:    now,
+			UpdatedAt:    now,
+			EndedAt:      sqltime.SQLiteNullTimeOf(now.Time),
+		})
+		seq++
+	}
+	for i := range bgtask.MaxTasks + 2 {
+		writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+			OwnerAgentID: ownerID,
+			RowKey:       fmt.Sprintf("active-%02d", i),
+			Seq:          seq,
+			Role:         leapmuxv1.BackgroundTaskRole(bgtask.RoleTaskOutcome),
+			Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindShell),
+			Title:        fmt.Sprintf("active %d", i),
+			Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		})
+		seq++
+	}
+
+	svc.Output.bgtasks.Delete(ownerID)
+	loaded, err := svc.Output.LoadBackgroundTasks(ctx, ownerID)
+	require.NoError(t, err)
+	assert.Len(t, loaded, bgtask.MaxTasks+2, "cold seed preserves every active row past MaxTasks")
+	for _, item := range loaded {
+		assert.False(t, item.Status.IsFinished(), "finished rows are excluded when active rows fill the cap")
+	}
+
+	remaining := rowKeySet(listRows())
+	assert.Len(t, remaining, bgtask.MaxTasks+2, "unlinked finished surplus is reclaimed on cold seed")
+	for i := range 3 {
+		assert.NotContains(t, remaining, fmt.Sprintf("finished-%d", i))
 	}
 }

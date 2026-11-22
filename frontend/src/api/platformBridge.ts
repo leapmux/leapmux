@@ -7,6 +7,7 @@ import {
   LAUNCH_VISIBILITY_HIDDEN,
   LAUNCH_VISIBILITY_MINIMIZED,
   LAUNCH_VISIBILITY_NORMAL,
+  TAURI_EVENT_APP_CONFIRM_QUIT,
   TAURI_EVENT_SIDECAR_LOG,
   TAURI_IPC_HEADER_HEADERS,
   TAURI_IPC_HEADER_METHOD,
@@ -267,6 +268,167 @@ export interface ListTunnelsResult {
 export interface ExternalApp {
   id: string
   displayName: string
+}
+
+export interface BusyAgentWork {
+  tabId: string
+  title: string
+  activeBackgroundTasks: string[]
+  activeChildAgents: string[]
+}
+
+export interface BusyTerminalProcessWork {
+  pid: number
+  name: string
+}
+
+export interface BusyTerminalWork {
+  tabId: string
+  title: string
+  processes: BusyTerminalProcessWork[]
+  totalCount: number
+}
+
+export interface SoloBusyWork {
+  agents: BusyAgentWork[]
+  terminals: BusyTerminalWork[]
+}
+
+export interface QuitConfirmEvent {
+  promptId: number
+  busyWork: SoloBusyWork
+}
+
+export type SwitchModeStartResult
+  = | { kind: 'proceed', switchId: number }
+    | { kind: 'confirm', promptId: number, busyWork: SoloBusyWork }
+    | { kind: 'blocked' }
+
+function normalizePositiveId(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : null
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value))
+    return []
+  return value.filter((item): item is string => typeof item === 'string')
+}
+
+function normalizeSoloBusyWork(raw: unknown): SoloBusyWork {
+  if (typeof raw !== 'object' || raw === null)
+    return { agents: [], terminals: [] }
+  const record = raw as Record<string, unknown>
+  const agents: BusyAgentWork[] = Array.isArray(record.agents)
+    ? record.agents.flatMap((entry) => {
+        if (typeof entry !== 'object' || entry === null)
+          return []
+        const agent = entry as Record<string, unknown>
+        return [
+          {
+            tabId: typeof agent.tabId === 'string'
+              ? agent.tabId
+              : '',
+            title: typeof agent.title === 'string'
+              ? agent.title
+              : '',
+            activeBackgroundTasks: normalizeStringArray(agent.activeBackgroundTasks),
+            activeChildAgents: normalizeStringArray(agent.activeChildAgents),
+          },
+        ]
+      })
+    : []
+  const terminals: BusyTerminalWork[] = Array.isArray(record.terminals)
+    ? record.terminals.flatMap((entry) => {
+        if (typeof entry !== 'object' || entry === null)
+          return []
+        const term = entry as Record<string, unknown>
+        const processes: BusyTerminalProcessWork[] = Array.isArray(term.processes)
+          ? term.processes.flatMap((procEntry) => {
+              if (typeof procEntry !== 'object' || procEntry === null)
+                return []
+              const proc = procEntry as Record<string, unknown>
+              return [
+                {
+                  pid: typeof proc.pid === 'number' && Number.isFinite(proc.pid)
+                    ? proc.pid
+                    : 0,
+                  name: typeof proc.name === 'string'
+                    ? proc.name
+                    : '',
+                },
+              ]
+            })
+          : []
+        const totalCount = typeof term.totalCount === 'number' && Number.isFinite(term.totalCount)
+          ? term.totalCount
+          : processes.length
+        return [
+          {
+            tabId: typeof term.tabId === 'string'
+              ? term.tabId
+              : '',
+            title: typeof term.title === 'string'
+              ? term.title
+              : '',
+            processes,
+            totalCount,
+          },
+        ]
+      })
+    : []
+  return { agents, terminals }
+}
+
+/**
+ * Validates and normalizes a raw `app:confirm-quit` event payload.
+ * Returns null for malformed payloads or empty busy-work snapshots so the UI
+ * never renders a broken or "0 tabs" confirmation dialog.
+ */
+export function parseQuitConfirmEvent(raw: unknown): QuitConfirmEvent | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+    return null
+  const record = raw as Record<string, unknown>
+  const promptId = normalizePositiveId(record.promptId)
+  if (promptId === null)
+    return null
+  if (typeof record.busyWork !== 'object' || record.busyWork === null || Array.isArray(record.busyWork))
+    return null
+  const rawBusy = record.busyWork as Record<string, unknown>
+  if (!Array.isArray(rawBusy.agents) || !Array.isArray(rawBusy.terminals))
+    return null
+  const busyWork = normalizeSoloBusyWork(rawBusy)
+  if (busyWork.agents.length === 0 && busyWork.terminals.length === 0)
+    return null
+  return {
+    promptId,
+    busyWork,
+  }
+}
+
+/**
+ * Validates and normalizes a raw `begin_switch_mode` response from Rust.
+ * Malformed responses resolve to `{ kind: 'blocked' }` so the UI never renders
+ * a broken dialog or calls `switch_mode` with an invalid token.
+ */
+export function parseSwitchModeStartResult(raw: unknown): SwitchModeStartResult {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+    return { kind: 'blocked' }
+  const record = raw as Record<string, unknown>
+  if (record.kind === 'proceed') {
+    const switchId = normalizePositiveId(record.switchId)
+    return switchId !== null
+      ? { kind: 'proceed', switchId }
+      : { kind: 'blocked' }
+  }
+  if (record.kind === 'confirm') {
+    const parsed = parseQuitConfirmEvent(record)
+    return parsed
+      ? { kind: 'confirm', promptId: parsed.promptId, busyWork: parsed.busyWork }
+      : { kind: 'blocked' }
+  }
+  return { kind: 'blocked' }
 }
 
 // Tagged unions the UI consumes. Mirror CliPathStatusResponse and
@@ -1339,9 +1501,77 @@ export const platformBridge = {
   async restart(): Promise<void> {
     await tauriInvoke('restart_app')
   },
-  async switchMode(): Promise<void> {
-    await tauriInvoke('switch_mode')
+  async switchMode(switchId?: number): Promise<void> {
+    await tauriInvoke('switch_mode', switchId !== undefined && switchId > 0
+      ? { switchId }
+      : undefined)
     await refreshRuntimeState()
+  },
+  async beginSwitchMode(): Promise<SwitchModeStartResult> {
+    if (!isTauriApp())
+      return { kind: 'proceed', switchId: 0 }
+    try {
+      const raw = await tauriInvoke<unknown>('begin_switch_mode')
+      return parseSwitchModeStartResult(raw)
+    }
+    catch (err) {
+      log.warn('begin_switch_mode failed', err)
+      return { kind: 'blocked' }
+    }
+  },
+  async resolveSwitchModeConfirmation(promptId: number, confirm: boolean): Promise<number | null> {
+    if (!isTauriApp()) {
+      return confirm
+        ? 0
+        : null
+    }
+    try {
+      const raw = await tauriInvoke<unknown>('resolve_switch_mode_confirmation', { promptId, confirm })
+      return normalizePositiveId(raw)
+    }
+    catch (err) {
+      log.warn('resolve_switch_mode_confirmation failed', err)
+      return null
+    }
+  },
+  async cancelSwitchMode(switchId: number): Promise<void> {
+    if (!isTauriApp() || switchId <= 0)
+      return
+    try {
+      await tauriInvoke('cancel_switch_mode', { switchId })
+    }
+    catch (err) {
+      log.warn('cancel_switch_mode failed', err)
+    }
+  },
+  async ackQuitConfirmation(promptId: number): Promise<boolean> {
+    if (!isTauriApp())
+      return false
+    try {
+      const result = await tauriInvoke<unknown>('ack_quit_confirmation', { promptId })
+      return result === true
+    }
+    catch (err) {
+      log.warn('ack_quit_confirmation failed', err)
+      return false
+    }
+  },
+  async resolveQuitConfirmation(promptId: number, confirm: boolean): Promise<void> {
+    if (!isTauriApp())
+      return
+    try {
+      await tauriInvoke('resolve_quit_confirmation', { promptId, confirm })
+    }
+    catch (err) {
+      log.warn('resolve_quit_confirmation failed', err)
+    }
+  },
+  onQuitConfirmation(callback: (event: QuitConfirmEvent) => void): Promise<() => void> {
+    return this.onEvent(TAURI_EVENT_APP_CONFIRM_QUIT, (raw) => {
+      const parsed = parseQuitConfirmEvent(raw)
+      if (parsed)
+        callback(parsed)
+    })
   },
   setTunnelTrustScope,
   onTunnelResetStatusChange,

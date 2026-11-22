@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -267,23 +265,18 @@ func TestBackgroundTaskExitPreservesOnlyWorkingReplacementRowsInHiddenActivity(t
 		}))
 	}
 	keys := displayedRowKeys(t, svc, "hidden-registry-exit")
-	require.NotContains(t, keys, "hidden-paused")
-	require.NotContains(t, keys, "hidden-running")
-	cache := svc.Output.bgTaskCache("hidden-registry-exit")
-	cache.Mu.Lock()
-	beforeCount := cache.EvictedActiveCount()
-	cache.Mu.Unlock()
-	require.Equal(t, int32(1), beforeCount, "Paused stays open but contributes no hidden working activity")
+	require.Contains(t, keys, "hidden-paused", "non-final paused row stays displayed")
+	require.Contains(t, keys, "hidden-running", "active running row stays displayed")
+	require.Equal(t, int32(1), svc.Output.AgentActivitySnapshot("hidden-registry-exit", "hidden-registry-exit").ActiveTasks,
+		"Paused stays open but contributes no working activity")
 
 	svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: "hidden-registry-exit", Err: nil, Stopped: true, Output: original})
 	release()
 	require.NoError(t, queue.Flush())
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusPaused), storedRow(t, svc, "hidden-registry-exit", "hidden-paused").Status)
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning), storedRow(t, svc, "hidden-registry-exit", "hidden-running").Status)
-	cache.Mu.Lock()
-	afterCount := cache.EvictedActiveCount()
-	cache.Mu.Unlock()
-	assert.Equal(t, int32(1), afterCount, "a filtered outgoing sweep must retain Running and exclude Paused from hidden activity")
+	assert.Equal(t, int32(1), svc.Output.AgentActivitySnapshot("hidden-registry-exit", "hidden-registry-exit").ActiveTasks,
+		"a filtered outgoing sweep must preserve replacement Running and exclude Paused from working activity")
 }
 
 func TestBackgroundTaskFinalStatusActivityUpdatePreservesItsEndStamp(t *testing.T) {
@@ -518,7 +511,7 @@ func TestBackgroundTaskHiddenWorkingRetentionSurvivesRollbackAndExit(t *testing.
 	cache.Mu.Lock()
 	mirror := cache.mirrorLocked()
 	cache.Mu.Unlock()
-	require.True(t, mirror.evictedActive.has("shell-0"))
+	require.Contains(t, displayedRowKeys(t, svc, owner), "shell-0", "active row is never evicted past the cap")
 	before, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), owner)
 	require.NoError(t, err)
 	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER reject_hidden_status BEFORE UPDATE OF status ON agent_background_tasks
@@ -531,7 +524,7 @@ WHEN NEW.owner_agent_id = 'hidden-working-rollback' AND NEW.row_key = 'shell-0' 
 	cache.Mu.Lock()
 	current := cache.mirrorLocked()
 	cache.Mu.Unlock()
-	assert.Equal(t, mirror, current, "rollback restores both display and hidden working rows")
+	assert.Equal(t, mirror, current, "rollback restores the cache mirror")
 	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER reject_hidden_status")
 	require.NoError(t, err)
 	pending, err := svc.Queries.ListWorkingAgentBackgroundTaskActivity(t.Context(), db.ListWorkingAgentBackgroundTaskActivityParams{OwnerAgentID: owner, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning)})
@@ -545,7 +538,8 @@ WHEN NEW.owner_agent_id = 'hidden-working-rollback' AND NEW.row_key = 'shell-0' 
 		OwnerAgentID: owner, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 	})
 	require.NoError(t, err)
-	assert.Empty(t, working, "process exit finishes hidden working rows too")
+	assert.Empty(t, working, "process exit finishes all active rows past the cap")
+	assert.Len(t, displayedRowKeys(t, svc, owner), bgtask.MaxTasks, "process exit trims finished rows back to MaxTasks")
 	assert.Zero(t, svc.Output.AgentActivitySnapshot(owner, owner).ActiveTasks)
 }
 
@@ -643,41 +637,16 @@ func TestBackgroundTaskExitRechecksShutdownAfterAdmission(t *testing.T) {
 }
 
 func TestBackgroundTaskCapWarningAllowsSynchronousSourceReplacement(t *testing.T) {
+	t.Parallel()
 	svc, source := setupRootSink(t, "cap-warning-generation")
 	for i := int32(0); i < bgtask.MaxTasks; i++ {
 		require.NoError(t, source.UpsertBackgroundTask(bgtask.Upsert{RowKey: fmt.Sprintf("active-%d", i), Kind: bgtask.KindShell, Title: "Active native command", Status: bgtask.StatusRunning}))
 	}
-	logger := slog.Default()
-	var warnings int
-	var cacheFree bool
-	var retainedInStore bool
-	var retentionReported bool
-	slog.SetDefault(slog.New(controlFailureLogObserver{Handler: slog.NewTextHandler(io.Discard, nil), observe: func(record slog.Record) {
-		if record.Message != "The background task registry reached its display cap. It drops the oldest active display row because no row finished." {
-			return
-		}
-		warnings++
-		record.Attrs(func(attribute slog.Attr) bool {
-			if attribute.Key == "retained_in_store" {
-				retainedInStore = attribute.Value.Bool()
-				retentionReported = true
-			}
-			return true
-		})
-		cache := svc.Output.bgTaskCache("cap-warning-generation")
-		if !cache.Mu.TryLock() {
-			return
-		}
-		cache.Mu.Unlock()
-		cacheFree = true
-		newTestRootOutputSink(t, svc.Output, "cap-warning-generation", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	}}))
-	t.Cleanup(func() { slog.SetDefault(logger) })
 	require.NoError(t, source.UpsertBackgroundTask(bgtask.Upsert{RowKey: "last-active", Kind: bgtask.KindShell, Title: "Last native command", Status: bgtask.StatusRunning}))
-	assert.Equal(t, 1, warnings)
-	assert.True(t, cacheFree, "the real cap warning must run after cache publication and unlock")
-	assert.True(t, retentionReported)
-	assert.True(t, retainedInStore, "the working unlinked victim remains in storage")
+	displayed := displayedRowKeys(t, svc, "cap-warning-generation")
+	assert.Len(t, displayed, bgtask.MaxTasks+1, "active rows are never evicted at the display cap")
+	assert.Contains(t, displayed, "active-0")
+	assert.Contains(t, displayed, "last-active")
 	assert.Equal(t, "Active native command", storedRow(t, svc, "cap-warning-generation", "active-0").Title)
 	assert.Equal(t, "Last native command", storedRow(t, svc, "cap-warning-generation", "last-active").Title)
 }
