@@ -322,6 +322,18 @@ export function tooltipPathForLocalLink(rawHref: string, opts: LocalLinkResolveO
 
 export type LocalLinkKind = 'directory' | 'file' | 'image'
 
+function hasImageExtension(filePath: string, flavor: PathFlavor): boolean {
+  const sepIndex = lastSepIndex(filePath, flavor)
+  const fileName = sepIndex < 0
+    ? filePath
+    : filePath.slice(sepIndex + 1)
+  // A leading dot in a dotfile (`.svg`, `dir/.png`) is part of the filename,
+  // not an extension separator.
+  if (fileName.lastIndexOf('.') <= 0)
+    return false
+  return isImageExtension(fileName)
+}
+
 /**
  * Classify a local Markdown link target as a directory, image, or file using
  * static path signals without issuing worker RPCs. Ambiguous paths without a
@@ -333,14 +345,14 @@ export function classifyLocalLinkKind(rawHref: string, flavor: PathFlavor): Loca
     return undefined
 
   if (parsed.pathWithoutLineSuffix !== undefined) {
-    return isImageExtension(parsed.pathWithoutLineSuffix)
+    return hasImageExtension(parsed.pathWithoutLineSuffix, flavor)
       ? 'image'
       : 'file'
   }
 
   const path = parsed.path
-  const hasTrailingSep = path.endsWith('/') || (flavor === 'win32' && path.endsWith('\\'))
   const sepIndex = lastSepIndex(path, flavor)
+  const hasTrailingSep = sepIndex >= 0 && sepIndex === path.length - 1
   const finalSegment = sepIndex < 0
     ? path
     : path.slice(sepIndex + 1)
@@ -348,7 +360,7 @@ export function classifyLocalLinkKind(rawHref: string, flavor: PathFlavor): Loca
   if (path === '~' || hasTrailingSep || finalSegment === '.' || finalSegment === '..')
     return 'directory'
 
-  if (isImageExtension(path))
+  if (hasImageExtension(path, flavor))
     return 'image'
 
   return 'file'

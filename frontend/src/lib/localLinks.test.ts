@@ -334,9 +334,15 @@ describe('classifyLocalLinkKind', () => {
       './docs/nested',
       'Makefile',
       '/etc/hosts',
+      '.png',
+      './.svg',
+      'dir/.ico',
+      './.png:1',
     ]) {
       expect(classifyLocalLinkKind(href, 'posix'), href).toBe('file')
     }
+    expect(classifyLocalLinkKind('C:\\dir\\.webp', 'win32')).toBe('file')
+    expect(classifyLocalLinkKind('.hidden.png', 'posix')).toBe('image')
     expect(classifyLocalLinkKind('./photo.png:1', 'posix')).toBe('image')
   })
 

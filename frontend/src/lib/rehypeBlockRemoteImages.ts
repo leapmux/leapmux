@@ -19,6 +19,20 @@ export const BLOCKED_IMAGE_CLASS = 'blocked-remote-image'
 export const BLOCKED_IMAGE_CHIP_CLASS = 'blocked-remote-image-chip'
 export const BLOCKED_IMAGE_LABEL_CLASS = 'blocked-remote-image-label'
 
+/**
+ * True when a rendered DOM element represents one of the three Markdown image forms
+ * owned by `rehypeBlockRemoteImages`: an inline `<img>`, a `.local-markdown-image`
+ * wrapper, or a `.blocked-remote-image` placeholder wrapper.
+ */
+export function isMarkdownImageElement(el: {
+  tagName: string
+  classList: { contains: (token: string) => boolean }
+}): boolean {
+  return el.tagName.toUpperCase() === 'IMG'
+    || el.classList.contains(LOCAL_IMAGE_CLASS)
+    || el.classList.contains(BLOCKED_IMAGE_CLASS)
+}
+
 /** Text of the chip that explains why the image isn't shown. */
 export const BLOCKED_IMAGE_CHIP_TEXT = 'remote image blocked'
 

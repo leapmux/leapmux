@@ -390,15 +390,15 @@ function makeReadFileResponse(bytes: Uint8Array, totalSize?: bigint) {
 function makeLocalLinkContext(
   overrides: Partial<MarkdownLocalLinkContextValue> = {},
 ): MarkdownLocalLinkContextValue {
-  return {
+  const ctx: MarkdownLocalLinkContextValue = {
     workerId: 'w-1',
     baseDir: '/repo/docs',
     workingDir: '/repo',
     homeDir: '/home/alice',
     flavor: 'posix',
     onActivate: vi.fn(),
-    ...overrides,
   }
+  return Object.defineProperties(ctx, Object.getOwnPropertyDescriptors(overrides))
 }
 
 describe('MarkdownText local links and images', () => {
@@ -748,14 +748,9 @@ describe('MarkdownText local links and images', () => {
     })
 
     const [workerId, setWorkerId] = createSignal('w-1')
-    const ctx: MarkdownLocalLinkContextValue = {
+    const ctx = makeLocalLinkContext({
       get workerId() { return workerId() },
-      baseDir: '/repo/docs',
-      workingDir: '/repo',
-      homeDir: '/home/alice',
-      flavor: 'posix',
-      onActivate: vi.fn(),
-    }
+    })
     const { container } = render(() => (
       <MarkdownLocalLinkProvider value={ctx}>
         <MarkdownText text="[Note](./note.md) ![Chart](./chart.png) ![Broken](./broken.png)" />
@@ -1194,14 +1189,9 @@ describe('MarkdownText remote link tooltips and link icons', () => {
 
   it('prepends the matching Lucide icon by kind and updates in place when flavor changes reactively', async () => {
     const [flavor, setFlavor] = createSignal<'posix' | 'win32'>('posix')
-    const ctx: MarkdownLocalLinkContextValue = {
-      workerId: 'w-1',
-      baseDir: '/repo/docs',
-      workingDir: '/repo',
-      homeDir: '/home/alice',
+    const ctx = makeLocalLinkContext({
       get flavor() { return flavor() },
-      onActivate: vi.fn(),
-    }
+    })
     const md = '[File](./guide.md) [Dir](./docs/) [Img](./arch.png) [Ambig](./docs/nested) [WinDir](docs\\\\) [Web](https://example.com) ![Blocked](https://evil.example/a.png)'
 
     const { container } = render(() => (
@@ -1257,14 +1247,9 @@ describe('MarkdownText remote link tooltips and link icons', () => {
 
   it('dismisses a local tooltip synchronously without disturbing an open remote tooltip across workerId transitions', async () => {
     const [workerId, setWorkerId] = createSignal('w-1')
-    const ctx: MarkdownLocalLinkContextValue = {
+    const ctx = makeLocalLinkContext({
       get workerId() { return workerId() },
-      baseDir: '/repo/docs',
-      workingDir: '/repo',
-      homeDir: '/home/alice',
-      flavor: 'posix',
-      onActivate: vi.fn(),
-    }
+    })
 
     const { container } = render(() => (
       <MarkdownLocalLinkProvider value={ctx}>
@@ -1354,5 +1339,79 @@ describe('MarkdownText remote link tooltips and link icons', () => {
     expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
     const secondLink = body.querySelector('a[href="https://two.example/b"]') as HTMLAnchorElement
     expect(secondLink.querySelector(`svg[${MARKDOWN_LINK_ICON_ATTRIBUTE}="remote"]`)).not.toBeNull()
+  })
+
+  it('dismisses remote tooltips on auxclick, resyncs after external dismissal, switches cleanly across nested blocked-image links, and preserves remote HIDE_DELAY_MS on workerId deactivation', async () => {
+    const [workerId, setWorkerId] = createSignal('w-1')
+    const ctx = makeLocalLinkContext({
+      get workerId() { return workerId() },
+    })
+    const md = '[Web](https://example.com/keep) [![diagram](https://evil.example/x.png)](./docs/guide.md)'
+    const { container } = render(() => (
+      <MarkdownLocalLinkProvider value={ctx}>
+        <MarkdownText text={md} />
+      </MarkdownLocalLinkProvider>
+    ))
+    await settleWorkerReplies()
+
+    vi.useFakeTimers()
+    const body = container.querySelector(`.${markdownContent}`) as HTMLElement
+    const webLink = body.querySelector('a[href="https://example.com/keep"]') as HTMLAnchorElement
+    const outerBlockedLink = body.querySelector(`[${LOCAL_LINK_ATTRIBUTE}="./docs/guide.md"]`) as HTMLElement
+    const innerBlockedAnchor = outerBlockedLink.querySelector('a[href="https://evil.example/x.png"]') as HTMLAnchorElement
+    const blockedChip = outerBlockedLink.querySelector('.blocked-remote-image-chip') as HTMLElement
+
+    // Blocked-image-only local link skips an outer file icon while keeping the inner remote icon.
+    expect(outerBlockedLink.querySelector(`:scope > svg.${markdownLinkIconClass}`)).toBeNull()
+    expect(innerBlockedAnchor.querySelector(`:scope > svg[${MARKDOWN_LINK_ICON_ATTRIBUTE}="remote"]`)).not.toBeNull()
+
+    // Middle-click (auxclick) dismisses the remote tooltip immediately, even when cancelled in capture phase.
+    webLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+    const cancelAux = (ev: MouseEvent) => ev.preventDefault()
+    container.addEventListener('auxclick', cancelAux, { capture: true })
+    try {
+      webLink.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    }
+    finally {
+      container.removeEventListener('auxclick', cancelAux, { capture: true })
+    }
+
+    // External dismissal (dismissActiveTooltip) while focused clears shownTarget so hover reopens the tooltip.
+    fireEvent.focusIn(webLink)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+    dismissActiveTooltip()
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    webLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+    webLink.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: body }))
+
+    // Deactivating workerId while a remote tooltip is in its HIDE_DELAY_MS grace window keeps it open.
+    webLink.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS / 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+    setWorkerId('')
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+    webLink.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS * 2)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/keep')
+    webLink.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(HIDE_DELAY_MS)
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    setWorkerId('w-1')
+
+    // Moving pointer from nested blocked-image anchor back onto the enclosing local link switches tooltip.
+    innerBlockedAnchor.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: body }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://evil.example/x.png')
+
+    innerBlockedAnchor.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget: blockedChip }))
+    blockedChip.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: innerBlockedAnchor }))
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/docs/docs/guide.md')
   })
 })

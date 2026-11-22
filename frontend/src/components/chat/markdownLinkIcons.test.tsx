@@ -1,36 +1,39 @@
 import type { MarkdownLinkIconKind } from './markdownLinkIcons'
 import { describe, expect, it } from 'vitest'
 import { LOCAL_IMAGE_CLASS, LOCAL_IMAGE_FALLBACK_CLASS } from '~/lib/localLinks'
+import { BLOCKED_IMAGE_CHIP_CLASS, BLOCKED_IMAGE_CLASS, BLOCKED_IMAGE_LABEL_CLASS } from '~/lib/rehypeBlockRemoteImages'
 import { markdownLinkIconClass } from './markdownEditor/markdownContent.css'
 import { MARKDOWN_LINK_ICON_ATTRIBUTE, syncMarkdownLinkIcon } from './markdownLinkIcons'
+
+function makeDataImg(alt: string): HTMLImageElement {
+  const img = document.createElement('img')
+  img.src = 'data:image/png;base64,AA=='
+  img.alt = alt
+  return img
+}
 
 describe('syncMarkdownLinkIcon', () => {
   it('prepends the matching Lucide svg for each icon kind on anchors and local link spans', () => {
     const kinds: MarkdownLinkIconKind[] = ['file', 'directory', 'image', 'remote']
+    const hosts = [
+      ['a', 'docs'],
+      ['span', 'guide.md'],
+    ] as const
     for (const kind of kinds) {
-      const anchor = document.createElement('a')
-      anchor.textContent = 'docs'
-      syncMarkdownLinkIcon(anchor, kind)
+      for (const [tag, label] of hosts) {
+        const el = document.createElement(tag)
+        el.textContent = label
+        syncMarkdownLinkIcon(el, kind)
 
-      const anchorIcon = anchor.firstChild as Element | null
-      expect(anchorIcon?.tagName.toLowerCase(), `anchor ${kind}`).toBe('svg')
-      expect(anchorIcon?.classList.contains(markdownLinkIconClass), `anchor ${kind}`).toBe(true)
-      expect(anchorIcon?.getAttribute(MARKDOWN_LINK_ICON_ATTRIBUTE), `anchor ${kind}`).toBe(kind)
-      expect(anchorIcon?.getAttribute('aria-hidden'), `anchor ${kind}`).toBe('true')
-      expect(anchorIcon?.getAttribute('focusable'), `anchor ${kind}`).toBe('false')
-      expect(anchorIcon?.textContent, `anchor ${kind}`).toBe('')
-
-      const span = document.createElement('span')
-      span.textContent = 'guide.md'
-      syncMarkdownLinkIcon(span, kind)
-
-      const spanIcon = span.firstChild as Element | null
-      expect(spanIcon?.tagName.toLowerCase(), `span ${kind}`).toBe('svg')
-      expect(spanIcon?.classList.contains(markdownLinkIconClass), `span ${kind}`).toBe(true)
-      expect(spanIcon?.getAttribute(MARKDOWN_LINK_ICON_ATTRIBUTE), `span ${kind}`).toBe(kind)
-      expect(spanIcon?.getAttribute('aria-hidden'), `span ${kind}`).toBe('true')
-      expect(spanIcon?.getAttribute('focusable'), `span ${kind}`).toBe('false')
-      expect(spanIcon?.textContent, `span ${kind}`).toBe('')
+        const icon = el.firstChild as Element | null
+        const desc = `${tag} ${kind}`
+        expect(icon?.tagName.toLowerCase(), desc).toBe('svg')
+        expect(icon?.classList.contains(markdownLinkIconClass), desc).toBe(true)
+        expect(icon?.getAttribute(MARKDOWN_LINK_ICON_ATTRIBUTE), desc).toBe(kind)
+        expect(icon?.getAttribute('aria-hidden'), desc).toBe('true')
+        expect(icon?.getAttribute('focusable'), desc).toBe('false')
+        expect(icon?.textContent, desc).toBe('')
+      }
     }
   })
 
@@ -84,19 +87,13 @@ describe('syncMarkdownLinkIcon', () => {
 
     const nestedImgOnly = document.createElement('a')
     const nestedSpan = document.createElement('span')
-    const nestedImg = document.createElement('img')
-    nestedImg.src = 'data:image/png;base64,AA=='
-    nestedImg.alt = 'nested'
-    nestedSpan.append(nestedImg)
+    nestedSpan.append(makeDataImg('nested'))
     nestedImgOnly.append(nestedSpan)
     syncMarkdownLinkIcon(nestedImgOnly, 'remote')
     expect(nestedImgOnly.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
 
     const imgOnly = document.createElement('a')
-    const directImg = document.createElement('img')
-    directImg.src = 'data:image/png;base64,AA=='
-    directImg.alt = 'x'
-    imgOnly.append(directImg)
+    imgOnly.append(makeDataImg('x'))
     syncMarkdownLinkIcon(imgOnly, 'remote')
     expect(imgOnly.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
 
@@ -111,11 +108,23 @@ describe('syncMarkdownLinkIcon', () => {
     syncMarkdownLinkIcon(localImgOnly, 'remote')
     expect(localImgOnly.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
 
+    const blockedImgOnly = document.createElement('span')
+    const blockedWrapper = document.createElement('span')
+    blockedWrapper.className = BLOCKED_IMAGE_CLASS
+    const blockedChip = document.createElement('span')
+    blockedChip.className = BLOCKED_IMAGE_CHIP_CLASS
+    blockedChip.textContent = 'remote image blocked'
+    const blockedAnchor = document.createElement('a')
+    blockedAnchor.className = BLOCKED_IMAGE_LABEL_CLASS
+    blockedAnchor.href = 'https://evil.example/x.png'
+    blockedAnchor.textContent = 'diagram'
+    blockedWrapper.append(blockedChip, blockedAnchor)
+    blockedImgOnly.append(blockedWrapper)
+    syncMarkdownLinkIcon(blockedImgOnly, 'file')
+    expect(blockedImgOnly.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(0)
+
     const mixed = document.createElement('a')
-    const mixedImg = document.createElement('img')
-    mixedImg.src = 'data:image/png;base64,AA=='
-    mixedImg.alt = 'x'
-    mixed.append(mixedImg, document.createTextNode(' Docs'))
+    mixed.append(makeDataImg('x'), document.createTextNode(' Docs'))
     syncMarkdownLinkIcon(mixed, 'remote')
     expect(mixed.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(1)
     expect((mixed.firstChild as Element).getAttribute(MARKDOWN_LINK_ICON_ATTRIBUTE)).toBe('remote')
@@ -128,10 +137,7 @@ describe('syncMarkdownLinkIcon', () => {
     syncMarkdownLinkIcon(transitioning, 'remote')
     expect(transitioning.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(1)
 
-    const replacementImg = document.createElement('img')
-    replacementImg.src = 'data:image/png;base64,AA=='
-    replacementImg.alt = 'x'
-    textNode.replaceWith(replacementImg)
+    textNode.replaceWith(makeDataImg('x'))
     expect(transitioning.querySelectorAll(`.${markdownLinkIconClass}`)).toHaveLength(1)
 
     syncMarkdownLinkIcon(transitioning, 'remote')

@@ -3,6 +3,7 @@ import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MARKDOWN_LINK_ICON_ATTRIBUTE } from '~/components/chat/markdownLinkIcons'
 import { MarkdownLocalLinkProvider } from '~/components/chat/markdownLocalLinks'
+import { dismissActiveTooltip, SHOW_DELAY_MS } from '~/components/common/Tooltip'
 import { LOCAL_LINK_ATTRIBUTE, LOCAL_LINKS_ACTIVE_ATTRIBUTE } from '~/lib/localLinks'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
@@ -137,6 +138,7 @@ describe('GoalObjective', () => {
       vi.spyOn(HTMLElement.prototype, 'showPopover').mockImplementation(() => {})
     })
     afterEach(() => {
+      dismissActiveTooltip()
       vi.useRealTimers()
       vi.restoreAllMocks()
     })
@@ -226,6 +228,44 @@ describe('GoalObjective', () => {
       expect(tipLink.getAttribute('role')).toBeNull()
       expect(tipLink.getAttribute('tabindex')).toBeNull()
       expect(tipLink.querySelector(`[${MARKDOWN_LINK_ICON_ATTRIBUTE}]`)).toBeNull()
+    })
+
+    it('suppresses inner remote link tooltips while clamped or inside the overflow tooltip, and restores them when expanded', async () => {
+      const { getByTestId } = render(() => (
+        <GoalObjective objective="review [spec](https://example.com/spec) thoroughly" />
+      ))
+      await settleWorkerReplies()
+
+      const box = getByTestId('goal-objective')
+      const mainAnchor = box.querySelector('a[href="https://example.com/spec"]') as HTMLAnchorElement
+      expect(mainAnchor).not.toBeNull()
+      expect(mainAnchor.querySelector(`[${MARKDOWN_LINK_ICON_ATTRIBUTE}="remote"]`)).not.toBeNull()
+
+      statesLayout(box, 200, 84)
+      triggerResizeObserversSync()
+
+      // Hovering the remote link inside the clamped objective must not open a competing URL tooltip.
+      mainAnchor.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: box }))
+      vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+      // Opening the overflow tooltip and focusing the remote link inside it must not dismiss the tooltip.
+      fireEvent.mouseEnter(box)
+      vi.advanceTimersByTime(HOVER_DELAY_MS)
+      await settleWorkerReplies()
+      const tip = screen.getByRole('tooltip', { hidden: true })
+      const tipAnchor = tip.querySelector('a[href="https://example.com/spec"]') as HTMLAnchorElement
+      expect(tipAnchor).not.toBeNull()
+      fireEvent.focusIn(tipAnchor)
+      vi.advanceTimersByTime(SHOW_DELAY_MS + 100)
+      expect(screen.getByRole('tooltip', { hidden: true })).toBe(tip)
+
+      // Expanding removes the outer overflow tooltip and re-enables remote link tooltips on the objective.
+      fireEvent.click(getByTestId('goal-objective-toggle'))
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+      mainAnchor.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget: box }))
+      vi.advanceTimersByTime(SHOW_DELAY_MS)
+      expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('https://example.com/spec')
     })
   })
 })

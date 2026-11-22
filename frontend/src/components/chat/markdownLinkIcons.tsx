@@ -5,7 +5,7 @@ import FileImageIcon from 'lucide-solid/icons/file-image'
 import FolderClosed from 'lucide-solid/icons/folder-closed'
 import Globe from 'lucide-solid/icons/globe'
 import { render } from 'solid-js/web'
-import { LOCAL_IMAGE_CLASS } from '~/lib/localLinks'
+import { isMarkdownImageElement } from '~/lib/rehypeBlockRemoteImages'
 import { markdownLinkIconClass } from './markdownEditor/markdownContent.css'
 
 export type MarkdownLinkIconKind = LocalLinkKind | 'remote'
@@ -31,12 +31,9 @@ function getIconPrototype(kind: MarkdownLinkIconKind): SVGSVGElement {
   const IconComponent = ICON_COMPONENTS[kind]
   const host = document.createElement('span')
   let prototype: SVGSVGElement | undefined
-  const dispose = render(() => (
-    <IconComponent
-      class={markdownLinkIconClass}
-      aria-hidden="true"
-    />
-  ), host)
+  // Pass `{ owner: null }` so rendering inside a reactive effect never inherits
+  // an ancestor context (such as a custom LucideProvider) into the shared cache.
+  const dispose = render(() => <IconComponent />, host, undefined, { owner: null })
   try {
     const svg = host.querySelector('svg')
     if (!svg)
@@ -67,13 +64,8 @@ function hasVisibleNonImageContent(el: Element): boolean {
     if (child.nodeType !== Node.ELEMENT_NODE)
       continue
     const childEl = child as Element
-    if (
-      childEl.classList.contains(markdownLinkIconClass)
-      || childEl.tagName.toUpperCase() === 'IMG'
-      || childEl.classList.contains(LOCAL_IMAGE_CLASS)
-    ) {
+    if (childEl.classList.contains(markdownLinkIconClass) || isMarkdownImageElement(childEl))
       continue
-    }
     if (hasVisibleNonImageContent(childEl))
       return true
   }
