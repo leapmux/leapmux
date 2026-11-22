@@ -128,6 +128,20 @@ describe('antigravity tool results', () => {
     })
     expect(JSON.stringify(call?.result)).toContain('NATIVE_GENERIC_OUTPUT')
   })
+  it('renders a launched subagent as launched asynchronously rather than completed', () => {
+    const call = callOf(ANTIGRAVITY_TOOL.InvokeSubagent)
+    if (!call)
+      throw new Error('The Antigravity subagent fixture did not produce a tool call.')
+    const { container } = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+    expect(container.textContent).toContain('Agent "Researcher" launched asynchronously')
+    expect(container.textContent).not.toContain('completed')
+    const icons = [
+      ...container.querySelectorAll('svg'),
+    ].map(node => node.getAttribute('class') ?? '')
+    expect(icons.some(name => name.includes('lucide-bot'))).toBe(true)
+    expect(icons.some(name => name.includes('lucide-check'))).toBe(false)
+  })
+
   it('reads the native recipient and message arguments', () => {
     const call = providerToolCall(AgentProvider.ANTIGRAVITY_CLI, {
       type: 'CORTEX_STEP_TYPE_GENERIC',
