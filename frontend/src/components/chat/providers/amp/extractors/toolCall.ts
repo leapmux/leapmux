@@ -15,6 +15,7 @@ import { parseMcpContentItem, parseMcpToolName } from '../../../model/mcpToolCal
 import { failedResult, proseResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome, retainedRowIsFinal } from '../../registry'
+import { extractWebSearchLinks } from '../../webSearchLinks'
 import { ampToolKind } from '../toolKinds'
 import { AMP_TOOL_NAME } from '../toolNames'
 import { ampAgentRequest, ampAgentResult } from './agent'
@@ -332,19 +333,13 @@ function webSearchLinks(text: string): WebSearchLink[] {
   catch {
     return []
   }
-  const entries = Array.isArray(parsed)
-    ? parsed
-    : isObject(parsed) && Array.isArray(parsed.results)
-      ? parsed.results
-      : []
-  return entries.filter(isObject).flatMap((entry) => {
-    const url = pickString(entry, 'url')
-    return url
-      ? [
-          { title: pickString(entry, 'title') || url, url },
-        ]
-      : []
-  })
+  return extractWebSearchLinks(
+    Array.isArray(parsed)
+      ? parsed
+      : isObject(parsed)
+        ? parsed.results
+        : undefined,
+  )
 }
 
 /**

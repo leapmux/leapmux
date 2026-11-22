@@ -391,4 +391,184 @@ describe('antigravityExtractRow', () => {
     })
     expect(call?.result).toEqual({ lines: [], fallbackContent: '' })
   })
+
+  it('extracts a finished web search step with links and summary', () => {
+    const query = '"from_utf16" OR "from_utf8" "CredentialBlob"'
+    const summary = 'Secrets are stored in CredentialBlob.'
+    const payload = {
+      type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: {
+        toolCall: {
+          id: 'call_search_1',
+          name: 'search_web',
+          argumentsJson: JSON.stringify({ query }),
+        },
+      },
+      searchWeb: {
+        query,
+        searchType: 'SEARCH_WEB_TYPE_WEB',
+        summary,
+        thirdPartyConfig: {
+          provider: 'THIRD_PARTY_WEB_SEARCH_PROVIDER_GEMINI',
+        },
+        webDocuments: [
+          {
+            documentId: 'https://example.com/csdn-1',
+            title: 'csdn.net',
+            url: 'https://example.com/csdn-1',
+          },
+          {
+            documentId: 'https://example.com/ms',
+            title: 'microsoft.com',
+            url: 'https://example.com/ms',
+          },
+          {
+            documentId: 'https://example.com/csdn-2',
+            title: 'csdn.net',
+            url: 'https://example.com/csdn-2',
+          },
+        ],
+      },
+    }
+    expect(extraction(payload)).toMatchObject({
+      kind: 'row',
+      completion: null,
+      row: {
+        kind: 'tool',
+        role: 'result',
+        call: {
+          kind: 'web_search',
+          status: 'completed',
+          request: { query },
+          result: {
+            links: [
+              { title: 'csdn.net', url: 'https://example.com/csdn-1' },
+              { title: 'microsoft.com', url: 'https://example.com/ms' },
+              { title: 'csdn.net', url: 'https://example.com/csdn-2' },
+            ],
+            summary,
+          },
+        },
+      },
+    })
+  })
+
+  it('extracts a running web search step as a request row with no result', () => {
+    const running = {
+      type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+      status: 'CORTEX_STEP_STATUS_RUNNING',
+      metadata: {
+        toolCall: {
+          id: 'call_search_open',
+          name: 'search_web',
+        },
+      },
+      searchWeb: {
+        query: 'LeapMux',
+      },
+    }
+    const row = providerRow(PROVIDER, running, {
+      request: input(running, undefined, PROVIDER),
+      role: 'request',
+    })
+    if (row?.kind !== 'tool' || row.call.kind !== 'web_search')
+      throw new Error('The open web search step requires a web_search tool row.')
+    expect(row.role).toBe('request')
+    expect(row.call.status).toBe('in_progress')
+    expect(row.call.request).toEqual({ query: 'LeapMux' })
+    expect(row.call).not.toHaveProperty('result')
+  })
+
+  it('keeps a cancelled web search free of invented failure text', () => {
+    const call = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+      status: 'CORTEX_STEP_STATUS_CANCELED',
+      metadata: {
+        toolCall: {
+          id: 'call_search_canceled',
+          name: 'search_web',
+          argumentsJson: JSON.stringify({ query: 'LeapMux' }),
+        },
+      },
+    }, { role: 'result', completion: MessageCompletion.INTERRUPTED })
+    expect(call?.status).toBe('cancelled')
+    expect(call?.result).toBeUndefined()
+  })
+
+  it('keeps an empty searchWeb result typed even when generic text is present', () => {
+    const call = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: {
+        toolCall: {
+          id: 'call_search_empty',
+          name: 'search_web',
+          argumentsJson: JSON.stringify({ query: 'LeapMux' }),
+        },
+      },
+      searchWeb: {},
+      generic: {
+        result: { result: 'generic text' },
+      },
+    })
+    expect(call?.result).toEqual({ links: [], summary: '' })
+  })
+
+  it('infers web_search and execute kinds from step.type when metadata.toolCall.name is absent', () => {
+    const searchCall = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      searchWeb: {
+        query: 'LeapMux',
+        summary: 'Search summary.',
+        webDocuments: [
+          { title: 'LeapMux Docs', url: 'https://leapmux.dev/docs' },
+        ],
+      },
+    })
+    expect(searchCall).toMatchObject({
+      kind: 'web_search',
+      status: 'completed',
+      request: { query: 'LeapMux' },
+      result: {
+        links: [
+          { title: 'LeapMux Docs', url: 'https://leapmux.dev/docs' },
+        ],
+        summary: 'Search summary.',
+      },
+    })
+
+    const commandCall = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      runCommand: {
+        commandLine: 'echo probe',
+        exitCode: 0,
+        combinedOutput: { full: 'probe\n' },
+      },
+    })
+    expect(commandCall).toMatchObject({
+      kind: 'execute',
+      status: 'completed',
+      request: { command: 'echo probe' },
+      result: {
+        commands: [
+          { output: 'probe\n', exitCode: 0 },
+        ],
+      },
+    })
+
+    const unknownNamedSearch = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: {
+        toolCall: { id: 'custom-1', name: 'custom_search_tool' },
+      },
+      generic: {
+        result: { result: 'custom output' },
+      },
+    })
+    expect(unknownNamedSearch?.kind).toBe('other')
+  })
 })

@@ -10,6 +10,7 @@ const TYPES = new Map<string, string>([
   [ANTIGRAVITY_TOOL.WriteFile, ANTIGRAVITY_STEP_TYPE.CodeAction],
   [ANTIGRAVITY_TOOL.EditFile, ANTIGRAVITY_STEP_TYPE.CodeAction],
   [ANTIGRAVITY_TOOL.RunCommand, ANTIGRAVITY_STEP_TYPE.RunCommand],
+  [ANTIGRAVITY_TOOL.SearchWeb, ANTIGRAVITY_STEP_TYPE.SearchWeb],
   [ANTIGRAVITY_TOOL.InvokeSubagent, ANTIGRAVITY_STEP_TYPE.InvokeSubagent],
   [ANTIGRAVITY_TOOL.AskQuestion, ANTIGRAVITY_STEP_TYPE.AskQuestion],
   [ANTIGRAVITY_TOOL.CallMcpTool, ANTIGRAVITY_STEP_TYPE.McpTool],
@@ -106,7 +107,23 @@ const ANTIGRAVITY_FIXTURES = {
       combinedOutput: { full: 'probe\n' },
     },
   }),
-  [ANTIGRAVITY_TOOL.SearchWeb]: done(ANTIGRAVITY_TOOL.SearchWeb, { query: 'LeapMux', domain: 'leapmux.dev' }, generic('Native search result')),
+  [ANTIGRAVITY_TOOL.SearchWeb]: done(ANTIGRAVITY_TOOL.SearchWeb, { query: 'LeapMux', domain: 'leapmux.dev' }, {
+    searchWeb: {
+      query: 'LeapMux',
+      searchType: 'SEARCH_WEB_TYPE_WEB',
+      summary: 'LeapMux coordinates coding agents.',
+      thirdPartyConfig: {
+        provider: 'THIRD_PARTY_WEB_SEARCH_PROVIDER_GEMINI',
+      },
+      webDocuments: [
+        {
+          documentId: 'https://leapmux.dev/docs',
+          title: 'LeapMux Docs',
+          url: 'https://leapmux.dev/docs',
+        },
+      ],
+    },
+  }),
   [ANTIGRAVITY_TOOL.InvokeSubagent]: done(ANTIGRAVITY_TOOL.InvokeSubagent, {
     TypeName: 'research',
     Role: 'Researcher',
@@ -187,7 +204,6 @@ export const ANTIGRAVITY_TOOL_RESULTS: ToolResultCheck = {
   noFailure: {},
   noResult: {},
   unparsed: {
-    [ANTIGRAVITY_TOOL.SearchWeb]: 'The web-search result is native text, not a typed link list.',
     [ANTIGRAVITY_TOOL.ManageSubagents]: 'The management result is native text with no neutral agent records.',
     [ANTIGRAVITY_TOOL.ManageTask]: 'The task result is native text rather than a typed task outcome.',
     [ANTIGRAVITY_TOOL.SendMessage]: 'The delivery result is native text.',

@@ -106,6 +106,11 @@ describe('antigravity tool results', () => {
       { Prompt: 'task' },
     ],
     ['call_mcp_tool', 'CORTEX_STEP_TYPE_MCP_TOOL', {}],
+    [
+      'search_web',
+      'CORTEX_STEP_TYPE_SEARCH_WEB',
+      { query: 'LeapMux' },
+    ],
   ])('retains generic output when %s has no structured result', (name, type, args) => {
     const call = providerToolCall(AgentProvider.ANTIGRAVITY_CLI, {
       type,

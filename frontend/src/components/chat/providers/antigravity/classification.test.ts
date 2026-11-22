@@ -109,6 +109,17 @@ describe('classifyAntigravityMessage', () => {
       completion,
     } as never).kind).toBe('tool_result')
   })
+
+  it('classifies a web search step as tool_use while running and tool_result when done', () => {
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.SearchWeb,
+      status: 'CORTEX_STEP_STATUS_RUNNING',
+    }))).toEqual({ kind: 'tool_use' })
+    expect(classifyAntigravityMessage(input({
+      type: ANTIGRAVITY_STEP_TYPE.SearchWeb,
+      status: 'CORTEX_STEP_STATUS_DONE',
+    }))).toEqual({ kind: 'tool_result' })
+  })
 })
 
 describe('antigravityExtractRow', () => {
@@ -147,6 +158,15 @@ describe('antigravitySpanRole', () => {
     expect(antigravitySpanRole({
       parentObject: { type: ANTIGRAVITY_STEP_TYPE.RunCommand, status: 'CORTEX_STEP_STATUS_RUNNING' },
       completion: MessageCompletion.COMPLETE,
+    } as never)).toBe('result')
+  })
+
+  it('maps a web search step to request while running and result when done', () => {
+    expect(antigravitySpanRole({
+      parentObject: { type: ANTIGRAVITY_STEP_TYPE.SearchWeb, status: 'CORTEX_STEP_STATUS_RUNNING' },
+    } as never)).toBe('request')
+    expect(antigravitySpanRole({
+      parentObject: { type: ANTIGRAVITY_STEP_TYPE.SearchWeb, status: 'CORTEX_STEP_STATUS_DONE' },
     } as never)).toBe('result')
   })
 })

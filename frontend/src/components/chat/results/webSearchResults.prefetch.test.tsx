@@ -63,6 +63,20 @@ describe('WebSearchResultsBody', () => {
     expect(requests).toEqual([])
   })
 
+  it('asks the Markdown worker nothing for a whitespace-only summary', async () => {
+    const requests = recordWorkerRequests('lib/markdownWorker.ts')
+
+    render(() => (
+      <WebSearchResultsBody
+        source={{ links: [], summary: '   \n\t  ' }}
+        context={COLLAPSED}
+      />
+    ))
+    await settleWorkerReplies()
+
+    expect(requests).toEqual([])
+  })
+
   it('asks the Markdown worker for the summary that its collapsed body hides', async () => {
     const requests = recordWorkerRequests('lib/markdownWorker.ts')
 

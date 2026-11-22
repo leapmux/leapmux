@@ -1,26 +1,10 @@
 import type { ToolCallSpecVariant } from '../../../model/toolCall'
-import type { WebSearchLink, WebSearchRequest, WebSearchResult } from '../../../model/tools/webSearch'
+import type { WebSearchRequest, WebSearchResult } from '../../../model/tools/webSearch'
 import type { ClaudeToolRow } from './toolCommon'
 import { isObject, pickNumber } from '~/lib/jsonPick'
 import { unparsedResult } from '../../../model/toolCall'
+import { extractWebSearchLinks } from '../../webSearchLinks'
 import { claudeToolFailureResult } from './failure'
-
-/** Extract deduplicated links from Claude's WebSearch result entries. */
-function extractWebSearchLinks(results: unknown[]): WebSearchLink[] {
-  const seen = new Set<string>()
-  const links: WebSearchLink[] = []
-  for (const item of results) {
-    if (!isObject(item) || !Array.isArray(item.content))
-      continue
-    for (const link of item.content) {
-      if (isObject(link) && typeof link.url === 'string' && typeof link.title === 'string' && !seen.has(link.url)) {
-        seen.add(link.url)
-        links.push({ title: link.title, url: link.url })
-      }
-    }
-  }
-  return links
-}
 
 /** Extract the final non-blank summary from Claude's WebSearch entries. */
 function extractWebSearchSummary(results: unknown[]): string {
@@ -42,7 +26,10 @@ export function claudeWebSearchFromToolResult(
 ): WebSearchResult | null {
   if (!toolUseResult || !Array.isArray(toolUseResult.results))
     return null
-  const links = extractWebSearchLinks(toolUseResult.results)
+  const rawLinks = toolUseResult.results.flatMap(item => (isObject(item) && Array.isArray(item.content)
+    ? item.content
+    : []))
+  const links = extractWebSearchLinks(rawLinks)
   const summary = extractWebSearchSummary(toolUseResult.results)
   const durationSeconds = pickNumber(toolUseResult, 'durationSeconds', undefined)
   return {
