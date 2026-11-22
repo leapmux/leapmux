@@ -57,7 +57,7 @@ import { fnv1a32Hex } from './stringDigest'
  *   merging): old artifacts still render correctly, just less optimally.
  *   Bumping anyway is a judgment call to re-render the population uniformly.
  */
-export const RENDER_ARTIFACT_CACHE_VERSION = 3
+export const RENDER_ARTIFACT_CACHE_VERSION = 4
 
 /** Entries older than this are dropped by the sweep (TTL since last use). */
 export const ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1000

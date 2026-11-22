@@ -1,6 +1,7 @@
 import type { LocalLinkResolveOptions } from './localLinks'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  classifyLocalLinkKind,
   isLocalLinkHref,
   parseLocalLinkHref,
   resolveLocalLinkCandidates,
@@ -277,5 +278,84 @@ describe('tooltipPathForLocalLink', () => {
       homeDir: '',
       flavor: 'posix',
     })).toBeUndefined()
+  })
+})
+
+describe('classifyLocalLinkKind', () => {
+  it('classifies directory paths on POSIX and Windows', () => {
+    for (const href of [
+      '.',
+      '..',
+      '~',
+      './',
+      '../docs/',
+      'docs/',
+      '/',
+      './a/.',
+      './a/..',
+      'file:///tmp/dir/',
+    ]) {
+      expect(classifyLocalLinkKind(href, 'posix'), `posix: ${href}`).toBe('directory')
+    }
+
+    for (const href of [
+      'C:\\',
+      'C:/',
+      'docs\\',
+      'C:\\repo\\docs\\',
+      'C:\\repo\\.',
+      'a\\.',
+      'a\\..',
+      'file:///C:/repo/',
+    ]) {
+      expect(classifyLocalLinkKind(href, 'win32'), `win32: ${href}`).toBe('directory')
+    }
+  })
+
+  it('keeps backslash trailing separators and dot segments as files on POSIX', () => {
+    for (const href of ['docs\\', 'a\\.', 'a\\..'])
+      expect(classifyLocalLinkKind(href, 'posix'), href).toBe('file')
+  })
+
+  it('classifies image paths case-insensitively while prioritizing directory trailing slashes', () => {
+    expect(classifyLocalLinkKind('./arch.png', 'posix')).toBe('image')
+    expect(classifyLocalLinkKind('../PIC.JPG', 'posix')).toBe('image')
+    expect(classifyLocalLinkKind('icon.svg?raw=1#top', 'posix')).toBe('image')
+    expect(classifyLocalLinkKind('file:///tmp/photo.webp', 'posix')).toBe('image')
+    expect(classifyLocalLinkKind('C:\\img\\hero.AVIF', 'win32')).toBe('image')
+    expect(classifyLocalLinkKind('photos.png/', 'posix')).toBe('directory')
+  })
+
+  it('classifies files, line-suffixed references, and ambiguous extensionless paths', () => {
+    for (const href of [
+      'README.md',
+      'src/app.ts:42',
+      './Makefile:10',
+      './docs/nested',
+      'Makefile',
+      '/etc/hosts',
+      '.png',
+      './.svg',
+      'dir/.ico',
+      './.png:1',
+    ]) {
+      expect(classifyLocalLinkKind(href, 'posix'), href).toBe('file')
+    }
+    expect(classifyLocalLinkKind('C:\\dir\\.webp', 'win32')).toBe('file')
+    expect(classifyLocalLinkKind('.hidden.png', 'posix')).toBe('image')
+    expect(classifyLocalLinkKind('./photo.png:1', 'posix')).toBe('image')
+  })
+
+  it('returns undefined for invalid, empty, or remote hrefs', () => {
+    for (const href of [
+      '',
+      '   ',
+      'https://example.com',
+      'javascript:alert(1)',
+      '#anchor',
+    ]) {
+      expect(classifyLocalLinkKind(href, 'posix'), `posix: ${href}`).toBeUndefined()
+      expect(classifyLocalLinkKind(href, 'win32'), `win32: ${href}`).toBeUndefined()
+    }
   })
 })

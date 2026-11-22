@@ -133,9 +133,24 @@ function rehypeMarkdownLinks() {
 }
 
 /**
+ * Strip native `title` attributes from every surviving element in rendered
+ * Markdown so browser-native tooltips never collide with custom tooltips or
+ * let untrusted Markdown spoof hover labels (including on inline `data:`/`blob:`
+ * images inside links).
+ */
+function rehypeStripNativeTitles() {
+  return (tree: Root) => {
+    visit(tree, 'element', (node) => {
+      if (node.properties && 'title' in node.properties)
+        delete node.properties.title
+    })
+  }
+}
+
+/**
  * Append the shared security-hardening + stringify tail every markdown pipeline
- * ends with: block remote images, then harden links, then stringify. Runs
- * rehypeMarkdownLinks AFTER rehypeBlockRemoteImages so the blocked-image
+ * ends with: block remote images, harden links, strip native titles, then stringify.
+ * Runs rehypeMarkdownLinks AFTER rehypeBlockRemoteImages so the blocked-image
  * placeholder's `<a href>` is owned by the link-hardening pass.
  *
  * Centralizing the tail makes remote-image blocking a PROPERTY of any pipeline built
@@ -149,14 +164,15 @@ function withHardeningTail<P extends Processor<any, any, Root, any, any>>(pipeli
   return pipeline
     .use(rehypeBlockRemoteImages)
     .use(rehypeMarkdownLinks)
+    .use(rehypeStripNativeTitles)
     .use(rehypeStringify)
 }
 
 /**
  * Build the full markdown->HTML processor (remark + GFM + rehype + Shiki + link
  * hardening + remote-image blocking) around a Shiki highlighter instance. Takes the
- * highlighter so the main thread can pass its synchronous instance and the worker its
- * own — the rest of the chain (and thus the output) is identical.
+ * highlighter so the worker and tests can pass their own `HighlighterCore` instance
+ * while sharing the exact same pipeline.
  *
  * `pair` IS BAKED IN, so a processor belongs to exactly one syntax theme and a
  * caller that keeps one must rebuild it when the theme changes.
@@ -269,9 +285,7 @@ function isStackOverflow(error: unknown): boolean {
  * Render `text` through `processor` (highlighted), degrading to the plain
  * (un-highlighted) processor when the highlighted pipeline throws, and to the
  * escaped source when the parser overflows its stack or the plain processor throws
- * too. Never throws. Single-sources
- * the fallback rule that BOTH the main-thread synchronous path and the worker
- * apply, so the two can't drift on what counts as a fallback.
+ * too. Never throws. Single-sources the fallback rule used by the Markdown worker.
  *
  * This is the WIDER net of the two error paths, not the narrower one. A grammar
  * that throws at tokenize time -- the Safari regex-engine case -- is raised

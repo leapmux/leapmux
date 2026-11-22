@@ -1,8 +1,10 @@
 import type { PathFlavor } from './paths'
+import { isImageExtension } from './fileType'
 import {
   cleanPath,
   filesystemRoot,
   isFilesystemRoot,
+  lastSepIndex,
   resolvePath,
   safeDecodeURIComponent,
   untildify,
@@ -316,4 +318,50 @@ export function tooltipPathForLocalLink(rawHref: string, opts: LocalLinkResolveO
       return first
   }
   return undefined
+}
+
+export type LocalLinkKind = 'directory' | 'file' | 'image'
+
+function hasImageExtension(filePath: string, flavor: PathFlavor): boolean {
+  const sepIndex = lastSepIndex(filePath, flavor)
+  const fileName = sepIndex < 0
+    ? filePath
+    : filePath.slice(sepIndex + 1)
+  // A leading dot in a dotfile (`.svg`, `dir/.png`) is part of the filename,
+  // not an extension separator.
+  if (fileName.lastIndexOf('.') <= 0)
+    return false
+  return isImageExtension(fileName)
+}
+
+/**
+ * Classify a local Markdown link target as a directory, image, or file using
+ * static path signals without issuing worker RPCs. Ambiguous paths without a
+ * trailing separator or image extension fall back to `'file'`.
+ */
+export function classifyLocalLinkKind(rawHref: string, flavor: PathFlavor): LocalLinkKind | undefined {
+  const parsed = parseLocalLinkHref(rawHref)
+  if (!parsed)
+    return undefined
+
+  if (parsed.pathWithoutLineSuffix !== undefined) {
+    return hasImageExtension(parsed.pathWithoutLineSuffix, flavor)
+      ? 'image'
+      : 'file'
+  }
+
+  const path = parsed.path
+  const sepIndex = lastSepIndex(path, flavor)
+  const hasTrailingSep = sepIndex >= 0 && sepIndex === path.length - 1
+  const finalSegment = sepIndex < 0
+    ? path
+    : path.slice(sepIndex + 1)
+
+  if (path === '~' || hasTrailingSep || finalSegment === '.' || finalSegment === '..')
+    return 'directory'
+
+  if (hasImageExtension(path, flavor))
+    return 'image'
+
+  return 'file'
 }

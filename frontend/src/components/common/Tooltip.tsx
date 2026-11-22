@@ -783,6 +783,13 @@ export function Tooltip(props: TooltipProps) {
   )
 }
 
+export type AnchoredTooltipDismissReason = 'click' | 'dismiss'
+
+export interface AnchoredTooltipOptions {
+  /** Called whenever the tooltip dismisses itself internally (click/auxclick, hover exit, hide timer, or another tooltip taking over). */
+  onDismiss?: ((reason: AnchoredTooltipDismissReason) => void) | undefined
+}
+
 export interface AnchoredTooltipHandle {
   /** Anchor the tooltip to `target` with static text or a reactive text accessor. */
   show: (target: HTMLElement, text: string | (() => string | undefined)) => void
@@ -790,6 +797,8 @@ export interface AnchoredTooltipHandle {
   hide: () => void
   /** Hide immediately, clearing timers, listeners, active anchor, and `aria-describedby`. */
   dismiss: () => void
+  /** Currently active or hiding anchor element, or undefined when dismissed. */
+  activeTarget: () => HTMLElement | undefined
   /** Top-layer popover portal rendered while visible. */
   Popover: () => JSX.Element
 }
@@ -805,7 +814,7 @@ interface AnchoredState {
  * single-active-tooltip coordination, top-layer popover, viewport clamping, and
  * `aria-describedby` contract of {@link Tooltip}.
  */
-export function createAnchoredTooltip(): AnchoredTooltipHandle {
+export function createAnchoredTooltip(options?: AnchoredTooltipOptions): AnchoredTooltipHandle {
   const tooltipId = createUniqueId()
   const domId = `tooltip-${tooltipId}`
   const [visible, setVisible] = createSignal(false)
@@ -854,8 +863,8 @@ export function createAnchoredTooltip(): AnchoredTooltipHandle {
       // eslint-disable-next-line ts/no-use-before-define -- mutual recursion between hideNow and onPointerMove
       document.removeEventListener('pointermove', onPointerMove)
     }
-    // eslint-disable-next-line ts/no-use-before-define -- activeHide points at dismiss
-    if (activeHide === dismiss)
+    // eslint-disable-next-line ts/no-use-before-define -- activeHide points at dismissFromSingleton
+    if (activeHide === dismissFromSingleton)
       activeHide = undefined
     setVisible(false)
   }
@@ -866,16 +875,25 @@ export function createAnchoredTooltip(): AnchoredTooltipHandle {
     setDisplayText('')
   }
 
+  const dismissInternal = (reason: AnchoredTooltipDismissReason) => {
+    const hadAnchor = untrack(anchor) !== undefined
+    dismiss()
+    if (hadAnchor)
+      options?.onDismiss?.(reason)
+  }
+
+  const dismissFromSingleton = () => dismissInternal('dismiss')
+
   const onPointerMove = (e: PointerEvent) => {
     const current = untrack(anchor)
     if (!current?.target.isConnected) {
-      dismiss()
+      dismissInternal('dismiss')
       return
     }
     if (isElementFocused(current.target))
       return
     if (isOutsideHoverRect(e.clientX, e.clientY, current.target.getBoundingClientRect()))
-      dismiss()
+      dismissInternal('dismiss')
   }
 
   const present = () => {
@@ -890,7 +908,7 @@ export function createAnchoredTooltip(): AnchoredTooltipHandle {
 
     const rect = current.target.getBoundingClientRect()
     activeHide?.()
-    activeHide = dismiss
+    activeHide = dismissFromSingleton
     attachDescribedBy(current.target)
     setDisplayText(text)
     setPos(positionAboveRect(rect))
@@ -922,7 +940,8 @@ export function createAnchoredTooltip(): AnchoredTooltipHandle {
         setAnchor({ target, getText })
       return
     }
-    dismiss()
+    hideNow()
+    setDisplayText('')
     setAnchor({ target, getText })
   }
 
@@ -935,18 +954,23 @@ export function createAnchoredTooltip(): AnchoredTooltipHandle {
     if (hiding)
       return
     hiding = true
-    timers.scheduleHide(dismiss)
+    timers.scheduleHide(() => dismissInternal('dismiss'))
   }
 
-  // Match Tooltip's click dismissal so clicking or drag-selecting on the active
-  // anchor hides the tooltip immediately instead of lingering over a selection.
+  // Match Tooltip's click dismissal (plus auxclick for middle-click link activation)
+  // so clicking, middle-clicking, or drag-selecting on the active anchor hides the
+  // tooltip immediately instead of lingering over a selection or dialog.
   createEffect(() => {
     const target = anchor()?.target
     if (!target)
       return
-    const handleClick = () => dismiss()
-    target.addEventListener('click', handleClick)
-    onCleanup(() => target.removeEventListener('click', handleClick))
+    const handleActivate = () => dismissInternal('click')
+    target.addEventListener('click', handleActivate)
+    target.addEventListener('auxclick', handleActivate)
+    onCleanup(() => {
+      target.removeEventListener('click', handleActivate)
+      target.removeEventListener('auxclick', handleActivate)
+    })
   })
 
   createEffect(() => {
@@ -956,7 +980,7 @@ export function createAnchoredTooltip(): AnchoredTooltipHandle {
     const { target, getText } = current
     const text = getText() || ''
     if (!target.isConnected) {
-      dismiss()
+      dismissInternal('dismiss')
       return
     }
     if (!text) {
@@ -989,5 +1013,11 @@ export function createAnchoredTooltip(): AnchoredTooltipHandle {
     </Show>
   )
 
-  return { show, hide, dismiss, Popover }
+  return {
+    show,
+    hide,
+    dismiss,
+    activeTarget: () => untrack(anchor)?.target,
+    Popover,
+  }
 }

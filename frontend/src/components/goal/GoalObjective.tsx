@@ -117,7 +117,7 @@ export const GoalObjective: Component<GoalObjectiveProps> = (props) => {
                     provider so the tooltip never exposes focusable buttons or
                     starts duplicate worker image reads. */}
                 <MarkdownLocalLinkProvider value={undefined}>
-                  <MarkdownText text={props.objective} />
+                  <MarkdownText text={props.objective} disableLinkTooltips />
                 </MarkdownLocalLinkProvider>
               </div>
             )
@@ -136,7 +136,7 @@ export const GoalObjective: Component<GoalObjectiveProps> = (props) => {
           {/* The measured element. It exists so the ResizeObserver has
               something that actually changes size -- see `onMount`. */}
           <div ref={contentEl}>
-            <MarkdownText text={props.objective} />
+            <MarkdownText text={props.objective} disableLinkTooltips={overflows() && !expanded()} />
           </div>
         </div>
       </Tooltip>

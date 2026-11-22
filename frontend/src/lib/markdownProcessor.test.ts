@@ -631,6 +631,29 @@ describe('link hardening in both processors', () => {
     }
   })
 
+  it('strips native title attributes from http(s) links', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('[docs](https://example.com/a "Spoofed title")')
+      expect(html, name).toContain('href="https://example.com/a"')
+      expect(html, name).toContain('target="_blank"')
+      expect(html, name).toContain('rel="noopener noreferrer nofollow"')
+      expect(html, name).toContain(`${UNTRUSTED_LINK_ATTRIBUTE}=""`)
+      expect(html, name).not.toContain('title=')
+    }
+  })
+
+  it('strips native title attributes from surviving inline data and blob images', async () => {
+    for (const [name, render] of await processors()) {
+      const dataHtml = render('[![logo](data:image/png;base64,iVBORw0KGgo= "Spoofed img title")](https://evil.example)')
+      expect(dataHtml, name).toContain('<img src="data:image/png;base64,iVBORw0KGgo=" alt="logo">')
+      expect(dataHtml, name).not.toContain('title=')
+
+      const blobHtml = render('![shot](blob:http://localhost:3000/9a1f-uuid "Blob title")')
+      expect(blobHtml, name).toContain('<img src="blob:http://localhost:3000/9a1f-uuid" alt="shot">')
+      expect(blobHtml, name).not.toContain('title=')
+    }
+  })
+
   it('marks every surviving link untrusted, so a click reaches the prompt', async () => {
     for (const [name, render] of await processors()) {
       // An agent wrote both halves, so the text may state one address over a

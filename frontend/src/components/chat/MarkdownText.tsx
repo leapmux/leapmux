@@ -1,11 +1,10 @@
 import type { JSX } from 'solid-js'
 import type { MarkdownRenderContext } from './renderContext'
-import type { AnchoredTooltipHandle } from '~/components/common/Tooltip'
 import type { LocalMarkdownImageLease } from '~/lib/localMarkdownImages'
-import { createEffect, createMemo, createSignal, onCleanup, Show, untrack } from 'solid-js'
-import { createAnchoredTooltip } from '~/components/common/Tooltip'
+import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import {
+  classifyLocalLinkKind,
   LOCAL_IMAGE_ALT_ATTRIBUTE,
   LOCAL_IMAGE_ATTRIBUTE,
   LOCAL_IMAGE_CLICKABLE_ATTRIBUTE,
@@ -22,6 +21,8 @@ import {
 import { prefetchMarkdownHtml } from '~/lib/renderMarkdown'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { markdownContent } from './markdownEditor/markdownContent.css'
+import { syncMarkdownLinkIcon } from './markdownLinkIcons'
+import { createMarkdownLinkTooltip } from './markdownLinkTooltip'
 import { useMarkdownLocalLinks } from './markdownLocalLinks'
 import { markdownHtmlForContext, rowCachedMarkdownHtml } from './markdownRendering'
 import { useRenderReadiness, useRequestReadiness } from './renderReadiness'
@@ -31,8 +32,9 @@ import { SKELETON_LINE_PITCH_PX, SkeletonLines } from './widgets/ChatRowSkeleton
 const MARKDOWN_PENDING_MAX_LINES = 6
 
 const INTERACTIVE_LOCAL_SELECTOR = `[${LOCAL_LINK_ATTRIBUTE}], [${LOCAL_IMAGE_CLICKABLE_ATTRIBUTE}]`
+const REMOTE_LINK_SELECTOR = 'a[href]'
 
-function findInteractiveLocalTarget(start: EventTarget | null, root: HTMLElement): HTMLElement | undefined {
+function startElementInRoot(start: EventTarget | null, root: HTMLElement): Element | undefined {
   if (!(start instanceof Node))
     return undefined
   const startEl = start instanceof Element
@@ -40,15 +42,50 @@ function findInteractiveLocalTarget(start: EventTarget | null, root: HTMLElement
     : start.parentElement
   if (!startEl || !root.contains(startEl))
     return undefined
-  const interactive = startEl.closest<HTMLElement>(INTERACTIVE_LOCAL_SELECTOR)
-  if (!interactive || !root.contains(interactive))
+  return startEl
+}
+
+function closestInRoot<T extends Element>(
+  startEl: Element,
+  root: HTMLElement,
+  selector: string,
+): T | undefined {
+  const matched = startEl.closest<T>(selector)
+  if (!matched || !root.contains(matched))
+    return undefined
+  return matched
+}
+
+function findInteractiveLocalTarget(start: EventTarget | null, root: HTMLElement): HTMLElement | undefined {
+  const startEl = startElementInRoot(start, root)
+  if (!startEl)
+    return undefined
+  const interactive = closestInRoot<HTMLElement>(startEl, root, INTERACTIVE_LOCAL_SELECTOR)
+  if (!interactive)
     return undefined
   // An external anchor inside the rendered Markdown body takes precedence over
   // any local-image or local-link span it contains or sits inside.
-  const closerAnchor = startEl.closest<HTMLElement>('a[href]')
-  if (closerAnchor && root.contains(closerAnchor))
+  if (closestInRoot<HTMLAnchorElement>(startEl, root, REMOTE_LINK_SELECTOR))
     return undefined
   return interactive
+}
+
+function findTooltipTarget(
+  start: EventTarget | null,
+  root: HTMLElement,
+  opts: { hasRemote: boolean, localActive: boolean, hasLocal: boolean },
+): HTMLElement | undefined {
+  const startEl = startElementInRoot(start, root)
+  if (!startEl)
+    return undefined
+  if (opts.hasRemote) {
+    const remote = closestInRoot<HTMLAnchorElement>(startEl, root, REMOTE_LINK_SELECTOR)
+    if (remote)
+      return remote
+  }
+  if (!opts.localActive || !opts.hasLocal)
+    return undefined
+  return closestInRoot<HTMLElement>(startEl, root, INTERACTIVE_LOCAL_SELECTOR)
 }
 
 function rawHrefForInteractive(el: HTMLElement): string | undefined {
@@ -72,19 +109,6 @@ function setInteractiveSpanRole(el: HTMLElement, interactive: boolean, premeasur
     el.removeAttribute('tabindex')
   else
     el.setAttribute('tabindex', '0')
-}
-
-function clearTargetOnLeave(
-  event: PointerEvent | FocusEvent,
-  getTarget: () => HTMLElement | undefined,
-  setTarget: (next: HTMLElement | undefined) => void,
-): void {
-  const current = getTarget()
-  if (!current)
-    return
-  if (event.relatedTarget instanceof Node && current.contains(event.relatedTarget))
-    return
-  setTarget(undefined)
 }
 
 function hasSelectionInside(root: HTMLElement): boolean {
@@ -204,13 +228,6 @@ function MarkdownPendingSkeleton(props: { text: string }): JSX.Element {
   return <SkeletonLines height={height()} seed="markdown-pending" testId="markdown-pending" />
 }
 
-function LocalTooltipHost(props: { onHandle: (handle: AnchoredTooltipHandle | undefined) => void }): JSX.Element {
-  const handle = createAnchoredTooltip()
-  untrack(() => props.onHandle(handle))
-  onCleanup(() => props.onHandle(undefined))
-  return <handle.Popover />
-}
-
 /**
  * Render a Markdown body through the shared remark pipeline. The HTML is produced
  * via remark + sanitizer, never arbitrary user input. It is applied through the
@@ -231,6 +248,8 @@ export function MarkdownText(props: {
   class?: string
   /** Mark the body as returned tool output; see CollapsibleContentProps.outputPreview. */
   outputPreview?: boolean
+  /** Suppress delegated hover/focus link tooltips (used when an outer `<Tooltip>` owns hover, or inside a tooltip popover). */
+  disableLinkTooltips?: boolean
 }): JSX.Element {
   // The HTML this body shows, and the text it renders. markdownHtmlForContext keeps
   // it while the reader selects or scrolls, and while a theme change renders the SAME
@@ -257,125 +276,107 @@ export function MarkdownText(props: {
   const localLinksActive = () => Boolean(localLinks?.workerId)
   const isPremeasure = () => props.context?.premeasureMode === true
   const isInteractive = () => localLinksActive() && !isPremeasure()
-  const hasLocalMarkup = createMemo(() => {
+  const markupFeatures = createMemo(() => {
     const h = html()
-    return Boolean(h && (h.includes(LOCAL_LINK_ATTRIBUTE) || h.includes(LOCAL_IMAGE_ATTRIBUTE)))
+    if (!h)
+      return { hasLinks: false, hasImages: false, hasRemote: false }
+    return {
+      hasLinks: h.includes(LOCAL_LINK_ATTRIBUTE),
+      hasImages: h.includes(LOCAL_IMAGE_ATTRIBUTE),
+      hasRemote: h.includes('<a '),
+    }
   })
+  const hasLocalMarkup = () => {
+    const features = markupFeatures()
+    return features.hasLinks || features.hasImages
+  }
+  const hasTooltipTargets = () => (localLinksActive() && hasLocalMarkup()) || markupFeatures().hasRemote
 
   const htmlPending = () => html() === undefined
   const drawsOwnSkeleton = useRenderReadiness(() => props.context, htmlPending)
   const imageReadiness = useRequestReadiness(() => props.context)
 
   const [bodyEl, setBodyEl] = createSignal<HTMLDivElement | undefined>(undefined)
-  let tooltip: AnchoredTooltipHandle | undefined
-  let hoveredTarget: HTMLElement | undefined
-  let focusedTarget: HTMLElement | undefined
-  let shownTarget: HTMLElement | undefined
 
-  const tooltipTextFor = (target: HTMLElement): string | undefined => {
-    if (!localLinks || !localLinks.workerId)
-      return undefined
-    const rawHref = rawHrefForInteractive(target)
-    if (!rawHref)
-      return undefined
-    return tooltipPathForLocalLink(rawHref, {
-      baseDir: localLinks.baseDir,
-      workingDir: localLinks.workingDir,
-      homeDir: localLinks.homeDir,
-      flavor: localLinks.flavor,
-    })
-  }
+  const linkTooltip = createMarkdownLinkTooltip({
+    bodyEl,
+    html,
+    enabled: () => props.disableLinkTooltips !== true && !isPremeasure(),
+    hasTargets: hasTooltipTargets,
+    localActive: localLinksActive,
+    resolveTarget: (node, el) => {
+      const features = markupFeatures()
+      return findTooltipTarget(node, el, {
+        hasRemote: features.hasRemote,
+        localActive: localLinksActive(),
+        hasLocal: features.hasLinks || features.hasImages,
+      })
+    },
+    isLocalTarget: target => !(target instanceof HTMLAnchorElement),
+    getTooltipText: (target) => {
+      if (target instanceof HTMLAnchorElement)
+        return target.href || target.getAttribute('href') || undefined
+      if (!localLinks || !localLinks.workerId)
+        return undefined
+      const rawHref = rawHrefForInteractive(target)
+      if (!rawHref)
+        return undefined
+      return tooltipPathForLocalLink(rawHref, {
+        baseDir: localLinks.baseDir,
+        workingDir: localLinks.workingDir,
+        homeDir: localLinks.homeDir,
+        flavor: localLinks.flavor,
+      })
+    },
+  })
 
-  const syncTooltip = () => {
-    const next = hoveredTarget ?? focusedTarget
-    if (next === shownTarget)
-      return
-    shownTarget = next
-    if (next)
-      tooltip?.show(next, () => tooltipTextFor(next))
-    else
-      tooltip?.hide()
-  }
-
-  const dismissTooltip = () => {
-    hoveredTarget = undefined
-    focusedTarget = undefined
-    shownTarget = undefined
-    tooltip?.dismiss()
-  }
-
-  // Effect 1: synchronize interactive link/image attributes and tooltip detachment.
-  // Separated from async image hydration so `premeasureMode` or tooltip state
-  // never tears down active image leases, and short-circuited when the rendered
-  // HTML contains no local link or image markup.
-  let prevHtmlForAttrs: string | undefined
+  // Effect 1a: prepend remote link icons once per rendered HTML body, decoupled
+  // from local-link context and premeasureMode changes.
   createEffect(() => {
     const el = bodyEl()
     const currentHtml = html()
+    if (!el || !currentHtml || !markupFeatures().hasRemote)
+      return
+    for (const anchor of el.querySelectorAll<HTMLAnchorElement>(REMOTE_LINK_SELECTOR))
+      syncMarkdownLinkIcon(anchor, 'remote')
+  })
+
+  // Effect 1b: synchronize local link/image interactivity and local link icons.
+  // Separated from async image hydration so `premeasureMode` or link-attribute
+  // changes never tear down active image leases.
+  createEffect(() => {
+    const el = bodyEl()
+    const currentHtml = html()
+    const { hasLinks, hasImages } = markupFeatures()
+    if (!el || !currentHtml || (!hasLinks && !hasImages))
+      return
+
     const active = localLinksActive()
+    const flavor = active
+      ? localLinks!.flavor
+      : 'posix'
     const premeasure = isPremeasure()
 
-    const htmlReplaced = prevHtmlForAttrs !== undefined && currentHtml !== prevHtmlForAttrs
-    prevHtmlForAttrs = currentHtml
-
-    if (!el || !currentHtml) {
-      if (hoveredTarget || focusedTarget || shownTarget)
-        dismissTooltip()
-      return
-    }
-
-    const hasLinks = currentHtml.includes(LOCAL_LINK_ATTRIBUTE)
-    const hasImages = currentHtml.includes(LOCAL_IMAGE_ATTRIBUTE)
-    if (!hasLinks && !hasImages) {
-      if (hoveredTarget || focusedTarget || shownTarget)
-        dismissTooltip()
-      return
-    }
-
-    if (!active) {
-      if (hoveredTarget || focusedTarget || shownTarget)
-        dismissTooltip()
-      if (hasLinks) {
-        for (const link of el.querySelectorAll<HTMLElement>(`[${LOCAL_LINK_ATTRIBUTE}]`))
-          setInteractiveSpanRole(link, false, premeasure)
-      }
-      if (hasImages) {
-        for (const span of el.querySelectorAll<HTMLElement>(`[${LOCAL_IMAGE_ATTRIBUTE}]`)) {
-          setInteractiveSpanRole(span, false, premeasure)
-          span.removeAttribute(LOCAL_IMAGE_CLICKABLE_ATTRIBUTE)
-        }
-      }
-      return
-    }
-
-    // Drop any hover or focus anchor detached by an HTML swap or DOM update.
-    const hoveredDetached = Boolean(hoveredTarget && !hoveredTarget.isConnected)
-    const focusedDetached = Boolean(focusedTarget && !focusedTarget.isConnected)
-    if (hoveredDetached || focusedDetached || htmlReplaced) {
-      if (hoveredDetached)
-        hoveredTarget = undefined
-      if (focusedDetached)
-        focusedTarget = undefined
-      shownTarget = undefined
-      tooltip?.dismiss()
-    }
-
     if (hasLinks) {
-      for (const link of el.querySelectorAll<HTMLElement>(`[${LOCAL_LINK_ATTRIBUTE}]`))
-        setInteractiveSpanRole(link, true, premeasure)
+      for (const link of el.querySelectorAll<HTMLElement>(`[${LOCAL_LINK_ATTRIBUTE}]`)) {
+        setInteractiveSpanRole(link, active, premeasure)
+        syncMarkdownLinkIcon(
+          link,
+          active
+            ? classifyLocalLinkKind(link.getAttribute(LOCAL_LINK_ATTRIBUTE) ?? '', flavor)
+            : undefined,
+        )
+      }
     }
 
     if (hasImages) {
       for (const span of el.querySelectorAll<HTMLElement>(`[${LOCAL_IMAGE_ATTRIBUTE}]`)) {
-        const insideLink = Boolean(span.closest(`a[href], [${LOCAL_LINK_ATTRIBUTE}]`))
-        if (!insideLink) {
+        const clickable = active && !span.closest(`${REMOTE_LINK_SELECTOR}, [${LOCAL_LINK_ATTRIBUTE}]`)
+        setInteractiveSpanRole(span, clickable, premeasure)
+        if (clickable)
           span.setAttribute(LOCAL_IMAGE_CLICKABLE_ATTRIBUTE, '')
-          setInteractiveSpanRole(span, true, premeasure)
-        }
-        else {
+        else
           span.removeAttribute(LOCAL_IMAGE_CLICKABLE_ATTRIBUTE)
-          setInteractiveSpanRole(span, false, premeasure)
-        }
       }
     }
   })
@@ -413,7 +414,7 @@ export function MarkdownText(props: {
       ? localLinks!.flavor
       : 'posix'
 
-    if (!el || !currentHtml || !currentHtml.includes(LOCAL_IMAGE_ATTRIBUTE)) {
+    if (!el || !currentHtml || !markupFeatures().hasImages) {
       if (activeImages.size > 0)
         disposeAllImages()
       return
@@ -557,7 +558,7 @@ export function MarkdownText(props: {
     const rawHref = rawHrefForInteractive(target)
     if (!rawHref || !localLinks)
       return
-    dismissTooltip()
+    linkTooltip.dismiss()
     localLinks.onActivate(rawHref)
   }
 
@@ -595,48 +596,6 @@ export function MarkdownText(props: {
     activateTarget(target)
   }
 
-  const handlePointerOver = (event: PointerEvent) => {
-    if (!isInteractive() || !hasLocalMarkup() || event.pointerType === 'touch')
-      return
-    const el = bodyEl()
-    if (!el)
-      return
-    const target = findInteractiveLocalTarget(event.target, el)
-    if (!target)
-      return
-    if (event.relatedTarget instanceof Node && target.contains(event.relatedTarget))
-      return
-    hoveredTarget = target
-    syncTooltip()
-  }
-
-  const handlePointerOut = (event: PointerEvent) => {
-    clearTargetOnLeave(event, () => hoveredTarget, (next) => {
-      hoveredTarget = next
-      syncTooltip()
-    })
-  }
-
-  const handleFocusIn = (event: FocusEvent) => {
-    if (!isInteractive() || !hasLocalMarkup())
-      return
-    const el = bodyEl()
-    if (!el)
-      return
-    const target = findInteractiveLocalTarget(event.target, el)
-    if (target) {
-      focusedTarget = target
-      syncTooltip()
-    }
-  }
-
-  const handleFocusOut = (event: FocusEvent) => {
-    clearTargetOnLeave(event, () => focusedTarget, (next) => {
-      focusedTarget = next
-      syncTooltip()
-    })
-  }
-
   return (
     <Show
       when={!htmlPending()}
@@ -661,23 +620,12 @@ export function MarkdownText(props: {
         }}
         onClick={handleClick}
         on:keydown={handleKeyDown}
-        onPointerOver={handlePointerOver}
-        onPointerOut={handlePointerOut}
-        onFocusIn={handleFocusIn}
-        onFocusOut={handleFocusOut}
+        onPointerOver={linkTooltip.onPointerOver}
+        onPointerOut={linkTooltip.onPointerOut}
+        onFocusIn={linkTooltip.onFocusIn}
+        onFocusOut={linkTooltip.onFocusOut}
       />
-      <Show when={isInteractive() && hasLocalMarkup()}>
-        <LocalTooltipHost
-          onHandle={(handle) => {
-            tooltip = handle
-            if (!handle) {
-              hoveredTarget = undefined
-              focusedTarget = undefined
-              shownTarget = undefined
-            }
-          }}
-        />
-      </Show>
+      <linkTooltip.Popover />
     </Show>
   )
 }

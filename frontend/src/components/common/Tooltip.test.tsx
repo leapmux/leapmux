@@ -1146,4 +1146,54 @@ describe('createAnchoredTooltip', () => {
     fireEvent.click(a)
     expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
   })
+
+  it('dismisses on auxclick, tracks activeTarget across HIDE_DELAY_MS, and notifies onDismiss for internal dismissals only', () => {
+    const onDismiss = vi.fn()
+    const a = makeAnchor('A')
+    const b = makeAnchor('B')
+    let tip!: ReturnType<typeof createAnchoredTooltip>
+    render(() => {
+      tip = createAnchoredTooltip({ onDismiss })
+      return <tip.Popover />
+    })
+
+    expect(tip.activeTarget()).toBeUndefined()
+    tip.show(a, '/repo/a.ts')
+    expect(tip.activeTarget()).toBe(a)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+    // Switching anchors does not emit a spurious onDismiss.
+    tip.show(b, '/repo/b.ts')
+    expect(onDismiss).not.toHaveBeenCalled()
+    expect(tip.activeTarget()).toBe(b)
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('/repo/b.ts')
+
+    // activeTarget stays populated while hiding during HIDE_DELAY_MS, then clears and notifies onDismiss('dismiss').
+    tip.hide()
+    expect(tip.activeTarget()).toBe(b)
+    vi.advanceTimersByTime(HIDE_DELAY_MS)
+    expect(tip.activeTarget()).toBeUndefined()
+    expect(onDismiss).toHaveBeenLastCalledWith('dismiss')
+
+    // auxclick dismisses immediately and notifies onDismiss('click').
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    a.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    expect(tip.activeTarget()).toBeUndefined()
+    expect(onDismiss).toHaveBeenLastCalledWith('click')
+
+    // External dismissActiveTooltip notifies onDismiss('dismiss'), while direct tip.dismiss() does not.
+    tip.show(a, '/repo/a.ts')
+    vi.advanceTimersByTime(SHOW_DELAY_MS)
+    dismissActiveTooltip()
+    expect(onDismiss).toHaveBeenCalledTimes(3)
+    expect(onDismiss).toHaveBeenLastCalledWith('dismiss')
+
+    tip.show(a, '/repo/a.ts')
+    tip.dismiss()
+    expect(onDismiss).toHaveBeenCalledTimes(3)
+  })
 })
