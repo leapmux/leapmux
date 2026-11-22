@@ -200,7 +200,7 @@ func (a *Agent) CompactContext() error {
 		return agent.ErrAgentBusy
 	}
 	a.Mu.Unlock()
-	return a.sendToStateCommand(root, "", nil, false, "compact")
+	return a.sendToStateCommand(root, "", nil, false, antigravityCompactCommand)
 }
 
 func (a *Agent) ClearContext() (string, error) {

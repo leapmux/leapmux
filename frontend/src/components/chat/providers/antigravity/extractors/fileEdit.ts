@@ -3,6 +3,7 @@ import type { AntigravityStep } from './toolCommon'
 import { ANTIGRAVITY_TOOL } from '~/generated/contracts/antigravity-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { fileUriToPath } from '~/lib/paths'
+import { contextualPatchHunks } from '../../../diff/diffBuilder'
 import { fileEditDiffFromHunks, fileEditDiffFromOldNew, fileEditDiffFromWholeFile } from '../../../model/fileEditDiff'
 
 export function antigravityFileChange(step: AntigravityStep): FileEditDiff[] {
@@ -26,15 +27,20 @@ export function antigravityFileChange(step: AntigravityStep): FileEditDiff[] {
 export function antigravityLandedChanges(step: AntigravityStep): FileEditDiff[] | null {
   const action = pickObject(step.raw, 'codeAction')
   const command = pickObject(pickObject(action, 'actionSpec'), 'command')
-  const uri = pickString(pickObject(command, 'file'), 'absoluteUri')
+  const edit = pickObject(pickObject(action, 'actionResult'), 'edit')
+  const uri = pickString(edit, 'absoluteUri') || pickString(pickObject(command, 'file'), 'absoluteUri')
   const path = fileUriToPath(uri) ?? uri
-  const diff = pickObject(pickObject(pickObject(action, 'actionResult'), 'edit'), 'diff')
+  const diff = pickObject(edit, 'diff')
   const entries = pickObject(diff, 'unifiedDiff')?.lines
-  if (!path || !Array.isArray(entries) || entries.length === 0)
+  const startLine = diff?.startLine ?? 0
+  if (!path || !Array.isArray(entries) || entries.length === 0
+    || typeof startLine !== 'number' || !Number.isSafeInteger(startLine) || startLine < 0) {
     return null
+  }
   const lines: string[] = []
-  let oldLines = 0
-  let newLines = 0
+  const originalLines: string[] | undefined = startLine === 0
+    ? []
+    : undefined
   for (const entry of entries) {
     if (!isObject(entry) || (entry.text !== undefined && entry.text !== null && typeof entry.text !== 'string'))
       return null
@@ -56,21 +62,20 @@ export function antigravityLandedChanges(step: AntigravityStep): FileEditDiff[] 
     for (const text of pickString(entry, 'text').split('\n')) {
       lines.push(prefix + text)
       if (prefix !== '+')
-        oldLines++
-      if (prefix !== '-')
-        newLines++
+        originalLines?.push(text)
     }
   }
-  const change = fileEditDiffFromHunks(path, [
-    {
-      oldStart: oldLines ? 1 : 0,
-      oldLines,
-      newStart: newLines ? 1 : 0,
-      newLines,
-      lines,
-    },
-  ])
+  if (!Number.isSafeInteger(startLine + lines.length))
+    return null
+  const change = fileEditDiffFromHunks(path, contextualPatchHunks(lines, startLine))
+  // A block that starts after line zero cannot supply the leading file context.
   return [
-    { ...change, operation: 'edit', showLineNumbers: false },
+    originalLines
+      ? {
+          ...change,
+          operation: 'edit',
+          originalFile: originalLines.join('\n'),
+        }
+      : { ...change, operation: 'edit' },
   ]
 }

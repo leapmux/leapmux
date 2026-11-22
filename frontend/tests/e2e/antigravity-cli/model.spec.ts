@@ -4,8 +4,14 @@ import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { currentNativeAgent, nativeModelContextText, nativeOptionValue } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { uniqueMarker } from '../helpers/shellArguments'
+import { closeComposerMenus, openSettingsMenu, waitForNativeSettingsHydrated } from '../helpers/ui'
 
 antigravityTest('changes the native model and restores the selected model after reload', async ({ native }) => {
+  await waitForNativeSettingsHydrated(native.page)
+  const menu = await openSettingsMenu(native.page, 'model')
+  await expect(menu.getByTestId('model-gemini-3.8-flash').getByText('Gemini 3.8 Flash', { exact: true })).toBeVisible()
+  await expect(menu.getByTestId('model-gemini-4-neon').getByText('Gemini 4 Neon', { exact: true })).toBeVisible()
+  await closeComposerMenus(native.page)
   const before = await currentNativeAgent(native)
   const marker = uniqueMarker('GEMINIMODELCONTEXT')
   expect(nativeOptionValue(before, 'model')).toBe('gemini-3.8-flash')

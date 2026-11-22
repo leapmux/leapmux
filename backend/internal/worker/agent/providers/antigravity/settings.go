@@ -101,7 +101,7 @@ func cascadeConfigForToken(token, workspace string) map[string]any {
 
 func slashCommandItem(name string) map[string]any {
 	return map[string]any{"item": map[string]any{"slashCommand": map[string]any{
-		"info": map[string]any{"name": name, "type": "SLASH_COMMAND_TYPE_SYSTEM"},
+		"info": map[string]any{"name": name, "type": antigravitySystemSlashCommand},
 	}}}
 }
 

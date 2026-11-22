@@ -1,5 +1,57 @@
 import type { DiffGap, DiffGapSummary, StructuredPatchHunk } from './diffTypes'
 
+/** Unchanged lines kept around each change. */
+export const DIFF_CONTEXT_LINES = 3
+
+/** Split line-aligned diff text into numbered hunks without changing the alignment. */
+export function contextualPatchHunks(lines: readonly string[], startLine: number): StructuredPatchHunk[] {
+  const ranges: { start: number, end: number }[] = []
+  for (let index = 0; index < lines.length; index++) {
+    if (lines[index]![0] === ' ')
+      continue
+    const start = Math.max(0, index - DIFF_CONTEXT_LINES)
+    const end = Math.min(lines.length, index + DIFF_CONTEXT_LINES + 1)
+    const last = ranges.at(-1)
+    if (last && start <= last.end)
+      last.end = end
+    else
+      ranges.push({ start, end })
+  }
+
+  let oldLine = startLine
+  let newLine = startLine
+  let previousEnd = 0
+  return ranges.map(({ start, end }) => {
+    // Every omitted line is unchanged and advances both coordinates.
+    oldLine += start - previousEnd
+    newLine += start - previousEnd
+    const hunkLines = lines.slice(start, end)
+    let oldLines = 0
+    let newLines = 0
+    for (const line of hunkLines) {
+      if (line[0] !== '+')
+        oldLines++
+      if (line[0] !== '-')
+        newLines++
+    }
+    const hunk = {
+      oldStart: oldLine + (oldLines > 0
+        ? 1
+        : 0),
+      oldLines,
+      newStart: newLine + (newLines > 0
+        ? 1
+        : 0),
+      newLines,
+      lines: hunkLines,
+    }
+    oldLine += oldLines
+    newLine += newLines
+    previousEnd = end
+    return hunk
+  })
+}
+
 /** Format structuredPatch hunks as a unified diff string suitable for copying. */
 export function formatUnifiedDiffText(hunks: StructuredPatchHunk[], filePath?: string): string {
   const header = filePath

@@ -1,9 +1,9 @@
 import type { DiffInput, StructuredPatchHunk } from './diffTypes'
 import { diffWordsWithSpace } from 'diff'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { DIFF_DRAWN_LINE_LIMIT } from './diffBuilder'
+import { DIFF_CONTEXT_LINES, DIFF_DRAWN_LINE_LIMIT } from './diffBuilder'
 import { LINE_DIFF_MAX_EDITS, pairKey, replacedWholeHunks } from './diffCompute'
-import { computeDiff, DIFF_CONTEXT_LINES, WORD_DIFF_MAX_EDITS } from './diffSearch'
+import { computeDiff, WORD_DIFF_MAX_EDITS } from './diffSearch'
 
 // The real word diff, counted, so a test can state how many searches ran.
 vi.mock('diff', async (importOriginal) => {

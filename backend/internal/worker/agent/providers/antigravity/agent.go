@@ -95,6 +95,9 @@ type cascadeState struct {
 	streamDone        chan struct{}
 	connected         chan struct{}
 	connectedOnce     sync.Once
+
+	// A native /compact input starts progress. Its checkpoint carries the same execution ID.
+	manualCompactionExecutionID *string
 }
 
 type cascadeTurnPhase uint8

@@ -96,7 +96,7 @@ func (a *Agent) persistLiveStep(state *cascadeState, index int, raw json.RawMess
 	}
 	record.liveOutputAccepted = true
 	a.Mu.Unlock()
-	cleaned, err := scrubStep(raw)
+	cleaned, err := scrubStep(raw, "")
 	if err != nil {
 		a.Mu.Lock()
 		record.liveOutputAccepted = false
@@ -192,6 +192,8 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 		return nil
 	}
 	interrupted := state.interrupted
+	manualCheckpoint := step.Type == contracts.AntigravityStepTypeCheckpoint &&
+		state.manualCompactionExecutionID != nil && *state.manualCompactionExecutionID == step.Metadata.ExecutionID
 	spanID := ""
 	if record != nil && isToolStep(step) {
 		spanID = record.spanID
@@ -199,6 +201,7 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	a.Mu.Unlock()
 
 	splitPlannerResponse := false
+	compactionTrigger := ""
 	switch step.Type {
 	case contracts.AntigravityStepTypePlannerResponse:
 		text, thinking := step.PlannerResponse.visibleContent()
@@ -208,6 +211,15 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 		}
 		splitPlannerResponse = text != "" && thinking != ""
 	case contracts.AntigravityStepTypeUserInput:
+		if state.parent == nil && step.Status == contracts.AntigravityStepStatusDone {
+			for _, item := range step.UserInput.Items {
+				info := item.Item.SlashCommand.Info
+				if info.Name == antigravityCompactCommand && info.Type == antigravitySystemSlashCommand {
+					a.beginManualCompaction(state, step.Metadata.ExecutionID)
+					break
+				}
+			}
+		}
 		if state.parent == nil || slices.Contains(step.UserInput.Tags, antigravityQueueInputTag) {
 			a.consumeStep(state, index)
 			return nil
@@ -221,8 +233,19 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	case contracts.AntigravityStepTypeErrorMessage:
 		a.consumeStep(state, index)
 		return nil
+	case contracts.AntigravityStepTypeCheckpoint:
+		if step.Status != contracts.AntigravityStepStatusDone {
+			a.consumeStep(state, index)
+			if manualCheckpoint {
+				a.endManualCompaction(state)
+			}
+			return nil
+		}
+		if manualCheckpoint {
+			compactionTrigger = "manual"
+		}
 	}
-	cleaned, err := scrubStep(raw)
+	cleaned, err := scrubStep(raw, compactionTrigger)
 	if err != nil {
 		slog.Error("antigravity scrub step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
 		return err
@@ -264,7 +287,31 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 		return err
 	}
 	a.finalizeStep(state, index, step, spanID)
+	if manualCheckpoint {
+		a.endManualCompaction(state)
+	}
 	return nil
+}
+
+func (a *Agent) beginManualCompaction(state *cascadeState, executionID string) {
+	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(state) || state.closed || state.manualCompactionExecutionID != nil {
+		a.Mu.Unlock()
+		return
+	}
+	state.manualCompactionExecutionID = &executionID
+	a.Mu.Unlock()
+	providerkit.PublishCompaction(state.sink, "manual")
+}
+
+func (a *Agent) endManualCompaction(state *cascadeState) {
+	a.Mu.Lock()
+	wasCompacting := state.manualCompactionExecutionID != nil
+	state.manualCompactionExecutionID = nil
+	a.Mu.Unlock()
+	if wasCompacting {
+		providerkit.EndCompaction(state.sink)
+	}
 }
 
 func (a *Agent) finalizeStep(state *cascadeState, index int, step antigravityStep, spanID string) {
@@ -340,14 +387,17 @@ func (a *Agent) persistUnknownStep(state *cascadeState, index int, raw json.RawM
 	return nil
 }
 
-func scrubStep(raw json.RawMessage) (json.RawMessage, error) {
-	var value any
+func scrubStep(raw json.RawMessage, compactionTrigger string) (json.RawMessage, error) {
+	var value map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
 		return nil, err
 	}
 	scrubOpaqueFields(value)
+	if compactionTrigger != "" {
+		value[contracts.CompactionFieldTrigger] = compactionTrigger
+	}
 	return json.Marshal(value)
 }
 
@@ -444,7 +494,7 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 		return nil
 	}
 	if !a.IsDiscardingOutput() && len(heldErrorStep) > 0 {
-		raw, scrubErr := scrubStep(heldErrorStep)
+		raw, scrubErr := scrubStep(heldErrorStep, "")
 		if scrubErr != nil {
 			return scrubErr
 		}
@@ -486,6 +536,7 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 	if !a.cascadeInstalled(state) {
 		return nil
 	}
+	a.endManualCompaction(state)
 	state.sink.ReportProgress(agent.ResetProgress())
 	a.Mu.Lock()
 	if !a.cascadeInstalledLocked(state) {

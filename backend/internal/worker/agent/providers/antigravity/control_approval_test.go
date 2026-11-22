@@ -88,7 +88,9 @@ func TestAntigravityAutomaticApprovalUncertaintyPublishesAndContinues(t *testing
 	}
 	require.NoError(t, json.Unmarshal(sink.LastPublishedControl().Payload, &published))
 	assert.Equal(t, int(failedIndex.Load()), published.StepIndex)
-	assert.Equal(t, 1, approvedNotificationCount(sink))
+	assert.Zero(t, approvedNotificationCount(sink))
+	require.Len(t, sink.Notifications(), 1)
+	assert.Equal(t, contracts.NotificationTypeAgentError, sink.Notifications()[0][contracts.NotificationFieldType])
 	a.queuePermissionApprovals()
 	waitForApprovalWork(t, a)
 	assert.Equal(t, int32(2), requests.Load(), "uncertain approval must not be sent automatically again")

@@ -6,7 +6,7 @@ import { fileEditCopyableText } from '../../../model/fileEditDiff'
 import { antigravityLandedChanges } from './fileEdit'
 import { antigravityStep } from './toolCommon'
 
-function landed(lines: unknown) {
+function landed(lines: unknown, startLine?: unknown) {
   return antigravityLandedChanges(antigravityStep({
     type: 'CORTEX_STEP_TYPE_CODE_ACTION',
     status: 'CORTEX_STEP_STATUS_DONE',
@@ -22,6 +22,7 @@ function landed(lines: unknown) {
       actionResult: {
         edit: {
           diff: {
+            startLine,
             unifiedDiff: { lines },
           },
         },
@@ -46,10 +47,62 @@ describe('antigravityLandedChanges', () => {
         lines: [' context', '-alpha', '+committed'],
       },
     ])
-    expect(change.showLineNumbers).toBe(false)
+    expect(change.showLineNumbers).not.toBe(false)
     const hunksOf = (input: DiffInput) => computeDiff(input).hunks
     expect(fileEditCopyableText(change, hunksOf)).toContain('+committed')
     expect(fileEditCopyableText(change, hunksOf)).not.toContain('+proposed')
+  })
+
+  it('keeps the file coordinates and collapses distant unchanged lines', () => {
+    const context = (start: number, count: number) => Array.from({ length: count }, (_, offset) => ({
+      text: `line ${start + offset}`,
+      type: 'UNIFIED_DIFF_LINE_TYPE_UNCHANGED',
+    }))
+    const change = landed([
+      ...context(1, 40),
+      { text: 'alpha', type: 'UNIFIED_DIFF_LINE_TYPE_DELETE' },
+      { text: 'committed', type: 'UNIFIED_DIFF_LINE_TYPE_INSERT' },
+      { text: 'extra', type: 'UNIFIED_DIFF_LINE_TYPE_INSERT' },
+      ...context(42, 50),
+      { text: 'old', type: 'UNIFIED_DIFF_LINE_TYPE_DELETE' },
+      { text: 'new', type: 'UNIFIED_DIFF_LINE_TYPE_INSERT' },
+      ...context(93, 40),
+    ])![0]!
+    const hunks = fileEditDrawnHunks(change)
+    expect(hunks).toHaveLength(2)
+    expect(hunks[0]!.oldStart + hunks[0]!.lines.indexOf('-alpha')).toBe(41)
+    expect(hunks[1]!.oldStart + hunks[1]!.lines.indexOf('-old')).toBe(92)
+    expect(hunks[1]!.newStart).toBe(hunks[1]!.oldStart + 1)
+    expect((change.originalFile ?? change.oldStr)?.split('\n')[20]).toBe('line 21')
+  })
+
+  it('uses the native start offset for partial blocks and splits multiline entries', () => {
+    const change = landed([
+      { text: 'context', type: 'UNIFIED_DIFF_LINE_TYPE_UNCHANGED' },
+      { text: 'alpha\nbeta', type: 'UNIFIED_DIFF_LINE_TYPE_DELETE' },
+      { text: 'committed', type: 'UNIFIED_DIFF_LINE_TYPE_INSERT' },
+    ], 120)![0]!
+    expect(fileEditDrawnHunks(change)).toEqual([
+      {
+        oldStart: 121,
+        oldLines: 3,
+        newStart: 121,
+        newLines: 2,
+        lines: [
+          ' context',
+          '-alpha',
+          '-beta',
+          '+committed',
+        ],
+      },
+    ])
+    expect(change.originalFile).toBeUndefined()
+  })
+
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER, '40'])('rejects an invalid native start offset %j', (startLine) => {
+    expect(landed([
+      { text: 'new', type: 'UNIFIED_DIFF_LINE_TYPE_INSERT' },
+    ], startLine)).toBeNull()
   })
 
   it.each([

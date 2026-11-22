@@ -73,6 +73,28 @@ func TestAntigravityCatalogPreservesServerOrder(t *testing.T) {
 		assert.Equal(t, []string{agent.DefaultModelSentinel, "z", "a", "m"}, ids)
 	}
 }
+
+func TestAntigravityCatalogSeparatesModelLabelsAndEffortTokens(t *testing.T) {
+	var reply antigravityCatalogReply
+	require.NoError(t, json.Unmarshal([]byte(`{"clientModelConfigs":[
+		{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH"}},
+		{"modelId":"gemini-4-neon-xhigh","label":"Gemini 4 Neon (XHigh)","modelOrAlias":{"model":"NEON_XHIGH"}},
+		{"modelId":"claude-opus-5-5-low","label":"Claude Opus 5.5 (Low)","modelOrAlias":{"model":"OPUS_LOW"}},
+		{"modelId":"other","label":"Other (High)","modelOrAlias":{"model":"OTHER"}}
+	]}`), &reply))
+	catalog := buildAntigravityCatalog(reply)
+	require.Len(t, catalog.models, 4)
+	assert.Equal(t, "Gemini 4 Neon", catalog.models[1].DisplayName)
+	assert.Equal(t, "Claude Opus 5.5", catalog.models[2].DisplayName)
+	assert.Equal(t, "Other (High)", catalog.models[3].DisplayName)
+	for _, effort := range []string{"high", "xhigh"} {
+		variant, selected, err := catalog.resolveModel("gemini-4-neon", effort)
+		require.NoError(t, err)
+		assert.Equal(t, effort, selected)
+		assert.Equal(t, map[string]string{"high": "NEON_HIGH", "xhigh": "NEON_XHIGH"}[effort], variant.token)
+	}
+}
+
 func TestAntigravityQuotaRefreshCannotDelayInactiveTurn(t *testing.T) {
 	a, sink := testAgent(t)
 	entered := make(chan struct{})

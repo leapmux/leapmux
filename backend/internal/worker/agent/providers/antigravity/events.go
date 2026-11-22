@@ -15,6 +15,9 @@ const (
 	cascadeStatusBusy        = "CASCADE_RUN_STATUS_BUSY"
 	antigravityQueueInputTag = "leapmux:queue-input"
 	pastEveryStep            = 1 << 30
+
+	antigravityCompactCommand     = "compact"
+	antigravitySystemSlashCommand = "SLASH_COMMAND_TYPE_SYSTEM"
 )
 
 type agentStateEnvelope struct {
@@ -93,6 +96,17 @@ type antigravityPlannerResponse struct {
 	Thinking         string `json:"thinking"`
 }
 
+type antigravityInputItem struct {
+	Item struct {
+		SlashCommand struct {
+			Info struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			} `json:"info"`
+		} `json:"slashCommand"`
+	} `json:"item"`
+}
+
 type antigravityStep struct {
 	Type     string `json:"type"`
 	Status   string `json:"status"`
@@ -102,12 +116,14 @@ type antigravityStep struct {
 			Name          string `json:"name"`
 			ArgumentsJSON string `json:"argumentsJson"`
 		} `json:"toolCall"`
-		ModelUsage map[string]string `json:"modelUsage"`
+		ModelUsage  map[string]string `json:"modelUsage"`
+		ExecutionID string            `json:"executionId"`
 	} `json:"metadata"`
 	RequestedInteraction json.RawMessage            `json:"requestedInteraction"`
 	PlannerResponse      antigravityPlannerResponse `json:"plannerResponse"`
 	UserInput            struct {
-		Tags []string `json:"tags"`
+		Tags  []string               `json:"tags"`
+		Items []antigravityInputItem `json:"items"`
 	} `json:"userInput"`
 	SystemMessage struct {
 		AgentMessage *struct {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -84,6 +85,42 @@ func TestAntigravitySlashAndCompactInput(t *testing.T) {
 	items = requests("SendUserCascadeMessage")[1]["items"].([]any)
 	assert.Len(t, items, 1)
 	assert.Contains(t, items[0], "item")
+}
+
+func TestAntigravityCompactionFollowsNativeCommandAndCheckpoint(t *testing.T) {
+	command := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_USER_INPUT","status":"CORTEX_STEP_STATUS_DONE","metadata":{"executionId":"compact-turn"},"userInput":{"items":[{"item":{"slashCommand":{"info":{"name":"compact","type":"SLASH_COMMAND_TYPE_SYSTEM"}}}}],"tags":["leapmux:queue-input"]}}`)
+	checkpoint := func(executionID string) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"type":"CORTEX_STEP_TYPE_CHECKPOINT","status":"CORTEX_STEP_STATUS_DONE","metadata":{"executionId":%q},"checkpoint":{"sessionSummary":"Compacted from native context"}}`, executionID))
+	}
+	for _, completed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("checkpoint completes=%t", completed), func(t *testing.T) {
+			a, sink := testAgent(t)
+			emit := func(index int, step json.RawMessage) {
+				feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusRunning, MainTrajectory: trajectoryPatch{StepsUpdate: stepsPatch{Indices: []int{index}, Steps: []json.RawMessage{step}}}})
+			}
+			emit(0, command)
+			emit(0, command)
+			manual := map[string]any{contracts.CompactionFieldTrigger: "manual"}
+			assert.Equal(t, []any{manual}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			emit(1, checkpoint("another-execution"))
+			assert.Equal(t, []any{manual}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			messages := sink.Messages()
+			require.Len(t, messages, 1)
+			assert.NotContains(t, string(messages[0].Content), `"trigger":"manual"`)
+			if completed {
+				emit(2, checkpoint("compact-turn"))
+				assert.Equal(t, []any{manual, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+				messages := sink.Messages()
+				require.Len(t, messages, 2)
+				assert.Contains(t, string(messages[1].Content), `"trigger":"manual"`)
+			}
+			feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+			assert.Equal(t, []any{manual, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			emit(3, checkpoint("compact-turn"))
+			messages = sink.Messages()
+			assert.NotContains(t, string(messages[len(messages)-1].Content), `"trigger":"manual"`)
+		})
+	}
 }
 
 func TestAntigravitySteerPolicy(t *testing.T) {

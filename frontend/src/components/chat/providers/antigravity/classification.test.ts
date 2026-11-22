@@ -53,6 +53,25 @@ describe('classifyAntigravityMessage', () => {
     expect(classifyAntigravityMessage(input({ type: 'CORTEX_STEP_TYPE_FUTURE', status: 'CORTEX_STEP_STATUS_DONE' })).kind).toBe('tool_result')
   })
 
+  it.each(['manual', 'auto'])('renders the stored compaction trigger %s', (trigger) => {
+    const checkpoint = {
+      type: ANTIGRAVITY_STEP_TYPE.Checkpoint,
+      ...(trigger === 'manual'
+        ? { trigger }
+        : {}),
+    }
+    expect(classifyAntigravityMessage(input(checkpoint))).toMatchObject({
+      kind: 'notification',
+      entries: [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger },
+        },
+      ],
+    })
+  })
+
   // When a turn ends while a step runs, the Worker stores the open step again with a
   // completion, as the closing row. That copy is the final row of its call.
   it.each([MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED])('classifies the closing copy of an open step as a result, with completion %s', (completion) => {

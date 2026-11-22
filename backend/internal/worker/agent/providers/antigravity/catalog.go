@@ -56,7 +56,7 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 		}
 		catalog.variants[family][effort] = catalogVariant{token: config.ModelOrAlias.Model, mimeTypes: config.SupportedMimeTypes}
 		if families[family] == nil {
-			families[family] = &agent.ModelInfo{Id: family, DisplayName: config.Label, Description: family}
+			families[family] = &agent.ModelInfo{Id: family, DisplayName: modelFamilyLabel(config.Label, effort), Description: family}
 			familyOrder = append(familyOrder, family)
 		}
 		if effort != "" {
@@ -89,6 +89,13 @@ func splitModelEffort(modelID string) (string, string) {
 		}
 	}
 	return modelID, ""
+}
+
+func modelFamilyLabel(label, effort string) string {
+	if start := strings.LastIndex(label, " ("); start > 0 && effort != "" && strings.EqualFold(label[start+2:], effort+")") {
+		return label[:start]
+	}
+	return label
 }
 
 func (c antigravityCatalog) resolveModel(model, effort string) (catalogVariant, string, error) {
