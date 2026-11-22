@@ -77,6 +77,10 @@ const (
 	// MethodRequestOfficialMcpAuthHeaders asks for credentials for ZCode's
 	// hosted MCP servers, which LeapMux likewise does not hold.
 	MethodRequestOfficialMcpAuthHeaders = "interaction/requestOfficialMcpAuthHeaders"
+	// MethodRequestCredentialCipher delegates decryption of shared credentials.json
+	// entries to the host so the app-server never opens the OS credential store
+	// directly.
+	MethodRequestCredentialCipher = "interaction/requestCredentialCipher"
 )
 
 // ZCode server->client notifications (no id).

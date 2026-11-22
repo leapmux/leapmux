@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -708,6 +709,62 @@ func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, answer *zcodeRun
 func (a *Agent) answerOfficialMcpAuthHeaders(id json.RawMessage) {
 	if err := a.sendZCodeReply(id, map[string]any{"ok": false, "reason": OfficialAuthUnavailable}); err != nil {
 		slog.Warn("zcode official mcp auth reply failed", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+const (
+	zcodeCredentialPlaintextMaxBytes  = 1 << 20
+	zcodeCredentialCiphertextMaxChars = ((zcodeCredentialPlaintextMaxBytes + 2) / 3 * 4) + 128
+)
+
+type zcodeCredentialCipherRequest struct {
+	RequestID string `json:"requestId"`
+	Operation string `json:"operation"`
+	Value     string `json:"value"`
+}
+
+// answerCredentialCipher answers ZCode 3.18+'s credential cipher bridge requests.
+// LeapMux serves decrypt requests using the same read-only credential store and
+// refuses encrypt requests so it never mutates or migrates ZCode's store.
+func (a *Agent) answerCredentialCipher(id, params json.RawMessage) {
+	var req zcodeCredentialCipherRequest
+	if err := json.Unmarshal(params, &req); err != nil || req.RequestID == "" ||
+		(req.Operation != "decrypt" && req.Operation != "encrypt") || len(req.Value) > zcodeCredentialCiphertextMaxChars {
+		if err := a.sendZCodeErrorReply(id, -32602, "Credential cipher request is invalid"); err != nil {
+			slog.Warn("zcode credential cipher error reply failed", "agent_id", a.AgentID(), "error", err)
+		}
+		return
+	}
+	replyErr := func(code, message string) map[string]any {
+		return map[string]any{
+			"requestId": req.RequestID,
+			"result": map[string]any{
+				"ok":    false,
+				"error": map[string]string{"code": code, "message": message},
+			},
+		}
+	}
+	var payload map[string]any
+	if req.Operation == "encrypt" {
+		payload = replyErr("CREDENTIAL_SECURE_STORAGE_UNAVAILABLE", "LeapMux has read-only access to ZCode credential storage.")
+	} else {
+		plain, err := a.credentials.decryptRaw(a.Context(), req.Value)
+		switch {
+		case err == nil && len(plain) > zcodeCredentialPlaintextMaxBytes:
+			payload = replyErr("CREDENTIAL_CIPHER_INVALID_PAYLOAD", "Invalid credential cipher payload")
+		case err == nil:
+			payload = map[string]any{
+				"requestId": req.RequestID,
+				"result":    map[string]any{"ok": true, "value": plain},
+			}
+		case errors.Is(err, errZCodeCredentialDecryptFailed):
+			payload = replyErr("ZCODE_CREDENTIAL_DECRYPT_FAILED", "ZCODE_CREDENTIAL_DECRYPT_FAILED: Invalid encrypted credential")
+		default:
+			payload = replyErr("CREDENTIAL_SECURE_STORAGE_UNAVAILABLE", "System credential storage is unavailable. Unlock the OS credential store and restart to retry.")
+		}
+	}
+	if err := a.sendZCodeReply(id, payload); err != nil {
+		slog.Warn("zcode credential cipher reply failed", "agent_id", a.AgentID(), "error", err)
 	}
 }
 

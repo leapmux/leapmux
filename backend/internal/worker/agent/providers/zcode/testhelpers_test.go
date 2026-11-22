@@ -88,8 +88,19 @@ func zcodeTestCredentialGetenv(name string) string {
 	return ""
 }
 
-// zcodeTestEncryptCredential encrypts plain as ZCode's credential cipher does.
+// zcodeTestEncryptCredential encrypts plain as ZCode's legacy v1 credential cipher does.
 func zcodeTestEncryptCredential(t *testing.T, key [sha256.Size]byte, plain string) string {
+	t.Helper()
+	return zcodeCredentialCipherPrefix + zcodeTestSealAESGCM(t, key, plain)
+}
+
+// zcodeTestEncryptV2Credential encrypts plain as ZCode 3.18+'s v2 credential cipher does.
+func zcodeTestEncryptV2Credential(t *testing.T, key [sha256.Size]byte, source, plain string) string {
+	t.Helper()
+	return zcodeCredentialV2Prefix + source + ":" + zcodeKeyFingerprint(key) + ":" + zcodeTestSealAESGCM(t, key, plain)
+}
+
+func zcodeTestSealAESGCM(t *testing.T, key [sha256.Size]byte, plain string) string {
 	t.Helper()
 	iv := make([]byte, zcodeCredentialIVBytes)
 	_, err := rand.Read(iv)
@@ -101,7 +112,7 @@ func zcodeTestEncryptCredential(t *testing.T, key [sha256.Size]byte, plain strin
 	sealed := gcm.Seal(nil, iv, []byte(plain), nil)
 	ciphertext, tag := sealed[:len(sealed)-zcodeCredentialTagBytes], sealed[len(sealed)-zcodeCredentialTagBytes:]
 	encode := base64.RawURLEncoding.EncodeToString
-	return zcodeCredentialCipherPrefix + encode(iv) + "." + encode(tag) + "." + encode(ciphertext)
+	return encode(iv) + "." + encode(tag) + "." + encode(ciphertext)
 }
 
 // zcodeTestCredentialStore writes values, encrypted, into a credential store under a
@@ -109,9 +120,10 @@ func zcodeTestEncryptCredential(t *testing.T, key [sha256.Size]byte, plain strin
 func zcodeTestCredentialStore(t *testing.T, values map[string]string) zcodeCredentialStore {
 	t.Helper()
 	store := newZCodeCredentialStore(t.TempDir(), zcodeTestCredentialGetenv)
+	key := sha256.Sum256([]byte(zcodeTestCredentialSecret))
 	encrypted := map[string]string{}
-	for key, value := range values {
-		encrypted[key] = zcodeTestEncryptCredential(t, store.key, value)
+	for k, value := range values {
+		encrypted[k] = zcodeTestEncryptCredential(t, key, value)
 	}
 	data, err := json.Marshal(encrypted)
 	require.NoError(t, err)

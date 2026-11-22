@@ -114,3 +114,35 @@ func TestZCodeAccountEnvironment_UsesTheProfileSelectedProviderRelease(t *testin
 		})
 	}
 }
+
+func TestZCodeAccountEnvironment_UsesSecretFileFromProfile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fixture executes a POSIX shell script")
+	}
+	t.Parallel()
+
+	home, working, profileDir := t.TempDir(), t.TempDir(), t.TempDir()
+	secret := "0123456789abcdef0123456789abcdef0123456789abcdef"
+	secretPath := filepath.Join(profileDir, "zcode.secret")
+	require.NoError(t, os.WriteFile(secretPath, []byte(secret), 0o600))
+
+	key := sha256.Sum256([]byte(secret))
+	v2 := zcodeTestEncryptV2Credential(t, key, zcodeCredentialSourceEnv, "file-backed-jwt")
+	credPath := filepath.Join(home, ".zcode", "v2", "credentials.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(credPath), 0o700))
+	data, err := json.Marshal(map[string]string{zcodeCredentialZCodeJWT: v2})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(credPath, data, 0o600))
+
+	shell := filepath.Join(t.TempDir(), "sh")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\ncd \"$LEAPMUX_TEST_PROFILE_DIR\" || exit 2\nexport ZCODE_CREDENTIAL_SECRET_FILE=\"zcode.secret\"\nexec /bin/sh \"$@\"\n")
+	opts := agent.Options{HomeDir: home, WorkingDir: working, Shell: shell}
+	environment := envutil.PinEnv(os.Environ(), "HOME="+home, "USERPROFILE="+home, "LEAPMUX_TEST_PROFILE_DIR="+profileDir)
+	got, err := resolveZCodeAccountEnvironment(t.Context(), opts, providerkit.FinalizeAgentEnv(environment, opts))
+	require.NoError(t, err)
+	creds, err := got.credentials.read()
+	require.NoError(t, err)
+	jwt, err := creds.get(zcodeCredentialZCodeJWT)
+	require.NoError(t, err)
+	assert.Equal(t, "file-backed-jwt", jwt)
+}

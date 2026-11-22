@@ -114,7 +114,7 @@ func (a *Agent) startPlanRequestAuth(ctx context.Context, state *zcodeAccountSta
 		if !ok {
 			return zcodeRequestAuth{}, errZCodeScopeInvalidated
 		}
-		credentials := a.readAccountCredentials()
+		credentials := a.readAccountCredentialsContext(ctx)
 		session, _, err := credentials.session(binding.family())
 		a.warnCredentialStoreError(err)
 		binding.session = session
