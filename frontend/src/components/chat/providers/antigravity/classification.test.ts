@@ -10,6 +10,28 @@ function input(parentObject: Record<string, unknown>) {
 }
 
 describe('classifyAntigravityMessage', () => {
+  it('classifies every member of a notification thread', () => {
+    const first = { type: 'settings_changed', changes: {} }
+    const second = { type: 'pending_requests_approved' }
+    expect(classifyAntigravityMessage({
+      parentObject: first,
+      wrapper: {
+        messages: [first],
+      },
+    } as never).kind).toBe('hidden')
+    expect(classifyAntigravityMessage({
+      parentObject: first,
+      wrapper: {
+        messages: [first, second],
+      },
+    } as never)).toMatchObject({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text: 'Bypass permissions approved the pending requests.' },
+      ],
+    })
+  })
+
   it('classifies steps, interactions and turn ends', () => {
     expect(classifyAntigravityMessage(input({ name: ANTIGRAVITY_FRAME.TurnEnd })).kind).toBe('result_divider')
     expect(classifyAntigravityMessage(input({ name: ANTIGRAVITY_FRAME.Interaction, modelRequest: {} })).kind).toBe('notification')
@@ -29,6 +51,25 @@ describe('classifyAntigravityMessage', () => {
       },
     } as never).kind).toBe('notification')
     expect(classifyAntigravityMessage(input({ type: 'CORTEX_STEP_TYPE_FUTURE', status: 'CORTEX_STEP_STATUS_DONE' })).kind).toBe('tool_result')
+  })
+
+  it.each(['manual', 'auto'])('renders the stored compaction trigger %s', (trigger) => {
+    const checkpoint = {
+      type: ANTIGRAVITY_STEP_TYPE.Checkpoint,
+      ...(trigger === 'manual'
+        ? { trigger }
+        : {}),
+    }
+    expect(classifyAntigravityMessage(input(checkpoint))).toMatchObject({
+      kind: 'notification',
+      entries: [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger },
+        },
+      ],
+    })
   })
 
   // When a turn ends while a step runs, the Worker stores the open step again with a
@@ -71,7 +112,7 @@ describe('antigravitySpanRole', () => {
     } as never)).toBe('request')
     expect(antigravitySpanRole({
       parentObject: { type: ANTIGRAVITY_STEP_TYPE.PlannerResponse, status: 'CORTEX_STEP_STATUS_DONE' },
-    } as never)).toBe('result')
+    } as never)).toBe('other')
   })
 
   it('places the closing copy of an open step on the result side', () => {

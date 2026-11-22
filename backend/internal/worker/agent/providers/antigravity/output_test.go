@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -85,6 +86,62 @@ func TestAntigravityCumulativePlannerText(t *testing.T) {
 	assert.Equal(t, "HELLO WORLD", step.PlannerResponse.ModifiedResponse)
 }
 
+func TestAntigravityRepeatedToolUpdatesKeepOneRailPerCall(t *testing.T) {
+	a, sink := testAgent(t)
+	firstPending := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_PENDING","metadata":{"toolCall":{"id":"first","name":"run_command"}}}`)
+	firstRunning := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"first","name":"run_command"}}}`)
+	firstDone := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_DONE","metadata":{"toolCall":{"id":"first","name":"run_command"}}}`)
+	secondPending := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_PENDING","metadata":{"toolCall":{"id":"second","name":"read_file"}}}`)
+	secondDone := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_VIEW_FILE","status":"CORTEX_STEP_STATUS_DONE","metadata":{"toolCall":{"id":"second","name":"read_file"}}}`)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{firstPending}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{firstRunning, secondPending}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{firstRunning, secondPending}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{firstDone, secondDone}))
+
+	rows := transcriptMessages(sink)
+	require.Len(t, rows, 4)
+	assert.Empty(t, rows[0].SpansOpenAtPersist)
+	assert.Positive(t, rows[0].SpanColor)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "first"}}, rows[1].SpansOpenAtPersist)
+	assert.Positive(t, rows[1].SpanColor)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "first"}, {SpanID: "second"}}, rows[2].SpansOpenAtPersist)
+	assert.True(t, rows[2].Closing)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "second"}}, rows[3].SpansOpenAtPersist)
+	assert.True(t, rows[3].Closing)
+	assert.Equal(t, []agenttest.SpanOpen{{SpanID: "first"}, {SpanID: "second"}}, sink.OpenSpans())
+}
+
+type refusingToolRequestSink struct {
+	agent.ProviderServices
+	refusal error
+}
+
+func (s *refusingToolRequestSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if s.refusal != nil {
+		return s.refusal
+	}
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func TestAntigravityRefusedToolRequestCanRetryWithoutAnOpenRail(t *testing.T) {
+	a, sink := testAgent(t)
+	writer := &refusingToolRequestSink{ProviderServices: a.root.sink, refusal: errors.New("write refused")}
+	a.root.sink = writer
+	a.root.steps[0] = &stepState{}
+	raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_GENERIC","status":"CORTEX_STEP_STATUS_PENDING","metadata":{"toolCall":{"id":"call","name":"read_file"}}}`)
+
+	require.ErrorIs(t, a.persistLiveStep(a.root, 0, raw, "call"), writer.refusal)
+	assert.Empty(t, transcriptMessages(sink))
+	assert.False(t, a.root.steps[0].liveOutputAccepted)
+
+	writer.refusal = nil
+	require.NoError(t, a.persistLiveStep(a.root, 0, raw, "call"))
+	rows := transcriptMessages(sink)
+	require.Len(t, rows, 1)
+	assert.Empty(t, rows[0].SpansOpenAtPersist)
+	assert.Positive(t, rows[0].SpanColor)
+}
+
 func TestAntigravityRewrittenPlannerTextDoesNotEmitNegativeDelta(t *testing.T) {
 	a, sink := testAgent(t)
 	for _, text := range []string{"HELLO", "HI", "HI THERE"} {
@@ -112,6 +169,50 @@ func TestAntigravityPlannerThinkingAndTextPersistAsSeparateRows(t *testing.T) {
 	assert.Empty(t, thinking.PlannerResponse.Response)
 	assert.Equal(t, "visible answer", text.PlannerResponse.ModifiedResponse)
 	assert.Equal(t, "private reasoning", text.PlannerResponse.Thinking)
+}
+
+func TestAntigravityConsumesTextlessPlannerStepsWithoutStoringRows(t *testing.T) {
+	a, sink := testAgent(t)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{
+		plannerStep(contracts.AntigravityStepStatusRunning, "a provisional reply"),
+	}))
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1, 2}, []json.RawMessage{
+		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"toolCalls":[{"name":"read_file"}],"stopReason":"STOP"},"metadata":{"modelUsage":{"inputTokens":"23","outputTokens":"5"}}}`),
+		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"modifiedResponse":"  ","response":"\n","thinking":"\t"}}`),
+		json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE"}`),
+	}))
+	assert.Empty(t, transcriptMessages(sink))
+	assert.Contains(t, sink.ProgressUpdates(), agent.CompleteModelProgress("antigravity:cascade:0"))
+	a.Mu.Lock()
+	assert.Equal(t, 3, a.firstOpenIndexLocked(a.root))
+	assert.Empty(t, a.root.steps[0].raw)
+	a.Mu.Unlock()
+
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{3}, []json.RawMessage{
+		plannerStep(contracts.AntigravityStepStatusRunning, " \t"),
+	}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	divider := rows[0]
+	require.True(t, divider.TurnEnd)
+	assert.JSONEq(t, `{"name":"antigravity_turn_end","num_tool_uses":0,"metadata":{"modelUsage":{"inputTokens":23,"outputTokens":5}}}`, string(divider.Content))
+}
+
+func TestAntigravityStoresOnlyNonblankPlannerContent(t *testing.T) {
+	for _, planner := range []string{
+		`{"modifiedResponse":" ","response":"  answer","thinking":"\t"}`,
+		`{"modifiedResponse":" ","thinking":"  reasoning"}`,
+	} {
+		t.Run(planner, func(t *testing.T) {
+			a, sink := testAgent(t)
+			raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":` + planner + `}`)
+			feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{raw}))
+			rows := transcriptMessages(sink)
+			require.Len(t, rows, 1)
+			assert.JSONEq(t, string(raw), string(rows[0].Content))
+		})
+	}
 }
 
 func TestAntigravityChildUserInputPersistsWithoutRootDuplication(t *testing.T) {
@@ -273,8 +374,44 @@ func TestAntigravityScrubFailureAllowsPersistenceRetry(t *testing.T) {
 	a, _ := testAgent(t)
 	a.root.steps[0] = &stepState{}
 	raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":`)
-	assert.Error(t, a.persistLiveStep(a.root, 0, antigravityStep{}, raw, "call"))
+	assert.Error(t, a.persistLiveStep(a.root, 0, raw, "call"))
 	assert.False(t, a.root.steps[0].liveOutputAccepted)
 	assert.Error(t, a.persistStep(a.root, 0, antigravityStep{}, raw))
 	assert.False(t, a.root.steps[0].consumed)
+}
+
+func TestAntigravityBlankPlannerDoesNotConsumeRetry(t *testing.T) {
+	for _, result := range []struct{ name, payload string }{
+		{"text", `{"response":"The model recovered."}`},
+		{"tool calls", `{"toolCalls":[{"name":"read_file"}],"stopReason":"STOP"}`},
+	} {
+		t.Run(result.name, func(t *testing.T) {
+			a, sink := testAgent(t)
+			a.beginTurn(a.root)
+			a.noteModelRetry(a.root, &modelRequestStatus{Attempt: 1, MaxAttempts: 4})
+			before := len(sink.Messages())
+			empty := plannerStep(contracts.AntigravityStepStatusGenerating, "\u0085\uFEFF")
+			feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{empty}))
+			require.Len(t, sink.Messages(), before)
+			require.NotContains(t, sink.LeapMuxNotifications(), map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved})
+			raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":` + result.payload + `}`)
+			feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{raw}))
+			require.Contains(t, sink.LeapMuxNotifications(), map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved})
+		})
+	}
+}
+
+func TestAntigravityBlankPlannerKeepsUnrecoveredError(t *testing.T) {
+	a, sink := testAgent(t)
+	failure := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_ERROR_MESSAGE","status":"CORTEX_STEP_STATUS_DONE","errorMessage":{"error":{"shortError":"Native model failed."}}}`)
+	empty := plannerStep(contracts.AntigravityStepStatusGenerating, "")
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{failure, empty}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+	notices := sink.PersistedNotifications()
+	require.Len(t, notices, 1)
+	assert.Contains(t, string(notices[0].Content), "Native model failed.")
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].TurnEnd)
+	assert.Equal(t, agent.MessageCompletionError, rows[0].Completion)
 }

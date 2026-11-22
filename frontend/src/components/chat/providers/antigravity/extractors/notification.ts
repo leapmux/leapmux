@@ -1,5 +1,6 @@
 import type { NotificationEntry } from '../../../model/notification'
 import { ANTIGRAVITY_FRAME, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/antigravity-protocol'
+import { COMPACTION_FIELD } from '~/generated/contracts/session-info'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { retryEntry } from '../../../model/notification'
 import { antigravityMessageIsChildPrompt } from './toolCommon'
@@ -38,7 +39,11 @@ export function antigravityNotificationEntry(msg: Record<string, unknown>): Noti
       {
         kind: 'compaction',
         phase: 'end',
-        detail: { trigger: 'auto' },
+        detail: {
+          trigger: msg[COMPACTION_FIELD.Trigger] === 'manual'
+            ? 'manual'
+            : 'auto',
+        },
       },
     ]
   }

@@ -2,11 +2,8 @@ package antigravity
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
-
-	"github.com/leapmux/leapmux/generated/contracts"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
@@ -76,56 +73,75 @@ func TestAntigravityCatalogPreservesServerOrder(t *testing.T) {
 		assert.Equal(t, []string{agent.DefaultModelSentinel, "z", "a", "m"}, ids)
 	}
 }
-func TestAntigravityQuotaMappingAndEmptyReplacement(t *testing.T) {
-	for _, tc := range []struct {
-		name, payload string
-		count         int
-		utilization   float64
-		status        string
-	}{
-		{"exhausted", `{"remainingFraction":0}`, 1, 100, contracts.RateLimitStatusExceeded},
-		{"partial", `{"remainingFraction":0.25,"resetTime":"2026-11-06T12:00:00Z"}`, 1, 75, contracts.RateLimitStatusAllowed},
-		{"unused", `{"remainingFraction":1}`, 1, 0, contracts.RateLimitStatusAllowed},
-		{"absent", `null`, 0, 0, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+
+func TestAntigravityCatalogSeparatesModelLabelsAndEffortTokens(t *testing.T) {
+	var reply antigravityCatalogReply
+	require.NoError(t, json.Unmarshal([]byte(`{"clientModelConfigs":[
+		{"modelId":"gemini-4-neon-high","label":"Gemini 4 Neon (High)","modelOrAlias":{"model":"NEON_HIGH"}},
+		{"modelId":"gemini-4-neon-xhigh","label":"Gemini 4 Neon (XHigh)","modelOrAlias":{"model":"NEON_XHIGH"}},
+		{"modelId":"claude-opus-5-5-low","label":"Claude Opus 5.5 (Low)","modelOrAlias":{"model":"OPUS_LOW"}},
+		{"modelId":"other","label":"Other (High)","modelOrAlias":{"model":"OTHER"}}
+	]}`), &reply))
+	catalog := buildAntigravityCatalog(reply)
+	require.Len(t, catalog.models, 4)
+	assert.Equal(t, "Gemini 4 Neon", catalog.models[1].DisplayName)
+	assert.Equal(t, "Claude Opus 5.5", catalog.models[2].DisplayName)
+	assert.Equal(t, "Other (High)", catalog.models[3].DisplayName)
+	for _, effort := range []string{"high", "xhigh"} {
+		variant, selected, err := catalog.resolveModel("gemini-4-neon", effort)
+		require.NoError(t, err)
+		assert.Equal(t, effort, selected)
+		assert.Equal(t, map[string]string{"high": "NEON_HIGH", "xhigh": "NEON_XHIGH"}[effort], variant.token)
+	}
+}
+
+func TestAntigravityAccountRefreshCannotDelayInactiveTurn(t *testing.T) {
+	for _, method := range []string{"GetCascadeModelConfigData", "RetrieveUserQuotaSummary"} {
+		t.Run(method, func(t *testing.T) {
 			a, sink := testAgent(t)
-			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = fmt.Fprintf(w, `{"clientModelConfigs":[{"modelId":"model","label":"Model","modelOrAlias":{"model":"MODEL"},"quotaInfo":%s}]}`, tc.payload)
+			entered := make(chan struct{})
+			release, unblock := newTestGate(t)
+			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == languageServerService+method {
+					close(entered)
+					<-release
+				}
+				_, _ = w.Write([]byte(`{"response":{}}`))
 			})
-			a.refreshRateLimits()
-			value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
-			require.True(t, ok)
-			update := value.(map[string]any)
-			assert.Equal(t, contracts.RateLimitUpdateModeReplace, update[contracts.RateLimitUpdateFieldMode])
-			values := update[contracts.RateLimitUpdateFieldValues].(map[string]any)
-			require.Len(t, values, tc.count)
-			if tc.count > 0 {
-				model := values["model"].(map[string]any)
-				assert.Equal(t, tc.utilization, model[contracts.RateLimitFieldUtilization])
-				assert.Equal(t, tc.status, model[contracts.RateLimitFieldStatus])
-			}
-			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
-			a.refreshRateLimits()
-			value, ok = sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
-			require.True(t, ok)
-			assert.Empty(t, value.(map[string]any)[contracts.RateLimitUpdateFieldValues])
+			defer func() { unblock(); a.accountRefreshWork.CloseAndWait() }()
+			a.beginTurn(a.root)
+			done := make(chan error, 1)
+			go func() { done <- a.endTurn(a.root, agent.MessageCompletionComplete) }()
+			receiveTestValue(t, entered)
+			states := sink.TurnStates()
+			require.NotEmpty(t, states)
+			assert.Equal(t, agent.TurnState{}, states[len(states)-1])
+			require.NoError(t, receiveTestValue(t, done))
 		})
 	}
 }
 
-func TestAntigravityQuotaRefreshCannotDelayInactiveTurn(t *testing.T) {
+func TestAntigravityCatalogRefreshSettlesUnavailableSelection(t *testing.T) {
 	a, sink := testAgent(t)
-	entered := make(chan struct{})
-	release, unblock := newTestGate(t)
-	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) { close(entered); <-release; _, _ = w.Write([]byte(`{}`)) })
-	a.beginTurn(a.root)
-	done := make(chan error, 1)
-	go func() { done <- a.endTurn(a.root, agent.MessageCompletionComplete) }()
-	receiveTestValue(t, entered)
-	states := sink.TurnStates()
-	require.NotEmpty(t, states)
-	assert.Equal(t, agent.TurnState{}, states[len(states)-1], "quota I/O must start after inactive state publication")
-	unblock()
-	require.NoError(t, receiveTestValue(t, done))
+	a.model, a.effort = "gemini-test", "high"
+	sent := make(chan map[string]any, 1)
+	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case languageServerService + "GetCascadeModelConfigData":
+			_, _ = w.Write([]byte(`{"clientModelConfigs":[{"modelId":"gemini-new-low","modelOrAlias":{"model":"NEW_LOW"}}]}`))
+		case languageServerService + "SendUserCascadeMessage":
+			var request map[string]any
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			sent <- request
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			_, _ = w.Write([]byte(`{"response":{}}`))
+		}
+	})
+	a.refreshAccountCatalog()
+	require.NoError(t, a.SendInput("continue the session", nil))
+	assert.Equal(t, "NEW_LOW", receiveTestValue(t, sent)["cascadeConfig"].(map[string]any)["plannerConfig"].(map[string]any)["planModel"])
+	assert.Equal(t, agent.DefaultModelSentinel, a.model)
+	assert.Empty(t, a.effort)
+	assert.Positive(t, sink.SettingsRefreshCount())
 }

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -84,6 +85,43 @@ func TestAntigravitySlashAndCompactInput(t *testing.T) {
 	items = requests("SendUserCascadeMessage")[1]["items"].([]any)
 	assert.Len(t, items, 1)
 	assert.Contains(t, items[0], "item")
+}
+
+func TestAntigravityCompactionFollowsNativeCommandAndCheckpoint(t *testing.T) {
+	command := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_USER_INPUT","status":"CORTEX_STEP_STATUS_DONE","metadata":{"executionId":"compact-turn"},"userInput":{"items":[{"item":{"slashCommand":{"info":{"name":"compact","type":"SLASH_COMMAND_TYPE_SYSTEM"}}}}],"tags":["leapmux:queue-input"]}}`)
+	checkpoint := func(executionID string) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"type":"CORTEX_STEP_TYPE_CHECKPOINT","status":"CORTEX_STEP_STATUS_DONE","metadata":{"executionId":%q},"checkpoint":{"sessionSummary":"Compacted from native context"}}`, executionID))
+	}
+	for _, completed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("checkpoint completes=%t", completed), func(t *testing.T) {
+			a, sink := testAgent(t)
+			a.sink.AdoptNativeSession(a.root.id)
+			emit := func(index int, step json.RawMessage) {
+				feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusRunning, MainTrajectory: trajectoryPatch{StepsUpdate: stepsPatch{Indices: []int{index}, Steps: []json.RawMessage{step}}}})
+			}
+			emit(0, command)
+			emit(0, command)
+			manual := map[string]any{contracts.CompactionFieldTrigger: "manual"}
+			assert.Equal(t, []any{manual}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			emit(1, checkpoint("another-execution"))
+			assert.Equal(t, []any{manual}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			messages := sink.Messages()
+			require.Len(t, messages, 1)
+			assert.NotContains(t, string(messages[0].Content), `"trigger":"manual"`)
+			if completed {
+				emit(2, checkpoint("compact-turn"))
+				assert.Equal(t, []any{manual, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+				messages := sink.Messages()
+				require.Len(t, messages, 2)
+				assert.Contains(t, string(messages[1].Content), `"trigger":"manual"`)
+			}
+			feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+			assert.Equal(t, []any{manual, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			emit(3, checkpoint("compact-turn"))
+			messages = sink.Messages()
+			assert.NotContains(t, string(messages[len(messages)-1].Content), `"trigger":"manual"`)
+		})
+	}
 }
 
 func TestAntigravitySteerPolicy(t *testing.T) {
@@ -292,4 +330,183 @@ func TestAntigravityClosedRootDoesNotReportAChildRouteFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrChildRouteNotReady)
 	assert.Contains(t, err.Error(), "Antigravity")
+}
+
+func compactInputStep(execution string) json.RawMessage {
+	return json.RawMessage(`{"type":"CORTEX_STEP_TYPE_USER_INPUT","status":"CORTEX_STEP_STATUS_DONE","metadata":{"executionId":"` + execution + `"},"userInput":{"items":[{"item":{"slashCommand":{"info":{"name":"compact","type":"SLASH_COMMAND_TYPE_SYSTEM"}}}}]}}`)
+}
+
+func completedCheckpointStep(execution string) json.RawMessage {
+	return json.RawMessage(`{"type":"CORTEX_STEP_TYPE_CHECKPOINT","status":"CORTEX_STEP_STATUS_DONE","metadata":{"executionId":"` + execution + `"},"checkpoint":{"sessionSummary":"Summary."}}`)
+}
+
+func TestAntigravityDoesNotCorrelateMissingCompactionIDs(t *testing.T) {
+	a, sink := testAgent(t)
+	a.sink.AdoptNativeSession(a.root.id)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{compactInputStep(""), completedCheckpointStep("")}))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction), 1)
+	rows := transcriptMessages(sink)
+	require.Len(t, rows, 1)
+	assert.NotContains(t, string(rows[0].Content), `"trigger":"manual"`)
+}
+
+func TestAntigravityOrdersCompactionStepsByTrajectoryIndex(t *testing.T) {
+	a, sink := testAgent(t)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{1, 0}, []json.RawMessage{completedCheckpointStep("execution"), compactInputStep("execution")}))
+	rows := transcriptMessages(sink)
+	require.Len(t, rows, 1)
+	assert.Contains(t, string(rows[0].Content), `"trigger":"manual"`)
+}
+
+func TestAntigravityPersistsFailedCompactionWithoutCheckpoint(t *testing.T) {
+	a, sink := testAgent(t)
+	a.sink.AdoptNativeSession(a.root.id)
+	failure := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_ERROR_MESSAGE","status":"CORTEX_STEP_STATUS_DONE","errorMessage":{"error":{"shortError":"Summary failed."}}}`)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{compactInputStep("execution"), failure}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+	assert.Contains(t, sink.LeapMuxNotifications(), map[string]any{
+		contracts.NotificationFieldType:    contracts.NotificationTypeCompactionEnded,
+		contracts.NotificationFieldOutcome: contracts.CompactionEndOutcomeFailed,
+	})
+}
+
+func TestAntigravityClearKeepsOldSessionWhenReplacementStreamIsRefused(t *testing.T) {
+	a, sink := testAgent(t)
+	var requestsMu sync.Mutex
+	var touchedOld bool
+	var removed []string
+	var sent atomic.Bool
+	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case languageServerService + "StartCascade":
+			_, _ = w.Write([]byte(`{"cascadeId":"replacement"}`))
+		case languageServerService + "StreamAgentStateUpdates":
+			http.Error(w, "The replacement conversation was not found.", http.StatusNotFound)
+		case languageServerService + "CancelCascadeInvocation":
+			requestsMu.Lock()
+			touchedOld = true
+			requestsMu.Unlock()
+			_, _ = w.Write([]byte(`{}`))
+		case languageServerService + "ForceStopCascadeTree":
+			var request map[string]string
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			requestsMu.Lock()
+			removed = append(removed, request["conversationId"])
+			requestsMu.Unlock()
+			_, _ = w.Write([]byte(`{}`))
+		case languageServerService + "SendUserCascadeMessage":
+			sent.Store(true)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	})
+	id, err := a.ClearContext()
+	require.Error(t, err)
+	assert.Empty(t, id)
+	assert.Empty(t, sink.SessionIDs())
+	requestsMu.Lock()
+	assert.False(t, touchedOld)
+	assert.Equal(t, []string{"replacement"}, removed)
+	requestsMu.Unlock()
+	require.NoError(t, a.SendInputForSession("cascade", "continue here", nil))
+	assert.True(t, sent.Load())
+}
+
+type delayedCompactionSink struct {
+	agent.ProviderServices
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+type delayedCompactionPublication struct {
+	agent.TranscriptPublication
+	sink *delayedCompactionSink
+}
+
+type delayedCompactionOwner struct {
+	agent.TranscriptOwner
+	sink *delayedCompactionSink
+}
+
+func (s *delayedCompactionSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	content = s.ProviderServices.CaptureMessage(content, span)
+	if content.Publication != nil {
+		content.Publication = delayedCompactionPublication{TranscriptPublication: content.Publication, sink: s}
+	}
+	return content
+}
+
+func (s *delayedCompactionSink) BroadcastSessionInfo(info map[string]any) {
+	s.waitBeforeCompactionStart(info)
+	s.ProviderServices.BroadcastSessionInfo(info)
+}
+
+func (s *delayedCompactionSink) waitBeforeCompactionStart(info map[string]any) {
+	if info[contracts.SessionInfoKeyCompaction] != nil {
+		s.entered <- struct{}{}
+		<-s.release
+	}
+}
+
+func (p delayedCompactionPublication) Owner() agent.TranscriptOwner {
+	return delayedCompactionOwner{TranscriptOwner: p.TranscriptPublication.Owner(), sink: p.sink}
+}
+
+func (o delayedCompactionOwner) PublishSessionInfo(info map[string]any) bool {
+	o.sink.waitBeforeCompactionStart(info)
+	return o.TranscriptOwner.PublishSessionInfo(info)
+}
+
+func TestAntigravityRetiredCompactionCannotPublishToReplacement(t *testing.T) {
+	a, sink := testAgent(t)
+	a.sink.AdoptNativeSession(a.root.id)
+	release, unblock := newTestGate(t)
+	gated := &delayedCompactionSink{ProviderServices: a.root.sink, entered: make(chan struct{}, 1), release: release}
+	old := a.root
+	old.sink = gated
+	done := make(chan error, 1)
+	go func() {
+		update := updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{compactInputStep("execution")})
+		done <- a.applyUpdate(old, update, false)
+	}()
+	receiveTestValue(t, gated.entered)
+	a.Mu.Lock()
+	a.generation++
+	a.installRoot("replacement", false)
+	a.Mu.Unlock()
+	a.sink.AdoptNativeSession("replacement")
+	a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyCompaction: nil})
+	unblock()
+	require.NoError(t, receiveTestValue(t, done))
+	assert.Equal(t, []any{nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+}
+
+type compactionNoticeSessionSink struct {
+	agent.ProviderServices
+	sessionIDs []string
+}
+
+func (s *compactionNoticeSessionSink) PersistLeapMuxNotification(info map[string]any) {
+	s.sessionIDs = append(s.sessionIDs, s.MessageSessionID())
+	s.ProviderServices.PersistLeapMuxNotification(info)
+}
+
+func (s *compactionNoticeSessionSink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
+	s.sessionIDs = append(s.sessionIDs, content.AgentSessionID)
+	return s.ProviderServices.PersistWorkerNotification(content)
+}
+
+func TestAntigravityRetiredCompactionOutcomeKeepsItsSession(t *testing.T) {
+	a, _ := testAgent(t)
+	old := a.root
+	a.sink.AdoptNativeSession(old.id)
+	sink := &compactionNoticeSessionSink{ProviderServices: old.sink}
+	old.sink = sink
+	a.beginManualCompaction(old, "execution")
+	a.Mu.Lock()
+	a.generation++
+	a.installRoot("replacement", false)
+	a.Mu.Unlock()
+	a.sink.AdoptNativeSession("replacement")
+	a.endManualCompaction(old, providerkit.CompactionEndAborted)
+	assert.Equal(t, []string{old.id}, sink.sessionIDs)
 }

@@ -200,7 +200,7 @@ func (a *Agent) CompactContext() error {
 		return agent.ErrAgentBusy
 	}
 	a.Mu.Unlock()
-	return a.sendToStateCommand(root, "", nil, false, "compact")
+	return a.sendToStateCommand(root, "", nil, false, antigravityCompactCommand)
 }
 
 func (a *Agent) ClearContext() (string, error) {
@@ -215,25 +215,38 @@ func (a *Agent) ClearContext() (string, error) {
 	}
 	a.sessionSwitching = true
 	oldRoot := a.root
+	oldStreamCtx := a.streamCtx
 	admissionGeneration := a.generation
 	a.Mu.Unlock()
-	newID, err := a.openACPSession(a.Context(), "")
-	if err != nil {
+	defer func() {
 		a.Mu.Lock()
 		if a.root == oldRoot && a.generation == admissionGeneration && !a.StoppedLocked() {
 			a.sessionSwitching = false
 		}
 		a.Mu.Unlock()
+	}()
+	newID, err := a.rpc.startCascade(a.Context(), a.workingDir)
+	if err != nil {
 		return "", err
 	}
+	streamCtx, streamCancel := context.WithCancel(a.Context())
+	var prepared *preparedStateStream
 	installed := false
 	defer func() {
 		if !installed {
-			if closeErr := a.closeACPSession(a.Context(), newID); closeErr != nil {
-				slog.Debug("antigravity close an unused replacement session", "error", closeErr)
+			streamCancel()
+			if prepared != nil {
+				_ = prepared.body.Close()
+			}
+			if stopErr := a.rpc.forceStopCascadeTree(a.Context(), newID); stopErr != nil {
+				slog.Debug("antigravity stop the unused replacement cascade", "error", stopErr)
 			}
 		}
 	}()
+	prepared, err = a.awaitReplacementStream(streamCtx, oldStreamCtx, newID)
+	if err != nil {
+		return "", fmt.Errorf("open the replacement Antigravity stream: %w", err)
+	}
 	a.inputWG.Wait()
 	a.Mu.Lock()
 	if a.root != oldRoot || a.generation != admissionGeneration || a.StoppedLocked() {
@@ -246,40 +259,82 @@ func (a *Agent) ClearContext() (string, error) {
 	states := a.cascadeSnapshotLocked()
 	activeIDs := a.nativeCancellationIDsLocked(states)
 	a.Mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	for _, cascadeID := range activeIDs {
 		if err := a.rpc.cancel(a.Context(), cascadeID); err != nil {
 			slog.Warn("antigravity cancel during clear", "agent_id", a.AgentID(), "cascade_id", cascadeID, "error", err)
 		}
 	}
-	if cancel != nil {
-		cancel()
-	}
 	a.awaitStreams(group, antigravityClearTimerTag)
 	a.finishCascades(states, agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 	if oldRoot != nil {
-		if err := a.closeACPSession(a.Context(), oldRoot.id); err != nil {
-			slog.Warn("antigravity close the cleared session", "agent_id", a.AgentID(), "error", err)
+		if err := a.rpc.forceStopCascadeTree(a.Context(), oldRoot.id); err != nil {
+			slog.Warn("antigravity stop the cleared cascade tree", "agent_id", a.AgentID(), "error", err)
 		}
 	}
-	streamCtx, streamCancel := context.WithCancel(a.Context())
 	a.Mu.Lock()
 	if a.root != oldRoot || a.generation != retiredGeneration || a.StoppedLocked() {
 		a.Mu.Unlock()
-		streamCancel()
 		return "", agent.ErrInputSessionChanged
 	}
 	a.streamCtx, a.streamCancel, a.streamWG = streamCtx, streamCancel, &sync.WaitGroup{}
 	root := a.installRoot(newID, false)
 	installed = true
-	a.sessionSwitching = false
 	a.Mu.Unlock()
-	a.startCascadeStream(root)
 	a.sink.ResetSpans()
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.sink.UpdateSessionID(newID)
 	a.sink.AdoptNativeSession(newID)
+	providerkit.EndCompaction(a.sink)
+	if !a.startCascadeWorker(root, func(ctx context.Context, state *cascadeState) {
+		a.runCascadeStreamFrom(ctx, state, prepared)
+	}) {
+		_ = prepared.body.Close()
+		return "", agent.ErrInputSessionChanged
+	}
+	a.Mu.Lock()
+	current := a.cascadeCurrentLocked(root)
+	if current {
+		a.sessionSwitching = false
+	}
+	a.Mu.Unlock()
+	if !current {
+		return "", agent.ErrInputSessionChanged
+	}
 	a.PublishTurnActive()
 	return newID, nil
+}
+
+func (a *Agent) awaitReplacementStream(ctx, oldCtx context.Context, sessionID string) (*preparedStateStream, error) {
+	type result struct {
+		stream *preparedStateStream
+		err    error
+	}
+	ready := make(chan result)
+	go func() {
+		stream, err := a.rpc.prepareStateStream(ctx, sessionID)
+		select {
+		case ready <- result{stream: stream, err: err}:
+		case <-ctx.Done():
+			if stream != nil {
+				_ = stream.body.Close()
+			}
+		}
+	}()
+	timer := a.clock.NewTimer(a.rpc.timeout, antigravityClearStreamTimerTag)
+	defer timer.Stop(antigravityClearStreamTimerTag)
+	select {
+	case prepared := <-ready:
+		return prepared.stream, prepared.err
+	case <-oldCtx.Done():
+		return nil, agent.ErrInputSessionChanged
+	case <-a.ProcessDone():
+		return nil, agent.ErrInputSessionChanged
+	case <-timer.C:
+		return nil, context.DeadlineExceeded
+	}
 }
 
 func (a *Agent) nativeCancellationIDsLocked(states []*cascadeState) []string {

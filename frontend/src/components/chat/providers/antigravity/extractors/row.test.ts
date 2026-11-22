@@ -15,6 +15,210 @@ function extraction(payload: Record<string, unknown>) {
 }
 
 describe('antigravityExtractRow', () => {
+  it.each(['  ', '\u0085', '\uFEFF'])('keeps the original markdown when the modified planner response is whitespace %j', (modifiedResponse) => {
+    expect(extraction({
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      plannerResponse: { modifiedResponse, response: '    example code' },
+    })).toEqual({
+      kind: 'row',
+      completion: null,
+      row: { kind: 'assistant-text', text: '    example code' },
+    })
+  })
+
+  it.each(['CORTEX_STEP_STATUS_RUNNING', 'CORTEX_STEP_STATUS_CANCELED'])('keeps partial stdout on an interrupted command with status %s', (status) => {
+    const call = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+      status,
+      metadata: {
+        toolCall: { name: 'run_command' },
+      },
+      runCommand: {
+        commandLine: 'print then wait',
+        combinedOutput: { full: 'before interrupt\n' },
+      },
+    }, { role: 'result', completion: MessageCompletion.INTERRUPTED })
+    expect(call).toMatchObject({
+      kind: 'execute',
+      status: 'cancelled',
+      result: {
+        commands: [
+          { output: 'before interrupt\n' },
+        ],
+        unresolvedTerminals: [],
+      },
+    })
+  })
+
+  it('matches trimmed question prompts by native identity and ordinal', () => {
+    const questions = [
+      { id: 'blank', question: '' },
+      {
+        id: 'color',
+        question: 'Which color?',
+        options: [
+          { id: 'choose', text: 'Blue' },
+        ],
+      },
+      {
+        id: 'size',
+        question: 'Which size?',
+        options: [
+          { id: 'choose', text: 'Large' },
+        ],
+      },
+    ]
+    const responses = [
+      { id: 'blank', skipped: true },
+      {
+        id: 'size',
+        selectedOptionIds: ['choose'],
+      },
+      {
+        id: 'color',
+        selectedOptionIds: ['choose'],
+      },
+    ]
+    const native = {
+      type: 'CORTEX_STEP_TYPE_ASK_QUESTION',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: {
+        toolCall: { name: 'ask_question' },
+      },
+      askQuestion: { questions },
+      completedInteractions: [
+        {
+          response: {
+            askQuestion: { responses },
+          },
+        },
+      ],
+    }
+    const call = providerToolCall(PROVIDER, native, { role: 'result' })
+    expect(call?.result).toMatchObject({
+      answers: [
+        { header: 'Which size?', answer: 'Large' },
+        { header: 'Which color?', answer: 'Blue' },
+      ],
+    })
+  })
+
+  it('retains a native dismissal on a cancelled question', () => {
+    const call = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_ASK_QUESTION',
+      status: 'CORTEX_STEP_STATUS_CANCELED',
+      metadata: {
+        toolCall: { name: 'ask_question' },
+      },
+      completedInteractions: [
+        {
+          response: {
+            askQuestion: { cancelled: true },
+          },
+        },
+      ],
+    }, { role: 'result', completion: MessageCompletion.INTERRUPTED })
+    expect(call).toMatchObject({
+      status: 'cancelled',
+      result: { answers: [], note: 'Dismissed' },
+    })
+  })
+
+  it('keeps a cancelled file read free of invented failure text', () => {
+    const call = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_VIEW_FILE',
+      status: 'CORTEX_STEP_STATUS_CANCELED',
+      metadata: {
+        toolCall: { name: 'read_file' },
+      },
+      viewFile: { absolutePath: '/workspace/task.md' },
+    }, { role: 'result', completion: MessageCompletion.INTERRUPTED })
+    expect(call?.status).toBe('cancelled')
+    expect(call?.result).toBeUndefined()
+  })
+
+  it('reads the selected labels and write-in text from a finished question step', () => {
+    const questions = [
+      {
+        question: 'Which color?',
+        options: [
+          { id: 'a', text: 'Red' },
+          { id: 'b', text: 'Blue' },
+        ],
+      },
+      { question: 'Why?' },
+      { question: 'Which size?' },
+    ]
+    const call = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_ASK_QUESTION',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: {
+        toolCall: {
+          id: 'question-call',
+          name: 'ask_question',
+          argumentsJson: JSON.stringify({ questions }),
+        },
+      },
+      askQuestion: { questions },
+      completedInteractions: [
+        {
+          response: {
+            askQuestion: {
+              responses: [
+                {
+                  ...questions[0],
+                  selectedOptionIds: ['b', 'a'],
+                },
+                { ...questions[1], writeInResponse: 'Match the sample.' },
+                { ...questions[2], skipped: true },
+              ],
+            },
+          },
+        },
+      ],
+    }, { role: 'result', completion: MessageCompletion.COMPLETE })
+    expect(call).toMatchObject({
+      kind: 'question',
+      status: 'completed',
+      result: {
+        answers: [
+          { header: 'Which color?', answer: 'Blue, Red' },
+          { header: 'Why?', answer: 'Match the sample.' },
+          { header: 'Which size?', answer: 'Skipped' },
+        ],
+      },
+    })
+  })
+
+  it('reads answers materialized on the native step without a response envelope', () => {
+    const call = providerToolCall(PROVIDER, {
+      type: 'CORTEX_STEP_TYPE_ASK_QUESTION',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: {
+        toolCall: { name: 'ask_question' },
+      },
+      askQuestion: {
+        questions: [
+          {
+            question: 'Which color?',
+            options: [
+              { id: 'blue', text: 'Blue' },
+            ],
+            selectedOptionIds: ['blue'],
+          },
+        ],
+      },
+    }, { role: 'result' })
+    expect(call).toMatchObject({
+      status: 'completed',
+      result: {
+        answers: [
+          { header: 'Which color?', answer: 'Blue' },
+        ],
+      },
+    })
+  })
+
   it.each([
     '{broken',
     'null',

@@ -423,6 +423,47 @@ function createTestClassifiedEntryCache(
 }
 
 describe('createClassifiedEntryCache', () => {
+  it('draws a stored Antigravity opening connector on the request body', () => {
+    createRoot((dispose) => {
+      const existing = { type: 'active', span_id: 'first', color: 2 }
+      const connector = { type: 'connector', span_id: 'second', color: 5 }
+      const request = create(AgentChatMessageSchema, {
+        id: 'request',
+        seq: 1n,
+        source: MessageSource.AGENT,
+        agentProvider: AgentProvider.ANTIGRAVITY_CLI,
+        spanId: 'second',
+        spanColor: 5,
+        spanLines: JSON.stringify([existing, null, connector]),
+        contentCompression: ContentCompression.NONE,
+        content: new TextEncoder().encode(JSON.stringify({
+          type: 'CORTEX_STEP_TYPE_GENERIC',
+          status: 'CORTEX_STEP_STATUS_PENDING',
+        })),
+      })
+      const end = { ...connector, type: 'connector_end' }
+      const result = create(AgentChatMessageSchema, {
+        ...request,
+        id: 'result',
+        seq: 2n,
+        spanLines: JSON.stringify([existing, null, end]),
+        content: new TextEncoder().encode(JSON.stringify({
+          type: 'CORTEX_STEP_TYPE_VIEW_FILE',
+          status: 'CORTEX_STEP_STATUS_DONE',
+        })),
+      })
+      const cache = createTestClassifiedEntryCache({
+        messages: () => [request, result],
+        showHiddenMessages: () => false,
+      })
+      expect(cache.visibleEntries().map(entry => entry.parsedSpanLines)).toEqual([
+        [existing, null],
+        [existing, null, end],
+      ])
+      dispose()
+    })
+  })
+
   it('rebuilds settings labels when provider option metadata arrives after history', () => {
     createRoot((dispose) => {
       clearSettingsLabelCache()

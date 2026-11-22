@@ -124,8 +124,16 @@ export interface SplitRowMarks {
 export interface DiffGap {
   /** Lines from the original file that fill this gap. */
   lines: string[]
-  /** 1-based line number of the first line in the gap. */
+  /** 1-based line number of the first line in the original file. */
   startLineNumber: number
+  /** 1-based line number of that line in the updated file. */
+  newStartLineNumber: number
+}
+
+/** Available context from the original file and its 1-based starting line. */
+export interface DiffOriginalContext {
+  startLineNumber: number
+  lines: readonly string[]
 }
 
 /** A synthetic gap computed from hunk coordinates when original file content is unavailable. */

@@ -163,6 +163,7 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
         ...request,
         rowId: pendingRowId(request.message.id),
         pending: true,
+        openingSpanId: undefined,
         parsedSpanLines: pendingRowSpanLines(request.parsedSpanLines, request.message.spanId, request.message.spanColor),
       }
       pendingEntries.set(request, entry)
@@ -178,7 +179,7 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
     if (!deps.tailLoaded())
       return requests
     for (const entry of deps.entries()) {
-      if (entry.category.kind === 'tool_use' && entry.message.spanId !== '' && entry.freshness.role === 'request') {
+      if (entry.openingSpanId) {
         const result = deps.resultOf(messageSpanIdentity(entry.message))
         requests.set(entry, result?.id === entry.message.id
           ? undefined

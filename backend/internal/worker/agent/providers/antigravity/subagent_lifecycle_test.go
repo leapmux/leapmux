@@ -392,7 +392,7 @@ func TestAntigravityRetiredRootCannotStopReplacement(t *testing.T) {
 func TestAntigravityPendingResetKeepsWorkerOwnership(t *testing.T) {
 	a, sink, child := childLifecycleTestAgent(t)
 	a.sessionSwitching = true
-	a.fatalCascade(child, errors.New("native stream failed during session/new"))
+	a.fatalCascade(child, errors.New("native stream failed while starting a cascade"))
 	assert.True(t, child.closed)
 	assert.Error(t, child.connectErr)
 	row, ok := sink.BackgroundTask(child.id)
@@ -400,44 +400,45 @@ func TestAntigravityPendingResetKeepsWorkerOwnership(t *testing.T) {
 	assert.Equal(t, bgtask.StatusFailed, row.Status)
 }
 
-type antigravityACPTestWriter func([]byte) (int, error)
-
-func (write antigravityACPTestWriter) Write(data []byte) (int, error) { return write(data) }
 func TestAntigravityClearCannotInstallAfterConcurrentStop(t *testing.T) {
 	a, _ := testAgent(t)
 	exited := make(chan struct{})
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), ProcessDone: exited})
-	var closes atomic.Int32
-	entered := make(chan struct{})
+	stoppedIDs := make(chan string, 2)
 	release, unblock := newTestGate(t)
-	a.SetStdinForTest(agenttest.NopStdin(antigravityACPTestWriter(func(data []byte) (int, error) {
-		var request struct {
-			ID     int64  `json:"id"`
-			Method string `json:"method"`
+	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case languageServerService + "StartCascade":
+			_, _ = w.Write([]byte(`{"cascadeId":"replacement"}`))
+		case languageServerService + "StreamAgentStateUpdates":
+			_, _ = w.Write(encodeSingleFrame([]byte(`{"update":{"status":"CASCADE_RUN_STATUS_IDLE"}}`)))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		case languageServerService + "CancelCascadeInvocation":
+			_, _ = w.Write([]byte(`{}`))
+		case languageServerService + "ForceStopCascadeTree":
+			var request struct {
+				ConversationID string `json:"conversationId"`
+			}
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			stoppedIDs <- request.ConversationID
+			if request.ConversationID == "cascade" {
+				<-release
+			}
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected native method: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
 		}
-		if err := json.Unmarshal(data, &request); err != nil {
-			return 0, err
-		}
-		result := `{}`
-		if request.Method == "session/new" {
-			result = `{"sessionId":"replacement"}`
-		}
-		if request.Method == "session/close" && closes.Add(1) == 1 {
-			close(entered)
-			<-release
-		}
-		response, _ := json.Marshal(map[string]any{"id": request.ID, "result": json.RawMessage(result)})
-		// Process exit can remove the request while this reply waits.
-		a.Deliver(request.ID, response)
-		return len(data), nil
-	})))
+	})
 	done := make(chan error, 1)
 	go func() { _, err := a.ClearContext(); done <- err }()
-	receiveTestValue(t, entered)
+	assert.Equal(t, "cascade", receiveTestValue(t, stoppedIDs))
 	close(exited)
 	a.Stop()
 	unblock()
 	assert.Error(t, receiveTestValue(t, done))
+	assert.Equal(t, "replacement", receiveTestValue(t, stoppedIDs))
 	assert.Equal(t, "cascade", a.root.id)
 	assert.True(t, a.IsStopped())
 }
@@ -458,26 +459,6 @@ func TestAntigravityReopenCannotResetANewerAttempt(t *testing.T) {
 	assert.True(t, child.closed)
 }
 
-func setAntigravityACPResponder(t *testing.T, a *Agent, respond func(string) json.RawMessage) {
-	t.Helper()
-	a.SetStdinForTest(agenttest.NopStdin(antigravityACPTestWriter(func(data []byte) (int, error) {
-		var request struct {
-			ID     int64  `json:"id"`
-			Method string `json:"method"`
-		}
-		if err := json.Unmarshal(data, &request); err != nil {
-			return 0, err
-		}
-		response, err := json.Marshal(map[string]any{"id": request.ID, "result": respond(request.Method)})
-		if err != nil {
-			return 0, err
-		}
-		if !a.Deliver(request.ID, response) {
-			return 0, errors.New("no request waits for the test ACP reply")
-		}
-		return len(data), nil
-	})))
-}
 func TestAntigravityClearTimeoutCompensatesRetiredSetup(t *testing.T) {
 	for _, kind := range []string{"child", "shell"} {
 		t.Run(kind, func(t *testing.T) {
@@ -485,12 +466,6 @@ func TestAntigravityClearTimeoutCompensatesRetiredSetup(t *testing.T) {
 			clock := testutil.NewQuartzMock(t)
 			a.clock = clock
 			newTimer, stopTimer := testutil.NewTimerTraps(t, clock, antigravityClearTimerTag)
-			setAntigravityACPResponder(t, a, func(method string) json.RawMessage {
-				if method == "session/new" {
-					return json.RawMessage(`{"sessionId":"replacement"}`)
-				}
-				return json.RawMessage(`{}`)
-			})
 			entered := make(chan struct{}, 1)
 			release, unblock := newTestGate(t)
 			replacementStream := make(chan struct{}, 1)
@@ -500,19 +475,27 @@ func TestAntigravityClearTimeoutCompensatesRetiredSetup(t *testing.T) {
 				if !assert.NoError(t, err) {
 					return
 				}
-				if r.URL.Path == languageServerService+"CancelCascadeInvocation" {
+				switch r.URL.Path {
+				case languageServerService + "StartCascade":
+					_, _ = w.Write([]byte(`{"cascadeId":"replacement"}`))
+				case languageServerService + "ForceStopCascadeTree":
+					_, _ = w.Write([]byte(`{}`))
+				case languageServerService + "CancelCascadeInvocation":
 					var request struct {
 						CascadeID string `json:"cascadeId"`
 					}
 					assert.NoError(t, json.Unmarshal(body, &request))
 					canceledIDs <- request.CascadeID
 					_, _ = w.Write([]byte(`{}`))
-					return
+				case languageServerService + "StreamAgentStateUpdates":
+					_, _ = w.Write(encodeSingleFrame([]byte(`{"update":{"status":"CASCADE_RUN_STATUS_IDLE"}}`)))
+					w.(http.Flusher).Flush()
+					replacementStream <- struct{}{}
+					<-r.Context().Done()
+				default:
+					t.Errorf("unexpected native method: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
 				}
-				_, _ = w.Write(encodeSingleFrame([]byte(`{"update":{"status":"CASCADE_RUN_STATUS_IDLE"}}`)))
-				w.(http.Flusher).Flush()
-				replacementStream <- struct{}{}
-				<-r.Context().Done()
 			})
 			retired := a.root
 			oldGroup := a.streamWG
@@ -659,17 +642,13 @@ func TestAntigravityChildReopenWaitHonorsCancellation(t *testing.T) {
 
 func TestAntigravityClearClosesRemovedShellDuringReconciliation(t *testing.T) {
 	a, sink := testAgent(t)
-	setAntigravityACPResponder(t, a, func(method string) json.RawMessage {
-		if method == "session/new" {
-			return json.RawMessage(`{"sessionId":"replacement"}`)
-		}
-		return json.RawMessage(`{}`)
-	})
 	entered := make(chan struct{}, 1)
 	replacementStream := make(chan struct{}, 1)
 	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		switch r.URL.Path {
+		case languageServerService + "StartCascade":
+			_, _ = w.Write([]byte(`{"cascadeId":"replacement"}`))
 		case languageServerService + "GetCascadeTrajectorySteps":
 			entered <- struct{}{}
 			<-r.Context().Done()
@@ -796,20 +775,19 @@ func TestAntigravityChildReviveFollowsRetainedClose(t *testing.T) {
 
 func installClearTestRPC(t *testing.T, a *Agent) (chan string, chan struct{}) {
 	t.Helper()
-	setAntigravityACPResponder(t, a, func(method string) json.RawMessage {
-		if method == "session/new" {
-			return json.RawMessage(`{"sessionId":"replacement"}`)
-		}
-		return json.RawMessage(`{}`)
-	})
 	canceled := make(chan string, 16)
 	opened := make(chan struct{}, 1)
+	var subscriptions atomic.Int32
 	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if !assert.NoError(t, err) {
 			return
 		}
 		switch r.URL.Path {
+		case languageServerService + "StartCascade":
+			_, _ = w.Write([]byte(`{"cascadeId":"replacement"}`))
+		case languageServerService + "ForceStopCascadeTree":
+			_, _ = w.Write([]byte(`{}`))
 		case languageServerService + "CancelCascadeInvocation":
 			var request struct {
 				CascadeID string `json:"cascadeId"`
@@ -818,6 +796,10 @@ func installClearTestRPC(t *testing.T, a *Agent) (chan string, chan struct{}) {
 			canceled <- request.CascadeID
 			_, _ = w.Write([]byte(`{}`))
 		case languageServerService + "StreamAgentStateUpdates":
+			if !assert.Equal(t, int32(1), subscriptions.Add(1), "the clear handoff must use the verified subscription") {
+				http.NotFound(w, r)
+				return
+			}
 			_, _ = w.Write(encodeSingleFrame([]byte(`{"update":{"status":"CASCADE_RUN_STATUS_IDLE"}}`)))
 			w.(http.Flusher).Flush()
 			opened <- struct{}{}
@@ -851,6 +833,7 @@ func TestAntigravityClearCancelsAcceptedInputBeforeRunning(t *testing.T) {
 	_, err := a.ClearContext()
 	require.NoError(t, err)
 	receiveTestValue(t, opened)
+	require.NoError(t, a.waitForRoot(t.Context(), a.root, 30*time.Second))
 	require.Len(t, canceled, 1)
 	assert.Equal(t, "cascade", <-canceled)
 }

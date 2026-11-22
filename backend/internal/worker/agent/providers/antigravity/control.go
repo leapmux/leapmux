@@ -334,7 +334,6 @@ func (a *Agent) queuePermissionApprovals() {
 }
 
 func (a *Agent) approvePendingPermissions() {
-	approved := 0
 	for {
 		a.Mu.Lock()
 		var next *cascadeState
@@ -354,7 +353,6 @@ func (a *Agent) approvePendingPermissions() {
 					continue
 				}
 				if next == nil {
-					candidate.approvalClaimed = true
 					next, control = state, candidate
 				}
 			}
@@ -364,14 +362,25 @@ func (a *Agent) approvePendingPermissions() {
 			a.publishInteraction(request.state, request.control)
 		}
 		if next == nil {
-			break
+			return
 		}
-		err := a.rpc.handleInteraction(a.Context(), next.id, map[string]any{
+		a.Mu.Lock()
+		generationCtx := a.streamCtx
+		if generationCtx.Err() != nil {
+			a.Mu.Unlock()
+			return
+		}
+		if !a.controlCurrentLocked(next, control) || control.approvalClaimed || !a.autoAnswerLocked(a.mode, control.permission) {
+			a.Mu.Unlock()
+			continue
+		}
+		control.approvalClaimed = true
+		a.Mu.Unlock()
+		err := a.rpc.handleInteraction(generationCtx, next.id, map[string]any{
 			"trajectoryId": control.trajectoryID, "stepIndex": control.stepIndex,
 			"permission": map[string]any{"allow": true, "scope": "PERMISSION_SCOPE_ONCE"},
 		})
 		if err == nil {
-			approved++
 			continue
 		}
 		a.Mu.Lock()
@@ -388,9 +397,6 @@ func (a *Agent) approvePendingPermissions() {
 		}
 		slog.Warn("antigravity automatic approval refused; publishing the request", "agent_id", a.AgentID(), "request_id", control.requestID, "error", err)
 		a.publishInteraction(next, control)
-	}
-	if approved > 0 {
-		a.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypePendingRequestsApproved})
 	}
 }
 

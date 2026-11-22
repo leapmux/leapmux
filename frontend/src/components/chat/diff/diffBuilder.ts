@@ -1,5 +1,57 @@
 import type { DiffGap, DiffGapSummary, StructuredPatchHunk } from './diffTypes'
 
+/** Unchanged lines kept around each change. */
+export const DIFF_CONTEXT_LINES = 3
+
+/** Split line-aligned diff text into numbered hunks without changing the alignment. */
+export function contextualPatchHunks(lines: readonly string[], startLine: number): StructuredPatchHunk[] {
+  const ranges: { start: number, end: number }[] = []
+  for (let index = 0; index < lines.length; index++) {
+    if (lines[index]![0] === ' ')
+      continue
+    const start = Math.max(0, index - DIFF_CONTEXT_LINES)
+    const end = Math.min(lines.length, index + DIFF_CONTEXT_LINES + 1)
+    const last = ranges.at(-1)
+    if (last && start <= last.end)
+      last.end = end
+    else
+      ranges.push({ start, end })
+  }
+
+  let oldLine = startLine
+  let newLine = startLine
+  let previousEnd = 0
+  return ranges.map(({ start, end }) => {
+    // Every omitted line is unchanged and advances both coordinates.
+    oldLine += start - previousEnd
+    newLine += start - previousEnd
+    const hunkLines = lines.slice(start, end)
+    let oldLines = 0
+    let newLines = 0
+    for (const line of hunkLines) {
+      if (line[0] !== '+')
+        oldLines++
+      if (line[0] !== '-')
+        newLines++
+    }
+    const hunk = {
+      oldStart: oldLine + (oldLines > 0
+        ? 1
+        : 0),
+      oldLines,
+      newStart: newLine + (newLines > 0
+        ? 1
+        : 0),
+      newLines,
+      lines: hunkLines,
+    }
+    oldLine += oldLines
+    newLine += newLines
+    previousEnd = end
+    return hunk
+  })
+}
+
 /** Format structuredPatch hunks as a unified diff string suitable for copying. */
 export function formatUnifiedDiffText(hunks: StructuredPatchHunk[], filePath?: string): string {
   const header = filePath
@@ -55,52 +107,58 @@ export function extractSidesFromHunks(hunks: StructuredPatchHunk[]): { oldCode: 
  */
 export function computeGapMap(
   hunks: StructuredPatchHunk[],
-  originalFileLines: string[],
+  originalFileLines: readonly string[],
+  firstOriginalLine = 1,
 ): { gaps: Map<number, DiffGap>, trailing: DiffGap | null } {
   const gaps = new Map<number, DiffGap>()
-  let trailing: DiffGap | null = null
+  const afterLastOriginalLine = firstOriginalLine + originalFileLines.length
+  function gapFrom(oldStart: number, newStart: number, oldEnd: number): DiffGap | null {
+    const start = Math.max(oldStart, firstOriginalLine)
+    const end = Math.min(oldEnd, afterLastOriginalLine)
+    if (end <= start)
+      return null
+    return {
+      lines: originalFileLines.slice(start - firstOriginalLine, end - firstOriginalLine),
+      startLineNumber: start,
+      newStartLineNumber: newStart + (start - oldStart),
+    }
+  }
 
-  if (hunks.length === 0)
-    return { gaps, trailing }
-
-  // Gap before the first hunk (lines 1..firstHunk.oldStart-1)
   const firstHunk = hunks[0]
-  if (firstHunk !== undefined && firstHunk.oldStart > 1) {
-    const endLine = firstHunk.oldStart - 1 // 1-based inclusive
-    gaps.set(0, {
-      lines: originalFileLines.slice(0, endLine),
-      startLineNumber: 1,
-    })
-  }
+  if (!firstHunk)
+    return { gaps, trailing: null }
+  const firstOld = hunkSideStart(firstHunk.oldStart, firstHunk.oldLines)
+  const firstNew = hunkSideStart(firstHunk.newStart, firstHunk.newLines)
+  const leading = gapFrom(1, 1 + firstNew - firstOld, firstOld)
+  if (leading)
+    gaps.set(0, leading)
 
-  // Gaps between consecutive hunks
   for (let i = 1; i < hunks.length; i++) {
-    const prev = hunks[i - 1]
-    const curr = hunks[i]
-    if (prev === undefined || curr === undefined)
-      continue
-    const gapStart = prev.oldStart + prev.oldLines // 1-based, first line after prev hunk
-    const gapEnd = curr.oldStart - 1 // 1-based inclusive
-    if (gapEnd >= gapStart) {
-      gaps.set(i, {
-        lines: originalFileLines.slice(gapStart - 1, gapEnd),
-        startLineNumber: gapStart,
-      })
-    }
+    const previous = hunks[i - 1]!
+    const next = hunks[i]!
+    const gap = gapFrom(
+      hunkSideStart(previous.oldStart, previous.oldLines) + previous.oldLines,
+      hunkSideStart(previous.newStart, previous.newLines) + previous.newLines,
+      hunkSideStart(next.oldStart, next.oldLines),
+    )
+    if (gap)
+      gaps.set(i, gap)
   }
 
-  // Trailing gap (lines after the last hunk)
-  // hunks.length > 0 is guaranteed by the early return above
   const lastHunk = hunks.at(-1)!
-  const trailingStart = lastHunk.oldStart + lastHunk.oldLines // 1-based
-  if (trailingStart <= originalFileLines.length) {
-    trailing = {
-      lines: originalFileLines.slice(trailingStart - 1),
-      startLineNumber: trailingStart,
-    }
-  }
-
+  const trailing = gapFrom(
+    hunkSideStart(lastHunk.oldStart, lastHunk.oldLines) + lastHunk.oldLines,
+    hunkSideStart(lastHunk.newStart, lastHunk.newLines) + lastHunk.newLines,
+    afterLastOriginalLine,
+  )
   return { gaps, trailing }
+}
+
+// A zero-line side gives the line preceding the hunk.
+function hunkSideStart(start: number, count: number): number {
+  return count === 0
+    ? start + 1
+    : start
 }
 
 /**
@@ -123,8 +181,8 @@ export function computeSyntheticGapMap(hunks: StructuredPatchHunk[]): Map<number
     const curr = hunks[i]
     if (prev === undefined || curr === undefined)
       continue
-    const gapStart = prev.oldStart + prev.oldLines
-    const gapEnd = curr.oldStart - 1
+    const gapStart = hunkSideStart(prev.oldStart, prev.oldLines) + prev.oldLines
+    const gapEnd = hunkSideStart(curr.oldStart, curr.oldLines) - 1
     if (gapEnd >= gapStart) {
       gaps.set(i, {
         lineCount: gapEnd - gapStart + 1,

@@ -16,6 +16,43 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAntigravityStartCascade(t *testing.T) {
+	for _, scenario := range []struct {
+		name, reply string
+		status      int
+		wantID      string
+		wantError   string
+	}{
+		{name: "workspace URI", reply: `{"cascadeId":"native-cascade"}`, status: http.StatusOK, wantID: "native-cascade"},
+		{name: "missing ID", reply: `{}`, status: http.StatusOK, wantError: "returned no cascade ID"},
+		{name: "server refusal", reply: `{"message":"workspace unavailable"}`, status: http.StatusBadRequest, wantError: "workspace unavailable"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			rpc := testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, languageServerService+"StartCascade", r.URL.Path)
+				var request map[string]any
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				assert.Equal(t, map[string]any{
+					"workspaceUris":  []any{"file:///workspace/skill%20files%231"},
+					"source":         "CORTEX_TRAJECTORY_SOURCE_CLI",
+					"trajectoryType": "CORTEX_TRAJECTORY_TYPE_CASCADE",
+				}, request)
+				w.WriteHeader(scenario.status)
+				_, _ = io.WriteString(w, scenario.reply)
+			})
+
+			sessionID, err := rpc.startCascade(t.Context(), "/workspace/skill files#1")
+
+			if scenario.wantError == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, scenario.wantError)
+			}
+			assert.Equal(t, scenario.wantID, sessionID)
+		})
+	}
+}
+
 func TestAntigravityFrameDecoding(t *testing.T) {
 	first := []byte(`{"update":{"status":"CASCADE_RUN_STATUS_RUNNING"}}`)
 	second := []byte(`{"update":{"status":"CASCADE_RUN_STATUS_IDLE"}}`)

@@ -3,7 +3,7 @@ import type { MarkdownRenderContext } from '../renderContext'
 import type { RenderReadiness } from '../renderReadiness'
 import type { TokenGate } from '../useAsyncCodeTokens'
 import type { ComputedDiff, WholeReplacementReason, WordDiffs } from './diffCompute'
-import type { DiffGap, DiffGapSummary, DiffLineEntry, DiffLineMarks, DiffMarkSources, SplitLineEntry, SplitRowEntry, SplitRowMarks, StructuredPatchHunk } from './diffTypes'
+import type { DiffGap, DiffGapSummary, DiffLineEntry, DiffLineMarks, DiffMarkSources, DiffOriginalContext, SplitLineEntry, SplitRowEntry, SplitRowMarks, StructuredPatchHunk } from './diffTypes'
 import type { HunkLineGroup } from './progressiveDiffLines'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { CachedToken } from '~/lib/tokenCache'
@@ -67,38 +67,37 @@ function gapSeparatorClass(opts: { splitView?: boolean, isFirst: boolean, isLast
 
 /** One unchanged line of the original file that a gap reveals. */
 interface GapContextLine {
-  /** The 1-based number of the line in the original file. */
-  number: number
+  oldNumber: number
+  newNumber: number
   text: string
 }
 
 /**
  * Draw one unchanged line that a gap reveals, with its syntax tokens or plain.
- * The split view draws it in both columns, because the two gutters of an
- * unchanged line are the same.
+ * Each gutter uses the line number from its own side.
  */
 function renderGapContextLine(line: GapContextLine, tokens: Accessor<CachedToken[] | null>, splitView: boolean): JSX.Element {
   const content = () => renderTokenizedLine(line.text, tokens())
   if (!splitView) {
     return (
       <div class={diffLine}>
-        <span class={diffLineNumber}>{line.number}</span>
-        <span class={diffLineNumberNew}>{line.number}</span>
+        <span class={diffLineNumber}>{line.oldNumber}</span>
+        <span class={diffLineNumberNew}>{line.newNumber}</span>
         <span class={diffPrefix}>{' '}</span>
         <span class={diffContent}>{content()}</span>
       </div>
     )
   }
-  const column = () => (
+  const column = (number: number) => (
     <div class={diffLine}>
-      <span class={diffLineNumber}>{line.number}</span>
+      <span class={diffLineNumber}>{number}</span>
       <span class={diffPrefix}>{' '}</span>
       <span class={diffContent}>{content()}</span>
     </div>
   )
   return [
-    column(),
-    column(),
+    column(line.oldNumber),
+    column(line.newNumber),
   ]
 }
 
@@ -219,7 +218,7 @@ function DiffGapSeparator(props: {
   })
   const holdMarks = () => shouldPauseSyntaxHighlighting(props.context)
   const drawLine = (gapIndex: number, tokens: Accessor<CachedToken[] | null>): JSX.Element => renderGapContextLine(
-    { number: gap.startLineNumber + gapIndex, text: gap.lines[gapIndex]! },
+    { oldNumber: gap.startLineNumber + gapIndex, newNumber: gap.newStartLineNumber + gapIndex, text: gap.lines[gapIndex]! },
     tokens,
     props.splitView,
   )
@@ -434,18 +433,20 @@ function useGapReveals(): GapState {
 function useGapData(props: DiffBodyProps) {
   const originalFileLines = createMemo(() => {
     const source = props.originalFile
+    if (typeof source !== 'string')
+      return source
     if (!source)
       return undefined
     const lines = source.split('\n')
     if (lines.length > 0 && lines.at(-1) === '')
       lines.pop()
-    return lines
+    return { startLineNumber: 1, lines }
   })
   const gapData = createMemo(() => {
     const ofl = originalFileLines()
     if (!ofl)
       return null
-    const gaps = computeGapMap(props.hunks, ofl)
+    const gaps = computeGapMap(props.hunks, ofl.lines, ofl.startLineNumber)
     // A cut diff's trailing gap starts inside the changes that the cut leaves out,
     // so it would show them as unchanged lines. The gaps before the cut come before
     // every left-out line, so they stay.
@@ -602,7 +603,7 @@ interface DiffBodyProps {
   /** True when `hunks` stop before the end of the diff (see limitDiffLines). */
   truncated: boolean
   filePath: string | undefined
-  originalFile: string | undefined
+  originalFile: string | DiffOriginalContext | undefined
   showLineNumbers: boolean | undefined
   context: MarkdownRenderContext | undefined
 }
@@ -797,7 +798,7 @@ export function DiffView(props: {
   diff: ComputedDiff
   view: DiffViewPreference
   filePath?: string
-  originalFile?: string
+  originalFile?: string | DiffOriginalContext
   showLineNumbers?: boolean
   context?: MarkdownRenderContext
 }): JSX.Element {

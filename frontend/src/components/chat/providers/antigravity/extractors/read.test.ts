@@ -28,6 +28,36 @@ describe('antigravity read extraction', () => {
     })
   })
 
+  it.each(['\n', '\r\n'])('shows the file line below the native header with separator %j', (separator) => {
+    const step = antigravityStep({
+      ...raw,
+      viewFile: {
+        ...raw.viewFile,
+        content: [
+          'Created At: 2026-11-22T05:38:41+09:00',
+          'Completed At: 2026-11-22T05:38:41+09:00',
+          'Showing lines 1-1 of 1',
+          '1: Created At: a line in the file',
+        ].join(separator),
+      },
+    })!
+    expect(antigravityReadResult(step)).toEqual({
+      lines: [
+        { num: 1, text: 'Created At: a line in the file' },
+      ],
+      fallbackContent: '1: Created At: a line in the file',
+    })
+  })
+
+  it('keeps timestamp-like output when there is no native range header', () => {
+    const content = 'Created At: report metadata\nThe file is unavailable.'
+    const step = antigravityStep({
+      ...raw,
+      viewFile: { ...raw.viewFile, content },
+    })!
+    expect(antigravityReadResult(step)).toEqual({ lines: null, fallbackContent: content })
+  })
+
   it('returns an empty result for an empty native view', () => {
     const step = antigravityStep({
       ...raw,

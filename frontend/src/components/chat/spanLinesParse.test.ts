@@ -3,6 +3,35 @@ import { parseSpanLines } from './spanLinesParse'
 
 describe('spanLinesParse', () => {
   describe('parseSpanLines', () => {
+    it('drops duplicate rails and trims the horizontal lines that only reached them', () => {
+      const end = { span_id: 'first', type: 'connector_end', color: 2 }
+      const crossing = { type: 'passthrough', passthrough_color: 2 }
+      const second = {
+        span_id: 'second',
+        type: 'active_passthrough',
+        color: 4,
+        passthrough_color: 2,
+      }
+      expect(parseSpanLines(JSON.stringify([
+        end,
+        { ...second, span_id: 'first', color: 3 },
+        second,
+        crossing,
+        { ...second, span_id: 'second', color: 5 },
+      ]))).toEqual([end, crossing, second])
+    })
+
+    it('preserves the original positions of the other rails on rows without a connector', () => {
+      const first = { span_id: 'first', type: 'active', color: 2 }
+      const second = { span_id: 'second', type: 'active', color: 4 }
+      expect(parseSpanLines(JSON.stringify([
+        first,
+        { ...first, color: 3 },
+        second,
+        second,
+      ]))).toEqual([first, null, second])
+    })
+
     it('returns [] for an empty, undefined, or "[]" payload', () => {
       expect(parseSpanLines(undefined)).toEqual([])
       expect(parseSpanLines('')).toEqual([])

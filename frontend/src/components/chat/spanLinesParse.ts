@@ -18,7 +18,32 @@ function isSpanLineColumn(el: unknown): el is SpanLine | null {
   return typeof el === 'object' && !Array.isArray(el) && typeof (el as { type?: unknown }).type === 'string'
 }
 
-export function parseSpanLines(raw: string | undefined): (SpanLine | null)[] {
+/** Collapse repeated rails while retaining the column positions of other spans. */
+function collapseDuplicateRails(lines: (SpanLine | null)[]): (SpanLine | null)[] {
+  const seen = new Set<string>()
+  let removed = false
+  for (const [column, line] of lines.entries()) {
+    if (line === null || typeof line.span_id !== 'string' || line.span_id === '' || line.type === 'passthrough')
+      continue
+    const id = line.span_id
+    if (!seen.has(id)) {
+      seen.add(id)
+      continue
+    }
+    removed = true
+    lines[column] = line.type === 'active_passthrough' && line.passthrough_color !== undefined
+      ? { type: 'passthrough', passthrough_color: line.passthrough_color }
+      : null
+  }
+  if (removed) {
+    // The last remaining rail is where the row's own content starts.
+    const lastRail = lines.findLastIndex(line => line !== null && line.type !== 'passthrough')
+    lines.length = lastRail + 1
+  }
+  return lines
+}
+
+export function parseSpanLines(raw: string | undefined, openingSpanId?: string): (SpanLine | null)[] {
   if (!raw || raw === '[]')
     return []
   try {
@@ -39,7 +64,13 @@ export function parseSpanLines(raw: string | undefined): (SpanLine | null)[] {
     // of which classFor would still render as a junk column. Keep only the null
     // sentinel and objects that actually carry a string `type` (the field classFor
     // dispatches on), so a malformed element means "none" rather than a junk column.
-    return parsed.filter(isSpanLineColumn)
+    const lines = collapseDuplicateRails(parsed.filter(isSpanLineColumn))
+    const last = lines.at(-1)
+    // A request draws its own rail as its body border, just after the rail columns.
+    // Older requests also stored it as their last connector column.
+    if (openingSpanId && last?.type === 'connector' && last.span_id === openingSpanId)
+      lines.pop()
+    return lines
   }
   catch {
     return []

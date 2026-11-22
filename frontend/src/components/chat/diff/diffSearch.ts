@@ -1,7 +1,7 @@
 import type { ComputedDiff, WordDiffPart } from './diffCompute'
 import type { DiffInput, StructuredPatchHunk, TextsDiffInput } from './diffTypes'
 import { diffWordsWithSpace, structuredPatch } from 'diff'
-import { limitDiffLines } from './diffBuilder'
+import { DIFF_CONTEXT_LINES, limitDiffLines } from './diffBuilder'
 import { diffWithoutSearch, drawnLineLimitOf, forEachPairedLine, maxLineEditsOf, pairKey, wholeReplacementDiff } from './diffCompute'
 import { isNoNewlineMarker } from './unifiedDiffParser'
 
@@ -14,9 +14,6 @@ import { isNoNewlineMarker } from './unifiedDiffParser'
 // thread may import it: jsdiff declares no `sideEffects`, so one import keeps the
 // whole library in the main chunk (see diffCompute).
 // ---------------------------------------------------------------------------
-
-/** Unchanged lines kept around each change; the gap separators reveal the rest. */
-export const DIFF_CONTEXT_LINES = 3
 
 /** The most word edits one paired line takes before it draws as a whole-line change. */
 export const WORD_DIFF_MAX_EDITS = 200

@@ -5,9 +5,8 @@ import (
 	"log/slog"
 	"math"
 	"strings"
-	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -25,14 +24,8 @@ type antigravityModelConfig struct {
 	ModelOrAlias struct {
 		Model string `json:"model"`
 	} `json:"modelOrAlias"`
-	Disabled           bool                  `json:"disabled"`
-	SupportedMimeTypes map[string]bool       `json:"supportedMimeTypes"`
-	QuotaInfo          *antigravityQuotaInfo `json:"quotaInfo"`
-}
-
-type antigravityQuotaInfo struct {
-	RemainingFraction float64 `json:"remainingFraction"`
-	ResetTime         string  `json:"resetTime"`
+	Disabled           bool            `json:"disabled"`
+	SupportedMimeTypes map[string]bool `json:"supportedMimeTypes"`
 }
 
 type catalogVariant struct {
@@ -44,7 +37,6 @@ type antigravityCatalog struct {
 	models       []*agent.ModelInfo
 	variants     map[string]map[string]catalogVariant
 	defaultToken string
-	quota        []antigravityModelConfig
 }
 
 func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
@@ -64,14 +56,11 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 		}
 		catalog.variants[family][effort] = catalogVariant{token: config.ModelOrAlias.Model, mimeTypes: config.SupportedMimeTypes}
 		if families[family] == nil {
-			families[family] = &agent.ModelInfo{Id: family, DisplayName: config.Label, Description: family}
+			families[family] = &agent.ModelInfo{Id: family, DisplayName: modelFamilyLabel(config.Label, effort), Description: family}
 			familyOrder = append(familyOrder, family)
 		}
 		if effort != "" {
 			families[family].SupportedEfforts = append(families[family].SupportedEfforts, providerkit.EffortTier(effort))
-		}
-		if config.QuotaInfo != nil {
-			catalog.quota = append(catalog.quota, config)
 		}
 	}
 	if reply.DefaultOverrideModelConfig != nil && reply.DefaultOverrideModelConfig.ModelOrAlias.Model != "" {
@@ -102,6 +91,13 @@ func splitModelEffort(modelID string) (string, string) {
 	return modelID, ""
 }
 
+func modelFamilyLabel(label, effort string) string {
+	if start := strings.LastIndex(label, " ("); start > 0 && effort != "" && strings.EqualFold(label[start+2:], effort+")") {
+		return label[:start]
+	}
+	return label
+}
+
 func (c antigravityCatalog) resolveModel(model, effort string) (catalogVariant, string, error) {
 	if agent.UsesAccountDefaultModel(model) {
 		if c.defaultToken == "" {
@@ -126,6 +122,16 @@ func (c antigravityCatalog) resolveModel(model, effort string) (catalogVariant, 
 		return catalogVariant{}, "", fmt.Errorf("%s is not in the Antigravity catalog", model)
 	}
 	return variant, selected, nil
+}
+
+func (c antigravityCatalog) settleSelection(model, effort string) (string, string) {
+	if model == "" {
+		model = agent.DefaultModelSentinel
+	}
+	if _, settled, err := c.resolveModel(model, effort); err == nil {
+		return model, settled
+	}
+	return agent.DefaultModelSentinel, ""
 }
 
 func settleAntigravityEffort(family map[string]catalogVariant, requested string) string {
@@ -159,68 +165,37 @@ func (a *Agent) loadCatalog() error {
 	catalog := buildAntigravityCatalog(reply)
 	a.Mu.Lock()
 	a.catalog = catalog
-	requestedModel, requestedEffort := a.model, a.effort
-	if requestedModel == "" {
-		requestedModel = agent.DefaultModelSentinel
-	}
-	_, effort, err := catalog.resolveModel(requestedModel, requestedEffort)
-	if err == nil {
-		a.effort = effort
-	} else {
-		a.model = agent.DefaultModelSentinel
-		a.effort = ""
-	}
+	a.model, a.effort = catalog.settleSelection(a.model, a.effort)
 	a.Mu.Unlock()
 	return nil
 }
 
-func (a *Agent) refreshRateLimits() {
-	a.Mu.Lock()
-	ctx, generation := a.streamCtx, a.generation
-	eligible := a.cascadeCurrentLocked(a.root) && !a.IsDiscardingOutput()
-	a.Mu.Unlock()
-	if !eligible || ctx.Err() != nil {
+func (a *Agent) refreshAccountCatalog() {
+	ctx, generation, current := a.accountRefreshContext()
+	if !current {
 		return
 	}
 	reply, err := a.rpc.modelConfig(ctx)
 	if err != nil {
-		slog.Debug("antigravity refresh model quota", "agent_id", a.AgentID(), "error", err)
+		slog.Debug("antigravity refresh model catalog", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	a.Mu.Lock()
-	if generation != a.generation || !a.cascadeCurrentLocked(a.root) || ctx.Err() != nil || a.IsDiscardingOutput() {
-		a.Mu.Unlock()
+	if len(reply.ClientModelConfigs) == 0 && reply.DefaultOverrideModelConfig == nil {
 		return
 	}
 	catalog := buildAntigravityCatalog(reply)
-	if len(reply.ClientModelConfigs) > 0 || reply.DefaultOverrideModelConfig != nil {
-		a.catalog = catalog
-	} else {
-		a.catalog.quota = nil
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	a.Mu.Lock()
+	if !a.accountRefreshCurrentLocked(ctx, generation) {
+		a.Mu.Unlock()
+		return
 	}
-	quota := catalog.quota
+	model, effort := catalog.settleSelection(a.model, a.effort)
+	changed := model != a.model || effort != a.effort || !agent.ModelInfosEqual(a.catalog.models, catalog.models)
+	a.catalog, a.model, a.effort = catalog, model, effort
 	a.Mu.Unlock()
-	values := map[string]any{}
-	for _, config := range quota {
-		value := map[string]any{
-			contracts.RateLimitFieldLabel:       config.Label,
-			contracts.RateLimitFieldUtilization: (1 - config.QuotaInfo.RemainingFraction) * 100,
-			contracts.RateLimitFieldStatus:      contracts.RateLimitStatusAllowed,
-		}
-		if config.QuotaInfo.RemainingFraction <= 0 {
-			value[contracts.RateLimitFieldStatus] = contracts.RateLimitStatusExceeded
-		}
-		if config.QuotaInfo.ResetTime != "" {
-			if reset, err := time.Parse(time.RFC3339, config.QuotaInfo.ResetTime); err == nil {
-				value[contracts.RateLimitFieldResetsAt] = reset.Format(time.RFC3339)
-			} else {
-				value[contracts.RateLimitFieldResetsAt] = config.QuotaInfo.ResetTime
-			}
-		}
-		values[config.ModelID] = value
+	if changed {
+		a.sink.PersistSettingsRefresh(optionmap.Map{agent.OptionIDModel: model, agent.OptionIDEffort: effort})
 	}
-	a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyRateLimits: map[string]any{
-		contracts.RateLimitUpdateFieldMode:   contracts.RateLimitUpdateModeReplace,
-		contracts.RateLimitUpdateFieldValues: values,
-	}})
 }

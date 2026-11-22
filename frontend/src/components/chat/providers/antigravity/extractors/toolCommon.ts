@@ -26,6 +26,42 @@ export function antigravityStepHeader(raw: Record<string, unknown> | undefined):
     : null
 }
 
+// Match the Worker's Unicode whitespace and byte order mark handling.
+const blankPlannerText = /^[\p{White_Space}\uFEFF]*$/u
+
+export function antigravityPlannerContent(raw: Record<string, unknown> | undefined): { text: string, thinking: string } {
+  const planner = pickObject(raw, 'plannerResponse')
+  const modified = pickString(planner, 'modifiedResponse')
+  const response = pickString(planner, 'response')
+  const thinking = pickString(planner, 'thinking')
+  return {
+    text: !blankPlannerText.test(modified)
+      ? modified
+      : !blankPlannerText.test(response)
+          ? response
+          : '',
+    thinking: !blankPlannerText.test(thinking)
+      ? thinking
+      : '',
+  }
+}
+
+export function antigravityStepDisposition(type: string): 'planner' | 'user' | 'system' | 'notification' | 'tool' {
+  switch (type) {
+    case ANTIGRAVITY_STEP_TYPE.PlannerResponse:
+      return 'planner'
+    case ANTIGRAVITY_STEP_TYPE.UserInput:
+      return 'user'
+    case ANTIGRAVITY_STEP_TYPE.SystemMessage:
+      return 'system'
+    case ANTIGRAVITY_STEP_TYPE.ErrorMessage:
+    case ANTIGRAVITY_STEP_TYPE.Checkpoint:
+      return 'notification'
+    default:
+      return 'tool'
+  }
+}
+
 export function antigravityStep(raw: Record<string, unknown> | undefined): AntigravityStep | null {
   const header = antigravityStepHeader(raw)
   if (!raw || !header || !STEP_TYPES.has(header.type))

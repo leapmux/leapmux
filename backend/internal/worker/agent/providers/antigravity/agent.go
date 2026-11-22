@@ -21,13 +21,14 @@ const (
 	antigravityStreamReconnectTimerTag = "antigravity-stream-reconnect"
 	antigravityChildAttachTimerTag     = "antigravity-child-attach"
 	antigravityClearTimerTag           = "antigravity-clear"
+	antigravityClearStreamTimerTag     = "antigravity-clear-stream"
 	antigravityStopTimerTag            = "antigravity-stop"
 	antigravityStreamRetryFirst        = 100 * time.Millisecond
 	antigravityStreamRetryMax          = 5 * time.Second
 )
 
-// Agent owns one agy process and the language server inside it. ACP stdio
-// manages sessions. Every live update arrives on one HTTP stream per cascade.
+// Agent owns one agy process and the language server inside it. Each cascade
+// receives live updates through its own HTTP stream.
 type Agent struct {
 	providerkit.JSONRPCProcess
 	sink       agent.ProviderServices
@@ -40,14 +41,14 @@ type Agent struct {
 	agentDir   *agentdir.Dir
 	logPath    string
 
-	streamCtx    context.Context
-	streamCancel context.CancelFunc
-	streamWG     *sync.WaitGroup
-	inputWG      sync.WaitGroup
-	approvalWork providerkit.CoalescingWork
-	quotaWork    providerkit.CoalescingWork
-	settingsMu   sync.Mutex
-	childSetupMu sync.Mutex
+	streamCtx          context.Context
+	streamCancel       context.CancelFunc
+	streamWG           *sync.WaitGroup
+	inputWG            sync.WaitGroup
+	approvalWork       providerkit.CoalescingWork
+	accountRefreshWork providerkit.CoalescingWork
+	settingsMu         sync.Mutex
+	childSetupMu       sync.Mutex
 
 	// Mu protects streamCtx, streamCancel, streamWG, and every field below.
 	// No caller holds Mu across a sink call or an HTTP request.
@@ -95,6 +96,9 @@ type cascadeState struct {
 	streamDone        chan struct{}
 	connected         chan struct{}
 	connectedOnce     sync.Once
+
+	// A native /compact input starts progress. Its checkpoint carries the same execution ID.
+	manualCompactionExecutionID *string
 }
 
 type cascadeTurnPhase uint8
@@ -214,18 +218,18 @@ func (a *Agent) startCascadeStream(state *cascadeState) {
 	a.startCascadeWorker(state, a.runCascadeStream)
 }
 
-func (a *Agent) startCascadeWorker(state *cascadeState, work func(context.Context, *cascadeState)) {
+func (a *Agent) startCascadeWorker(state *cascadeState, work func(context.Context, *cascadeState)) bool {
 	a.Mu.Lock()
 	if !a.cascadeCurrentLocked(state) || state.closed || a.streamCtx.Err() != nil || a.IsDiscardingOutput() {
 		a.Mu.Unlock()
-		return
+		return false
 	}
 	if state.streamDone != nil {
 		select {
 		case <-state.streamDone:
 		default:
 			a.Mu.Unlock()
-			return
+			return false
 		}
 	}
 	done := make(chan struct{})
@@ -238,9 +242,19 @@ func (a *Agent) startCascadeWorker(state *cascadeState, work func(context.Contex
 		defer close(done)
 		work(ctx, state)
 	}()
+	return true
 }
 
 func (a *Agent) runCascadeStream(ctx context.Context, state *cascadeState) {
+	a.runCascadeStreamFrom(ctx, state, nil)
+}
+
+func (a *Agent) runCascadeStreamFrom(ctx context.Context, state *cascadeState, initial *preparedStateStream) {
+	defer func() {
+		if initial != nil {
+			_ = initial.body.Close()
+		}
+	}()
 	delay := antigravityStreamRetryFirst
 	emptyAttempts := 0
 	undecodable := 0
@@ -256,14 +270,22 @@ func (a *Agent) runCascadeStream(ctx context.Context, state *cascadeState) {
 			return
 		}
 		firstOnAttempt := true
-		delivered, err := a.rpc.consumeStream(ctx, state.id, startIndex, func(update agentStateUpdate) error {
+		apply := func(update agentStateUpdate) error {
 			first := firstOnAttempt
 			firstOnAttempt = false
 			if err := a.applyUpdate(state, update, first); err != nil {
 				return err
 			}
 			return nil
-		})
+		}
+		var delivered bool
+		var err error
+		if initial != nil {
+			delivered, err = initial.consume(apply)
+			initial = nil
+		} else {
+			delivered, err = a.rpc.consumeStream(ctx, state.id, startIndex, apply)
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -349,10 +371,12 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 	}
 
 	patch := update.MainTrajectory.StepsUpdate
-	for position, raw := range patch.Steps {
-		if position >= len(patch.Indices) {
-			break
+	order := patch.orderedPositions()
+	for position := range min(len(patch.Indices), len(patch.Steps)) {
+		if order != nil {
+			position = order[position]
 		}
+		raw := patch.Steps[position]
 		if !a.acceptsCascadeUpdate(state) {
 			return nil
 		}

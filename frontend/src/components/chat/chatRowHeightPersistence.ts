@@ -65,8 +65,10 @@ type StoredRow = [id: string, digest: string, height: number]
  *    old drawing.
  * 8: tool extraction selects the block addressed by the stored span. A height
  *    measured from the wrong block can have the same row key as the corrected body.
+ * 9: Antigravity changes span columns, question answers, and diff hunks.
+ *    These rows can change height while their stored content stays identical.
  */
-export const STORED_ROW_HEIGHTS_VERSION = 8
+export const STORED_ROW_HEIGHTS_VERSION = 9
 
 interface StoredRowHeights {
   v: typeof STORED_ROW_HEIGHTS_VERSION

@@ -113,7 +113,6 @@ import {
   spawnSubagentBatchToolCall,
   spawnSubagentToolCall,
   updateTodosToolCall,
-  viewFileToolCall,
   WORKFLOW_TOOL_NAMES,
   workflowToolNames,
   writeAntigravityPlan,
@@ -999,14 +998,11 @@ describe('readToolCall', () => {
       rmSync(directory, { recursive: true, force: true })
     }
   })
-})
-
-describe('viewFileToolCall', () => {
   it('uses the file tool that Antigravity gives its subagents', () => {
-    expect(viewFileToolCall('child-read', '/work/child.txt')).toEqual({
+    expect(readToolCall(AgentProvider.ANTIGRAVITY_CLI, 'child-read', '/work/child.txt')).toEqual({
       id: 'child-read',
-      name: 'view_file',
-      arguments: { AbsolutePath: '/work/child.txt' },
+      name: 'read_file',
+      arguments: { Path: '/work/child.txt' },
     })
   })
 })

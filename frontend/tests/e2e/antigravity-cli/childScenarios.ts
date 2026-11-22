@@ -6,7 +6,7 @@ import { expect } from '@playwright/test'
 import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
-import { spawnSubagentToolCall, viewFileToolCall } from '../helpers/providerToolCalls'
+import { readToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { openRunningNativeChild } from '../helpers/runningChildProof'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { openChildTabFromRow } from '../helpers/subagentRegistry'
@@ -54,7 +54,7 @@ export async function openAntigravityRunningChild(context: ManagedNativeScenario
           reasoning: thought,
           text: progress,
           toolCalls: [
-            viewFileToolCall(`antigravity-child-read-${marker}`, path),
+            readToolCall(context.provider, `antigravity-child-read-${marker}`, path),
           ],
         },
         once: true,

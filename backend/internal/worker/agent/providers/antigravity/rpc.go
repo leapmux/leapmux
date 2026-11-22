@@ -18,6 +18,7 @@ import (
 const (
 	languageServerService    = "/exa.language_server_pb.LanguageServerService/"
 	antigravityMaxFrameBytes = 32 << 20
+	connectReadBufferBytes   = 64 * 1024
 	connectJSONContentType   = "application/connect+json"
 )
 
@@ -47,6 +48,24 @@ func (r antigravityRPC) handleInteraction(ctx context.Context, cascadeID string,
 	return r.deliver(ctx, "HandleCascadeUserInteraction", map[string]any{"cascadeId": cascadeID, "interaction": interaction})
 }
 
+func (r antigravityRPC) startCascade(ctx context.Context, workingDir string) (string, error) {
+	var reply struct {
+		CascadeID string `json:"cascadeId"`
+	}
+	err := r.do(ctx, "StartCascade", map[string]any{
+		"workspaceUris":  []string{fileURI(workingDir)},
+		"source":         "CORTEX_TRAJECTORY_SOURCE_CLI",
+		"trajectoryType": "CORTEX_TRAJECTORY_TYPE_CASCADE",
+	}, &reply)
+	if err != nil {
+		return "", err
+	}
+	if reply.CascadeID == "" {
+		return "", fmt.Errorf("the Antigravity StartCascade call returned no cascade ID")
+	}
+	return reply.CascadeID, nil
+}
+
 func (r antigravityRPC) deliver(ctx context.Context, method string, body any) error {
 	err := r.do(ctx, method, body, nil)
 	if errors.Is(err, errLanguageServerNotConnected) {
@@ -59,10 +78,27 @@ func (r antigravityRPC) cancel(ctx context.Context, cascadeID string) error {
 	return r.do(ctx, "CancelCascadeInvocation", map[string]any{"cascadeId": cascadeID, "killBackgroundTasks": true}, nil)
 }
 
+func (r antigravityRPC) forceStopCascadeTree(ctx context.Context, cascadeID string) error {
+	return r.do(ctx, "ForceStopCascadeTree", map[string]string{"conversationId": cascadeID}, nil)
+}
+
 func (r antigravityRPC) modelConfig(ctx context.Context) (antigravityCatalogReply, error) {
 	var reply antigravityCatalogReply
 	err := r.do(ctx, "GetCascadeModelConfigData", map[string]any{}, &reply)
 	return reply, err
+}
+
+func (r antigravityRPC) quotaSummary(ctx context.Context) (antigravityQuotaSummary, error) {
+	var reply struct {
+		Response *antigravityQuotaSummary `json:"response"`
+	}
+	if err := r.do(ctx, "RetrieveUserQuotaSummary", map[string]any{"request": map[string]any{}}, &reply); err != nil {
+		return antigravityQuotaSummary{}, err
+	}
+	if reply.Response == nil {
+		return antigravityQuotaSummary{}, errors.New("the Antigravity language server returned no quota summary")
+	}
+	return *reply.Response, nil
 }
 
 func (r antigravityRPC) steps(ctx context.Context, cascadeID string, offset int) ([]json.RawMessage, error) {
@@ -151,7 +187,7 @@ func (e frameSizeError) Error() string {
 }
 
 func decodeStreamFrames(reader io.Reader, handler func(json.RawMessage) error) (bool, error) {
-	buffered := bufio.NewReaderSize(reader, 64*1024)
+	buffered := bufio.NewReaderSize(reader, connectReadBufferBytes)
 	delivered := false
 	for {
 		header := make([]byte, 5)
@@ -186,17 +222,32 @@ func decodeStreamFrames(reader io.Reader, handler func(json.RawMessage) error) (
 	}
 }
 
-func (r antigravityRPC) consumeStream(ctx context.Context, conversationID string, startIndex int, handler func(agentStateUpdate) error) (bool, error) {
+func (r antigravityRPC) openStateStream(ctx context.Context, conversationID string, startIndex int) (io.ReadCloser, error) {
+	if r.endpoint == nil {
+		return nil, errLanguageServerNotConnected
+	}
 	body, err := encodeStreamRequest(conversationID, id.Generate(), startIndex)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	response, err := r.endpoint.OpenStreamBody(ctx, http.MethodPost, languageServerService+"StreamAgentStateUpdates", connectHeaders, connectJSONContentType, body)
 	if err != nil {
+		return nil, err
+	}
+	return response.Body, nil
+}
+
+func (r antigravityRPC) consumeStream(ctx context.Context, conversationID string, startIndex int, handler func(agentStateUpdate) error) (bool, error) {
+	body, err := r.openStateStream(ctx, conversationID, startIndex)
+	if err != nil {
 		return false, err
 	}
-	defer func() { _ = response.Body.Close() }()
-	return decodeStreamFrames(response.Body, func(raw json.RawMessage) error {
+	defer func() { _ = body.Close() }()
+	return consumeStateStream(body, handler)
+}
+
+func consumeStateStream(reader io.Reader, handler func(agentStateUpdate) error) (bool, error) {
+	return decodeStreamFrames(reader, func(raw json.RawMessage) error {
 		var envelope agentStateEnvelope
 		if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Update) == 0 {
 			if err == nil {
@@ -210,6 +261,43 @@ func (r antigravityRPC) consumeStream(ctx context.Context, conversationID string
 		}
 		return handler(update)
 	})
+}
+
+type preparedStateStream struct {
+	body   io.ReadCloser
+	reader *bufio.Reader
+	first  agentStateUpdate
+}
+
+var errInitialStateRead = errors.New("the first Antigravity update arrived")
+
+func (r antigravityRPC) prepareStateStream(ctx context.Context, conversationID string) (*preparedStateStream, error) {
+	body, err := r.openStateStream(ctx, conversationID, 0)
+	if err != nil {
+		return nil, err
+	}
+	// Keep the same buffered reader when consumption resumes after adoption.
+	stream := &preparedStateStream{body: body, reader: bufio.NewReaderSize(body, connectReadBufferBytes)}
+	_, err = consumeStateStream(stream.reader, func(update agentStateUpdate) error {
+		stream.first = update
+		return errInitialStateRead
+	})
+	if !errors.Is(err, errInitialStateRead) {
+		_ = stream.body.Close()
+		return nil, err
+	}
+	return stream, nil
+}
+
+func (stream *preparedStateStream) consume(handler func(agentStateUpdate) error) (bool, error) {
+	defer func() { _ = stream.body.Close() }()
+	first := stream.first
+	stream.first = agentStateUpdate{}
+	if err := handler(first); err != nil {
+		return false, err
+	}
+	_, err := consumeStateStream(stream.reader, handler)
+	return true, err
 }
 
 type undecodableFrameError struct{ err error }

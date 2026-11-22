@@ -1,8 +1,10 @@
 package antigravity
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -15,6 +17,9 @@ const (
 	cascadeStatusBusy        = "CASCADE_RUN_STATUS_BUSY"
 	antigravityQueueInputTag = "leapmux:queue-input"
 	pastEveryStep            = 1 << 30
+
+	antigravityCompactCommand     = "compact"
+	antigravitySystemSlashCommand = "SLASH_COMMAND_TYPE_SYSTEM"
 )
 
 type agentStateEnvelope struct {
@@ -49,6 +54,23 @@ type stepsPatch struct {
 	Indices     []int             `json:"indices"`
 	Steps       []json.RawMessage `json:"steps"`
 	TotalLength int               `json:"totalLength"`
+}
+
+// orderedPositions pairs each step with its trajectory position. Repeated
+// updates to one position retain their arrival order.
+func (patch stepsPatch) orderedPositions() []int {
+	count := min(len(patch.Indices), len(patch.Steps))
+	if slices.IsSorted(patch.Indices[:count]) {
+		return nil
+	}
+	order := make([]int, count)
+	for position := range order {
+		order[position] = position
+	}
+	slices.SortStableFunc(order, func(left, right int) int {
+		return cmp.Compare(patch.Indices[left], patch.Indices[right])
+	})
+	return order
 }
 
 type modelRequestStatus struct {
@@ -87,6 +109,24 @@ type antigravityErrorDetails struct {
 	Details           string `json:"details"`
 }
 
+type antigravityPlannerResponse struct {
+	Response         string            `json:"response"`
+	ModifiedResponse string            `json:"modifiedResponse"`
+	Thinking         string            `json:"thinking"`
+	ToolCalls        []json.RawMessage `json:"toolCalls"`
+}
+
+type antigravityInputItem struct {
+	Item struct {
+		SlashCommand struct {
+			Info struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			} `json:"info"`
+		} `json:"slashCommand"`
+	} `json:"item"`
+}
+
 type antigravityStep struct {
 	Type     string `json:"type"`
 	Status   string `json:"status"`
@@ -96,16 +136,14 @@ type antigravityStep struct {
 			Name          string `json:"name"`
 			ArgumentsJSON string `json:"argumentsJson"`
 		} `json:"toolCall"`
-		ModelUsage map[string]string `json:"modelUsage"`
+		ModelUsage  map[string]string `json:"modelUsage"`
+		ExecutionID string            `json:"executionId"`
 	} `json:"metadata"`
-	RequestedInteraction json.RawMessage `json:"requestedInteraction"`
-	PlannerResponse      struct {
-		Response         string `json:"response"`
-		ModifiedResponse string `json:"modifiedResponse"`
-		Thinking         string `json:"thinking"`
-	} `json:"plannerResponse"`
-	UserInput struct {
-		Tags []string `json:"tags"`
+	RequestedInteraction json.RawMessage            `json:"requestedInteraction"`
+	PlannerResponse      antigravityPlannerResponse `json:"plannerResponse"`
+	UserInput            struct {
+		Tags  []string               `json:"tags"`
+		Items []antigravityInputItem `json:"items"`
 	} `json:"userInput"`
 	SystemMessage struct {
 		AgentMessage *struct {

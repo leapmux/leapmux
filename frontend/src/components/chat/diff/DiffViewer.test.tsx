@@ -15,7 +15,7 @@ import { createRenderReadinessScope } from '../renderReadiness'
 import { DIFF_DRAWN_LINE_LIMIT } from './diffBuilder'
 import { patchWithoutWordDiffs, replacedWholeHunks } from './diffCompute'
 import { computeDiff } from './diffSearch'
-import { diffAddedInline, diffContent, diffHideLineNumbers, diffLayoutIncoming, diffLine, diffRemovedInline, diffSplitContainer } from './diffStyles.css'
+import { diffAddedInline, diffContent, diffHideLineNumbers, diffLayoutIncoming, diffLine, diffLineNumber, diffLineNumberNew, diffRemovedInline, diffSplitContainer } from './diffStyles.css'
 import { buildSplitRows, buildUnifiedLines, splitRowMarks } from './diffTokenRender'
 import { resetLayoutEstimateForTests } from './progressiveDiffLines'
 
@@ -250,6 +250,25 @@ describe('DiffView rendering preserves whitespace', () => {
     finally {
       vi.unstubAllGlobals()
     }
+  })
+
+  it.each(['unified', 'split'] as const)('numbers expanded unchanged lines on both sides after an insertion in %s view', async (view) => {
+    const hunks = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 2,
+        lines: [' first', '+inserted'],
+      },
+    ]
+    render(() => <DiffView originalFile={'first\nexpanded line\n'} diff={patchDiff(hunks)} view={view} />)
+    fireEvent.click(screen.getByText('1 line hidden'))
+    await waitFor(() => {
+      const numbers = screen.getAllByText('expanded line').flatMap(element =>
+        Array.from(element.closest(`.${diffLine}`)!.querySelectorAll(`.${diffLineNumber}, .${diffLineNumberNew}`), node => node.textContent))
+      expect(numbers).toEqual(['2', '3'])
+    })
   })
 
   it('invalidates cached revealed gap tokens when original gap text changes', async () => {
@@ -1250,6 +1269,7 @@ describe('DiffView line limit', () => {
     // Lines 20 to 30 come after the second hunk.
     const originalFile = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n')
     function twoHunks(insertedRows: number): StructuredPatchHunk[] {
+      const inserted = addedRows(insertedRows, 20)[0]!
       return [
         {
           oldStart: 10,
@@ -1258,7 +1278,7 @@ describe('DiffView line limit', () => {
           newLines: 1,
           lines: ['-line 10', '+LINE 10'],
         },
-        ...addedRows(insertedRows, 20),
+        { ...inserted, oldStart: 19 },
       ]
     }
 

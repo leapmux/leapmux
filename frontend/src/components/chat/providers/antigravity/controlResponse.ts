@@ -3,9 +3,9 @@ import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { ControlQuestion } from '../../model/question'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import type { ControlRequest } from '~/stores/control.store'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickObject } from '~/lib/jsonPick'
 import { CONTROL_DECISION_WORDS, controlBehaviorDisplay, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
-import { antigravityExtractQuestions } from './askUserQuestion'
+import { antigravityQuestionAnswers, antigravityQuestionRecords } from './askUserQuestion'
 
 interface InteractionAddress {
   cascadeId: string
@@ -46,19 +46,28 @@ export async function sendAntigravityPermissionResponse(onRespond: ControlRespon
   await onRespond(new TextEncoder().encode(JSON.stringify(antigravityPermissionResponse(requestId, optionId, feedback))))
 }
 
-export async function sendAntigravityQuestionResponse(request: ControlRequest, onRespond: ControlResponseSender, questions: ControlQuestion[], answerState: ControlAnswerState): Promise<void> {
+export async function sendAntigravityQuestionResponse(request: ControlRequest, onRespond: ControlResponseSender, _questions: ControlQuestion[], answerState: ControlAnswerState): Promise<void> {
   const payload = request.payload as Record<string, unknown>
   const address = antigravityInteractionAddress(request.requestId)
   const source = pickObject(pickObject(payload, 'requestedInteraction'), 'askQuestion')?.questions
   const wireQuestions = Array.isArray(source)
     ? source
     : []
-  const responses = questions.map((question, index) => {
-    const wire = isObject(wireQuestions[index])
-      ? wireQuestions[index]
+  const answers = antigravityQuestionRecords(wireQuestions).filter(record => record.prompt)
+  const answerIndices = new Map(answers.map((record, index) => [record.index, index]))
+  const selections = answerState.selections()
+  const customTexts = answerState.customTexts()
+  const responses = wireQuestions.map((record, index) => {
+    const wire = isObject(record)
+      ? record
       : {}
-    const selectedOptionIds = answerState.selections()[index] ?? []
-    const writeInResponse = answerState.customTexts()[index] ?? ''
+    const answerIndex = answerIndices.get(index)
+    const selectedOptionIds = answerIndex === undefined
+      ? []
+      : (selections[answerIndex] ?? [])
+    const writeInResponse = answerIndex === undefined
+      ? ''
+      : (customTexts[answerIndex] ?? '')
     return {
       ...wire,
       ...(selectedOptionIds.length > 0
@@ -110,24 +119,10 @@ export function antigravityControlResponseSummary(cr: PersistedControlResponse):
     return null
   if (ask.cancelled === true)
     return label('Dismissed')
-  const responses = Array.isArray(ask.responses)
-    ? ask.responses
-    : []
-  const questions = antigravityExtractQuestions(cr.request ?? {})
-  const lines: string[] = []
-  responses.forEach((answer, index) => {
-    if (!isObject(answer))
-      return
-    const selected = Array.isArray(answer.selectedOptionIds)
-      ? answer.selectedOptionIds.filter((id): id is string => typeof id === 'string')
-      : []
-    const labels = selected.map(id => questions[index]?.options.find(option => option.value === id)?.label ?? id)
-    const text = pickString(answer, 'writeInResponse') || labels.join(', ') || (answer.skipped === true
-      ? 'Skipped'
-      : '')
-    const line = labeledAnswerLine(questions[index]?.question ?? `Question ${index + 1}`, text)
-    if (line !== null)
-      lines.push(line)
-  })
+  const askRequest = pickObject(pickObject(cr.request, 'requestedInteraction'), 'askQuestion')
+  const questions = antigravityQuestionRecords(askRequest?.questions)
+  const lines = antigravityQuestionAnswers(ask.responses, questions)
+    .map(({ header, answer }) => labeledAnswerLine(header, [answer]))
+    .filter(line => line !== null)
   return labelOrNull(joinAnswerLines(lines))
 }

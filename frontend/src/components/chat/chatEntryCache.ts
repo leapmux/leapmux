@@ -88,6 +88,8 @@ export type ClassifiedEntry = PreparedMessage & {
    * This separate string lets a rebuilt entry reuse the parse only for identical content.
    */
   spanLinesRef: string
+  /** The request span whose rail the row draws on its body. */
+  openingSpanId?: string | undefined
   /** The exact option groups whose labels this entry read. */
   settingsLabelDependencies: SettingsLabelDependency[]
 }
@@ -233,18 +235,23 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
       isChildTranscript: deps.isChildTranscript?.() ?? false,
     }))
     const prepared = collected.value
+    const freshness = freshnessOf(message, selected, collected.dependencies)
+    const openingSpanId = prepared.category.kind === 'tool_use' && freshness.role === 'request'
+      ? selectedMessage.spanId
+      : undefined
     // Compare `spanLines` with its saved string, because the cached proxy reads the current value after an in-place change.
-    // A new window object with identical content reuses the parse. Changed content requires a new parse.
-    const parsedSpanLines = cached && cached.spanLinesRef === selectedMessage.spanLines
+    // Reuse the parse when the row still draws the same opening span and its stored lines match.
+    const parsedSpanLines = cached && cached.spanLinesRef === selectedMessage.spanLines && cached.openingSpanId === openingSpanId
       ? cached.parsedSpanLines
-      : parseSpanLines(selectedMessage.spanLines)
+      : parseSpanLines(selectedMessage.spanLines, openingSpanId)
     return {
       ...prepared,
       rowId: message.id,
       pending: false,
       parsedSpanLines,
-      freshness: freshnessOf(message, selected, collected.dependencies),
+      freshness,
       spanLinesRef: selectedMessage.spanLines,
+      openingSpanId,
       settingsLabelDependencies: collected.dependencies,
     }
   }
