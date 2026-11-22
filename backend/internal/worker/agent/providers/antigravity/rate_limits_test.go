@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,8 @@ func TestAntigravityQuotaPublishesNativeGroupsAndWindows(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	})
-	a.refreshAccountState()
+	a.refreshAccountQuota()
+	a.refreshAccountCatalog()
 	mu.Lock()
 	assert.ElementsMatch(t, []string{
 		languageServerService + "GetCascadeModelConfigData",
@@ -108,7 +110,7 @@ func TestAntigravityQuotaFractionLimitsAndEmptyReplacement(t *testing.T) {
 				}
 				_, _ = fmt.Fprintf(w, `{"response":{"buckets":[%s]}}`, tc.bucket)
 			})
-			a.refreshAccountState()
+			a.refreshAccountQuota()
 			value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
 			require.True(t, ok)
 			values := value.(map[string]any)[contracts.RateLimitUpdateFieldValues].(map[string]any)
@@ -120,7 +122,7 @@ func TestAntigravityQuotaFractionLimitsAndEmptyReplacement(t *testing.T) {
 			}
 
 			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"response":{}}`)) })
-			a.refreshAccountState()
+			a.refreshAccountQuota()
 			value, ok = sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
 			require.True(t, ok)
 			assert.Empty(t, value.(map[string]any)[contracts.RateLimitUpdateFieldValues])
@@ -137,7 +139,7 @@ func TestAntigravityQuotaFailureKeepsLastSnapshotAndRefreshesCatalog(t *testing.
 		}
 		_, _ = w.Write([]byte(`{}`))
 	})
-	a.refreshAccountState()
+	a.refreshAccountQuota()
 	before, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
 	require.True(t, ok)
 
@@ -148,9 +150,55 @@ func TestAntigravityQuotaFailureKeepsLastSnapshotAndRefreshesCatalog(t *testing.
 		}
 		_, _ = w.Write([]byte(`{"clientModelConfigs":[{"modelId":"gemini-updated","modelOrAlias":{"model":"UPDATED"}}]}`))
 	})
-	a.refreshAccountState()
+	a.refreshAccountQuota()
+	a.refreshAccountCatalog()
 	after, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
 	require.True(t, ok)
 	assert.Equal(t, before, after)
 	assert.Contains(t, a.catalog.variants, "gemini-updated")
+}
+
+func TestAntigravityKeepsQuotaWhenResponseIsMissing(t *testing.T) {
+	a, sink := testAgent(t)
+	for _, body := range []string{`{"response":{"buckets":[{"bucketId":"pool","remainingFraction":0.8}]}}`, `{}`, `{"response":null}`, ""} {
+		a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == languageServerService+"RetrieveUserQuotaSummary" {
+				_, _ = w.Write([]byte(body))
+			} else {
+				_, _ = w.Write([]byte(`{}`))
+			}
+		})
+		a.refreshAccountQuota()
+		value, present := sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
+		require.True(t, present)
+		assert.Contains(t, value.(map[string]any)[contracts.RateLimitUpdateFieldValues], "pool", "reply %q", body)
+	}
+}
+
+func TestAntigravityQuotaRefreshContinuesWhileCatalogIsHeld(t *testing.T) {
+	a, _ := testAgent(t)
+	catalog := make(chan struct{}, 2)
+	quota := make(chan struct{}, 2)
+	release, unblock := newTestGate(t)
+	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case languageServerService + "GetCascadeModelConfigData":
+			catalog <- struct{}{}
+			<-release
+			_, _ = w.Write([]byte(`{}`))
+		case languageServerService + "RetrieveUserQuotaSummary":
+			quota <- struct{}{}
+			_, _ = w.Write([]byte(`{"response":{}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer func() { unblock(); a.accountRefreshWork.CloseAndWait() }()
+	a.beginTurn(a.root)
+	require.NoError(t, a.endTurn(a.root, agent.MessageCompletionComplete))
+	receiveTestValue(t, catalog)
+	receiveTestValue(t, quota)
+	a.beginTurn(a.root)
+	require.NoError(t, a.endTurn(a.root, agent.MessageCompletionComplete))
+	receiveTestValue(t, quota)
 }

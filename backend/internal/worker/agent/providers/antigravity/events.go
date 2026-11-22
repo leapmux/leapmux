@@ -1,8 +1,10 @@
 package antigravity
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -54,6 +56,23 @@ type stepsPatch struct {
 	TotalLength int               `json:"totalLength"`
 }
 
+// orderedPositions pairs each step with its trajectory position. Repeated
+// updates to one position retain their arrival order.
+func (patch stepsPatch) orderedPositions() []int {
+	count := min(len(patch.Indices), len(patch.Steps))
+	if slices.IsSorted(patch.Indices[:count]) {
+		return nil
+	}
+	order := make([]int, count)
+	for position := range order {
+		order[position] = position
+	}
+	slices.SortStableFunc(order, func(left, right int) int {
+		return cmp.Compare(patch.Indices[left], patch.Indices[right])
+	})
+	return order
+}
+
 type modelRequestStatus struct {
 	Attempt     int    `json:"attempt"`
 	MaxAttempts int    `json:"maxAttempts"`
@@ -91,9 +110,10 @@ type antigravityErrorDetails struct {
 }
 
 type antigravityPlannerResponse struct {
-	Response         string `json:"response"`
-	ModifiedResponse string `json:"modifiedResponse"`
-	Thinking         string `json:"thinking"`
+	Response         string            `json:"response"`
+	ModifiedResponse string            `json:"modifiedResponse"`
+	Thinking         string            `json:"thinking"`
+	ToolCalls        []json.RawMessage `json:"toolCalls"`
 }
 
 type antigravityInputItem struct {

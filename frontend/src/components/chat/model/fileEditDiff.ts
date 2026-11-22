@@ -1,4 +1,4 @@
-import type { DiffInput, StructuredPatchHunk } from '../diff/diffTypes'
+import type { DiffInput, DiffOriginalContext, StructuredPatchHunk } from '../diff/diffTypes'
 import { memoizeByObject } from '~/lib/memoizeByObject'
 import { formatUnifiedDiffText } from '../diff/diffBuilder'
 import { isNoNewlineMarker, parseUnifiedDiffCached } from '../diff/unifiedDiffParser'
@@ -40,7 +40,7 @@ export interface FileEditBase {
   operation?: FileChangeOperation
   showLineNumbers?: boolean
   notice?: string
-  originalFile?: string
+  originalFile?: string | DiffOriginalContext
 }
 
 /** The BEFORE side of an edit, or `''` for one stated as a pre-computed patch. */

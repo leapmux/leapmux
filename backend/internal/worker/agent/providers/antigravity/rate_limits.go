@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -88,18 +87,11 @@ func (bucket antigravityQuotaBucket) label(group string) string {
 	return window
 }
 
-func (a *Agent) refreshAccountState() {
-	a.Mu.Lock()
-	ctx, generation := a.streamCtx, a.generation
-	current := a.accountRefreshCurrentLocked(ctx, generation)
-	a.Mu.Unlock()
+func (a *Agent) refreshAccountQuota() {
+	ctx, generation, current := a.accountRefreshContext()
 	if !current {
 		return
 	}
-
-	var catalogWork sync.WaitGroup
-	catalogWork.Go(func() { a.refreshAccountCatalog(ctx, generation) })
-	defer catalogWork.Wait()
 	summary, err := a.rpc.quotaSummary(ctx)
 	if err != nil {
 		slog.Debug("antigravity refresh account quota", "agent_id", a.AgentID(), "error", err)
@@ -116,6 +108,13 @@ func (a *Agent) refreshAccountState() {
 		contracts.RateLimitUpdateFieldMode:   contracts.RateLimitUpdateModeReplace,
 		contracts.RateLimitUpdateFieldValues: values,
 	}})
+}
+
+func (a *Agent) accountRefreshContext() (context.Context, uint64, bool) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	ctx, generation := a.streamCtx, a.generation
+	return ctx, generation, a.accountRefreshCurrentLocked(ctx, generation)
 }
 
 func (a *Agent) accountRefreshCurrentLocked(ctx context.Context, generation uint64) bool {

@@ -4,7 +4,7 @@ import { ANTIGRAVITY_FRAME, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { antigravityNotificationEntry } from './extractors/notification'
-import { antigravityMessageIsChildPrompt, antigravityPlannerContent, antigravityRowOpen, antigravityStepHeader } from './extractors/toolCommon'
+import { antigravityMessageIsChildPrompt, antigravityPlannerContent, antigravityRowOpen, antigravityStepDisposition, antigravityStepHeader } from './extractors/toolCommon'
 
 export function classifyAntigravityMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
@@ -23,16 +23,16 @@ export function classifyAntigravityMessage(input: ClassificationInput): MessageC
     return notification([parent], 'hidden')
   const step = antigravityStepHeader(parent)
   if (step) {
-    switch (step.type) {
-      case ANTIGRAVITY_STEP_TYPE.PlannerResponse: {
+    switch (antigravityStepDisposition(step.type)) {
+      case 'planner': {
         const { text, thinking } = antigravityPlannerContent(parent)
         return !text && thinking
           ? { kind: 'assistant_thinking' }
           : { kind: 'assistant_text' }
       }
-      case ANTIGRAVITY_STEP_TYPE.UserInput:
+      case 'user':
         return { kind: 'user_content' }
-      case ANTIGRAVITY_STEP_TYPE.SystemMessage: {
+      case 'system': {
         const message = pickObject(pickObject(parent, 'systemMessage'), 'agentMessage')
         if (!message || message.hideFromUser === true || !pickString(message, 'content'))
           return { kind: 'hidden' }
@@ -40,10 +40,9 @@ export function classifyAntigravityMessage(input: ClassificationInput): MessageC
           ? { kind: 'user_content' }
           : notification([parent], 'hidden')
       }
-      case ANTIGRAVITY_STEP_TYPE.ErrorMessage:
-      case ANTIGRAVITY_STEP_TYPE.Checkpoint:
+      case 'notification':
         return notification([parent], 'hidden')
-      default:
+      case 'tool':
         return antigravityRowOpen(step, input.completion)
           ? { kind: 'tool_use' }
           : { kind: 'tool_result' }

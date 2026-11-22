@@ -38,9 +38,7 @@ export function antigravityLandedChanges(step: AntigravityStep): FileEditDiff[] 
     return null
   }
   const lines: string[] = []
-  const originalLines: string[] | undefined = startLine === 0
-    ? []
-    : undefined
+  const originalLines: string[] = []
   for (const entry of entries) {
     if (!isObject(entry) || (entry.text !== undefined && entry.text !== null && typeof entry.text !== 'string'))
       return null
@@ -62,20 +60,20 @@ export function antigravityLandedChanges(step: AntigravityStep): FileEditDiff[] 
     for (const text of pickString(entry, 'text').split('\n')) {
       lines.push(prefix + text)
       if (prefix !== '+')
-        originalLines?.push(text)
+        originalLines.push(text)
     }
   }
   if (!Number.isSafeInteger(startLine + lines.length))
     return null
   const change = fileEditDiffFromHunks(path, contextualPatchHunks(lines, startLine))
-  // A block that starts after line zero cannot supply the leading file context.
+  // A full native block includes an empty record for the final newline.
+  if (startLine === 0 && originalLines.at(-1) === '')
+    originalLines.pop()
   return [
-    originalLines
-      ? {
-          ...change,
-          operation: 'edit',
-          originalFile: originalLines.join('\n'),
-        }
-      : { ...change, operation: 'edit' },
+    {
+      ...change,
+      operation: 'edit',
+      originalFile: { startLineNumber: startLine + 1, lines: originalLines },
+    },
   ]
 }

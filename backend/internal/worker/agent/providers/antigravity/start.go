@@ -98,9 +98,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return cleanup("initialize", err)
 	}
 	if err := a.bootstrapBackend(ctx); err != nil {
-		if opts.ResumeSessionID != "" && !errors.Is(err, errAntigravitySignIn) {
-			err = providerkit.ResumeFailedError(opts.ResumeSessionID, err)
-		}
 		return cleanup("session", err)
 	}
 	if err := a.discoverLSPort(ctx, opts.EffectiveStartupTimeout()); err != nil {

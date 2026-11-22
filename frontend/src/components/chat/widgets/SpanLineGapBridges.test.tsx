@@ -12,11 +12,10 @@ describe('SpanLineGapBridges', () => {
   // gap bridge connects. The first row has nothing above it, so it never draws a bridge.
   const entry = (id: string): SpanBridgeEntry => ({
     rowId: id,
-    message: { spanId: 's1' },
+    message: {},
     parsedSpanLines: [
       { type: 'active', span_id: 's1' },
     ],
-    category: { kind: 'assistant_text' },
   })
 
   it('draws a bridge for a connecting row but not for the first (unconnected) row', () => {
@@ -37,6 +36,53 @@ describe('SpanLineGapBridges', () => {
     const bridge = container.querySelector('[data-span-gap-bridges-for="b"]')
     expect(bridge).not.toBeNull()
     expect(bridge?.firstElementChild).toHaveAttribute('data-span-gap-bridge-segment', '0')
+  })
+
+  it('does not continue a closed span through a result classified as tool use', () => {
+    const result = {
+      ...entry('result'),
+      category: { kind: 'tool_use' },
+      message: { spanId: 's1', spanColor: 1 },
+      parsedSpanLines: [
+        { type: 'connector_end', span_id: 's1', color: 1 },
+      ] satisfies SpanBridgeEntry['parsedSpanLines'],
+    }
+    const entries = [
+      result,
+      entry('settings'),
+    ]
+    const { container } = render(() => (
+      <SpanLineGapBridges
+        entries={entries}
+        precedingEntry={undefined}
+        topOf={() => 0}
+        hiddenOf={() => false}
+        gapAboveOf={() => 8}
+      />
+    ))
+    expect(container.querySelector('[data-span-gap-bridges-for="settings"]')).toBeNull()
+  })
+
+  it('connects to a preceding request that draws its opening span on the body', () => {
+    const request: SpanBridgeEntry = {
+      ...entry('request'),
+      openingSpanId: 's1',
+      parsedSpanLines: [],
+    }
+    const entries = [
+      request,
+      entry('output'),
+    ]
+    const { container } = render(() => (
+      <SpanLineGapBridges
+        entries={entries}
+        precedingEntry={undefined}
+        topOf={() => 0}
+        hiddenOf={() => false}
+        gapAboveOf={() => 8}
+      />
+    ))
+    expect(container.querySelector('[data-span-gap-bridges-for="output"]')).not.toBeNull()
   })
 
   it('hides a row bridge exactly when hiddenOf(id) is true (the skeleton case)', () => {

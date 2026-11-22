@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -206,4 +207,27 @@ func TestAntigravityPermissionModeRevokesUnclaimedApprovals(t *testing.T) {
 	waitForApprovalWork(t, a)
 	assert.Equal(t, int32(1), requests.Load())
 	assert.Equal(t, 1, sink.PublishedControlCount())
+}
+
+func TestAntigravityDowngradeBeforeApprovalDispatch(t *testing.T) {
+	a, sink := publicationTestAgent(t, nil)
+	first := seedApprovalControl(t, a, 0, contracts.AntigravityPermissionActionCommand, "command")
+	second := seedApprovalControl(t, a, 1, "unknown_action", "manual")
+	sink.entered = make(chan struct{}, 2)
+	var unblock func()
+	sink.release, unblock = newTestGate(t)
+	var sent atomic.Int32
+	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) {
+		sent.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	a.UpdateSettings(optionmap.Map{agent.OptionIDPermissionMode: contracts.AntigravityModeBypass})
+	receiveTestValue(t, sink.entered)
+	a.UpdateSettings(optionmap.Map{agent.OptionIDPermissionMode: contracts.AntigravityModeDefault})
+	unblock()
+	waitForApprovalWork(t, a)
+	assert.Zero(t, sent.Load())
+	assert.Equal(t, 2, sink.PublishedControlCount())
+	assert.Equal(t, first.instanceID, sink.active[first.requestID])
+	assert.Equal(t, second.instanceID, sink.active[second.requestID])
 }

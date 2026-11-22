@@ -73,7 +73,9 @@ describe('antigravityLandedChanges', () => {
     expect(hunks[0]!.oldStart + hunks[0]!.lines.indexOf('-alpha')).toBe(41)
     expect(hunks[1]!.oldStart + hunks[1]!.lines.indexOf('-old')).toBe(92)
     expect(hunks[1]!.newStart).toBe(hunks[1]!.oldStart + 1)
-    expect((change.originalFile ?? change.oldStr)?.split('\n')[20]).toBe('line 21')
+    expect(change.originalFile).toMatchObject({ startLineNumber: 1 })
+    const original = change.originalFile
+    expect(original && typeof original !== 'string' && original.lines[20]).toBe('line 21')
   })
 
   it('uses the native start offset for partial blocks and splits multiline entries', () => {
@@ -96,7 +98,12 @@ describe('antigravityLandedChanges', () => {
         ],
       },
     ])
-    expect(change.originalFile).toBeUndefined()
+    expect(change).toMatchObject({
+      originalFile: {
+        startLineNumber: 121,
+        lines: ['context', 'alpha', 'beta'],
+      },
+    })
   })
 
   it.each([-1, 0.5, Number.MAX_SAFE_INTEGER, '40'])('rejects an invalid native start offset %j', (startLine) => {

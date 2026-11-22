@@ -46,10 +46,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	if requested := options[agent.OptionIDPermissionMode]; requested != "" && validAntigravityMode(requested) {
 		mode = requested
 	}
-	_, settledEffort, err := catalog.resolveModel(model, effort)
-	if err != nil {
-		model, settledEffort = agent.DefaultModelSentinel, ""
-	}
+	model, settledEffort := catalog.settleSelection(model, effort)
 	a.model, a.effort, a.mode = model, settledEffort, mode
 	a.Mu.Unlock()
 	a.sink.PersistSettingsRefresh(optionmap.Map{

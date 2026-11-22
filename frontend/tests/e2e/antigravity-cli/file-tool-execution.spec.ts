@@ -27,10 +27,11 @@ antigravityTest('shows landed line numbers and expandable context for a large fi
   const path = join(workingDir, 'large-native-edit.txt')
   const before = 'original native line'
   const after = 'replacement native line'
+  const inserted = 'inserted native line'
   const prefix = Array.from({ length: 40 }, (_, index) => `unchanged prefix ${index + 1}`).join('\n')
   const suffix = Array.from({ length: 40 }, (_, index) => `unchanged suffix ${index + 1}`).join('\n')
   writeFileSync(path, `${prefix}\n${before}\n${suffix}\n`)
-  const tool = editToolCall(native.provider, 'edit-large-file', { path, before, after })
+  const tool = editToolCall(native.provider, 'edit-large-file', { path, before, after: `${after}\n${inserted}` })
   const step = {
     toolCalls: [tool],
   }
@@ -39,7 +40,7 @@ antigravityTest('shows landed line numbers and expandable context for a large fi
     prompt: 'Apply the scripted edit to the large file.',
     answer: 'The large file edit finished.',
   })
-  expect(readFileSync(path, 'utf8')).toBe(`${prefix}\n${after}\n${suffix}\n`)
+  expect(readFileSync(path, 'utf8')).toBe(`${prefix}\n${after}\n${inserted}\n${suffix}\n`)
   const resultRows = messageBubbles(native.page).and(native.page.locator('[data-tool-row-role="result"]'))
   const diff = resultRows.locator('[data-file-diff]:visible').filter({ hasText: before }).filter({ hasText: after }).first()
   await expect(diff).toBeVisible()
@@ -49,4 +50,8 @@ antigravityTest('shows landed line numbers and expandable context for a large fi
   await expect(diff.getByText('unchanged prefix 2', { exact: true })).toHaveCount(0)
   await gap.click()
   await expect(diff.getByText('unchanged prefix 2', { exact: true })).toBeVisible()
+  await diff.getByText(/^\d+ lines hidden$/).last().click()
+  const trailing = diff.getByText('unchanged suffix 7', { exact: true }).locator('..')
+  await expect(trailing.getByText('48', { exact: true })).toBeVisible()
+  await expect(trailing.getByText('49', { exact: true })).toBeVisible()
 })

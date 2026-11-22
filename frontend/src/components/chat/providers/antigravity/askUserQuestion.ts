@@ -1,60 +1,88 @@
-import type { ControlQuestion, QuestionOption, QuestionPrompt } from '../../model/question'
+import type { ControlQuestion, QuestionOption } from '../../model/question'
 import type { QuestionAnswer } from '../../model/tools/question'
 import { isObject, pickObject, pickString, stringArray } from '~/lib/jsonPick'
-import { questionsFromRecords } from '../questionRecords'
+
+interface AntigravityQuestionRecord {
+  index: number
+  id: string
+  prompt: ControlQuestion | null
+}
 
 export function antigravityIsQuestionRequest(payload: Record<string, unknown>): boolean {
   return pickObject(pickObject(payload, 'requestedInteraction'), 'askQuestion') !== null
 }
 
+export function antigravityQuestionRecords(source: unknown): AntigravityQuestionRecord[] {
+  if (!Array.isArray(source))
+    return []
+  return source.flatMap((record, index) => {
+    if (!isObject(record))
+      return []
+    const id = pickString(record, 'id')
+    const question = pickString(record, 'question')
+    const options = Array.isArray(record.options)
+      ? record.options.filter(isObject).map(questionOption).filter(option => option.label.trim())
+      : []
+    const prompt = question.trim()
+      ? {
+          question,
+          options,
+          multiSelect: record.isMultiSelect === true,
+          ...(id
+            ? { id }
+            : {}),
+        }
+      : null
+    return [
+      { index, id, prompt },
+    ]
+  })
+}
+
 export function antigravityExtractQuestions(payload: Record<string, unknown>): ControlQuestion[] {
   const ask = pickObject(pickObject(payload, 'requestedInteraction'), 'askQuestion')
-  const questions = Array.isArray(ask?.questions)
-    ? ask.questions
-    : []
-  return questions.filter(isObject).map(question => ({
-    question: pickString(question, 'question'),
-    options: Array.isArray(question.options)
-      ? question.options.filter(isObject).map(option => questionOption(option))
-      : [],
-    multiSelect: question.isMultiSelect === true,
-  }))
+  return antigravityQuestionRecords(ask?.questions).flatMap(record => record.prompt
+    ? [record.prompt]
+    : [])
 }
 
 function questionOption(option: Record<string, unknown>): QuestionOption {
   const label = pickString(option, 'text')
-  const id = pickString(option, 'id', undefined)
-  return id === undefined
+  const value = pickString(option, 'id', undefined)
+  return value === undefined
     ? { label }
-    : { label, value: id }
+    : { label, value }
 }
 
-export function antigravityQuestionPrompts(records: unknown): QuestionPrompt[] {
-  return questionsFromRecords(records, question => ({
-    question: pickString(question, 'question'),
-  }), (record) => {
-    const option = questionOption(record)
-    return option.label.trim()
-      ? option
-      : null
-  })
+function optionLabels(options: readonly QuestionOption[]): Map<string, string> {
+  const labels = new Map<string, string>()
+  for (const { label, value } of options) {
+    if (value !== undefined && !labels.has(value))
+      labels.set(value, label)
+  }
+  return labels
 }
 
 /** Native answers can repeat their own option records when no request is available. */
-export function antigravityQuestionAnswers(responses: unknown, questions: readonly QuestionPrompt[]): QuestionAnswer[] {
+export function antigravityQuestionAnswers(responses: unknown, questions: readonly AntigravityQuestionRecord[]): QuestionAnswer[] {
   if (!Array.isArray(responses))
     return []
+  const byIndex = new Map(questions.map(record => [record.index, record]))
+  const byId = new Map(questions.filter(record => record.id).map(record => [record.id, record]))
   return responses.flatMap((response, index) => {
     if (!isObject(response))
       return []
-    const question = questions[index]
-    const echoedOptions = Array.isArray(response.options)
+    const id = pickString(response, 'id')
+    const record = byId.get(id) ?? byIndex.get(index)
+    if (record?.prompt === null)
+      return []
+    const question = record?.prompt
+    const echoed = optionLabels(Array.isArray(response.options)
       ? response.options.filter(isObject).map(questionOption)
-      : []
-    const selected = stringArray(response.selectedOptionIds).filter(id => id !== '').map(id =>
-      echoedOptions.find(option => option.value === id)?.label
-      || question?.options.find(option => option.value === id)?.label
-      || id)
+      : [])
+    const requested = optionLabels(question?.options ?? [])
+    const selected = stringArray(response.selectedOptionIds).filter(option => option !== '').map(option =>
+      echoed.get(option) || requested.get(option) || option)
     const answer = pickString(response, 'writeInResponse').trim() || selected.join(', ') || (response.skipped === true
       ? 'Skipped'
       : '')

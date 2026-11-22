@@ -21,6 +21,7 @@ const (
 	antigravityStreamReconnectTimerTag = "antigravity-stream-reconnect"
 	antigravityChildAttachTimerTag     = "antigravity-child-attach"
 	antigravityClearTimerTag           = "antigravity-clear"
+	antigravityClearStreamTimerTag     = "antigravity-clear-stream"
 	antigravityStopTimerTag            = "antigravity-stop"
 	antigravityStreamRetryFirst        = 100 * time.Millisecond
 	antigravityStreamRetryMax          = 5 * time.Second
@@ -217,18 +218,18 @@ func (a *Agent) startCascadeStream(state *cascadeState) {
 	a.startCascadeWorker(state, a.runCascadeStream)
 }
 
-func (a *Agent) startCascadeWorker(state *cascadeState, work func(context.Context, *cascadeState)) {
+func (a *Agent) startCascadeWorker(state *cascadeState, work func(context.Context, *cascadeState)) bool {
 	a.Mu.Lock()
 	if !a.cascadeCurrentLocked(state) || state.closed || a.streamCtx.Err() != nil || a.IsDiscardingOutput() {
 		a.Mu.Unlock()
-		return
+		return false
 	}
 	if state.streamDone != nil {
 		select {
 		case <-state.streamDone:
 		default:
 			a.Mu.Unlock()
-			return
+			return false
 		}
 	}
 	done := make(chan struct{})
@@ -241,9 +242,19 @@ func (a *Agent) startCascadeWorker(state *cascadeState, work func(context.Contex
 		defer close(done)
 		work(ctx, state)
 	}()
+	return true
 }
 
 func (a *Agent) runCascadeStream(ctx context.Context, state *cascadeState) {
+	a.runCascadeStreamFrom(ctx, state, nil)
+}
+
+func (a *Agent) runCascadeStreamFrom(ctx context.Context, state *cascadeState, initial *preparedStateStream) {
+	defer func() {
+		if initial != nil {
+			_ = initial.body.Close()
+		}
+	}()
 	delay := antigravityStreamRetryFirst
 	emptyAttempts := 0
 	undecodable := 0
@@ -259,14 +270,22 @@ func (a *Agent) runCascadeStream(ctx context.Context, state *cascadeState) {
 			return
 		}
 		firstOnAttempt := true
-		delivered, err := a.rpc.consumeStream(ctx, state.id, startIndex, func(update agentStateUpdate) error {
+		apply := func(update agentStateUpdate) error {
 			first := firstOnAttempt
 			firstOnAttempt = false
 			if err := a.applyUpdate(state, update, first); err != nil {
 				return err
 			}
 			return nil
-		})
+		}
+		var delivered bool
+		var err error
+		if initial != nil {
+			delivered, err = initial.consume(apply)
+			initial = nil
+		} else {
+			delivered, err = a.rpc.consumeStream(ctx, state.id, startIndex, apply)
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -352,10 +371,12 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 	}
 
 	patch := update.MainTrajectory.StepsUpdate
-	for position, raw := range patch.Steps {
-		if position >= len(patch.Indices) {
-			break
+	order := patch.orderedPositions()
+	for position := range min(len(patch.Indices), len(patch.Steps)) {
+		if order != nil {
+			position = order[position]
 		}
+		raw := patch.Steps[position]
 		if !a.acceptsCascadeUpdate(state) {
 			return nil
 		}

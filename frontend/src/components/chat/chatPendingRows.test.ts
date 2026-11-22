@@ -75,6 +75,7 @@ function textMessage(id: string, seq: bigint): AgentChatMessage {
 
 function entryOf(message: AgentChatMessage, parsedSpanLines: (SpanLine | null)[] = []): ClassifiedEntry {
   const prepared = prepareMessage(message)
+  const role = resolvedSpanRole(prepared.resolved, message.agentProvider)
   return {
     ...prepared,
     rowId: message.id,
@@ -84,9 +85,12 @@ function entryOf(message: AgentChatMessage, parsedSpanLines: (SpanLine | null)[]
       revisionKey: message.id,
       isChildTranscript: false,
       settingsLabelRevision: '',
-      role: resolvedSpanRole(prepared.resolved, message.agentProvider),
+      role,
     },
     spanLinesRef: message.spanLines,
+    openingSpanId: prepared.category.kind === 'tool_use' && role === 'request'
+      ? message.spanId
+      : undefined,
     settingsLabelDependencies: [],
   }
 }
@@ -275,6 +279,7 @@ describe('createPendingRows', () => {
   it('draws no pending row for a tool row whose span role is not request', () => {
     const finished: ClassifiedEntry = {
       ...request,
+      openingSpanId: undefined,
       freshness: { ...request.freshness, role: 'result' },
     }
     withPendingRows([finished, text], {}, ({ ids }) => {

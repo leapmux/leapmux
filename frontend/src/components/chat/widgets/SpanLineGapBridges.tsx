@@ -13,9 +13,9 @@ import { LINE_THICKNESS, SPAN_BRIDGE_GAP_VAR, spanColumnCenterX } from './SpanLi
 export interface SpanBridgeEntry {
   /** The id of the list row: the message id, or the id of a pending row (see chatPendingRows). */
   rowId: string
-  message: { spanId?: string, spanColor?: number }
+  message: { spanColor?: number }
   parsedSpanLines: (SpanLine | null)[]
-  category: { kind: string }
+  openingSpanId?: string | undefined
 }
 
 export interface SpanLineGapBridgesProps {
@@ -65,8 +65,8 @@ export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
       const previousLines = createMemo(() => previous()?.parsedSpanLines ?? [])
       const previousBodyKey = createMemo(() => {
         const p = previous()
-        return p?.category.kind === 'tool_use'
-          ? bodySpanKey(p.message.spanId, p.message.spanColor)
+        return p?.openingSpanId !== undefined
+          ? bodySpanKey(p.openingSpanId, p.message.spanColor)
           : undefined
       })
       // Per column: does its vertical rail continue from the row above? Memoized

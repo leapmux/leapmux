@@ -678,7 +678,7 @@ describe('chatRowHeightPersistence', () => {
     // still match while every height in it is wrong. The version guard is the
     // only thing that stops those heights from jumping the offset map.
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: STORED_ROW_HEIGHTS_VERSION - 1,
+      v: 8,
       rows: [
         storedRow('a', 'k-a', 120),
       ],

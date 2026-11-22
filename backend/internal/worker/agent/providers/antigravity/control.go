@@ -353,7 +353,6 @@ func (a *Agent) approvePendingPermissions() {
 					continue
 				}
 				if next == nil {
-					candidate.approvalClaimed = true
 					next, control = state, candidate
 				}
 			}
@@ -365,7 +364,19 @@ func (a *Agent) approvePendingPermissions() {
 		if next == nil {
 			return
 		}
-		err := a.rpc.handleInteraction(a.Context(), next.id, map[string]any{
+		a.Mu.Lock()
+		generationCtx := a.streamCtx
+		if generationCtx.Err() != nil {
+			a.Mu.Unlock()
+			return
+		}
+		if !a.controlCurrentLocked(next, control) || control.approvalClaimed || !a.autoAnswerLocked(a.mode, control.permission) {
+			a.Mu.Unlock()
+			continue
+		}
+		control.approvalClaimed = true
+		a.Mu.Unlock()
+		err := a.rpc.handleInteraction(generationCtx, next.id, map[string]any{
 			"trajectoryId": control.trajectoryID, "stepIndex": control.stepIndex,
 			"permission": map[string]any{"allow": true, "scope": "PERMISSION_SCOPE_ONCE"},
 		})

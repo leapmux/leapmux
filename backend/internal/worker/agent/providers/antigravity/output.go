@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -131,21 +132,28 @@ func isToolStep(step antigravityStep) bool {
 
 func (response antigravityPlannerResponse) visibleContent() (text, thinking string) {
 	text = response.ModifiedResponse
-	if strings.TrimSpace(text) == "" {
+	if blankPlannerText(text) {
 		text = response.Response
-		if strings.TrimSpace(text) == "" {
+		if blankPlannerText(text) {
 			text = ""
 		}
 	}
 	thinking = response.Thinking
-	if strings.TrimSpace(thinking) == "" {
+	if blankPlannerText(thinking) {
 		thinking = ""
 	}
 	return text, thinking
 }
 
+// Treat Unicode whitespace and the byte order mark as blank in both renderers.
+func blankPlannerText(text string) bool {
+	return strings.TrimFunc(text, func(r rune) bool { return unicode.IsSpace(r) || r == '\uFEFF' }) == ""
+}
+
 func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigravityStep) {
 	text, thinking := step.PlannerResponse.visibleContent()
+	recovered := text != "" || thinking != "" ||
+		step.Status == contracts.AntigravityStepStatusDone && len(step.PlannerResponse.ToolCalls) > 0
 	scope := fmt.Sprintf("antigravity:%s:%d", state.id, index)
 	a.Mu.Lock()
 	if !a.cascadeCurrentLocked(state) || state.closed {
@@ -155,9 +163,11 @@ func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigr
 	record := state.steps[index]
 	previous := record.text
 	record.text = text
-	retryPending := state.retryPending
-	state.retryPending = false
-	state.heldErrorStep = nil
+	resolveRetry := recovered && state.retryPending
+	if recovered {
+		state.retryPending = false
+		state.heldErrorStep = nil
+	}
 	a.Mu.Unlock()
 	if text != previous {
 		delta := text
@@ -170,10 +180,8 @@ func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigr
 			state.sink.ReportProgress(agent.ModelTextProgress(scope, delta))
 		}
 	}
-	if text != "" || thinking != "" {
-		if retryPending {
-			state.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved})
-		}
+	if resolveRetry {
+		persistCascadeNotification(state, map[string]string{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved})
 	}
 }
 
@@ -192,7 +200,7 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 		return nil
 	}
 	interrupted := state.interrupted
-	manualCheckpoint := step.Type == contracts.AntigravityStepTypeCheckpoint &&
+	manualCheckpoint := step.Type == contracts.AntigravityStepTypeCheckpoint && step.Metadata.ExecutionID != "" &&
 		state.manualCompactionExecutionID != nil && *state.manualCompactionExecutionID == step.Metadata.ExecutionID
 	spanID := ""
 	if record != nil && isToolStep(step) {
@@ -237,7 +245,11 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 		if step.Status != contracts.AntigravityStepStatusDone {
 			a.consumeStep(state, index)
 			if manualCheckpoint {
-				a.endManualCompaction(state)
+				outcome := providerkit.CompactionEndFailed
+				if step.Status == contracts.AntigravityStepStatusCanceled {
+					outcome = providerkit.CompactionEndAborted
+				}
+				a.endManualCompaction(state, outcome)
 			}
 			return nil
 		}
@@ -288,12 +300,13 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	}
 	a.finalizeStep(state, index, step, spanID)
 	if manualCheckpoint {
-		a.endManualCompaction(state)
+		a.endManualCompaction(state, providerkit.CompactionEndCompleted)
 	}
 	return nil
 }
 
 func (a *Agent) beginManualCompaction(state *cascadeState, executionID string) {
+	publication := state.sink.CaptureMessage(agent.MessageContent{AgentSessionID: state.id}, agent.SpanInfo{}).Publication
 	a.Mu.Lock()
 	if !a.cascadeCurrentLocked(state) || state.closed || state.manualCompactionExecutionID != nil {
 		a.Mu.Unlock()
@@ -301,16 +314,33 @@ func (a *Agent) beginManualCompaction(state *cascadeState, executionID string) {
 	}
 	state.manualCompactionExecutionID = &executionID
 	a.Mu.Unlock()
-	providerkit.PublishCompaction(state.sink, "manual")
+	if publication != nil {
+		publication.Owner().PublishSessionInfo(map[string]any{contracts.SessionInfoKeyCompaction: map[string]any{contracts.CompactionFieldTrigger: "manual"}})
+	}
 }
 
-func (a *Agent) endManualCompaction(state *cascadeState) {
+func (a *Agent) endManualCompaction(state *cascadeState, outcome providerkit.CompactionEndOutcome) {
 	a.Mu.Lock()
 	wasCompacting := state.manualCompactionExecutionID != nil
 	state.manualCompactionExecutionID = nil
 	a.Mu.Unlock()
 	if wasCompacting {
-		providerkit.EndCompaction(state.sink)
+		if outcome != providerkit.CompactionEndCompleted && !a.IsDiscardingOutput() {
+			persistCascadeNotification(state, map[string]string{
+				contracts.NotificationFieldType:    contracts.NotificationTypeCompactionEnded,
+				contracts.NotificationFieldOutcome: string(outcome),
+			})
+		}
+		if publication := state.sink.CaptureMessage(agent.MessageContent{AgentSessionID: state.id}, agent.SpanInfo{}).Publication; publication != nil {
+			publication.Owner().PublishSessionInfo(map[string]any{contracts.SessionInfoKeyCompaction: nil})
+		}
+	}
+}
+
+func persistCascadeNotification(state *cascadeState, fields map[string]string) {
+	raw, _ := json.Marshal(fields)
+	if _, err := state.sink.PersistWorkerNotification(agent.MessageContent{Original: raw, AgentSessionID: state.id}); !agent.OutputRetained(err) {
+		slog.Warn("Antigravity could not retain a cascade notification", "cascade_id", state.id, "error", err)
 	}
 }
 
@@ -506,6 +536,15 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 	if !a.cascadeInstalled(state) {
 		return nil
 	}
+	compactionOutcome := providerkit.CompactionEndCompleted
+	switch completion {
+	case agent.MessageCompletionInterrupted:
+		compactionOutcome = providerkit.CompactionEndAborted
+	case agent.MessageCompletionError:
+		compactionOutcome = providerkit.CompactionEndFailed
+	case agent.MessageCompletionComplete, agent.MessageCompletionFinished:
+	}
+	a.endManualCompaction(state, compactionOutcome)
 	if state.parent != nil {
 		status := bgtask.StatusSucceeded
 		switch completion {
@@ -536,7 +575,6 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 	if !a.cascadeInstalled(state) {
 		return nil
 	}
-	a.endManualCompaction(state)
 	state.sink.ReportProgress(agent.ResetProgress())
 	a.Mu.Lock()
 	if !a.cascadeInstalledLocked(state) {
@@ -554,7 +592,8 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 	} else {
 		providerkit.PublishTurnStateTo(a.sink, agent.TurnState{}, seq)
 		if a.cascadeCurrent(state) && !a.IsDiscardingOutput() {
-			a.accountRefreshWork.Run("account", a.refreshAccountState)
+			a.accountRefreshWork.Run("catalog", a.refreshAccountCatalog)
+			a.accountRefreshWork.Run("quota", a.refreshAccountQuota)
 		}
 	}
 	return nil

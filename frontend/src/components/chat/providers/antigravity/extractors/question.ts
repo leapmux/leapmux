@@ -1,18 +1,26 @@
 import type { QuestionRequest, QuestionResult } from '../../../model/tools/question'
 import type { AntigravityStep } from './toolCommon'
 import { isObject, pickObject } from '~/lib/jsonPick'
-import { antigravityQuestionAnswers, antigravityQuestionPrompts } from '../askUserQuestion'
+import { antigravityQuestionAnswers, antigravityQuestionRecords } from '../askUserQuestion'
+
+function questionRecords(step: AntigravityStep) {
+  const records = antigravityQuestionRecords(pickObject(step.raw, 'askQuestion')?.questions)
+  return records.some(record => record.prompt)
+    ? records
+    : antigravityQuestionRecords(step.args.questions)
+}
 
 export function antigravityQuestionRequest(step: AntigravityStep): QuestionRequest {
-  const questions = antigravityQuestionPrompts(pickObject(step.raw, 'askQuestion')?.questions)
   return {
-    questions: questions.length > 0
-      ? questions
-      : antigravityQuestionPrompts(step.args.questions),
+    questions: questionRecords(step).flatMap(({ prompt }) => prompt
+      ? [
+          { question: prompt.question, options: prompt.options },
+        ]
+      : []),
   }
 }
 
-export function antigravityQuestionResult(step: AntigravityStep, request: QuestionRequest): QuestionResult | undefined {
+export function antigravityQuestionResult(step: AntigravityStep): QuestionResult | undefined {
   const interactions = step.raw.completedInteractions
   const response = Array.isArray(interactions)
     ? interactions.filter(isObject)
@@ -22,10 +30,11 @@ export function antigravityQuestionResult(step: AntigravityStep, request: Questi
   if (response?.cancelled === true)
     return { answers: [], note: 'Dismissed' }
 
-  const submitted = antigravityQuestionAnswers(response?.responses, request.questions)
+  const records = questionRecords(step)
+  const submitted = antigravityQuestionAnswers(response?.responses, records)
   const answers = submitted.length > 0
     ? submitted
-    : antigravityQuestionAnswers(pickObject(step.raw, 'askQuestion')?.questions, request.questions)
+    : antigravityQuestionAnswers(pickObject(step.raw, 'askQuestion')?.questions, records)
   return answers.length > 0
     ? { answers }
     : undefined

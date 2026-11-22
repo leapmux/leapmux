@@ -379,3 +379,39 @@ func TestAntigravityScrubFailureAllowsPersistenceRetry(t *testing.T) {
 	assert.Error(t, a.persistStep(a.root, 0, antigravityStep{}, raw))
 	assert.False(t, a.root.steps[0].consumed)
 }
+
+func TestAntigravityBlankPlannerDoesNotConsumeRetry(t *testing.T) {
+	for _, result := range []struct{ name, payload string }{
+		{"text", `{"response":"The model recovered."}`},
+		{"tool calls", `{"toolCalls":[{"name":"read_file"}],"stopReason":"STOP"}`},
+	} {
+		t.Run(result.name, func(t *testing.T) {
+			a, sink := testAgent(t)
+			a.beginTurn(a.root)
+			a.noteModelRetry(a.root, &modelRequestStatus{Attempt: 1, MaxAttempts: 4})
+			before := len(sink.Messages())
+			empty := plannerStep(contracts.AntigravityStepStatusGenerating, "\u0085\uFEFF")
+			feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{empty}))
+			require.Len(t, sink.Messages(), before)
+			require.NotContains(t, sink.LeapMuxNotifications(), map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved})
+			raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":` + result.payload + `}`)
+			feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{raw}))
+			require.Contains(t, sink.LeapMuxNotifications(), map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeApiRetryResolved})
+		})
+	}
+}
+
+func TestAntigravityBlankPlannerKeepsUnrecoveredError(t *testing.T) {
+	a, sink := testAgent(t)
+	failure := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_ERROR_MESSAGE","status":"CORTEX_STEP_STATUS_DONE","errorMessage":{"error":{"shortError":"Native model failed."}}}`)
+	empty := plannerStep(contracts.AntigravityStepStatusGenerating, "")
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{failure, empty}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+	notices := sink.PersistedNotifications()
+	require.Len(t, notices, 1)
+	assert.Contains(t, string(notices[0].Content), "Native model failed.")
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].TurnEnd)
+	assert.Equal(t, agent.MessageCompletionError, rows[0].Completion)
+}

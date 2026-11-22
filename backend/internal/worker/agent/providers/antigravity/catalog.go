@@ -1,12 +1,12 @@
 package antigravity
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"math"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -124,6 +124,16 @@ func (c antigravityCatalog) resolveModel(model, effort string) (catalogVariant, 
 	return variant, selected, nil
 }
 
+func (c antigravityCatalog) settleSelection(model, effort string) (string, string) {
+	if model == "" {
+		model = agent.DefaultModelSentinel
+	}
+	if _, settled, err := c.resolveModel(model, effort); err == nil {
+		return model, settled
+	}
+	return agent.DefaultModelSentinel, ""
+}
+
 func settleAntigravityEffort(family map[string]catalogVariant, requested string) string {
 	if _, ok := family[requested]; ok {
 		return requested
@@ -155,22 +165,16 @@ func (a *Agent) loadCatalog() error {
 	catalog := buildAntigravityCatalog(reply)
 	a.Mu.Lock()
 	a.catalog = catalog
-	requestedModel, requestedEffort := a.model, a.effort
-	if requestedModel == "" {
-		requestedModel = agent.DefaultModelSentinel
-	}
-	_, effort, err := catalog.resolveModel(requestedModel, requestedEffort)
-	if err == nil {
-		a.effort = effort
-	} else {
-		a.model = agent.DefaultModelSentinel
-		a.effort = ""
-	}
+	a.model, a.effort = catalog.settleSelection(a.model, a.effort)
 	a.Mu.Unlock()
 	return nil
 }
 
-func (a *Agent) refreshAccountCatalog(ctx context.Context, generation uint64) {
+func (a *Agent) refreshAccountCatalog() {
+	ctx, generation, current := a.accountRefreshContext()
+	if !current {
+		return
+	}
 	reply, err := a.rpc.modelConfig(ctx)
 	if err != nil {
 		slog.Debug("antigravity refresh model catalog", "agent_id", a.AgentID(), "error", err)
@@ -180,9 +184,18 @@ func (a *Agent) refreshAccountCatalog(ctx context.Context, generation uint64) {
 		return
 	}
 	catalog := buildAntigravityCatalog(reply)
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if a.accountRefreshCurrentLocked(ctx, generation) {
-		a.catalog = catalog
+	if !a.accountRefreshCurrentLocked(ctx, generation) {
+		a.Mu.Unlock()
+		return
+	}
+	model, effort := catalog.settleSelection(a.model, a.effort)
+	changed := model != a.model || effort != a.effort || !agent.ModelInfosEqual(a.catalog.models, catalog.models)
+	a.catalog, a.model, a.effort = catalog, model, effort
+	a.Mu.Unlock()
+	if changed {
+		a.sink.PersistSettingsRefresh(optionmap.Map{agent.OptionIDModel: model, agent.OptionIDEffort: effort})
 	}
 }

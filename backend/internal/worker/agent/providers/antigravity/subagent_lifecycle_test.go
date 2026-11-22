@@ -410,6 +410,10 @@ func TestAntigravityClearCannotInstallAfterConcurrentStop(t *testing.T) {
 		switch r.URL.Path {
 		case languageServerService + "StartCascade":
 			_, _ = w.Write([]byte(`{"cascadeId":"replacement"}`))
+		case languageServerService + "StreamAgentStateUpdates":
+			_, _ = w.Write(encodeSingleFrame([]byte(`{"update":{"status":"CASCADE_RUN_STATUS_IDLE"}}`)))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
 		case languageServerService + "CancelCascadeInvocation":
 			_, _ = w.Write([]byte(`{}`))
 		case languageServerService + "ForceStopCascadeTree":
@@ -773,6 +777,7 @@ func installClearTestRPC(t *testing.T, a *Agent) (chan string, chan struct{}) {
 	t.Helper()
 	canceled := make(chan string, 16)
 	opened := make(chan struct{}, 1)
+	var subscriptions atomic.Int32
 	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if !assert.NoError(t, err) {
@@ -791,6 +796,10 @@ func installClearTestRPC(t *testing.T, a *Agent) (chan string, chan struct{}) {
 			canceled <- request.CascadeID
 			_, _ = w.Write([]byte(`{}`))
 		case languageServerService + "StreamAgentStateUpdates":
+			if !assert.Equal(t, int32(1), subscriptions.Add(1), "the clear handoff must use the verified subscription") {
+				http.NotFound(w, r)
+				return
+			}
 			_, _ = w.Write(encodeSingleFrame([]byte(`{"update":{"status":"CASCADE_RUN_STATUS_IDLE"}}`)))
 			w.(http.Flusher).Flush()
 			opened <- struct{}{}
@@ -824,6 +833,7 @@ func TestAntigravityClearCancelsAcceptedInputBeforeRunning(t *testing.T) {
 	_, err := a.ClearContext()
 	require.NoError(t, err)
 	receiveTestValue(t, opened)
+	require.NoError(t, a.waitForRoot(t.Context(), a.root, 30*time.Second))
 	require.Len(t, canceled, 1)
 	assert.Equal(t, "cascade", <-canceled)
 }

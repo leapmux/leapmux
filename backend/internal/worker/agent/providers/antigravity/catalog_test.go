@@ -95,24 +95,53 @@ func TestAntigravityCatalogSeparatesModelLabelsAndEffortTokens(t *testing.T) {
 	}
 }
 
-func TestAntigravityQuotaRefreshCannotDelayInactiveTurn(t *testing.T) {
+func TestAntigravityAccountRefreshCannotDelayInactiveTurn(t *testing.T) {
+	for _, method := range []string{"GetCascadeModelConfigData", "RetrieveUserQuotaSummary"} {
+		t.Run(method, func(t *testing.T) {
+			a, sink := testAgent(t)
+			entered := make(chan struct{})
+			release, unblock := newTestGate(t)
+			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == languageServerService+method {
+					close(entered)
+					<-release
+				}
+				_, _ = w.Write([]byte(`{"response":{}}`))
+			})
+			defer func() { unblock(); a.accountRefreshWork.CloseAndWait() }()
+			a.beginTurn(a.root)
+			done := make(chan error, 1)
+			go func() { done <- a.endTurn(a.root, agent.MessageCompletionComplete) }()
+			receiveTestValue(t, entered)
+			states := sink.TurnStates()
+			require.NotEmpty(t, states)
+			assert.Equal(t, agent.TurnState{}, states[len(states)-1])
+			require.NoError(t, receiveTestValue(t, done))
+		})
+	}
+}
+
+func TestAntigravityCatalogRefreshSettlesUnavailableSelection(t *testing.T) {
 	a, sink := testAgent(t)
-	entered := make(chan struct{})
-	release, unblock := newTestGate(t)
+	a.model, a.effort = "gemini-test", "high"
+	sent := make(chan map[string]any, 1)
 	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == languageServerService+"RetrieveUserQuotaSummary" {
-			close(entered)
-			<-release
+		switch r.URL.Path {
+		case languageServerService + "GetCascadeModelConfigData":
+			_, _ = w.Write([]byte(`{"clientModelConfigs":[{"modelId":"gemini-new-low","modelOrAlias":{"model":"NEW_LOW"}}]}`))
+		case languageServerService + "SendUserCascadeMessage":
+			var request map[string]any
+			assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			sent <- request
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			_, _ = w.Write([]byte(`{"response":{}}`))
 		}
-		_, _ = w.Write([]byte(`{}`))
 	})
-	a.beginTurn(a.root)
-	done := make(chan error, 1)
-	go func() { done <- a.endTurn(a.root, agent.MessageCompletionComplete) }()
-	receiveTestValue(t, entered)
-	states := sink.TurnStates()
-	require.NotEmpty(t, states)
-	assert.Equal(t, agent.TurnState{}, states[len(states)-1], "quota I/O must start after inactive state publication")
-	unblock()
-	require.NoError(t, receiveTestValue(t, done))
+	a.refreshAccountCatalog()
+	require.NoError(t, a.SendInput("continue the session", nil))
+	assert.Equal(t, "NEW_LOW", receiveTestValue(t, sent)["cascadeConfig"].(map[string]any)["plannerConfig"].(map[string]any)["planModel"])
+	assert.Equal(t, agent.DefaultModelSentinel, a.model)
+	assert.Empty(t, a.effort)
+	assert.Positive(t, sink.SettingsRefreshCount())
 }

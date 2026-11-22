@@ -98,7 +98,7 @@ describe('SpanLines', () => {
       {
         rowId: 'm1',
         message: {},
-        category: { kind: 'assistant_text' },
+
         parsedSpanLines: [
           { span_id: 'span-A', color: 1, type: 'connector_end' },
           {
@@ -112,7 +112,7 @@ describe('SpanLines', () => {
       {
         rowId: 'm2',
         message: {},
-        category: { kind: 'assistant_text' },
+
         parsedSpanLines: [
           null,
           { span_id: 'span-B', color: 2, type: 'active' },
@@ -149,7 +149,7 @@ describe('SpanLines', () => {
       {
         rowId: 'm6',
         message: {},
-        category: { kind: 'assistant_text' },
+
         parsedSpanLines: [lineA, lineB],
       },
     ]
@@ -159,7 +159,7 @@ describe('SpanLines', () => {
         precedingEntry={{
           rowId: 'm5',
           message: {},
-          category: { kind: 'assistant_text' },
+
           parsedSpanLines: [lineA, lineB],
         }}
         topOf={() => 300}
@@ -180,7 +180,7 @@ describe('SpanLines', () => {
       {
         rowId: 'm3',
         message: {},
-        category: { kind: 'assistant_text' },
+
         parsedSpanLines: [line],
       },
     ]
@@ -190,7 +190,7 @@ describe('SpanLines', () => {
         precedingEntry={{
           rowId: 'm2',
           message: {},
-          category: { kind: 'assistant_text' },
+
           parsedSpanLines: [line],
         }}
         topOf={() => 100}
@@ -208,7 +208,7 @@ describe('SpanLines', () => {
       {
         rowId: 'm4',
         message: {},
-        category: { kind: 'connector_end' },
+
         parsedSpanLines: [
           { span_id: 'span-tool', color: 3, type: 'connector_end' },
         ],
@@ -221,8 +221,8 @@ describe('SpanLines', () => {
           // A tool_use body: its bottom border is the span's rail, so the
           // closing row below connects via the body key, not a column match.
           rowId: 'm3',
-          message: { spanId: 'span-tool', spanColor: 3 },
-          category: { kind: 'tool_use' },
+          message: { spanColor: 3 },
+          openingSpanId: 'span-tool',
           parsedSpanLines: [],
         }}
         topOf={() => 60}
