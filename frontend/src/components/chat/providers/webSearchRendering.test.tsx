@@ -3,6 +3,7 @@ import type { MessageContentRenderContext } from '~/test-support/messageContentR
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import './claude/plugin'
 import './codex/plugin'
 import '~/components/chat/providers'
@@ -84,5 +85,85 @@ describe('codex webSearch action rendering', () => {
       action: { type: 'openPage', url: 'https://codex.example.com/page' },
     })
     expect(container.textContent ?? '').toContain('codex.example.com')
+  })
+})
+
+function renderAntigravitySearchWeb(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
+  const category: MessageCategory = { kind: 'tool_result' }
+  const result = renderMessageContent(parsed, context, category, AgentProvider.ANTIGRAVITY_CLI)
+  return render(() => result)
+}
+
+describe('antigravity searchWeb rendering', () => {
+  const payload = {
+    type: 'CORTEX_STEP_TYPE_SEARCH_WEB',
+    status: 'CORTEX_STEP_STATUS_DONE',
+    metadata: {
+      toolCall: {
+        id: 'call_ag_search_1',
+        name: 'search_web',
+        argumentsJson: JSON.stringify({ query: 'windows credential blob rust' }),
+      },
+    },
+    searchWeb: {
+      query: 'windows credential blob rust',
+      searchType: 'SEARCH_WEB_TYPE_WEB',
+      summary: '### Findings\n\nUse [Reference](https://ref.example.com) to decode UTF-16LE.',
+      thirdPartyConfig: {
+        provider: 'THIRD_PARTY_WEB_SEARCH_PROVIDER_GEMINI',
+      },
+      webDocuments: [
+        { documentId: '1', title: 'Alpha Guide', url: 'https://alpha.example.com/1' },
+        { documentId: '2', title: 'Beta Docs', url: 'https://beta.example.com/2' },
+        { documentId: '3', title: 'Gamma Notes', url: 'https://gamma.example.com/3' },
+        { documentId: '4', title: 'Delta Spec', url: 'https://delta.example.com/4' },
+        { documentId: '5', title: 'Epsilon Post', url: 'https://epsilon.example.com/5' },
+      ],
+    },
+  }
+
+  it('renders the query, result count, first three links with hrefs and domains, and hides the summary when collapsed', () => {
+    const { container } = renderAntigravitySearchWeb(payload, { spanType: 'antigravity_step' })
+    const text = container.textContent ?? ''
+    expect(text).toContain('windows credential blob rust')
+    expect(text).toContain('5 results')
+    expect(text).toContain('Alpha Guide')
+    expect(text).toContain('Beta Docs')
+    expect(text).toContain('Gamma Notes')
+    expect(text).not.toContain('Delta Spec')
+    expect(text).not.toContain('Epsilon Post')
+    expect(text).toContain('alpha.example.com')
+    expect(text).toContain('beta.example.com')
+    expect(text).toContain('gamma.example.com')
+    expect(text).not.toContain('Findings')
+
+    const anchors = Array.from(container.querySelectorAll('a'))
+    expect(anchors.map(anchor => ({
+      text: anchor.textContent,
+      href: anchor.getAttribute('href'),
+    }))).toEqual([
+      { text: 'Alpha Guide', href: 'https://alpha.example.com/1' },
+      { text: 'Beta Docs', href: 'https://beta.example.com/2' },
+      { text: 'Gamma Notes', href: 'https://gamma.example.com/3' },
+    ])
+  })
+
+  it('renders all five links and the markdown summary when expanded', async () => {
+    const { container } = renderAntigravitySearchWeb(payload, {
+      spanType: 'antigravity_step',
+      getMessageUiState: () => true,
+    })
+    await settleWorkerReplies()
+
+    const text = container.textContent ?? ''
+    expect(text).toContain('5 results')
+    expect(text).toContain('Alpha Guide')
+    expect(text).toContain('Beta Docs')
+    expect(text).toContain('Gamma Notes')
+    expect(text).toContain('Delta Spec')
+    expect(text).toContain('Epsilon Post')
+    expect(container.querySelector('h3')?.textContent).toBe('Findings')
+    const summaryLink = container.querySelector('a[href="https://ref.example.com"]')
+    expect(summaryLink?.textContent).toBe('Reference')
   })
 })

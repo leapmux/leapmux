@@ -25,6 +25,7 @@
     "AskQuestion": "CORTEX_STEP_TYPE_ASK_QUESTION",
     "McpTool": "CORTEX_STEP_TYPE_MCP_TOOL",
     "InvokeSubagent": "CORTEX_STEP_TYPE_INVOKE_SUBAGENT",
+    "SearchWeb": "CORTEX_STEP_TYPE_SEARCH_WEB",
     "Generic": "CORTEX_STEP_TYPE_GENERIC",
     "ErrorMessage": "CORTEX_STEP_TYPE_ERROR_MESSAGE",
     "Checkpoint": "CORTEX_STEP_TYPE_CHECKPOINT",

@@ -20,6 +20,7 @@ import { antigravityMcpRequest, antigravityMcpResult } from './mcp'
 import { antigravityQuestionRequest, antigravityQuestionResult } from './question'
 import { antigravityReadImages, antigravityReadRequest, antigravityReadResult } from './read'
 import { antigravityGenericResult, antigravityStepDeclined, antigravityStepFailed, antigravityStepOpen, antigravityToolName } from './toolCommon'
+import { antigravityWebSearchRequest, antigravityWebSearchResult } from './webSearch'
 
 /**
  * One row's own native step.
@@ -116,6 +117,7 @@ export const ANTIGRAVITY_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<Antigravit
     text: pickString(args, 'Message'),
   }),
   question: (_args, facts): ToolRequestByKind['question'] => antigravityQuestionRequest(facts.step),
+  web_search: (_args, facts): ToolRequestByKind['web_search'] => antigravityWebSearchRequest(facts.step),
 }
 
 function requestFor<K extends ToolKind>(kind: K, facts: AntigravityToolFacts): ToolRequestByKind[K] {
@@ -271,7 +273,14 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
         : {}),
     }
   },
-  web_search: declared('web_search'),
+  web_search: (facts): ToolCallSpecVariant<'web_search'> => {
+    const request = requestFor('web_search', facts)
+    return early('web_search', facts, request) ?? {
+      kind: 'web_search',
+      request,
+      result: genericFallback(facts, 'searchWeb') ?? antigravityWebSearchResult(facts.step),
+    }
+  },
   fetch: declared('fetch'),
   grep: declared('grep'),
   search: declared('search'),

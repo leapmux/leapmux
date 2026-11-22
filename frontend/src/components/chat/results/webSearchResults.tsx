@@ -19,6 +19,7 @@ import {
   webSearchLinkDomain,
   webSearchLinkList,
 } from '../toolStyles.css'
+import { COLLAPSED_RESULT_ROWS } from './collapse'
 import { renderQueryTitle } from './tools/titleParts'
 import { useCollapsedItems } from './useCollapsedLines'
 
@@ -51,6 +52,11 @@ export function WebSearchQueries(props: { request: WebSearchRequest, context?: T
       </div>
     </Show>
   )
+}
+
+/** Whether a web search result hides extra links or a summary when collapsed. */
+export function webSearchResultCollapsible(source: WebSearchResult): boolean {
+  return source.links.length > COLLAPSED_RESULT_ROWS || source.summary.length > 0
 }
 
 /** What a search found: its links and its summary. */

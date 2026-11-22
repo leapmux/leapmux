@@ -1,7 +1,9 @@
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
+import { COLLAPSED_RESULT_ROWS } from '../collapse'
 import { ToolMessage } from '../ToolMessage'
 import { toolCallMeta } from './meta'
 
@@ -104,5 +106,81 @@ describe('web_search queries', () => {
 
     expect(toolCallMeta(row).collapsible).toBe(true)
     expect(draw(row).textContent).toContain('leapmux')
+  })
+})
+
+describe('web_search result expandability', () => {
+  const request = { query: 'LeapMux' }
+  const oneLink = { title: 'LeapMux Docs', url: 'https://leapmux.dev/docs' }
+  const COLLAPSED = {
+    getMessageUiState: () => false,
+  }
+  const EXPANDED = {
+    getMessageUiState: () => true,
+  }
+
+  it('marks a result with one link and a short summary as collapsible', async () => {
+    const row = toolRow(toolCallFixture('web_search', {
+      request,
+      result: {
+        links: [oneLink],
+        summary: 'Short summary.',
+      },
+    }), 'result', { request: true })
+    expect(toolCallMeta(row).collapsible).toBe(true)
+
+    const collapsed = render(() => <ToolMessage row={row} context={COLLAPSED} />).container
+    expect(collapsed.textContent).toContain('LeapMux Docs')
+    expect(collapsed.textContent).not.toContain('Short summary.')
+
+    const expanded = render(() => <ToolMessage row={row} context={EXPANDED} />).container
+    await settleWorkerReplies()
+    expect(expanded.textContent).toContain('Short summary.')
+  })
+
+  it('marks a summary-only result with no links as collapsible', () => {
+    const row = toolRow(toolCallFixture('web_search', {
+      request,
+      result: {
+        links: [],
+        summary: 'Short summary.',
+      },
+    }), 'result', { request: true })
+    expect(toolCallMeta(row).collapsible).toBe(true)
+  })
+
+  it('keeps an empty result with no links and no summary non-collapsible', () => {
+    const row = toolRow(toolCallFixture('web_search', {
+      request,
+      result: {
+        links: [],
+        summary: '',
+      },
+    }), 'result', { request: true })
+    expect(toolCallMeta(row).collapsible).toBe(false)
+  })
+
+  it('enforces the collapsed link threshold when summary is empty', () => {
+    const makeLinks = (count: number) => Array.from({ length: count }, (_, index) => ({
+      title: `Result ${index + 1}`,
+      url: `https://leapmux.dev/r/${index + 1}`,
+    }))
+    const atLimit = toolRow(toolCallFixture('web_search', {
+      request,
+      result: {
+        links: makeLinks(COLLAPSED_RESULT_ROWS),
+        summary: '',
+      },
+    }), 'result', { request: true })
+    const aboveLimit = toolRow(toolCallFixture('web_search', {
+      request,
+      result: {
+        links: makeLinks(COLLAPSED_RESULT_ROWS + 1),
+        summary: '',
+      },
+    }), 'result', { request: true })
+
+    expect(toolCallMeta(atLimit).collapsible).toBe(false)
+    expect(toolCallMeta(aboveLimit).collapsible).toBe(true)
   })
 })
