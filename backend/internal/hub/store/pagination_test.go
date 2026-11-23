@@ -102,7 +102,7 @@ func TestFetchLimit(t *testing.T) {
 func TestNewPage_TerminalWhenNoProbeRowCameBack(t *testing.T) {
 	// Fewer rows than the limit: the probe row did not materialize, so the
 	// page is terminal with every fetched row kept.
-	rows := []User{{ID: "a"}, {ID: "b"}}
+	rows := []UserListItem{{ID: "a"}, {ID: "b"}}
 	page := NewPage(rows, 5)
 	assert.Equal(t, rows, page.Rows)
 	assert.False(t, page.HasMore())
@@ -113,7 +113,7 @@ func TestNewPage_ExactlyLimitRowsIsTerminal(t *testing.T) {
 	// The limit+1 fetch returned exactly limit rows: total is an exact
 	// multiple of the page size, and unlike the old len(rows)==limit
 	// heuristic the page must NOT claim a further page.
-	page := NewPage([]User{{ID: "a"}, {ID: "b"}}, 2)
+	page := NewPage([]UserListItem{{ID: "a"}, {ID: "b"}}, 2)
 	assert.Len(t, page.Rows, 2)
 	assert.False(t, page.HasMore())
 	assert.Empty(t, page.NextCursor)
@@ -121,7 +121,7 @@ func TestNewPage_ExactlyLimitRowsIsTerminal(t *testing.T) {
 
 func TestNewPage_SlicesProbeRowAndEncodesLastKeptRow(t *testing.T) {
 	newest := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	rows := []User{
+	rows := []UserListItem{
 		{ID: "a", CreatedAt: newest},
 		{ID: "b", CreatedAt: newest.Add(-time.Second)},
 		{ID: "c", CreatedAt: newest.Add(-2 * time.Second)}, // the probe row
@@ -150,7 +150,7 @@ func TestNewPage_EncodesOrderByColumnViaPageCursor(t *testing.T) {
 }
 
 func TestNewPage_EmptyRows(t *testing.T) {
-	page := NewPage([]User{}, 5)
+	page := NewPage([]UserListItem{}, 5)
 	assert.Empty(t, page.Rows)
 	assert.False(t, page.HasMore())
 	assert.Empty(t, page.NextCursor)
@@ -160,7 +160,7 @@ func TestNewPage_ZeroLimitIsTerminal(t *testing.T) {
 	// Guard for the FetchLimit(0)=0 contract: even if a caller violates it
 	// and hands rows in with a zero limit, the page must not panic slicing
 	// or mint a cursor pointing nowhere.
-	page := NewPage([]User{{ID: "a"}}, 0)
+	page := NewPage([]UserListItem{{ID: "a"}}, 0)
 	assert.False(t, page.HasMore())
 	assert.Empty(t, page.NextCursor)
 }
@@ -174,14 +174,14 @@ func TestNewPage_ZeroLimitIsTerminal(t *testing.T) {
 func TestQueryPage(t *testing.T) {
 	ctx := context.Background()
 	mapErr := func(err error) error { return fmt.Errorf("mapped: %w", err) }
-	identity := func(u User) User { return u }
+	identity := func(u UserListItem) UserListItem { return u }
 
 	t.Run("build error short-circuits unwrapped", func(t *testing.T) {
 		buildErr := fmt.Errorf("%w: bad cursor", ErrInvalidCursor)
 		queryRan := false
 		page, err := QueryPage(ctx, 5,
 			func() (struct{}, error) { return struct{}{}, buildErr },
-			func(context.Context, struct{}) ([]User, error) { queryRan = true; return nil, nil },
+			func(context.Context, struct{}) ([]UserListItem, error) { queryRan = true; return nil, nil },
 			identity, mapErr)
 		require.ErrorIs(t, err, ErrInvalidCursor,
 			"a cursor decode error must surface errors.Is-able, not mapped")
@@ -194,7 +194,7 @@ func TestQueryPage(t *testing.T) {
 		queryErr := errors.New("boom")
 		_, err := QueryPage(ctx, 5,
 			func() (struct{}, error) { return struct{}{}, nil },
-			func(context.Context, struct{}) ([]User, error) { return nil, queryErr },
+			func(context.Context, struct{}) ([]UserListItem, error) { return nil, queryErr },
 			identity, mapErr)
 		require.ErrorIs(t, err, queryErr)
 		assert.Contains(t, err.Error(), "mapped:", "query errors must pass through the dialect's mapErr")
@@ -202,20 +202,47 @@ func TestQueryPage(t *testing.T) {
 
 	t.Run("success maps rows and slices the probe row", func(t *testing.T) {
 		newest := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-		rows := []User{
+		rows := []UserListItem{
 			{ID: "a", CreatedAt: newest},
 			{ID: "b", CreatedAt: newest.Add(-time.Second)},
 			{ID: "c", CreatedAt: newest.Add(-2 * time.Second)}, // the probe row
 		}
 		page, err := QueryPage(ctx, 2,
 			func() (struct{}, error) { return struct{}{}, nil },
-			func(context.Context, struct{}) ([]User, error) { return rows, nil },
+			func(context.Context, struct{}) ([]UserListItem, error) { return rows, nil },
 			identity, mapErr)
 		require.NoError(t, err)
 		require.Len(t, page.Rows, 2)
 		assert.True(t, page.HasMore())
 		assert.Equal(t, EncodeCursor(rows[1].CreatedAt, "b"), page.NextCursor)
 	})
+}
+
+func TestQueryPageErrSkipsMappingDiscardedProbeRow(t *testing.T) {
+	ctx := context.Background()
+	newest := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	rows := []UserListItem{
+		{ID: "a", CreatedAt: newest},
+		{ID: "b", CreatedAt: newest.Add(-time.Second)},
+		{ID: "corrupt-probe", CreatedAt: newest.Add(-2 * time.Second)},
+	}
+	var mapped []string
+	page, err := QueryPageErr(ctx, 2,
+		func() (struct{}, error) { return struct{}{}, nil },
+		func(context.Context, struct{}) ([]UserListItem, error) { return rows, nil },
+		func(u UserListItem) (UserListItem, error) {
+			mapped = append(mapped, u.ID)
+			if u.ID == "corrupt-probe" {
+				return UserListItem{}, errors.New("probe row cannot decrypt")
+			}
+			return u, nil
+		},
+		func(err error) error { return err })
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b"}, mapped, "discarded probe row must not be mapped")
+	require.Len(t, page.Rows, 2)
+	assert.True(t, page.HasMore())
+	assert.Equal(t, EncodeCursor(rows[1].CreatedAt, "b"), page.NextCursor)
 }
 
 func TestEncodeCursor_NormalizesTimezone(t *testing.T) {
@@ -250,7 +277,7 @@ func TestPageCursorReturnsListingOrderByColumn(t *testing.T) {
 		want time.Time
 	}{
 		// users ListAll/Search order by (created_at DESC, id DESC).
-		{"User_orders_by_created_at", User{CreatedAt: sentinel, UpdatedAt: time.Time{}}, sentinel},
+		{"UserListItem_orders_by_created_at", UserListItem{CreatedAt: sentinel, UpdatedAt: time.Time{}}, sentinel},
 		// workers ListByUserID/ListAdmin order by (created_at DESC, id DESC).
 		{"Worker_orders_by_created_at", Worker{CreatedAt: sentinel}, sentinel},
 		// registration keys ListAdmin orders by (created_at DESC, id DESC);

@@ -16,7 +16,6 @@ const (
 	KeyKindString KeyColumnKind = iota + 1
 	KeyKindInt64
 	KeyKindInt32
-	KeyKindBytes
 )
 
 // KeyColumnSpec identifies one primary-key or AAD-key column in an
@@ -55,9 +54,9 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "password_hash", AADFunc: func(k []any) []byte { return keystore.UserPasswordHashAAD(k[0].(string)) }},
-			{Name: "prefs", Nullable: true, AADFunc: func(k []any) []byte { return keystore.UserPrefsAAD(k[0].(string)) }},
-			{Name: "pending_email_token", Nullable: true, AADFunc: func(k []any) []byte { return keystore.UserPendingEmailTokenAAD(k[0].(string)) }},
+			{Name: "password_hash", AADFunc: func(k []any) []byte { return UserPasswordHashAAD(k[0].(string)) }},
+			{Name: "prefs", Nullable: true, AADFunc: func(k []any) []byte { return UserPrefsAAD(k[0].(string)) }},
+			{Name: "pending_email_token", Nullable: true, AADFunc: func(k []any) []byte { return UserPendingEmailTokenAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -66,8 +65,8 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "user_agent", AADFunc: func(k []any) []byte { return keystore.UserSessionUserAgentAAD(k[0].(string)) }},
-			{Name: "ip_address", AADFunc: func(k []any) []byte { return keystore.UserSessionIPAddressAAD(k[0].(string)) }},
+			{Name: "user_agent", AADFunc: func(k []any) []byte { return UserSessionUserAgentAAD(k[0].(string)) }},
+			{Name: "ip_address", AADFunc: func(k []any) []byte { return UserSessionIPAddressAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -76,7 +75,7 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "title", AADFunc: func(k []any) []byte { return keystore.WorkspaceTitleAAD(k[0].(string)) }},
+			{Name: "title", AADFunc: func(k []any) []byte { return WorkspaceTitleAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -85,7 +84,7 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "name", AADFunc: func(k []any) []byte { return keystore.WorkspaceSectionNameAAD(k[0].(string)) }},
+			{Name: "name", AADFunc: func(k []any) []byte { return WorkspaceSectionNameAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -94,7 +93,7 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "user_id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "user_id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "state_payload", AADFunc: func(k []any) []byte { return keystore.UserStatePayloadAAD(k[0].(string)) }},
+			{Name: "state_payload", AADFunc: func(k []any) []byte { return UserStatePayloadAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -111,9 +110,9 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 			{Name: "logical", Kind: KeyKindInt64},
 		},
 		Columns: []EncryptedColumnSpec{
-			{Name: "batch_payload", AADFunc: func(k []any) []byte { return keystore.UserOpBatchPayloadAAD(k[0].(string), k[1].(int64), k[2].(int64)) }},
+			{Name: "batch_payload", AADFunc: func(k []any) []byte { return UserOpBatchPayloadAAD(k[0].(string), k[1].(int64), k[2].(int64)) }},
 			{Name: "transitions_payload", AADFunc: func(k []any) []byte {
-				return keystore.UserOpBatchTransitionsAAD(k[0].(string), k[1].(int64), k[2].(int64))
+				return UserOpBatchTransitionsAAD(k[0].(string), k[1].(int64), k[2].(int64))
 			}},
 		},
 	},
@@ -126,7 +125,7 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 			{Name: "op_type", Kind: KeyKindInt32},
 		},
 		Columns: []EncryptedColumnSpec{
-			{Name: "payload", AADFunc: func(k []any) []byte { return keystore.LifecycleOutboxPayloadAAD(k[0].(string), k[1].(int32)) }},
+			{Name: "payload", AADFunc: func(k []any) []byte { return LifecycleOutboxPayloadAAD(k[0].(string), k[1].(int32)) }},
 		},
 	},
 	{
@@ -144,7 +143,7 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		},
 		Columns: []EncryptedColumnSpec{
 			{Name: "response_payload", AADFunc: func(k []any) []byte {
-				return keystore.WorkerTabPublicationResponseAAD(k[0].(string), k[1].(string), k[2].(string))
+				return WorkerTabPublicationResponseAAD(k[0].(string), k[1].(string), k[2].(string))
 			}},
 		},
 	},
@@ -154,13 +153,13 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "client_id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "client_id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "client_name", AADFunc: func(k []any) []byte { return keystore.OAuthClientNameAAD(k[0].(string)) }},
-			{Name: "icon_blob", Nullable: true, AADFunc: func(k []any) []byte { return keystore.OAuthClientIconBlobAAD(k[0].(string)) }},
-			{Name: "icon_media_type", Nullable: true, AADFunc: func(k []any) []byte { return keystore.OAuthClientIconMediaTypeAAD(k[0].(string)) }},
-			{Name: "client_uri", AADFunc: func(k []any) []byte { return keystore.OAuthClientURIAAD(k[0].(string)) }},
-			{Name: "redirect_uris", AADFunc: func(k []any) []byte { return keystore.OAuthClientRedirectURIsAAD(k[0].(string)) }},
-			{Name: "scopes", AADFunc: func(k []any) []byte { return keystore.OAuthClientScopesAAD(k[0].(string)) }},
-			{Name: "grant_types", AADFunc: func(k []any) []byte { return keystore.OAuthClientGrantTypesAAD(k[0].(string)) }},
+			{Name: "client_name", AADFunc: func(k []any) []byte { return OAuthClientNameAAD(k[0].(string)) }},
+			{Name: "icon_blob", Nullable: true, AADFunc: func(k []any) []byte { return OAuthClientIconBlobAAD(k[0].(string)) }},
+			{Name: "icon_media_type", Nullable: true, AADFunc: func(k []any) []byte { return OAuthClientIconMediaTypeAAD(k[0].(string)) }},
+			{Name: "client_uri", AADFunc: func(k []any) []byte { return OAuthClientURIAAD(k[0].(string)) }},
+			{Name: "redirect_uris", AADFunc: func(k []any) []byte { return OAuthClientRedirectURIsAAD(k[0].(string)) }},
+			{Name: "scopes", AADFunc: func(k []any) []byte { return OAuthClientScopesAAD(k[0].(string)) }},
+			{Name: "grant_types", AADFunc: func(k []any) []byte { return OAuthClientGrantTypesAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -169,8 +168,8 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "installation_name", AADFunc: func(k []any) []byte { return keystore.APITokenInstallationNameAAD(k[0].(string)) }},
-			{Name: "granted_scopes", AADFunc: func(k []any) []byte { return keystore.APITokenGrantedScopesAAD(k[0].(string)) }},
+			{Name: "installation_name", AADFunc: func(k []any) []byte { return APITokenInstallationNameAAD(k[0].(string)) }},
+			{Name: "granted_scopes", AADFunc: func(k []any) []byte { return APITokenGrantedScopesAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -179,7 +178,7 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "granted_scopes", AADFunc: func(k []any) []byte { return keystore.DelegationTokenGrantedScopesAAD(k[0].(string)) }},
+			{Name: "granted_scopes", AADFunc: func(k []any) []byte { return DelegationTokenGrantedScopesAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -188,11 +187,11 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "name", AADFunc: func(k []any) []byte { return keystore.OAuthProviderNameAAD(k[0].(string)) }},
-			{Name: "issuer_url", AADFunc: func(k []any) []byte { return keystore.OAuthProviderIssuerURLAAD(k[0].(string)) }},
-			{Name: "client_id", AADFunc: func(k []any) []byte { return keystore.OAuthProviderClientIDAAD(k[0].(string)) }},
-			{Name: "client_secret", AADFunc: func(k []any) []byte { return keystore.OAuthProviderClientSecretAAD(k[0].(string)) }},
-			{Name: "scopes", AADFunc: func(k []any) []byte { return keystore.OAuthProviderScopesAAD(k[0].(string)) }},
+			{Name: "name", AADFunc: func(k []any) []byte { return OAuthProviderNameAAD(k[0].(string)) }},
+			{Name: "issuer_url", AADFunc: func(k []any) []byte { return OAuthProviderIssuerURLAAD(k[0].(string)) }},
+			{Name: "client_id", AADFunc: func(k []any) []byte { return OAuthProviderClientIDAAD(k[0].(string)) }},
+			{Name: "client_secret", AADFunc: func(k []any) []byte { return OAuthProviderClientSecretAAD(k[0].(string)) }},
+			{Name: "scopes", AADFunc: func(k []any) []byte { return OAuthProviderScopesAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -201,10 +200,10 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "id", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "public_key", AADFunc: func(k []any) []byte { return keystore.PasskeyPublicKeyAAD(k[0].(string)) }},
-			{Name: "aaguid", Nullable: true, AADFunc: func(k []any) []byte { return keystore.PasskeyAAGUIDAAD(k[0].(string)) }},
-			{Name: "transports", AADFunc: func(k []any) []byte { return keystore.PasskeyTransportsAAD(k[0].(string)) }},
-			{Name: "friendly_name", AADFunc: func(k []any) []byte { return keystore.PasskeyFriendlyNameAAD(k[0].(string)) }},
+			{Name: "public_key", AADFunc: func(k []any) []byte { return PasskeyPublicKeyAAD(k[0].(string)) }},
+			{Name: "aaguid", Nullable: true, AADFunc: func(k []any) []byte { return PasskeyAAGUIDAAD(k[0].(string)) }},
+			{Name: "transports", AADFunc: func(k []any) []byte { return PasskeyTransportsAAD(k[0].(string)) }},
+			{Name: "friendly_name", AADFunc: func(k []any) []byte { return PasskeyFriendlyNameAAD(k[0].(string)) }},
 		},
 	},
 	{
@@ -213,27 +212,39 @@ var PersistentEncryptedTables = []EncryptedTableSpec{
 		PrimaryKey: []KeyColumnSpec{{Name: "key", Kind: KeyKindString}},
 		AADColumns: []KeyColumnSpec{{Name: "key", Kind: KeyKindString}},
 		Columns: []EncryptedColumnSpec{
-			{Name: "value", Nullable: true, AADFunc: func(k []any) []byte { return keystore.SettingValueAAD(k[0].(string)) }},
-			{Name: "secret", Nullable: true, AADFunc: func(k []any) []byte { return keystore.SettingSecretAAD(k[0].(string)) }},
+			{Name: "value", Nullable: true, AADFunc: func(k []any) []byte { return SettingValueAAD(k[0].(string)) }},
+			{Name: "secret", Nullable: true, AADFunc: func(k []any) []byte { return SettingSecretAAD(k[0].(string)) }},
 		},
 	},
+}
+
+// TransientEncryptedColumnSpec describes one encrypted column in a short-lived
+// table that is excluded from CountKeyVersionRefs and ReencryptAll.
+type TransientEncryptedColumnSpec struct {
+	Name     string
+	Nullable bool
+}
+
+// TransientEncryptedTableSpec describes a short-lived table containing
+// encrypted-at-rest columns. Unlike EncryptedTableSpec, it carries only table
+// and column metadata used by registry/sqlc completeness tests.
+type TransientEncryptedTableSpec struct {
+	Table   string
+	Columns []TransientEncryptedColumnSpec
 }
 
 // TransientEncryptedTables lists the 1 short-lived auto-expiring table (4
 // columns) that is encrypted at rest but excluded from CountKeyVersionRefs and
 // ReencryptAll. Together with PersistentEncryptedTables they must match every
 // keystore.Ciphertext / NullCiphertext override in all three sqlc.yaml files.
-var TransientEncryptedTables = []EncryptedTableSpec{
+var TransientEncryptedTables = []TransientEncryptedTableSpec{
 	{
-		Table:      "oauth_authorization_codes",
-		Label:      "OAuth authorization codes",
-		PrimaryKey: []KeyColumnSpec{{Name: "code_hash", Kind: KeyKindBytes}},
-		AADColumns: []KeyColumnSpec{{Name: "code_hash", Kind: KeyKindBytes}},
-		Columns: []EncryptedColumnSpec{
-			{Name: "code_challenge", AADFunc: func(k []any) []byte { return keystore.OAuthAuthCodeChallengeAAD(k[0].([]byte)) }},
-			{Name: "redirect_uri", AADFunc: func(k []any) []byte { return keystore.OAuthAuthCodeRedirectURIAAD(k[0].([]byte)) }},
-			{Name: "granted_scopes", AADFunc: func(k []any) []byte { return keystore.OAuthAuthCodeGrantedScopesAAD(k[0].([]byte)) }},
-			{Name: "installation_name", AADFunc: func(k []any) []byte { return keystore.OAuthAuthCodeInstallationNameAAD(k[0].([]byte)) }},
+		Table: "oauth_authorization_codes",
+		Columns: []TransientEncryptedColumnSpec{
+			{Name: "code_challenge"},
+			{Name: "redirect_uri"},
+			{Name: "granted_scopes"},
+			{Name: "installation_name"},
 		},
 	},
 }
@@ -248,7 +259,7 @@ func OpenSettingRow(ks *keystore.Keystore, key string, valCt, secCt keystore.Nul
 		UpdatedAt: updatedAt,
 	}
 	if valCt.Valid() {
-		v, err := ks.OpenOptionalString(valCt, keystore.SettingValueAAD(key))
+		v, err := ks.OpenOptionalString(valCt, SettingValueAAD(key))
 		if err != nil {
 			row.ValueDecryptErr = fmt.Errorf("decrypt setting %q value: %w", key, err)
 		} else {
@@ -256,7 +267,7 @@ func OpenSettingRow(ks *keystore.Keystore, key string, valCt, secCt keystore.Nul
 		}
 	}
 	if secCt.Valid() {
-		s, err := ks.OpenOptionalBytes(secCt, keystore.SettingSecretAAD(key))
+		s, err := ks.OpenOptionalBytes(secCt, SettingSecretAAD(key))
 		if err != nil {
 			row.SecretDecryptErr = fmt.Errorf("decrypt setting %q secret: %w", key, err)
 		} else {

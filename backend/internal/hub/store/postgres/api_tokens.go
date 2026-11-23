@@ -9,6 +9,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -36,20 +37,25 @@ func joinedClientOf(name, scopes keystore.Ciphertext, elevationAllowed bool, rev
 	return joinedClient{Name: name, Scopes: scopes, ElevationAllowed: elevationAllowed, RevokedAt: revokedAt.Ptr()}
 }
 
-func (c *pgConn) fromDBAPIToken(t gendb.ApiToken, jc joinedClient) (store.APIToken, error) {
-	clientName, err := c.ks.OpenString(jc.Name, keystore.OAuthClientNameAAD(t.ClientID))
+func (c *pgConn) fromDBAPIToken(t gendb.ApiToken, jc joinedClient, clientCache *sqlutil.JoinedClientCache) (store.APIToken, error) {
+	var clientName, clientScopes string
+	var err error
+	if clientCache != nil {
+		clientName, clientScopes, err = clientCache.Open(t.ClientID, jc.Name, jc.Scopes)
+	} else {
+		clientName, err = c.ks.OpenString(jc.Name, sqlutil.OAuthClientNameAAD(t.ClientID))
+		if err == nil {
+			clientScopes, err = c.ks.OpenString(jc.Scopes, sqlutil.OAuthClientScopesAAD(t.ClientID))
+		}
+	}
 	if err != nil {
 		return store.APIToken{}, err
 	}
-	clientScopes, err := c.ks.OpenString(jc.Scopes, keystore.OAuthClientScopesAAD(t.ClientID))
+	installationName, err := c.ks.OpenString(t.InstallationName, sqlutil.APITokenInstallationNameAAD(t.ID))
 	if err != nil {
 		return store.APIToken{}, err
 	}
-	installationName, err := c.ks.OpenString(t.InstallationName, keystore.APITokenInstallationNameAAD(t.ID))
-	if err != nil {
-		return store.APIToken{}, err
-	}
-	grantedScopes, err := c.ks.OpenString(t.GrantedScopes, keystore.APITokenGrantedScopesAAD(t.ID))
+	grantedScopes, err := c.ks.OpenString(t.GrantedScopes, sqlutil.APITokenGrantedScopesAAD(t.ID))
 	if err != nil {
 		return store.APIToken{}, err
 	}
@@ -80,11 +86,11 @@ func (c *pgConn) fromDBAPIToken(t gendb.ApiToken, jc joinedClient) (store.APITok
 }
 
 func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams) error {
-	installationName, err := s.conn.ks.SealString(p.InstallationName, keystore.APITokenInstallationNameAAD(p.ID))
+	installationName, err := s.conn.ks.SealString(p.InstallationName, sqlutil.APITokenInstallationNameAAD(p.ID))
 	if err != nil {
 		return err
 	}
-	grantedScopes, err := s.conn.ks.SealString(p.GrantedScopes, keystore.APITokenGrantedScopesAAD(p.ID))
+	grantedScopes, err := s.conn.ks.SealString(p.GrantedScopes, sqlutil.APITokenGrantedScopesAAD(p.ID))
 	if err != nil {
 		return err
 	}
@@ -109,7 +115,7 @@ func (s *apiTokenStore) GetByID(ctx context.Context, id string) (*store.APIToken
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	out, err := s.conn.fromDBAPIToken(t.ApiToken, joinedClientOf(t.ClientName, t.ClientScopes, t.ClientElevationAllowed, t.ClientRevokedAt))
+	out, err := s.conn.fromDBAPIToken(t.ApiToken, joinedClientOf(t.ClientName, t.ClientScopes, t.ClientElevationAllowed, t.ClientRevokedAt), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -125,13 +131,14 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.APIToken]{}, nil
 	}
+	clientCache := sqlutil.NewJoinedClientCache(s.conn.ks)
 	return queryPageErr(ctx, p.Limit,
 		func() (gendb.ListAPITokensByUserParams, error) {
 			return listAPITokensByUserParams(owner, p.ClientID, p.Cursor, p.Limit)
 		},
 		s.conn.q.ListAPITokensByUser,
 		func(r gendb.ListAPITokensByUserRow) (store.APIToken, error) {
-			out, err := s.conn.fromDBAPIToken(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt))
+			out, err := s.conn.fromDBAPIToken(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache)
 			if err != nil {
 				return store.APIToken{}, err
 			}
@@ -148,8 +155,8 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 // apiTokenWithOwner assembles the JOINed listing row shared by the ListAll and
 // ListAllByUser query twins (mirroring workerWithOwner), so a field addition
 // to APITokenWithOwner edits one site instead of one closure per query.
-func (c *pgConn) apiTokenWithOwner(t gendb.ApiToken, jc joinedClient, ownerUsername string, ownerDeleted bool) (store.APITokenWithOwner, error) {
-	tok, err := c.fromDBAPIToken(t, jc)
+func (c *pgConn) apiTokenWithOwner(t gendb.ApiToken, jc joinedClient, clientCache *sqlutil.JoinedClientCache, ownerUsername string, ownerDeleted bool) (store.APITokenWithOwner, error) {
+	tok, err := c.fromDBAPIToken(t, jc, clientCache)
 	if err != nil {
 		return store.APITokenWithOwner{}, err
 	}
@@ -157,6 +164,7 @@ func (c *pgConn) apiTokenWithOwner(t gendb.ApiToken, jc joinedClient, ownerUsern
 }
 
 func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensParams) (store.Page[store.APITokenWithOwner], error) {
+	clientCache := sqlutil.NewJoinedClientCache(s.conn.ks)
 	// The admin token listing is a 2x2 matrix over (user_id nil/set) x
 	// (include_revoked false/true), dispatched to four generated queries
 	// (mirroring workers.go ListAdmin). The revoked dimension is split rather
@@ -173,7 +181,7 @@ func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensPar
 			},
 			s.conn.q.ListAllAPITokensByUserIncludingRevoked,
 			func(r gendb.ListAllAPITokensByUserIncludingRevokedRow) (store.APITokenWithOwner, error) {
-				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
+				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache, r.OwnerUsername, r.OwnerDeleted)
 			})
 	case p.UserID != nil:
 		return queryPageErr(ctx, p.Limit,
@@ -182,7 +190,7 @@ func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensPar
 			},
 			s.conn.q.ListAllAPITokensByUser,
 			func(r gendb.ListAllAPITokensByUserRow) (store.APITokenWithOwner, error) {
-				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
+				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache, r.OwnerUsername, r.OwnerDeleted)
 			})
 	case p.IncludeRevoked:
 		return queryPageErr(ctx, p.Limit,
@@ -191,7 +199,7 @@ func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensPar
 			},
 			s.conn.q.ListAllAPITokensIncludingRevoked,
 			func(r gendb.ListAllAPITokensIncludingRevokedRow) (store.APITokenWithOwner, error) {
-				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
+				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache, r.OwnerUsername, r.OwnerDeleted)
 			})
 	default:
 		return queryPageErr(ctx, p.Limit,
@@ -200,7 +208,7 @@ func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensPar
 			},
 			s.conn.q.ListAllAPITokens,
 			func(r gendb.ListAllAPITokensRow) (store.APITokenWithOwner, error) {
-				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
+				return s.conn.apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), clientCache, r.OwnerUsername, r.OwnerDeleted)
 			})
 	}
 }
@@ -210,7 +218,7 @@ func (s *apiTokenStore) Touch(ctx context.Context, id string) error {
 }
 
 func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPITokenRefreshParams) (int64, error) {
-	newGrantedScopes, err := s.conn.ks.SealString(p.NewGrantedScopes, keystore.APITokenGrantedScopesAAD(p.ID))
+	newGrantedScopes, err := s.conn.ks.SealString(p.NewGrantedScopes, sqlutil.APITokenGrantedScopesAAD(p.ID))
 	if err != nil {
 		return 0, err
 	}

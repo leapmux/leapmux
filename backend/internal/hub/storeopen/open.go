@@ -20,22 +20,19 @@ import (
 // configured (or "sqlite" is specified), it falls back to SQLite using the
 // default database path.
 func Open(ctx context.Context, cfg *config.Config, ks *keystore.Keystore) (store.Store, error) {
-	switch cfg.Storage.Type {
-	case "", config.StorageTypeSQLite:
-		return sqlitestore.Open(cfg.SQLiteDBPath(), cfg.SQLiteDBConfig(), ks)
-	case config.StorageTypePostgres:
-		return pgstore.Open(ctx, cfg.Storage.Postgres, ks)
-	case config.StorageTypeMySQL:
-		return mysqlstore.Open(cfg.Storage.MySQL, ks)
-	case config.StorageTypeCockroachDB:
-		return pgstore.Open(ctx, cfg.Storage.CockroachDB, ks)
-	case config.StorageTypeYugabyteDB:
-		return pgstore.Open(ctx, cfg.Storage.YugabyteDB, ks)
-	case config.StorageTypeTiDB:
-		return mysqlstore.Open(cfg.Storage.TiDB, ks)
-	default:
-		return nil, fmt.Errorf("unsupported storage type: %s", cfg.Storage.Type)
+	st, err := OpenWithoutMigrate(ctx, cfg, ks)
+	if err != nil {
+		return nil, err
 	}
+	if err := st.Migrator().Migrate(ctx); err != nil {
+		_ = st.Close()
+		storageType := cfg.Storage.Type
+		if storageType == "" {
+			storageType = config.StorageTypeSQLite
+		}
+		return nil, fmt.Errorf("migrate %s: %w", storageType, err)
+	}
+	return st, nil
 }
 
 // OpenWithoutMigrate opens a Store without running schema migrations or

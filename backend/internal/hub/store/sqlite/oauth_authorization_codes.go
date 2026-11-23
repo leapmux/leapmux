@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -16,19 +16,19 @@ type oauthAuthorizationCodeStore struct{ conn *sqliteConn }
 var _ store.OAuthAuthorizationCodeStore = (*oauthAuthorizationCodeStore)(nil)
 
 func (c *sqliteConn) fromDBOAuthAuthorizationCode(r gendb.OauthAuthorizationCode) (store.OAuthAuthorizationCode, error) {
-	codeChallenge, err := c.ks.OpenString(r.CodeChallenge, keystore.OAuthAuthCodeChallengeAAD(r.CodeHash))
+	codeChallenge, err := c.ks.OpenString(r.CodeChallenge, sqlutil.OAuthAuthCodeChallengeAAD(r.CodeHash))
 	if err != nil {
 		return store.OAuthAuthorizationCode{}, err
 	}
-	redirectURI, err := c.ks.OpenString(r.RedirectUri, keystore.OAuthAuthCodeRedirectURIAAD(r.CodeHash))
+	redirectURI, err := c.ks.OpenString(r.RedirectUri, sqlutil.OAuthAuthCodeRedirectURIAAD(r.CodeHash))
 	if err != nil {
 		return store.OAuthAuthorizationCode{}, err
 	}
-	grantedScopes, err := c.ks.OpenString(r.GrantedScopes, keystore.OAuthAuthCodeGrantedScopesAAD(r.CodeHash))
+	grantedScopes, err := c.ks.OpenString(r.GrantedScopes, sqlutil.OAuthAuthCodeGrantedScopesAAD(r.CodeHash))
 	if err != nil {
 		return store.OAuthAuthorizationCode{}, err
 	}
-	installationName, err := c.ks.OpenString(r.InstallationName, keystore.OAuthAuthCodeInstallationNameAAD(r.CodeHash))
+	installationName, err := c.ks.OpenString(r.InstallationName, sqlutil.OAuthAuthCodeInstallationNameAAD(r.CodeHash))
 	if err != nil {
 		return store.OAuthAuthorizationCode{}, err
 	}
@@ -51,19 +51,19 @@ func (c *sqliteConn) fromDBOAuthAuthorizationCode(r gendb.OauthAuthorizationCode
 }
 
 func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.CreateOAuthAuthorizationCodeParams) error {
-	codeChallenge, err := s.conn.ks.SealString(p.CodeChallenge, keystore.OAuthAuthCodeChallengeAAD(p.CodeHash))
+	codeChallenge, err := s.conn.ks.SealString(p.CodeChallenge, sqlutil.OAuthAuthCodeChallengeAAD(p.CodeHash))
 	if err != nil {
 		return err
 	}
-	redirectURI, err := s.conn.ks.SealString(p.RedirectURI, keystore.OAuthAuthCodeRedirectURIAAD(p.CodeHash))
+	redirectURI, err := s.conn.ks.SealString(p.RedirectURI, sqlutil.OAuthAuthCodeRedirectURIAAD(p.CodeHash))
 	if err != nil {
 		return err
 	}
-	grantedScopes, err := s.conn.ks.SealString(p.GrantedScopes, keystore.OAuthAuthCodeGrantedScopesAAD(p.CodeHash))
+	grantedScopes, err := s.conn.ks.SealString(p.GrantedScopes, sqlutil.OAuthAuthCodeGrantedScopesAAD(p.CodeHash))
 	if err != nil {
 		return err
 	}
-	installationName, err := s.conn.ks.SealString(p.InstallationName, keystore.OAuthAuthCodeInstallationNameAAD(p.CodeHash))
+	installationName, err := s.conn.ks.SealString(p.InstallationName, sqlutil.OAuthAuthCodeInstallationNameAAD(p.CodeHash))
 	if err != nil {
 		return err
 	}

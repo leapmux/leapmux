@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -74,12 +75,22 @@ func (d DoubleRunStore) RunInTransaction(ctx context.Context, fn func(tx store.S
 // is right for a decorator that only ever wraps a test store: a wrapped store
 // that has no helper panics with a message that states the cause, which is a
 // louder answer than a type assertion that silently reports false.
+var _ store.TestableStore = DoubleRunStore{}
+
 func (d DoubleRunStore) TestHelper() store.TestHelper {
 	testable, ok := d.Store.(store.TestableStore)
 	if !ok {
 		panic("storetest: DoubleRunStore wraps a store with no TestHelper")
 	}
-	return testable.TestHelper()
+	return doubleRunTestHelper{TestHelper: testable.TestHelper()}
+}
+
+type doubleRunTestHelper struct {
+	store.TestHelper
+}
+
+func (h doubleRunTestHelper) WithKeystore(ks *keystore.Keystore) store.TestableStore {
+	return DoubleRunStore{Store: h.TestHelper.WithKeystore(ks)}
 }
 
 // RunInUserAuthTransaction takes the identical shape. See RunInTransaction.

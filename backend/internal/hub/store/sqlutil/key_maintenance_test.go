@@ -32,17 +32,7 @@ func openTestSQLiteDB(t *testing.T) *sql.DB {
 }
 
 func sqliteTxRunner(db *sql.DB) TxRunner {
-	return func(ctx context.Context, fn func(*sql.Tx) error) error {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if err := fn(tx); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		return tx.Commit()
-	}
+	return NewSQLTxRunner(db, nil)
 }
 
 func makeKeyRing(t *testing.T) (*keystore.Keystore, *keystore.Keystore, *keystore.Keystore) {
@@ -70,9 +60,9 @@ func TestReencryptAllConcurrentUpdateAndSiblingColumn(t *testing.T) {
 	// - u1: will be fully updated to v2 before its per-row lock runs.
 	// - u2: will have its sibling column (prefs) updated to v2 before lock while password_hash stays v1.
 	seedUser := func(id, username, pw, prefs string) {
-		pwCt, err := ksV1.Encrypt([]byte(pw), keystore.UserPasswordHashAAD(id))
+		pwCt, err := ksV1.Encrypt([]byte(pw), UserPasswordHashAAD(id))
 		require.NoError(t, err)
-		prefsCt, err := ksV1.Encrypt([]byte(prefs), keystore.UserPrefsAAD(id))
+		prefsCt, err := ksV1.Encrypt([]byte(prefs), UserPrefsAAD(id))
 		require.NoError(t, err)
 		_, err = db.ExecContext(ctx,
 			`INSERT INTO users (id, username, password_hash, prefs) VALUES (?, ?, ?, ?)`,
@@ -85,20 +75,20 @@ func TestReencryptAllConcurrentUpdateAndSiblingColumn(t *testing.T) {
 	// Intercept the first two transactions (for u1 and u2) to simulate concurrent
 	// writes landing between page scan and row lock.
 	callIdx := 0
-	var interceptedRunner TxRunner = func(ctx context.Context, fn func(*sql.Tx) error) error {
+	var interceptedRunner TxRunner = func(ctx context.Context, fn func(QueryExec) error) error {
 		callIdx++
 		switch callIdx {
 		case 1:
 			// Simulate concurrent writer updating BOTH columns of u1 to v2 before u1 is locked.
-			pwV2, err := ksV12.Encrypt([]byte("hash-alice-v2-concurrent"), keystore.UserPasswordHashAAD("u1"))
+			pwV2, err := ksV12.Encrypt([]byte("hash-alice-v2-concurrent"), UserPasswordHashAAD("u1"))
 			require.NoError(t, err)
-			prefsV2, err := ksV12.Encrypt([]byte(`{"a":2}`), keystore.UserPrefsAAD("u1"))
+			prefsV2, err := ksV12.Encrypt([]byte(`{"a":2}`), UserPrefsAAD("u1"))
 			require.NoError(t, err)
 			_, err = db.ExecContext(ctx, `UPDATE users SET password_hash = ?, prefs = ? WHERE id = 'u1'`, pwV2, prefsV2)
 			require.NoError(t, err)
 		case 2:
 			// Simulate concurrent writer updating ONLY prefs of u2 to v2 before u2 is locked.
-			prefsV2, err := ksV12.Encrypt([]byte(`{"b":2}`), keystore.UserPrefsAAD("u2"))
+			prefsV2, err := ksV12.Encrypt([]byte(`{"b":2}`), UserPrefsAAD("u2"))
 			require.NoError(t, err)
 			_, err = db.ExecContext(ctx, `UPDATE users SET prefs = ? WHERE id = 'u2'`, prefsV2)
 			require.NoError(t, err)
@@ -106,34 +96,34 @@ func TestReencryptAllConcurrentUpdateAndSiblingColumn(t *testing.T) {
 		return sqliteTxRunner(db)(ctx, fn)
 	}
 
-	res, err := ReencryptAll(ctx, db, interceptedRunner, DialectSQLite, ksV12)
+	res, err := ReencryptAll(ctx, NewSQLQueryExec(db), interceptedRunner, DialectSQLite, ksV12, nil)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), res.ActiveVersion)
 	// u1 was already migrated by the concurrent writer, so only u2 counts as updated.
 	assert.Equal(t, int64(1), res.RowsUpdated)
 
 	// Verify zero v1 refs remain.
-	refs, err := CountKeyVersionRefs(ctx, db, DialectSQLite, 1)
+	refs, err := CountKeyVersionRefs(ctx, NewSQLQueryExec(db), DialectSQLite, 1, nil)
 	require.NoError(t, err)
 	assert.Empty(t, refs)
 
 	// Verify u1 keeps its newer concurrent values and decrypts under v2-only.
 	var pw1, prefs1 []byte
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT password_hash, prefs FROM users WHERE id = 'u1'`).Scan(&pw1, &prefs1))
-	gotPW1, err := ksV2.Decrypt(pw1, keystore.UserPasswordHashAAD("u1"))
+	gotPW1, err := ksV2.Decrypt(pw1, UserPasswordHashAAD("u1"))
 	require.NoError(t, err)
 	assert.Equal(t, "hash-alice-v2-concurrent", string(gotPW1))
-	gotPrefs1, err := ksV2.Decrypt(prefs1, keystore.UserPrefsAAD("u1"))
+	gotPrefs1, err := ksV2.Decrypt(prefs1, UserPrefsAAD("u1"))
 	require.NoError(t, err)
 	assert.Equal(t, `{"a":2}`, string(gotPrefs1))
 
 	// Verify u2 preserved its v2 sibling prefs AND migrated password_hash to v2.
 	var pw2, prefs2 []byte
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT password_hash, prefs FROM users WHERE id = 'u2'`).Scan(&pw2, &prefs2))
-	gotPW2, err := ksV2.Decrypt(pw2, keystore.UserPasswordHashAAD("u2"))
+	gotPW2, err := ksV2.Decrypt(pw2, UserPasswordHashAAD("u2"))
 	require.NoError(t, err)
 	assert.Equal(t, "hash-bob-v1", string(gotPW2))
-	gotPrefs2, err := ksV2.Decrypt(prefs2, keystore.UserPrefsAAD("u2"))
+	gotPrefs2, err := ksV2.Decrypt(prefs2, UserPrefsAAD("u2"))
 	require.NoError(t, err)
 	assert.Equal(t, `{"b":2}`, string(gotPrefs2))
 }
@@ -145,7 +135,7 @@ func TestReencryptAllMultiPageKeysetPagination(t *testing.T) {
 	ksV1, ksV12, ksV2 := makeKeyRing(t)
 
 	// Seed one user under v2 (so only the 250-row tables below have v1 rows).
-	pwV2, err := ksV12.Encrypt([]byte("pw"), keystore.UserPasswordHashAAD("owner-1"))
+	pwV2, err := ksV12.Encrypt([]byte("pw"), UserPasswordHashAAD("owner-1"))
 	require.NoError(t, err)
 	_, err = db.ExecContext(ctx, `INSERT INTO users (id, username, password_hash) VALUES ('owner-1', 'owner', ?)`, pwV2)
 	require.NoError(t, err)
@@ -155,7 +145,7 @@ func TestReencryptAllMultiPageKeysetPagination(t *testing.T) {
 	// 1) Single string PK: workspaces
 	for i := range rowCount {
 		wsID := fmt.Sprintf("ws-%04d", i)
-		titleCt, err := ksV1.Encrypt([]byte(fmt.Sprintf("title-%04d", i)), keystore.WorkspaceTitleAAD(wsID))
+		titleCt, err := ksV1.Encrypt([]byte(fmt.Sprintf("title-%04d", i)), WorkspaceTitleAAD(wsID))
 		require.NoError(t, err)
 		_, err = db.ExecContext(ctx, `INSERT INTO workspaces (id, owner_user_id, title) VALUES (?, 'owner-1', ?)`, wsID, titleCt)
 		require.NoError(t, err)
@@ -164,7 +154,7 @@ func TestReencryptAllMultiPageKeysetPagination(t *testing.T) {
 	// 2) Single int64 PK with separate AAD columns: lifecycle_outbox
 	for i := range rowCount {
 		opType := int32((i % 3) + 1)
-		payloadCt, err := ksV1.Encrypt([]byte(fmt.Sprintf("outbox-%04d", i)), keystore.LifecycleOutboxPayloadAAD("owner-1", opType))
+		payloadCt, err := ksV1.Encrypt([]byte(fmt.Sprintf("outbox-%04d", i)), LifecycleOutboxPayloadAAD("owner-1", opType))
 		require.NoError(t, err)
 		_, err = db.ExecContext(ctx, `INSERT INTO lifecycle_outbox (user_id, op_type, payload) VALUES ('owner-1', ?, ?)`, opType, payloadCt)
 		require.NoError(t, err)
@@ -174,9 +164,9 @@ func TestReencryptAllMultiPageKeysetPagination(t *testing.T) {
 	for i := range rowCount {
 		phys := int64(1000 + (i / 5))
 		logical := int64(i % 5)
-		batchCt, err := ksV1.Encrypt([]byte(fmt.Sprintf("batch-%04d", i)), keystore.UserOpBatchPayloadAAD("owner-1", phys, logical))
+		batchCt, err := ksV1.Encrypt([]byte(fmt.Sprintf("batch-%04d", i)), UserOpBatchPayloadAAD("owner-1", phys, logical))
 		require.NoError(t, err)
-		transCt, err := ksV1.Encrypt([]byte(fmt.Sprintf("trans-%04d", i)), keystore.UserOpBatchTransitionsAAD("owner-1", phys, logical))
+		transCt, err := ksV1.Encrypt([]byte(fmt.Sprintf("trans-%04d", i)), UserOpBatchTransitionsAAD("owner-1", phys, logical))
 		require.NoError(t, err)
 		_, err = db.ExecContext(ctx,
 			`INSERT INTO user_op_batches (user_id, physical_ms, logical, batch_id, batch_payload, transitions_payload, op_count) VALUES ('owner-1', ?, ?, ?, ?, ?, 1)`,
@@ -184,15 +174,15 @@ func TestReencryptAllMultiPageKeysetPagination(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	refs, err := CountKeyVersionRefs(ctx, db, DialectSQLite, 1)
+	refs, err := CountKeyVersionRefs(ctx, NewSQLQueryExec(db), DialectSQLite, 1, nil)
 	require.NoError(t, err)
 	assert.Len(t, refs, 3)
 
-	res, err := ReencryptAll(ctx, db, sqliteTxRunner(db), DialectSQLite, ksV12)
+	res, err := ReencryptAll(ctx, NewSQLQueryExec(db), sqliteTxRunner(db), DialectSQLite, ksV12, nil)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3*rowCount), res.RowsUpdated)
 
-	refsAfter, err := CountKeyVersionRefs(ctx, db, DialectSQLite, 1)
+	refsAfter, err := CountKeyVersionRefs(ctx, NewSQLQueryExec(db), DialectSQLite, 1, nil)
 	require.NoError(t, err)
 	assert.Empty(t, refsAfter)
 
@@ -201,7 +191,7 @@ func TestReencryptAllMultiPageKeysetPagination(t *testing.T) {
 		wsID := fmt.Sprintf("ws-%04d", idx)
 		var ct []byte
 		require.NoError(t, db.QueryRowContext(ctx, `SELECT title FROM workspaces WHERE id = ?`, wsID).Scan(&ct))
-		plain, err := ksV2.Decrypt(ct, keystore.WorkspaceTitleAAD(wsID))
+		plain, err := ksV2.Decrypt(ct, WorkspaceTitleAAD(wsID))
 		require.NoError(t, err)
 		assert.Equal(t, fmt.Sprintf("title-%04d", idx), string(plain))
 
@@ -211,10 +201,10 @@ func TestReencryptAllMultiPageKeysetPagination(t *testing.T) {
 		require.NoError(t, db.QueryRowContext(ctx,
 			`SELECT batch_payload, transitions_payload FROM user_op_batches WHERE user_id = 'owner-1' AND physical_ms = ? AND logical = ?`,
 			phys, logical).Scan(&bCt, &tCt))
-		bPlain, err := ksV2.Decrypt(bCt, keystore.UserOpBatchPayloadAAD("owner-1", phys, logical))
+		bPlain, err := ksV2.Decrypt(bCt, UserOpBatchPayloadAAD("owner-1", phys, logical))
 		require.NoError(t, err)
 		assert.Equal(t, fmt.Sprintf("batch-%04d", idx), string(bPlain))
-		tPlain, err := ksV2.Decrypt(tCt, keystore.UserOpBatchTransitionsAAD("owner-1", phys, logical))
+		tPlain, err := ksV2.Decrypt(tCt, UserOpBatchTransitionsAAD("owner-1", phys, logical))
 		require.NoError(t, err)
 		assert.Equal(t, fmt.Sprintf("trans-%04d", idx), string(tPlain))
 	}
@@ -228,7 +218,7 @@ func TestReencryptAllMultiPageKeysetPagination(t *testing.T) {
 		var opType int32
 		var ct []byte
 		require.NoError(t, rows.Scan(&uid, &opType, &ct))
-		_, err := ksV2.Decrypt(ct, keystore.LifecycleOutboxPayloadAAD(uid, opType))
+		_, err := ksV2.Decrypt(ct, LifecycleOutboxPayloadAAD(uid, opType))
 		require.NoError(t, err)
 		outboxCount++
 	}
@@ -248,12 +238,71 @@ func TestReencryptAllReturnsErrorOnUndecryptableRow(t *testing.T) {
 	ksV99, err := keystore.New(map[uint32][32]byte{99: k99})
 	require.NoError(t, err)
 
-	pwCt, err := ksV99.Encrypt([]byte("pw"), keystore.UserPasswordHashAAD("u-bad"))
+	pwCt, err := ksV99.Encrypt([]byte("pw"), UserPasswordHashAAD("u-bad"))
 	require.NoError(t, err)
 	_, err = db.ExecContext(ctx, `INSERT INTO users (id, username, password_hash) VALUES ('u-bad', 'bad', ?)`, pwCt)
 	require.NoError(t, err)
 
-	_, err = ReencryptAll(ctx, db, sqliteTxRunner(db), DialectSQLite, ksV2)
+	_, err = ReencryptAll(ctx, NewSQLQueryExec(db), sqliteTxRunner(db), DialectSQLite, ksV2, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown key version 99")
+}
+
+func TestReencryptAllReturnsErrorOnEmptyBlobInNullableColumn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := openTestSQLiteDB(t)
+	_, _, ksV2 := makeKeyRing(t)
+
+	// Seed a user whose password_hash is v2 but whose nullable prefs column holds
+	// a corrupt non-NULL zero-length BLOB (x''). ReencryptAll must fail instead of
+	// treating the empty BLOB as SQL NULL.
+	pwCt, err := ksV2.Encrypt([]byte("pw"), UserPasswordHashAAD("u-empty-blob"))
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO users (id, username, password_hash, prefs) VALUES ('u-empty-blob', 'emptyblob', ?, x'')`,
+		pwCt)
+	require.NoError(t, err)
+
+	_, err = ReencryptAll(ctx, NewSQLQueryExec(db), sqliteTxRunner(db), DialectSQLite, ksV2, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty ciphertext in users.prefs")
+}
+
+func TestVerifyKeyringRejectsEmptyBlobAndVersionMismatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := openTestSQLiteDB(t)
+	ksV1, ksV12, ksV2 := makeKeyRing(t)
+
+	// Empty database succeeds.
+	require.NoError(t, VerifyKeyring(ctx, NewSQLQueryExec(db), DialectSQLite, ksV1, nil))
+
+	// Insert a valid v1 user row.
+	pwCt, err := ksV1.Encrypt([]byte("pw"), UserPasswordHashAAD("u-verify"))
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO users (id, username, password_hash) VALUES ('u-verify', 'verify', ?)`, pwCt)
+	require.NoError(t, err)
+
+	require.NoError(t, VerifyKeyring(ctx, NewSQLQueryExec(db), DialectSQLite, ksV1, nil))
+	require.NoError(t, VerifyKeyring(ctx, NewSQLQueryExec(db), DialectSQLite, ksV12, nil))
+
+	// Unretained key version (v2-only ring against v1 row) fails.
+	err = VerifyKeyring(ctx, NewSQLQueryExec(db), DialectSQLite, ksV2, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key version 1")
+
+	// Different key material at the same version (v1) fails cryptographic decrypt check.
+	ksWrongV1, err := keystore.NewRandom()
+	require.NoError(t, err)
+	err = VerifyKeyring(ctx, NewSQLQueryExec(db), DialectSQLite, ksWrongV1, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot decrypt users.password_hash")
+
+	// Corrupt non-NULL empty BLOB in nullable prefs column fails.
+	_, err = db.ExecContext(ctx, `UPDATE users SET prefs = x'' WHERE id = 'u-verify'`)
+	require.NoError(t, err)
+	err = VerifyKeyring(ctx, NewSQLQueryExec(db), DialectSQLite, ksV1, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "malformed ciphertext")
 }

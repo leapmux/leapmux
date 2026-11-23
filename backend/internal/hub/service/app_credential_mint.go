@@ -42,7 +42,7 @@ import (
 // and a site with neither does not compile into anything that runs.
 type mintAuthority struct {
 	actor   *auth.UserInfo
-	grantID string
+	grantID []byte
 }
 
 // mintedByActor permits a mint that a credential performs directly.
@@ -51,9 +51,9 @@ func mintedByActor(actor *auth.UserInfo) mintAuthority {
 }
 
 // mintedByConsentGrant permits a mint that redeems a browser consent. grantID
-// is the resolved grant row's id: a caller that did not load one has nothing
-// to pass.
-func mintedByConsentGrant(grantID string) mintAuthority {
+// is the resolved grant row's digest bytes: a caller that did not load one has
+// nothing to pass.
+func mintedByConsentGrant(grantID []byte) mintAuthority {
 	return mintAuthority{grantID: grantID}
 }
 
@@ -81,7 +81,7 @@ const (
 )
 
 func (m mintAuthority) kind() authorityKind {
-	if m.grantID != "" {
+	if len(m.grantID) > 0 {
 		return consentGrantAuthority
 	}
 	if m.actor == nil {

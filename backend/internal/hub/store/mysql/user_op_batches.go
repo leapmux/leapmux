@@ -3,9 +3,9 @@ package mysql
 import (
 	"context"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -17,11 +17,11 @@ var _ store.UserOpBatchesStore = (*userOpBatchesStore)(nil)
 
 func (s *userOpBatchesStore) Insert(ctx context.Context, p store.InsertUserOpBatchParams) error {
 	userID := p.UserID.String()
-	batchPayload, err := s.conn.ks.SealBytes(p.BatchPayload, keystore.UserOpBatchPayloadAAD(userID, p.PhysicalMs, p.Logical))
+	batchPayload, err := s.conn.ks.SealBytes(p.BatchPayload, sqlutil.UserOpBatchPayloadAAD(userID, p.PhysicalMs, p.Logical))
 	if err != nil {
 		return err
 	}
-	transitionsPayload, err := s.conn.ks.SealBytes(p.TransitionsPayload, keystore.UserOpBatchTransitionsAAD(userID, p.PhysicalMs, p.Logical))
+	transitionsPayload, err := s.conn.ks.SealBytes(p.TransitionsPayload, sqlutil.UserOpBatchTransitionsAAD(userID, p.PhysicalMs, p.Logical))
 	if err != nil {
 		return err
 	}
@@ -56,11 +56,11 @@ func (s *userOpBatchesStore) ListAfter(ctx context.Context, p store.ListUserOpBa
 }
 
 func (c *mysqlConn) toUserOpBatchRow(r gendb.UserOpBatch) (store.UserOpBatchRow, error) {
-	batchPayload, err := c.ks.OpenBytes(r.BatchPayload, keystore.UserOpBatchPayloadAAD(r.UserID, r.PhysicalMs, r.Logical))
+	batchPayload, err := c.ks.OpenBytes(r.BatchPayload, sqlutil.UserOpBatchPayloadAAD(r.UserID, r.PhysicalMs, r.Logical))
 	if err != nil {
 		return store.UserOpBatchRow{}, err
 	}
-	transitionsPayload, err := c.ks.OpenBytes(r.TransitionsPayload, keystore.UserOpBatchTransitionsAAD(r.UserID, r.PhysicalMs, r.Logical))
+	transitionsPayload, err := c.ks.OpenBytes(r.TransitionsPayload, sqlutil.UserOpBatchTransitionsAAD(r.UserID, r.PhysicalMs, r.Logical))
 	if err != nil {
 		return store.UserOpBatchRow{}, err
 	}

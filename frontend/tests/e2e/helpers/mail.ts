@@ -209,3 +209,22 @@ export function extractAccountRecoveryToken(emailBody: string): string {
   }
   return token
 }
+
+/**
+ * The display format of an email verification code, from
+ * `verifycode.Format` (`backend/internal/util/verifycode/verifycode.go`):
+ * two 3-character groups from the 31-character crockford-like alphabet
+ * separated by a hyphen (`XXX-XXX`).
+ */
+const EMAIL_VERIFICATION_CODE_RE = /\/verify-email\?code=([2-9A-HJKMNP-Z]{3}-[2-9A-HJKMNP-Z]{3})(?![A-Za-z0-9-])/
+
+/**
+ * Extract the formatted email verification code (`XXX-XXX`) from a captured
+ * verification email body.
+ */
+export function extractEmailVerificationCode(emailBody: string): string {
+  const match = emailBody.match(EMAIL_VERIFICATION_CODE_RE)
+  if (!match?.[1])
+    throw new Error(`email verification code not found in captured email:\n${emailBody}`)
+  return match[1]
+}

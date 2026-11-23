@@ -277,7 +277,7 @@ leapmux control admin settings get smtp
 leapmux control admin settings reset signup_enabled
 ```
 
-A value is a JSON document; fields it omits keep their current (or default) values, so `{"port":465}` retunes one SMTP field without restating the host. Secret-bearing fields (the SMTP password, captcha signing keys) live in an encrypted half of the row and are written through `set-secret`; they never appear in `list` or `get` output. A key with no stored row sits at its built-in default — `reset` returns a key to exactly that.
+A value is a JSON document; fields it omits keep their current (or default) values, so `{"port":465}` retunes one SMTP field without restating the host. Both the value and secret halves of each row are encrypted at rest with the Hub keystore. Secret-bearing fields (the SMTP password, captcha signing keys) live in the separate `secret` half written through `set-secret` and never appear in `list` or `get` output. A key with no stored row sits at its built-in default — `reset` returns a key to exactly that.
 
 Changes fall into two classes, shown by `settings list`:
 
@@ -471,7 +471,7 @@ A probe establishes liveness only. The Hub ignores a reply that does not match a
 
 ### Keys with no CLI flag
 
-`encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It specifies the encryption key ring and token pepper file that the Hub uses to open its database, encrypt and decrypt all 54 protected columns across 20 Hub tables, and verify peppered bearer digests.
+`encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It specifies the encryption key ring and token pepper file that the Hub uses to open its database, encrypt and decrypt all 37 protected columns across 15 Hub tables, and verify peppered bearer digests.
 
 See [Encryption & Data](/docs/admin/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
 
@@ -557,7 +557,7 @@ Any unrecognized value falls back to `post-quantum` (fail-safe). For what each m
 
 ## Storage backends
 
-The Hub stores all relational data (users, workers, sessions, workspaces, tokens, …) in a single SQL store. Select the backend with `storage.type` (flag `--storage-type`). Every storage setting's CLI flag is `--` plus the dotted key with dots and underscores replaced by hyphens — for example `storage.sqlite.path` → `--storage-sqlite-path`, `storage.postgres.max_conns` → `--storage-postgres-max-conns`. Schema migrations run automatically every time the store is opened — including normal Hub startup — so there is no manual migration step on a fresh database.
+The Hub stores all relational data (users, workers, sessions, workspaces, tokens, …) in a single SQL store. Select the backend with `storage.type` (flag `--storage-type`). Every storage setting's CLI flag is `--` plus the dotted key with dots and underscores replaced by hyphens — for example `storage.sqlite.path` → `--storage-sqlite-path`, `storage.postgres.max_conns` → `--storage-postgres-max-conns`. Schema migrations run automatically on Hub startup (and during first-run bootstrap), so there is no manual migration step on a fresh database; offline `leapmux recover` commands targeting an existing database open the store without auto-migrating.
 
 | `storage.type` | Driver family | Notes                                              |
 | -------------- | ------------- | ------------------------------------------------- |

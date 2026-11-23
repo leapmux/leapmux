@@ -102,6 +102,10 @@ type Migrator interface {
 type UserStore interface {
 	Create(ctx context.Context, p CreateUserParams) error
 	GetByID(ctx context.Context, id string) (*User, error)
+	// GetAuthIdentity returns the plaintext identity columns needed by bearer
+	// validation and refresh generation checks without decrypting password_hash,
+	// prefs, or pending_email_token.
+	GetAuthIdentity(ctx context.Context, id string) (*UserAuthIdentity, error)
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*User, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
@@ -132,8 +136,8 @@ type UserStore interface {
 
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
-	ListAll(ctx context.Context, p ListAllUsersParams) (Page[User], error)
-	Search(ctx context.Context, p SearchUsersParams) (Page[User], error)
+	ListAll(ctx context.Context, p ListAllUsersParams) (Page[UserListItem], error)
+	Search(ctx context.Context, p SearchUsersParams) (Page[UserListItem], error)
 	UpdateProfile(ctx context.Context, p UpdateUserProfileParams) error
 	UpdatePassword(ctx context.Context, p UpdateUserPasswordParams) error
 	UpdateEmail(ctx context.Context, p UpdateUserEmailParams) error
@@ -1018,12 +1022,19 @@ type CleanupStore interface {
 	CompactPublishedRevocationEvents(ctx context.Context, p CompactRevocationEventsParams) (int64, error)
 }
 
-// KeyMaintenanceStore performs key-version inventory and full-database
-// re-encryption across all persistent encrypted tables.
+// KeyMaintenanceStore performs key-version inventory, startup key-ring
+// verification, and full-database re-encryption across all persistent
+// encrypted tables.
 type KeyMaintenanceStore interface {
 	// CountKeyVersionRefs returns each persistent encrypted table that still
 	// holds at least one non-NULL ciphertext encrypted with version.
 	CountKeyVersionRefs(ctx context.Context, version uint32) ([]KeyVersionRefCount, error)
+	// VerifyKeyring verifies that every non-NULL encrypted column across all
+	// persistent encrypted tables bears a well-formed ciphertext whose key
+	// version is retained in the loaded keystore, and confirms cryptographic
+	// decryptability of a sample row for each distinct key version present.
+	// Returns nil when no persistent encrypted data exists yet.
+	VerifyKeyring(ctx context.Context) error
 	// ReencryptAll re-encrypts every outdated encrypted column across all
 	// persistent encrypted tables under the keystore's active version.
 	ReencryptAll(ctx context.Context) (ReencryptResult, error)
@@ -1118,6 +1129,11 @@ type TestHelper interface {
 	// SetSettingSecretRaw overwrites hub_settings.secret with raw ciphertext
 	// bytes for one key so tests can simulate partial-column key skew.
 	SetSettingSecretRaw(ctx context.Context, key string, raw []byte) error
+
+	// CopySettingSecretCiphertext copies the raw persisted hub_settings.secret
+	// bytes from srcKey onto dstKey so tests can verify key-scoped AAD
+	// rejection on real persisted ciphertext.
+	CopySettingSecretCiphertext(ctx context.Context, srcKey, dstKey string) error
 }
 
 // TestableStore is a Store that also provides test helper operations.

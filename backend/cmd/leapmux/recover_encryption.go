@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -16,8 +17,8 @@ func runRotateEncryptionKey(cmd cmdCtx, args []string) error {
 	return withRecoverConfig(cmd, args, nil, func(cfg *config.Config) error {
 		path := cfg.EncryptionKeyFilePath()
 
-		if _, err := keystore.LoadFromFile(path); err != nil {
-			return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", path)
+		if _, err := loadExistingKeystore(path); err != nil {
+			return err
 		}
 
 		newVersion, err := keystore.RotateKey(path)
@@ -43,6 +44,9 @@ func runRemoveEncryptionKey(cmd cmdCtx, args []string) error {
 		v := uint32(*version)
 		if v == ks.ActiveVersion() {
 			return fmt.Errorf("cannot remove active key version %d", v)
+		}
+		if !slices.Contains(ks.Versions(), v) {
+			return fmt.Errorf("keystore: key version %d not in ring", v)
 		}
 
 		// Guard: refuse to remove a version that still encrypts persistent
@@ -90,8 +94,8 @@ func runRotatePepper(cmd cmdCtx, args []string) error {
 		fs.BoolVar(&yes, "yes", false, "confirm these effects after the Hub restarts:\n"+pepperRotationEffects)
 	}, func(cfg *config.Config) error {
 		path := cfg.EncryptionKeyFilePath()
-		if _, err := keystore.LoadFromFile(path); err != nil {
-			return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", path)
+		if _, err := loadExistingKeystore(path); err != nil {
+			return err
 		}
 		if !yes {
 			return fmt.Errorf("rotating the token pepper causes these effects after the Hub restarts:\n%sRe-run with --yes to proceed", pepperRotationEffects)

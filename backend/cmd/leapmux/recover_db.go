@@ -47,6 +47,11 @@ func runDBMigrate(cmd cmdCtx, args []string) error {
 			}
 		} else {
 			if current == latest {
+				// Still run m.Migrate so MigratorWithBuiltIns reconciles built-in
+				// rows even when no schema migration is pending.
+				if err := m.Migrate(ctx); err != nil {
+					return fmt.Errorf("migrate: %w", err)
+				}
 				fmt.Println("Already at latest version.")
 				return nil
 			}

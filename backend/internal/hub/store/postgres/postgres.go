@@ -47,7 +47,7 @@ type pgConn struct {
 
 // Open connects to a PostgreSQL database, runs migrations, seeds built-ins, and returns a Store.
 func Open(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore) (store.Store, error) {
-	st, err := openWithoutMigrate(ctx, cfg, ks)
+	st, err := OpenWithoutMigrate(ctx, cfg, ks)
 	if err != nil {
 		return nil, err
 	}
@@ -55,8 +55,7 @@ func Open(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore)
 	// built-in registrations. Migrator() wraps the raw migrator so every
 	// caller that migrates this store later completes the same sequence.
 	if err := st.Migrator().Migrate(ctx); err != nil {
-		st.conn.shared.pool.Close()
-		_ = st.conn.shared.migrationDB.Close()
+		_ = st.Close()
 		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}
 	return st, nil
@@ -65,10 +64,6 @@ func Open(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore)
 // OpenWithoutMigrate connects to a PostgreSQL database and initializes its
 // migrator without running migrations or seeding built-in rows.
 func OpenWithoutMigrate(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore) (store.Store, error) {
-	return openWithoutMigrate(ctx, cfg, ks)
-}
-
-func openWithoutMigrate(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore) (*pgStore, error) {
 	if ks == nil {
 		return nil, errors.New("open postgres: keystore is required")
 	}

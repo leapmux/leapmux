@@ -8,21 +8,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCiphertextValueRejectsZeroValue(t *testing.T) {
+func TestCiphertextValueRejectsZeroAndTruncatedValues(t *testing.T) {
 	var zero Ciphertext
 	_, err := zero.Value()
 	require.Error(t, err)
+
+	short := Ciphertext{raw: make([]byte, overhead-1)}
+	_, err = short.Value()
+	require.Error(t, err)
 }
 
-func TestCiphertextScanRejectsNilAndEmpty(t *testing.T) {
+func TestCiphertextScanRejectsNilAndEmptyAndClearsPriorState(t *testing.T) {
+	valid := make([]byte, overhead)
+	valid[3] = 1
 	var ct Ciphertext
+	require.NoError(t, ct.Scan(valid))
+	require.NotEmpty(t, ct.Bytes())
+
 	assert.Error(t, ct.Scan(nil))
+	assert.Nil(t, ct.Bytes(), "failed Scan must clear prior Ciphertext bytes")
+
+	require.NoError(t, ct.Scan(valid))
 	assert.Error(t, ct.Scan([]byte{}))
+	assert.Nil(t, ct.Bytes(), "failed empty Scan must clear prior Ciphertext bytes")
+
+	require.NoError(t, ct.Scan(valid))
 	assert.Error(t, ct.Scan("string"))
+	assert.Nil(t, ct.Bytes(), "failed wrong-type Scan must clear prior Ciphertext bytes")
 }
 
 func TestCiphertextScanClonesDriverBuffer(t *testing.T) {
-	driverBuf := []byte{0, 0, 0, 1, 10, 20, 30, 40}
+	driverBuf := make([]byte, overhead)
+	driverBuf[3] = 1
+	driverBuf[4] = 10
+	driverBuf[5] = 20
+	driverBuf[6] = 30
 	original := bytes.Clone(driverBuf)
 
 	var ct Ciphertext
@@ -37,13 +57,12 @@ func TestCiphertextScanClonesDriverBuffer(t *testing.T) {
 	got[5] = 88
 	assert.Equal(t, original, ct.Bytes())
 
-	// Also verify Value() returns a clone.
+	// Value() exposes the stored bytes without an extra copy.
 	val, err := ct.Value()
 	require.NoError(t, err)
 	valBytes, ok := val.([]byte)
 	require.True(t, ok)
-	valBytes[6] = 77
-	assert.Equal(t, original, ct.Bytes())
+	assert.Equal(t, original, valBytes)
 }
 
 func TestNullCiphertextEdgeCases(t *testing.T) {
@@ -64,20 +83,38 @@ func TestNullCiphertextEdgeCases(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("valid with empty raw fails Value", func(t *testing.T) {
+	t.Run("valid with empty or truncated raw fails Value", func(t *testing.T) {
 		nc := NullCiphertext{valid: true}
 		_, err := nc.Value()
 		require.Error(t, err)
+
+		short := NullCiphertext{raw: make([]byte, overhead-1), valid: true}
+		_, err = short.Value()
+		require.Error(t, err)
 	})
 
-	t.Run("scan rejects empty slice and wrong type", func(t *testing.T) {
+	t.Run("scan rejects empty slice and wrong type and clears prior state", func(t *testing.T) {
+		valid := make([]byte, overhead)
+		valid[3] = 1
 		var nc NullCiphertext
+		require.NoError(t, nc.Scan(valid))
+		require.True(t, nc.Valid())
+
 		assert.Error(t, nc.Scan([]byte{}))
+		assert.False(t, nc.Valid(), "failed empty Scan must clear prior NullCiphertext validity")
+		assert.Nil(t, nc.Bytes(), "failed empty Scan must clear prior NullCiphertext bytes")
+
+		require.NoError(t, nc.Scan(valid))
 		assert.Error(t, nc.Scan("string"))
+		assert.False(t, nc.Valid(), "failed wrong-type Scan must clear prior NullCiphertext validity")
+		assert.Nil(t, nc.Bytes(), "failed wrong-type Scan must clear prior NullCiphertext bytes")
 	})
 
-	t.Run("scan valid bytes clones buffer and Value clones output", func(t *testing.T) {
-		buf := []byte{0, 0, 0, 2, 5, 6, 7}
+	t.Run("scan valid bytes clones buffer and Value returns stored bytes", func(t *testing.T) {
+		buf := make([]byte, overhead)
+		buf[3] = 2
+		buf[4] = 5
+		buf[5] = 6
 		original := bytes.Clone(buf)
 
 		var nc NullCiphertext
@@ -87,13 +124,15 @@ func TestNullCiphertextEdgeCases(t *testing.T) {
 		buf[4] = 99
 		assert.Equal(t, original, nc.Bytes())
 
+		gotBytes := nc.Bytes()
+		gotBytes[5] = 88
+		assert.Equal(t, original, nc.Bytes())
+
 		val, err := nc.Value()
 		require.NoError(t, err)
 		valBytes, ok := val.([]byte)
 		require.True(t, ok)
 		assert.Equal(t, original, valBytes)
-		valBytes[5] = 88
-		assert.Equal(t, original, nc.Bytes())
 
 		ver, err := nc.Version()
 		require.NoError(t, err)
@@ -102,7 +141,7 @@ func TestNullCiphertextEdgeCases(t *testing.T) {
 }
 
 func TestFromRawCiphertextAndVersion(t *testing.T) {
-	_, err := FromRawCiphertext(make([]byte, overhead-1))
+	_, err := fromRawCiphertext(make([]byte, overhead-1))
 	require.Error(t, err)
 
 	var zero Ciphertext
@@ -120,10 +159,10 @@ func TestFromRawCiphertextAndVersion(t *testing.T) {
 	raw, err := ks.Encrypt([]byte("hello"), ColumnAAD("t", "c", "k"))
 	require.NoError(t, err)
 
-	ct, err := FromRawCiphertext(raw)
+	ct, err := fromRawCiphertext(raw)
 	require.NoError(t, err)
 
-	// Mutating raw after FromRawCiphertext must not affect ct.
+	// Mutating raw after fromRawCiphertext must not affect ct.
 	raw[0] = 0xff
 	ver, err := ct.Version()
 	require.NoError(t, err)
@@ -281,9 +320,23 @@ func TestSealOpenStringAndBytesEdgeCases(t *testing.T) {
 		assert.Contains(t, err.Error(), "unknown key version")
 	})
 
-	t.Run("nil keystore returns error", func(t *testing.T) {
+	t.Run("nil keystore returns error on every seal and open helper", func(t *testing.T) {
 		var nilKS *Keystore
 		_, err := nilKS.SealString("x", aad)
+		require.Error(t, err)
+		_, err = nilKS.SealOptionalBytes(nil, aad)
+		require.Error(t, err)
+		_, err = nilKS.OpenOptionalBytes(NullCiphertext{}, aad)
+		require.Error(t, err)
+		_, err = nilKS.SealOptionalString(nil, aad)
+		require.Error(t, err)
+		_, err = nilKS.OpenOptionalString(NullCiphertext{}, aad)
+		require.Error(t, err)
+		_, err = nilKS.SealNonEmptyString("", aad)
+		require.Error(t, err)
+		_, err = nilKS.SealNonEmptyBytes(nil, aad)
+		require.Error(t, err)
+		_, err = nilKS.OpenStringOrDefault(NullCiphertext{}, aad, "{}")
 		require.Error(t, err)
 
 		ct, err := ks1.SealString("x", aad)

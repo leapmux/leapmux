@@ -3,9 +3,9 @@ package postgres
 import (
 	"context"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -17,19 +17,19 @@ type passkeyCredentialStore struct {
 var _ store.PasskeyCredentialStore = (*passkeyCredentialStore)(nil)
 
 func (c *pgConn) fromDBPasskeyCredential(r gendb.PasskeyCredential) (store.PasskeyCredential, error) {
-	publicKey, err := c.ks.OpenBytes(r.PublicKey, keystore.PasskeyPublicKeyAAD(r.ID))
+	publicKey, err := c.ks.OpenBytes(r.PublicKey, sqlutil.PasskeyPublicKeyAAD(r.ID))
 	if err != nil {
 		return store.PasskeyCredential{}, err
 	}
-	aaguid, err := c.ks.OpenOptionalBytes(r.Aaguid, keystore.PasskeyAAGUIDAAD(r.ID))
+	aaguid, err := c.ks.OpenOptionalBytes(r.Aaguid, sqlutil.PasskeyAAGUIDAAD(r.ID))
 	if err != nil {
 		return store.PasskeyCredential{}, err
 	}
-	transports, err := c.ks.OpenString(r.Transports, keystore.PasskeyTransportsAAD(r.ID))
+	transports, err := c.ks.OpenString(r.Transports, sqlutil.PasskeyTransportsAAD(r.ID))
 	if err != nil {
 		return store.PasskeyCredential{}, err
 	}
-	friendlyName, err := c.ks.OpenString(r.FriendlyName, keystore.PasskeyFriendlyNameAAD(r.ID))
+	friendlyName, err := c.ks.OpenString(r.FriendlyName, sqlutil.PasskeyFriendlyNameAAD(r.ID))
 	if err != nil {
 		return store.PasskeyCredential{}, err
 	}
@@ -54,19 +54,19 @@ func (s *passkeyCredentialStore) Create(ctx context.Context, p store.CreatePassk
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	publicKey, err := s.conn.ks.SealBytes(p.PublicKey, keystore.PasskeyPublicKeyAAD(p.ID))
+	publicKey, err := s.conn.ks.SealBytes(p.PublicKey, sqlutil.PasskeyPublicKeyAAD(p.ID))
 	if err != nil {
 		return err
 	}
-	aaguid, err := s.conn.ks.SealNonEmptyBytes(p.AAGUID, keystore.PasskeyAAGUIDAAD(p.ID))
+	aaguid, err := s.conn.ks.SealNonEmptyBytes(p.AAGUID, sqlutil.PasskeyAAGUIDAAD(p.ID))
 	if err != nil {
 		return err
 	}
-	transports, err := s.conn.ks.SealString(p.Transports, keystore.PasskeyTransportsAAD(p.ID))
+	transports, err := s.conn.ks.SealString(p.Transports, sqlutil.PasskeyTransportsAAD(p.ID))
 	if err != nil {
 		return err
 	}
-	friendlyName, err := s.conn.ks.SealString(p.FriendlyName, keystore.PasskeyFriendlyNameAAD(p.ID))
+	friendlyName, err := s.conn.ks.SealString(p.FriendlyName, sqlutil.PasskeyFriendlyNameAAD(p.ID))
 	if err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (s *passkeyCredentialStore) UpdateFriendlyName(ctx context.Context, id, use
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	sealedName, err := s.conn.ks.SealString(friendlyName, keystore.PasskeyFriendlyNameAAD(id))
+	sealedName, err := s.conn.ks.SealString(friendlyName, sqlutil.PasskeyFriendlyNameAAD(id))
 	if err != nil {
 		return err
 	}

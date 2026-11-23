@@ -89,10 +89,6 @@ type User struct {
 	DeletedAt             *time.Time
 }
 
-// PageCursor returns the keyset position for user listings (ListAll/Search),
-// which order by (created_at DESC, id DESC).
-func (u User) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
-
 // HasUsablePassword reports whether a password can actually sign this account
 // in, which is a question about the stored HASH and not about
 // FirstCredentialExempt.
@@ -101,6 +97,48 @@ func (u User) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
 // `password_set` on the wire, and what the solo gate asks; the exempt flag
 // answers a different question and reads differently on the bootstrap account.
 func (u User) HasUsablePassword() bool { return password.IsUsable(u.PasswordHash) }
+
+// UserAuthIdentity is the plaintext identity projection read by bearer-token
+// validation and refresh generation checks. Projecting only plaintext columns
+// avoids decrypting password_hash, prefs, and pending_email_token on bearer
+// cache misses and keeps bearer auth working even if an encrypted column cannot
+// decrypt.
+type UserAuthIdentity struct {
+	ID             string
+	Username       string
+	Email          string
+	EmailVerified  bool
+	IsAdmin        bool
+	AuthGeneration int64
+	DeletedAt      *time.Time
+}
+
+// UserListItem is the admin-listing projection returned by UserStore.ListAll
+// and UserStore.Search. It omits encrypted prefs (up to 256 KiB per row) and
+// pending_email_token, decrypting only password_hash so callers can report
+// HasUsablePassword.
+type UserListItem struct {
+	ID                    string
+	Username              string
+	PasswordHash          string
+	DisplayName           string
+	Email                 string
+	EmailVerified         bool
+	PendingEmail          string
+	FirstCredentialExempt bool
+	IsAdmin               bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	AuthGeneration        int64
+	DeletedAt             *time.Time
+}
+
+// PageCursor returns the keyset position for user listings (ListAll/Search),
+// which order by (created_at DESC, id DESC).
+func (u UserListItem) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
+
+// HasUsablePassword reports whether a password can sign this account in.
+func (u UserListItem) HasUsablePassword() bool { return password.IsUsable(u.PasswordHash) }
 
 // UserSession represents an authenticated session.
 //

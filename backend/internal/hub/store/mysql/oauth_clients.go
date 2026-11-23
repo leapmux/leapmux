@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -20,23 +19,7 @@ var _ store.OAuthClientStore = (*oauthClientStore)(nil)
 // Get and List project icon length instead of its bytes. Their generated row
 // types have identical fields and support explicit conversion.
 func (c *mysqlConn) fromGetOAuthClientRow(r gendb.GetOAuthClientRow) (store.OAuthClient, error) {
-	clientName, err := c.ks.OpenString(r.ClientName, keystore.OAuthClientNameAAD(r.ClientID))
-	if err != nil {
-		return store.OAuthClient{}, err
-	}
-	clientURI, err := c.ks.OpenString(r.ClientUri, keystore.OAuthClientURIAAD(r.ClientID))
-	if err != nil {
-		return store.OAuthClient{}, err
-	}
-	redirectURIs, err := c.ks.OpenString(r.RedirectUris, keystore.OAuthClientRedirectURIsAAD(r.ClientID))
-	if err != nil {
-		return store.OAuthClient{}, err
-	}
-	scopes, err := c.ks.OpenString(r.Scopes, keystore.OAuthClientScopesAAD(r.ClientID))
-	if err != nil {
-		return store.OAuthClient{}, err
-	}
-	grantTypes, err := c.ks.OpenString(r.GrantTypes, keystore.OAuthClientGrantTypesAAD(r.ClientID))
+	opened, err := sqlutil.OpenOAuthClientFields(c.ks, r.ClientID, r.ClientName, r.ClientUri, r.RedirectUris, r.Scopes, r.GrantTypes)
 	if err != nil {
 		return store.OAuthClient{}, err
 	}
@@ -44,12 +27,12 @@ func (c *mysqlConn) fromGetOAuthClientRow(r gendb.GetOAuthClientRow) (store.OAut
 		ClientID:           r.ClientID,
 		OwnerUserID:        r.OwnerUserID.String,
 		SecretHash:         r.SecretHash,
-		ClientName:         clientName,
+		ClientName:         opened.ClientName,
 		HasIcon:            sqlutil.CoerceInt64(r.IconBytes) > 0,
-		ClientURI:          clientURI,
-		RedirectURIs:       redirectURIs,
-		Scopes:             scopes,
-		GrantTypes:         grantTypes,
+		ClientURI:          opened.ClientURI,
+		RedirectURIs:       opened.RedirectURIs,
+		Scopes:             opened.Scopes,
+		GrantTypes:         opened.GrantTypes,
 		ElevationAllowed:   r.ElevationAllowed,
 		RegistrationSource: r.RegistrationSource,
 		VerifiedAt:         r.VerifiedAt.Ptr(),
@@ -65,31 +48,11 @@ func (c *mysqlConn) fromListRow(r gendb.ListOAuthClientsRow) (store.OAuthClient,
 }
 
 func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClientParams) (*store.OAuthClient, error) {
-	clientName, err := s.conn.ks.SealString(p.ClientName, keystore.OAuthClientNameAAD(p.ClientID))
+	sealed, err := sqlutil.SealOAuthClientFields(s.conn.ks, p.ClientID, p.ClientName, p.ClientURI, p.RedirectURIs, p.Scopes, p.GrantTypes)
 	if err != nil {
 		return nil, err
 	}
-	iconBlob, err := s.conn.ks.SealNonEmptyBytes(p.IconBlob, keystore.OAuthClientIconBlobAAD(p.ClientID))
-	if err != nil {
-		return nil, err
-	}
-	iconMediaType, err := s.conn.ks.SealNonEmptyString(p.IconMediaType, keystore.OAuthClientIconMediaTypeAAD(p.ClientID))
-	if err != nil {
-		return nil, err
-	}
-	clientURI, err := s.conn.ks.SealString(p.ClientURI, keystore.OAuthClientURIAAD(p.ClientID))
-	if err != nil {
-		return nil, err
-	}
-	redirectURIs, err := s.conn.ks.SealString(p.RedirectURIs, keystore.OAuthClientRedirectURIsAAD(p.ClientID))
-	if err != nil {
-		return nil, err
-	}
-	scopes, err := s.conn.ks.SealString(p.Scopes, keystore.OAuthClientScopesAAD(p.ClientID))
-	if err != nil {
-		return nil, err
-	}
-	grantTypes, err := s.conn.ks.SealString(p.GrantTypes, keystore.OAuthClientGrantTypesAAD(p.ClientID))
+	iconBlob, iconMediaType, err := sqlutil.SealOAuthClientIcon(s.conn.ks, p.ClientID, p.IconBlob, p.IconMediaType)
 	if err != nil {
 		return nil, err
 	}
@@ -103,13 +66,13 @@ func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClient
 		// because no users.id is ever empty.
 		OwnerUserID:        sqlutil.NullNonEmpty(p.OwnerUserID),
 		SecretHash:         p.SecretHash,
-		ClientName:         clientName,
+		ClientName:         sealed.ClientName,
 		IconBlob:           iconBlob,
 		IconMediaType:      iconMediaType,
-		ClientUri:          clientURI,
-		RedirectUris:       redirectURIs,
-		Scopes:             scopes,
-		GrantTypes:         grantTypes,
+		ClientUri:          sealed.ClientURI,
+		RedirectUris:       sealed.RedirectURIs,
+		Scopes:             sealed.Scopes,
+		GrantTypes:         sealed.GrantTypes,
 		ElevationAllowed:   p.ElevationAllowed,
 		RegistrationSource: p.RegistrationSource,
 		VerifiedAt:         sqltime.NewMySQLNullTime(p.VerifiedAt),
@@ -153,11 +116,7 @@ func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	iconBlob, err := s.conn.ks.OpenOptionalBytes(row.IconBlob, keystore.OAuthClientIconBlobAAD(clientID))
-	if err != nil {
-		return nil, err
-	}
-	iconMediaType, err := s.conn.ks.OpenStringOrDefault(row.IconMediaType, keystore.OAuthClientIconMediaTypeAAD(clientID), "")
+	iconBlob, iconMediaType, err := sqlutil.OpenOAuthClientIcon(s.conn.ks, clientID, row.IconBlob, row.IconMediaType)
 	if err != nil {
 		return nil, err
 	}
@@ -171,33 +130,17 @@ func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store
 }
 
 func (s *oauthClientStore) UpsertBuiltIn(ctx context.Context, p store.UpsertBuiltInClientParams) error {
-	clientName, err := s.conn.ks.SealString(p.ClientName, keystore.OAuthClientNameAAD(p.ClientID))
-	if err != nil {
-		return err
-	}
-	clientURI, err := s.conn.ks.SealString(p.ClientURI, keystore.OAuthClientURIAAD(p.ClientID))
-	if err != nil {
-		return err
-	}
-	redirectURIs, err := s.conn.ks.SealString(p.RedirectURIs, keystore.OAuthClientRedirectURIsAAD(p.ClientID))
-	if err != nil {
-		return err
-	}
-	scopes, err := s.conn.ks.SealString(p.Scopes, keystore.OAuthClientScopesAAD(p.ClientID))
-	if err != nil {
-		return err
-	}
-	grantTypes, err := s.conn.ks.SealString(p.GrantTypes, keystore.OAuthClientGrantTypesAAD(p.ClientID))
+	sealed, err := sqlutil.SealOAuthClientFields(s.conn.ks, p.ClientID, p.ClientName, p.ClientURI, p.RedirectURIs, p.Scopes, p.GrantTypes)
 	if err != nil {
 		return err
 	}
 	return s.conn.queryError(s.conn.q.UpsertBuiltInOAuthClient(ctx, gendb.UpsertBuiltInOAuthClientParams{
 		ClientID:           p.ClientID,
-		ClientName:         clientName,
-		ClientUri:          clientURI,
-		RedirectUris:       redirectURIs,
-		Scopes:             scopes,
-		GrantTypes:         grantTypes,
+		ClientName:         sealed.ClientName,
+		ClientUri:          sealed.ClientURI,
+		RedirectUris:       sealed.RedirectURIs,
+		Scopes:             sealed.Scopes,
+		GrantTypes:         sealed.GrantTypes,
 		ElevationAllowed:   p.ElevationAllowed,
 		RegistrationSource: p.RegistrationSource,
 		CreatedAt:          sqltime.NewMySQLTime(p.CreatedAt),
@@ -230,40 +173,20 @@ func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClient
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
-	clientName, err := s.conn.ks.SealString(p.ClientName, keystore.OAuthClientNameAAD(p.ClientID))
-	if err != nil {
-		return 0, err
-	}
-	clientURI, err := s.conn.ks.SealString(p.ClientURI, keystore.OAuthClientURIAAD(p.ClientID))
-	if err != nil {
-		return 0, err
-	}
-	redirectURIs, err := s.conn.ks.SealString(p.RedirectURIs, keystore.OAuthClientRedirectURIsAAD(p.ClientID))
-	if err != nil {
-		return 0, err
-	}
-	scopes, err := s.conn.ks.SealString(p.Scopes, keystore.OAuthClientScopesAAD(p.ClientID))
-	if err != nil {
-		return 0, err
-	}
-	grantTypes, err := s.conn.ks.SealString(p.GrantTypes, keystore.OAuthClientGrantTypesAAD(p.ClientID))
+	sealed, err := sqlutil.SealOAuthClientFields(s.conn.ks, p.ClientID, p.ClientName, p.ClientURI, p.RedirectURIs, p.Scopes, p.GrantTypes)
 	if err != nil {
 		return 0, err
 	}
 	return s.conn.rowsAffected(s.conn.q.UpdateOAuthClient(ctx, gendb.UpdateOAuthClientParams{
 		BuiltinSource: store.OAuthClientSourceBuiltin,
 		ClientID:      p.ClientID,
-		ClientName:    clientName,
-		ClientUri:     clientURI,
-		RedirectUris:  redirectURIs,
-		Scopes:        scopes,
-		GrantTypes:    grantTypes,
+		ClientName:    sealed.ClientName,
+		ClientUri:     sealed.ClientURI,
+		RedirectUris:  sealed.RedirectURIs,
+		Scopes:        sealed.Scopes,
+		GrantTypes:    sealed.GrantTypes,
 		CallerIsAdmin: p.CallerIsAdmin,
-		// An unminted caller matches no OWNED row, because no users.id is ever
-		// empty -- so the hub-wide arm (which needs CallerIsAdmin) is the only
-		// one such a caller could satisfy, and only if the service really did
-		// resolve an administrator.
-		CallerUserID: sql.NullString{String: owner, Valid: true},
+		CallerUserID:  sql.NullString{String: owner, Valid: true},
 	}))
 }
 
@@ -295,11 +218,7 @@ func (s *oauthClientStore) SetIcon(ctx context.Context, p store.SetOAuthClientIc
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
-	iconBlob, err := s.conn.ks.SealNonEmptyBytes(p.IconBlob, keystore.OAuthClientIconBlobAAD(p.ClientID))
-	if err != nil {
-		return 0, err
-	}
-	iconMediaType, err := s.conn.ks.SealNonEmptyString(p.IconMediaType, keystore.OAuthClientIconMediaTypeAAD(p.ClientID))
+	iconBlob, iconMediaType, err := sqlutil.SealOAuthClientIcon(s.conn.ks, p.ClientID, p.IconBlob, p.IconMediaType)
 	if err != nil {
 		return 0, err
 	}
@@ -401,27 +320,15 @@ func (s *oauthClientStore) ListUserTokenRefs(ctx context.Context, clientID strin
 	if user.IsZero() {
 		return nil, store.ErrInvalidArgument
 	}
-	return s.conn.userTokenRefsOf(s.conn.q.ListUserAPITokenIDsForOAuthClient(ctx, gendb.ListUserAPITokenIDsForOAuthClientParams{
+	rows, err := s.conn.q.ListUserAPITokenIDsForOAuthClient(ctx, gendb.ListUserAPITokenIDsForOAuthClientParams{
 		ClientID: clientID,
 		UserID:   user.String(),
-	}))
-}
-
-// userTokenRefsOf maps the per-user query rows. Individual generated token
-// rows support explicit conversion, but their slice types do not.
-func (c *mysqlConn) userTokenRefsOf(rows []gendb.ListUserAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
-	if err != nil {
-		return nil, c.queryError(err)
+	})
+	converted := make([]gendb.ListAPITokenIDsForOAuthClientRow, len(rows))
+	for i, r := range rows {
+		converted[i] = gendb.ListAPITokenIDsForOAuthClientRow(r)
 	}
-	out := make([]store.APITokenRef, 0, len(rows))
-	for _, r := range rows {
-		grantedScopes, err := c.ks.OpenString(r.GrantedScopes, keystore.APITokenGrantedScopesAAD(r.ID))
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, store.APITokenRef{ID: r.ID, UserID: r.UserID, GrantedScopes: grantedScopes})
-	}
-	return out, nil
+	return s.conn.tokenRefsOf(converted, err)
 }
 
 func (s *oauthClientStore) RevokeTokens(ctx context.Context, clientID string) (int64, error) {
@@ -446,7 +353,7 @@ func (c *mysqlConn) tokenRefsOf(rows []gendb.ListAPITokenIDsForOAuthClientRow, e
 	}
 	out := make([]store.APITokenRef, 0, len(rows))
 	for _, r := range rows {
-		grantedScopes, err := c.ks.OpenString(r.GrantedScopes, keystore.APITokenGrantedScopesAAD(r.ID))
+		grantedScopes, err := c.ks.OpenString(r.GrantedScopes, sqlutil.APITokenGrantedScopesAAD(r.ID))
 		if err != nil {
 			return nil, err
 		}

@@ -340,23 +340,33 @@ func withRecoverStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), f
 	return fn(context.Background(), cfg, st)
 }
 
+// loadExistingKeystore loads an existing encryption.key file, reporting a
+// clear operator-facing hint when the file is missing while preserving parse
+// and permission errors verbatim.
+func loadExistingKeystore(keyPath string) (*keystore.Keystore, error) {
+	ks, err := keystore.LoadFromFile(keyPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", keyPath)
+		}
+		return nil, fmt.Errorf("load encryption key from %s: %w", keyPath, err)
+	}
+	return ks, nil
+}
+
 // withRecoverExistingStore opens an existing Hub store without running
 // migrations or seeding built-in rows, and loads encryption.key via
-// LoadFromFile so a missing key file fails loudly instead of generating a new
-// key that cannot decrypt existing rows.
+// loadExistingKeystore so a missing key file fails loudly instead of generating
+// a new key that cannot decrypt existing rows.
 func withRecoverExistingStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store, ks *keystore.Keystore) error) error {
 	cfg, err := parseRecoverStoreConfig(cmd, args, setup)
 	if err != nil {
 		return err
 	}
 
-	keyPath := cfg.EncryptionKeyFilePath()
-	ks, err := keystore.LoadFromFile(keyPath)
+	ks, err := loadExistingKeystore(cfg.EncryptionKeyFilePath())
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", keyPath)
-		}
-		return fmt.Errorf("load encryption key from %s: %w", keyPath, err)
+		return err
 	}
 
 	st, err := storeopen.OpenWithoutMigrate(context.Background(), cfg, ks)

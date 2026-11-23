@@ -27,6 +27,9 @@ const (
 	versionSize = 4
 	// overhead is the minimum ciphertext overhead: version + nonce + Poly1305 tag.
 	overhead = versionSize + nonceSize + chacha20poly1305.Overhead
+	// CiphertextOverhead is the minimum byte length of a valid ciphertext
+	// envelope (4-byte key version + 24-byte nonce + 16-byte Poly1305 tag).
+	CiphertextOverhead = overhead
 	// pepperTag is the reserved line tag for the dedicated token pepper in
 	// the key-ring file. It can never collide with a numeric key version.
 	pepperTag = "pepper"
@@ -380,8 +383,8 @@ func RotateKey(path string) (uint32, error) {
 //
 // RemoveKey only guards against removing the active version; it has no
 // visibility into the database, so callers that can reach the store should
-// first verify no ciphertext still depends on the version (see the admin
-// encryption-key remove command).
+// first verify no ciphertext still depends on the version (see the
+// `leapmux recover encryption-key remove` command).
 func RemoveKey(path string, version uint32) error {
 	return withKeyRingMutation(path, func(path string) error {
 		ks, err := LoadFromFile(path)

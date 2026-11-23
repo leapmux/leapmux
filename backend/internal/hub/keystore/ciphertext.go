@@ -22,10 +22,10 @@ type NullCiphertext struct {
 	valid bool
 }
 
-// FromRawCiphertext wraps raw encrypted bytes into a Ciphertext after verifying
+// fromRawCiphertext wraps raw encrypted bytes into a Ciphertext after verifying
 // that the slice meets the minimum envelope overhead (version + nonce + tag).
 // It clones the input slice.
-func FromRawCiphertext(raw []byte) (Ciphertext, error) {
+func fromRawCiphertext(raw []byte) (Ciphertext, error) {
 	if len(raw) < overhead {
 		return Ciphertext{}, fmt.Errorf("keystore: ciphertext too short: got %d bytes, need at least %d", len(raw), overhead)
 	}
@@ -42,28 +42,28 @@ func (c Ciphertext) Version() (uint32, error) {
 	return CiphertextVersion(c.raw)
 }
 
-// Value implements driver.Valuer. It rejects an uninitialized zero-value
-// Ciphertext so an omitted struct field fails instead of writing empty bytes.
+// Value implements driver.Valuer. It rejects an uninitialized or truncated
+// Ciphertext so an omitted or malformed struct field fails instead of writing
+// invalid ciphertext bytes. Callers and SQL drivers must treat the returned
+// slice as read-only; use Bytes for a defensive copy.
 func (c Ciphertext) Value() (driver.Value, error) {
-	if len(c.raw) == 0 {
-		return nil, errors.New("keystore: refusing to serialize empty Ciphertext")
+	if len(c.raw) < overhead {
+		return nil, fmt.Errorf("keystore: refusing to serialize invalid Ciphertext: got %d bytes, need at least %d", len(c.raw), overhead)
 	}
-	return bytes.Clone(c.raw), nil
+	return c.raw, nil
 }
 
 // Scan implements sql.Scanner for non-NULL binary columns.
 func (c *Ciphertext) Scan(src any) error {
+	c.raw = nil
 	if src == nil {
 		return errors.New("keystore: cannot scan NULL into non-null Ciphertext")
 	}
-	b, ok := src.([]byte)
-	if !ok {
-		return fmt.Errorf("keystore: unsupported scan source %T for Ciphertext", src)
+	b, err := scanCiphertextBytes(src, "Ciphertext")
+	if err != nil {
+		return err
 	}
-	if len(b) == 0 {
-		return errors.New("keystore: cannot scan empty bytes into Ciphertext")
-	}
-	c.raw = bytes.Clone(b)
+	c.raw = b
 	return nil
 }
 
@@ -91,34 +91,44 @@ func (c NullCiphertext) Version() (uint32, error) {
 }
 
 // Value implements driver.Valuer. It returns nil for SQL NULL and rejects a
-// valid NullCiphertext whose raw slice is empty.
+// valid NullCiphertext whose raw slice is shorter than the minimum ciphertext
+// envelope overhead. Callers and SQL drivers must treat the returned slice as
+// read-only; use Bytes for a defensive copy.
 func (c NullCiphertext) Value() (driver.Value, error) {
 	if !c.valid {
 		return nil, nil
 	}
-	if len(c.raw) == 0 {
-		return nil, errors.New("keystore: refusing to serialize empty valid NullCiphertext")
+	if len(c.raw) < overhead {
+		return nil, fmt.Errorf("keystore: refusing to serialize invalid valid NullCiphertext: got %d bytes, need at least %d", len(c.raw), overhead)
 	}
-	return bytes.Clone(c.raw), nil
+	return c.raw, nil
 }
 
 // Scan implements sql.Scanner for nullable binary columns.
 func (c *NullCiphertext) Scan(src any) error {
+	c.raw = nil
+	c.valid = false
 	if src == nil {
-		c.raw = nil
-		c.valid = false
 		return nil
 	}
-	b, ok := src.([]byte)
-	if !ok {
-		return fmt.Errorf("keystore: unsupported scan source %T for NullCiphertext", src)
+	b, err := scanCiphertextBytes(src, "NullCiphertext")
+	if err != nil {
+		return err
 	}
-	if len(b) == 0 {
-		return errors.New("keystore: cannot scan empty bytes into NullCiphertext")
-	}
-	c.raw = bytes.Clone(b)
+	c.raw = b
 	c.valid = true
 	return nil
+}
+
+func scanCiphertextBytes(src any, typeName string) ([]byte, error) {
+	b, ok := src.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("keystore: unsupported scan source %T for %s", src, typeName)
+	}
+	if len(b) == 0 {
+		return nil, fmt.Errorf("keystore: cannot scan empty bytes into %s", typeName)
+	}
+	return bytes.Clone(b), nil
 }
 
 // SealBytes encrypts plain with aad into a non-null Ciphertext.
@@ -166,6 +176,9 @@ func (ks *Keystore) OpenString(ct Ciphertext, aad []byte) (string, error) {
 // SealOptionalBytes encrypts plain into a NullCiphertext. A nil slice encodes
 // as SQL NULL; a non-nil empty slice ([]byte{}) encrypts as a valid ciphertext.
 func (ks *Keystore) SealOptionalBytes(plain, aad []byte) (NullCiphertext, error) {
+	if ks == nil {
+		return NullCiphertext{}, errors.New("keystore: nil keystore")
+	}
 	if plain == nil {
 		return NullCiphertext{}, nil
 	}
@@ -178,6 +191,9 @@ func (ks *Keystore) SealOptionalBytes(plain, aad []byte) (NullCiphertext, error)
 
 // OpenOptionalBytes decrypts ct with aad. SQL NULL returns (nil, nil).
 func (ks *Keystore) OpenOptionalBytes(ct NullCiphertext, aad []byte) ([]byte, error) {
+	if ks == nil {
+		return nil, errors.New("keystore: nil keystore")
+	}
 	if !ct.valid {
 		return nil, nil
 	}
@@ -188,6 +204,9 @@ func (ks *Keystore) OpenOptionalBytes(ct NullCiphertext, aad []byte) ([]byte, er
 // encodes as SQL NULL; a non-nil pointer (including &"") encrypts as a valid
 // ciphertext.
 func (ks *Keystore) SealOptionalString(plain *string, aad []byte) (NullCiphertext, error) {
+	if ks == nil {
+		return NullCiphertext{}, errors.New("keystore: nil keystore")
+	}
 	if plain == nil {
 		return NullCiphertext{}, nil
 	}
@@ -200,6 +219,9 @@ func (ks *Keystore) SealOptionalString(plain *string, aad []byte) (NullCiphertex
 
 // OpenOptionalString decrypts ct with aad. SQL NULL returns (nil, nil).
 func (ks *Keystore) OpenOptionalString(ct NullCiphertext, aad []byte) (*string, error) {
+	if ks == nil {
+		return nil, errors.New("keystore: nil keystore")
+	}
 	if !ct.valid {
 		return nil, nil
 	}
@@ -213,6 +235,9 @@ func (ks *Keystore) OpenOptionalString(ct NullCiphertext, aad []byte) (*string, 
 // SealNonEmptyString encrypts plain into a NullCiphertext when plain is
 // non-empty, or returns SQL NULL when plain is "".
 func (ks *Keystore) SealNonEmptyString(plain string, aad []byte) (NullCiphertext, error) {
+	if ks == nil {
+		return NullCiphertext{}, errors.New("keystore: nil keystore")
+	}
 	if plain == "" {
 		return NullCiphertext{}, nil
 	}
@@ -222,6 +247,9 @@ func (ks *Keystore) SealNonEmptyString(plain string, aad []byte) (NullCiphertext
 // SealNonEmptyBytes encrypts plain into a NullCiphertext when len(plain) > 0,
 // or returns SQL NULL when plain is nil or empty.
 func (ks *Keystore) SealNonEmptyBytes(plain, aad []byte) (NullCiphertext, error) {
+	if ks == nil {
+		return NullCiphertext{}, errors.New("keystore: nil keystore")
+	}
 	if len(plain) == 0 {
 		return NullCiphertext{}, nil
 	}
@@ -230,6 +258,9 @@ func (ks *Keystore) SealNonEmptyBytes(plain, aad []byte) (NullCiphertext, error)
 
 // OpenStringOrDefault decrypts ct with aad, returning fallback when ct is SQL NULL.
 func (ks *Keystore) OpenStringOrDefault(ct NullCiphertext, aad []byte, fallback string) (string, error) {
+	if ks == nil {
+		return "", errors.New("keystore: nil keystore")
+	}
 	if !ct.valid {
 		return fallback, nil
 	}

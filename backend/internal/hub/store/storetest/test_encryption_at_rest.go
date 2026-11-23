@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
@@ -16,6 +17,36 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
+
+func setupRotationKeystores(t *testing.T) (ksV1, ksV12, ksV2 *keystore.Keystore) {
+	t.Helper()
+	k1, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	k2, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ksV1, err = keystore.New(map[uint32][32]byte{1: k1})
+	require.NoError(t, err)
+	ksV12, err = keystore.New(map[uint32][32]byte{1: k1, 2: k2})
+	require.NoError(t, err)
+	ksV2, err = keystore.New(map[uint32][32]byte{2: k2})
+	require.NoError(t, err)
+	return ksV1, ksV12, ksV2
+}
+
+// useSwappedKeystore returns a borrowed store handle using swappedKS, seeds
+// built-in oauth_clients under swappedKS, and registers cleanup to clear all
+// rows encrypted under swappedKS and restore built-ins under st's own keystore
+// before the next subtest's Migrator().Migrate runs VerifyKeyring.
+func useSwappedKeystore(t *testing.T, ctx context.Context, st store.TestableStore, swappedKS *keystore.Keystore, now time.Time) store.TestableStore {
+	t.Helper()
+	swapped := st.TestHelper().WithKeystore(swappedKS)
+	require.NoError(t, store.SeedBuiltIns(ctx, swapped, now))
+	t.Cleanup(func() {
+		_ = st.TestHelper().TruncateAll(context.Background())
+		_ = store.SeedBuiltIns(context.Background(), st, time.Now().UTC())
+	})
+	return swapped
+}
 
 func (s *Suite) testEncryptionAtRest(t *testing.T) {
 	t.Run("no plaintext on disk across all 15 tables", func(t *testing.T) {
@@ -487,24 +518,9 @@ func (s *Suite) testEncryptionAtRest(t *testing.T) {
 		st := s.NewStore(t)
 		now := time.Now().UTC().Truncate(time.Second)
 
-		k1, err := keystore.GenerateKey()
-		require.NoError(t, err)
-		k2, err := keystore.GenerateKey()
-		require.NoError(t, err)
-		ksV1, err := keystore.New(map[uint32][32]byte{1: k1})
-		require.NoError(t, err)
-		ksV12, err := keystore.New(map[uint32][32]byte{1: k1, 2: k2})
-		require.NoError(t, err)
-		ksV2, err := keystore.New(map[uint32][32]byte{2: k2})
-		require.NoError(t, err)
+		ksV1, ksV12, ksV2 := setupRotationKeystores(t)
 
-		stV1 := st.TestHelper().WithKeystore(ksV1)
-		// Re-seed built-in oauth_clients under ksV1 so rows preserved by TruncateAll
-		// do not stay encrypted under st's original random keystore.
-		require.NoError(t, store.SeedBuiltIns(ctx, stV1, now))
-		t.Cleanup(func() {
-			_ = store.SeedBuiltIns(ctx, st, time.Now().UTC())
-		})
+		stV1 := useSwappedKeystore(t, ctx, st, ksV1, now)
 
 		// Seed 1 row in each of the 14 persistent tables under v1.
 		userID := id.Generate()
@@ -796,22 +812,9 @@ func (s *Suite) testEncryptionAtRest(t *testing.T) {
 		st := s.NewStore(t)
 		now := time.Now().UTC().Truncate(time.Second)
 
-		k1, err := keystore.GenerateKey()
-		require.NoError(t, err)
-		k2, err := keystore.GenerateKey()
-		require.NoError(t, err)
-		ksV1, err := keystore.New(map[uint32][32]byte{1: k1})
-		require.NoError(t, err)
-		ksV12, err := keystore.New(map[uint32][32]byte{1: k1, 2: k2})
-		require.NoError(t, err)
-		ksV2, err := keystore.New(map[uint32][32]byte{2: k2})
-		require.NoError(t, err)
+		ksV1, ksV12, ksV2 := setupRotationKeystores(t)
 
-		stV1 := st.TestHelper().WithKeystore(ksV1)
-		require.NoError(t, store.SeedBuiltIns(ctx, stV1, now))
-		t.Cleanup(func() {
-			_ = store.SeedBuiltIns(ctx, st, time.Now().UTC())
-		})
+		stV1 := useSwappedKeystore(t, ctx, st, ksV1, now)
 
 		userID := id.Generate()
 		require.NoError(t, stV1.Users().Create(ctx, store.CreateUserParams{
@@ -870,5 +873,155 @@ func (s *Suite) testEncryptionAtRest(t *testing.T) {
 		gotA, err := st.Workspaces().GetByID(ctx, wsA)
 		require.NoError(t, err)
 		assert.Equal(t, "Workspace Alpha", gotA.Title)
+	})
+
+	t.Run("key maintenance inside caller transaction and borrowed WithKeystore close safety", func(t *testing.T) {
+		st := s.NewStore(t)
+		now := time.Now().UTC().Truncate(time.Second)
+		ksV1, ksV12, ksV2 := setupRotationKeystores(t)
+
+		stV1 := useSwappedKeystore(t, ctx, st, ksV1, now)
+
+		// Closing a borrowed WithKeystore handle must be a no-op and leave st open.
+		require.NoError(t, stV1.Close())
+
+		u := SeedUser(t, stV1, "intx-km-user")
+		wsID := SeedWorkspace(t, stV1, u.ID, "InTx Workspace")
+
+		stV12 := st.TestHelper().WithKeystore(ksV12)
+		require.NoError(t, stV12.RunInTransaction(ctx, func(tx store.Store) error {
+			refs, err := tx.KeyMaintenance().CountKeyVersionRefs(ctx, 1)
+			if err != nil {
+				return err
+			}
+			require.NotEmpty(t, refs, "in-tx CountKeyVersionRefs must see v1 refs")
+
+			res, err := tx.KeyMaintenance().ReencryptAll(ctx)
+			if err != nil {
+				return err
+			}
+			assert.GreaterOrEqual(t, res.RowsUpdated, int64(2))
+
+			refsAfter, err := tx.KeyMaintenance().CountKeyVersionRefs(ctx, 1)
+			if err != nil {
+				return err
+			}
+			assert.Empty(t, refsAfter, "in-tx CountKeyVersionRefs must see re-encrypted writes")
+			return nil
+		}))
+
+		stV2 := st.TestHelper().WithKeystore(ksV2)
+		gotWS, err := stV2.Workspaces().GetByID(ctx, wsID)
+		require.NoError(t, err)
+		assert.Equal(t, "InTx Workspace", gotWS.Title)
+	})
+
+	t.Run("plaintext user mutations succeed when encrypted columns cannot decrypt", func(t *testing.T) {
+		st := s.NewStore(t)
+		now := time.Now().UTC().Truncate(time.Second)
+		ksV1, _, ksV2 := setupRotationKeystores(t)
+
+		stV1 := useSwappedKeystore(t, ctx, st, ksV1, now)
+		adminA := SeedUser(t, stV1, "adm-plain-a")
+		adminB := SeedUser(t, stV1, "adm-plain-b")
+		require.NoError(t, stV1.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{ID: adminA.ID, IsAdmin: true}))
+		require.NoError(t, stV1.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{ID: adminB.ID, IsAdmin: true}))
+
+		// Under v2-only, adminB's password_hash cannot decrypt, yet UpdateAdmin
+		// (which uses GetLiveUserForUpdate) must still succeed.
+		stV2 := st.TestHelper().WithKeystore(ksV2)
+		require.NoError(t, stV2.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{ID: adminB.ID, IsAdmin: false}))
+	})
+
+	t.Run("VerifyKeyring and Migrator protect built-ins against wrong or incomplete key ring", func(t *testing.T) {
+		st := s.NewStore(t)
+		now := time.Now().UTC().Truncate(time.Second)
+		ksV1, ksV12, ksV2 := setupRotationKeystores(t)
+		ksWrongV1, err := keystore.NewRandom()
+		require.NoError(t, err)
+
+		stV1 := useSwappedKeystore(t, ctx, st, ksV1, now)
+		_ = SeedUser(t, stV1, "verify-kr-user")
+
+		// Matching rings succeed (both v1-only and dual {v1,v2}).
+		require.NoError(t, stV1.KeyMaintenance().VerifyKeyring(ctx))
+		require.NoError(t, st.TestHelper().WithKeystore(ksV12).KeyMaintenance().VerifyKeyring(ctx))
+
+		// Unretained version (v2-only) fails both VerifyKeyring and Migrate without touching built-ins.
+		stV2 := st.TestHelper().WithKeystore(ksV2)
+		require.Error(t, stV2.KeyMaintenance().VerifyKeyring(ctx))
+		require.Error(t, stV2.Migrator().Migrate(ctx))
+
+		// Wrong v1 key material (same version number, different key bytes) fails both without touching built-ins.
+		stWrongV1 := st.TestHelper().WithKeystore(ksWrongV1)
+		require.Error(t, stWrongV1.KeyMaintenance().VerifyKeyring(ctx))
+		require.Error(t, stWrongV1.Migrator().Migrate(ctx))
+
+		// Built-in oauth_clients must remain intact and readable under the original v1 keystore.
+		for _, app := range oauthapp.BuiltInRegistrations() {
+			got, getErr := stV1.OAuthClients().Get(ctx, app.ClientID)
+			require.NoError(t, getErr, "built-in %s must not be overwritten by failed wrong-key Migrate", app.ClientID)
+			assert.Equal(t, app.ClientName, got.ClientName)
+		}
+	})
+
+	t.Run("GetAuthIdentity and ListAll/Search skip unused encrypted user columns", func(t *testing.T) {
+		st := s.NewStore(t)
+		now := time.Now().UTC().Truncate(time.Second)
+		ksV1, _, ksV2 := setupRotationKeystores(t)
+
+		stV1 := useSwappedKeystore(t, ctx, st, ksV1, now)
+
+		u := SeedUser(t, stV1, "narrow-proj-user")
+		require.NoError(t, stV1.Users().UpdatePrefs(ctx, store.UpdateUserPrefsParams{
+			ID:    u.ID,
+			Prefs: `{"theme":"dark"}`,
+		}))
+		exp := now.Add(time.Hour)
+		ok, err := stV1.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
+			ID:                      u.ID,
+			PendingEmail:            "narrow@example.com",
+			PendingEmailToken:       "ABC-123",
+			PendingEmailExpiresAt:   &exp,
+			PendingEmailUnblockedAt: now,
+			Now:                     now,
+		})
+		require.NoError(t, err)
+		require.True(t, ok)
+
+		// Under v2-only, none of the encrypted columns can decrypt, yet GetAuthIdentity
+		// (used by bearer auth) must succeed.
+		stV2 := st.TestHelper().WithKeystore(ksV2)
+		ident, err := stV2.Users().GetAuthIdentity(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, u.ID, ident.ID)
+		assert.Equal(t, u.Username, ident.Username)
+
+		// Re-encrypt ONLY password_hash under v2 while prefs and pending_email_token
+		// stay encrypted under v1. Full GetByID must fail on prefs/pending_email_token,
+		// whereas ListAll and Search must succeed and report HasUsablePassword().
+		require.NoError(t, stV2.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
+			ID:           u.ID,
+			PasswordHash: "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA",
+		}))
+
+		_, err = stV2.Users().GetByID(ctx, u.ID)
+		require.Error(t, err, "full GetByID must still fail when prefs/pending_email_token cannot decrypt")
+
+		listPage, err := stV2.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Limit: 10}})
+		require.NoError(t, err, "ListAll must skip decrypting prefs and pending_email_token")
+		require.Len(t, listPage.Rows, 1)
+		assert.Equal(t, u.ID, listPage.Rows[0].ID)
+		assert.True(t, listPage.Rows[0].HasUsablePassword())
+
+		q := "narrow-proj"
+		searchPage, err := stV2.Users().Search(ctx, store.SearchUsersParams{
+			Query:      &q,
+			PageParams: store.PageParams{Limit: 10},
+		})
+		require.NoError(t, err, "Search must skip decrypting prefs and pending_email_token")
+		require.Len(t, searchPage.Rows, 1)
+		assert.Equal(t, u.ID, searchPage.Rows[0].ID)
+		assert.True(t, searchPage.Rows[0].HasUsablePassword())
 	})
 }

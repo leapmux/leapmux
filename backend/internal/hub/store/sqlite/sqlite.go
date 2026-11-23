@@ -50,7 +50,7 @@ type sqliteConn struct {
 
 // Open opens a SQLite database, runs migrations, seeds built-ins, and returns a Store.
 func Open(path string, cfg sqlitedb.Config, ks *keystore.Keystore) (store.Store, error) {
-	st, err := openWithoutMigrate(path, cfg, ks)
+	st, err := OpenWithoutMigrate(path, cfg, ks)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func Open(path string, cfg sqlitedb.Config, ks *keystore.Keystore) (store.Store,
 	// built-in registrations. Migrator() wraps the raw migrator so every
 	// caller that migrates this store later completes the same sequence.
 	if err := st.Migrator().Migrate(context.Background()); err != nil {
-		_ = st.conn.shared.db.Close()
+		_ = st.Close()
 		return nil, fmt.Errorf("migrate sqlite: %w", err)
 	}
 	return st, nil
@@ -67,10 +67,6 @@ func Open(path string, cfg sqlitedb.Config, ks *keystore.Keystore) (store.Store,
 // OpenWithoutMigrate opens a SQLite database and initializes its migrator
 // without running migrations or seeding built-in rows.
 func OpenWithoutMigrate(path string, cfg sqlitedb.Config, ks *keystore.Keystore) (store.Store, error) {
-	return openWithoutMigrate(path, cfg, ks)
-}
-
-func openWithoutMigrate(path string, cfg sqlitedb.Config, ks *keystore.Keystore) (*sqliteStore, error) {
 	if ks == nil {
 		return nil, errors.New("open sqlite: keystore is required")
 	}

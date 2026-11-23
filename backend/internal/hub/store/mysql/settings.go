@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -50,11 +49,7 @@ func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow,
 }
 
 func (s *settingsStore) Upsert(ctx context.Context, p store.UpsertSettingParams) error {
-	valCt, err := s.conn.ks.SealOptionalString(p.Value, keystore.SettingValueAAD(p.Key))
-	if err != nil {
-		return err
-	}
-	secCt, err := s.conn.ks.SealNonEmptyBytes(p.Secret, keystore.SettingSecretAAD(p.Key))
+	valCt, secCt, err := sqlutil.SealSetting(s.conn.ks, p)
 	if err != nil {
 		return err
 	}
@@ -69,11 +64,7 @@ func (s *settingsStore) Upsert(ctx context.Context, p store.UpsertSettingParams)
 // not a fault: a racing provisioner won. See the query comment for why
 // the duplicate arrives as error 1062 rather than an affected-rows count.
 func (s *settingsStore) InsertIfAbsent(ctx context.Context, p store.UpsertSettingParams) (bool, error) {
-	valCt, err := s.conn.ks.SealOptionalString(p.Value, keystore.SettingValueAAD(p.Key))
-	if err != nil {
-		return false, err
-	}
-	secCt, err := s.conn.ks.SealNonEmptyBytes(p.Secret, keystore.SettingSecretAAD(p.Key))
+	valCt, secCt, err := sqlutil.SealSetting(s.conn.ks, p)
 	if err != nil {
 		return false, err
 	}

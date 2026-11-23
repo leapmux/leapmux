@@ -14,6 +14,14 @@ import (
 // testableMySQLStore extends mysqlStore with test helper operations.
 type testableMySQLStore struct {
 	*mysqlStore
+	borrowed bool
+}
+
+func (s *testableMySQLStore) Close() error {
+	if s.borrowed {
+		return nil
+	}
+	return s.mysqlStore.Close()
 }
 
 var _ store.TestableStore = (*testableMySQLStore)(nil)
@@ -25,12 +33,6 @@ func OpenTestable(cfg config.MySQLConfig) (store.TestableStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return OpenTestableWithKeystore(cfg, ks)
-}
-
-// OpenTestableWithKeystore opens a MySQL store using ks that also implements
-// store.TestableStore. This is intended for use in tests only.
-func OpenTestableWithKeystore(cfg config.MySQLConfig, ks *keystore.Keystore) (store.TestableStore, error) {
 	st, err := Open(cfg, ks)
 	if err != nil {
 		return nil, err
@@ -52,23 +54,23 @@ func (h *mysqlTestHelper) exec(ctx context.Context, query string, args ...any) e
 }
 
 func (h *mysqlTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
-	return sqlutil.SetDeletedAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, id, deletedAt)
+	return sqlutil.SetDeletedAt(ctx, h.exec, sqlutil.DialectMySQL, entity, id, deletedAt)
 }
 
 func (h *mysqlTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity, id string, createdAt time.Time) error {
-	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, id, createdAt)
+	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.DialectMySQL, entity, id, createdAt)
 }
 
 func (h *mysqlTestHelper) SetLastActiveAt(ctx context.Context, id string, lastActiveAt time.Time) error {
-	return sqlutil.SetLastActiveAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, id, lastActiveAt)
+	return sqlutil.SetLastActiveAt(ctx, h.exec, sqlutil.DialectMySQL, id, lastActiveAt)
 }
 
 func (h *mysqlTestHelper) SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error {
-	return sqlutil.SetDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, workerID, deregisteringAt)
+	return sqlutil.SetDeregisteringAt(ctx, h.exec, sqlutil.DialectMySQL, workerID, deregisteringAt)
 }
 
 func (h *mysqlTestHelper) ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error {
-	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, workerID)
+	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.DialectMySQL, workerID)
 }
 
 // ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
@@ -94,17 +96,25 @@ func (h *mysqlTestHelper) TableHoldsText(ctx context.Context, table, text string
 }
 
 func (h *mysqlTestHelper) WithKeystore(ks *keystore.Keystore) store.TestableStore {
+	if ks == nil {
+		panic("mysql: WithKeystore requires a non-nil keystore")
+	}
 	return &testableMySQLStore{
 		mysqlStore: &mysqlStore{
 			conn: newPoolConn(h.shared, h.shared.db, ks),
 		},
+		borrowed: true,
 	}
 }
 
 func (h *mysqlTestHelper) CopyWorkspaceTitleCiphertext(ctx context.Context, srcWorkspaceID, dstWorkspaceID string) error {
-	return sqlutil.CopyWorkspaceTitleCiphertext(ctx, h.shared.db, h.exec, sqlutil.ParameterStyleQuestionMark, srcWorkspaceID, dstWorkspaceID)
+	return sqlutil.CopyWorkspaceTitleCiphertext(ctx, h.shared.db, h.exec, sqlutil.DialectMySQL, srcWorkspaceID, dstWorkspaceID)
 }
 
 func (h *mysqlTestHelper) SetSettingSecretRaw(ctx context.Context, key string, raw []byte) error {
-	return sqlutil.SetSettingSecretRaw(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, key, raw)
+	return sqlutil.SetSettingSecretRaw(ctx, h.exec, sqlutil.DialectMySQL, key, raw)
+}
+
+func (h *mysqlTestHelper) CopySettingSecretCiphertext(ctx context.Context, srcKey, dstKey string) error {
+	return sqlutil.CopySettingSecretCiphertext(ctx, h.shared.db, h.exec, sqlutil.DialectMySQL, srcKey, dstKey)
 }

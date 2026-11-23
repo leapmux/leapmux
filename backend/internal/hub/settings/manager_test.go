@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -421,7 +422,7 @@ func TestUpdateRefusesToDropUndecryptableSecret(t *testing.T) {
 	m2 := NewManager(st, []Descriptor{KeySMTP})
 	require.NoError(t, m2.Load(ctx))
 	require.NoError(t, m2.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls","password":"temp"}`)))
-	rawSecret, err := ks1.SealBytes([]byte(`{"password":"s3cret"}`), keystore.SettingSecretAAD(KeySMTP.Name()))
+	rawSecret, err := ks1.SealBytes([]byte(`{"password":"s3cret"}`), sqlutil.SettingSecretAAD(KeySMTP.Name()))
 	require.NoError(t, err)
 	require.NoError(t, st.TestHelper().SetSettingSecretRaw(ctx, KeySMTP.Name(), rawSecret.Bytes()))
 
@@ -460,7 +461,7 @@ func undecryptableSMTPManager(t *testing.T) (*Manager, context.Context) {
 	require.NoError(t, m.Load(ctx))
 	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(
 		`{"host":"smtp.example.com","from_address":"hub@example.com","password":"temp"}`)))
-	rawSecret, err := ks1.SealBytes([]byte(`{"password":"original"}`), keystore.SettingSecretAAD(KeySMTP.Name()))
+	rawSecret, err := ks1.SealBytes([]byte(`{"password":"original"}`), sqlutil.SettingSecretAAD(KeySMTP.Name()))
 	require.NoError(t, err)
 	require.NoError(t, st.TestHelper().SetSettingSecretRaw(ctx, KeySMTP.Name(), rawSecret.Bytes()))
 	require.NoError(t, m.Load(ctx))

@@ -5,9 +5,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
 
--- Current live-user projection for locked mutations.
+-- Plaintext identity projection for bearer-token validation and refresh
+-- generation checks. Omits password_hash, prefs, and pending_email_token so
+-- bearer cache misses perform zero AEAD decryptions and never read prefs blobs.
+-- name: GetUserAuthIdentity :one
+SELECT id, username, email, email_verified, is_admin, auth_generation, deleted_at
+FROM users WHERE id = ? AND deleted_at IS NULL;
+
+-- Current live-user projection for locked mutations. Projects only the four
+-- plaintext columns cached in UserInfo so mutations avoid decrypting encrypted
+-- columns and remain usable even if an encrypted column cannot decrypt.
 -- name: GetLiveUserForUpdate :one
-SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
+SELECT username, email, email_verified, is_admin FROM users WHERE id = ? AND deleted_at IS NULL;
 
 -- name: LockOtherAdministrator :one
 SELECT id FROM users WHERE is_admin = 1 AND deleted_at IS NULL AND id <> ? LIMIT 1;
@@ -56,7 +65,10 @@ SELECT EXISTS(
 );
 
 -- name: ListAllUsers :many
-SELECT * FROM users WHERE deleted_at IS NULL
+SELECT id, username, password_hash, display_name, email, email_verified,
+       pending_email, first_credential_exempt, is_admin, created_at, updated_at,
+       auth_generation, deleted_at
+FROM users WHERE deleted_at IS NULL
   AND (sqlc.narg(cursor_time) IS NULL
        OR created_at < sqlc.narg(cursor_time)
        OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
@@ -74,7 +86,10 @@ ORDER BY created_at DESC, id DESC LIMIT sqlc.arg(limit);
 -- char on SQLite (unlike Postgres/MySQL, whose default is backslash), and
 -- sqlc's SQLite grammar cannot parse the `LIKE ? ESCAPE '\'` clause form.
 -- name: SearchUsers :many
-SELECT * FROM users
+SELECT id, username, password_hash, display_name, email, email_verified,
+       pending_email, first_credential_exempt, is_admin, created_at, updated_at,
+       auth_generation, deleted_at
+FROM users
 WHERE deleted_at IS NULL
   AND (sqlc.narg(query) IS NULL
    OR like(sqlc.narg(query), username, '\')

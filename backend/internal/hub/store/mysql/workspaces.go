@@ -3,9 +3,9 @@ package mysql
 import (
 	"context"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -16,7 +16,7 @@ type workspaceStore struct {
 var _ store.WorkspaceStore = (*workspaceStore)(nil)
 
 func (c *mysqlConn) fromDBWorkspace(w gendb.Workspace) (store.Workspace, error) {
-	title, err := c.ks.OpenString(w.Title, keystore.WorkspaceTitleAAD(w.ID))
+	title, err := c.ks.OpenString(w.Title, sqlutil.WorkspaceTitleAAD(w.ID))
 	if err != nil {
 		return store.Workspace{}, err
 	}
@@ -30,7 +30,7 @@ func (c *mysqlConn) fromDBWorkspace(w gendb.Workspace) (store.Workspace, error) 
 }
 
 func (s *workspaceStore) Create(ctx context.Context, p store.CreateWorkspaceParams) error {
-	title, err := s.conn.ks.SealString(p.Title, keystore.WorkspaceTitleAAD(p.ID))
+	title, err := s.conn.ks.SealString(p.Title, sqlutil.WorkspaceTitleAAD(p.ID))
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspacePara
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	title, err := s.conn.ks.SealString(p.Title, keystore.WorkspaceTitleAAD(p.ID))
+	title, err := s.conn.ks.SealString(p.Title, sqlutil.WorkspaceTitleAAD(p.ID))
 	if err != nil {
 		return 0, err
 	}

@@ -5,9 +5,9 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -18,7 +18,7 @@ type workspaceSectionStore struct {
 var _ store.WorkspaceSectionStore = (*workspaceSectionStore)(nil)
 
 func (c *sqliteConn) fromDBWorkspaceSection(s gendb.WorkspaceSection) (store.WorkspaceSection, error) {
-	name, err := c.ks.OpenString(s.Name, keystore.WorkspaceSectionNameAAD(s.ID))
+	name, err := c.ks.OpenString(s.Name, sqlutil.WorkspaceSectionNameAAD(s.ID))
 	if err != nil {
 		return store.WorkspaceSection{}, err
 	}
@@ -34,7 +34,7 @@ func (c *sqliteConn) fromDBWorkspaceSection(s gendb.WorkspaceSection) (store.Wor
 }
 
 func (s *workspaceSectionStore) Create(ctx context.Context, p store.CreateWorkspaceSectionParams) error {
-	name, err := s.conn.ks.SealString(p.Name, keystore.WorkspaceSectionNameAAD(p.ID))
+	name, err := s.conn.ks.SealString(p.Name, sqlutil.WorkspaceSectionNameAAD(p.ID))
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorksp
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	name, err := s.conn.ks.SealString(p.Name, keystore.WorkspaceSectionNameAAD(p.ID))
+	name, err := s.conn.ks.SealString(p.Name, sqlutil.WorkspaceSectionNameAAD(p.ID))
 	if err != nil {
 		return 0, err
 	}

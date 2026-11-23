@@ -12,17 +12,17 @@ import (
 )
 
 func TestClearWorkerDeregisteringAtKeepsItsFixedScope(t *testing.T) {
-	for _, style := range []ParameterStyle{ParameterStyleQuestionMark, ParameterStyleDollar} {
+	for _, dialect := range []Dialect{DialectSQLite, DialectPostgres, DialectMySQL} {
 		var query string
 		var args []any
 		injected := errors.New("the test database refused the update")
 		err := ClearWorkerDeregisteringAt(context.Background(), func(_ context.Context, text string, values ...any) error {
 			query, args = text, values
 			return injected
-		}, style, "worker")
+		}, dialect, "worker")
 		assert.ErrorIs(t, err, injected)
 		placeholder := "?"
-		if style == ParameterStyleDollar {
+		if dialect == DialectPostgres {
 			placeholder = "$1"
 		}
 		assert.Equal(t, "UPDATE workers SET deregistering_at = NULL WHERE id = "+placeholder+" AND deleted_at IS NULL", query)
@@ -32,12 +32,12 @@ func TestClearWorkerDeregisteringAtKeepsItsFixedScope(t *testing.T) {
 	err := ClearWorkerDeregisteringAt(context.Background(), func(context.Context, string, ...any) error {
 		called = true
 		return nil
-	}, ParameterStyle(255), "worker")
+	}, Dialect(255), "worker")
 	assert.Error(t, err)
 	assert.False(t, called)
 }
 
-func TestSetEntityColumnValueUsesApprovedIdentifiersAndParameterStyle(t *testing.T) {
+func TestSetEntityColumnValueUsesApprovedIdentifiersAndDialect(t *testing.T) {
 	var gotQuery string
 	var gotArgs []any
 	at := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -48,7 +48,7 @@ func TestSetEntityColumnValueUsesApprovedIdentifiersAndParameterStyle(t *testing
 			gotArgs = args
 			return nil
 		},
-		ParameterStyleDollar,
+		DialectPostgres,
 		store.EntityWorkers,
 		"deleted_at",
 		"worker-id",
@@ -68,7 +68,7 @@ func TestSetEntityColumnValueRejectsUnknownColumnWithoutExecuting(t *testing.T) 
 			called = true
 			return nil
 		},
-		ParameterStyleQuestionMark,
+		DialectSQLite,
 		store.EntityWorkers,
 		"auth_token",
 		"id",
@@ -79,7 +79,7 @@ func TestSetEntityColumnValueRejectsUnknownColumnWithoutExecuting(t *testing.T) 
 	assert.False(t, called)
 }
 
-func TestSetEntityColumnValueRejectsUnknownParameterStyleWithoutExecuting(t *testing.T) {
+func TestSetEntityColumnValueRejectsUnknownDialectWithoutExecuting(t *testing.T) {
 	called := false
 	err := SetEntityColumnValue(
 		context.Background(),
@@ -87,13 +87,33 @@ func TestSetEntityColumnValueRejectsUnknownParameterStyleWithoutExecuting(t *tes
 			called = true
 			return nil
 		},
-		ParameterStyle(255),
+		Dialect(255),
 		store.EntityWorkers,
 		"deleted_at",
 		"id",
 		time.Now(),
 	)
 
-	require.EqualError(t, err, "unknown parameter style 255")
+	require.EqualError(t, err, "unknown sqlutil dialect 255")
 	assert.False(t, called)
+}
+
+func TestSetSettingSecretRawQuotesKeyOnlyForMySQL(t *testing.T) {
+	cases := []struct {
+		dialect Dialect
+		wantSQL string
+	}{
+		{DialectSQLite, "UPDATE hub_settings SET secret = ? WHERE key = ?"},
+		{DialectPostgres, "UPDATE hub_settings SET secret = $1 WHERE key = $2"},
+		{DialectMySQL, "UPDATE hub_settings SET secret = ? WHERE `key` = ?"},
+	}
+	for _, tc := range cases {
+		var gotQuery string
+		err := SetSettingSecretRaw(context.Background(), func(_ context.Context, q string, _ ...any) error {
+			gotQuery = q
+			return nil
+		}, tc.dialect, "smtp", []byte{1, 2, 3})
+		require.NoError(t, err)
+		assert.Equal(t, tc.wantSQL, gotQuery)
+	}
 }

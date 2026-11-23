@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -19,7 +19,7 @@ type delegationTokenStore struct{ conn *mysqlConn }
 var _ store.DelegationTokenStore = (*delegationTokenStore)(nil)
 
 func (c *mysqlConn) fromDBDelegationToken(t gendb.DelegationToken) (store.DelegationToken, error) {
-	grantedScopes, err := c.ks.OpenString(t.GrantedScopes, keystore.DelegationTokenGrantedScopesAAD(t.ID))
+	grantedScopes, err := c.ks.OpenString(t.GrantedScopes, sqlutil.DelegationTokenGrantedScopesAAD(t.ID))
 	if err != nil {
 		return store.DelegationToken{}, err
 	}
@@ -38,7 +38,7 @@ func (c *mysqlConn) fromDBDelegationToken(t gendb.DelegationToken) (store.Delega
 }
 
 func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegationTokenParams) error {
-	grantedScopes, err := s.conn.ks.SealString(p.GrantedScopes, keystore.DelegationTokenGrantedScopesAAD(p.ID))
+	grantedScopes, err := s.conn.ks.SealString(p.GrantedScopes, sqlutil.DelegationTokenGrantedScopesAAD(p.ID))
 	if err != nil {
 		return err
 	}

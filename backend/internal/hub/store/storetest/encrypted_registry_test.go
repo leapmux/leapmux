@@ -40,18 +40,22 @@ func TestEncryptedRegistryMatchesSqlcOverrides(t *testing.T) {
 	const keystoreImport = "github.com/leapmux/leapmux/internal/hub/keystore"
 
 	expected := map[string]bool{} // "table.column" -> nullable
-	addSpecs := func(specs []sqlutil.EncryptedTableSpec) {
-		for _, tbl := range specs {
-			for _, col := range tbl.Columns {
-				key := tbl.Table + "." + col.Name
-				_, dup := expected[key]
-				require.Falsef(t, dup, "duplicate encrypted column %q in registry", key)
-				expected[key] = col.Nullable
-			}
+	for _, tbl := range sqlutil.PersistentEncryptedTables {
+		for _, col := range tbl.Columns {
+			key := tbl.Table + "." + col.Name
+			_, dup := expected[key]
+			require.Falsef(t, dup, "duplicate encrypted column %q in registry", key)
+			expected[key] = col.Nullable
 		}
 	}
-	addSpecs(sqlutil.PersistentEncryptedTables)
-	addSpecs(sqlutil.TransientEncryptedTables)
+	for _, tbl := range sqlutil.TransientEncryptedTables {
+		for _, col := range tbl.Columns {
+			key := tbl.Table + "." + col.Name
+			_, dup := expected[key]
+			require.Falsef(t, dup, "duplicate encrypted column %q in registry", key)
+			expected[key] = col.Nullable
+		}
+	}
 	require.Len(t, expected, 37, "expected 37 encrypted columns across 15 tables")
 
 	for _, dialect := range hubDialects {

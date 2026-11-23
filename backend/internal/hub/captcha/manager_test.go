@@ -662,22 +662,17 @@ func TestSecretAADIsProviderScoped(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, turnstileRow.Secret)
 
-	// Seal the Turnstile secret payload under Turnstile's key-scoped AAD: it
-	// must not decrypt under the altcha key name.
-	turnstileCt, err := e.ks.SealBytes(turnstileRow.Secret, keystore.SettingSecretAAD(TurnstileKey.Name()))
-	require.NoError(t, err)
-	_, err = e.ks.Decrypt(turnstileCt.Bytes(), keystore.SettingSecretAAD(AltchaKey.Name()))
-	require.Error(t, err, "ciphertext pasted into another key's row must not decrypt")
-
-	// Move that raw ciphertext into the altcha row's secret column (direct SQL
-	// via TestHelper, keeping the public value readable) and switch the
-	// selection back.
+	// Copy the actual persisted Turnstile secret ciphertext into the altcha
+	// row's secret column (direct SQL via TestHelper, keeping the public value
+	// readable) and switch the selection back. Because the ciphertext was sealed
+	// under Turnstile's key-scoped AAD, decrypting it under AltchaKey.Name()
+	// must fail.
 	empty := "{}"
 	require.NoError(t, e.st.Settings().Upsert(ctx, store.UpsertSettingParams{
 		Key:   AltchaKey.Name(),
 		Value: &empty,
 	}))
-	require.NoError(t, e.st.(store.TestableStore).TestHelper().SetSettingSecretRaw(ctx, AltchaKey.Name(), turnstileCt.Bytes()))
+	require.NoError(t, e.st.(store.TestableStore).TestHelper().CopySettingSecretCiphertext(ctx, TurnstileKey.Name(), AltchaKey.Name()))
 	require.NoError(t, CaptchaSelectedKey.Set(ctx, e.set, ProviderAlias(ProviderAltcha)))
 
 	// Reload through a fresh manager: the pasted secret fails decryption

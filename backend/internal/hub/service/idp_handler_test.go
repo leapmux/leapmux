@@ -402,16 +402,16 @@ func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
 func setupOAuthTestEnvWithAuthService(t *testing.T) *oauthTestEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
+	ks := hubtestutil.TestKeystore(t)
+	st, err := sqlite.OpenTestableWithKeystore(":memory:", ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
-	err = st.Migrator().Migrate(context.Background())
-	require.NoError(t, err)
-
 	hubtestutil.CreateTestAdmin(t, st)
 
-	return setupOAuthSignupEnv(t, st)
+	env := setupOAuthSignupEnv(t, st)
+	env.ks = ks
+	return env
 }
 
 func setupOAuthSignupEnv(t *testing.T, st store.Store) *oauthTestEnv {
@@ -1506,7 +1506,7 @@ func TestOAuthLogin_ConsentSessionChecksFactorsUnderItsInsertLock(t *testing.T) 
 					})
 				}
 			} else {
-				_, credential, wa := prepareProofPasskey(t, st, ks, userID)
+				_, credential, wa := prepareProofPasskey(t, st, userID)
 				commitFactorChange = func(ctx context.Context) error {
 					return st.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
 						_, err := wa.StoreCredential(ctx, tx, id.Generate(), userID, credential, "First key")

@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -19,7 +19,7 @@ var _ store.LifecycleOutboxStore = (*lifecycleOutboxStore)(nil)
 
 func (s *lifecycleOutboxStore) Insert(ctx context.Context, p store.InsertLifecycleOutboxParams) error {
 	userID := p.UserID.String()
-	payload, err := s.conn.ks.SealBytes(p.Payload, keystore.LifecycleOutboxPayloadAAD(userID, int32(p.OpType)))
+	payload, err := s.conn.ks.SealBytes(p.Payload, sqlutil.LifecycleOutboxPayloadAAD(userID, int32(p.OpType)))
 	if err != nil {
 		return err
 	}
@@ -46,7 +46,7 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 	}
 	out := make([]store.LifecycleOutboxRow, len(rows))
 	for i, r := range rows {
-		payload, err := s.conn.ks.OpenBytes(r.Payload, keystore.LifecycleOutboxPayloadAAD(r.UserID, int32(r.OpType)))
+		payload, err := s.conn.ks.OpenBytes(r.Payload, sqlutil.LifecycleOutboxPayloadAAD(r.UserID, int32(r.OpType)))
 		if err != nil {
 			return nil, err
 		}

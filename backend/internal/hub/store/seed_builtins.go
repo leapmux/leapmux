@@ -92,6 +92,12 @@ func (m migratorWithBuiltIns) Migrate(ctx context.Context) error {
 	if err := m.inner.Migrate(ctx); err != nil {
 		return err
 	}
+	// Verify every persistent encrypted table against the loaded keystore
+	// BEFORE SeedBuiltIns writes or overwrites built-in oauth_clients rows.
+	// On a fresh database with no encrypted rows this returns nil immediately.
+	if err := m.st.KeyMaintenance().VerifyKeyring(ctx); err != nil {
+		return err
+	}
 	return SeedBuiltIns(ctx, m.st, time.Now())
 }
 

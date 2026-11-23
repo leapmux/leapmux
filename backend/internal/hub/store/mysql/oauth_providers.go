@@ -3,9 +3,9 @@ package mysql
 import (
 	"context"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
 
 type oauthProviderStore struct {
@@ -15,23 +15,11 @@ type oauthProviderStore struct {
 var _ store.OAuthProviderStore = (*oauthProviderStore)(nil)
 
 func (c *mysqlConn) fromDBOAuthProvider(p gendb.OauthProvider) (*store.OAuthProvider, error) {
-	name, err := c.ks.OpenString(p.Name, keystore.OAuthProviderNameAAD(p.ID))
+	sum, err := sqlutil.OpenOAuthProviderSummary(c.ks, p.ID, p.Name, p.IssuerUrl, p.ClientID, p.Scopes)
 	if err != nil {
 		return nil, err
 	}
-	issuerURL, err := c.ks.OpenString(p.IssuerUrl, keystore.OAuthProviderIssuerURLAAD(p.ID))
-	if err != nil {
-		return nil, err
-	}
-	clientID, err := c.ks.OpenString(p.ClientID, keystore.OAuthProviderClientIDAAD(p.ID))
-	if err != nil {
-		return nil, err
-	}
-	clientSecret, err := c.ks.OpenBytes(p.ClientSecret, keystore.OAuthProviderClientSecretAAD(p.ID))
-	if err != nil {
-		return nil, err
-	}
-	scopes, err := c.ks.OpenString(p.Scopes, keystore.OAuthProviderScopesAAD(p.ID))
+	clientSecret, err := c.ks.OpenBytes(p.ClientSecret, sqlutil.OAuthProviderClientSecretAAD(p.ID))
 	if err != nil {
 		return nil, err
 	}
@@ -39,10 +27,10 @@ func (c *mysqlConn) fromDBOAuthProvider(p gendb.OauthProvider) (*store.OAuthProv
 		OAuthProviderSummary: store.OAuthProviderSummary{
 			ID:           p.ID,
 			ProviderType: p.ProviderType,
-			Name:         name,
-			IssuerURL:    issuerURL,
-			ClientID:     clientID,
-			Scopes:       scopes,
+			Name:         sum.Name,
+			IssuerURL:    sum.IssuerURL,
+			ClientID:     sum.ClientID,
+			Scopes:       sum.Scopes,
 			TrustEmail:   p.TrustEmail,
 			Enabled:      p.Enabled,
 			CreatedAt:    p.CreatedAt.Time,
@@ -51,34 +39,18 @@ func (c *mysqlConn) fromDBOAuthProvider(p gendb.OauthProvider) (*store.OAuthProv
 	}, nil
 }
 
-func (c *mysqlConn) openOAuthProviderSummary(id string, nameCt, issuerURLCt, clientIDCt, scopesCt keystore.Ciphertext) (name, issuerURL, clientID, scopes string, err error) {
-	if name, err = c.ks.OpenString(nameCt, keystore.OAuthProviderNameAAD(id)); err != nil {
-		return "", "", "", "", err
-	}
-	if issuerURL, err = c.ks.OpenString(issuerURLCt, keystore.OAuthProviderIssuerURLAAD(id)); err != nil {
-		return "", "", "", "", err
-	}
-	if clientID, err = c.ks.OpenString(clientIDCt, keystore.OAuthProviderClientIDAAD(id)); err != nil {
-		return "", "", "", "", err
-	}
-	if scopes, err = c.ks.OpenString(scopesCt, keystore.OAuthProviderScopesAAD(id)); err != nil {
-		return "", "", "", "", err
-	}
-	return name, issuerURL, clientID, scopes, nil
-}
-
 func (c *mysqlConn) fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuthProvidersRow) (store.OAuthProviderSummary, error) {
-	name, issuerURL, clientID, scopes, err := c.openOAuthProviderSummary(r.ID, r.Name, r.IssuerUrl, r.ClientID, r.Scopes)
+	sum, err := sqlutil.OpenOAuthProviderSummary(c.ks, r.ID, r.Name, r.IssuerUrl, r.ClientID, r.Scopes)
 	if err != nil {
 		return store.OAuthProviderSummary{}, err
 	}
 	return store.OAuthProviderSummary{
 		ID:           r.ID,
 		ProviderType: r.ProviderType,
-		Name:         name,
-		IssuerURL:    issuerURL,
-		ClientID:     clientID,
-		Scopes:       scopes,
+		Name:         sum.Name,
+		IssuerURL:    sum.IssuerURL,
+		ClientID:     sum.ClientID,
+		Scopes:       sum.Scopes,
 		TrustEmail:   r.TrustEmail,
 		Enabled:      r.Enabled,
 		CreatedAt:    r.CreatedAt.Time,
@@ -86,52 +58,22 @@ func (c *mysqlConn) fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuthP
 }
 
 func (c *mysqlConn) fromDBListAllOAuthProvidersRow(r gendb.ListAllOAuthProvidersRow) (store.OAuthProviderSummary, error) {
-	name, issuerURL, clientID, scopes, err := c.openOAuthProviderSummary(r.ID, r.Name, r.IssuerUrl, r.ClientID, r.Scopes)
-	if err != nil {
-		return store.OAuthProviderSummary{}, err
-	}
-	return store.OAuthProviderSummary{
-		ID:           r.ID,
-		ProviderType: r.ProviderType,
-		Name:         name,
-		IssuerURL:    issuerURL,
-		ClientID:     clientID,
-		Scopes:       scopes,
-		TrustEmail:   r.TrustEmail,
-		Enabled:      r.Enabled,
-		CreatedAt:    r.CreatedAt.Time,
-	}, nil
+	return c.fromDBListEnabledOAuthProvidersRow(gendb.ListEnabledOAuthProvidersRow(r))
 }
 
 func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProviderParams) error {
-	name, err := s.conn.ks.SealString(p.Name, keystore.OAuthProviderNameAAD(p.ID))
-	if err != nil {
-		return err
-	}
-	issuerURL, err := s.conn.ks.SealString(p.IssuerURL, keystore.OAuthProviderIssuerURLAAD(p.ID))
-	if err != nil {
-		return err
-	}
-	clientID, err := s.conn.ks.SealString(p.ClientID, keystore.OAuthProviderClientIDAAD(p.ID))
-	if err != nil {
-		return err
-	}
-	clientSecret, err := s.conn.ks.SealBytes(p.ClientSecret, keystore.OAuthProviderClientSecretAAD(p.ID))
-	if err != nil {
-		return err
-	}
-	scopes, err := s.conn.ks.SealString(p.Scopes, keystore.OAuthProviderScopesAAD(p.ID))
+	sealed, err := sqlutil.SealOAuthProvider(s.conn.ks, p)
 	if err != nil {
 		return err
 	}
 	return s.conn.queryError(s.conn.q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
 		ID:           p.ID,
 		ProviderType: p.ProviderType,
-		Name:         name,
-		IssuerUrl:    issuerURL,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		Scopes:       scopes,
+		Name:         sealed.Name,
+		IssuerUrl:    sealed.IssuerURL,
+		ClientID:     sealed.ClientID,
+		ClientSecret: sealed.ClientSecret,
+		Scopes:       sealed.Scopes,
 		TrustEmail:   p.TrustEmail,
 		Enabled:      p.Enabled,
 	}))

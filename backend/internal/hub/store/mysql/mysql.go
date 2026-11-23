@@ -53,7 +53,7 @@ type mysqlConn struct {
 // loc=UTC, and session time_zone='+00:00' because the schema stores
 // revocation cursors in DATETIME columns and compares them directly.
 func Open(cfg config.MySQLConfig, ks *keystore.Keystore) (store.Store, error) {
-	st, err := openWithoutMigrate(cfg, ks)
+	st, err := OpenWithoutMigrate(cfg, ks)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func Open(cfg config.MySQLConfig, ks *keystore.Keystore) (store.Store, error) {
 	// built-in registrations. Migrator() wraps the raw migrator so every
 	// caller that migrates this store later completes the same sequence.
 	if err := st.Migrator().Migrate(context.Background()); err != nil {
-		_ = st.conn.shared.db.Close()
+		_ = st.Close()
 		return nil, fmt.Errorf("migrate mysql: %w", err)
 	}
 	return st, nil
@@ -70,10 +70,6 @@ func Open(cfg config.MySQLConfig, ks *keystore.Keystore) (store.Store, error) {
 // OpenWithoutMigrate opens a MySQL database and initializes its migrator
 // without running migrations or seeding built-in rows.
 func OpenWithoutMigrate(cfg config.MySQLConfig, ks *keystore.Keystore) (store.Store, error) {
-	return openWithoutMigrate(cfg, ks)
-}
-
-func openWithoutMigrate(cfg config.MySQLConfig, ks *keystore.Keystore) (*mysqlStore, error) {
 	if ks == nil {
 		return nil, errors.New("open mysql: keystore is required")
 	}

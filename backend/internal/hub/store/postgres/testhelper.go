@@ -16,6 +16,14 @@ import (
 // testablePGStore extends pgStore with test helper operations.
 type testablePGStore struct {
 	*pgStore
+	borrowed bool
+}
+
+func (s *testablePGStore) Close() error {
+	if s.borrowed {
+		return nil
+	}
+	return s.pgStore.Close()
 }
 
 var _ store.TestableStore = (*testablePGStore)(nil)
@@ -28,12 +36,6 @@ func OpenTestable(ctx context.Context, cfg config.PostgresConfig) (store.Testabl
 	if err != nil {
 		return nil, err
 	}
-	return OpenTestableWithKeystore(ctx, cfg, ks)
-}
-
-// OpenTestableWithKeystore connects to a PostgreSQL database using ks and
-// returns a TestableStore.
-func OpenTestableWithKeystore(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore) (store.TestableStore, error) {
 	st, err := Open(ctx, cfg, ks)
 	if err != nil {
 		return nil, err
@@ -48,12 +50,6 @@ func NewTestableFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (store.Testabl
 	if err != nil {
 		return nil, err
 	}
-	return NewTestableFromPoolWithKeystore(pool, migrationDB, ks)
-}
-
-// NewTestableFromPoolWithKeystore creates a TestableStore from an existing
-// pool, sql.DB, and explicit keystore.
-func NewTestableFromPoolWithKeystore(pool *pgxpool.Pool, migrationDB *sql.DB, ks *keystore.Keystore) (store.TestableStore, error) {
 	st, err := newFromPool(pool, migrationDB, ks)
 	if err != nil {
 		return nil, err
@@ -75,23 +71,23 @@ func (h *pgTestHelper) exec(ctx context.Context, query string, args ...any) erro
 }
 
 func (h *pgTestHelper) SetDeletedAt(ctx context.Context, entity store.TestEntity, id string, deletedAt time.Time) error {
-	return sqlutil.SetDeletedAt(ctx, h.exec, sqlutil.ParameterStyleDollar, entity, id, deletedAt)
+	return sqlutil.SetDeletedAt(ctx, h.exec, sqlutil.DialectPostgres, entity, id, deletedAt)
 }
 
 func (h *pgTestHelper) SetCreatedAt(ctx context.Context, entity store.TestEntity, id string, createdAt time.Time) error {
-	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.ParameterStyleDollar, entity, id, createdAt)
+	return sqlutil.SetCreatedAt(ctx, h.exec, sqlutil.DialectPostgres, entity, id, createdAt)
 }
 
 func (h *pgTestHelper) SetLastActiveAt(ctx context.Context, id string, lastActiveAt time.Time) error {
-	return sqlutil.SetLastActiveAt(ctx, h.exec, sqlutil.ParameterStyleDollar, id, lastActiveAt)
+	return sqlutil.SetLastActiveAt(ctx, h.exec, sqlutil.DialectPostgres, id, lastActiveAt)
 }
 
 func (h *pgTestHelper) SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error {
-	return sqlutil.SetDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleDollar, workerID, deregisteringAt)
+	return sqlutil.SetDeregisteringAt(ctx, h.exec, sqlutil.DialectPostgres, workerID, deregisteringAt)
 }
 
 func (h *pgTestHelper) ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error {
-	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleDollar, workerID)
+	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.DialectPostgres, workerID)
 }
 
 // ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
@@ -137,17 +133,25 @@ func (h *pgTestHelper) TableHoldsText(ctx context.Context, table, text string) (
 }
 
 func (h *pgTestHelper) WithKeystore(ks *keystore.Keystore) store.TestableStore {
+	if ks == nil {
+		panic("postgres: WithKeystore requires a non-nil keystore")
+	}
 	return &testablePGStore{
 		pgStore: &pgStore{
 			conn: newPoolConn(h.shared, h.shared.pool, ks),
 		},
+		borrowed: true,
 	}
 }
 
 func (h *pgTestHelper) CopyWorkspaceTitleCiphertext(ctx context.Context, srcWorkspaceID, dstWorkspaceID string) error {
-	return sqlutil.CopyWorkspaceTitleCiphertext(ctx, h.shared.migrationDB, h.exec, sqlutil.ParameterStyleDollar, srcWorkspaceID, dstWorkspaceID)
+	return sqlutil.CopyWorkspaceTitleCiphertext(ctx, h.shared.migrationDB, h.exec, sqlutil.DialectPostgres, srcWorkspaceID, dstWorkspaceID)
 }
 
 func (h *pgTestHelper) SetSettingSecretRaw(ctx context.Context, key string, raw []byte) error {
-	return sqlutil.SetSettingSecretRaw(ctx, h.exec, sqlutil.ParameterStyleDollar, key, raw)
+	return sqlutil.SetSettingSecretRaw(ctx, h.exec, sqlutil.DialectPostgres, key, raw)
+}
+
+func (h *pgTestHelper) CopySettingSecretCiphertext(ctx context.Context, srcKey, dstKey string) error {
+	return sqlutil.CopySettingSecretCiphertext(ctx, h.shared.migrationDB, h.exec, sqlutil.DialectPostgres, srcKey, dstKey)
 }

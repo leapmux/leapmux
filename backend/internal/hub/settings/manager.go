@@ -448,8 +448,9 @@ func (m *Manager) fireSubs(prev, s *Snapshot, subs []func(*Snapshot)) {
 	}
 }
 
-// refresh reads every row, decrypts secrets, decodes each registered key
-// onto its default, and degrades bad rows to defaults with a warning.
+// refresh reads every row (already decrypted at the store boundary), decodes
+// each registered key onto its default, and degrades bad rows to defaults with
+// a warning.
 func (m *Manager) refresh(ctx context.Context) (*Snapshot, error) {
 	rows, err := m.st.Settings().GetAll(ctx)
 	if err != nil {
@@ -949,7 +950,8 @@ func completeWrite(desc Descriptor, v any) pendingWrite {
 
 // prepareRows is the write tail every path shares: each key's merge, then
 // the key's own rules, then ONE cross-key validation over the whole
-// candidate snapshot, then the split and the encryption of every row.
+// candidate snapshot, then splitting every row into its public and secret
+// halves (encrypted at the store boundary on write).
 //
 // The cross-key rules run ONCE over every candidate at once. That is what
 // makes a multi-key write checkable: a rule that spans keys has to see the
@@ -980,7 +982,7 @@ func (m *Manager) prepareRows(pending []pendingWrite, locked lockedRows) ([]stor
 		if err != nil {
 			return nil, err
 		}
-		row, err := m.rowParams(w.desc, public, secret)
+		row, err := rowParams(w.desc, public, secret)
 		if err != nil {
 			return nil, err
 		}
@@ -1091,17 +1093,7 @@ func (m *Manager) mergeForUpdate(stored store.SettingRow, w KeyWrite) (any, erro
 // whose two halves are both empty (the table's CHECK refuses it anyway, with
 // a message that says nothing about the key). prepareRows is the one caller,
 // so the refusal covers every write path.
-func (m *Manager) rowParams(desc Descriptor, public, secret json.RawMessage) (store.UpsertSettingParams, error) {
-	p := paramsFromHalves(desc, public, secret)
-	if p.Value == nil && p.Secret == nil {
-		return store.UpsertSettingParams{}, Invalidf("settings key %q would write an empty row", desc.Name())
-	}
-	return p, nil
-}
-
-// paramsFromHalves assembles the row write from the split halves. At least
-// one half must be non-empty to satisfy the table's CHECK.
-func paramsFromHalves(desc Descriptor, public, secret json.RawMessage) store.UpsertSettingParams {
+func rowParams(desc Descriptor, public, secret json.RawMessage) (store.UpsertSettingParams, error) {
 	p := store.UpsertSettingParams{Key: desc.Name()}
 	if len(public) > 0 {
 		s := string(public)
@@ -1110,7 +1102,10 @@ func paramsFromHalves(desc Descriptor, public, secret json.RawMessage) store.Ups
 	if len(secret) > 0 {
 		p.Secret = []byte(secret)
 	}
-	return p
+	if p.Value == nil && p.Secret == nil {
+		return store.UpsertSettingParams{}, Invalidf("settings key %q would write an empty row", desc.Name())
+	}
+	return p, nil
 }
 
 // buildSnapshotFromStore refreshes from the store and is best-effort: the

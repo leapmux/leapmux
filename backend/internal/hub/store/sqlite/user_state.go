@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -31,7 +31,7 @@ func (s *userStateStore) Get(ctx context.Context, userID userid.UserID) (*store.
 		}
 		return nil, s.conn.queryError(err)
 	}
-	payload, err := s.conn.ks.OpenBytes(row.StatePayload, keystore.UserStatePayloadAAD(row.UserID))
+	payload, err := s.conn.ks.OpenBytes(row.StatePayload, sqlutil.UserStatePayloadAAD(row.UserID))
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (s *userStateStore) Upsert(ctx context.Context, p store.UpsertUserStatePara
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	payload, err := s.conn.ks.SealBytes(p.StatePayload(), keystore.UserStatePayloadAAD(owner))
+	payload, err := s.conn.ks.SealBytes(p.StatePayload(), sqlutil.UserStatePayloadAAD(owner))
 	if err != nil {
 		return err
 	}

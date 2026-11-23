@@ -10,7 +10,6 @@ import (
 	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -68,7 +67,6 @@ type proofTestUser struct {
 	base                     store.Store
 	wrapped                  *proofMutationStore
 	service                  *service.UserService
-	ks                       *keystore.Keystore
 	info                     *auth.UserInfo
 	token, userID, sessionID string
 }
@@ -84,10 +82,6 @@ func setupProofTestUser(t *testing.T) *proofTestUser {
 	token := sess.Token
 	info, err := auth.ValidateToken(t.Context(), st, hubtestutil.TestSecretHasher(), token)
 	require.NoError(t, err)
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 	set := servicetest.NewSettingsManager(t, st)
 	require.NoError(t, settings.KeyPublicURL.Set(t.Context(), set, passkeyTestOrigin))
 	wrapped := &proofMutationStore{Store: st}
@@ -99,7 +93,7 @@ func setupProofTestUser(t *testing.T) *proofTestUser {
 		Mail:      mail.NewStubSender(),
 		Renderer:  mail.Renderer{},
 	})
-	return &proofTestUser{base: st, wrapped: wrapped, service: svc, ks: ks, info: info, token: token, userID: uid, sessionID: hubtestutil.SessionIDFromCookie(t, token)}
+	return &proofTestUser{base: st, wrapped: wrapped, service: svc, info: info, token: token, userID: uid, sessionID: hubtestutil.SessionIDFromCookie(t, token)}
 }
 func assertProofRefusedWithoutEndingSession(t *testing.T, st store.Store, token, sessionID string) {
 	t.Helper()
@@ -146,7 +140,7 @@ func TestPasswordElevationRefusesAChangedProofForASurvivingSession(t *testing.T)
 	}
 }
 
-func prepareProofPasskey(t *testing.T, st store.Store, ks *keystore.Keystore, userID string) (*passkeyCeremony, webauthn.FinishedSignUpCredential, *webauthn.Service) {
+func prepareProofPasskey(t *testing.T, st store.Store, userID string) (*passkeyCeremony, webauthn.FinishedSignUpCredential, *webauthn.Service) {
 	t.Helper()
 	wa, err := webauthn.NewService(webauthn.RPConfig{RPID: "localhost", RPDisplayName: "LeapMux", RPOrigins: []string{passkeyTestOrigin}}, st, nil)
 	require.NoError(t, err)
@@ -164,10 +158,10 @@ func TestPasskeyElevationRefusesAReplacedVerifiedCredential(t *testing.T) {
 		t.Run(mutation, func(t *testing.T) {
 			changed := mutation != "unchanged"
 			env := setupProofTestUser(t)
-			ceremony, credential, wa := prepareProofPasskey(t, env.base, env.ks, env.userID)
+			ceremony, credential, wa := prepareProofPasskey(t, env.base, env.userID)
 			verified, err := wa.StoreCredential(t.Context(), env.base, id.Generate(), env.userID, credential, "Verified key")
 			require.NoError(t, err)
-			_, other, otherWA := prepareProofPasskey(t, env.base, env.ks, env.userID)
+			_, other, otherWA := prepareProofPasskey(t, env.base, env.userID)
 			_, err = otherWA.StoreCredential(t.Context(), env.base, id.Generate(), env.userID, other, "Other key")
 			require.NoError(t, err)
 			var begin *leapmuxv1.BeginPasskeyElevationResponse
@@ -221,7 +215,7 @@ func TestOAuthElevationRechecksTheProvedFactorUnderItsGrantLock(t *testing.T) {
 			state, nonce, _ := beginReauth(t, server, provider, cookie, "/after-proof")
 			switch mutation {
 			case "first passkey added":
-				_, credential, wa := prepareProofPasskey(t, st, ks, userID)
+				_, credential, wa := prepareProofPasskey(t, st, userID)
 				wrapped.beforeGrant = func() error {
 					return st.RunInUserAuthTransaction(t.Context(), userid.MustNew(userID), func(tx store.Store) error {
 						_, err := wa.StoreCredential(t.Context(), tx, id.Generate(), userID, credential, "First key")

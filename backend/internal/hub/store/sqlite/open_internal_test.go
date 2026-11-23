@@ -89,8 +89,11 @@ func TestOpen_SecondBootReseedsTheBuiltIns(t *testing.T) {
 	// is the point of those refusals.
 	raw, err := OpenDB(path, sqlitedb.Config{})
 	require.NoError(t, err)
-	_, err = raw.Exec("DELETE FROM oauth_clients WHERE registration_source = 'builtin'")
+	res, err := raw.Exec("DELETE FROM oauth_clients WHERE registration_source = ?", int64(store.OAuthClientSourceBuiltin))
 	require.NoError(t, err)
+	deleted, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(len(oauthapp.BuiltInClientIDs())), deleted, "fixture must actually delete all built-in rows before second boot")
 	require.NoError(t, raw.Close())
 
 	// Second boot: migration is a no-op, and the seed must restore the rows.

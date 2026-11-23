@@ -669,7 +669,9 @@ CREATE TABLE worker_tab_publications (
     worker_id TEXT COLLATE "C" NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     tab_id TEXT COLLATE "C" NOT NULL,
     request_hash BYTEA NOT NULL CHECK (octet_length(request_hash) = 32),
-    response_payload BYTEA NOT NULL CHECK (octet_length(response_payload) > 0),
+    -- Encrypted payload carries 44 bytes of XChaCha20-Poly1305 envelope overhead
+    -- (4-byte version + 24-byte nonce + 16-byte tag), so > 44 rejects empty plaintext.
+    response_payload BYTEA NOT NULL CHECK (octet_length(response_payload) > 44),
     PRIMARY KEY (user_id, worker_id, tab_id)
 );
 

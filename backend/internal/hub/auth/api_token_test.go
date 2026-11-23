@@ -518,7 +518,7 @@ type userLookupFailUsers struct {
 	err error
 }
 
-func (s userLookupFailUsers) GetByID(context.Context, string) (*store.User, error) {
+func (s userLookupFailUsers) GetAuthIdentity(context.Context, string) (*store.UserAuthIdentity, error) {
 	return nil, s.err
 }
 

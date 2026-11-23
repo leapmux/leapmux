@@ -159,20 +159,14 @@ func QueryPage[P any, R any, I PageCursorer](
 	mapRow func(R) I,
 	mapErr func(error) error,
 ) (Page[I], error) {
-	params, err := build()
-	if err != nil {
-		return Page[I]{}, err
-	}
-	rows, err := query(ctx, params)
-	if err != nil {
-		return Page[I]{}, mapErr(err)
-	}
-	return NewPage(MapSlice(rows, mapRow), limit), nil
+	return QueryPageErr(ctx, limit, build, query, func(r R) (I, error) {
+		return mapRow(r), nil
+	}, mapErr)
 }
 
-// QueryPageErr builds one listing, executes its query, maps each row with a
-// fallible mapper (such as decryption), maps the query error, and assembles
-// the page.
+// QueryPageErr builds one listing, executes its query, trims any extra probe
+// row before mapping each kept row with a fallible mapper (such as decryption),
+// maps the query error, and assembles the page.
 func QueryPageErr[P any, R any, I PageCursorer](
 	ctx context.Context,
 	limit int64,
@@ -189,11 +183,20 @@ func QueryPageErr[P any, R any, I PageCursorer](
 	if err != nil {
 		return Page[I]{}, mapErr(err)
 	}
+	clamped := ClampListLimit(limit)
+	hasMore := clamped > 0 && int64(len(rows)) > clamped
+	if hasMore {
+		rows = rows[:clamped]
+	}
 	mapped, err := MapSliceErr(rows, mapRow)
 	if err != nil {
 		return Page[I]{}, err
 	}
-	return NewPage(mapped, limit), nil
+	if !hasMore {
+		return Page[I]{Rows: mapped}, nil
+	}
+	t, id := mapped[len(mapped)-1].PageCursor()
+	return Page[I]{Rows: mapped, NextCursor: EncodeCursor(t, id)}, nil
 }
 
 // MapSlice converts a slice of type In to a slice of type Out using fn.

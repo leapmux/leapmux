@@ -743,13 +743,16 @@ func TestCLI_BootstrapCreateAdmin_DuplicateUsername(t *testing.T) {
 // problem.
 //
 // The seam is the second write of CreateUser's one transaction: the user row
-// goes in first, then sections.InitDefaults seeds the sidebar. Removing the
-// sections table leaves the users table intact, so the admin gate ahead of the
-// create still reports an empty hub and the create still reaches the store.
+// goes in first, then sections.InitDefaults seeds the sidebar. Installing a
+// BEFORE INSERT trigger on workspace_sections keeps the schema valid (so store
+// startup and keyring verification pass) while forcing sections.InitDefaults to
+// fail mid-transaction after the admin gate reports an empty hub.
 func TestCLI_BootstrapCreateAdmin_PassesAStoreFaultThrough(t *testing.T) {
 	dir := setupTestDataDir(t)
 	sqlDB, _ := openTestDB(t, dir)
-	_, err := sqlDB.Exec("DROP TABLE workspace_sections")
+	_, err := sqlDB.Exec(`CREATE TRIGGER fail_workspace_sections_insert
+		BEFORE INSERT ON workspace_sections
+		BEGIN SELECT RAISE(ABORT, 'forced workspace_sections fault'); END`)
 	require.NoError(t, err)
 
 	err = runBootstrapCreateAdmin(testCmdCtx, []string{
@@ -1064,7 +1067,7 @@ func TestRecoverEncryptionKey_ReencryptAndRemoveAcrossAllTables(t *testing.T) {
 	// Rotate to v2.
 	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
 
-	// remove --version 1 must fail naming affected tables and must not modify
+	// remove --version 1 must fail listing affected tables and must not modify
 	// built-in oauth_clients ciphertext (it uses OpenWithoutMigrate).
 	err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
 	require.Error(t, err)
@@ -1145,4 +1148,56 @@ func TestRecoverExistingCommands_FailLoudlyWhenKeyFileMissing(t *testing.T) {
 				"%s must not modify oauth_clients", tc.name)
 		})
 	}
+}
+
+func TestRecoverEncryptionKey_CorruptKeyFileReportsParseErrorAndAbsentVersionFailsFast(t *testing.T) {
+	t.Run("corrupt key file reports parse error instead of not found", func(t *testing.T) {
+		dir := setupTestDataDir(t)
+		keyPath := filepath.Join(dir, "encryption.key")
+		require.NoError(t, os.WriteFile(keyPath, []byte("not-a-valid-key-line\n"), 0o600))
+
+		for _, tc := range []struct {
+			name string
+			run  func() error
+		}{
+			{"rotate", func() error { return runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}) }},
+			{"rotate-pepper", func() error { return runRotatePepper(testCmdCtx, []string{"--data-dir", dir, "--yes"}) }},
+		} {
+			err := tc.run()
+			require.Error(t, err, tc.name)
+			assert.NotContains(t, err.Error(), "not found", "%s must not mask a parse error as missing file", tc.name)
+			assert.Contains(t, err.Error(), "load encryption key", "%s must report key load error", tc.name)
+		}
+	})
+
+	t.Run("remove rejects absent key version before scanning database", func(t *testing.T) {
+		dir := setupTestDataDir(t)
+		err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "99", "--data-dir", dir})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not in ring")
+	})
+
+	t.Run("db migrate at latest version still reseeds missing built-in oauth_clients", func(t *testing.T) {
+		dir := setupTestDataDir(t)
+		// Seed built-ins via normal Open first, then delete them directly in SQL.
+		initStore := openTestStore(t, dir)
+		require.NoError(t, initStore.Close())
+
+		raw, err := sqlite.OpenDB(filepath.Join(dir, "hub.db"), sqlitedb.Config{})
+		require.NoError(t, err)
+		res, err := raw.Exec("DELETE FROM oauth_clients WHERE registration_source = ?", int64(store.OAuthClientSourceBuiltin))
+		require.NoError(t, err)
+		deleted, err := res.RowsAffected()
+		require.NoError(t, err)
+		require.Equal(t, int64(len(oauthapp.BuiltInClientIDs())), deleted)
+		require.NoError(t, raw.Close())
+
+		require.NoError(t, runDBMigrate(testCmdCtx, []string{"--data-dir", dir}))
+
+		st := openExistingTestStore(t, dir)
+		for _, clientID := range oauthapp.BuiltInClientIDs() {
+			_, err := st.OAuthClients().Get(context.Background(), clientID)
+			require.NoErrorf(t, err, "db migrate at latest must restore built-in client %s", clientID)
+		}
+	})
 }

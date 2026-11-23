@@ -102,10 +102,11 @@ func TestPostgresStore(t *testing.T) {
 // id column can silently omit it; information_schema reports collation_name
 // only when it differs from the database default, so asserting the literal
 // 'C' catches an omitted clause even in a C-locale test database.
-// Point-lookup secrets that never tiebreak a cursor (device_code, user_code,
-// code, state, token, auth_token, provider_subject) also carry COLLATE "C"
-// for byte-wise equality, but fall outside the name shape and are not
-// enumerated here.
+// Point-lookup TEXT identifiers that never tiebreak a cursor (state, token,
+// auth_token) also carry COLLATE "C" for byte-wise equality, but fall outside
+// the name shape and are not enumerated here; hashed bearer codes
+// (device_code_hash, user_code_hash, code_hash) are BYTEA columns and carry no
+// collation.
 // Live twin of mysql's TestMySQLBinaryCollationLive; sqlite needs no
 // counterpart because its TEXT comparison is BINARY unless a collation is
 // declared. YugabyteDB inherits this pin via the shared migration.

@@ -6,9 +6,9 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -26,7 +26,7 @@ func (s *workerTabPublicationStore) Get(ctx context.Context, key store.WorkerTab
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	responsePayload, err := s.conn.ks.OpenBytes(row.ResponsePayload, keystore.WorkerTabPublicationResponseAAD(owner, key.WorkerID, key.TabID))
+	responsePayload, err := s.conn.ks.OpenBytes(row.ResponsePayload, sqlutil.WorkerTabPublicationResponseAAD(owner, key.WorkerID, key.TabID))
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +38,7 @@ func (s *workerTabPublicationStore) Insert(ctx context.Context, p store.InsertWo
 		return err
 	}
 	userID := p.UserID.String()
-	responsePayload, err := s.conn.ks.SealBytes(p.ResponsePayload, keystore.WorkerTabPublicationResponseAAD(userID, p.WorkerID, p.TabID))
+	responsePayload, err := s.conn.ks.SealBytes(p.ResponsePayload, sqlutil.WorkerTabPublicationResponseAAD(userID, p.WorkerID, p.TabID))
 	if err != nil {
 		return err
 	}
@@ -55,7 +55,7 @@ func (s *workerTabPublicationStore) Replace(ctx context.Context, p store.InsertW
 	if !ownerOK {
 		return store.ErrInvalidArgument
 	}
-	responsePayload, err := s.conn.ks.SealBytes(p.ResponsePayload, keystore.WorkerTabPublicationResponseAAD(owner, p.WorkerID, p.TabID))
+	responsePayload, err := s.conn.ks.SealBytes(p.ResponsePayload, sqlutil.WorkerTabPublicationResponseAAD(owner, p.WorkerID, p.TabID))
 	if err != nil {
 		return err
 	}

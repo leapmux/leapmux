@@ -7,7 +7,6 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -21,11 +20,11 @@ type sessionStore struct{ conn *sqliteConn }
 var _ store.SessionStore = (*sessionStore)(nil)
 
 func (c *sqliteConn) fromDBSession(s gendb.UserSession) (store.UserSession, error) {
-	userAgent, err := c.ks.OpenString(s.UserAgent, keystore.UserSessionUserAgentAAD(s.ID))
+	userAgent, err := c.ks.OpenString(s.UserAgent, sqlutil.UserSessionUserAgentAAD(s.ID))
 	if err != nil {
 		return store.UserSession{}, err
 	}
-	ipAddress, err := c.ks.OpenString(s.IpAddress, keystore.UserSessionIPAddressAAD(s.ID))
+	ipAddress, err := c.ks.OpenString(s.IpAddress, sqlutil.UserSessionIPAddressAAD(s.ID))
 	if err != nil {
 		return store.UserSession{}, err
 	}
@@ -46,11 +45,11 @@ func (c *sqliteConn) fromDBSession(s gendb.UserSession) (store.UserSession, erro
 }
 
 func (c *sqliteConn) fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) (store.ActiveSession, error) {
-	userAgent, err := c.ks.OpenString(r.UserAgent, keystore.UserSessionUserAgentAAD(r.ID))
+	userAgent, err := c.ks.OpenString(r.UserAgent, sqlutil.UserSessionUserAgentAAD(r.ID))
 	if err != nil {
 		return store.ActiveSession{}, err
 	}
-	ipAddress, err := c.ks.OpenString(r.IpAddress, keystore.UserSessionIPAddressAAD(r.ID))
+	ipAddress, err := c.ks.OpenString(r.IpAddress, sqlutil.UserSessionIPAddressAAD(r.ID))
 	if err != nil {
 		return store.ActiveSession{}, err
 	}
@@ -68,11 +67,11 @@ func (c *sqliteConn) fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) (s
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
-	userAgent, err := s.conn.ks.SealString(p.UserAgent, keystore.UserSessionUserAgentAAD(p.ID))
+	userAgent, err := s.conn.ks.SealString(p.UserAgent, sqlutil.UserSessionUserAgentAAD(p.ID))
 	if err != nil {
 		return err
 	}
-	ipAddress, err := s.conn.ks.SealString(p.IPAddress, keystore.UserSessionIPAddressAAD(p.ID))
+	ipAddress, err := s.conn.ks.SealString(p.IPAddress, sqlutil.UserSessionIPAddressAAD(p.ID))
 	if err != nil {
 		return err
 	}

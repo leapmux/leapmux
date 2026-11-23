@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -21,15 +21,15 @@ type userStore struct {
 var _ store.UserStore = (*userStore)(nil)
 
 func (c *mysqlConn) fromDBUser(u gendb.User) (store.User, error) {
-	passwordHash, err := c.ks.OpenString(u.PasswordHash, keystore.UserPasswordHashAAD(u.ID))
+	passwordHash, err := c.ks.OpenString(u.PasswordHash, sqlutil.UserPasswordHashAAD(u.ID))
 	if err != nil {
 		return store.User{}, err
 	}
-	prefs, err := c.ks.OpenStringOrDefault(u.Prefs, keystore.UserPrefsAAD(u.ID), "{}")
+	prefs, err := c.ks.OpenStringOrDefault(u.Prefs, sqlutil.UserPrefsAAD(u.ID), "{}")
 	if err != nil {
 		return store.User{}, err
 	}
-	pendingEmailToken, err := c.ks.OpenStringOrDefault(u.PendingEmailToken, keystore.UserPendingEmailTokenAAD(u.ID), "")
+	pendingEmailToken, err := c.ks.OpenStringOrDefault(u.PendingEmailToken, sqlutil.UserPendingEmailTokenAAD(u.ID), "")
 	if err != nil {
 		return store.User{}, err
 	}
@@ -63,7 +63,7 @@ func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error 
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	passwordHash, err := s.conn.ks.SealString(p.PasswordHash, keystore.UserPasswordHashAAD(p.ID))
+	passwordHash, err := s.conn.ks.SealString(p.PasswordHash, sqlutil.UserPasswordHashAAD(p.ID))
 	if err != nil {
 		return err
 	}
@@ -90,6 +90,22 @@ func (s *userStore) GetByID(ctx context.Context, id string) (*store.User, error)
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (s *userStore) GetAuthIdentity(ctx context.Context, id string) (*store.UserAuthIdentity, error) {
+	u, err := s.conn.q.GetUserAuthIdentity(ctx, id)
+	if err != nil {
+		return nil, s.conn.queryError(err)
+	}
+	return &store.UserAuthIdentity{
+		ID:             u.ID,
+		Username:       u.Username,
+		Email:          u.Email,
+		EmailVerified:  u.EmailVerified,
+		IsAdmin:        u.IsAdmin,
+		AuthGeneration: u.AuthGeneration,
+		DeletedAt:      u.DeletedAt.Ptr(),
+	}, nil
 }
 
 func (s *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.User, error) {
@@ -204,7 +220,7 @@ func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	if err != nil {
 		return "", s.conn.queryError(err)
 	}
-	return s.conn.ks.OpenStringOrDefault(prefs, keystore.UserPrefsAAD(id), "{}")
+	return s.conn.ks.OpenStringOrDefault(prefs, sqlutil.UserPrefsAAD(id), "{}")
 }
 
 // See store.ErrLockingReadOutsideTransaction for the rule and its reason.
@@ -216,7 +232,7 @@ func (s *userStore) GetPrefsForUpdate(ctx context.Context, id string) (string, e
 	if err != nil {
 		return "", s.conn.queryError(err)
 	}
-	return s.conn.ks.OpenStringOrDefault(prefs, keystore.UserPrefsAAD(id), "{}")
+	return s.conn.ks.OpenStringOrDefault(prefs, sqlutil.UserPrefsAAD(id), "{}")
 }
 
 func (s *userStore) HasAny(ctx context.Context) (bool, error) {
@@ -232,16 +248,42 @@ func (s *userStore) Count(ctx context.Context) (int64, error) {
 	return n, s.conn.queryError(err)
 }
 
-func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) (store.Page[store.User], error) {
-	return store.QueryPageErr(ctx, p.Limit,
-		func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
-		s.conn.q.ListAllUsers, s.conn.fromDBUser, s.conn.queryError)
+func (c *mysqlConn) fromDBUserListRow(u gendb.ListAllUsersRow) (store.UserListItem, error) {
+	passwordHash, err := c.ks.OpenString(u.PasswordHash, sqlutil.UserPasswordHashAAD(u.ID))
+	if err != nil {
+		return store.UserListItem{}, err
+	}
+	return store.UserListItem{
+		ID:                    u.ID,
+		Username:              u.Username,
+		PasswordHash:          passwordHash,
+		DisplayName:           u.DisplayName,
+		Email:                 u.Email,
+		EmailVerified:         u.EmailVerified,
+		PendingEmail:          u.PendingEmail,
+		FirstCredentialExempt: u.FirstCredentialExempt,
+		IsAdmin:               u.IsAdmin,
+		CreatedAt:             u.CreatedAt.Time,
+		UpdatedAt:             u.UpdatedAt.Time,
+		AuthGeneration:        u.AuthGeneration,
+		DeletedAt:             u.DeletedAt.Ptr(),
+	}, nil
 }
 
-func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (store.Page[store.User], error) {
+func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) (store.Page[store.UserListItem], error) {
+	return store.QueryPageErr(ctx, p.Limit,
+		func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
+		s.conn.q.ListAllUsers, s.conn.fromDBUserListRow, s.conn.queryError)
+}
+
+func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (store.Page[store.UserListItem], error) {
 	return store.QueryPageErr(ctx, p.Limit,
 		func() (gendb.SearchUsersParams, error) { return searchUsersParams(p.Query, p.Cursor, p.Limit) },
-		s.conn.q.SearchUsers, s.conn.fromDBUser, s.conn.queryError)
+		s.conn.q.SearchUsers,
+		func(r gendb.SearchUsersRow) (store.UserListItem, error) {
+			return s.conn.fromDBUserListRow(gendb.ListAllUsersRow(r))
+		},
+		s.conn.queryError)
 }
 
 // loadUserInfoCacheFields reads the current cached-UserInfo projection for id.
@@ -255,11 +297,12 @@ func loadUserInfoCacheFields(ctx context.Context, conn *mysqlConn, id string) (s
 	if err != nil {
 		return store.UserInfoCacheFields{}, false, conn.queryError(err)
 	}
-	user, err := conn.fromDBUser(u)
-	if err != nil {
-		return store.UserInfoCacheFields{}, false, err
-	}
-	return store.UserInfoCacheFieldsOf(user), true, nil
+	return store.UserInfoCacheFields{
+		Username:      u.Username,
+		Email:         u.Email,
+		EmailVerified: u.EmailVerified,
+		IsAdmin:       u.IsAdmin,
+	}, true, nil
 }
 
 // runUserInfoMutation wires the shared RunUserInfoMutation to this dialect's
@@ -402,7 +445,7 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 }
 
 func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswordParams) error {
-	passwordHash, err := s.conn.ks.SealString(p.PasswordHash, keystore.UserPasswordHashAAD(p.ID))
+	passwordHash, err := s.conn.ks.SealString(p.PasswordHash, sqlutil.UserPasswordHashAAD(p.ID))
 	if err != nil {
 		return err
 	}
@@ -471,7 +514,7 @@ func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminPara
 }
 
 func (s *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsParams) error {
-	prefs, err := s.conn.ks.SealNonEmptyString(p.Prefs, keystore.UserPrefsAAD(p.ID))
+	prefs, err := s.conn.ks.SealNonEmptyString(p.Prefs, sqlutil.UserPrefsAAD(p.ID))
 	if err != nil {
 		return err
 	}
@@ -485,7 +528,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	if err := store.ValidatePendingUnblockedAt(p.PendingEmailUnblockedAt); err != nil {
 		return false, err
 	}
-	token, err := s.conn.ks.SealNonEmptyString(p.PendingEmailToken, keystore.UserPendingEmailTokenAAD(p.ID))
+	token, err := s.conn.ks.SealNonEmptyString(p.PendingEmailToken, sqlutil.UserPendingEmailTokenAAD(p.ID))
 	if err != nil {
 		return false, err
 	}
@@ -635,7 +678,7 @@ func (s *userStore) GetByLiveRecoveryToken(ctx context.Context, tokenHash string
 }
 
 func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecoveryParams) (*store.RecoveryRevocation, error) {
-	passwordHash, err := s.conn.ks.SealString(p.PasswordHash, keystore.UserPasswordHashAAD(p.ID))
+	passwordHash, err := s.conn.ks.SealString(p.PasswordHash, sqlutil.UserPasswordHashAAD(p.ID))
 	if err != nil {
 		return nil, err
 	}

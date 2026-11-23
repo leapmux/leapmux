@@ -19,6 +19,14 @@ var _ store.TestHelper = (*sqliteTestHelper)(nil)
 // testableSQLiteStore extends sqliteStore with test helper operations.
 type testableSQLiteStore struct {
 	*sqliteStore
+	borrowed bool
+}
+
+func (s *testableSQLiteStore) Close() error {
+	if s.borrowed {
+		return nil
+	}
+	return s.sqliteStore.Close()
 }
 
 var _ store.TestableStore = (*testableSQLiteStore)(nil)
@@ -73,7 +81,7 @@ func (h *sqliteTestHelper) SetDeregisteringAt(ctx context.Context, workerID stri
 }
 
 func (h *sqliteTestHelper) ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error {
-	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, workerID)
+	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.DialectSQLite, workerID)
 }
 
 // setEntityTime binds t as a SQLiteTime and writes it to a fixed column on a
@@ -95,7 +103,7 @@ func (h *sqliteTestHelper) setEntityTime(ctx context.Context, entity store.TestE
 // raw-string deleted_at cleanup cutoffs). The column is a hardcoded literal,
 // never caller input.
 func (h *sqliteTestHelper) setEntityColumn(ctx context.Context, entity store.TestEntity, column, id string, value any) error {
-	return sqlutil.SetEntityColumnValue(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, column, id, value)
+	return sqlutil.SetEntityColumnValue(ctx, h.exec, sqlutil.DialectSQLite, entity, column, id, value)
 }
 
 // CheckCanonicalTimestamps asserts every DATETIME column of every table
@@ -173,6 +181,9 @@ func (h *sqliteTestHelper) TableHoldsText(ctx context.Context, table, text strin
 }
 
 func (h *sqliteTestHelper) WithKeystore(ks *keystore.Keystore) store.TestableStore {
+	if ks == nil {
+		panic("sqlite: WithKeystore requires a non-nil keystore")
+	}
 	return &testableSQLiteStore{
 		sqliteStore: &sqliteStore{
 			conn: &sqliteConn{
@@ -182,13 +193,18 @@ func (h *sqliteTestHelper) WithKeystore(ks *keystore.Keystore) store.TestableSto
 				q:      gendb.New(h.shared.db),
 			},
 		},
+		borrowed: true,
 	}
 }
 
 func (h *sqliteTestHelper) CopyWorkspaceTitleCiphertext(ctx context.Context, srcWorkspaceID, dstWorkspaceID string) error {
-	return sqlutil.CopyWorkspaceTitleCiphertext(ctx, h.shared.db, h.exec, sqlutil.ParameterStyleQuestionMark, srcWorkspaceID, dstWorkspaceID)
+	return sqlutil.CopyWorkspaceTitleCiphertext(ctx, h.shared.db, h.exec, sqlutil.DialectSQLite, srcWorkspaceID, dstWorkspaceID)
 }
 
 func (h *sqliteTestHelper) SetSettingSecretRaw(ctx context.Context, key string, raw []byte) error {
-	return sqlutil.SetSettingSecretRaw(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, key, raw)
+	return sqlutil.SetSettingSecretRaw(ctx, h.exec, sqlutil.DialectSQLite, key, raw)
+}
+
+func (h *sqliteTestHelper) CopySettingSecretCiphertext(ctx context.Context, srcKey, dstKey string) error {
+	return sqlutil.CopySettingSecretCiphertext(ctx, h.shared.db, h.exec, sqlutil.DialectSQLite, srcKey, dstKey)
 }

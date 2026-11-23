@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"fmt"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -14,20 +13,24 @@ type keyMaintenanceStore struct {
 }
 
 func (s *keyMaintenanceStore) CountKeyVersionRefs(ctx context.Context, version uint32) ([]store.KeyVersionRefCount, error) {
-	return sqlutil.CountKeyVersionRefs(ctx, s.conn.shared.db, sqlutil.DialectSQLite, version)
+	if tx, ok := s.conn.exec.(*sql.Tx); ok {
+		return sqlutil.CountKeyVersionRefs(ctx, sqlutil.NewSQLQueryExec(tx), sqlutil.DialectSQLite, version, nil)
+	}
+	return sqlutil.CountKeyVersionRefs(ctx, sqlutil.NewSQLQueryExec(s.conn.shared.db), sqlutil.DialectSQLite, version, nil)
+}
+
+func (s *keyMaintenanceStore) VerifyKeyring(ctx context.Context) error {
+	if tx, ok := s.conn.exec.(*sql.Tx); ok {
+		return sqlutil.VerifyKeyring(ctx, sqlutil.NewSQLQueryExec(tx), sqlutil.DialectSQLite, s.conn.ks, nil)
+	}
+	return sqlutil.VerifyKeyring(ctx, sqlutil.NewSQLQueryExec(s.conn.shared.db), sqlutil.DialectSQLite, s.conn.ks, nil)
 }
 
 func (s *keyMaintenanceStore) ReencryptAll(ctx context.Context) (store.ReencryptResult, error) {
-	runTx := func(ctx context.Context, fn func(*sql.Tx) error) error {
-		tx, err := s.conn.shared.db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin reencrypt transaction: %w", err)
-		}
-		defer func() { _ = tx.Rollback() }()
-		if err := fn(tx); err != nil {
-			return err
-		}
-		return tx.Commit()
+	if tx, ok := s.conn.exec.(*sql.Tx); ok {
+		qe := sqlutil.NewSQLQueryExec(tx)
+		return sqlutil.ReencryptAll(ctx, qe, sqlutil.InTxRunner(qe), sqlutil.DialectSQLite, s.conn.ks, nil)
 	}
-	return sqlutil.ReencryptAll(ctx, s.conn.shared.db, runTx, sqlutil.DialectSQLite, s.conn.ks)
+	qe := sqlutil.NewSQLQueryExec(s.conn.shared.db)
+	return sqlutil.ReencryptAll(ctx, qe, sqlutil.NewSQLTxRunner(s.conn.shared.db, nil), sqlutil.DialectSQLite, s.conn.ks, nil)
 }

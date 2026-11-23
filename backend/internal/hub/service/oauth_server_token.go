@@ -274,7 +274,7 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 		return
 	}
 	h.issueTokenResponse(w, r, consentedGrant{
-		id:               string(codeHash),
+		id:               codeHash,
 		userID:           grantUID,
 		app:              app,
 		installationName: row.InstallationName,
@@ -541,8 +541,8 @@ type consentedGrant struct {
 	// AUTHORITY: /oauth/token carries no session at all, so the browser consent
 	// that produced this row is where the elevated session was required, and
 	// holding the row is the proof. Both device grants and authorization-code
-	// grants store the stored digest's bytes as a string.
-	id               string
+	// grants store the stored digest bytes directly.
+	id               []byte
 	userID           userid.UserID
 	app              *store.OAuthClient
 	installationName string
@@ -655,7 +655,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 		return
 	}
 	h.issueTokenResponse(w, r, consentedGrant{
-		id:               string(deviceCodeHash),
+		id:               deviceCodeHash,
 		userID:           row.UserID,
 		app:              app,
 		installationName: row.DeviceName,

@@ -92,7 +92,7 @@ A key file looks like this:
 pepper:cGVwcGVyIGlzIGEgc2VwYXJhdGUgc3RhYmxlIHNlY3JldA==
 ```
 
-The **highest version number is the active key** — it encrypts all new secrets. Older versions stay in the file only to decrypt data written before a rotation.
+The **highest version number is the active key** — it encrypts all newly written protected columns across the 15 encrypted Hub tables. Older versions stay in the file only to decrypt data written before a rotation.
 
 {{< callout type="warning" >}}
 Treat `encryption.key` as a top-grade secret. There is no master-password or HSM wrapping around it — the file contains the raw keys. Anyone who has both this file and a copy of the database can decrypt all 37 encrypted Hub columns across 15 tables. Conversely, **losing this file makes all encrypted columns permanently unreadable** (see [Backup & restore](#backup--restore)).
@@ -154,7 +154,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 
    ```bash
    leapmux recover encryption-key reencrypt
-   # Re-encrypted 18 rows to key version 2.
+   # Re-encrypted 18 encrypted rows to key version 2.
    ```
 
    This walks all 14 persistent encrypted tables (33 columns), checks each ciphertext's 4-byte key-version header, decrypts every column still encrypted under an older version, and rewrites it under the active version inside a transaction. Rows already at the active version are skipped.
@@ -323,7 +323,7 @@ A correct, restorable backup of a single-machine Hub is: a consistent copy of `h
 2. Restore the database into place (copy the SQLite file back, or load your SQL dump into the target server).
 3. Restore `encryption.key` to its original path (or set `encryption_key_path` to wherever you placed it).
 4. Restore each Worker's `state.json` to its data dir.
-5. Start the Hub. It will apply any pending migrations automatically on open, then load the keystore.
+5. Start the Hub. It loads the keystore first, then opens the store and applies any pending migrations automatically.
 
 You can restore a whole data directory at another path, as the same operating-system account. The first command at the new path adopts it; see [Move an instance to another directory](/docs/admin/starting-and-stopping/#move-an-instance-to-another-directory).
 

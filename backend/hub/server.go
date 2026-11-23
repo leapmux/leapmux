@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -59,6 +60,56 @@ import (
 	"github.com/leapmux/leapmux/util/errwrap"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// loadOrInitKeystore loads the Hub's encryption key ring, or generates a fresh
+// key ring only when the target database contains no existing encrypted data.
+// Refusing to auto-generate a key file against an existing database prevents a
+// missing encryption.key from silently creating a mismatched key file on disk.
+func loadOrInitKeystore(ctx context.Context, cfg *config.Config) (*keystore.Keystore, error) {
+	keyPath := cfg.EncryptionKeyFilePath()
+	_, err := keystore.LoadFromFile(keyPath)
+	if err == nil {
+		// Existing file found. LoadOrGenerate handles read-only rings and
+		// upgrades legacy pre-pepper key files in place.
+		return keystore.LoadOrGenerate(keyPath)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := ensureDatabaseHasNoEncryptedData(ctx, cfg, keyPath); err != nil {
+		return nil, err
+	}
+	return keystore.LoadOrGenerate(keyPath)
+}
+
+func ensureDatabaseHasNoEncryptedData(ctx context.Context, cfg *config.Config, keyPath string) error {
+	if cfg.Storage.Type == "" || cfg.Storage.Type == config.StorageTypeSQLite {
+		if _, err := os.Stat(cfg.SQLiteDBPath()); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+	}
+	probeKS, err := keystore.NewRandom()
+	if err != nil {
+		return fmt.Errorf("create probe keystore: %w", err)
+	}
+	probeStore, err := storeopen.OpenWithoutMigrate(ctx, cfg, probeKS)
+	if err != nil {
+		return fmt.Errorf("probe database before generating %s: %w", keyPath, err)
+	}
+	defer func() { _ = probeStore.Close() }()
+
+	curVer, err := probeStore.Migrator().CurrentVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("check schema version before generating %s: %w", keyPath, err)
+	}
+	if curVer == 0 {
+		return nil
+	}
+	if err := probeStore.KeyMaintenance().VerifyKeyring(ctx); err != nil {
+		return fmt.Errorf("encryption key file %s is missing, but the database already contains encrypted data; restore %s before starting: %w", keyPath, keyPath, err)
+	}
+	return nil
+}
 
 // crdtShutdownTimeout caps the CRDT registry's drain, both on a construction
 // failure and on runtime shutdown -- one constant so the two paths cannot drift.
@@ -462,7 +513,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// never as part of the TCP merge input.
 	listenReports := listenReporter{set: listeners, configured: tcpEntries, local: localListenURLs}
 
-	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
+	ks, err := loadOrInitKeystore(context.Background(), cfg)
 	if err != nil {
 		return nil, acquired.close(
 			fmt.Errorf("load encryption keystore: %w", err))
