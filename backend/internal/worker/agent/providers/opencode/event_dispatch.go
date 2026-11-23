@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -245,13 +246,18 @@ func (a *Agent) finishRunExecutionLocked(run *openCodeRun, id string, raw []byte
 	if err := run.text.finish(completion); err != nil {
 		return err
 	}
-	if err := run.tools.finish(completion); err != nil {
-		return err
+	if completion == agent.MessageCompletionInterrupted {
+		if err := run.tools.finish(completion); err != nil {
+			return err
+		}
 	}
 	count := run.tools.count - run.lastToolCount
 	content := agent.WithToolUseCount(agent.MessageContent{Original: raw, AgentSessionID: run.id, IdempotencyKey: "completion:" + id, Completion: completion}, count)
 	if err := run.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		return err
+	}
+	if completion == agent.MessageCompletionInterrupted {
+		providerkit.ResetSpansAndProgress(run.sink)
 	}
 	run.ended[id] = true
 	run.retryResolution.Reset()
@@ -292,6 +298,7 @@ func (a *Agent) retireRunLocked(run *openCodeRun, completion agent.MessageComple
 	run.cancel()
 	a.controls.retireOwner(run.id)
 	result = errors.Join(result, run.text.finish(completion), run.tools.finish(completion))
+	providerkit.ResetSpansAndProgress(run.sink)
 	run.finishPendingSteers()
 	if run.childLease != nil && run.childLease.Cleanup != nil {
 		run.childLease.Cleanup()

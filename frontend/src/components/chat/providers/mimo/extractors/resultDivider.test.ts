@@ -11,7 +11,7 @@ describe('mimoResultDivider', () => {
 
   // The idle states no outcome of its own. LeapMux knows it stopped the turn.
   it('reads the idle of an interrupted turn from the completion', () => {
-    expect(mimoResultDivider(statusFrame('idle'), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
+    expect(mimoResultDivider(statusFrame('idle'), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', interrupted: true })
   })
 
   it('reads a failure with its name and its reason', () => {
@@ -22,7 +22,7 @@ describe('mimoResultDivider', () => {
   })
 
   it('reads an abort error as an interruption', () => {
-    expect(mimoResultDivider(errorFrame('MessageAbortedError', 'aborted'))).toEqual({ label: 'Turn interrupted' })
+    expect(mimoResultDivider(errorFrame('MessageAbortedError', 'aborted'))).toEqual({ label: 'Turn interrupted', interrupted: true })
   })
 
   it('reads no other row', () => {
@@ -38,7 +38,7 @@ describe('mimoResultDivider', () => {
   // The reader's stop can reach MiMo as a failure of another name. LeapMux's own
   // completion knows that the reader stopped the turn.
   it('reads a failure of an interrupted turn as an interruption', () => {
-    expect(mimoResultDivider(errorFrame('APIError', 'socket closed'), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
+    expect(mimoResultDivider(errorFrame('APIError', 'socket closed'), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', interrupted: true })
   })
 
   it('reads a failure with no completion as a failure', () => {

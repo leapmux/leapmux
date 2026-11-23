@@ -3,10 +3,14 @@ package acp
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -146,7 +150,7 @@ func TestACPStoppedPromptThatErrorsIsAStop(t *testing.T) {
 		"a stop the reader asked for is not an agent error worth telling them about")
 }
 
-// A prompt that fails on its own is still an error, and still worth reporting.
+// A prompt that fails on its own reports the error while keeping open tools alive.
 func TestACPPromptThatFailsOnItsOwnIsAnError(t *testing.T) {
 	t.Parallel()
 
@@ -159,10 +163,8 @@ func TestACPPromptThatFailsOnItsOwnIsAnError(t *testing.T) {
 	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
 	b.finishPromptRequest("s1", nil, errors.New("boom"))
 
-	msgs := sink.Messages()
-	require.NotEmpty(t, msgs)
-	assert.Equal(t, agent.MessageCompletionError, msgs[len(msgs)-1].Completion,
-		"nobody stopped this, so the turn failed")
+	assert.Empty(t, closingRows(sink, "call-1"), "non-interrupted prompt failure leaves open tools running")
+	assert.True(t, b.HasOpenRootTool("call-1"))
 	assert.NotEmpty(t, sink.LeapMuxNotifications(), "a real prompt failure still reaches the reader")
 }
 
@@ -196,7 +198,7 @@ func TestACPStoppedPromptResponseReportsTheStop(t *testing.T) {
 		"the reader stopped this turn, so the work it cut reports the stop")
 }
 
-// A turn that ends on its own with work unfinished is still a failure.
+// A normal turn end keeps open tools alive so background work can finish in a later turn.
 func TestACPPromptResponseWithoutAStopKeepsTheError(t *testing.T) {
 	t.Parallel()
 
@@ -209,12 +211,136 @@ func TestACPPromptResponseWithoutAStopKeepsTheError(t *testing.T) {
 	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-1","kind":"execute","title":"Sleep"}`))
 	b.handleACPPromptResponse(json.RawMessage(`{"stopReason":"end_turn"}`))
 
-	var tool agenttest.Message
-	for _, message := range sink.Messages() {
-		if message.SpanID == "call-1" {
-			tool = message
+	assert.Empty(t, closingRows(sink, "call-1"), "normal end_turn keeps open tools alive")
+	assert.True(t, b.HasOpenRootTool("call-1"))
+	assert.Equal(t, "execute", sink.GetSpanType("call-1"))
+}
+
+func TestACPIdleInterruptClosesOpenToolAndSuppressesLateUpdatesAndFinal(t *testing.T) {
+	t.Parallel()
+
+	for _, cancelBefore := range []bool{true, false} {
+		name := "cancel_after_withdrawal"
+		if cancelBefore {
+			name = "cancel_before_withdrawal"
 		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			out := &agenttest.Stdin{}
+			b, sink := newACPTurnBase(t, out)
+			b.hooks.CancelBeforeControlWithdrawal = cancelBefore
+			b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-bg","kind":"execute","title":"Sleep"}`))
+			b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-bg","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":"running"}}]} `))
+			require.True(t, b.HasOpenRootTool("call-bg"))
+
+			require.NoError(t, b.Interrupt(agent.StopContext{}))
+			assert.False(t, b.HasOpenRootTool("call-bg"))
+			assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closingRows(sink, "call-bg"))
+			assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+			b.Mu.Lock()
+			drained := b.promptOutputDrained
+			b.Mu.Unlock()
+			assert.False(t, drained, "idle Interrupt must not set promptOutputDrained")
+
+			progressBefore := len(sink.ProgressUpdates())
+			msgsBefore := sink.MessageCount()
+			// Late non-final and final updates after idle interrupt must be dropped completely.
+			b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-bg","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":"late chunk"}}]} `))
+			b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-bg","status":"failed"}`))
+			assert.Equal(t, progressBefore, len(sink.ProgressUpdates()))
+			assert.Equal(t, msgsBefore, sink.MessageCount())
+
+			// A subsequent Turn 2 must still own and finish its prompt normally.
+			require.NoError(t, b.SendInput("turn 2", nil))
+			b.HandleOutput(acptest.Chunk("session-1", contracts.ACPUpdateAgentMessageChunk, "turn 2 reply"))
+			b.HandleJSONRPCResponseForTest(promptResponse(1))
+			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+			assert.Equal(t, []string{"text:turn 2 reply"}, assembledTexts(t, sink.Messages()))
+			assert.Len(t, turnEndContents(sink), 1)
+		})
+
+		t.Run(name+"_concurrent_turn_2_race", func(t *testing.T) {
+			t.Parallel()
+
+			out := &agenttest.Stdin{}
+			b, sink := newACPTurnBase(t, out)
+			b.hooks.CancelBeforeControlWithdrawal = cancelBefore
+			b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-bg","kind":"execute","title":"Sleep"}`))
+			require.True(t, b.HasOpenRootTool("call-bg"))
+
+			// Hold sessionUpdates.mu so idle Interrupt completes cancelSession
+			// (releasing sessionMu.RLock) and blocks at detachIdleRootTools().
+			b.sessionUpdates.mu.Lock()
+			interruptErr := make(chan error, 1)
+			go func() {
+				interruptErr <- b.Interrupt(agent.StopContext{})
+			}()
+			testutil.RequireEventually(t, func() bool {
+				return strings.Contains(out.String(), MethodSessionCancel)
+			})
+
+			// Start Turn 2 while idle Interrupt is paused before detachIdleRootTools().
+			require.NoError(t, b.SendInput("turn 2", nil))
+			b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-turn2","kind":"execute","title":"Turn2"}`))
+			lifecycleBefore := len(sink.TurnLifecycle())
+			progressBefore := len(sink.ProgressUpdates())
+			b.sessionUpdates.mu.Unlock()
+
+			require.NoError(t, <-interruptErr)
+			assert.True(t, b.PromptActive(), "racing idle Interrupt must not disturb concurrent Turn 2")
+			assert.True(t, b.HasOpenRootTool("call-turn2"), "racing idle Interrupt must not close Turn 2 tools")
+			assert.Equal(t, lifecycleBefore, len(sink.TurnLifecycle()), "racing idle Interrupt must not reset spans after Turn 2 started")
+			assert.Equal(t, progressBefore, len(sink.ProgressUpdates()), "racing idle Interrupt must not reset progress after Turn 2 started")
+			b.Mu.Lock()
+			drained := b.promptOutputDrained
+			b.Mu.Unlock()
+			assert.False(t, drained, "racing idle Interrupt must not set promptOutputDrained")
+
+			b.HandleJSONRPCResponseForTest(promptResponse(1))
+			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+			assert.Len(t, turnEndContents(sink), 1)
+		})
 	}
-	assert.Equal(t, agent.MessageCompletionError, tool.Completion,
-		"nobody stopped this, so a tool the turn left unfinished failed")
+}
+
+func TestACPFinishOwnedPromptRequestHandlesNativeCancelledStopReason(t *testing.T) {
+	t.Parallel()
+
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	var endedStopped bool
+	b.hooks.PromptEnded = func(_ error, stopped bool) PromptEnding {
+		endedStopped = stopped
+		return PromptEnding{}
+	}
+	b.Mu.Lock()
+	b.promptActive = true
+	b.Mu.Unlock()
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-cancel","kind":"execute","title":"Sleep"}`))
+
+	b.finishPromptRequest("session-1", json.RawMessage(`{"stopReason":"cancelled"}`), nil)
+	assert.True(t, endedStopped, "native cancelled stopReason must pass stopped=true to PromptEnded")
+	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closingRows(sink, "call-cancel"))
+	assert.False(t, b.HasOpenRootTool("call-cancel"))
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+}
+
+func TestACPRPCErrorAfterStopResetsSpans(t *testing.T) {
+	t.Parallel()
+
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	b.Mu.Lock()
+	b.promptActive = true
+	b.Mu.Unlock()
+	b.noteACPInterruptRequested()
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-err","kind":"execute","title":"Sleep"}`))
+
+	b.finishPromptRequest("session-1", nil, errors.New("rpc canceled"))
+	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closingRows(sink, "call-err"))
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
 }

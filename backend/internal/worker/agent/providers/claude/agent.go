@@ -1,10 +1,12 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -106,6 +108,196 @@ type Agent struct {
 	// workflows draws the agent rows of Workflow runs. A value, not a pointer,
 	// for the same reason as tasks.
 	workflows claudeWorkflowRuns
+	openTools claudeOpenToolStore
+}
+
+type claudeOpenTool struct {
+	raw          []byte
+	toolName     string
+	parentSpanID string
+	sessionID    string
+}
+
+type claudeOpenToolStore struct {
+	mu            sync.Mutex
+	root          providerkit.ToolSpanLedger[claudeOpenTool]
+	children      map[string]*providerkit.ToolSpanLedger[claudeOpenTool]
+	releasedSpans map[string]struct{}
+}
+
+func (s *claudeOpenToolStore) ledgerLocked(childID string, create bool) *providerkit.ToolSpanLedger[claudeOpenTool] {
+	if childID == "" {
+		return &s.root
+	}
+	if s.children == nil {
+		if !create {
+			return nil
+		}
+		s.children = make(map[string]*providerkit.ToolSpanLedger[claudeOpenTool])
+	}
+	ledger := s.children[childID]
+	if ledger == nil && create {
+		ledger = &providerkit.ToolSpanLedger[claudeOpenTool]{}
+		s.children[childID] = ledger
+	}
+	return ledger
+}
+
+func (s *claudeOpenToolStore) open(childID, spanID, toolName, parentSpanID, sessionID string, raw []byte) {
+	if spanID == "" || claudeToolSpawnsSubagent(toolName) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ledger := s.ledgerLocked(childID, true)
+	ledger.Open(spanID, toolName, false, claudeOpenTool{
+		raw:          bytes.Clone(raw),
+		toolName:     toolName,
+		parentSpanID: parentSpanID,
+		sessionID:    sessionID,
+	})
+	if childID == "" {
+		delete(s.releasedSpans, spanID)
+	}
+}
+
+func (s *claudeOpenToolStore) completeNative(childID, spanID string) (wasOpen, alreadyClosed bool) {
+	if spanID == "" {
+		return false, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ledger := s.ledgerLocked(childID, false)
+	if ledger == nil {
+		return false, false
+	}
+	_, wasOpen, alreadyClosed = ledger.CompleteNative(spanID)
+	if childID == "" && alreadyClosed {
+		if _, released := s.releasedSpans[spanID]; released {
+			delete(s.releasedSpans, spanID)
+			return false, false
+		}
+	}
+	return wasOpen, alreadyClosed
+}
+
+// wasForceClosed reports whether spanID was force-closed by interrupt or
+// teardown. It returns false for spans that are currently open, workflow spans
+// released early by task_started, and spans never tracked in the ledger (such
+// as spawning Agent/Task calls).
+func (s *claudeOpenToolStore) wasForceClosed(childID, spanID string) bool {
+	if spanID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.wasForceClosedLocked(childID, spanID)
+}
+
+func (s *claudeOpenToolStore) wasForceClosedLocked(childID, spanID string) bool {
+	ledger := s.ledgerLocked(childID, false)
+	if ledger == nil {
+		return false
+	}
+	if _, open := ledger.Get(spanID); open {
+		return false
+	}
+	if childID == "" {
+		if _, released := s.releasedSpans[spanID]; released {
+			return false
+		}
+	}
+	// Non-open entries are never mutated by CompleteNative.
+	_, _, alreadyClosed := ledger.CompleteNative(spanID)
+	return alreadyClosed
+}
+
+// allToolResultsForceClosed reports whether blocks contains at least one
+// tool_result block, contains no non-tool_result blocks, and every referenced
+// tool_use_id was already force-closed by interrupt or teardown (excluding
+// workflow spans released early by task_started, whose native tool_result
+// must still persist).
+func (s *claudeOpenToolStore) allToolResultsForceClosed(childID string, blocks []contentBlock) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	var ids []string
+	for _, block := range blocks {
+		if block.Type != "tool_result" || block.ToolUseID == "" {
+			return false
+		}
+		ids = append(ids, block.ToolUseID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		if !s.wasForceClosedLocked(childID, id) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *claudeOpenToolStore) markWorkflowSpanReleased(spanID string) {
+	if spanID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.root.MarkNativeClosed(spanID)
+	if s.releasedSpans == nil {
+		s.releasedSpans = make(map[string]struct{})
+	}
+	s.releasedSpans[spanID] = struct{}{}
+}
+
+func (s *claudeOpenToolStore) drain(childID string) []providerkit.OpenToolEntry[claudeOpenTool] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ledger := s.ledgerLocked(childID, false)
+	if ledger == nil {
+		return nil
+	}
+	return ledger.DrainAll()
+}
+
+func (s *claudeOpenToolStore) forgetChild(childID string) {
+	if childID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.children, childID)
+	s.mu.Unlock()
+}
+
+func (s *claudeOpenToolStore) drainAllChildren() map[string][]providerkit.OpenToolEntry[claudeOpenTool] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.children) == 0 {
+		return nil
+	}
+	drained := make(map[string][]providerkit.OpenToolEntry[claudeOpenTool], len(s.children))
+	for childID, ledger := range s.children {
+		if entries := ledger.DrainAll(); len(entries) > 0 {
+			drained[childID] = entries
+		}
+	}
+	return drained
+}
+
+func claudeBuildClosingRow(entry providerkit.OpenToolEntry[claudeOpenTool]) (agent.MessageContent, agent.SpanInfo, bool) {
+	if len(entry.Data.raw) == 0 {
+		return agent.MessageContent{}, agent.SpanInfo{}, false
+	}
+	return agent.MessageContent{
+		Original:       bytes.Clone(entry.Data.raw),
+		AgentSessionID: entry.Data.sessionID,
+	}, agent.SpanInfo{
+		SpanID:       entry.SpanID,
+		ParentSpanID: entry.Data.parentSpanID,
+		SpanType:     entry.SpanType,
+		Closing:      true,
+	}, true
 }
 
 func (a *Agent) Stop() {
@@ -122,7 +314,25 @@ func (a *Agent) Wait() error {
 func (a *Agent) finishClaudeProcessExit() {
 	a.joinFinalHoldReservation()
 	a.withdrawControls()
-	a.sink.ReportProgress(agent.ResetProgress())
+	completion := a.ProcessExitCompletion()
+	discarding := a.IsDiscardingOutput()
+	if a.sink != nil {
+		rootEntries := a.openTools.drain("")
+		if !discarding && len(rootEntries) > 0 {
+			providerkit.CloseToolSpans(a.sink, rootEntries, completion, claudeBuildClosingRow, false)
+		}
+		providerkit.ResetSpansAndProgress(a.sink)
+		for childID, entries := range a.openTools.drainAllChildren() {
+			childSink := a.sink.ChildSink(childID)
+			if childSink == nil {
+				continue
+			}
+			if !discarding && len(entries) > 0 {
+				providerkit.CloseToolSpans(childSink, entries, completion, claudeBuildClosingRow, false)
+			}
+			providerkit.ResetSpansAndProgress(childSink)
+		}
+	}
 }
 
 func (a *Agent) liveClaudeOutput() bool {
@@ -168,12 +378,80 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	// here is a control TIMEOUT far more often than a lost write, and the CLI
 	// that answered late still aborted the turn. The note costs nothing if it is
 	// wrong: an idle report drops an unused note.
-	a.noteInterruptRequested()
+	wasActive := a.noteInterruptRequested()
 	// Use the agent's own context so a process exit unblocks the
 	// wait. APITimeout caps how long we hold the caller; the control
 	// protocol itself is fast (single round-trip).
 	_, err := a.sendControlAndWait(a.Context(), `{"subtype":"interrupt"}`, a.APITimeout())
+	if err == nil && !wasActive {
+		a.closeIdleOpenRootTools()
+	}
 	return err
+}
+
+func (a *Agent) closeIdleOpenRootTools() {
+	if a.sink == nil {
+		return
+	}
+	done := make(chan struct{})
+	var doneOnce sync.Once
+	finish := func() {
+		doneOnce.Do(func() { close(done) })
+	}
+	route, err := a.reserveRoutedClaudeRootOutput("close idle Claude open tools", func(func()) claudeRootSequence {
+		destination := a.rootTranscript()
+		base := destination.capture(agent.MessageContent{}, agent.SpanInfo{})
+		spans := agent.TranscriptFrameSpans(base, destination.sink)
+		var drained bool
+		var pending []claudeClosingToolOp
+		return func(sequence agent.TranscriptSequence) error {
+			if !drained {
+				a.Mu.Lock()
+				active := a.turnActive
+				a.Mu.Unlock()
+				if active {
+					finish()
+					return nil
+				}
+				drained = true
+				entries := a.openTools.drain("")
+				if len(entries) == 0 {
+					finish()
+					return nil
+				}
+				pending = makeClaudeClosingToolOps(entries)
+			}
+			if err := a.persistClaudeClosingToolsInSequence(sequence, destination, spans, &pending, agent.MessageCompletionInterrupted); err != nil {
+				return err
+			}
+			if spans != nil {
+				spans.ResetSpans()
+			}
+			providerkit.ResetSpansAndProgress(a.sink)
+			finish()
+			return nil
+		}
+	})
+	if err != nil {
+		a.reportClaudeSequenceError("close idle Claude open tools", err)
+		return
+	}
+	route()
+	timeout := a.APITimeout()
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	timer := a.Clock().NewTimer(timeout, "claude idle interrupt close")
+	defer timer.Stop("claude idle interrupt close")
+	var ctxDone <-chan struct{}
+	if ctx := a.Context(); ctx != nil {
+		ctxDone = ctx.Done()
+	}
+	select {
+	case <-done:
+	case <-ctxDone:
+	case <-timer.C:
+	}
 }
 
 // noteInterruptRequested records that the USER stopped the running turn, so the
@@ -191,12 +469,14 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 // The note is taken only while a turn is running. Claude acknowledges an interrupt
 // sent outside a turn and sends no `result` for it, so a note taken there would wait
 // and then mislabel the NEXT turn's outcome.
-func (a *Agent) noteInterruptRequested() {
+func (a *Agent) noteInterruptRequested() bool {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	if a.turnActive {
 		a.interruptRequested = true
+		return true
 	}
+	return false
 }
 
 // SendInput writes a user message to the agent's stdin.

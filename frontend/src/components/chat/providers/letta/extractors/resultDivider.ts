@@ -27,6 +27,7 @@ export function lettaResultDivider(parsed: unknown, completion?: MessageCompleti
     case MessageCompletion.INTERRUPTED:
       return {
         label: turnEndLabel('interrupted'),
+        interrupted: true,
       }
     case MessageCompletion.ERROR: {
       const [head, ...lines] = lettaErrorWords(pickString(parsed, LETTA_DELTA_FIELD.Error)).split('\n')

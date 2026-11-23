@@ -2874,7 +2874,7 @@ func TestHandleCodexOutput_InterruptedMCPItemGetsAClosingRowAndToolCount(t *test
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.threadID = "main-thread"
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"mcpToolCall","id":"mcp-1","status":"inProgress","server":"docs","tool":"search"}}}`)))
-	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[]}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted","items":[]}}}`)))
 
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	assert.True(t, sink.Messages()[1].Closing)
@@ -4070,4 +4070,198 @@ func TestCodexDuplicateCompletedFailuresMarkOnce(t *testing.T) {
 	frame := `{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-9","status":"failed","error":{"message":"signed in to another account","codexErrorInfo":"unauthorized"}}}}`
 	feedCodexLines(a, frame, frame)
 	assert.True(t, recoveryRequired(a))
+}
+
+func TestCodexBackgroundCommandOutlivesNormalAndFailedTurn(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"completed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+			feedCodexLines(a,
+				`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`,
+				`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"cmd-1","command":"sleep 10","status":"inProgress"}}}`,
+				`{"method":"item/commandExecution/outputDelta","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"cmd-1","delta":"working...\n"}}`,
+				fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":%q}}}`, status),
+			)
+
+			// Span and live output progress remain open across the normal/failed turn divider.
+			assert.NotContains(t, sink.ClosedSpans(), "cmd-1")
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			a.Mu.Lock()
+			_, stillOpen := a.incompleteTools["cmd-1"]
+			a.Mu.Unlock()
+			assert.True(t, stillOpen)
+
+			// Native completion later closes the span cleanly once.
+			feedCodexLines(a,
+				`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"cmd-1","command":"sleep 10","status":"completed","aggregatedOutput":"working...\ndone\n","exitCode":0}}}`,
+			)
+			assert.Contains(t, sink.ClosedSpans(), "cmd-1")
+			rows := codexSpanRows(sink.Messages(), "cmd-1")
+			require.Len(t, rows, 2)
+			assert.True(t, rows[1].Closing)
+			assert.Empty(t, rows[1].Completion)
+		})
+	}
+}
+
+func TestCodexOverlappingTurnStartKeepsPriorOpenCommandAndRawExec(t *testing.T) {
+	t.Parallel()
+
+	t.Run("root sequential turn start", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+		feedCodexLines(a,
+			`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`,
+			`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"cmd-1","command":"sleep 10","status":"inProgress"}}}`,
+		)
+		feedYieldedCodexCell(t, a, "main-thread", "turn-1", "cell-1")
+		feedCodexLines(a,
+			`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`,
+			`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`,
+		)
+
+		assert.NotContains(t, sink.ClosedSpans(), "cmd-1")
+		a.Mu.Lock()
+		_, cmdOpen := a.incompleteTools["cmd-1"]
+		a.Mu.Unlock()
+		assert.True(t, cmdOpen)
+		assert.NotEmpty(t, a.rawExecutionCalls)
+	})
+
+	t.Run("root overlapping turn start without prior turn completed", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+		feedCodexLines(a,
+			`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`,
+			`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"cmd-overlap","command":"sleep 10","status":"inProgress"}}}`,
+		)
+		feedYieldedCodexCell(t, a, "main-thread", "turn-1", "cell-overlap")
+		// Start turn-2 while turn-1 is still active (previousTurnID == "turn-1").
+		feedCodexLines(a,
+			`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`,
+		)
+
+		assert.NotContains(t, sink.ClosedSpans(), "cmd-overlap")
+		assert.Empty(t, codexSpanRows(sink.Messages(), "cell-overlap"))
+		a.Mu.Lock()
+		_, cmdOpen := a.incompleteTools["cmd-overlap"]
+		a.Mu.Unlock()
+		assert.True(t, cmdOpen)
+		assert.NotEmpty(t, a.rawExecutionCalls)
+	})
+
+	t.Run("child turn 2 start keeps open command and yielded raw execution", func(t *testing.T) {
+		t.Parallel()
+		for _, withCompleted := range []bool{false, true} {
+			name := "overlapping"
+			if withCompleted {
+				name = "after completed"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+				feedCodexLines(a,
+					`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`,
+					`{"method":"item/started","params":{"threadId":"main-thread","turnId":"main-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`,
+					`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn-1"}}}`,
+					`{"method":"item/started","params":{"threadId":"child-1","turnId":"child-turn-1","item":{"type":"commandExecution","id":"child-cmd-1","command":"sleep 10","status":"inProgress"}}}`,
+				)
+				feedYieldedCodexCell(t, a, "child-1", "child-turn-1", "child-cell-1")
+				if withCompleted {
+					feedCodexLines(a,
+						`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn-1","status":"completed"}}}`,
+					)
+				}
+				feedCodexLines(a,
+					`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn-2"}}}`,
+				)
+
+				child := sink.Child("child-of-spawn-1")
+				require.NotNil(t, child)
+				assert.NotContains(t, child.ClosedSpans(), "child-cmd-1")
+				assert.Empty(t, codexSpanRows(child.Messages(), "child-cell-1"))
+				a.Mu.Lock()
+				_, cmdOpen := a.incompleteTools["child-cmd-1"]
+				a.Mu.Unlock()
+				assert.True(t, cmdOpen)
+				assert.NotEmpty(t, a.rawExecutionCalls)
+
+				// Child Turn 2 wait attaches to the preserved yielded cell and finishes it cleanly.
+				for _, frame := range [][]byte{
+					codexWaitCallFrame(t, "wait-child-turn-2", "205", "child-1", "child-turn-2"),
+					codexCellOutputFrame(t, "function_call_output", "wait-child-turn-2", codexTestCellCompleted, "child-1", "child-turn-2", "child turn 2 final"),
+				} {
+					handleCodexOutput(a, providerkit.ParseLine(frame))
+				}
+				rows := codexSpanRows(child.Messages(), "child-cell-1")
+				require.Len(t, rows, 2)
+				assert.Contains(t, string(rows[1].SupplementalContent), "child turn 2 final")
+				assert.True(t, rows[1].Closing)
+			})
+		}
+	})
+}
+
+func TestCodexChildTurnCompletedPreservesOpenToolOnNormalAndClosesOnInterrupted(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"main-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`,
+		`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn-1"}}}`,
+		`{"method":"item/started","params":{"threadId":"child-1","turnId":"child-turn-1","item":{"type":"commandExecution","id":"child-cmd","command":"sleep 10","status":"inProgress"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn-1","status":"completed"}}}`,
+	)
+	child := sink.Child("child-of-spawn-1")
+	require.NotNil(t, child)
+	assert.NotContains(t, child.ClosedSpans(), "child-cmd")
+
+	// Interrupting a subsequent child turn closes the still-open child tool and resets child spans.
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn-2"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn-2","status":"interrupted"}}}`,
+	)
+	assert.Contains(t, child.ClosedSpans(), "child-cmd")
+	assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+	rows := codexSpanRows(child.Messages(), "child-cmd")
+	require.Len(t, rows, 2)
+	assert.True(t, rows[1].Closing)
+	assert.Equal(t, agentapi.MessageCompletionInterrupted, rows[1].Completion)
+}
+
+func TestCodexLateOutputDeltaAndItemCompletedAfterInterruptAreDropped(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"cmd-1","command":"sleep 10","status":"inProgress"}}}`,
+		`{"method":"item/commandExecution/outputDelta","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"cmd-1","delta":"before interrupt\n"}}`,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted"}}}`,
+	)
+	rowsAfterInterrupt := len(codexSpanRows(sink.Messages(), "cmd-1"))
+	require.Equal(t, 2, rowsAfterInterrupt)
+	assert.Equal(t, agentapi.ProgressSnapshot{}, sink.ProgressSnapshot())
+
+	// Late outputDelta and item/completed must be dropped without reviving progress or duplicating rows.
+	feedCodexLines(a,
+		`{"method":"item/commandExecution/outputDelta","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"cmd-1","delta":"late output\n"}}`,
+		`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"cmd-1","command":"sleep 10","status":"completed","aggregatedOutput":"late\n","exitCode":0}}}`,
+	)
+	assert.Equal(t, agentapi.ProgressSnapshot{}, sink.ProgressSnapshot())
+	assert.Len(t, codexSpanRows(sink.Messages(), "cmd-1"), rowsAfterInterrupt)
+	assert.Zero(t, a.TurnToolUses)
 }

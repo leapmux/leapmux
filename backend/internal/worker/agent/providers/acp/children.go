@@ -10,6 +10,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -660,6 +661,7 @@ func (c *childConversation) finish(status bgtask.Status) {
 	c.persistAssembledText(agent.AssembledMessageKindReasoning, "", turn.thoughtText, textCompletion)
 	c.persistAssembledText(agent.AssembledMessageKindText, "", turn.assistantText, textCompletion)
 	c.persistIncompleteTools(turn.incompleteTools, toolCompletion)
+	providerkit.ResetSpansAndProgress(c.sink())
 }
 
 // childCloseCompletions selects completions for a child's text and open tools when its row closes with status.

@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -173,4 +174,95 @@ func TestOpenCodeToolStopPreservesFirstSeenOrder(t *testing.T) {
 		assert.Equal(t, openCodeToolSpanID("msg_1", fmt.Sprintf("call_%02d", i)), rows[count+i].SpanID)
 		assert.True(t, rows[count+i].Closing)
 	}
+}
+
+func TestOpenCodeNormalAndFailedExecutionPreserveOpenTool(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		eventKind  string
+		completion agent.MessageCompletion
+	}{
+		{name: "succeeded", eventKind: "session.execution.succeeded", completion: agent.MessageCompletionComplete},
+		{name: "failed", eventKind: "session.execution.failed", completion: agent.MessageCompletionError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+			a, sink := assemblyAgent(t, rpc)
+			a.root.setNativeActivity(true, false)
+			require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.tool.input.started", map[string]any{"sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_1", "name": "shell"})))
+			require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.tool.called", map[string]any{"sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_1", "input": map[string]any{"command": "sleep 30"}, "executed": false})))
+			require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, tc.eventKind, map[string]any{"sessionID": "ses_1"})))
+
+			rows := sink.Messages()
+			require.Len(t, rows, 2)
+			assert.False(t, rows[0].Closing)
+			assert.True(t, rows[1].TurnEnd)
+			assert.Equal(t, tc.completion, rows[1].Completion)
+			assert.Empty(t, sink.ClosedSpans())
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		})
+	}
+}
+
+func TestOpenCodeInterruptedExecutionAndIdleInterruptCloseAndResetProgress(t *testing.T) {
+	t.Parallel()
+	t.Run("interrupted execution", func(t *testing.T) {
+		t.Parallel()
+		rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+		a, sink := assemblyAgent(t, rpc)
+		a.root.setNativeActivity(true, false)
+		require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.tool.input.started", map[string]any{"sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_1", "name": "shell"})))
+		require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.tool.called", map[string]any{"sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_1", "input": map[string]any{"command": "sleep 30"}, "executed": false})))
+		require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.execution.interrupted", map[string]any{"sessionID": "ses_1", "reason": "user"})))
+
+		rows := sink.Messages()
+		require.Len(t, rows, 3)
+		assert.True(t, rows[1].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+		assert.True(t, rows[2].TurnEnd)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("idle interrupt closes root tools and preserves background child", func(t *testing.T) {
+		t.Parallel()
+		rpc := openCodeTestRPC(t, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/session/ses_1/interrupt":
+				_, _ = w.Write([]byte(`{"interrupted":false}`))
+			case "/api/session/ses_1":
+				_, _ = w.Write([]byte(`{"data":{"id":"ses_1","agent":"build"}}`))
+			case "/api/session/ses_1/message":
+				_, _ = w.Write([]byte(`{"data":[],"cursor":{}}`))
+			case "/api/session/active":
+				_, _ = w.Write([]byte(`{"data":{}}`))
+			case "/api/permission", "/api/form", "/api/session/ses_1/permission", "/api/session/ses_1/form":
+				_, _ = w.Write([]byte(`{"data":[]}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		})
+		a, sink := assemblyAgent(t, rpc)
+		child, err := a.newRun(openCodeSessionInfo{ID: "ses_child", ParentID: "ses_1", Agent: "general"}, agent.NewProviderServices(sink.Child("child-1")))
+		require.NoError(t, err)
+		child.childAgentID = "child-1"
+		a.runs[child.id] = child
+		a.root.setNativeActivity(true, false)
+		require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.tool.input.started", map[string]any{"sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_idle", "name": "shell"})))
+		require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.tool.called", map[string]any{"sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_idle", "input": map[string]any{"command": "sleep 30"}, "executed": false})))
+		require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.execution.succeeded", map[string]any{"sessionID": "ses_1"})))
+		require.Empty(t, sink.ClosedSpans())
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		rows := sink.Messages()
+		require.Len(t, rows, 3)
+		assert.True(t, rows[2].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, a.runs, child.id, "idle root interrupt preserves running child runs")
+	})
 }

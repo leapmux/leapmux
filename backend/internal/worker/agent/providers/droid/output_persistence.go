@@ -70,9 +70,11 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 		target, known := a.outputTargetFor(sessionID)
 		if !known {
 			target = droidOutputTarget{state: state, childSessionID: sessionID}
-		} else if !a.IsDiscardingOutput() {
-			a.persistRemainingGeneration(target, completion)
-			a.flushPendingToolCalls(target)
+		} else {
+			if !a.IsDiscardingOutput() {
+				a.persistRemainingGeneration(target, completion)
+			}
+			a.closeOpenTools(target, completion, true)
 		}
 		a.flushPendingOutput(target)
 		a.releaseEndedOutput(target)

@@ -57,7 +57,14 @@ func TestTurnEndPrecedesTheClear_ZCode(t *testing.T) {
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"toolCallCount":1}`))
 
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+
+	// An interrupted turn retains reset_spans between turn_end and turn_active:false.
+	sinkInterrupted := &agenttest.Sink{}
+	aInterrupted := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sinkInterrupted), &zcodeRecordedStdin{})
+	aInterrupted.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
+	aInterrupted.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"toolCallCount":1,"resultType":"cancelled"}`))
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sinkInterrupted.TurnLifecycle())
 }
 
 func TestZCodeTurnActive_IssuesRisingOrderingTokens(t *testing.T) {

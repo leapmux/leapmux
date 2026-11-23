@@ -969,3 +969,46 @@ func TestLettaNonCommandFieldsStayOpaque(t *testing.T) {
 	require.NoError(t, json.Unmarshal(messages[0].Content, &content))
 	assert.Equal(t, "Keep this model text and its final continuation.", content[contracts.AssembledMessageFieldText])
 }
+
+func TestLettaIdleInterruptAndDiscardingExitResetSpansAndProgress(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt closes open root tools and preserves child scope", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newLettaChildTestAgent(t)
+		a.HandleOutput(lettaChildStateFrame(t, "running"))
+		row, ok := sink.BackgroundTask(lettaTestChildID)
+		require.True(t, ok)
+		child := sink.Child(row.ChildAgentID)
+
+		rootStart, _ := lettaOutputFrame(t, "", lettaOutputStart("root-call", "run-1"))
+		childStart, _ := lettaOutputFrame(t, lettaTestChildID, lettaOutputStart("child-call", "run-c"))
+		a.HandleOutput(rootStart)
+		a.HandleOutput(childStart)
+		a.HandleOutput([]byte(lettaLiveTurnFinished))
+		require.Empty(t, sink.ClosedSpans())
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Contains(t, sink.ClosedSpans(), "letta-tool-root-call")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Empty(t, child.ClosedSpans(), "idle root interrupt must leave child spans untouched")
+		assert.Contains(t, a.tools, lettaToolKey(lettaTestChildID, "child-call"))
+	})
+
+	t.Run("discarding exit closes spans and resets progress without writing closing rows", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newLettaChildTestAgent(t)
+		start, _ := lettaOutputFrame(t, "", lettaOutputStart("disc-call", "run-1"))
+		a.HandleOutput(start)
+		require.Equal(t, 1, sink.MessageCount())
+
+		a.DiscardOutput()
+		a.finishOutputAfterExit(agent.MessageCompletionInterrupted)
+
+		assert.Equal(t, 1, sink.MessageCount(), "discarding exit writes no closing row")
+		assert.Contains(t, sink.ClosedSpans(), "letta-tool-disc-call")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+}

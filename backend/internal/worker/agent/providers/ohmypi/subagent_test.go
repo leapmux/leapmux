@@ -1025,3 +1025,22 @@ func TestUnknownFramesPersistOnTheChild(t *testing.T) {
 		return child
 	})
 }
+
+func TestOhMyPiChildTurnEndPreservesOpenToolsAndFinishSubagentResetsSpans(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(frameTaskStart, frameStarted)
+	child := r.sink.Child(subagentRow(t, r, "Probe").ChildAgentID)
+	r.emit(
+		subagentEvent("Probe", `{"type":"agent_start"}`),
+		subagentEvent("Probe", `{"type":"tool_execution_start","toolCallId":"child_tool","toolName":"bash","args":{"command":"sleep 30"}}`),
+		subagentEvent("Probe", `{"type":"agent_end","isTerminal":true,"messages":[{"role":"assistant","stopReason":"stop"}]}`),
+	)
+	assert.Empty(t, child.ClosedSpans(), "normal child agent_end keeps open child tools alive")
+	assert.Equal(t, 0, child.ResetSpanCount())
+
+	r.emit(frameCompleted)
+	assert.Contains(t, child.ClosedSpans(), "child_tool")
+	assert.Equal(t, 1, child.ResetSpanCount())
+	assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+}

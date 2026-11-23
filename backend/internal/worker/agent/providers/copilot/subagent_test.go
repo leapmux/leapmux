@@ -1,12 +1,15 @@
 package copilot
 
 import (
+	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -184,7 +187,7 @@ func TestNativeCopilotClearingChildrenStopsTheirRows(t *testing.T) {
 	}))
 
 	a.outputMu.Lock()
-	a.clearNativeChildren()
+	a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 	a.outputMu.Unlock()
 
 	row, ok := copilotBackgroundRow(t, sink, "agent-1")
@@ -379,11 +382,243 @@ func TestNativeCopilotClearingChildrenStopsAnIdleSubagent(t *testing.T) {
 	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}))
 
 	a.outputMu.Lock()
-	a.clearNativeChildren()
+	a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 	a.outputMu.Unlock()
 
 	row, _ := copilotBackgroundRow(t, sink, "agent-1")
 	assert.Equal(t, bgtask.StatusStopped, row.Status)
 	assert.Empty(t, a.children)
 	assert.Equal(t, agent.TurnState{}, child.TurnStates()[len(child.TurnStates())-1])
+}
+
+func TestNativeCopilotRootTurnEndAndInterruptPreserveChildOpenTools(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	_, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+
+	// Start a root turn and open one root tool and one child tool.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotToolStart(t, "", "root-tool", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-tool", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventAssistantMessageDelta, map[string]any{
+		"messageId": "child-msg", "deltaContent": "child working",
+	}))
+
+	// Normal root turn end keeps both root and child tools open.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	assert.Empty(t, sink.ClosedSpans())
+	assert.Empty(t, child.ClosedSpans())
+
+	// Interrupted root turn closes only root tool, leaving child tool and child text intact.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{"aborted": true}))
+	assert.Contains(t, sink.ClosedSpans(), "root-tool")
+	assert.Empty(t, child.ClosedSpans(), "root interrupt must not close child open tools")
+	assert.Contains(t, a.openTools, "child-tool")
+
+	// Pausing background child keeps its open tool alive and resets only model progress.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}))
+	assert.Empty(t, child.ClosedSpans(), "background child pause must keep open child tools alive")
+	assert.NotContains(t, child.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, child.ProgressUpdates(), agent.ResetModelProgress())
+	assert.NotContains(t, child.ProgressUpdates(), agent.ResetProgress())
+	assert.Contains(t, a.openTools, "child-tool")
+}
+
+func TestNativeCopilotFinishAndWaitUseProcessExitCompletionAndResetSpans(t *testing.T) {
+	t.Parallel()
+
+	t.Run("finishNativeSubagent persists closing row with mapped completion and resets child spans", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newNativeCopilotForEvents(t)
+		_, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+		a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-tool", contracts.CopilotToolBash))
+		a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentFailed, map[string]any{
+			"toolCallId": "task-1", "error": "boom",
+		}))
+
+		assert.Contains(t, child.ClosedSpans(), "child-tool")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+		var foundClosing bool
+		for _, m := range child.Messages() {
+			if m.Closing && m.SpanID == "child-tool" {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionError, m.Completion)
+			}
+		}
+		assert.True(t, foundClosing)
+	})
+
+	t.Run("Wait on unexpected exit uses error completion for root and child open tools and resets spans", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newNativeCopilotForEvents(t)
+		done := make(chan struct{})
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+			AgentID:     "copilot-wait",
+			Ctx:         t.Context(),
+			Stdin:       agenttest.FailingStdin{},
+			ProcessDone: done,
+		})
+		_, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+		a.HandleOutput(nativeCopilotToolStart(t, "", "root-tool", contracts.CopilotToolBash))
+		a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-tool", contracts.CopilotToolBash))
+
+		close(done)
+		require.NoError(t, a.Wait())
+
+		row, ok := copilotBackgroundRow(t, sink, "agent-1")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+		assert.Contains(t, sink.ClosedSpans(), "root-tool")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, child.ClosedSpans(), "child-tool")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+		assertCopilotClosingToolRow(t, sink.Messages(), "root-tool", agent.MessageCompletionError)
+		assertCopilotClosingToolRow(t, child.Messages(), "child-tool", agent.MessageCompletionError)
+	})
+
+	t.Run("Stop uses interrupted completion for root and child open tools and resets spans", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newNativeCopilotForEvents(t)
+		done := make(chan struct{})
+		var closeOnce sync.Once
+		finish := func() { closeOnce.Do(func() { close(done) }) }
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+			AgentID: "copilot-stop",
+			Ctx:     t.Context(),
+			Stdin: copilotStopStdin{
+				write: func(raw []byte) (int, error) {
+					var request copilotSteerRequest
+					if err := json.Unmarshal(raw, &request); err != nil {
+						return 0, err
+					}
+					a.Deliver(request.ID, []byte(`{"result":{}}`))
+					return len(raw), nil
+				},
+				onClose: finish,
+			},
+			ProcessDone: done,
+		})
+		_, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+		a.HandleOutput(nativeCopilotToolStart(t, "", "root-tool", contracts.CopilotToolBash))
+		a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-tool", contracts.CopilotToolBash))
+
+		a.Stop()
+
+		row, ok := copilotBackgroundRow(t, sink, "agent-1")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, row.Status)
+		assert.Contains(t, sink.ClosedSpans(), "root-tool")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, child.ClosedSpans(), "child-tool")
+		assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+		assertCopilotClosingToolRow(t, sink.Messages(), "root-tool", agent.MessageCompletionInterrupted)
+		assertCopilotClosingToolRow(t, child.Messages(), "child-tool", agent.MessageCompletionInterrupted)
+	})
+
+	for _, useStop := range []bool{false, true} {
+		name := "Wait when discarding skips row persistence while closing spans and resetting progress"
+		if useStop {
+			name = "Stop when discarding skips row persistence while closing spans and resetting progress"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+			done := make(chan struct{})
+			var closeOnce sync.Once
+			finish := func() { closeOnce.Do(func() { close(done) }) }
+			stdin := agenttest.FailingStdin{}
+			var procStdin interface {
+				Write([]byte) (int, error)
+				Close() error
+			} = stdin
+			if useStop {
+				procStdin = copilotStopStdin{
+					write: func(raw []byte) (int, error) {
+						var request copilotSteerRequest
+						if err := json.Unmarshal(raw, &request); err != nil {
+							return 0, err
+						}
+						a.Deliver(request.ID, []byte(`{"result":{}}`))
+						return len(raw), nil
+					},
+					onClose: finish,
+				}
+			}
+			a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+				AgentID:     "copilot-discard",
+				Ctx:         t.Context(),
+				Stdin:       procStdin,
+				ProcessDone: done,
+			})
+			_, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+			a.HandleOutput(nativeCopilotToolStart(t, "", "root-tool", contracts.CopilotToolBash))
+			a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-tool", contracts.CopilotToolBash))
+			a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessageDelta, map[string]any{
+				"messageId": "root-msg", "deltaContent": "root streamed text",
+			}))
+			a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventAssistantMessageDelta, map[string]any{
+				"messageId": "child-msg", "deltaContent": "child streamed text",
+			}))
+
+			rootBefore := len(sink.Messages())
+			childBefore := len(child.Messages())
+			a.DiscardOutput()
+			if useStop {
+				a.Stop()
+			} else {
+				finish()
+				require.NoError(t, a.Wait())
+			}
+
+			assert.Len(t, sink.Messages(), rootBefore, "discarding teardown must not persist root closing or streamed-text rows")
+			assert.Len(t, child.Messages(), childBefore, "discarding teardown must not persist child closing or streamed-text rows")
+			assert.Contains(t, sink.ClosedSpans(), "root-tool")
+			assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("root-tool"))
+			assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+			assert.Contains(t, child.ClosedSpans(), "child-tool")
+			assert.Contains(t, child.ProgressUpdates(), agent.CompleteOutputProgress("child-tool"))
+			assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+			assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+			assert.Empty(t, a.openTools)
+			assert.Empty(t, a.nativeTextSegments)
+			_, rootBuffered, err := a.nativeText.Finish("root-msg", agent.MessageCompletionInterrupted)
+			require.NoError(t, err)
+			assert.False(t, rootBuffered, "root streamed text buffer must be finished even when discarding")
+			_, childBuffered, err := a.nativeText.Finish("child-msg", agent.MessageCompletionInterrupted)
+			require.NoError(t, err)
+			assert.False(t, childBuffered, "child streamed text buffer must be finished even when discarding")
+		})
+	}
+}
+
+type copilotStopStdin struct {
+	write   func([]byte) (int, error)
+	onClose func()
+}
+
+func (s copilotStopStdin) Write(p []byte) (int, error) { return s.write(p) }
+
+func (s copilotStopStdin) Close() error {
+	if s.onClose != nil {
+		s.onClose()
+	}
+	return nil
+}
+
+func assertCopilotClosingToolRow(t *testing.T, messages []agenttest.Message, spanID string, want agent.MessageCompletion) {
+	t.Helper()
+	for _, m := range messages {
+		if m.Closing && m.SpanID == spanID {
+			assert.Equal(t, want, m.Completion)
+			return
+		}
+	}
+	t.Errorf("expected closing row for span %q with completion %q", spanID, want)
 }

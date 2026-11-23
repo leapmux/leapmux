@@ -184,16 +184,24 @@ func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 		return
 	}
 	delete(a.children, child.nativeAgentID)
+	completion := copilotChildCompletion(status)
+	a.closeStreamedNativeText(child, completion)
+	a.closeOpenNativeTools(child, completion)
 	a.persistNativeFrameTo(child.sink, raw, agent.SpanInfo{})
+	providerkit.ResetSpansAndProgress(child.sink)
 	a.publishChildTurn(child, false)
 	providerkit.LogRegistryRefusal("copilot", "close subagent", child.owner.CloseBackgroundTask(child.nativeAgentID, status))
-	child.sink.ReportProgress(agent.ResetProgress())
-	child.sink.ResetSpans()
 	child.owner.CleanupChildAgent(child.workerAgentID)
-	for id, tool := range a.openTools {
-		if tool.child == child {
-			delete(a.openTools, id)
-		}
+}
+
+func copilotChildCompletion(status bgtask.Status) agent.MessageCompletion {
+	switch status {
+	case bgtask.StatusStopped, bgtask.StatusInterrupted:
+		return agent.MessageCompletionInterrupted
+	case bgtask.StatusFailed:
+		return agent.MessageCompletionError
+	default:
+		return agent.MessageCompletionComplete
 	}
 }
 
@@ -208,21 +216,16 @@ func (a *Agent) pauseNativeChild(raw []byte, child *copilotNativeChild) {
 
 // markNativeChildIdle pauses the row of a running background subagent that
 // finished a turn. It does nothing for a foreground subagent, an idle one, or
-// an unknown one.
+// an unknown one. Still-open child tool calls remain open across the pause.
 func (a *Agent) markNativeChildIdle(child *copilotNativeChild) {
 	if child == nil || !child.background || child.idle {
 		return
 	}
 	child.idle = true
+	a.closeStreamedNativeText(child, agent.MessageCompletionComplete)
 	providerkit.LogRegistryRefusal("copilot", "pause subagent", child.owner.UpdateBackgroundTaskStatus(child.nativeAgentID, bgtask.StatusPaused, ""))
 	a.publishChildTurn(child, false)
-	child.sink.ReportProgress(agent.ResetProgress())
-	child.sink.ResetSpans()
-	for id, tool := range a.openTools {
-		if tool.child == child {
-			delete(a.openTools, id)
-		}
-	}
+	child.sink.ReportProgress(agent.ResetModelProgress())
 }
 
 // resumeNativeChild reopens the row of an idle background subagent whose next
@@ -259,25 +262,27 @@ func (a *Agent) childForSpawnToolCall(toolCallID string) *copilotNativeChild {
 	return nil
 }
 
-// clearNativeChildren ends every open subagent transcript.
+// clearNativeChildren ends every open subagent transcript and closes open root
+// and child tools with completion.
 //
 // A session replacement and a process stop both reach it, so each child leaves
-// its registry row stopped rather than running forever.
-func (a *Agent) clearNativeChildren() {
+// its registry row closed rather than running forever.
+func (a *Agent) clearNativeChildren(completion agent.MessageCompletion, status bgtask.Status) {
 	for nativeAgentID := range a.retries {
 		a.resetNativeRetry(nativeAgentID)
 	}
 	// A session that goes away takes every unfinished segment with it, so the text
 	// each transcript had already streamed is stored before its sink is dropped.
-	a.closeStreamedNativeText(agent.MessageCompletionInterrupted)
-	a.closeOpenNativeTools()
+	a.closeStreamedNativeText(nil, completion)
+	a.closeOpenNativeTools(nil, completion)
 	children := a.children
 	a.children = nil
 	for _, child := range children {
+		a.closeStreamedNativeText(child, completion)
+		a.closeOpenNativeTools(child, completion)
 		a.publishChildTurn(child, false)
-		providerkit.LogRegistryRefusal("copilot", "close subagent", child.owner.CloseBackgroundTask(child.nativeAgentID, bgtask.StatusStopped))
-		child.sink.ReportProgress(agent.ResetProgress())
-		child.sink.ResetSpans()
+		providerkit.LogRegistryRefusal("copilot", "close subagent", child.owner.CloseBackgroundTask(child.nativeAgentID, status))
+		providerkit.ResetSpansAndProgress(child.sink)
 		child.owner.CleanupChildAgent(child.workerAgentID)
 	}
 }

@@ -10,6 +10,7 @@ export function antigravityResultDivider(parsed: unknown, completion?: MessageCo
   if (completion === MessageCompletion.INTERRUPTED) {
     return {
       label: turnEndLabel('interrupted'),
+      interrupted: true,
     }
   }
   if (completion === MessageCompletion.ERROR) {

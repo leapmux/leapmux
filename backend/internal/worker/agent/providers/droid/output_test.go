@@ -520,9 +520,17 @@ func TestToolCallStoresPendingRowsInTheirNativeOrderAtProcessEnd(t *testing.T) {
 	assert.Empty(t, sink.Messages())
 	a.finishOutput(agent.MessageCompletionInterrupted)
 	rows := sink.Messages()
-	require.Len(t, rows, 2)
+	require.Len(t, rows, 4)
 	assert.Equal(t, "droid-tool-z", rows[0].SpanID)
+	assert.False(t, rows[0].Closing)
 	assert.Equal(t, "droid-tool-a", rows[1].SpanID)
+	assert.False(t, rows[1].Closing)
+	assert.Equal(t, "droid-tool-z", rows[2].SpanID)
+	assert.True(t, rows[2].Closing)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+	assert.Equal(t, "droid-tool-a", rows[3].SpanID)
+	assert.True(t, rows[3].Closing)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[3].Completion)
 }
 
 func TestToolCallStoresOneRowInItsOwnChild(t *testing.T) {
@@ -876,4 +884,106 @@ func TestDroidFullOutputForeignProgressCannotWriteTheRoot(t *testing.T) {
 	assert.Empty(t, sink.PersistedNotifications())
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, a.outputStates)
+}
+
+func TestDroidNormalAndErrorTurnPreserveOpenTool(t *testing.T) {
+	t.Parallel()
+	for _, end := range []struct {
+		name    string
+		payload string
+	}{
+		{name: "normal completed", payload: `{"type":"agent_turn_completed","reason":"completed"}`},
+		{name: "non-interrupted error", payload: `{"type":"error","message":"model error"}`},
+		{name: "error turn completed", payload: `{"type":"agent_turn_completed","reason":"error"}`},
+	} {
+		t.Run(end.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSteerAgent(t)
+			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_call","toolUse":{"id":"bg-1","name":"Execute","input":{"command":"sleep 10"}}}`)))
+			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(end.payload)))
+
+			assert.NotContains(t, sink.ClosedSpans(), "droid-tool-bg-1")
+			assert.Zero(t, sink.ResetSpanCount())
+			require.NotNil(t, a.outputStates["main-session"].tools["bg-1"])
+
+			// Native tool_result later closes the span cleanly once.
+			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_result","toolUseId":"bg-1","content":"done","isError":false}`)))
+			assert.Contains(t, sink.ClosedSpans(), "droid-tool-bg-1")
+			var closing int
+			for _, row := range sink.Messages() {
+				if row.SpanID == "droid-tool-bg-1" && row.Closing {
+					closing++
+				}
+			}
+			assert.Equal(t, 1, closing)
+		})
+	}
+}
+
+func TestDroidInterruptedTurnAndIdleInterruptCloseOpenToolsAndResetProgress(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cancelled turn closes open tools in order before turn end", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newSteerAgent(t)
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_call","toolUse":{"id":"call-b","name":"Execute","input":{"command":"sleep 10"}}}`)))
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_call","toolUse":{"id":"call-a","name":"Read","input":{"file_path":"a.txt"}}}`)))
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_progress_update","toolUseId":"call-b","update":{"text":"running"}}`)))
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"agent_turn_completed","reason":"cancelled"}`)))
+
+		rows := sink.Messages()
+		require.Len(t, rows, 5)
+		// Pending opening rows flush first (call-b, call-a), then closing rows (call-b, call-a), then turn end.
+		assert.Equal(t, "droid-tool-call-b", rows[0].SpanID)
+		assert.False(t, rows[0].Closing)
+		assert.Equal(t, "droid-tool-call-a", rows[1].SpanID)
+		assert.False(t, rows[1].Closing)
+		assert.Equal(t, "droid-tool-call-b", rows[2].SpanID)
+		assert.True(t, rows[2].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+		assert.Equal(t, "droid-tool-call-a", rows[3].SpanID)
+		assert.True(t, rows[3].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[3].Completion)
+		assert.True(t, rows[4].TurnEnd)
+		assert.Equal(t, 1, sink.ResetSpanCount())
+		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+	})
+
+	t.Run("idle interrupt closes open root tools and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newSteerAgent(t)
+		a.SetStdinForTest(nil)
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_call","toolUse":{"id":"idle-1","name":"Execute","input":{"command":"sleep 10"}}}`)))
+		a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"agent_turn_completed","reason":"completed"}`)))
+		require.NotContains(t, sink.ClosedSpans(), "droid-tool-idle-1")
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Contains(t, sink.ClosedSpans(), "droid-tool-idle-1")
+		assert.Equal(t, 1, sink.ResetSpanCount())
+		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+		var closing []agenttest.Message
+		for _, row := range sink.Messages() {
+			if row.SpanID == "droid-tool-idle-1" && row.Closing {
+				closing = append(closing, row)
+			}
+		}
+		require.Len(t, closing, 1)
+		assert.Equal(t, agent.MessageCompletionInterrupted, closing[0].Completion)
+	})
+}
+
+func TestDroidLateToolResultAfterInterruptSuppressed(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_call","toolUse":{"id":"call-1","name":"Execute","input":{"command":"sleep 10"}}}`)))
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"agent_turn_completed","reason":"cancelled"}`)))
+	countAfterInterrupt := len(sink.Messages())
+	require.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+
+	// Late progress update and tool_result must be dropped without reviving progress or duplicating rows.
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_progress_update","toolUseId":"call-1","update":{"text":"late tail"}}`)))
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"tool_result","toolUseId":"call-1","content":"late","isError":false}`)))
+	assert.Len(t, sink.Messages(), countAfterInterrupt)
+	assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+	assert.Zero(t, a.outputStates["main-session"].turnToolUse)
 }

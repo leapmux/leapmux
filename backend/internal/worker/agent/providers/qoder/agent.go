@@ -56,12 +56,24 @@ type Agent struct {
 	// Its result consumes the flag. A turn end without a result clears it also.
 	interruptRequested bool
 
+	toolMu     sync.Mutex
+	rootTools  providerkit.ToolSpanLedger[qoderOpenTool]
+	childTools map[string]*providerkit.ToolSpanLedger[qoderOpenTool]
+	outputDone chan struct{}
+	finishOnce sync.Once
+
 	controls    providerkit.Correlator[string]
 	credentials qoderCredentials
 
 	// usageRefresh wakes refreshUsageLoop. Start creates it, so an agent built
 	// without a process sends no quota request. It never changes afterwards.
 	usageRefresh chan struct{}
+}
+
+type qoderOpenTool struct {
+	raw       []byte
+	name      string
+	sessionID string
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -235,7 +247,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return fmt.Errorf("the Qoder process is stopped")
 	}
 	a.mu.Lock()
-	sessionID := a.sessionID
+	sessionID, active := a.sessionID, a.active
 	a.mu.Unlock()
 	body, err := json.Marshal(map[string]any{
 		"subtype":    contracts.QoderControlRequestSubtypeInterrupt,
@@ -252,6 +264,15 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		// The request never reached Qoder, so no `result` answers it.
 		a.takeInterruptRequest()
 		return err
+	}
+	if !active {
+		a.mu.Lock()
+		stillIdle := !a.active
+		a.mu.Unlock()
+		if stillIdle {
+			a.closeOpenToolsForTarget(a.sink, "", agent.MessageCompletionInterrupted, false)
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
 	}
 	return nil
 }
@@ -288,14 +309,20 @@ func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.Process.Stop()
 	a.stopWorkflowArchiveRetries()
-	a.setTurnActive(false)
+	if a.outputDone != nil {
+		<-a.outputDone
+	}
+	a.finishStream()
 }
 
 // Wait waits for the process to exit.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopWorkflowArchiveRetries()
-	a.setTurnActive(false)
+	if a.outputDone != nil {
+		<-a.outputDone
+	}
+	a.finishStream()
 	if a.directory != nil {
 		err = errors.Join(err, a.directory.Close())
 	}

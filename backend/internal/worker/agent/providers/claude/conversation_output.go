@@ -13,19 +13,34 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
+type claudeClosingToolOp struct {
+	entry    providerkit.OpenToolEntry[claudeOpenTool]
+	prepared *agent.CapturedTranscriptOperation
+}
+
+func makeClaudeClosingToolOps(entries []providerkit.OpenToolEntry[claudeOpenTool]) []claudeClosingToolOp {
+	ops := make([]claudeClosingToolOp, 0, len(entries))
+	for _, entry := range entries {
+		ops = append(ops, claudeClosingToolOp{entry: entry})
+	}
+	return ops
+}
+
 type claudeConversationFrame struct {
-	msgType         string
-	envelope        *messageEnvelope
-	content         agent.MessageContent
-	destination     *claudeTranscriptDestination
-	spans           agent.SpanServices
-	prepared        *agent.CapturedTranscriptOperation
-	report          *agent.CapturedTranscriptOperation
-	retryResolution *agent.CapturedTranscriptOperation
-	admission       *claudeOutputDecision
-	span            agent.SpanInfo
-	result          *claudeReceivedResult
-	inputEvidence   *claudeInferredTurnEvidence
+	msgType             string
+	envelope            *messageEnvelope
+	content             agent.MessageContent
+	destination         *claudeTranscriptDestination
+	spans               agent.SpanServices
+	prepared            *agent.CapturedTranscriptOperation
+	report              *agent.CapturedTranscriptOperation
+	retryResolution     *agent.CapturedTranscriptOperation
+	closingTools        []claudeClosingToolOp
+	closingToolsDrained bool
+	admission           *claudeOutputDecision
+	span                agent.SpanInfo
+	result              *claudeReceivedResult
+	inputEvidence       *claudeInferredTurnEvidence
 }
 
 func (destination *claudeTranscriptDestination) captureFrame(content []byte, msgType string, env *messageEnvelope) *claudeConversationFrame {
@@ -568,8 +583,68 @@ func (a *Agent) persistClaudeRetryResolution(sequence agent.TranscriptSequence, 
 	return err
 }
 
+func (a *Agent) persistClaudeClosingToolsInSequence(
+	sequence agent.TranscriptSequence,
+	destination *claudeTranscriptDestination,
+	spans agent.SpanServices,
+	pending *[]claudeClosingToolOp,
+	completion agent.MessageCompletion,
+) error {
+	for len(*pending) > 0 {
+		item := &(*pending)[0]
+		if item.prepared == nil {
+			content, span, ok := claudeBuildClosingRow(item.entry)
+			if ok {
+				content.Completion = completion
+				capturedContent := destination.capture(content, span)
+				capturedContent.Original = content.Original
+				capturedContent.Completion = completion
+				capturedContent.WriteReceipt = agent.NewTranscriptWriteReceipt()
+				if capturedContent.AgentSessionID == "" {
+					capturedContent.AgentSessionID = content.AgentSessionID
+				}
+				captured, err := agent.CaptureTranscriptFrame(destination.sink, capturedContent, span)
+				if err != nil {
+					return err
+				}
+				op := captured.MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+				item.prepared = &op
+			}
+		}
+		if item.prepared != nil {
+			if _, err := sequence.Persist(*item.prepared); err != nil {
+				return err
+			}
+		}
+		if spans != nil {
+			spans.CloseSpan(item.entry.SpanID)
+		}
+		destination.sink.ReportProgress(agent.CompleteOutputProgress(item.entry.SpanID))
+		(*pending)[0] = claudeClosingToolOp{}
+		*pending = (*pending)[1:]
+	}
+	return nil
+}
+
 func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame) error {
 	env, msgType, raw := frame.envelope, frame.msgType, frame.content.Original
+	live := frame.live() && a.liveClaudeOutput()
+	if msgType == claudeMsgTypeUser && frame.prepared == nil && a.openTools.allToolResultsForceClosed("", env.ContentBlocks()) {
+		if live {
+			a.settleToolControls(env.ContentBlocks())
+		}
+		return nil
+	}
+	interruptedResult := msgType == claudeMsgTypeResult && frame.live() && frame.result != nil && frame.result.interrupted && env.statesAbortedTurn()
+	if interruptedResult {
+		if !frame.closingToolsDrained {
+			frame.closingToolsDrained = true
+			frame.closingTools = makeClaudeClosingToolOps(a.openTools.drain(""))
+		}
+		if err := a.persistClaudeClosingToolsInSequence(sequence, frame.destination, frame.spans, &frame.closingTools, agent.MessageCompletionInterrupted); err != nil {
+			return err
+		}
+	}
 	if frame.prepared == nil {
 		content := frame.content
 		if msgType == claudeMsgTypeAssistant && !env.IsAPIErrorMessage {
@@ -582,7 +657,7 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 				return nil
 			}
 			content.Metadata = a.MessageWithToolUses(raw).Metadata
-			if frame.result != nil && frame.result.interrupted && env.statesAbortedTurn() {
+			if interruptedResult {
 				content.Completion = agent.MessageCompletionInterrupted
 			}
 		}
@@ -596,22 +671,26 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 		return err
 	}
 
-	live := frame.live() && a.liveClaudeOutput()
 	if live && (msgType == claudeMsgTypeAssistant || msgType == claudeMsgTypeResult) {
 		a.extractAndBroadcastUsage(env, msgType)
 	}
 	switch msgType {
 	case claudeMsgTypeAssistant:
-		a.processAssistantBlocks(env, frame.spans, live)
+		a.processAssistantBlocks(env, frame.spans, live, raw, frame.content.AgentSessionID)
 	case claudeMsgTypeUser:
 		if live {
 			a.settleToolControls(env.ContentBlocks())
 			a.persistClaudeHandbackResult(env)
 			a.detectPlanModeFromToolResult(env)
 		}
-		claudeCloseToolResultSpans(frame.spans, env)
+		claudeCloseToolResultSpans(frame.spans, env, func(id string) {
+			a.openTools.completeNative("", id)
+		})
 	case claudeMsgTypeResult:
-		frame.spans.ResetSpans()
+		if interruptedResult {
+			frame.spans.ResetSpans()
+			a.sink.ReportProgress(agent.ResetProgress())
+		}
 		frame.destination.apiRetry.Reset()
 		if live && frame.result != nil {
 			a.finishClaudeRootResult(frame.result, env, raw)

@@ -396,3 +396,141 @@ func TestFastagentRootSelectsCompleteNativeInterruptedSuffix(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
 	assert.Empty(t, sink.LeapMuxNotifications())
 }
+
+func TestFastagentNormalTurnPreservesOpenSpanAcrossTurnsAndSyncsRootSink(t *testing.T) {
+	a, sink := newFastagentRootSubject(t)
+	root1 := openRootFixture(t, a)
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-1","kind":"execute","title":"Run"}`))
+	pos1 := root1.Reserve()
+	require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"open"}`)}, agent.SpanInfo{SpanID: "bg-1", SpanType: "execute"}))
+	require.NoError(t, pos1.Writer().PersistTurnEnd(agent.MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, agent.SpanInfo{}))
+	pos1.Complete()
+	finishRootFixture(t, a, root1)
+
+	// Open span must be mirrored onto the root sink and kept in a.openRootSpans across normal end_turn.
+	assert.Contains(t, sink.OpenSpans(), agenttest.SpanOpen{SpanID: "bg-1"})
+	assert.Equal(t, "execute", sink.GetSpanType("bg-1"))
+
+	// Turn 2 seeds its scope from a.openRootSpans so Turn 2 messages see bg-1 open,
+	// and closing bg-1 inside Turn 2 also closes it on the root sink.
+	root2 := openRootFixture(t, a)
+	pos2 := root2.Reserve()
+	require.NoError(t, pos2.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"turn2":"msg"}`)}, agent.SpanInfo{}))
+	require.NoError(t, pos2.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"close"}`)}, agent.SpanInfo{SpanID: "bg-1", SpanType: "execute", Closing: true}))
+	pos2.Complete()
+	finishRootFixture(t, a, root2)
+
+	var turn2Msg agenttest.Message
+	for _, msg := range sink.Messages() {
+		if strings.Contains(string(msg.Content), `"turn2":"msg"`) {
+			turn2Msg = msg
+			break
+		}
+	}
+	require.NotEmpty(t, turn2Msg.Content)
+	require.Len(t, turn2Msg.SpansOpenAtPersist, 1)
+	assert.Equal(t, "bg-1", turn2Msg.SpansOpenAtPersist[0].SpanID)
+	assert.Contains(t, sink.ClosedSpans(), "bg-1")
+}
+
+func countClosedSpan(closed []string, spanID string) int {
+	n := 0
+	for _, id := range closed {
+		if id == spanID {
+			n++
+		}
+	}
+	return n
+}
+
+func TestFastagentInterruptedAndDiscardedTurnResetSpans(t *testing.T) {
+	t.Run("interrupted turn clears mirrored spans without clobbering still-open tools", func(t *testing.T) {
+		a, sink := newFastagentRootSubject(t)
+		root1 := openRootFixture(t, a)
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-1","kind":"execute","title":"Run"}`))
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-live","kind":"execute","title":"Keep"}`))
+		pos1 := root1.Reserve()
+		require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"open-1"}`)}, agent.SpanInfo{SpanID: "bg-1", SpanType: "execute"}))
+		require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"open-live"}`)}, agent.SpanInfo{SpanID: "bg-live", SpanType: "execute"}))
+		pos1.Complete()
+		finishRootFixture(t, a, root1)
+		require.Contains(t, sink.OpenSpans(), agenttest.SpanOpen{SpanID: "bg-1"})
+		require.Contains(t, sink.OpenSpans(), agenttest.SpanOpen{SpanID: "bg-live"})
+
+		// Drain only bg-1 from toolUpdateState while keeping bg-live open, then
+		// record closed-span counts BEFORE root2.Finish so we verify root2's EOF
+		// cleanup closes bg-1 on sink without touching bg-live.
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"bg-1","status":"cancelled"}`))
+		require.False(t, a.HasOpenRootTool("bg-1"))
+		require.True(t, a.HasOpenRootTool("bg-live"))
+		bg1ClosedBefore := countClosedSpan(sink.ClosedSpans(), "bg-1")
+		liveClosedBefore := countClosedSpan(sink.ClosedSpans(), "bg-live")
+
+		root2 := openRootFixture(t, a)
+		pos2 := root2.Reserve()
+		require.NoError(t, pos2.Writer().PersistTurnEnd(agent.MessageContent{Original: []byte(`{"stopReason":"cancelled"}`)}, agent.SpanInfo{}))
+		pos2.Complete()
+		require.NoError(t, root2.Finish(acp.RootTranscriptCompletion{Reason: acp.RootTranscriptPromptEnded, Completion: agent.MessageCompletionInterrupted}))
+		a.rootArchiveWG.Wait()
+
+		a.rootMu.Lock()
+		remaining := len(a.openRootSpans)
+		a.rootMu.Unlock()
+		assert.Zero(t, remaining)
+		assert.Equal(t, bg1ClosedBefore+1, countClosedSpan(sink.ClosedSpans(), "bg-1"),
+			"interrupted EOF cleanup must close drained mirrored span bg-1 on sink")
+		assert.Equal(t, liveClosedBefore, countClosedSpan(sink.ClosedSpans(), "bg-live"),
+			"interrupted EOF cleanup must not close still-open tool bg-live on sink")
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans",
+			"interrupted EOF cleanup must not call unconditional ResetSpans on sink")
+	})
+
+	t.Run("discarded turn clears openRootSpans and mirrored spans without clobbering still-open tools", func(t *testing.T) {
+		a, sink := newFastagentRootSubject(t)
+		root1 := openRootFixture(t, a)
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-2","kind":"execute","title":"Run"}`))
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-keep","kind":"execute","title":"Keep"}`))
+		pos1 := root1.Reserve()
+		require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"open-2"}`)}, agent.SpanInfo{SpanID: "bg-2", SpanType: "execute"}))
+		require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"open-keep"}`)}, agent.SpanInfo{SpanID: "bg-keep", SpanType: "execute"}))
+		pos1.Complete()
+		finishRootFixture(t, a, root1)
+
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"bg-2","status":"cancelled"}`))
+		require.False(t, a.HasOpenRootTool("bg-2"))
+		require.True(t, a.HasOpenRootTool("bg-keep"))
+		bg2ClosedBefore := countClosedSpan(sink.ClosedSpans(), "bg-2")
+		keepClosedBefore := countClosedSpan(sink.ClosedSpans(), "bg-keep")
+
+		root2 := openRootFixture(t, a)
+		appendRootFixture(t, root2, `{"live":"discarded"}`)
+		require.NoError(t, root2.Finish(acp.RootTranscriptCompletion{Reason: acp.RootTranscriptPromptEnded, Completion: agent.MessageCompletionComplete, Discard: true}))
+		a.rootArchiveWG.Wait()
+
+		a.rootMu.Lock()
+		remaining := len(a.openRootSpans)
+		a.rootMu.Unlock()
+		assert.Zero(t, remaining)
+		assert.Equal(t, bg2ClosedBefore+1, countClosedSpan(sink.ClosedSpans(), "bg-2"),
+			"discarded turn must close drained mirrored span bg-2 on sink")
+		assert.Equal(t, keepClosedBefore, countClosedSpan(sink.ClosedSpans(), "bg-keep"),
+			"discarded turn must not close still-open tool bg-keep on sink")
+	})
+
+	t.Run("clearProviderState clears openRootSpans and resets spans", func(t *testing.T) {
+		a, sink := newFastagentRootSubject(t)
+		root1 := openRootFixture(t, a)
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-3","kind":"execute","title":"Run"}`))
+		pos1 := root1.Reserve()
+		require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"open"}`)}, agent.SpanInfo{SpanID: "bg-3", SpanType: "execute"}))
+		pos1.Complete()
+		finishRootFixture(t, a, root1)
+
+		a.clearProviderState()
+		a.rootMu.Lock()
+		remaining := len(a.openRootSpans)
+		a.rootMu.Unlock()
+		assert.Zero(t, remaining)
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+	})
+}

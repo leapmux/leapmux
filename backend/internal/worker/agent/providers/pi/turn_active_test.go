@@ -45,7 +45,16 @@ func TestTurnEndPrecedesTheClear_Pi(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","willRetry":false}`)))
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
-	assert.Equal(t, []string{"turn_active:true", "reset_spans", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+
+	// An interrupted turn places turn_end before reset_spans before turn_active:false.
+	sinkInterrupted := &agenttest.ControlSink{}
+	aInterrupted := newPiAgentWithSink(agent.NewProviderServices(sinkInterrupted))
+	handlePiOutput(aInterrupted, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(aInterrupted, providerkit.ParseLine([]byte(`{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"aborted"}]}`)))
+	aInterrupted.HandleOutput([]byte(`{"type":"agent_settled"}`))
+
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sinkInterrupted.TurnLifecycle())
 }
 
 // Pi keeps the turn open across a retry it drives itself, so the retried
@@ -59,14 +68,14 @@ func TestTurnEndPrecedesTheClear_PiRetryEndsNoTurn(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","willRetry":true}`)))
 
-	assert.Equal(t, []string{"turn_active:true", "reset_spans"}, sink.TurnLifecycle(),
+	assert.Equal(t, []string{"turn_active:true"}, sink.TurnLifecycle(),
 		"a retried attempt neither ends the turn nor clears the flag")
 
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_end","willRetry":false}`)))
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 
 	assert.Equal(t, []string{
-		"turn_active:true", "reset_spans", "reset_spans", "turn_end", "turn_active:false",
+		"turn_active:true", "turn_end", "turn_active:false",
 	}, sink.TurnLifecycle())
 }
 

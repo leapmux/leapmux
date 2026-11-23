@@ -110,7 +110,7 @@ describe('qwen provider', () => {
       expect(plugin.transcript.extractDivider({
         method: '_qwencode/end_turn',
         params: { reason: 'cancelled' },
-      })).toEqual({ label: 'Turn interrupted' })
+      })).toEqual({ label: 'Turn interrupted', interrupted: true })
     })
 
     it('qualifies a turn that ended for another reason', () => {

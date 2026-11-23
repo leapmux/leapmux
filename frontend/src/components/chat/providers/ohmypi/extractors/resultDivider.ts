@@ -39,6 +39,7 @@ export function ohMyPiResultDivider(parsed: unknown, completion?: MessageComplet
   if (completion === MessageCompletion.INTERRUPTED) {
     return {
       label: turnEndLabel('interrupted', { durationMs }),
+      interrupted: true,
     }
   }
   const assistant = lastAssistantMessage(parsed.messages)
@@ -61,6 +62,7 @@ export function ohMyPiResultDivider(parsed: unknown, completion?: MessageComplet
         durationMs,
         qualifiers: [continues],
       }),
+      interrupted: true,
     }
   }
   return {

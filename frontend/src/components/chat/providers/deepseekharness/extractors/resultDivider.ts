@@ -24,6 +24,7 @@ export function deepseekHarnessResultDivider(parsed: unknown, completion?: Messa
   if (completion === MessageCompletion.INTERRUPTED || kind === 'interrupted' || kind === 'aborted') {
     return {
       label: turnEndLabel('interrupted', { durationMs }),
+      interrupted: true,
     }
   }
   if (kind !== 'completed' && kind !== 'max-tokens') {

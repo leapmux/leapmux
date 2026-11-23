@@ -5,7 +5,11 @@ func (a *Agent) clearProviderState() {
 	a.rootMu.Lock()
 	a.rootSession = ""
 	a.rootFresh = true
+	a.openRootSpans = nil
 	a.rootMu.Unlock()
+	if sink := a.Sink(); sink != nil {
+		sink.ResetSpans()
+	}
 }
 
 func (a *Agent) initializeRootArchive(resumed bool) error {

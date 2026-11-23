@@ -8,7 +8,7 @@ describe('antigravityResultDivider', () => {
 
   it('labels completed, interrupted and failed turns', () => {
     expect(antigravityResultDivider(turnEnd, MessageCompletion.COMPLETE)).toEqual({ label: 'Turn ended' })
-    expect(antigravityResultDivider(turnEnd, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
+    expect(antigravityResultDivider(turnEnd, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', interrupted: true })
     expect(antigravityResultDivider(turnEnd, MessageCompletion.ERROR)).toEqual({ label: 'Turn failed', isError: true })
   })
 

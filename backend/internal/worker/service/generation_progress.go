@@ -1,6 +1,8 @@
 package service
 
 import (
+	"cmp"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,14 +115,33 @@ func (p *generationProgressPublisher) reportOwned(update agent.ProgressUpdate, o
 		p.mu.Unlock()
 		return
 	}
-	// BEFORE the counter's own early return: a call that ended keeps no tail
-	// whether or not the aggregate moved, and a completion for a scope the counter
-	// never saw moves nothing. The browser drops its own entry when the result row
-	// lands; this stops the worker re-broadcasting a tail for a finished span,
-	// which would revive the entry the browser just dropped.
-	p.dropTailsLocked(update)
+	if update.Operation == agent.ProgressReset {
+		if p.tailTimer != nil {
+			p.tailTimer.Stop()
+			p.tailTimer = nil
+		}
+		p.tails = nil
+		p.tailQueue = nil
+		p.tailQueue = append(p.tailQueue, progressEmission{
+			info:  map[string]interface{}{contracts.SessionInfoKeyRunningTool: nil},
+			owner: owner,
+		})
+	} else {
+		// BEFORE the counter's own early return: a call that ended keeps no tail
+		// whether or not the aggregate moved, and a completion for a scope the counter
+		// never saw moves nothing. The browser drops its own entry when the result row
+		// lands; this stops the worker re-broadcasting a tail for a finished span,
+		// which would revive the entry the browser just dropped.
+		p.dropTailsLocked(update)
+	}
 	snapshot, changed := p.counter.Apply(update)
 	if !changed {
+		if update.Operation == agent.ProgressReset {
+			select {
+			case p.wake <- struct{}{}:
+			default:
+			}
+		}
 		p.mu.Unlock()
 		return
 	}
@@ -212,6 +233,51 @@ func (p *generationProgressPublisher) snapshotInfo() map[string]interface{} {
 		return nil
 	}
 	return progressInfo(p.counter.Snapshot(), p.revision)
+}
+
+// tailSnapshots returns a deterministic (sessionID, spanID)-sorted copy of all
+// active running_tool tail payloads for replay on reconnect or page reload.
+func (p *generationProgressPublisher) tailSnapshots() []map[string]interface{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || len(p.tails) == 0 {
+		return nil
+	}
+	type tailKey struct {
+		sessionID string
+		spanID    string
+		text      string
+		truncated bool
+	}
+	entries := make([]tailKey, 0, len(p.tails))
+	for spanID, entry := range p.tails {
+		entries = append(entries, tailKey{
+			sessionID: entry.sessionID,
+			spanID:    spanID,
+			text:      entry.text,
+			truncated: entry.truncated,
+		})
+	}
+	slices.SortFunc(entries, func(a, b tailKey) int {
+		return cmp.Or(cmp.Compare(a.sessionID, b.sessionID), cmp.Compare(a.spanID, b.spanID))
+	})
+	snapshots := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		snapshots = append(snapshots, runningToolTailPayload(entry.spanID, entry.sessionID, entry.text, entry.truncated))
+	}
+	return snapshots
+}
+
+func runningToolTailPayload(spanID, sessionID, text string, truncated bool) map[string]interface{} {
+	return map[string]interface{}{
+		contracts.RunningToolFieldSpanId: spanID,
+		// The session of the CAPTURE, which a flush or replay can trail by a whole
+		// interval. Reading the live session here stamped a tail from the previous
+		// session with the id of the one ClearContext just minted.
+		contracts.RunningToolFieldAgentSessionId:  sessionID,
+		contracts.RunningToolFieldOutputTail:      text,
+		contracts.RunningToolFieldOutputTruncated: truncated,
+	}
 }
 
 func (p *generationProgressPublisher) close() {
@@ -350,15 +416,7 @@ func (p *generationProgressPublisher) flushTails() {
 		}
 		entry.dirty = false
 		payloads = append(payloads, progressEmission{owner: entry.owner, info: map[string]interface{}{
-			contracts.SessionInfoKeyRunningTool: map[string]interface{}{
-				contracts.RunningToolFieldSpanId: spanID,
-				// The session of the CAPTURE, which this flush can trail by a whole
-				// interval. Reading the live session here stamped a tail from the
-				// previous session with the id of the one ClearContext just minted.
-				contracts.RunningToolFieldAgentSessionId:  entry.sessionID,
-				contracts.RunningToolFieldOutputTail:      entry.text,
-				contracts.RunningToolFieldOutputTruncated: entry.truncated,
-			},
+			contracts.SessionInfoKeyRunningTool: runningToolTailPayload(spanID, entry.sessionID, entry.text, entry.truncated),
 		}})
 	}
 	p.tailQueue = append(p.tailQueue, payloads...)

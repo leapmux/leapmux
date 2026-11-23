@@ -536,8 +536,10 @@ func (a *Agent) completeCodexChildRun(threadID string, transition codexChildTran
 	}
 	if !finalized {
 		a.flushCodexChildGeneration(threadID, transition.completion)
-		a.persistIncompleteCodexTools(threadID, false, transition.completion)
-		a.finishCodexRawExecutions(threadID, transition.completion)
+		if transition.completion == agent.MessageCompletionInterrupted {
+			a.persistIncompleteCodexTools(threadID, false, transition.completion)
+			a.finishCodexRawExecutions(threadID, transition.completion)
+		}
 		if hadTurn {
 			a.publishCodexChildTurnActive(route.childSink, false)
 		}

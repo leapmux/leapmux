@@ -110,7 +110,7 @@ describe('grok provider', () => {
 
     it('states a reason that is not the ordinary end', () => {
       expect(plugin.transcript.extractDivider(turnCompleted({ stop_reason: 'max_tokens' }))?.label).toContain('max_tokens')
-      expect(plugin.transcript.extractDivider(turnCompleted({ stop_reason: 'cancelled' }))).toEqual({ label: 'Turn interrupted' })
+      expect(plugin.transcript.extractDivider(turnCompleted({ stop_reason: 'cancelled' }))).toEqual({ label: 'Turn interrupted', interrupted: true })
     })
 
     it('still reads the prompt response of a turn LeapMux started', () => {

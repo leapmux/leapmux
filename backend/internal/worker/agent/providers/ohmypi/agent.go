@@ -436,6 +436,15 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Unlock()
 	if !active {
 		a.settleOpenDialogs()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && !a.activityStateLocked().Active
+		a.Mu.Unlock()
+		if stillIdle {
+			root := a.rootConversation()
+			a.persistIncompleteTools(root, agent.MessageCompletionInterrupted)
+			a.ResetCumulativeOutput()
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
 		return nil
 	}
 	return a.sendCommandDetached(CommandAbort, nil, func(_ json.RawMessage, err error) {
@@ -491,10 +500,11 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.persistIncompleteTools(root, completion)
 	a.finishOpenCompactions()
 	a.closeSubagents(subagentStatusForCompletion(completion))
+	a.closeAllShells()
 	a.Mu.Lock()
 	a.turn.clear()
 	a.Mu.Unlock()
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 	a.PublishTurnActive()
 }
 

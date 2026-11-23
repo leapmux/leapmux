@@ -1,6 +1,7 @@
 package kimi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,14 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+type kimiOpenLiveSpan struct {
+	spanID       string
+	parentSpanID string
+	spanType     string
+}
 
 // The dispatcher owns the document and the publication of each native turn.
 // A correction to an older turn keeps its original publication authority.
@@ -23,6 +31,30 @@ type kimiConversationOutput struct {
 	activeTurnID  string
 	latestOrdinal int64
 	snapshotReady bool
+	openLiveSpans []kimiOpenLiveSpan
+}
+
+func (output *kimiConversationOutput) recordOpenLiveSpan(spanID, parentSpanID, spanType string) {
+	for i := range output.openLiveSpans {
+		if output.openLiveSpans[i].spanID == spanID {
+			output.openLiveSpans[i].parentSpanID = parentSpanID
+			if spanType != "" {
+				output.openLiveSpans[i].spanType = spanType
+			}
+			return
+		}
+	}
+	output.openLiveSpans = append(output.openLiveSpans, kimiOpenLiveSpan{
+		spanID:       spanID,
+		parentSpanID: parentSpanID,
+		spanType:     spanType,
+	})
+}
+
+func (output *kimiConversationOutput) removeOpenLiveSpan(spanID string) {
+	output.openLiveSpans = slices.DeleteFunc(output.openLiveSpans, func(span kimiOpenLiveSpan) bool {
+		return span.spanID == spanID
+	})
 }
 
 type kimiConversationTurnOutput struct {
@@ -84,6 +116,13 @@ func (a *Agent) conversationTurnOutput(run *kimiRun, turn *kimiConversationTurnS
 		anchor, err = scope.CaptureTranscript(agent.MessageContent{}, agent.SpanInfo{})
 		if err != nil {
 			return nil, err
+		}
+	} else {
+		for _, live := range output.openLiveSpans {
+			scope.OpenSpan(live.spanID, live.parentSpanID)
+			if live.spanType != "" {
+				scope.SetSpanType(live.spanID, live.spanType)
+			}
 		}
 	}
 	publication := &kimiConversationTurnOutput{writer: writer, scope: scope, progress: anchor.FrozenContent().Publication,
@@ -420,10 +459,11 @@ func (item kimiConversationItem) planProposal() *kimiPlanProposal {
 }
 
 type kimiConversationProjection struct {
-	record     contracts.KimiConversationRecord
-	span       agent.SpanInfo
-	completion agent.MessageCompletion
-	source     leapmuxv1.MessageSource
+	record        contracts.KimiConversationRecord
+	span          agent.SpanInfo
+	completion    agent.MessageCompletion
+	source        leapmuxv1.MessageSource
+	alreadyClosed bool
 }
 
 type kimiConversationSelection struct {
@@ -528,7 +568,12 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			}
 			textRecords[index] = append(textRecords[index], itemID)
 		}
+		alreadyClosed := false
 		if item.Type == contracts.KimiConversationItemKindToolCall {
+			_, alreadyClosed = publication.results[itemID]
+			if alreadyClosed && item.Status != contracts.KimiConversationStatusEnded {
+				continue
+			}
 			if item.Name == nil || strings.TrimSpace(*item.Name) == "" || item.Stage == "input" && item.Status != contracts.KimiConversationStatusEnded {
 				continue
 			}
@@ -567,7 +612,8 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 				projections = append(projections, kimiConversationProjection{record: record, span: span, completion: agent.MessageCompletionComplete, source: source})
 				requested = append(requested, itemID)
 			}
-			if item.Status != contracts.KimiConversationStatusEnded && !selection.endTurn && selection.localCompletion == "" {
+			interruptedTurnEnd := selection.endTurn && turn.header.Outcome == contracts.KimiConversationOutcomeInterrupted
+			if item.Status != contracts.KimiConversationStatusEnded && !interruptedTurnEnd && selection.localCompletion == "" {
 				continue
 			}
 			record.Role = contracts.KimiConversationRecordRoleResult
@@ -585,7 +631,7 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 		}
 		record.Item = itemRaw
 		record.TurnContext = turnContext
-		projections = append(projections, kimiConversationProjection{record: record, span: span, completion: completion, source: source})
+		projections = append(projections, kimiConversationProjection{record: record, span: span, completion: completion, source: source, alreadyClosed: alreadyClosed})
 		if item.Status == contracts.KimiConversationStatusEnded || selection.localCompletion != "" {
 			released = append(released, state)
 		}
@@ -669,10 +715,25 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 		}
 		if span.SpanID != "" && !span.NoSpan {
 			if span.Closing {
-				publication.scope.CloseSpan(span.SpanID)
+				if !projection.alreadyClosed {
+					publication.scope.CloseSpan(span.SpanID)
+					if !publication.historical {
+						run.conversation.removeOpenLiveSpan(span.SpanID)
+						if run.agentID == kimiMainAgentID && a.sink != nil {
+							a.sink.CloseSpan(span.SpanID)
+						}
+					}
+				}
 			} else {
 				publication.scope.OpenSpan(span.SpanID, "")
 				publication.scope.SetSpanType(span.SpanID, span.SpanType)
+				if !publication.historical {
+					run.conversation.recordOpenLiveSpan(span.SpanID, "", span.SpanType)
+					if run.agentID == kimiMainAgentID && a.sink != nil {
+						a.sink.OpenSpan(span.SpanID, "")
+						a.sink.SetSpanType(span.SpanID, span.SpanType)
+					}
+				}
 			}
 		}
 	}
@@ -699,7 +760,14 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 		}
 	}
 	if selection.endTurn {
-		for _, state := range turn.items {
+		for id, state := range turn.items {
+			if state.identity.kind == contracts.KimiConversationItemKindToolCall {
+				_, opened := publication.requests[id]
+				_, closed := publication.results[id]
+				if opened && !closed {
+					continue
+				}
+			}
 			state.releaseBody()
 		}
 	} else {
@@ -718,6 +786,9 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			a.correctConversationStepCompletion(publication, frame, turn.header.TurnID, turn.steps[index])
 		}
 		publication.completed = true
+		if !publication.historical && turn.header.Outcome == contracts.KimiConversationOutcomeInterrupted {
+			a.closeOpenConversationToolsAcrossTurns(run, agent.MessageCompletionInterrupted, true)
+		}
 		a.finishChildInvocationTurn(run, turn.header.TurnID)
 		if run.agentID == kimiMainAgentID {
 			if run.conversation.activeTurnID == turn.header.TurnID && !publication.historical && turn.header.Kind == contracts.KimiConversationTurnKindAgent {
@@ -752,5 +823,65 @@ func (a *Agent) finishConversationActivity(run *kimiRun, turnID string) {
 		a.requestUsageRefresh()
 	} else {
 		a.publishChildInputState(run)
+	}
+}
+
+// closeOpenConversationToolsAcrossTurns scans all turns in run.conversation
+// (regardless of turn status) for any opened tool call that has not closed yet,
+// closes each with completion, completes its progress counters, and resets
+// affected turn scopes plus root/child spans and progress.
+func (a *Agent) closeOpenConversationToolsAcrossTurns(run *kimiRun, completion agent.MessageCompletion, resetProgress bool) {
+	if run == nil || run.conversation == nil {
+		return
+	}
+	output := run.conversation
+	discarding := a.IsDiscardingOutput()
+	turns := slices.Collect(maps.Values(output.document.turns))
+	slices.SortFunc(turns, func(left, right *kimiConversationTurnState) int {
+		return cmp.Compare(*left.header.Ordinal, *right.header.Ordinal)
+	})
+	for _, turn := range turns {
+		publication := output.turns[turn.header.TurnID]
+		if publication == nil {
+			continue
+		}
+		frame := kimiConversationFrame{SessionID: output.document.sessionID, AgentID: run.agentID, TurnID: turn.header.TurnID}
+		var openIDs []string
+		for _, itemID := range turn.order {
+			item := turn.items[itemID]
+			if item == nil || item.identity.kind != contracts.KimiConversationItemKindToolCall {
+				continue
+			}
+			_, opened := publication.requests[itemID]
+			_, closed := publication.results[itemID]
+			if !opened || closed {
+				continue
+			}
+			openIDs = append(openIDs, itemID)
+		}
+		if len(openIDs) > 0 {
+			if !discarding {
+				a.persistConversationItems(run, turn, publication, frame, kimiConversationSelection{items: openIDs, localCompletion: completion})
+			}
+			for _, itemID := range openIDs {
+				publication.results[itemID] = struct{}{}
+				if publication.progress != nil {
+					scopeID := kimiConversationProgressID(frame, itemID, contracts.KimiConversationItemKindToolCall)
+					publication.reportProgressUpdate(agent.CompleteOutputProgress(scopeID))
+					publication.reportProgressUpdate(agent.CompleteModelProgress(scopeID))
+				}
+			}
+		}
+		publication.scope.ResetSpans()
+	}
+	output.openLiveSpans = nil
+	if resetProgress {
+		if run.agentID == kimiMainAgentID {
+			if a.sink != nil {
+				providerkit.ResetSpansAndProgress(a.sink)
+			}
+		} else if sink := a.runSink(run); sink != nil {
+			providerkit.ResetSpansAndProgress(sink)
+		}
 	}
 }

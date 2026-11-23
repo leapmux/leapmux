@@ -452,3 +452,199 @@ func joinHeldStopAtCleanup(t *testing.T, done <-chan struct{}) {
 		}
 	})
 }
+
+func TestIdleInterruptClearsDanglingRootSpan(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, sink, provider := stopOwnershipFixture(t)
+	sink.SetTurnState(agent.TurnState{Active: false}, 2)
+	sink.OpenSpan("dangling-1", "")
+	sink.ReportProgress(agent.OutputTailProgress("dangling-1", "running", false))
+	require.True(t, svc.Output.hasOpenRootSpans("agent-1"))
+	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+
+	writer, done := dispatchHeldStop(t, dispatcher, false)
+	call := receiveHeldStop(t, provider)
+	finishHeldStop(t, call, done, nil)
+	svc.Output.WaitActivityRefreshes()
+
+	require.Empty(t, writer.rejections())
+	assert.False(t, svc.Output.hasOpenRootSpans("agent-1"))
+	assert.Empty(t, requireRootOutputSink(t, svc.Output, "agent-1").currentSpanTracker().ActiveSpans())
+	assert.Empty(t, requireRootOutputSink(t, svc.Output, "agent-1").progress.tailSnapshots())
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+}
+
+func TestIdleInterruptRotatesScopeSoLaterPromptAndSpanWork(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, sink, provider := stopOwnershipFixture(t)
+	sink.SetTurnState(agent.TurnState{Active: false}, 2)
+	sink.OpenSpan("dangling-1", "")
+
+	writer, done := dispatchHeldStop(t, dispatcher, false)
+	call := receiveHeldStop(t, provider)
+	finishHeldStop(t, call, done, nil)
+	svc.Output.WaitActivityRefreshes()
+	require.Empty(t, writer.rejections())
+
+	// After idle interrupt rotated st.scope, a new root span marks WORKING and a
+	// blocking control request is published instead of suppressed by controlsStopped.
+	sink.OpenSpan("later-span", "")
+	svc.Output.WaitActivityRefreshes()
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+
+	publishStopControl(t, sink, "later-control")
+	requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, requests, 1)
+	assert.Equal(t, "later-control", requests[0].RequestID)
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+}
+
+func TestIdleInterruptPreservesSpansOnPreserveOpenSpansOrIgnoredStop(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserve_open_spans", func(t *testing.T) {
+		t.Parallel()
+		svc, dispatcher, sink, provider := stopOwnershipFixture(t)
+		sink.SetTurnState(agent.TurnState{Active: false}, 2)
+		sink.OpenSpan("spared-span", "")
+
+		writer, done := dispatchHeldStop(t, dispatcher, false)
+		call := receiveHeldStop(t, provider)
+		call.stop.PreserveOpenSpans()
+		finishHeldStop(t, call, done, nil)
+		svc.Output.WaitActivityRefreshes()
+
+		require.Empty(t, writer.rejections())
+		assert.True(t, svc.Output.hasOpenRootSpans("agent-1"), "PreserveOpenSpans must spare open spans")
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+			svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
+			"rotating st.scope must restore WORKING for spared spans")
+		publishStopControl(t, sink, "after-preserved-stop")
+		requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+		require.NoError(t, err)
+		require.Len(t, requests, 1, "rotated scope must allow later blocking prompts")
+	})
+
+	t.Run("ignored_stop", func(t *testing.T) {
+		t.Parallel()
+		svc, dispatcher, sink, provider := stopOwnershipFixture(t)
+		sink.SetTurnState(agent.TurnState{Active: false}, 2)
+		sink.OpenSpan("ignored-span", "")
+
+		writer, done := dispatchHeldStop(t, dispatcher, false)
+		call := receiveHeldStop(t, provider)
+		call.stop.ReportIgnored()
+		finishHeldStop(t, call, done, nil)
+		svc.Output.WaitActivityRefreshes()
+
+		require.Empty(t, writer.rejections())
+		assert.True(t, svc.Output.hasOpenRootSpans("agent-1"), "ignored stop must leave open spans untouched")
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+			svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+	})
+}
+
+func TestInterruptAgentSkipsIdleSpanResetWhileTurnActiveOrOnInterruptError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("turn_active", func(t *testing.T) {
+		t.Parallel()
+		svc, dispatcher, sink, provider := stopOwnershipFixture(t)
+		sink.OpenSpan("active-turn-span", "")
+
+		writer, done := dispatchHeldStop(t, dispatcher, false)
+		call := receiveHeldStop(t, provider)
+		finishHeldStop(t, call, done, nil)
+		svc.Output.WaitActivityRefreshes()
+
+		require.Empty(t, writer.rejections())
+		assert.True(t, svc.Output.hasOpenRootSpans("agent-1"),
+			"SettleIdleRootStop must not wipe spans while turnActive is true")
+	})
+
+	t.Run("interrupt_error", func(t *testing.T) {
+		t.Parallel()
+		svc, dispatcher, sink, provider := stopOwnershipFixture(t)
+		sink.SetTurnState(agent.TurnState{Active: false}, 2)
+		sink.OpenSpan("error-span", "")
+
+		writer, done := dispatchHeldStop(t, dispatcher, false)
+		call := receiveHeldStop(t, provider)
+		finishHeldStop(t, call, done, errors.New("interrupt refused"))
+		svc.Output.WaitActivityRefreshes()
+
+		require.NotEmpty(t, writer.rejections())
+		assert.True(t, svc.Output.hasOpenRootSpans("agent-1"),
+			"failed Interrupt must not reset spans")
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+			svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+	})
+}
+
+func TestSettleIdleRootStopResetsSpansBeforeRotatingScope(t *testing.T) {
+	t.Parallel()
+
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	sink.SetTurnState(agent.TurnState{Active: false}, 2)
+	sink.OpenSpan("dangling-race", "")
+	svc.Output.WaitActivityRefreshes()
+
+	target, err := svc.Agents.CaptureStopTarget("agent-1")
+	require.NoError(t, err)
+	stop := svc.Output.NoteAgentStopRequested("agent-1", "agent-1")
+	stop.Delivered(target)
+	svc.Output.WaitActivityRefreshes()
+	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+
+	rootSink := requireRootOutputSink(t, svc.Output, "agent-1")
+	rootSink.sessionInfoMu.Lock()
+	unlocked := false
+	unlockSessionInfo := func() {
+		if !unlocked {
+			unlocked = true
+			rootSink.sessionInfoMu.Unlock()
+		}
+	}
+	defer unlockSessionInfo()
+
+	settled := make(chan struct{})
+	go func() {
+		defer close(settled)
+		stop.SettleIdleRootStop()
+	}()
+
+	mutation := svc.Output.transcriptMutationMutex("agent-1")
+	require.Eventually(t, func() bool {
+		if mutation.TryRLock() {
+			mutation.RUnlock()
+			return false
+		}
+		return true
+	}, 5*time.Second, time.Millisecond)
+
+	snapCh := make(chan AgentActivity, 1)
+	go func() {
+		snapCh <- svc.Output.AgentActivitySnapshot("agent-1", "agent-1")
+	}()
+
+	var snapshot AgentActivity
+	select {
+	case snapshot = <-snapCh:
+		unlockSessionInfo()
+	case <-time.After(20 * time.Millisecond):
+		unlockSessionInfo()
+		snapshot = <-snapCh
+	}
+	<-settled
+	svc.Output.WaitActivityRefreshes()
+
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, snapshot.State,
+		"concurrent AgentActivitySnapshot must never observe WORKING between scope rotation and span reset")
+	assert.False(t, svc.Output.hasOpenRootSpans("agent-1"))
+}

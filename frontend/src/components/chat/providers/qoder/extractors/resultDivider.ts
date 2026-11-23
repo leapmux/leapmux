@@ -26,6 +26,7 @@ export function qoderResultDivider(parsed: unknown, completion?: MessageCompleti
   if (completion === MessageCompletion.INTERRUPTED) {
     return {
       label: turnEndLabel('interrupted', { durationMs }),
+      interrupted: true,
     }
   }
   if (parsed.is_error === true || pickString(parsed, 'subtype') === 'error_during_execution') {

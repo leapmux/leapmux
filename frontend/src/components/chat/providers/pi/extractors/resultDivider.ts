@@ -39,6 +39,7 @@ export function piResultDivider(parsed: unknown, completion?: MessageCompletion)
       label: turnEndLabel('interrupted', {
         durationMs: pickNumber(parsed, 'duration_ms'),
       }),
+      interrupted: true,
     }
   }
 
@@ -62,6 +63,7 @@ export function piResultDivider(parsed: unknown, completion?: MessageCompletion)
   if (stopReason === PI_STOP_REASON.Aborted) {
     return {
       label: turnEndLabel('interrupted', { durationMs }),
+      interrupted: true,
     }
   }
   return {

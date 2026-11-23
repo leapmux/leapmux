@@ -10,8 +10,10 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -2459,4 +2461,119 @@ func TestBackgroundTaskRolesRenamePreservesCanonicalRouting(t *testing.T) {
 			assert.Equal(t, leapmuxv1.BackgroundTaskRole(role), canonical.Role)
 		})
 	}
+}
+
+func TestOpenRootSpanKeepsAgentWorkingAcrossTurnEnd(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "open-span-root")
+	settles := holdSettles(t, svc.Output)
+	svc.Output.processRunning = func(string) bool { return true }
+	svc.Output.NoteAgentProcessStarted("open-span-root")
+	svc.Output.WaitActivityRefreshes()
+
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	sink.OpenSpan("bg-cmd", "")
+	svc.Output.WaitActivityRefreshes()
+
+	// Ending the turn leaves the root WORKING while the open span remains active.
+	sink.SetTurnState(agent.TurnState{Active: false}, 2)
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("open-span-root", "open-span-root").State)
+	assert.False(t, svc.Output.TurnActive("open-span-root"), "TurnActive still reflects turnActive alone")
+
+	// A child open span does not override the child's canonical bgtask activity.
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "spawn-1",
+		ProviderChildKey: "child-key",
+		Title:            "Child",
+	})
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("child-key", bgtask.StatusSucceeded))
+	childSink := sink.ChildSink(childID)
+	childSink.OpenSpan("child-span", "")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot(childID, "open-span-root").State)
+
+	// Closing the last root span drops root snapshot activity to IDLE and opens a held settle window.
+	beforeWindows := len(settles.openWindows())
+	sink.CloseSpan("bg-cmd")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("open-span-root", "open-span-root").State)
+	testutil.RequireEventually(t, func() bool { return len(settles.openWindows()) == beforeWindows+1 })
+	require.Equal(t, beforeWindows+1, settles.close())
+	svc.Output.WaitActivityRefreshes()
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivityPublished("open-span-root", "open-span-root"))
+}
+
+func TestOpenRootSpanWithPendingControlIsWaitingForUser(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "open-span-wait")
+	svc.Output.processRunning = func(string) bool { return true }
+	svc.Output.NoteAgentProcessStarted("open-span-wait")
+	svc.Output.WaitActivityRefreshes()
+
+	sink.OpenSpan("bg-cmd", "")
+	svc.Output.WaitActivityRefreshes()
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("open-span-wait", "open-span-wait").State)
+
+	svc.Output.noteControlRequestAdded("open-span-wait", "open-span-wait", "req-1", "claim-1")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		svc.Output.AgentActivitySnapshot("open-span-wait", "open-span-wait").State)
+
+	svc.Output.noteControlRequestsRemoved("open-span-wait", "open-span-wait", controlRequestInstance{RequestID: "req-1", ClaimToken: "claim-1"})
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("open-span-wait", "open-span-wait").State)
+
+	sink.ResetSpans()
+	svc.Output.WaitActivityRefreshes()
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("open-span-wait", "open-span-wait").State)
+}
+
+func TestNewRootSinkIsolatesProcessRestartSpans(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	svc.Output.processRunning = func(string) bool { return true }
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID:            "codex-restart",
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	oldSink, err := svc.Output.NewRootSink("codex-restart", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, err)
+	svc.Output.NoteAgentProcessStarted("codex-restart")
+	svc.Output.WaitActivityRefreshes()
+
+	oldSink.OpenSpan("stale-span", "")
+	svc.Output.WaitActivityRefreshes()
+	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("codex-restart", "codex-restart").State)
+
+	// Starting a replacement process allocates an empty isolated tracker for non-Claude providers too.
+	newSink, err := svc.Output.NewRootSink("codex-restart", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, err)
+	svc.Output.NoteAgentProcessStarted("codex-restart")
+	svc.Output.WaitActivityRefreshes()
+
+	assert.False(t, svc.Output.hasOpenRootSpans("codex-restart"))
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("codex-restart", "codex-restart").State)
+
+	// Mutating the retired sink must not affect the replacement process's tracker or activity.
+	oldSink.OpenSpan("retired-late", "")
+	assert.False(t, svc.Output.hasOpenRootSpans("codex-restart"))
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("codex-restart", "codex-restart").State)
+
+	newSink.OpenSpan("live-new", "")
+	assert.True(t, svc.Output.hasOpenRootSpans("codex-restart"))
+	oldSink.ResetSpans()
+	assert.True(t, svc.Output.hasOpenRootSpans("codex-restart"), "retired ResetSpans must not clear replacement tracker")
 }

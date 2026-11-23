@@ -19,6 +19,26 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	}
 	a.stateMu.Unlock()
 	if turn == "" {
+		var flushedSink agent.ProviderServices
+		func() {
+			a.dispatcher.mu.Lock()
+			defer a.dispatcher.mu.Unlock()
+			a.stateMu.Lock()
+			id = a.sessionID
+			state = a.sessions[id]
+			stillIdle := state != nil && !state.retired && state.turnID == ""
+			a.stateMu.Unlock()
+			if !stillIdle {
+				return
+			}
+			a.retryFinalizations(state)
+			a.closeIdleOpenTools(state, agent.MessageCompletionInterrupted)
+			flushedSink = state.sink
+		}()
+		a.drainDeferredOutputActions()
+		if flushedSink != nil {
+			_ = agent.FlushPendingOutput(flushedSink)
+		}
 		return nil
 	}
 	_, err := a.command(methodTurnInterrupt, map[string]any{"sessionId": id, "turnId": turn}, a.APITimeout(), nil)

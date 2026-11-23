@@ -262,8 +262,8 @@ func TestAgentTurn_EndPersistsTheFrameAndClearsTheTurn(t *testing.T) {
 
 	assert.False(t, b.AgentTurnActive())
 	assert.False(t, b.PromptActive())
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle(),
-		"the turn end precedes the clear, as it does for a prompt")
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle(),
+		"the turn end precedes the clear without resetting spans on normal completion")
 	messages := sink.Messages()
 	require.NotEmpty(t, messages)
 	end := messages[len(messages)-1]
@@ -299,14 +299,8 @@ func TestAgentTurn_EndWithoutRowStoresTheOutputAndWritesNoDivider(t *testing.T) 
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
 	assert.Empty(t, turnEndContents(sink), "work that is no conversation turn draws no divider")
 	assert.Equal(t, []string{"text:Compacting."}, assembledTexts(t, sink.Messages()), "the text is stored as a turn end stores it")
-	var closing *agenttest.Message
-	for _, message := range sink.Messages() {
-		if message.SpanID == "call-1" && message.Closing {
-			closing = &message
-		}
-	}
-	require.NotNil(t, closing, "the tool call that the work left open is stored")
-	assert.Equal(t, agent.MessageCompletionError, closing.Completion)
+	assert.Empty(t, closingRows(sink, "call-1"), "normal work end keeps open tool calls running")
+	assert.True(t, b.HasOpenRootTool("call-1"))
 }
 
 func TestAgentTurn_EndWithoutRowDropsAQueuedTurn(t *testing.T) {
@@ -346,8 +340,9 @@ func TestAgentTurn_EndWithoutRowGivesTheOutputOfAQueuedTurnBackToThePrompt(t *te
 
 	assert.Equal(t, []string{"text:Before.", "text:After."}, assembledTexts(t, sink.Messages()),
 		"the prompt's end stores the output after the boundary")
-	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionError}, closingRows(sink, "late-tool"),
-		"the prompt's end closes the tool that no turn will finish")
+	assert.Empty(t, closingRows(sink, "late-tool"),
+		"normal prompt end keeps still-running tools open")
+	assert.True(t, b.HasOpenRootTool("late-tool"))
 	var toolUses []string
 	for _, message := range sink.Messages() {
 		if message.TurnEnd {
@@ -355,7 +350,7 @@ func TestAgentTurn_EndWithoutRowGivesTheOutputOfAQueuedTurnBackToThePrompt(t *te
 		}
 	}
 	require.Len(t, toolUses, 1)
-	assert.JSONEq(t, `{"`+contracts.MessageMetadataFieldToolUses+`":2}`, toolUses[0], "the prompt counts both tools")
+	assert.JSONEq(t, `{"`+contracts.MessageMetadataFieldToolUses+`":1}`, toolUses[0], "the prompt counts its completed tool")
 	assert.Empty(t, b.TurnAssistantTextForTest().String(), "nothing waits for the next turn")
 }
 
@@ -630,8 +625,8 @@ func TestAgentTurn_AQueuedTurnKeepsItsOwnOutputAtThePromptEnd(t *testing.T) {
 	b.HandleJSONRPCResponseForTest(promptResponse(1))
 	testutil.RequireEventually(t, func() bool { return b.AgentTurnActive() })
 
-	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionError}, closingRows(sink, "prompt-tool"),
-		"the prompt's end closes the tool that the prompt left open")
+	assert.Empty(t, closingRows(sink, "prompt-tool"),
+		"normal prompt end keeps prompt-tool open across the turn boundary")
 	assert.Empty(t, closingRows(sink, "goal-tool"), "the goal round's tool still runs")
 
 	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call_update","toolCallId":"goal-tool","status":"completed","content":[{"type":"content","content":{"type":"text","text":"ok"}}]}`))
@@ -651,7 +646,7 @@ func TestAgentTurn_AQueuedTurnKeepsItsOwnOutputAtThePromptEnd(t *testing.T) {
 		}
 	}
 	require.Len(t, toolUses, 2, "each turn writes its divider")
-	assert.JSONEq(t, `{"`+contracts.MessageMetadataFieldToolUses+`":1}`, toolUses[0], "the prompt counts its own tool")
+	assert.JSONEq(t, `{"`+contracts.MessageMetadataFieldToolUses+`":0}`, toolUses[0], "the prompt counts only completed tools")
 	assert.JSONEq(t, `{"`+contracts.MessageMetadataFieldToolUses+`":1}`, toolUses[1], "the goal round counts its own tool")
 }
 
@@ -697,7 +692,7 @@ func TestAgentTurn_AFailedPromptKeepsTheQueuedTurnsOutput(t *testing.T) {
 	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)))
 	testutil.RequireEventually(t, func() bool { return b.AgentTurnActive() })
 
-	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionError}, closingRows(sink, "prompt-tool"))
+	assert.Empty(t, closingRows(sink, "prompt-tool"), "non-interrupted prompt failure keeps prompt-tool open")
 	assert.Empty(t, closingRows(sink, "goal-tool"), "the agent turn's tool still runs")
 }
 
@@ -1038,4 +1033,46 @@ func TestStaleContinuationFailurePreservesTheReplacementPrompt(t *testing.T) {
 	b.sendFollowUpPrompt("retired-session", "old input", nil)
 	assert.True(t, b.PromptActive(), "the replacement prompt must remain active")
 	assert.Zero(t, sink.NotificationCount(), "a retired turn must not report an error in the replacement session")
+}
+
+func TestACPEndAgentTurnPreservesOpenToolsOnNormalAndClosesOnInterrupted(t *testing.T) {
+	t.Parallel()
+
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	require.True(t, b.BeginAgentTurn())
+	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"bg-1","title":"Watch","kind":"execute","status":"in_progress"}`))
+	b.EndAgentTurn(json.RawMessage(agentTurnEndFrame))
+
+	assert.True(t, b.HasOpenRootTool("bg-1"))
+	assert.Empty(t, closingRows(sink, "bg-1"))
+	assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+
+	// A later interrupted agent turn closes bg-1 as Interrupted and resets spans.
+	require.True(t, b.BeginAgentTurn())
+	b.noteACPInterruptRequested()
+	b.EndAgentTurn(json.RawMessage(agentTurnEndFrame))
+
+	assert.False(t, b.HasOpenRootTool("bg-1"))
+	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closingRows(sink, "bg-1"))
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+}
+
+func TestACPEndAgentTurnWithoutRowPreservesOutputProgress(t *testing.T) {
+	t.Parallel()
+
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	require.True(t, b.BeginAgentTurn())
+	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call","toolCallId":"bg-1","title":"Watch","kind":"execute","status":"in_progress"}`))
+	b.HandleOutput(toolCallFrame(`{"sessionUpdate":"tool_call_update","toolCallId":"bg-1","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":"streamed"}}]} `))
+
+	b.EndAgentTurnWithoutRow()
+
+	assert.True(t, b.HasOpenRootTool("bg-1"))
+	assert.Empty(t, closingRows(sink, "bg-1"))
+	updates := sink.ProgressUpdates()
+	require.NotEmpty(t, updates)
+	assert.Equal(t, agent.ResetModelProgress(), updates[len(updates)-1], "normal EndAgentTurnWithoutRow resets model progress only")
+	assert.NotContains(t, updates, agent.ResetProgress())
 }

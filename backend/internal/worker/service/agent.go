@@ -710,6 +710,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 			stop.Delivered(target)
+			stop.SettleIdleRootStop()
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 		})
 

@@ -245,17 +245,24 @@ func TestOpenCodeRetryLookupKeepsTheFinalRowAndCleanupBehindItsText(t *testing.T
 		t.Fatal("the stored-message read did not start")
 	}
 	// PrepareSteer owns the session-update lock until its read finishes.
-	// The prompt callback waits for that lock, so the test must not wait for
-	// the callback before releasing the stored-message response.
-	promptDone := make(chan struct{})
+	// The prompt callback waits for that lock before running PromptEnded, so
+	// the test must not wait for PromptEnded before releasing the stored-message
+	// response.
+	promptStarted, promptDone := make(chan struct{}), make(chan struct{})
 	go func() {
+		close(promptStarted)
 		a.FinishPromptRequestForTest("test-session", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 		close(promptDone)
 	}()
 	select {
-	case <-promptEnding:
+	case <-promptStarted:
 	case <-guard.Done():
 		t.Fatal("the prompt callback did not start")
+	}
+	select {
+	case <-promptEnding:
+		t.Fatal("PromptEnded must wait for PrepareSteer to release the session-update lock")
+	default:
 	}
 	assert.Empty(t, sink.Messages(), "the turn end must wait for the selected text")
 	resumeLookup()
@@ -263,6 +270,11 @@ func TestOpenCodeRetryLookupKeepsTheFinalRowAndCleanupBehindItsText(t *testing.T
 	case <-textDone:
 	case <-guard.Done():
 		t.Fatal("the selected text did not finish")
+	}
+	select {
+	case <-promptEnding:
+	case <-guard.Done():
+		t.Fatal("the prompt ending hook did not run after the selected text")
 	}
 	select {
 	case <-cleanupStarted:

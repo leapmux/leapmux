@@ -202,3 +202,195 @@ func jsonQuoteKimiTestString(t *testing.T, value string) string {
 	require.NoError(t, err)
 	return string(raw)
 }
+
+func TestKimiNormalTurnKeepsToolOpenAcrossTurnTwoAndMirrorsRootSink(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	const tool = `"type":"tool_call","item_id":"call-1","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 30"}`
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+	rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	rows := rig.sink.Messages()
+	require.Len(t, rows, 2, "normal turn end must keep still-running tool open")
+	assert.False(t, rows[0].Closing)
+	assert.True(t, rows[1].TurnEnd)
+	spanID := rows[0].SpanID
+	require.NotEmpty(t, spanID)
+	assert.Empty(t, rig.sink.ClosedSpans())
+	// Root sink mirrors the live open span so OutputHandler sees open root spans.
+	assert.Equal(t, "Bash", rig.sink.GetSpanType(spanID))
+	assert.NotEmpty(t, rig.sink.OpenSpans())
+
+	// Starting Turn 2 seeds Turn 2's TranscriptScope with Turn 1's still-open span.
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t1","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:05Z","steps":[]}}`)
+	rig.endPublicTurn(t, kimiMainAgentID, "t1", 1, "completed")
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	rows = rig.sink.Messages()
+	require.Len(t, rows, 3)
+	t1Pub := rig.agent.run(kimiMainAgentID).conversation.turns["t1"]
+	require.NotNil(t, t1Pub)
+	assert.Equal(t, "Bash", t1Pub.scope.GetSpanType(spanID), "Turn 2 scope must inherit Turn 1 open tool span")
+}
+
+func TestKimiInterruptedTurnTwoIdleInterruptAndExitCloseEarlierTurnTools(t *testing.T) {
+	t.Parallel()
+
+	t.Run("interrupted turn two closes turn one tool and drops late item.ended", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiConversationRig(t)
+		rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		const tool = `"type":"tool_call","item_id":"call-1","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 30"}`
+		rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+		rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+
+		rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t1","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:05Z","steps":[]}}`)
+		rig.endPublicTurn(t, kimiMainAgentID, "t1", 1, "interrupted")
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		spanID := rig.sink.Messages()[0].SpanID
+		assert.Contains(t, rig.sink.ClosedSpans(), spanID)
+		assert.Contains(t, rig.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, rig.sink.ProgressUpdates(), agent.ResetProgress())
+
+		countBeforeLate := rig.sink.MessageCount()
+		closedBeforeLate := len(rig.sink.ClosedSpans())
+		rig.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{`+tool+`,"status":"ended","outcome":"completed","output":"late"}}`)
+		awaitKimiTestOutput(t, rig.agent.sink)
+		assert.Equal(t, countBeforeLate, rig.sink.MessageCount(), "late item.ended must not persist a duplicate closing row")
+		assert.Equal(t, closedBeforeLate, len(rig.sink.ClosedSpans()), "late item.ended must not close span twice")
+	})
+
+	t.Run("idle interrupt closes earlier turn tool and preserves detached bgtask", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiConversationRig(t)
+		rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"bg-1","kind":"subagent","status":"running","detached":true,"child_agent_id":"agent-0"}`))
+		rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		const tool = `"type":"tool_call","item_id":"call-idle","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 30"}`
+		rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+		rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+		awaitKimiTestOutput(t, rig.agent.sink)
+		require.Empty(t, rig.sink.ClosedSpans())
+
+		require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
+		awaitKimiTestOutput(t, rig.agent.sink)
+		spanID := rig.sink.Messages()[0].SpanID
+		assert.Contains(t, rig.sink.ClosedSpans(), spanID)
+		assert.Contains(t, rig.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, rig.sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Equal(t, bgtask.StatusRunning, nativeTaskOf(t, rig.sink, "bg-1").Status, "idle root interrupt must preserve detached bgtask")
+	})
+
+	t.Run("process exit closes open tool from an earlier normally-ended turn", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiConversationRig(t)
+		rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		const tool = `"type":"tool_call","item_id":"call-exit","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 30"}`
+		rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+		rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+		awaitKimiTestOutput(t, rig.agent.sink)
+		require.Empty(t, rig.sink.ClosedSpans())
+
+		rig.agent.SimulateExitForTest()
+		require.NoError(t, rig.agent.Wait())
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		spanID := rig.sink.Messages()[0].SpanID
+		assert.Contains(t, rig.sink.ClosedSpans(), spanID)
+		assert.Contains(t, rig.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, rig.sink.ProgressUpdates(), agent.ResetProgress())
+		var foundClosing bool
+		for _, row := range rig.sink.Messages() {
+			if row.Closing && row.SpanID == spanID {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionError, row.Completion)
+			}
+		}
+		assert.True(t, foundClosing)
+	})
+}
+
+func TestKimiDiscardingExitResetsSpansAndProgress(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	const tool = `"type":"tool_call","item_id":"call-disc","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 30"}`
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+	awaitKimiTestOutput(t, rig.agent.sink)
+	require.Len(t, rig.sink.Messages(), 1)
+
+	rig.agent.DiscardOutput()
+	rig.agent.SimulateExitForTest()
+	require.NoError(t, rig.agent.Wait())
+
+	assert.Len(t, rig.sink.Messages(), 1, "discarding exit must not write closing rows")
+	assert.Contains(t, rig.sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, rig.sink.ProgressUpdates(), agent.ResetProgress())
+}
+
+func TestKimiCrossTurnOpenToolReportsPostTurnOutputAndCompletesOnNativeEnd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("post-turn delta, update, and native item.ended update and complete output progress", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiConversationRig(t)
+		rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		const tool = `"type":"tool_call","item_id":"call-1","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 5"}`
+		rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+		rig.conversationFrame(t, `{"type":"item.delta","turn_id":"t0","item_id":"call-1","field":"output","delta":"before "}`)
+		rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		scopeID := kimiConversationProgressID(kimiConversationFrame{SessionID: rig.sessionID(), AgentID: kimiMainAgentID, TurnID: "t0"}, "call-1", contracts.KimiConversationItemKindToolCall)
+		require.EqualValues(t, len("before "), rig.sink.ProgressSnapshot().OutputBytes)
+
+		// Post-turn-end output delta updates live output tail and exact byte count.
+		rig.conversationFrame(t, `{"type":"item.delta","turn_id":"t0","item_id":"call-1","field":"output","delta":"after"}`)
+		assert.EqualValues(t, len("before after"), rig.sink.ProgressSnapshot().OutputBytes)
+		total, tail := lastKimiToolOutputProgress(rig)
+		assert.Equal(t, scopeID, total.ScopeID)
+		assert.EqualValues(t, len("before after"), total.Value)
+		assert.Equal(t, scopeID, tail.ScopeID)
+		assert.Equal(t, "before after", tail.Text)
+
+		// Post-turn-end item.updated output replacement also updates live output progress.
+		rig.conversationFrame(t, `{"type":"item.updated","turn_id":"t0","item_id":"call-1","set":{"output":"replaced output"}}`)
+		assert.EqualValues(t, len("replaced output"), rig.sink.ProgressSnapshot().OutputBytes)
+		total, tail = lastKimiToolOutputProgress(rig)
+		assert.EqualValues(t, len("replaced output"), total.Value)
+		assert.Equal(t, "replaced output", tail.Text)
+
+		// Native item.ended completes output and model progress so OutputBytes drops to zero.
+		rig.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{`+tool+`,"status":"ended","outcome":"completed","output":"final output"}}`)
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		assert.Contains(t, rig.sink.ClosedSpans(), scopeID)
+		assert.Contains(t, rig.sink.ProgressUpdates(), agent.CompleteOutputProgress(scopeID))
+		assert.Contains(t, rig.sink.ProgressUpdates(), agent.CompleteModelProgress(scopeID))
+		assert.Zero(t, rig.sink.ProgressSnapshot().OutputBytes, "native item.ended must clear OutputBytes")
+	})
+
+	t.Run("late item.ended after force-close does not revive output progress", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiConversationRig(t)
+		rig.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		const tool = `"type":"tool_call","item_id":"call-2","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 5"}`
+		rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+		rig.conversationFrame(t, `{"type":"item.delta","turn_id":"t0","item_id":"call-2","field":"output","delta":"running"}`)
+		rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
+		awaitKimiTestOutput(t, rig.agent.sink)
+		require.Zero(t, rig.sink.ProgressSnapshot().OutputBytes)
+
+		updatesBeforeLate := len(rig.sink.ProgressUpdates())
+		rig.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{`+tool+`,"status":"ended","outcome":"completed","output":"late output"}}`)
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		assert.Len(t, rig.sink.ProgressUpdates(), updatesBeforeLate, "late item.ended after force-close must not emit progress updates")
+		assert.Zero(t, rig.sink.ProgressSnapshot().OutputBytes)
+	})
+}

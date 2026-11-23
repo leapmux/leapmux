@@ -260,9 +260,8 @@ func TestZCodeStoppedTurn_WritesARowForTheStop(t *testing.T) {
 	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
 }
 
-// The spans stay OPEN, because the abort reaches the model stream and not a command
-// the runtime already launched. A reset would orphan the update that call still
-// sends, which is the same reason endStoppedZCodeTurn closes no tool call.
+// A stopped turn that expires into silence closes settled non-background tools
+// and resets spans when no background child or unsettled owner remains.
 func TestZCodeStoppedTurn_KeepsTheSpansOfWorkStillRunning(t *testing.T) {
 	t.Parallel()
 
@@ -280,7 +279,7 @@ func TestZCodeStoppedTurn_KeepsTheSpansOfWorkStillRunning(t *testing.T) {
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	timer.fire()
 
-	assert.Zero(t, sink.ResetSpanCount(), "a call still running keeps the span its update needs")
+	assert.Equal(t, 1, sink.ResetSpanCount(), "a stopped turn with no preserved background work resets spans")
 }
 
 // A turn that reports its own end needs no row from LeapMux: the app-server's frame
@@ -764,4 +763,163 @@ func TestZCodeStoppedTurn_SerializesInterruptedPrefixAcceptanceWithTheLateRespon
 	notifications := sink.PersistedNotifications()
 	require.Len(t, notifications, 1)
 	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
+}
+
+func TestZCodeIdleInterruptAndStoppedTurnCloseCrossTurnToolsPreservingBackgroundChildren(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt closes Turn 1 open tool and resets spans when no background child exists", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		stdin := &zcodeRecordedStdin{}
+		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+		a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"sleep 30"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventTurnCompleted, `{"toolCallCount":0}`))
+		require.Empty(t, sink.ClosedSpans())
+
+		var preserved bool
+		require.NoError(t, a.Interrupt(agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })))
+		assert.False(t, preserved)
+		assert.Contains(t, sink.ClosedSpans(), zcodeTestSpanID(t, sink, "tool-1"))
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("idle interrupt preserves background child output progress and sets PreserveOpenSpans", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		stdin := &zcodeRecordedStdin{}
+		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+		a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-fg","toolName":"Bash","input":{"command":"sleep 30"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-bg","toolName":"Agent","input":{"prompt":"bg","run_in_background":true}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-bg","outputBytes":18,"stdoutTail":"bg progress output"}`))
+		// Mark tool-bg as a live background child after seeding its root output progress.
+		bgSpan := zcodeTestSpanID(t, sink, "tool-bg")
+		seedZCodeLiveBackgroundChild(a, bgSpan, "child-bg")
+		a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventTurnCompleted, `{"toolCallCount":0}`))
+		require.Empty(t, sink.ClosedSpans())
+		require.Equal(t, int64(18), sink.ProgressSnapshot().OutputBytes)
+
+		progressBefore := len(sink.ProgressUpdates())
+		var preserved bool
+		require.NoError(t, a.Interrupt(agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })))
+		assert.True(t, preserved, "preserved background child must prevent idle root span reset")
+		assert.Contains(t, sink.ClosedSpans(), zcodeTestSpanID(t, sink, "tool-fg"))
+		assert.NotContains(t, sink.ClosedSpans(), bgSpan)
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates()[progressBefore:], agent.ResetModelProgress())
+		assertZCodeToolOutputProgressLive(t, sink, bgSpan, "bg progress output")
+		assert.Equal(t, int64(18), sink.ProgressSnapshot().OutputBytes)
+	})
+
+	t.Run("stopped compaction closes settled non-background tools and preserves background child", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		stdin := &zcodeRecordedStdin{}
+		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+		a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-fg","toolName":"Bash","input":{"command":"sleep 30"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-bg","toolName":"Agent","input":{"prompt":"bg","run_in_background":true}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-bg","outputBytes":18,"stdoutTail":"bg progress output"}`))
+		bgSpan := zcodeTestSpanID(t, sink, "tool-bg")
+		seedZCodeLiveBackgroundChild(a, bgSpan, "child-bg")
+		a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventTurnCompleted, `{"toolCallCount":0}`))
+		require.Equal(t, int64(18), sink.ProgressSnapshot().OutputBytes)
+
+		timer := &zcodeCapturedTimer{}
+		a.afterFunc = timer.afterFunc
+		a.Mu.Lock()
+		a.compactionSessionID = "sess-1"
+		a.Mu.Unlock()
+		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		require.NotNil(t, timer.fire)
+		progressBefore := len(sink.ProgressUpdates())
+		timer.fire()
+
+		assert.Contains(t, sink.ClosedSpans(), zcodeTestSpanID(t, sink, "tool-fg"))
+		assert.NotContains(t, sink.ClosedSpans(), bgSpan)
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress(), "compaction stop with live background child must not emit global ResetProgress")
+		assert.Contains(t, sink.ProgressUpdates()[progressBefore:], agent.ResetModelProgress())
+		assertZCodeToolOutputProgressLive(t, sink, bgSpan, "bg progress output")
+		assert.Equal(t, int64(18), sink.ProgressSnapshot().OutputBytes)
+	})
+
+	t.Run("stopped active turn closes settled non-background tools and preserves background child", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		stdin := &zcodeRecordedStdin{}
+		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+		a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"sleep 30"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-bg","toolName":"Agent","input":{"prompt":"bg","run_in_background":true}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-bg","outputBytes":18,"stdoutTail":"bg progress output"}`))
+		bgSpan := zcodeTestSpanID(t, sink, "tool-bg")
+		seedZCodeLiveBackgroundChild(a, bgSpan, "child-bg")
+		a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventTurnCompleted, `{"toolCallCount":0}`))
+
+		// Start an active Turn 2 with model text and its own open tool, then stop it via the silence window.
+		a.HandleOutput(zcodeTurnEventLine(t, 6, "turn-2", contracts.ZCodeEventTurnStarted, `{"turnNumber":2}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 7, "turn-2", contracts.ZCodeEventModelStreaming,
+			`{"kind":"text_delta","assistantMessageId":"msg-2","delta":"partial reply"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 8, "turn-2", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-2","toolName":"Bash","input":{"command":"sleep 45"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 9, "turn-2", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-2","outputBytes":10,"stdoutTail":"turn2 work"}`))
+		require.Equal(t, int64(28), sink.ProgressSnapshot().OutputBytes)
+		require.Positive(t, sink.ProgressSnapshot().ThinkingTokens)
+
+		timer := &zcodeCapturedTimer{}
+		a.afterFunc = timer.afterFunc
+		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		require.NotNil(t, timer.fire)
+		progressBefore := len(sink.ProgressUpdates())
+		timer.fire()
+
+		tool1Span := zcodeTestSpanID(t, sink, "tool-1")
+		tool2Span := zcodeTestSpanID(t, sink, "tool-2")
+		assert.Contains(t, sink.ClosedSpans(), tool1Span)
+		assert.Contains(t, sink.ClosedSpans(), tool2Span)
+		assert.NotContains(t, sink.ClosedSpans(), bgSpan)
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress(), "stopped active turn with live background child must not emit global ResetProgress")
+		assert.Contains(t, sink.ProgressUpdates()[progressBefore:], agent.ResetModelScopeProgress(zcodeTextScope("msg-2")))
+		assert.Contains(t, sink.ProgressUpdates()[progressBefore:], agent.ResetOutputProgress(tool2Span))
+		assertZCodeToolOutputProgressLive(t, sink, bgSpan, "bg progress output")
+		assert.Equal(t, int64(18), sink.ProgressSnapshot().OutputBytes)
+		assert.Zero(t, sink.ProgressSnapshot().ThinkingTokens)
+		notifications := sink.PersistedNotifications()
+		require.Len(t, notifications, 1)
+		assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
+	})
+}
+
+func TestZCodeFinalizeProcessTranscriptResetsSpans(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"sleep 30"}}`))
+	a.NoteIntentionalStop()
+	a.finalizeZCodeProcessTranscript()
+
+	assert.Contains(t, sink.ClosedSpans(), zcodeTestSpanID(t, sink, "tool-1"))
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
 }

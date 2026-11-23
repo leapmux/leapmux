@@ -21,7 +21,7 @@ import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/com
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, MODEL_API_RETRY_FIELD, MODEL_API_RETRY_PHASE, PROMPT_SUGGESTION_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
-import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, ControlResponseState, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { AGENT_SETTLED_EVENT } from '~/lib/agentSettledEvent'
@@ -310,10 +310,17 @@ export function handleAgentSessionInfo(
   if (generationProgress)
     agentSessionStore.applyProgress(agentId, generationProgress)
   // running_tool accumulates per-span state in the chat store.
+  // Explicit null clears all live per-span tool progress for the agent.
   // Keep it outside the scalar AgentSessionInfo translation.
-  const runningTool = wireRunningToolToUpdate(info?.[SESSION_INFO_KEY.RunningTool])
-  if (runningTool)
-    chatStore.applyToolProgress(agentId, runningTool)
+  const runningToolWire = info?.[SESSION_INFO_KEY.RunningTool]
+  if (runningToolWire === null) {
+    chatStore.clearToolProgress(agentId)
+  }
+  else {
+    const runningTool = wireRunningToolToUpdate(runningToolWire)
+    if (runningTool)
+      chatStore.applyToolProgress(agentId, runningTool)
+  }
   // A live turn-retry offer is per-turn state. A null withdraws it. An object
   // that gives a turn and a model sets it. This handler ignores every other
   // value, so a malformed frame leaves the live offer as it is.
@@ -498,9 +505,18 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   }
 }
 
+function isInterruptedResultDivider(msg: AgentChatMessage, parsed: ParsedMessageContent): boolean {
+  if (msg.completion === MessageCompletion.INTERRUPTED)
+    return true
+  const resolved = resolveMessageForRendering(parsed, msg.agentProvider)
+  const payload = resolved.parentObject ?? resolved.topLevel
+  return providerFor(msg.agentProvider)?.transcript.extractDivider?.(payload, msg.completion)?.interrupted === true
+}
+
 /**
  * Handle a row that the provider plugin classifies as result_divider.
- * Clear live per-turn indicators only for live delivery.
+ * Clear live per-turn model indicators on every live divider, and clear running
+ * tool progress and output bytes only when the divider reports an interrupted turn.
  * Restore scalar result metadata through the exact delivery receipt during live delivery and replay.
  * The worker's activity transition controls the alert and badge through handleAgentSettled.
  * A separate divider alert would notify twice or report completion while a subagent still runs.
@@ -517,12 +533,17 @@ export function handleResultDivider(
     return
   const { agentSessionStore, view } = stores
   const delivery = messageMetadataDelivery(msg, catchUpPhase, replayId)
-  // A current live divider clears its turn's indicators, regardless of their source.
+  // A live interrupted divider clears all per-turn state including running tool progress.
+  // Normal and non-interrupted error dividers clear only model-turn state so cross-turn
+  // running tools keep their live output tails, permission checks, and output bytes.
   // A live compaction can outlive this turn and keeps its indicator.
-  // This includes a tool whose result never arrived after interruption or process failure.
   // Historical dividers retain the replacement turn's indicators.
-  if (catchUpPhase === 'live')
-    clearPerTurnLiveState(agentId, stores)
+  if (catchUpPhase === 'live') {
+    if (isInterruptedResultDivider(msg, parsed))
+      clearPerTurnLiveState(agentId, stores)
+    else
+      clearTurnModelState(agentId, stores)
+  }
   // Use the confirmed catalog model to resolve the context-window hint.
   // An optimistic model value can still identify the default sentinel or a model whose relaunch did not occur.
   // That value could select the wrong context window for the completed turn.
@@ -574,7 +595,20 @@ export function dropFinishedToolProgress(
 }
 
 /**
- * Drop live per-turn state after a lifecycle event or a lost connection.
+ * Drop live model-turn state at a non-interrupted turn boundary while keeping
+ * still-running cross-turn tool progress and output bytes intact.
+ */
+export function clearTurnModelState(
+  agentId: string,
+  stores: Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'>,
+): void {
+  stores.agentSessionStore.clearThinkingTokens(agentId)
+  stores.chatStore.clearTurnRetryOffer(agentId)
+  stores.chatStore.clearPromptSuggestion(agentId)
+}
+
+/**
+ * Drop all live per-turn state after an interrupted turn, a lifecycle event, or a lost connection.
  * The Worker normally sends explicit counter clears. This cleanup also handles
  * a connection that ends before those clears arrive.
  * A compaction can outlive its turn. Only process or connection cleanup clears that state.
@@ -583,11 +617,9 @@ export function clearPerTurnLiveState(
   agentId: string,
   stores: Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'>,
 ): void {
-  stores.agentSessionStore.clearThinkingTokens(agentId)
+  clearTurnModelState(agentId, stores)
   stores.agentSessionStore.clearOutputBytes(agentId)
   stores.chatStore.clearToolProgress(agentId)
-  stores.chatStore.clearTurnRetryOffer(agentId)
-  stores.chatStore.clearPromptSuggestion(agentId)
 }
 
 /**

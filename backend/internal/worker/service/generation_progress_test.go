@@ -70,7 +70,11 @@ func TestGenerationProgressPublisherSerializesAResetAfterAPendingSend(t *testing
 	var zeroOnce sync.Once
 	updates := make(chan int64, 2)
 	publisher := newTestProgressPublisher(t, func(info map[string]interface{}) {
-		value := info[contracts.SessionInfoKeyThinkingTokens].(int64)
+		raw, ok := info[contracts.SessionInfoKeyThinkingTokens]
+		if !ok {
+			return
+		}
+		value := raw.(int64)
 		if value > 0 {
 			positiveOnce.Do(func() { close(positiveStarted) })
 			<-releasePositive
@@ -369,4 +373,68 @@ func TestPublisherTailAssertionReleasesItsLockOnFailure(t *testing.T) {
 	assert.True(t, acquired, "a fatal assertion must release the publisher mutex before cleanup")
 	assert.False(t, returned)
 	require.NotEmpty(t, recorder.messages)
+}
+
+func TestGenerationProgressTailSnapshotsSortedAndClosedSafe(t *testing.T) {
+	t.Parallel()
+
+	currentSession := "s2"
+	publisher := newTestProgressPublisher(t, func(map[string]interface{}) {}, func() string { return currentSession })
+	t.Cleanup(publisher.close)
+
+	publisher.report(agent.OutputTailProgress("b", "tail-s2-b", true))
+	currentSession = "s1"
+	publisher.report(agent.OutputTailProgress("c", "tail-s1-c", false))
+	publisher.report(agent.OutputTailProgress("a", "tail-s1-a", false))
+
+	snapshots := publisher.tailSnapshots()
+	require.Len(t, snapshots, 3)
+	assert.Equal(t, "s1", snapshots[0][contracts.RunningToolFieldAgentSessionId])
+	assert.Equal(t, "a", snapshots[0][contracts.RunningToolFieldSpanId])
+	assert.Equal(t, "tail-s1-a", snapshots[0][contracts.RunningToolFieldOutputTail])
+	assert.Equal(t, false, snapshots[0][contracts.RunningToolFieldOutputTruncated])
+
+	assert.Equal(t, "s1", snapshots[1][contracts.RunningToolFieldAgentSessionId])
+	assert.Equal(t, "c", snapshots[1][contracts.RunningToolFieldSpanId])
+
+	assert.Equal(t, "s2", snapshots[2][contracts.RunningToolFieldAgentSessionId])
+	assert.Equal(t, "b", snapshots[2][contracts.RunningToolFieldSpanId])
+	assert.Equal(t, true, snapshots[2][contracts.RunningToolFieldOutputTruncated])
+
+	publisher.close()
+	assert.Nil(t, publisher.tailSnapshots(), "a closed publisher must return nil tail snapshots")
+}
+
+func TestGenerationProgressResetEmitsRunningToolNull(t *testing.T) {
+	t.Parallel()
+
+	updates := make(chan map[string]interface{}, 8)
+	publisher := newTestProgressPublisher(t, func(info map[string]interface{}) {
+		updates <- info
+	}, func() string { return "session-1" })
+	t.Cleanup(publisher.close)
+
+	// Reset with zero aggregate counters still emits {running_tool: nil} and drops tails.
+	publisher.report(agent.OutputTailProgress("span-1", "running output", false))
+	publisher.report(agent.ResetProgress())
+
+	select {
+	case info := <-updates:
+		val, present := info[contracts.SessionInfoKeyRunningTool]
+		require.True(t, present, "ProgressReset must emit running_tool: null even when counters did not change")
+		assert.Nil(t, val)
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for running_tool: null emission")
+	}
+	assert.Nil(t, publisher.tailSnapshots())
+	assert.Nil(t, publisher.snapshotInfo(), "snapshotInfo must not retain running_tool: null")
+
+	// Subsequent model text progress emits after the reset.
+	publisher.report(agent.ModelTextProgress("model", "abcdefgh"))
+	select {
+	case info := <-updates:
+		assert.Equal(t, int64(2), info[contracts.SessionInfoKeyThinkingTokens])
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for post-reset model progress")
+	}
 }

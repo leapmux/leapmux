@@ -13,6 +13,7 @@ export function museResultDivider(payload: unknown): TurnEnd | null {
   if (outcome === MUSE_TURN_OUTCOME.Cancelled) {
     return {
       label: turnEndLabel('interrupted', { durationMs, reason }),
+      interrupted: true,
     }
   }
   if (outcome === MUSE_TURN_OUTCOME.Failed) {

@@ -514,7 +514,7 @@ func (e *messageEnvelope) ContentBlocks() []contentBlock {
 // processAssistantBlocks iterates the pre-parsed message.content[] blocks of an
 // assistant message and performs plan mode tracking, plan file tracking, tool
 // use counting, and scope management.
-func (a *Agent) processAssistantBlocks(env *messageEnvelope, spans agent.SpanServices, live bool) {
+func (a *Agent) processAssistantBlocks(env *messageEnvelope, spans agent.SpanServices, live bool, raw []byte, sessionID string) {
 	// Determine the parent span for any Agent tool_use blocks.
 	parentSpanID := env.ParentToolUseID
 
@@ -553,6 +553,7 @@ func (a *Agent) processAssistantBlocks(env *messageEnvelope, spans agent.SpanSer
 			// reads it back through GetSpanType to persist span_type.
 			if !claudeToolSpawnsSubagent(block.Name) {
 				spans.OpenSpan(block.ID, parentSpanID)
+				a.openTools.open("", block.ID, block.Name, parentSpanID, sessionID, raw)
 			}
 		}
 
@@ -670,11 +671,14 @@ func claudeSpanInfoFor(sink agent.SpanServices, msgType string, env *messageEnve
 
 // claudeCloseToolResultSpans closes the span of EVERY tool_result in a user
 // envelope. One user message can carry parallel tool calls, so closing only the
-// first would leak the rest until the turn's bulk ResetSpans.
-func claudeCloseToolResultSpans(sink agent.SpanServices, env *messageEnvelope) {
+// first would leak the rest until an interrupt or exit resets spans.
+func claudeCloseToolResultSpans(sink agent.SpanServices, env *messageEnvelope, onClose func(string)) {
 	for _, block := range env.ContentBlocks() {
 		if block.Type == "tool_result" && block.ToolUseID != "" {
 			sink.CloseSpan(block.ToolUseID)
+			if onClose != nil {
+				onClose(block.ToolUseID)
+			}
 		}
 	}
 }
@@ -970,6 +974,9 @@ func (a *Agent) claudeHandleToolProgress(content []byte) {
 	// so the updates of one call address the same browser entry.
 	update, ok := parseClaudeToolProgress(content, a.sink.MessageSessionID())
 	if !ok {
+		return
+	}
+	if spanID, _ := update[contracts.RunningToolFieldSpanId].(string); a.openTools.wasForceClosed("", spanID) {
 		return
 	}
 	a.sink.BroadcastSessionInfo(map[string]interface{}{

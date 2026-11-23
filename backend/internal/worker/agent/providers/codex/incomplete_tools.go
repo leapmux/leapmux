@@ -21,6 +21,7 @@ func (a *Agent) rememberCodexIncompleteTool(itemID, itemType, childThreadID stri
 		return
 	}
 	a.Mu.Lock()
+	a.closedSpans.Reopen(itemID)
 	if a.incompleteTools == nil {
 		a.incompleteTools = make(map[string]*codexIncompleteTool)
 	}
@@ -107,12 +108,34 @@ func (a *Agent) appendCodexToolEventLocked(itemID, text string, stdin bool) {
 // never holds more than a window per running call, whatever the command prints.
 const codexLiveTailLimit = 8192
 
+func (a *Agent) hasOpenRootIncompleteToolsLocked() bool {
+	for _, tool := range a.incompleteTools {
+		if tool != nil && tool.childThreadID == "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Agent) persistIncompleteCodexTools(childThreadID string, all bool, completion agent.MessageCompletion) int {
+	return a.persistMatchingCodexTools(func(_ string, tool *codexIncompleteTool) bool {
+		return all || tool.childThreadID == childThreadID
+	}, completion)
+}
+
+func (a *Agent) persistSnapshottedCodexTools(targetIDs map[string]struct{}, completion agent.MessageCompletion) int {
+	return a.persistMatchingCodexTools(func(itemID string, tool *codexIncompleteTool) bool {
+		_, ok := targetIDs[itemID]
+		return ok && tool.childThreadID == ""
+	}, completion)
+}
+
+func (a *Agent) persistMatchingCodexTools(match func(itemID string, tool *codexIncompleteTool) bool, completion agent.MessageCompletion) int {
 	a.Mu.Lock()
 	itemIDs := make([]string, 0, len(a.incompleteTools))
 	tools := make(map[string]codexIncompleteToolSnapshot)
 	for itemID, tool := range a.incompleteTools {
-		if tool == nil || (!all && tool.childThreadID != childThreadID) {
+		if tool == nil || !match(itemID, tool) {
 			continue
 		}
 		itemIDs = append(itemIDs, itemID)
@@ -123,6 +146,7 @@ func (a *Agent) persistIncompleteCodexTools(childThreadID string, all bool, comp
 			output:        renderCodexToolOutput(tool.outputEvents, tool.outputTruncated),
 			order:         tool.order,
 		}
+		a.closedSpans.MarkClosed(itemID)
 		delete(a.incompleteTools, itemID)
 		delete(a.collabChildItems, itemID)
 	}

@@ -92,7 +92,8 @@ type Agent struct {
 	turn           turnState
 	stopped        bool
 	// tools holds the tool calls that started and did not end, by tool-use id.
-	tools map[string]*openTool
+	tools       map[string]*openTool
+	closedSpans providerkit.ClosedSpanSet
 	// shells holds the registry row of each background command of the running
 	// process, by PID. See subagent.go.
 	shells    map[int]string
@@ -449,7 +450,10 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return errAgentStopped
 	}
 	if !a.turn.active {
+		open := a.takeOpenToolsLocked()
 		a.mu.Unlock()
+		a.closeIncompleteTools(open, agent.MessageCompletionInterrupted)
+		providerkit.ResetSpansAndProgress(a.sink)
 		return nil
 	}
 	a.turn.interruptRequested = true
@@ -536,17 +540,21 @@ func (a *Agent) stop() {
 	}
 	if proc != nil && completion == agent.MessageCompletionError {
 		message := exitMessage(proc, threadID, a.exitStderr(proc))
-		a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
+		a.endTurn(true, func(turn turnState) (agent.MessageCompletion, []byte) {
 			if turn.interruptRequested {
 				return agent.MessageCompletionInterrupted, errorResultLine(threadID, interruptedMessage)
 			}
 			return agent.MessageCompletionError, errorResultLine(threadID, message)
 		})
 	} else {
-		a.finishTurn(completion, nil)
+		a.endTurn(true, func(turnState) (agent.MessageCompletion, []byte) { return completion, nil })
 	}
+	a.mu.Lock()
+	remaining := a.takeOpenToolsLocked()
+	a.mu.Unlock()
+	a.closeIncompleteTools(remaining, completion)
 	a.closeAllShellRows(shellStatus)
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 	providerkit.RemoveAgentDir("amp", a.agentID, a.dir)
 	close(a.done)
 }

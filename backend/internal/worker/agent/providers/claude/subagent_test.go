@@ -2483,3 +2483,76 @@ func holdClaudeSiblingRestart(t *testing.T, sink agentapi.ServiceFacets, recorde
 	restartTaskStarted(a, "send-call", "continue")
 	return a, services, sender, blocker
 }
+
+func TestClaudeTaskNotificationClosesChildOpenToolsAndWorkflowSpanReleaseNotDoubleClosed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("task_notification closes remaining child open tools with status-mapped completion", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name            string
+			status          string
+			markInterrupted bool
+			wantTaskStatus  bgtask.Status
+			completion      agentapi.MessageCompletion
+		}{
+			{name: "stopped", status: "stopped", wantTaskStatus: bgtask.StatusStopped, completion: agentapi.MessageCompletionInterrupted},
+			{name: "interrupted", status: "stopped", markInterrupted: true, wantTaskStatus: bgtask.StatusInterrupted, completion: agentapi.MessageCompletionInterrupted},
+			{name: "failed", status: "failed", wantTaskStatus: bgtask.StatusFailed, completion: agentapi.MessageCompletionError},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				a := newTestAgent(agentapi.NewProviderServices(sink))
+				a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Worker","prompt":"run"}`))
+				a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"spawn-1","uuid":"child-u1","message":{"content":[{"type":"tool_use","id":"child-tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+				child := sink.Child("child-of-spawn-1")
+				require.NotNil(t, child)
+				require.NotContains(t, child.ClosedSpans(), "child-tool-1")
+				if tc.markInterrupted {
+					a.tasks.markInterrupted("task-1")
+				}
+
+				a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"` + tc.status + `","summary":"ended"}`))
+
+				_, taskStatus, found, err := sink.LookupBackgroundTask("task-1")
+				require.NoError(t, err)
+				require.True(t, found)
+				assert.Equal(t, tc.wantTaskStatus, taskStatus)
+				assert.Contains(t, child.ClosedSpans(), "child-tool-1")
+				assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+				assert.Contains(t, child.ProgressUpdates(), agentapi.ResetProgress())
+				var closing []agenttest.Message
+				for _, msg := range child.Messages() {
+					if msg.SpanID == "child-tool-1" && msg.Closing {
+						closing = append(closing, msg)
+					}
+				}
+				require.Len(t, closing, 1)
+				assert.Equal(t, tc.completion, closing[0].Completion)
+			})
+		}
+	})
+
+	t.Run("workflow span released by task_started is not double-closed on interrupt", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a, _ := newClaudeAgentWithStdin(agentapi.NewProviderServices(sink))
+		require.NoError(t, a.SendInput("run workflow", nil))
+		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"wf-call-1","name":"WorkflowTool","input":{}}]}}`))
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"wf-task-1","tool_use_id":"wf-call-1","task_type":"local_workflow","workflow_name":"review"}`))
+		require.Contains(t, sink.ClosedSpans(), "wf-call-1")
+
+		a.noteInterruptRequested()
+		a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`))
+
+		// No synthetic closing row is emitted for the already-released workflow span.
+		var wfClosing int
+		for _, msg := range sink.Messages() {
+			if msg.SpanID == "wf-call-1" && msg.Closing {
+				wfClosing++
+			}
+		}
+		assert.Zero(t, wfClosing)
+	})
+}

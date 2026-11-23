@@ -28,8 +28,12 @@ const (
 )
 
 // stopAttempt retains its exact disposition after the scope removes its active mark.
-// agentActivity.mu guards the disposition. The allocation supplies its unique identity.
-type stopAttempt struct{ disposition stopDisposition }
+// agentActivity.mu guards the disposition and preserveOpenSpans. The allocation
+// supplies its unique identity.
+type stopAttempt struct {
+	disposition       stopDisposition
+	preserveOpenSpans bool
+}
 
 type ownedControlRequest struct {
 	claimToken string
@@ -138,6 +142,10 @@ func (r *agentStopRequest) Context() agent.StopContext {
 	agentID, rootAgentID := r.agentID, r.rootAgentID
 	return agent.NewStopContext(func() {
 		h.withdrawStopAttempt(st, scope, attempt, stopIgnored, agentID, rootAgentID)
+	}).WithPreserveOpenSpans(func() {
+		st.mu.Lock()
+		attempt.preserveOpenSpans = true
+		st.mu.Unlock()
 	})
 }
 
@@ -211,5 +219,45 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 			continue
 		}
 		publication.enqueueCancellation(r.h, r.agentID, request.RequestID, request.ClaimToken)
+	}
+}
+
+// SettleIdleRootStop finalizes a delivered root interrupt when no turn is
+// active. It resets any remaining open root spans and progress unless the
+// provider explicitly requested PreserveOpenSpans, then rotates st.scope so
+// subsequent prompts and spans are not suppressed by the old stop scope.
+func (r *agentStopRequest) SettleIdleRootStop() {
+	if r == nil || r.agentID != r.rootAgentID {
+		return
+	}
+	mutation := r.h.transcriptMutationMutex(r.rootAgentID)
+	mutation.Lock()
+	st := r.activity
+	st.mu.Lock()
+	if r.attempt.disposition != stopDelivered || st.turnActive || st.scope != r.scope {
+		st.mu.Unlock()
+		mutation.Unlock()
+		return
+	}
+	preserve := r.attempt.preserveOpenSpans
+	hasSpans := r.h.hasOpenRootSpans(r.rootAgentID)
+	var resetSink *agentOutputSink
+	if !preserve && hasSpans {
+		if value, ok := r.h.rootSinks.Load(r.rootAgentID); ok {
+			resetSink = value.(*agentOutputSink)
+			resetSink.clearPermissionChecks()
+			resetSink.currentSpanTracker().Reset()
+		} else if r.h.trackers != nil {
+			r.h.trackers.reset(r.rootAgentID)
+		}
+	}
+	st.scope = &activityScope{publisher: r.scope.publisher}
+	st.mu.Unlock()
+	if resetSink != nil {
+		resetSink.progress.report(agent.ResetProgress())
+	}
+	mutation.Unlock()
+	if hasSpans {
+		r.h.publishSpanActivity(r.rootAgentID, settleImmediate)
 	}
 }

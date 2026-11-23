@@ -25,6 +25,7 @@ type Agent struct {
 	rootSession     string
 	rootFresh       bool
 	rootEpoch       uint64
+	openRootSpans   []fastagentOpenSpan
 	rootFailureWork providerkit.CoalescingWork
 	rootClosing     bool
 	rootArchiveWG   sync.WaitGroup

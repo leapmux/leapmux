@@ -239,6 +239,11 @@ func (b *Base) handleACPPromptResponse(resp json.RawMessage) {
 	b.persistFinishedTurn(resp)
 }
 
+// HasOpenRootTool reports whether the root conversation currently holds id open.
+func (b *Base) HasOpenRootTool(id string) bool {
+	return b.holdsOpenTool(id)
+}
+
 // persistFinishedTurn drains the turn that ended with frame and persists frame as its turn-end row.
 // frame is the agent's own end record:
 //   - A session/prompt response for a turn that LeapMux starts.
@@ -248,17 +253,21 @@ func (b *Base) handleACPPromptResponse(resp json.RawMessage) {
 // The boundary already contains the prompt's text.
 // The live text counter now counts the agent turn, so that turn stays open.
 func (b *Base) persistFinishedTurn(frame json.RawMessage) {
-	textCompletion, incomplete := b.turnOutputCompletions()
-	turn := b.detachRootPrompt()
+	stopped := b.IsStopped() || b.acpInterruptRequested() || acpResponseStopReason(frame) == "cancelled"
+	textCompletion, incomplete := b.turnOutputCompletions(stopped)
+	turn := b.detachRootPrompt(!stopped)
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
-		b.persistPromptResponseTo(writer, frame, count, turn.sessionID)
+		b.persistPromptResponseTo(writer, frame, count, turn.sessionID, stopped)
 	})
+	if stopped {
+		b.releaseAwaitedTerminals()
+	}
 }
 
 // turnOutputCompletions classifies buffered text and unfinished tools at a normal turn-end frame.
 // A clean cancellation returns such a frame, but its buffered output remains interrupted.
-func (b *Base) turnOutputCompletions() (agentapi.MessageCompletion, agentapi.MessageCompletion) {
-	if b.acpInterruptRequested() {
+func (b *Base) turnOutputCompletions(stopped bool) (agentapi.MessageCompletion, agentapi.MessageCompletion) {
+	if stopped {
 		return agentapi.MessageCompletionInterrupted, agentapi.MessageCompletionInterrupted
 	}
 	return agentapi.MessageCompletionComplete, agentapi.MessageCompletionError
@@ -278,8 +287,14 @@ func acpTextProgressScope(kind agentapi.AssembledMessageKind) string {
 // A prompt with a queued agent turn closes only the tool calls that the prompt left open.
 // The agent turn retains its progress. See BeginAgentTurn.
 func (b *Base) finishIncompleteACPPrompt(completion agentapi.MessageCompletion) int {
-	turn := b.detachRootPrompt()
-	return b.finishRootSnapshot(turn, completion, completion, RootTranscriptPromptEnded, nil)
+	stopped := completion == agentapi.MessageCompletionInterrupted || b.IsStopped() || b.acpInterruptRequested()
+	turn := b.detachRootPrompt(!stopped)
+	count := b.finishRootSnapshot(turn, completion, completion, RootTranscriptPromptEnded, nil)
+	if stopped {
+		b.resetCompletedRootSpans(turn.sessionID, true)
+		b.releaseAwaitedTerminals()
+	}
+	return count
 }
 
 func (b *Base) finishFailedRootSnapshot(turn acpTurnSnapshot, err error, ending PromptEnding) {
@@ -293,7 +308,7 @@ func (b *Base) finishFailedRootSnapshot(turn acpTurnSnapshot, err error, ending 
 			}
 		}
 		if len(ending.EndFrame) > 0 {
-			b.persistPromptResponseTo(writer, ending.EndFrame, count, turn.sessionID)
+			b.persistPromptResponseTo(writer, ending.EndFrame, count, turn.sessionID, false)
 		}
 	})
 }
@@ -310,7 +325,7 @@ func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agentapi.MessageCo
 
 func (b *Base) finishACPTurnFor(turn acpTurnSnapshot, completion agentapi.MessageCompletion, reason RootTranscriptEnd) {
 	b.finishRootSnapshot(turn, completion, completion, reason, nil)
-	b.sink.ReportProgress(agentapi.ResetProgress())
+	providerkit.ResetSpansAndProgress(b.sink)
 }
 
 // The shared ACP dispatcher calls MethodHandler for JSON-RPC methods that it does not handle.
@@ -1646,11 +1661,13 @@ func (b *Base) extractACPChunkText(content json.RawMessage, kind string) string 
 	return c.Text
 }
 
-func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, resp json.RawMessage, numToolUses int, sessionID string) {
+func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, resp json.RawMessage, numToolUses int, sessionID string, resetSpans bool) {
 	if err := writer.PersistTurnEnd(agentapi.WithToolUseCount(agentapi.MessageContent{Original: resp}, numToolUses), agentapi.SpanInfo{}); err != nil && !agentapi.OutputRetained(err) {
 		slog.Error("persist ACP prompt result", "agent_id", b.AgentID(), "error", err)
 	}
-	b.resetCompletedRootSpans(sessionID)
+	if resetSpans {
+		b.resetCompletedRootSpans(sessionID, true)
+	}
 }
 
 // ToolCallEnvelope holds a parsed ACP session/notification tool_call.
@@ -3634,27 +3651,45 @@ func (b *Base) Interrupt(stop agentapi.StopContext) error {
 		return nil
 	}
 	sessionID := b.sessionID
+	promptActive := b.promptActive
 	// Attribute the stop before the peer can respond. The pre-stop hook
 	// observes this same prompt state before it considers sending a cancel.
-	if sessionID != "" && b.promptActive {
+	if sessionID != "" && promptActive {
 		b.interruptRequested = true
 	}
 	b.Mu.Unlock()
 	if sessionID == "" {
 		return nil
 	}
+	var cancelErr error
 	if b.hooks.CancelBeforeControlWithdrawal {
-		if err := b.cancelSession(); err != nil {
-			return err
+		cancelErr = b.cancelSession()
+		if cancelErr == nil || !promptActive {
+			b.withdrawTurnControls()
 		}
+	} else {
+		// Other providers block their cancel on an open control. Release that control first.
+		// releaseOutgoingSession keeps the same order for a context clear, which
+		// already holds sessionMu and so cannot cancel through WithSessionID.
 		b.withdrawTurnControls()
-		return nil
+		cancelErr = b.cancelSession()
 	}
-	// Other providers block their cancel on an open control. Release that control first.
-	// releaseOutgoingSession keeps the same order for a context clear, which
-	// already holds sessionMu and so cannot cancel through WithSessionID.
-	b.withdrawTurnControls()
-	return b.cancelSession()
+	if !promptActive {
+		turn := b.detachIdleRootTools()
+		if len(turn.incompleteTools) > 0 {
+			b.finishRootSnapshot(turn, agentapi.MessageCompletionInterrupted, agentapi.MessageCompletionInterrupted, RootTranscriptPromptEnded, nil)
+		}
+		b.releaseAwaitedTerminals()
+		b.turnMu.Lock()
+		b.Mu.Lock()
+		reset := !b.promptActive && !b.agentTurnActive && !b.agentTurnQueued && b.rootTarget == nil && !b.hasOpenToolsLocked()
+		b.Mu.Unlock()
+		if reset {
+			providerkit.ResetSpansAndProgress(b.sink)
+		}
+		b.turnMu.Unlock()
+	}
+	return cancelErr
 }
 
 // HasOption returns true if any option in the slice has the given id.

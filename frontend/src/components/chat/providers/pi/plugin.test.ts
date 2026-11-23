@@ -73,7 +73,7 @@ describe('pi result divider', () => {
         { role: 'assistant', stopReason: 'aborted' },
       ],
     }))
-      .toEqual({ label: 'Turn interrupted' })
+      .toEqual({ label: 'Turn interrupted', interrupted: true })
   })
 
   it('maps an error stopReason to a danger "Turn failed — <msg>" model', () => {
@@ -103,7 +103,7 @@ describe('pi result divider', () => {
         ],
       },
       MessageCompletion.INTERRUPTED,
-    )).toEqual({ label: 'Turn interrupted (15s)' })
+    )).toEqual({ label: 'Turn interrupted (15s)', interrupted: true })
   })
 
   // The correction is limited to a stop LeapMux asked for. A real failure keeps its

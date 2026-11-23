@@ -118,7 +118,8 @@ type conversation struct {
 	// session's own.
 	childID string
 	// tools holds the tool calls that started and did not end, by call id.
-	tools map[string]*toolState
+	tools       map[string]*toolState
+	closedSpans providerkit.ClosedSpanSet
 	// nextOrder numbers the tool calls in start order, so an incomplete call is
 	// persisted in the order it started.
 	nextOrder uint64
@@ -243,6 +244,16 @@ func (env agentEndEnvelope) completion() agent.MessageCompletion {
 	return agent.MessageCompletionInterrupted
 }
 
+func (env agentEndEnvelope) statesAborted() bool {
+	for i := len(env.Messages) - 1; i >= 0; i-- {
+		if env.Messages[i].Role != contracts.OhMyPiRoleAssistant {
+			continue
+		}
+		return env.Messages[i].StopReason == contracts.OhMyPiStopReasonAborted
+	}
+	return false
+}
+
 // handleAgentStart opens (or continues) the session's turn.
 func (a *Agent) handleAgentStart() {
 	// Read the clock before the lock, so an injected clock never runs under Mu.
@@ -357,12 +368,15 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 	defer a.PublishTurnActive()
 
 	completion := env.completion()
-	if turn.interruptRequested {
+	interrupted := turn.interruptRequested || env.statesAborted()
+	if interrupted {
 		completion = agent.MessageCompletionInterrupted
 	}
 	a.flushGeneration(root, completion)
-	a.persistIncompleteTools(root, completion)
-	a.ResetCumulativeOutput()
+	if interrupted {
+		a.persistIncompleteTools(root, completion)
+		a.ResetCumulativeOutput()
+	}
 
 	content := agentEndContent(raw, a.currentUsageSnapshot(), turnDurationMs(turn.startedAt, endedAt))
 	if turn.interruptRequested {
@@ -374,7 +388,9 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 	// omp retries a failed request itself (auto_retry_*), so LeapMux schedules no
 	// continuation of its own, and a pending one is cancelled.
 	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, false, raw)
-	a.sink.ResetSpans()
+	if interrupted {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	a.refreshSessionStatsAsync()
 }
 
@@ -748,6 +764,7 @@ func (a *Agent) handleToolStart(c *conversation, raw []byte) {
 		return
 	}
 	a.Mu.Lock()
+	c.closedSpans.Reopen(env.ToolCallID)
 	c.tools[env.ToolCallID] = &toolState{
 		ToolName:   env.ToolName,
 		Args:       append(json.RawMessage(nil), env.Args...),
@@ -879,6 +896,10 @@ func (a *Agent) handleToolEnd(c *conversation, raw []byte) {
 		return
 	}
 	a.Mu.Lock()
+	if c.closedSpans.WasClosed(env.ToolCallID) {
+		a.Mu.Unlock()
+		return
+	}
 	// omp's end frame carries no arguments; the call's start frame had them.
 	args := env.Args
 	if started := c.tools[env.ToolCallID]; len(args) == 0 && started != nil {
@@ -937,6 +958,7 @@ func (a *Agent) persistIncompleteTools(c *conversation, completion agent.Message
 		if tool == nil {
 			continue
 		}
+		c.closedSpans.MarkClosed(id)
 		ids = append(ids, id)
 		tools[id] = *tool
 	}

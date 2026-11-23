@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"sync"
@@ -141,4 +142,91 @@ func TestPiStopDoesNotWaitForAQueuedDialogBeforeClosingStdin(t *testing.T) {
 			assert.Equal(t, queued, controls[len(controls)-1].Payload, "shutdown keeps the queued native dialog")
 		})
 	}
+}
+
+func TestPiIdleInterruptAndStopWaitClearContextResetSpansAndProgress(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt closes open tool and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{"type":"agent_start"}`))
+		a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-idle","toolName":"bash","args":{"command":"sleep 30"}}`))
+		a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop"}]}`))
+		a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+		require.Empty(t, sink.ClosedSpans())
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Contains(t, sink.ClosedSpans(), "tc-idle")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("Stop resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-stop","toolName":"bash","args":{"command":"sleep 30"}}`))
+		a.SimulateExitForTest()
+		a.Stop()
+		assert.Contains(t, sink.ClosedSpans(), "tc-stop")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("Wait resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-wait","toolName":"bash","args":{"command":"sleep 30"}}`))
+		a.SimulateExitForTest()
+		_ = a.Wait()
+		assert.Contains(t, sink.ClosedSpans(), "tc-wait")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("ClearContext closes open tools resets spans progress and closedSpans", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		rig := newPiTestRig(t, agent.NewProviderServices(sink))
+		rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+			switch req.Type {
+			case "new_session":
+				return json.RawMessage(`{"cancelled":false}`), true, ""
+			case "get_state":
+				return json.RawMessage(`{
+					"model":{"id":"gpt-5.5","provider":"openai-codex"},
+					"thinkingLevel":"medium",
+					"sessionId":"new-sess",
+					"sessionFile":"/tmp/pi-clear.jsonl"
+				}`), true, ""
+			}
+			return nil, true, ""
+		})
+
+		rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+		rig.agent.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-clear","toolName":"bash","args":{"command":"sleep 30"}}`))
+		rig.agent.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop"}]}`))
+		rig.agent.HandleOutput([]byte(`{"type":"agent_settled"}`))
+		require.Empty(t, sink.ClosedSpans())
+
+		id, err := rig.agent.ClearContext()
+		require.NoError(t, err)
+		assert.Equal(t, "/tmp/pi-clear.jsonl", id)
+		assert.Contains(t, sink.ClosedSpans(), "tc-clear")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+		rig.agent.Mu.Lock()
+		closedAfterClear := rig.agent.closedSpans.WasClosed("tc-clear")
+		rig.agent.Mu.Unlock()
+		assert.False(t, closedAfterClear, "ClearContext must reset closedSpans for the new session")
+
+		// A reused tool ID in the replacement session is accepted rather than suppressed.
+		rowsBefore := sink.MessageCount()
+		rig.agent.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"tc-clear","toolName":"bash","result":{"content":[{"type":"text","text":"new session"}]}}`))
+		assert.Equal(t, rowsBefore+1, sink.MessageCount())
+	})
 }

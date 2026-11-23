@@ -227,6 +227,10 @@ func (a *Agent) observeGooseSubagentUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 			a.gooseChildRenames = make(map[string]string)
 		}
 		a.gooseChildRenames[obs.RenameFrom] = obs.RowKey
+		if a.activeDelegations == nil {
+			a.activeDelegations = make(map[string]struct{})
+		}
+		a.activeDelegations[obs.RowKey] = struct{}{}
 		a.Mu.Unlock()
 		return obs
 	}

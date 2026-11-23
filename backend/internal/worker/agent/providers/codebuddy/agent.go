@@ -1,6 +1,7 @@
 package codebuddy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -47,6 +48,7 @@ type Agent struct {
 	turnOrder                  providerkit.TurnSeq
 	activityRev                uint64
 	turnToolCalls              map[string]struct{}
+	openTools                  providerkit.ToolSpanLedger[[]byte]
 	// modelStreams keeps the latest response per transcript owner. Empty identifies the root.
 	// The map and every stream state are guarded by mu.
 	modelStreams      map[string]*codebuddyModelStream
@@ -364,7 +366,53 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		forgetFailedAttempt()
 		return err
 	}
+	if !requested {
+		a.closeIdleOpenTools()
+	}
 	return nil
+}
+
+func codebuddyBuildClosingRow(entry providerkit.OpenToolEntry[[]byte]) (agent.MessageContent, agent.SpanInfo, bool) {
+	if len(entry.Data) == 0 {
+		return agent.MessageContent{}, agent.SpanInfo{}, false
+	}
+	return agent.MessageContent{Original: bytes.Clone(entry.Data)}, agent.SpanInfo{
+		SpanID:   entry.SpanID,
+		SpanType: entry.SpanType,
+		Closing:  true,
+	}, true
+}
+
+func (a *Agent) closeOpenTools(completion agent.MessageCompletion, resetSpans bool) {
+	a.mu.Lock()
+	entries := a.openTools.DrainAll()
+	a.mu.Unlock()
+	if a.sink == nil {
+		return
+	}
+	if !a.IsDiscardingOutput() && len(entries) > 0 {
+		providerkit.CloseToolSpans(a.sink, entries, completion, codebuddyBuildClosingRow, false)
+	}
+	if resetSpans {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
+}
+
+func (a *Agent) closeIdleOpenTools() {
+	a.mu.Lock()
+	if a.active || a.StoppedLocked() {
+		a.mu.Unlock()
+		return
+	}
+	entries := a.openTools.DrainAll()
+	a.mu.Unlock()
+	if a.sink == nil {
+		return
+	}
+	if !a.IsDiscardingOutput() && len(entries) > 0 {
+		providerkit.CloseToolSpans(a.sink, entries, agent.MessageCompletionInterrupted, codebuddyBuildClosingRow, false)
+	}
+	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // Stop terminates the process.
@@ -383,10 +431,11 @@ func (a *Agent) Wait() error {
 	return err
 }
 
-// cleanupAfterProcessExit stops archive retries and clears controls and turn state.
+// cleanupAfterProcessExit stops archive retries and clears controls, open tools, and turn state.
 func (a *Agent) cleanupAfterProcessExit() {
 	a.stopWorkflowArchiveRetries()
 	a.withdrawControls()
+	a.closeOpenTools(a.ProcessExitCompletion(), true)
 	a.setTurnActive(false)
 }
 

@@ -206,3 +206,34 @@ func TestPiRetryNoticesDoNotReplaceNativeSettlement(t *testing.T) {
 		})
 	}
 }
+
+func TestPiCancelledRetryWithOpenToolClosesToolBeforeDivider(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"agent_start"}`))
+	a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-retry","toolName":"bash","args":{"command":"sleep 30"}}`))
+	a.HandleOutput([]byte(piRetryAttemptEnd))
+	a.HandleOutput([]byte(piRetryStart))
+	require.Empty(t, sink.ClosedSpans(), "willRetry attempt must keep open tools alive")
+
+	a.HandleOutput([]byte(piRetryCancelled))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	assert.False(t, rows[0].Closing)
+	assert.True(t, rows[1].Closing, "open tool must close before the interrupted turn divider")
+	assert.Equal(t, "tc-retry", rows[1].SpanID)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+	assert.True(t, rows[2].TurnEnd)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+	assert.Contains(t, sink.ClosedSpans(), "tc-retry")
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+	a.Mu.Lock()
+	assert.Empty(t, a.toolStates)
+	assert.True(t, a.closedSpans.WasClosed("tc-retry"))
+	a.Mu.Unlock()
+}

@@ -55,6 +55,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				SessionMetadataHandler: a.captureSteerRunID,
 				SessionUpdateHandler:   a.observeGooseSessionUpdate,
 				PromptEnded:            a.finishGoosePrompt,
+				ClearProviderState:     a.clearGooseState,
 				AdvertisedSteerMethod:  gooseSteeringMethod,
 			}
 		},

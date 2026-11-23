@@ -31,7 +31,8 @@ func (a *Agent) observeChild(raw []byte, event nativeEvent) {
 	}
 	a.Mu.Lock()
 	state := a.children[event.ToolCallID]
-	opening, known := a.tools[event.ToolCallID]
+	entry, known := a.tools.Get(event.ToolCallID)
+	opening := entry.Data
 	sessionID := a.sessionID
 	a.Mu.Unlock()
 	if event.Type == contracts.CommandCodeEventSubagentStart {
@@ -189,13 +190,34 @@ func (a *Agent) finishChild(callID string, state *childState, status bgtask.Stat
 	a.Mu.Unlock()
 }
 
-func (a *Agent) closeChildren() {
+func (a *Agent) closeForegroundChildren(status bgtask.Status) {
+	if a.sink == nil {
+		return
+	}
+	a.Mu.Lock()
+	var foreground []*childState
+	for id, child := range a.children {
+		if !child.background {
+			foreground = append(foreground, child)
+			delete(a.children, id)
+		}
+	}
+	a.Mu.Unlock()
+	for _, child := range foreground {
+		if err := a.sink.CloseBackgroundTask(child.rowKey, status); err != nil {
+			slog.Warn("close a Command Code foreground child task", "error", err)
+		}
+		a.sink.CleanupChildAgent(child.childID)
+	}
+}
+
+func (a *Agent) closeChildren(status bgtask.Status) {
 	a.Mu.Lock()
 	children := a.children
 	a.children = make(map[string]*childState)
 	a.Mu.Unlock()
 	for _, child := range children {
-		if err := a.sink.CloseBackgroundTask(child.rowKey, bgtask.StatusStopped); err != nil {
+		if err := a.sink.CloseBackgroundTask(child.rowKey, status); err != nil {
 			slog.Warn("stop a Command Code child task", "error", err)
 		}
 		a.sink.CleanupChildAgent(child.childID)

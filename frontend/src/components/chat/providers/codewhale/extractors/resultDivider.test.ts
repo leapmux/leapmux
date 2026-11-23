@@ -6,8 +6,8 @@ import { codewhaleResultDivider } from './resultDivider'
 describe('codewhaleResultDivider', () => {
   it('states each ending the turn record reports', () => {
     expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Completed, { duration_ms: 2380 }))).toStrictEqual({ label: 'Turn ended (2.4s)' })
-    expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Interrupted))).toStrictEqual({ label: 'Turn interrupted' })
-    expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Canceled))).toStrictEqual({ label: 'Turn interrupted' })
+    expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Interrupted))).toStrictEqual({ label: 'Turn interrupted', interrupted: true })
+    expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Canceled))).toStrictEqual({ label: 'Turn interrupted', interrupted: true })
   })
 
   it('states the reason of a failed turn, and its long form as the detail', () => {
@@ -20,7 +20,7 @@ describe('codewhaleResultDivider', () => {
 
   it('states the duration beside every ending, and no duration the record does not state', () => {
     expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Completed))).toStrictEqual({ label: 'Turn ended' })
-    expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Interrupted, { duration_ms: 1500 }))).toStrictEqual({ label: 'Turn interrupted (1.5s)' })
+    expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Interrupted, { duration_ms: 1500 }))).toStrictEqual({ label: 'Turn interrupted (1.5s)', interrupted: true })
     expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Failed, { duration_ms: 1500, error: 'boom' }))).toStrictEqual({ label: 'Turn failed (1.5s) — boom', isError: true })
     // A duration in another shape states none, rather than a wrong one.
     expect(codewhaleResultDivider(turnCompleted(CODEWHALE_TURN_STATUS.Completed, { duration_ms: '1500' }))).toStrictEqual({ label: 'Turn ended' })

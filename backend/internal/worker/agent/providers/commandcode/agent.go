@@ -14,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // Agent owns one native Command Code RPC session and its private output files.
@@ -46,7 +47,7 @@ type Agent struct {
 	compacting       bool
 	compactionLive   bool
 	manualCompaction *compactionAttempt
-	tools            map[string]openTool
+	tools            providerkit.ToolSpanLedger[openTool]
 	children         map[string]*childState
 	usage            map[string]any
 	generation       providerkit.GenerationBuffer
@@ -215,6 +216,29 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 }
 
 func (a *Agent) Interrupt(stop agent.StopContext) error {
+	a.Mu.Lock()
+	active := a.operationActiveLocked()
+	stopped := a.StoppedLocked()
+	a.Mu.Unlock()
+	if stopped {
+		return fmt.Errorf("the Command Code agent is stopped")
+	}
+	if !active {
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && !a.operationActiveLocked()
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		a.closeUnfinishedTools(agent.MessageCompletionInterrupted)
+		a.closeForegroundChildren(bgtask.StatusInterrupted)
+		if a.sink != nil {
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
+		return nil
+	}
 	_, err := a.request(methodTurnInterrupt, nil, a.APITimeout())
 	return err
 }

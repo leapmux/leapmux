@@ -213,7 +213,7 @@ func (a *Agent) startCodexCellWait(key codexRawExecutionKey, rawItem json.RawMes
 		return
 	}
 	for cellKey, call := range a.rawExecutionCalls {
-		if cellKey.threadID != key.threadID || cellKey.turnID != key.turnID || call.cellID != arguments.CellID ||
+		if cellKey.threadID != key.threadID || call.cellID != arguments.CellID ||
 			call.completed || call.ended {
 			continue
 		}
@@ -232,7 +232,7 @@ func (a *Agent) handleCodexCellWaitOutput(waitKey codexRawExecutionKey, output j
 		return
 	}
 	for key, call := range a.rawExecutionCalls {
-		if key.threadID != waitKey.threadID || key.turnID != waitKey.turnID {
+		if key.threadID != waitKey.threadID {
 			continue
 		}
 		if _, waiting := call.waits[waitKey.callID]; !waiting {
@@ -725,7 +725,7 @@ func (call *codexRawExecutionCall) release() {
 }
 
 func (a *Agent) persistCodexRawExecution(key codexRawExecutionKey, call *codexRawExecutionCall) {
-	if (call.owner != nil && !call.owner.IsCurrent()) || a.IsDiscardingOutput() {
+	if (call.owner != nil && !call.owner.IsSessionCurrent()) || a.IsDiscardingOutput() {
 		call.release()
 		return
 	}
@@ -859,11 +859,4 @@ func codexRetainedCompletion(completion agent.MessageCompletion) agent.MessageCo
 		return agent.MessageCompletionInterrupted
 	}
 	return completion
-}
-
-// A new turn retains prior output even when the preceding turn sent no completion.
-func (a *Agent) clearCodexRawExecutionsBeforeTurn(threadID, turnID string) {
-	a.finishMatchingCodexRawExecutions(agent.MessageCompletionInterrupted, func(key codexRawExecutionKey) bool {
-		return key.threadID == threadID && key.turnID != turnID
-	})
 }

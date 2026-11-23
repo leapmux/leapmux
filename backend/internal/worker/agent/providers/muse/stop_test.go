@@ -28,7 +28,7 @@ func TestMuseIdleInterruptDoesNotWriteANativeCommand(t *testing.T) {
 	}})
 	require.NoError(t, a.Interrupt(agent.NewStopContext(nil)))
 	assert.Zero(t, calls)
-	assert.Empty(t, sink.TurnLifecycle())
+	assert.Equal(t, []string{"reset_spans"}, sink.TurnLifecycle())
 }
 
 func TestMuseInterruptTargetsTheExactNativeSessionAndTurn(t *testing.T) {

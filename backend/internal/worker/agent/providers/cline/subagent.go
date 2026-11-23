@@ -337,6 +337,7 @@ func (a *Agent) finishSpawn(s *spawnCall, status bgtask.Status, report string) {
 	a.finishTranscriptCompaction(s.child, text)
 	a.flushPending(s.child, sessionID, text)
 	a.closeOpenTools(s.child, tools)
+	providerkit.ResetSpansAndProgress(s.child.sink)
 	if !s.ambiguous {
 		finalize()
 		return

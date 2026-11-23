@@ -49,6 +49,10 @@ type SpanLine struct {
 // Color indices are 1-based and wrap around within [1, spanPaletteSize].
 const spanPaletteSize = 8
 
+// maxClosedSpanTypes caps how many closed span IDs retain their span type in
+// memory when spans outlive normal turns without an intervening Reset.
+const maxClosedSpanTypes = 1024
+
 // pendingSpan holds the color reserved for a span by ReserveSpanColor that
 // hasn't yet been committed by OpenSpan. Treated as "in use" by chooseColor
 // so a back-to-back reservation cannot pick the same color.
@@ -59,13 +63,14 @@ type pendingSpan struct {
 
 // SpanTracker manages hierarchical span state for an agent's message threading.
 type SpanTracker struct {
-	mu        sync.Mutex
-	spans     []ActiveSpan
-	spanTypes map[string]string // spanID → span type (tool name / item type)
-	parentMap map[string]string // spanID → parentSpanID (persists after close for ancestry lookups)
-	pending   *pendingSpan      // color reserved by ReserveSpanColor; consumed by matching OpenSpan.
-	rng       *rand.Rand        // lazy-initialized random source for color choice; tests inject directly.
-	deck      []int             // shuffled draw pile for primary-rule color selection; refilled when empty.
+	mu              sync.Mutex
+	spans           []ActiveSpan
+	spanTypes       map[string]string // spanID → span type (tool name / item type)
+	closedSpanTypes []string          // FIFO of closed span IDs retained in spanTypes
+	parentMap       map[string]string // spanID → parentSpanID (persists after close for ancestry lookups)
+	pending         *pendingSpan      // color reserved by ReserveSpanColor; consumed by matching OpenSpan.
+	rng             *rand.Rand        // lazy-initialized random source for color choice; tests inject directly.
+	deck            []int             // shuffled draw pile for primary-rule color selection; refilled when empty.
 }
 
 // FrozenSpanTracker retains immutable geometry without retaining a random source.
@@ -265,8 +270,16 @@ func (t *SpanTracker) chooseColor(parentSpanID string, newColumn int) int {
 
 // OpenSpan registers a new subagent span.
 func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
+	t.OpenSpanChanged(spanID, parentSpanID)
+}
+
+// OpenSpanChanged registers a new span and returns true when the active set
+// transitioned from empty to non-empty.
+func (t *SpanTracker) OpenSpanChanged(spanID, parentSpanID string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	wasEmpty := len(t.spans) == 0
 
 	// Record parentage (persists after close for ancestry lookups).
 	if t.parentMap == nil {
@@ -291,6 +304,7 @@ func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
 		ColorIndex: color,
 		Column:     column,
 	})
+	return wasEmpty && len(t.spans) > 0
 }
 
 // depthOf returns the nesting depth for a span by walking the parentMap.
@@ -308,19 +322,68 @@ func (t *SpanTracker) depthOf(spanID string) int {
 // Reset clears all span tracking state, returning the tracker to its
 // initial empty state. Used when the agent's context is cleared or interrupted.
 func (t *SpanTracker) Reset() {
+	t.ResetChanged()
+}
+
+// ResetChanged clears all span tracking state and returns true when the active
+// set transitioned from non-empty to empty.
+func (t *SpanTracker) ResetChanged() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	wasNonEmpty := len(t.spans) > 0
 	t.spans = nil
 	t.pending = nil
 	t.deck = t.deck[:0]
 	clear(t.spanTypes)
+	t.closedSpanTypes = nil
 	clear(t.parentMap)
+	return wasNonEmpty
+}
+
+// hasSpanLocked reports whether spanID is in the active set.
+// Must be called with t.mu held.
+func (t *SpanTracker) hasSpanLocked(spanID string) bool {
+	for _, s := range t.spans {
+		if s.SpanID == spanID {
+			return true
+		}
+	}
+	return false
+}
+
+// recordClosedSpanTypeLocked appends spanID to the closed-type FIFO and evicts
+// the oldest closed entries past maxClosedSpanTypes, skipping any ID that is
+// currently active or reserved in pending. Must be called with t.mu held.
+func (t *SpanTracker) recordClosedSpanTypeLocked(spanID string) {
+	if spanID == "" {
+		return
+	}
+	if _, ok := t.spanTypes[spanID]; !ok {
+		return
+	}
+	// Remove any older queued slot for the same ID so reopening and re-closing
+	// refreshes its recency instead of letting the stale slot evict it early.
+	t.closedSpanTypes = slices.DeleteFunc(t.closedSpanTypes, func(id string) bool {
+		return id == spanID
+	})
+	t.closedSpanTypes = append(t.closedSpanTypes, spanID)
+	if len(t.closedSpanTypes) <= maxClosedSpanTypes {
+		return
+	}
+	excess := len(t.closedSpanTypes) - maxClosedSpanTypes
+	for _, evictID := range t.closedSpanTypes[:excess] {
+		if t.hasSpanLocked(evictID) || (t.pending != nil && t.pending.spanID == evictID) {
+			continue
+		}
+		delete(t.spanTypes, evictID)
+	}
+	t.closedSpanTypes = slices.Delete(t.closedSpanTypes, 0, excess)
 }
 
 // removeSpanLocked drops a span from the active set, freeing its column and
-// its color. The recorded span type is NOT touched: only Reset clears types.
-// Must be called with t.mu held.
+// its color. The recorded span type stays until Reset or FIFO eviction past
+// maxClosedSpanTypes. Must be called with t.mu held.
 func (t *SpanTracker) removeSpanLocked(spanID string) {
 	t.spans = slices.DeleteFunc(t.spans, func(s ActiveSpan) bool {
 		return s.SpanID == spanID
@@ -333,25 +396,52 @@ func (t *SpanTracker) removeSpanLocked(spanID string) {
 	if len(t.spans) == 0 {
 		clear(t.parentMap)
 	}
+	t.recordClosedSpanTypeLocked(spanID)
 }
 
 // CloseSpan removes a span, freeing its column and its color.
 //
-// The recorded span type SURVIVES, and Reset clears it at the turn boundary.
-// Every reader wants the type after the span leaves the active set: a provider's
-// closing message reads it back through GetSpanType to persist span_type, and an
-// ACP history replay re-delivers that closing message long afterwards. Deleting
-// it here degraded the replayed row to the provider's fallback type, and it
-// forced a second removal method for the callers that must keep it.
+// The recorded span type SURVIVES up to the closed-type FIFO cap, and Reset
+// clears all types. Every reader wants the type after the span leaves the
+// active set: a provider's closing message reads it back through GetSpanType
+// to persist span_type, and an ACP history replay re-delivers that closing
+// message long afterwards. Deleting it here degraded the replayed row to the
+// provider's fallback type, and it forced a second removal method for the
+// callers that must keep it.
 //
 // A caller that takes a span back while its tool call KEEPS RUNNING -- a spawn
 // recognized late -- calls this too. The column is freed either way; nothing
 // downstream distinguishes "ended" from "given back".
 func (t *SpanTracker) CloseSpan(spanID string) {
+	t.CloseSpanChanged(spanID)
+}
+
+// CloseSpanChanged removes a span and returns true when the active set
+// transitioned from non-empty to empty.
+func (t *SpanTracker) CloseSpanChanged(spanID string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	wasNonEmpty := len(t.spans) > 0
 	t.removeSpanLocked(spanID)
+	return wasNonEmpty && len(t.spans) == 0
+}
+
+// HasActiveSpans reports whether at least one span is open without allocating.
+func (t *SpanTracker) HasActiveSpans() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.spans) > 0
+}
+
+// HasSpan reports whether spanID is currently open without allocating.
+func (t *SpanTracker) HasSpan(spanID string) bool {
+	if spanID == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.hasSpanLocked(spanID)
 }
 
 // ActiveSpans returns the spans currently open, ordered by column. The service

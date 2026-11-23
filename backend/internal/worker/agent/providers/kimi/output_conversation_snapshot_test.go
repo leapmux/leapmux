@@ -141,3 +141,40 @@ func TestKimiConversationSnapshotReconcilesAnInterruptedTurnAndItsSuccessor(t *t
 	rig.endPublicTurn(t, kimiMainAgentID, "new", 1, "completed")
 	assert.Equal(t, agent.TurnState{}, rig.agent.PublishTurnActive())
 }
+
+func TestKimiConversationSnapshotHistoricalInterruptedTurnPreservesLiveOpenTool(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "current", 1)
+	const tool = `"type":"tool_call","item_id":"held","step_index":1,"created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","name":"Bash","input":{"command":"sleep 30"}`
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"current","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	opening := rig.sink.Messages()
+	require.Len(t, opening, 1)
+	span := opening[0].SpanID
+	require.NotEmpty(t, span)
+	require.Empty(t, rig.sink.ClosedSpans())
+
+	lifecycleBefore := len(rig.sink.TurnLifecycle())
+	progressBefore := len(rig.sink.ProgressUpdates())
+
+	const historicalInterrupted = `{"turn_id":"older","ordinal":0,"kind":"agent","status":"ended","outcome":"interrupted","started_at":"2026-11-17T00:00:00Z","steps":[],"items":[]}`
+	page := fmt.Sprintf(`{"type":"turns","has_more":false,"turns":[%s,{"turn_id":"current","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[{%s,"status":"running","stage":"executing"}]}]}`, historicalInterrupted, tool)
+	rig.conversationFrame(t, page)
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	assert.Empty(t, rig.sink.ClosedSpans(), "replaying a historical interrupted turn must not close a live open tool")
+	assert.NotContains(t, rig.sink.TurnLifecycle()[lifecycleBefore:], "reset_spans", "replaying a historical interrupted turn must not reset root spans")
+	assert.NotContains(t, rig.sink.ProgressUpdates()[progressBefore:], agent.ResetProgress(), "replaying a historical interrupted turn must not reset root progress")
+	conv := rig.agent.run(kimiMainAgentID).conversation
+	assert.Empty(t, conv.turns["current"].results, "live tool must remain open after historical interrupted replay")
+	assert.Equal(t, "Bash", rig.sink.GetSpanType(span))
+	assert.NotEmpty(t, conv.openLiveSpans)
+
+	// The live tool can still close normally when its native item.ended arrives.
+	rig.conversationFrame(t, `{"type":"item.ended","turn_id":"current","item":{`+tool+`,"status":"ended","outcome":"completed","output":"done"}}`)
+	rig.endPublicTurn(t, kimiMainAgentID, "current", 1, "completed")
+	awaitKimiTestOutput(t, rig.agent.sink)
+	assert.Equal(t, []string{span}, rig.sink.ClosedSpans())
+}

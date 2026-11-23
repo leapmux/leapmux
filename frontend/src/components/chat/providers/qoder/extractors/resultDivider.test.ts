@@ -46,7 +46,7 @@ describe('qoderResultDivider', () => {
   })
 
   it('labels the turn that the worker marked interrupted, with no detail, under the abort shape', () => {
-    expect(qoderResultDivider(ABORTED_RESULT, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (228ms)' })
+    expect(qoderResultDivider(ABORTED_RESULT, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (228ms)', interrupted: true })
   })
 
   it('reads the abort shape as a failure when the worker marked no interrupt', () => {

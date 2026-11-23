@@ -56,6 +56,7 @@ type Agent struct {
 	// dispatchMu protects errors until the native turn end supplies its diagnostic.
 	pendingErrors   []string
 	lastTurnError   string
+	exitCleaned     bool
 	retryResolution providerkit.RetryResolution
 	pendingSteers   []*pendingSteer
 }
@@ -229,6 +230,27 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	for _, steer := range steers {
 		failures = errors.Join(failures, a.removePendingSteer(sessionID, steer))
 	}
+	if !active {
+		a.dispatchMu.Lock()
+		a.Mu.Lock()
+		stillIdle := !a.active && !a.StoppedLocked()
+		var rootStreams []*sessionStream
+		if stillIdle {
+			for _, stream := range a.streams {
+				if stream.childAgentID == "" {
+					rootStreams = append(rootStreams, stream)
+				}
+			}
+		}
+		a.Mu.Unlock()
+		if stillIdle {
+			for _, stream := range rootStreams {
+				failures = errors.Join(failures, a.finishPendingTools(stream, agent.MessageCompletionInterrupted))
+			}
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
+		a.dispatchMu.Unlock()
+	}
 	return failures
 }
 
@@ -304,6 +326,7 @@ func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.Process.Stop()
 	a.stopConnection()
+	a.finishAfterExit()
 }
 
 func (a *Agent) Wait() error {
@@ -315,7 +338,47 @@ func (a *Agent) Wait() error {
 	if stopDone != nil {
 		<-stopDone
 	}
+	a.finishAfterExit()
 	return errors.Join(err, failure, a.directory.Close())
+}
+
+// finishAfterExit closes remaining pending tools, resets spans and progress,
+// closes open workflows, and clears an active turn after the connection stops.
+func (a *Agent) finishAfterExit() {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	if a.exitCleaned {
+		return
+	}
+	a.exitCleaned = true
+	a.Mu.Lock()
+	streamIDs := make([]string, 0, len(a.streams))
+	for id := range a.streams {
+		streamIDs = append(streamIDs, id)
+	}
+	slices.Sort(streamIDs)
+	streams := make([]*sessionStream, 0, len(streamIDs))
+	for _, id := range streamIDs {
+		streams = append(streams, a.streams[id])
+	}
+	active := a.active
+	a.Mu.Unlock()
+	completion := a.ProcessExitCompletion()
+	resetRoot := false
+	for _, stream := range streams {
+		_ = a.finishPendingTools(stream, completion)
+		providerkit.ResetSpansAndProgress(a.streamSink(stream))
+		if stream.childAgentID == "" {
+			resetRoot = true
+		}
+	}
+	if !resetRoot {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
+	a.closeOpenWorkflows(agent.IncompleteTaskStatus(completion))
+	if active {
+		a.setTurnState(false)
+	}
 }
 
 func (a *Agent) ProcessExitCompletion() agent.MessageCompletion {

@@ -347,8 +347,10 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 	// Persist a final tool call as a closing row. It closes an earlier pending
 	// call when one exists. A call that first arrives final opens no span.
 	if StatusIsFinal(tc.Status) {
+		if !c.out.claimFinalTool(tc.ToolCallID) {
+			return
+		}
 		opened := sink.GetSpanType(tc.ToolCallID) != ""
-		c.out.completeTool(tc.ToolCallID)
 		c.completeToolOutput(tc.ToolCallID)
 		c.applySubagentObservation(obs)
 		if err := writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{
@@ -399,6 +401,19 @@ func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
 		return
 	}
 	if tcu.ToolCallID == "" {
+		return
+	}
+	if c.out.wasClosed(tcu.ToolCallID) {
+		// A native-final tool call (such as Goose's delegate ACK) can still carry
+		// non-final subagent_tool_request updates on the spawn toolCallId while
+		// the delegated subagent runs. Forward only the subagent hook without
+		// reviving toolUpdateState or output progress. Force-closed calls
+		// (interrupt/teardown) drop every late update.
+		if !StatusIsFinal(tcu.Status) && !c.out.wasForceClosed(tcu.ToolCallID) && c.b.hooks.SubagentFromToolCallUpdate != nil {
+			if obs := c.b.hooks.SubagentFromToolCallUpdate(tcu); obs != nil {
+				c.applySubagentObservation(obs)
+			}
+		}
 		return
 	}
 	_, admission := c.out.reserveToolTranscript(tcu.ToolCallID, false)
@@ -486,7 +501,9 @@ func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
 		// dropped earlier bytes.
 		sink.ReportProgress(agent.OutputTailProgress(tcu.ToolCallID, full, limited))
 	case "completed", "failed", "cancelled":
-		c.out.completeTool(tcu.ToolCallID)
+		if !c.out.claimFinalTool(tcu.ToolCallID) {
+			return
+		}
 		c.completeToolOutput(tcu.ToolCallID)
 
 		content := c.b.acpMessageContent(originalUpdate, update)

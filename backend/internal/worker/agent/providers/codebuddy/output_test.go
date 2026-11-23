@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func TestCodebuddySystemUsageUpdatesContextWithoutATranscriptRow(t *testing.T) {
@@ -388,7 +389,7 @@ func TestCodebuddyTurnEndRecordsExplicitZeroBeforeQueueRelease(t *testing.T) {
 	assert.True(t, messages[0].TurnEnd)
 	assert.Equal(t, result, messages[0].Content)
 	assert.Equal(t, []int{0}, agenttest.TurnToolUseCounts(t, messages))
-	assert.Equal(t, []string{"turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_end", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 func TestCodebuddyTurnEndCountsUniqueRootCallsAndResetsEachTurn(t *testing.T) {
@@ -583,7 +584,7 @@ func TestCodebuddyTurnEndPersistsResultBeforeReleasingQueuedInput(t *testing.T) 
 			a.HandleOutput([]byte(raw))
 			require.GreaterOrEqual(t, len(sink.messagesAtRelease), 2)
 			assert.Equal(t, raw, string(sink.messagesAtRelease[len(sink.messagesAtRelease)-1].Content))
-			assert.Equal(t, 1, sink.resetsAtRelease)
+			assert.Zero(t, sink.resetsAtRelease)
 		})
 	}
 }
@@ -672,34 +673,50 @@ func TestCodebuddyFailedPersistLeavesToolSpanLifetimeUnchanged(t *testing.T) {
 
 func TestCodebuddyTurnEndResetsOpenSpansBeforeReleasingQueuedInput(t *testing.T) {
 	t.Parallel()
-	for _, raw := range []string{
-		`{"type":"result","session_id":"native-session","result":"Finished.","is_error":false}`,
-		`{"type":"result","session_id":"native-session","usage":false}`,
-	} {
-		t.Run(raw, func(t *testing.T) {
-			sink := &agenttest.Sink{}
-			a := newOfflineAgent(t, sink)
-			a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"pending","name":"REPL"}]}}`))
-			require.Equal(t, "REPL", sink.GetSpanType("pending"))
-			a.HandleOutput([]byte(raw))
-			assert.Equal(t, 1, sink.ResetSpanCount())
-			assert.Empty(t, sink.GetSpanType("pending"))
-			lifecycle := sink.TurnLifecycle()
-			resetIndex := -1
-			clearIndex := -1
-			for index, event := range lifecycle {
-				if event == "reset_spans" {
-					resetIndex = index
-				}
-				if event == "turn_active:false" {
-					clearIndex = index
-				}
+	t.Run("normal result keeps open spans alive", func(t *testing.T) {
+		for _, raw := range []string{
+			`{"type":"result","session_id":"native-session","result":"Finished.","is_error":false}`,
+			`{"type":"result","session_id":"native-session","usage":false}`,
+		} {
+			t.Run(raw, func(t *testing.T) {
+				sink := &agenttest.Sink{}
+				a := newOfflineAgent(t, sink)
+				a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"pending","name":"REPL"}]}}`))
+				require.Equal(t, "REPL", sink.GetSpanType("pending"))
+				a.HandleOutput([]byte(raw))
+				assert.Zero(t, sink.ResetSpanCount())
+				assert.Equal(t, "REPL", sink.GetSpanType("pending"))
+				assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			})
+		}
+	})
+
+	t.Run("interrupted result resets open spans before releasing queued input", func(t *testing.T) {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"pending","name":"REPL"}]}}`))
+		require.Equal(t, "REPL", sink.GetSpanType("pending"))
+		a.mu.Lock()
+		a.interruptRequests = map[uint64]struct{}{1: {}}
+		a.mu.Unlock()
+		a.HandleOutput([]byte(codebuddyResultAbortedTools))
+		assert.Equal(t, 1, sink.ResetSpanCount())
+		assert.Empty(t, sink.GetSpanType("pending"))
+		lifecycle := sink.TurnLifecycle()
+		resetIndex := -1
+		clearIndex := -1
+		for index, event := range lifecycle {
+			if event == "reset_spans" {
+				resetIndex = index
 			}
-			require.NotEqual(t, -1, resetIndex)
-			require.NotEqual(t, -1, clearIndex)
-			assert.Less(t, resetIndex, clearIndex)
-		})
-	}
+			if event == "turn_active:false" {
+				clearIndex = index
+			}
+		}
+		require.NotEqual(t, -1, resetIndex)
+		require.NotEqual(t, -1, clearIndex)
+		assert.Less(t, resetIndex, clearIndex)
+	})
 }
 
 func TestCodebuddyMalformedMixedFramesDoNotChangeSpanLifetime(t *testing.T) {
@@ -1222,4 +1239,135 @@ func TestCodebuddyPlanExitRestoresNativeMode(t *testing.T) {
 			assert.Equal(t, want, a.permissionMode, "an exit outside Plan preserves its current mode")
 		})
 	}
+}
+
+func TestCodebuddyNormalAndErrorResultPreserveOpenTool(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result string
+	}{
+		{name: "normal", result: `{"type":"result","subtype":"success","is_error":false}`},
+		{name: "non-interrupted error", result: `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"bg-1","name":"Bash"}]}}`))
+			a.HandleOutput([]byte(tc.result))
+
+			assert.NotContains(t, sink.ClosedSpans(), "bg-1")
+			assert.Zero(t, sink.ResetSpanCount())
+			require.Len(t, sink.Messages(), 2)
+
+			a.HandleOutput([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bg-1","content":"ok"}]}}`))
+			assert.Contains(t, sink.ClosedSpans(), "bg-1")
+			require.Len(t, sink.Messages(), 3)
+			assert.True(t, sink.Messages()[2].Closing)
+		})
+	}
+}
+
+func TestCodebuddyInterruptedResultAndIdleInterruptCloseOpenToolAndSuppressLateResult(t *testing.T) {
+	t.Parallel()
+
+	t.Run("interrupted result closes open tool before divider", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"bash-bg-1","task_type":"local_bash","description":"sleep 60"}`))
+		bgBefore, ok := sink.BackgroundTask("bash-bg-1")
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusRunning, bgBefore.Status)
+
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t-1","name":"Bash"}]}}`))
+		a.sink.ReportProgress(agent.OutputDeltaProgress("t-1", 42))
+		a.sink.ReportProgress(agent.OutputTailProgress("t-1", "running...", false))
+		require.Equal(t, int64(42), sink.ProgressSnapshot().OutputBytes)
+
+		a.mu.Lock()
+		a.interruptRequests = map[uint64]struct{}{1: {}}
+		a.mu.Unlock()
+		a.HandleOutput([]byte(codebuddyResultAbortedTools))
+
+		rows := sink.Messages()
+		require.Len(t, rows, 3)
+		assert.Equal(t, "t-1", rows[1].SpanID)
+		assert.True(t, rows[1].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+		assert.True(t, rows[2].TurnEnd)
+		assert.Contains(t, sink.ClosedSpans(), "t-1")
+		assert.Equal(t, 1, sink.ResetSpanCount())
+		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+		bgAfter, ok := sink.BackgroundTask("bash-bg-1")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, bgAfter.Status)
+
+		// Late native tool_result is suppressed.
+		a.HandleOutput([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t-1","content":"late"}]}}`))
+		assert.Len(t, sink.Messages(), 3)
+	})
+
+	t.Run("idle interrupt closes open tool and suppresses late result", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		stdin := &bytes.Buffer{}
+		a.SetStdinForTest(agenttest.NopStdin(stdin))
+
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"bash-bg-idle","task_type":"local_bash","description":"sleep 60"}`))
+		bgBefore, ok := sink.BackgroundTask("bash-bg-idle")
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusRunning, bgBefore.Status)
+
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t-idle","name":"Bash"}]}}`))
+		a.sink.ReportProgress(agent.OutputDeltaProgress("t-idle", 42))
+		a.sink.ReportProgress(agent.OutputTailProgress("t-idle", "still running...", false))
+		a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false}`))
+		require.NotContains(t, sink.ClosedSpans(), "t-idle")
+		require.Equal(t, int64(42), sink.ProgressSnapshot().OutputBytes)
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Contains(t, stdin.String(), `"subtype":"interrupt"`)
+
+		rows := sink.Messages()
+		require.Len(t, rows, 3)
+		assert.Equal(t, "t-idle", rows[2].SpanID)
+		assert.True(t, rows[2].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+		assert.Equal(t, 1, sink.ResetSpanCount())
+		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+		bgAfter, ok := sink.BackgroundTask("bash-bg-idle")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, bgAfter.Status)
+
+		a.HandleOutput([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t-idle","content":"late"}]}}`))
+		assert.Len(t, sink.Messages(), 3)
+	})
+}
+
+func TestCodebuddyProcessExitClosesOpenToolsAndResetsProgress(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t-exit","name":"Bash"}]}}`))
+	a.sink.ReportProgress(agent.OutputDeltaProgress("t-exit", 19))
+	a.sink.ReportProgress(agent.OutputTailProgress("t-exit", "partial", false))
+	require.Equal(t, int64(19), sink.ProgressSnapshot().OutputBytes)
+	a.NoteIntentionalStop()
+	a.cleanupAfterProcessExit()
+
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.Equal(t, "t-exit", rows[1].SpanID)
+	assert.True(t, rows[1].Closing)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+	assert.Equal(t, 1, sink.ResetSpanCount())
+	assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
 }

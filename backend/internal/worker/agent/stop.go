@@ -103,14 +103,22 @@ func (t StopTarget) EscalationReady() bool {
 	return ok && provider.InterruptEscalationReady()
 }
 
-// StopContext identifies one stop attempt through its ignored-stop report.
-// The zero value carries no user stop and reports nothing.
+// StopContext identifies one stop attempt through its ignored-stop and
+// open-span-preservation callbacks. The zero value carries no user stop and
+// reports nothing.
 type StopContext struct {
-	reportIgnored func()
+	reportIgnored     func()
+	preserveOpenSpans func()
 }
 
 func NewStopContext(reportIgnored func()) StopContext {
 	return StopContext{reportIgnored: reportIgnored}
+}
+
+// WithPreserveOpenSpans returns a copy of s with the open-span preservation callback set.
+func (s StopContext) WithPreserveOpenSpans(fn func()) StopContext {
+	s.preserveOpenSpans = fn
+	return s
 }
 
 // ReportIgnored restores only the activity that this stop attempt suppressed.
@@ -118,5 +126,14 @@ func NewStopContext(reportIgnored func()) StopContext {
 func (s StopContext) ReportIgnored() {
 	if s.reportIgnored != nil {
 		s.reportIgnored()
+	}
+}
+
+// PreserveOpenSpans tells the service layer that this delivered idle stop
+// intentionally spared live root spans (such as running background shells or
+// child-fallback tools) and must not reset them during idle-stop settlement.
+func (s StopContext) PreserveOpenSpans() {
+	if s.preserveOpenSpans != nil {
+		s.preserveOpenSpans()
 	}
 }

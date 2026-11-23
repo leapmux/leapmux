@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // turnsRoute is the turn route of the test thread.
@@ -573,4 +574,61 @@ func TestCodewhaleExitedAgentIgnoresALateTurnStart(t *testing.T) {
 	a.HandleOutput(turnStartedEvent(2, "late-turn"))
 	assert.Empty(t, a.turnID)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+}
+
+func TestCodewhaleIdleInterruptExitAndFinishChildCloseToolsAndResetSpans(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt closes open root tools and resets spans", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newTestAgent(t, nil)
+		a.HandleOutput(turnStartedEvent(1, testTurnID))
+		a.HandleOutput(toolStartEvent(2, "item_1", "call_idle", contracts.CodewhaleToolBash, map[string]any{"command": "sleep 30"}))
+		a.HandleOutput(turnCompletedEvent(3, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+		require.Empty(t, sink.ClosedSpans())
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Contains(t, sink.ClosedSpans(), "call_idle")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		rows := messagesWithSpan(sink, "call_idle")
+		require.Len(t, rows, 2)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+	})
+
+	t.Run("finishAfterExit resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newTestAgent(t, nil)
+		a.HandleOutput(turnStartedEvent(1, testTurnID))
+		a.HandleOutput(toolStartEvent(2, "item_1", "call_exit", contracts.CodewhaleToolBash, map[string]any{"command": "sleep 30"}))
+		a.finishAfterExit(agent.MessageCompletionError)
+		assert.Contains(t, sink.ClosedSpans(), "call_exit")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("finishChild persists closing rows for open child tools and resets child spans", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newTestAgent(t, nil)
+		childSink := sink.Child("child-1")
+		child := &codewhaleChild{
+			agentID: "agent-1",
+			childID: "child-1",
+			title:   "worker",
+			openTools: map[string]string{
+				"ct-1": "bash",
+			},
+			openToolRows: map[string][]byte{
+				"ct-1": []byte(`{"kind":"message","index":0,"block":0,"message":{"role":"assistant","content":[]}}`),
+			},
+			openToolOrder: map[string]uint64{"ct-1": 0},
+		}
+		a.finishChild(agent.NewProviderServices(childSink), child, bgtask.StatusFailed, "")
+		assert.Contains(t, childSink.ClosedSpans(), "ct-1")
+		assert.Contains(t, childSink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, childSink.ProgressUpdates(), agent.ResetProgress())
+		require.Len(t, childSink.Messages(), 1)
+		assert.True(t, childSink.Messages()[0].Closing)
+		assert.Equal(t, agent.MessageCompletionError, childSink.Messages()[0].Completion)
+	})
 }

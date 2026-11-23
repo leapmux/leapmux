@@ -57,7 +57,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "Command Code", ShutdownGrace: registration.ShutdownGrace}, pipes, ctx, cancel)},
 		runtimeDir:     directory, bridgeSecret: secret, outputDone: make(chan struct{}),
 		workingDir: opts.WorkingDir, homeDir: opts.HomeDir, clock: quartz.NewReal(),
-		permissionMode: opts.PermissionMode(), tools: make(map[string]openTool), children: make(map[string]*childState),
+		permissionMode: opts.PermissionMode(), children: make(map[string]*childState),
 	}
 	a.sink = agent.NewModelProgressResetSink(sink)
 	if err := a.StartCmd(); err != nil {

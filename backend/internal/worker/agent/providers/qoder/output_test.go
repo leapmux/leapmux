@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func TestQoderNonJSONStdoutLineStoresNothingAndKeepsReading(t *testing.T) {
@@ -443,7 +444,12 @@ const (
 
 // qoderToolUseFrame is one main-thread assistant frame that calls one tool.
 func qoderToolUseFrame(callID string) []byte {
-	return []byte(`{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"tool_use","id":"` + callID + `","name":"Bash","input":{"command":"echo SOUND42"}}]},"parent_tool_use_id":null,"session_id":"session-1"}`)
+	return qoderToolUseFrameWithName(callID, "Bash")
+}
+
+// qoderToolUseFrameWithName is one main-thread assistant frame that calls a tool with the given name.
+func qoderToolUseFrameWithName(callID, toolName string) []byte {
+	return []byte(`{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"tool_use","id":"` + callID + `","name":"` + toolName + `","input":{"command":"echo SOUND42"}}]},"parent_tool_use_id":null,"session_id":"session-1"}`)
 }
 
 // qoderToolResultFrame is the user frame that answers one tool call.
@@ -629,4 +635,146 @@ func TestQoderChildToolUsesStayOutOfTheRootCount(t *testing.T) {
 	count, ok := resolvedTurnEndToolUses(onlyTurnEnd(t, sink))
 	assert.True(t, ok)
 	assert.Equal(t, int32(1), count, "the child's Read must not count toward the root turn")
+}
+
+func TestQoderNormalAndErrorResultPreserveOpenTool(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result string
+	}{
+		{name: "normal result", result: qoderSuccessResult},
+		{name: "non-interrupted error result", result: qoderAbortedResult},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newGoalAgent(t)
+			a.setTurnActive(true)
+			a.HandleOutput(qoderToolUseFrame("call-open"))
+			a.HandleOutput([]byte(tc.result))
+
+			assert.Empty(t, sink.ClosedSpans(), "non-interrupted result must keep open tool span alive")
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+			// A later native tool_result closes the span cleanly once.
+			a.HandleOutput(qoderToolResultFrame("call-open"))
+			assert.Equal(t, []string{"call-open"}, sink.ClosedSpans())
+		})
+	}
+}
+
+func TestQoderInterruptedResultIdleInterruptAndEOFFinishStreamCloseToolsAndResetSpans(t *testing.T) {
+	t.Parallel()
+
+	hasClosingMessage := func(sink *agenttest.Sink, spanID string) (agenttest.Message, bool) {
+		for _, msg := range sink.Messages() {
+			if msg.SpanID == spanID && msg.Closing {
+				return msg, true
+			}
+		}
+		return agenttest.Message{}, false
+	}
+
+	t.Run("interrupted result closes non-spawning tool drops late result and preserves Agent spawn and child bgtask", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGoalAgent(t)
+		a.setTurnActive(true)
+		a.HandleOutput(qoderToolUseFrameWithName("spawn-1", "Agent"))
+		a.HandleOutput([]byte(qoderChildStarted))
+		a.HandleOutput(qoderToolUseFrame("call-int"))
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		a.HandleOutput([]byte(qoderAbortedResult))
+
+		assert.Equal(t, []string{"call-int"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("call-int"))
+		_, spawnClosed := hasClosingMessage(sink, "spawn-1")
+		assert.False(t, spawnClosed, "interrupt must not force-close an open Agent spawn tool_use")
+		row, found := sink.BackgroundTask("spawn-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status, "root interrupt must preserve running child bgtask")
+
+		countBeforeLate := sink.MessageCount()
+		a.HandleOutput(qoderToolResultFrame("call-int"))
+		assert.Equal(t, countBeforeLate, sink.MessageCount(), "late tool_result after interrupt must be dropped")
+		assert.Equal(t, []string{"call-int"}, sink.ClosedSpans())
+
+		// The preserved Agent spawn tool_use still resolves its later native tool_result with NoSpan: true.
+		a.HandleOutput(qoderToolResultFrame("spawn-1"))
+		assert.Equal(t, countBeforeLate+1, sink.MessageCount(), "preserved Agent spawn tool_result must still persist")
+		spawnResult, foundClose := hasClosingMessage(sink, "spawn-1")
+		require.True(t, foundClose)
+		assert.True(t, spawnResult.NoSpan, "Agent spawn tool_result must persist with NoSpan: true")
+		assert.Equal(t, "Agent", spawnResult.SpanType)
+		assert.Empty(t, spawnResult.Completion)
+		assert.Equal(t, []string{"call-int"}, sink.ClosedSpans())
+	})
+
+	t.Run("idle interrupt closes earlier turn open tool and preserves Workflow spawn and running child bgtask", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGoalAgent(t)
+		a.setTurnActive(true)
+		a.HandleOutput(qoderToolUseFrameWithName("spawn-wf", "Workflow"))
+		a.HandleOutput([]byte(qoderChildStarted))
+		a.HandleOutput(qoderToolUseFrame("call-idle"))
+		a.HandleOutput([]byte(qoderSuccessResult))
+		require.Empty(t, sink.ClosedSpans())
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Equal(t, []string{"call-idle"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		_, spawnClosed := hasClosingMessage(sink, "spawn-wf")
+		assert.False(t, spawnClosed, "idle interrupt must not force-close an open Workflow spawn tool_use")
+		row, found := sink.BackgroundTask("spawn-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+		// The preserved Workflow spawn tool_use still resolves its later native tool_result with NoSpan: true.
+		countBeforeResult := sink.MessageCount()
+		a.HandleOutput(qoderToolResultFrame("spawn-wf"))
+		assert.Equal(t, countBeforeResult+1, sink.MessageCount(), "preserved Workflow spawn tool_result must still persist")
+		spawnResult, foundClose := hasClosingMessage(sink, "spawn-wf")
+		require.True(t, foundClose)
+		assert.True(t, spawnResult.NoSpan, "Workflow spawn tool_result must persist with NoSpan: true")
+		assert.Equal(t, "Workflow", spawnResult.SpanType)
+		assert.Empty(t, spawnResult.Completion)
+		assert.Equal(t, []string{"call-idle"}, sink.ClosedSpans())
+	})
+
+	t.Run("EOF finishStream closes open tools and open child bgtask and clears active turn without panicking on nil outputDone", func(t *testing.T) {
+		t.Parallel()
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^$")
+		require.NoError(t, cmd.Start())
+		t.Cleanup(func() { _ = cmd.Wait() })
+		a, sink, _ := newGoalAgent(t)
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "qoder-eof", ProviderName: "qoder", Ctx: t.Context(), Cmd: cmd})
+		a.setTurnActive(true)
+		a.HandleOutput(qoderToolUseFrameWithName("spawn-1", "Agent"))
+		a.HandleOutput([]byte(qoderChildStarted))
+		a.HandleOutput(qoderToolUseFrame("call-eof"))
+		require.Empty(t, sink.ClosedSpans())
+		require.Equal(t, []bool{true}, sink.TurnActiveCalls)
+
+		scanner := bufio.NewScanner(strings.NewReader(""))
+		a.readOutputLoop(scanner)
+
+		a.mu.Lock()
+		stillActive := a.active
+		a.mu.Unlock()
+		assert.False(t, stillActive, "EOF finishStream must clear turnActive when a turn is still active")
+		assert.Equal(t, []bool{true, false}, sink.TurnActiveCalls)
+		assert.Equal(t, []string{"call-eof"}, sink.ClosedSpans())
+		spawnClose, foundSpawnClose := hasClosingMessage(sink, "spawn-1")
+		require.True(t, foundSpawnClose, "EOF finishStream must close open spawn tool entries too")
+		assert.True(t, spawnClose.NoSpan)
+		assert.Equal(t, agent.MessageCompletionError, spawnClose.Completion)
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		row, found := sink.BackgroundTask("spawn-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+	})
 }

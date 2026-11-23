@@ -168,6 +168,7 @@ type droidOutputState struct {
 	nextToolOrder  uint64
 	modelMessages  map[string]*droidModelMessage
 	tools          map[string]*droidTool
+	closedSpans    providerkit.ClosedSpanSet
 	turnToolUse    int
 	turnErrorSeen  bool
 	compactionLive bool
@@ -370,16 +371,30 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 }
 
 // Interrupt aborts the agent's current turn with droid.interrupt_session.
+// When idle, it still sends a best-effort interrupt_session and closes any open
+// root tool spans as interrupted.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	active := a.turnActive
 	a.Mu.Unlock()
-	if !active || sessionID == "" {
+	if sessionID == "" {
 		return nil
 	}
-	if err := a.request(droidMethodInterruptSession, interruptParams{SessionID: sessionID}); err != nil {
-		return err
+	if active {
+		return a.request(droidMethodInterruptSession, interruptParams{SessionID: sessionID})
+	}
+	_ = a.request(droidMethodInterruptSession, interruptParams{SessionID: sessionID})
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	a.Mu.Lock()
+	stillIdle := !a.turnActive && !a.stopped && a.sessionID == sessionID
+	a.Mu.Unlock()
+	if !stillIdle {
+		return nil
+	}
+	if target, ok := a.outputTargetFor(sessionID); ok {
+		a.closeOpenTools(target, agent.MessageCompletionInterrupted, true)
 	}
 	return nil
 }

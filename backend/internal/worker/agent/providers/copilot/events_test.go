@@ -247,8 +247,7 @@ func TestNativeCopilotIgnoresAnotherSession(t *testing.T) {
 	assert.False(t, a.PublishTurnActive().Active)
 }
 
-// A turn that ends while a tool call runs must close that call's span. An open span
-// leaves the tool card showing a running badge for the rest of the session.
+// An interrupted turn that ends while a tool call runs must close that call's span.
 func TestNativeCopilotTurnEndClosesAToolThatNeverCompleted(t *testing.T) {
 	t.Parallel()
 	a, sink := newNativeCopilotForEvents(t)
@@ -259,7 +258,7 @@ func TestNativeCopilotTurnEndClosesAToolThatNeverCompleted(t *testing.T) {
 	})
 	a.HandleOutput(start)
 	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
-	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{"aborted": true}))
 
 	messages := sink.Messages()
 	require.GreaterOrEqual(t, len(messages), 3)
@@ -275,6 +274,7 @@ func TestNativeCopilotTurnEndClosesAToolThatNeverCompleted(t *testing.T) {
 	// so LeapMux states the outcome in its completion column and invents nothing.
 	assert.JSONEq(t, string(start), string(closing.Content))
 	assert.Contains(t, sink.ClosedSpans(), "tool-1")
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 // copilotTurnEndToolUses reads the tool count that the Worker stores beside the
@@ -388,7 +388,7 @@ func TestNativeCopilotStopClosesAToolThatNeverCompleted(t *testing.T) {
 		"toolCallId": "tool-1", "toolName": contracts.CopilotToolBash,
 		"arguments": map[string]any{"command": "bun test"},
 	}))
-	a.clearNativeChildren()
+	a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 
 	closing := sink.Messages()[len(sink.Messages())-1]
 	assert.True(t, closing.Closing)
@@ -982,7 +982,7 @@ func TestCopilotNativeEvents_ShellOutputEndsWithItsToolCall(t *testing.T) {
 					map[string]any{"toolCallId": "call-1", "success": true}))
 			} else {
 				a.outputMu.Lock()
-				a.closeOpenNativeTools()
+				a.closeOpenNativeTools(nil, agent.MessageCompletionInterrupted)
 				a.outputMu.Unlock()
 			}
 			assert.Empty(t, a.openTools)
@@ -1393,5 +1393,108 @@ func TestUnknownFramesPersist(t *testing.T) {
 		a, sink := newNativeCopilotForEvents(t)
 		a.HandleOutput(tc.Frame)
 		return sink
+	})
+}
+
+func TestNativeCopilotNormalIdlePreservesOpenToolsAndSuppressesDuplicateIdle(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+
+	// Startup idle before any turn emits no divider.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	assert.Empty(t, sink.Messages())
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+	a.HandleOutput(nativeCopilotToolStart(t, "", "tool-bg", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput, map[string]any{
+		"toolCallId": "tool-bg", "text": "running\n", "sequence": 0,
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	// Duplicate idle produces no second divider.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+
+	var turnEnds int
+	for _, m := range sink.Messages() {
+		if m.TurnEnd {
+			turnEnds++
+		}
+		assert.False(t, m.Closing, "normal idle must keep open tools alive")
+	}
+	assert.Equal(t, 1, turnEnds)
+	assert.Empty(t, sink.ClosedSpans())
+	assert.Equal(t, []string{"turn_active:false", "turn_active:true", "turn_end", "turn_active:false", "turn_active:false"}, sink.TurnLifecycle())
+	assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+	// Native completion later closes the tool once.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolCompleted, map[string]any{
+		"toolCallId": "tool-bg", "success": true,
+	}))
+	assert.Equal(t, []string{"tool-bg"}, sink.ClosedSpans())
+}
+
+func TestNativeCopilotInterruptedTurnAndIdleInterruptSuppressLateOutputAndCompletion(t *testing.T) {
+	t.Parallel()
+
+	t.Run("aborted idle closes tool and suppresses late output and completion", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newNativeCopilotForEvents(t)
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+		a.HandleOutput(nativeCopilotToolStart(t, "", "tool-1", contracts.CopilotToolBash))
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{"aborted": true}))
+
+		msgsBefore := sink.MessageCount()
+		progressBefore := len(sink.ProgressUpdates())
+
+		// Late progress, partial result, shell output, and completion must all be dropped.
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolProgress, map[string]any{
+			"toolCallId": "tool-1", "progressMessage": "late status",
+		}))
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolPartialResult, map[string]any{
+			"toolCallId": "tool-1", "partialOutput": "late partial",
+		}))
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput, map[string]any{
+			"toolCallId": "tool-1", "text": "late shell\n", "sequence": 1,
+		}))
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolCompleted, map[string]any{
+			"toolCallId": "tool-1", "success": true,
+		}))
+
+		assert.Equal(t, msgsBefore, sink.MessageCount(), "late completion must not duplicate closing row")
+		assert.Equal(t, progressBefore, len(sink.ProgressUpdates()), "late output deltas must not revive progress")
+	})
+
+	t.Run("idle interrupt closes root tool and suppresses late completion", func(t *testing.T) {
+		t.Parallel()
+		h := newCopilotRuntimeHarness(t, nil, nil)
+		h.agent.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+		h.agent.HandleOutput(nativeCopilotToolStart(t, "", "tool-idle", contracts.CopilotToolBash))
+		h.agent.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+		require.Empty(t, h.sink.ClosedSpans())
+
+		require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
+
+		assert.Equal(t, []string{"session.abort"}, h.methods())
+		assert.Equal(t, []string{"tool-idle"}, h.sink.ClosedSpans())
+		assert.Contains(t, h.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, h.sink.ProgressUpdates(), agent.ResetProgress())
+		var foundClosing bool
+		for _, m := range h.sink.Messages() {
+			if m.Closing && m.SpanID == "tool-idle" {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionInterrupted, m.Completion)
+			}
+		}
+		assert.True(t, foundClosing, "idle Interrupt must persist an interrupted closing row for the open tool")
+
+		msgsBefore := h.sink.MessageCount()
+		progressBefore := len(h.sink.ProgressUpdates())
+		h.agent.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput, map[string]any{
+			"toolCallId": "tool-idle", "text": "late shell\n", "sequence": 1,
+		}))
+		h.agent.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolCompleted, map[string]any{
+			"toolCallId": "tool-idle", "success": true,
+		}))
+		assert.Equal(t, msgsBefore, h.sink.MessageCount())
+		assert.Equal(t, progressBefore, len(h.sink.ProgressUpdates()))
 	})
 }

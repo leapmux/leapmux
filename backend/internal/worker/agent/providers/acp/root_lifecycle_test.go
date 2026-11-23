@@ -254,8 +254,9 @@ func TestPromptSpanResetCannotEraseANativeTurnThatStartsConcurrently(t *testing.
 	gate := newACPLifecycleGate(t)
 	b.sink = &acpLifecycleGateSink{ProviderServices: agent.NewProviderServices(sink), resetGate: gate}
 	b.promptActive = true
+	b.interruptRequested = true
 	ended := make(chan struct{})
-	go func() { defer close(ended); b.persistFinishedTurn(json.RawMessage(`{"stopReason":"end_turn"}`)) }()
+	go func() { defer close(ended); b.persistFinishedTurn(json.RawMessage(`{"stopReason":"cancelled"}`)) }()
 	waitACPLifecycleSignal(t, gate.entered, "the old divider did not reach its span reset")
 	startNative := func() bool {
 		ok := b.BeginAgentTurn()

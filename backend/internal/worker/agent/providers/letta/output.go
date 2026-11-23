@@ -331,6 +331,20 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 	if a.IsDiscardingOutput() {
 		a.generation.DiscardMatching(func(string) bool { return true })
 		a.heldErrors = nil
+		ids := []string{""}
+		for id, child := range a.children {
+			if child.registered && !child.closed {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if target, ok := a.outputTarget(id); ok {
+				a.closeToolScope(id, target, completion)
+				providerkit.ResetSpansAndProgress(target)
+			}
+		}
+		a.setTurnActive(false)
 		return
 	}
 	ids := []string{""}
@@ -348,6 +362,7 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 			a.retryForTarget(id).Reset()
 			// The process is gone, so no native result can follow.
 			a.closeToolScope(id, target, completion)
+			providerkit.ResetSpansAndProgress(target)
 		}
 	}
 	a.setTurnActive(false)
@@ -433,6 +448,7 @@ func (a *Agent) onToolStart(payload []byte, delta *lettaDelta, target agent.Prov
 	spanID := "letta-tool-" + delta.ToolCallID
 	toolKey := lettaToolKey(subagentID, delta.ToolCallID)
 	a.Mu.Lock()
+	a.closedSpans.Reopen(toolKey)
 	if a.tools == nil {
 		a.tools = make(map[string]*lettaTool)
 	}
@@ -469,8 +485,13 @@ func (a *Agent) onToolReturn(payload []byte, delta *lettaDelta, target agent.Pro
 		return
 	}
 	_, present, valid := lettaReturnedData(delta)
-	a.Mu.Lock()
+	spanID := "letta-tool-" + delta.ToolCallID
 	toolKey := lettaToolKey(subagentID, delta.ToolCallID)
+	a.Mu.Lock()
+	if delta.ToolCallID != "" && a.closedSpans.WasClosed(toolKey) {
+		a.Mu.Unlock()
+		return
+	}
 	tool := a.tools[toolKey]
 	owned := tool != nil && tool.runID == delta.RunID
 	if owned && present && valid {
@@ -482,7 +503,6 @@ func (a *Agent) onToolReturn(payload []byte, delta *lettaDelta, target agent.Pro
 		a.persistRowTo(target, payload, agent.SpanInfo{})
 		return
 	}
-	spanID := "letta-tool-" + delta.ToolCallID
 	if tool != nil {
 		spanID = tool.spanID
 	}
@@ -551,12 +571,17 @@ func (a *Agent) onTurnFinished(payload []byte) {
 	a.flushGenerationFor("", completion)
 	a.finishOpenCompaction(a.sink, "", completion)
 	a.flushHeldErrors(a.sink, "", finished.Error)
-	// The closing rows of the calls that the turn outlived precede its turn end,
-	// as each result of the turn does.
-	a.closeToolScope("", a.sink, completion)
+	// On an interrupted turn, closing rows for unfinished calls precede the turn end.
+	// On normal and non-interrupted error turns, still-open calls stay alive across turns.
+	if completion == agent.MessageCompletionInterrupted {
+		a.closeToolScope("", a.sink, completion)
+	}
 	content := agent.MessageContent{Original: payload, Completion: completion}
 	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 		slog.Debug("letta: persist turn end failed", "agent_id", a.AgentID(), "error", err)
+	}
+	if completion == agent.MessageCompletionInterrupted {
+		providerkit.ResetSpansAndProgress(a.sink)
 	}
 	a.withdrawPermissions()
 	a.setTurnActive(false)

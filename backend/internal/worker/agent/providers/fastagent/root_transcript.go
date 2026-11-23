@@ -57,6 +57,12 @@ type rootJournalEntry struct {
 	memory   *rootRecord
 }
 
+type fastagentOpenSpan struct {
+	spanID       string
+	parentSpanID string
+	spanType     string
+}
+
 type rootTranscriptGroup struct {
 	mu                      sync.Mutex
 	owner                   *Agent
@@ -81,6 +87,7 @@ type rootTranscriptGroup struct {
 	prepare                 sync.Once
 	prepareErr, baselineErr error
 	scope                   agent.TranscriptScope
+	openSpans               []fastagentOpenSpan
 	anchor                  agent.CapturedTranscript
 	before                  *fastagentRootReceipt
 	captureID               string
@@ -471,8 +478,29 @@ func (root *rootTranscript) Finish(completion acp.RootTranscriptCompletion) erro
 		}
 		group.pending = nil
 		if group.prepareErr != nil && len(entries) == 0 {
+			discarded := !group.hasKeptTurn
+			needsReset := discarded || completion.Completion == agent.MessageCompletionInterrupted
 			group.mu.Unlock()
-			group.batch.Discard()
+			if !needsReset {
+				group.batch.Discard()
+				return
+			}
+			group.owner.rootMu.Lock()
+			if group.owner.rootClosing {
+				group.owner.rootMu.Unlock()
+				group.batch.Discard()
+				finishErr = errors.New("the Fast Agent archive worker is closed")
+				return
+			}
+			group.owner.rootArchiveWG.Add(1)
+			group.owner.rootMu.Unlock()
+			go func() {
+				defer group.owner.rootArchiveWG.Done()
+				stream := &rootTranscriptStream{group: group, discarded: discarded, completion: completion.Completion}
+				if err := group.batch.PrepareStream(stream.next); err != nil && !agent.OutputRetained(err) {
+					slog.Error("reset Fast Agent root spans on empty stream", "session_id", group.start.SessionID, "error", err)
+				}
+			}()
 			return
 		}
 		group.mu.Unlock()
@@ -577,7 +605,7 @@ func (group *rootTranscriptGroup) publish(live []*rootJournalEntry, eligible boo
 			selected = slices.Insert(slices.Clone(selected), index, entry)
 		}
 	}
-	stream := &rootTranscriptStream{group: group, entries: selected}
+	stream := &rootTranscriptStream{group: group, entries: selected, discarded: !kept, completion: completion}
 	if err := group.batch.PrepareStream(stream.next); err != nil && !agent.OutputRetained(err) {
 		directory := ""
 		if group.journal != nil {
@@ -620,7 +648,47 @@ func (group *rootTranscriptGroup) abort(err error) {
 	})
 }
 
-func (group *rootTranscriptGroup) captureOne(record *rootRecord) (agent.CapturedTranscriptOperation, error) {
+func (group *rootTranscriptGroup) recordOpenSpan(id, parent, spanType string) {
+	if id == "" {
+		return
+	}
+	for i := range group.openSpans {
+		if group.openSpans[i].spanID == id {
+			group.openSpans[i].parentSpanID = parent
+			group.openSpans[i].spanType = spanType
+			return
+		}
+	}
+	group.openSpans = append(group.openSpans, fastagentOpenSpan{
+		spanID:       id,
+		parentSpanID: parent,
+		spanType:     spanType,
+	})
+}
+
+func (group *rootTranscriptGroup) recordCloseSpan(id string) {
+	if id == "" {
+		return
+	}
+	group.openSpans = slices.DeleteFunc(group.openSpans, func(open fastagentOpenSpan) bool {
+		return open.spanID == id
+	})
+}
+
+func (a *Agent) removeOpenRootSpan(id string) bool {
+	if id == "" {
+		return false
+	}
+	a.rootMu.Lock()
+	defer a.rootMu.Unlock()
+	before := len(a.openRootSpans)
+	a.openRootSpans = slices.DeleteFunc(a.openRootSpans, func(open fastagentOpenSpan) bool {
+		return open.spanID == id
+	})
+	return len(a.openRootSpans) != before
+}
+
+func (group *rootTranscriptGroup) captureOne(record *rootRecord, resetOnTurnEnd bool) (agent.CapturedTranscriptOperation, error) {
 	if group.scope == nil {
 		var err error
 		group.scope, err = group.delegate.TranscriptScopeFor(group.anchor)
@@ -655,25 +723,55 @@ func (group *rootTranscriptGroup) captureOne(record *rootRecord) (agent.Captured
 		scope.SetSpanType(span.SpanID, span.SpanType)
 		if !span.NoSpan {
 			scope.OpenSpan(span.SpanID, span.ParentSpanID)
+			group.recordOpenSpan(span.SpanID, span.ParentSpanID, span.SpanType)
 		}
 	}
 	if span.Closing {
 		scope.CloseSpan(span.SpanID)
+		group.recordCloseSpan(span.SpanID)
+		if group.owner.removeOpenRootSpan(span.SpanID) {
+			group.delegate.CloseSpan(span.SpanID)
+		}
 	}
-	if record.kind == rootRecordTurnEnd {
+	if record.kind == rootRecordTurnEnd && resetOnTurnEnd {
 		scope.ResetSpans()
+		group.openSpans = nil
 	}
 	return operation, nil
 }
 
 type rootTranscriptStream struct {
-	group   *rootTranscriptGroup
-	entries []*rootJournalEntry
-	index   int
-	current *rootRecord
+	group      *rootTranscriptGroup
+	entries    []*rootJournalEntry
+	index      int
+	current    *rootRecord
+	seeded     bool
+	discarded  bool
+	completion agent.MessageCompletion
 }
 
 func (stream *rootTranscriptStream) next() (agent.CapturedTranscriptOperation, bool, error) {
+	if !stream.seeded {
+		a := stream.group.owner
+		a.rootMu.Lock()
+		prior := slices.Clone(a.openRootSpans)
+		a.rootMu.Unlock()
+		if !stream.discarded && len(stream.entries) > 0 {
+			if stream.group.scope == nil {
+				scope, err := stream.group.delegate.TranscriptScopeFor(stream.group.anchor)
+				if err != nil {
+					return agent.CapturedTranscriptOperation{}, false, err
+				}
+				stream.group.scope = scope
+			}
+			for _, open := range prior {
+				stream.group.scope.SetSpanType(open.spanID, open.spanType)
+				stream.group.scope.OpenSpan(open.spanID, open.parentSpanID)
+			}
+		}
+		stream.group.openSpans = prior
+		stream.seeded = true
+	}
 	if stream.index == len(stream.entries) {
 		if stream.group.journal != nil {
 			stream.group.mu.Lock()
@@ -689,6 +787,40 @@ func (stream *rootTranscriptStream) next() (agent.CapturedTranscriptOperation, b
 				return agent.CapturedTranscriptOperation{}, false, err
 			}
 		}
+		a := stream.group.owner
+		if stream.completion == agent.MessageCompletionInterrupted || stream.discarded {
+			a.rootMu.Lock()
+			cleared := a.openRootSpans
+			a.openRootSpans = nil
+			a.rootMu.Unlock()
+			for _, open := range cleared {
+				if !a.HasOpenRootTool(open.spanID) {
+					stream.group.delegate.CloseSpan(open.spanID)
+				}
+			}
+		} else {
+			surviving := make([]fastagentOpenSpan, 0, len(stream.group.openSpans))
+			survivingIDs := make(map[string]struct{}, len(stream.group.openSpans))
+			for _, open := range stream.group.openSpans {
+				if a.HasOpenRootTool(open.spanID) {
+					surviving = append(surviving, open)
+					survivingIDs[open.spanID] = struct{}{}
+				}
+			}
+			a.rootMu.Lock()
+			prior := a.openRootSpans
+			a.openRootSpans = surviving
+			a.rootMu.Unlock()
+			for _, old := range prior {
+				if _, kept := survivingIDs[old.spanID]; !kept && !a.HasOpenRootTool(old.spanID) {
+					stream.group.delegate.CloseSpan(old.spanID)
+				}
+			}
+			for _, open := range surviving {
+				stream.group.delegate.SetSpanType(open.spanID, open.spanType)
+				stream.group.delegate.OpenSpan(open.spanID, open.parentSpanID)
+			}
+		}
 		stream.group.mu.Lock()
 		stream.group.entries = nil
 		stream.group.mu.Unlock()
@@ -702,7 +834,8 @@ func (stream *rootTranscriptStream) next() (agent.CapturedTranscriptOperation, b
 		}
 		stream.current = record
 	}
-	operation, err := stream.group.captureOne(stream.current)
+	resetOnTurnEnd := stream.completion == agent.MessageCompletionInterrupted || stream.discarded
+	operation, err := stream.group.captureOne(stream.current, resetOnTurnEnd)
 	if err != nil {
 		return agent.CapturedTranscriptOperation{}, false, err
 	}

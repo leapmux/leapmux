@@ -478,7 +478,9 @@ func (a *Agent) endActorTurn(payload mimoActorStatus) {
 	a.endLiveCompactions(payload.ActorID)
 	status, completion := actorOutcomeStatus(payload.LastOutcome)
 	a.flushActorText(payload.ActorID, completion)
-	a.closeUnfinishedTools(payload.ActorID, completion)
+	if completion == agent.MessageCompletionInterrupted {
+		a.closeUnfinishedTools(payload.ActorID, completion)
+	}
 	childID, ok := a.ensureActorTranscript(payload.ActorID)
 
 	a.Mu.Lock()

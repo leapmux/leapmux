@@ -106,3 +106,51 @@ func TestQoderStoppedChildDropsItsTaskID(t *testing.T) {
 	assert.ErrorIs(t, a.InterruptChild("spawn-1", agent.StopContext{}), agent.ErrChildRouteNotReady)
 	assert.Empty(t, script.subtypes())
 }
+
+func TestQoderChildStreamToolTrackedAndClosedOnFinishChildTask(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		status     string
+		wantStatus bgtask.Status
+		wantComp   agent.MessageCompletion
+	}{
+		{name: "stopped child", status: "stopped", wantStatus: bgtask.StatusStopped, wantComp: agent.MessageCompletionInterrupted},
+		{name: "failed child", status: "failed", wantStatus: bgtask.StatusFailed, wantComp: agent.MessageCompletionError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.HandleOutput([]byte(qoderChildStarted))
+			row, found := sink.BackgroundTask("spawn-1")
+			require.True(t, found)
+			child := sink.Child(row.ChildAgentID)
+			require.NotNil(t, child)
+
+			// Assemble one tool_use via child stream_event and one via direct child assistant frame.
+			a.HandleOutput([]byte(`{"type":"stream_event","parent_tool_use_id":"spawn-1","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"stream-tool-1","name":"Bash","input":{}}}}`))
+			a.HandleOutput([]byte(`{"type":"stream_event","parent_tool_use_id":"spawn-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"sleep 30\"}"}}}`))
+			a.HandleOutput([]byte(`{"type":"stream_event","parent_tool_use_id":"spawn-1","event":{"type":"content_block_stop","index":0}}`))
+			a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"spawn-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"direct-tool-2","name":"Read","input":{"file_path":"note.txt"}}]}}`))
+			require.Empty(t, child.ClosedSpans())
+
+			a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"spawn-1","status":"` + tc.status + `","summary":"Child ended"}`))
+
+			row, found = sink.BackgroundTask("spawn-1")
+			require.True(t, found)
+			assert.Equal(t, tc.wantStatus, row.Status)
+			assert.Equal(t, []string{"stream-tool-1", "direct-tool-2"}, child.ClosedSpans())
+			assert.Contains(t, child.TurnLifecycle(), "reset_spans")
+			assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+
+			var closedComps []agent.MessageCompletion
+			for _, msg := range child.Messages() {
+				if msg.Closing {
+					closedComps = append(closedComps, msg.Completion)
+				}
+			}
+			assert.Equal(t, []agent.MessageCompletion{tc.wantComp, tc.wantComp}, closedComps)
+		})
+	}
+}

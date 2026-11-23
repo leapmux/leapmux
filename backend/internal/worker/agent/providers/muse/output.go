@@ -194,6 +194,7 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		return
 	}
 	if existing == nil {
+		state.closedSpans.Reopen(item.Item.ID)
 		existing = &itemState{deltas: make(map[string]string), cursors: make(map[string]bool), order: state.nextItemOrder}
 		state.nextItemOrder++
 		state.items[item.Item.ID] = existing
@@ -213,7 +214,8 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		existing.raw = slices.Clone(raw)
 		existing.nativeItemRaw = nil
 	}
-	transcriptDone := existing.retainedRevision >= item.Item.Revision
+	tool := item.Item.Kind == contracts.MuseItemKindToolCall || item.Item.Kind == contracts.MuseItemKindUserShell
+	transcriptDone := existing.retainedRevision >= item.Item.Revision || (tool && (existing.forceClosed || state.closedSpans.WasClosed(item.Item.ID)))
 	current := a.currentSessionState(item.SessionID, state)
 	if transcriptDone {
 		a.stateMu.Unlock()
@@ -225,7 +227,6 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		return
 	}
 	state.ensureNativeItemIndex().replace(previous, existing)
-	tool := item.Item.Kind == contracts.MuseItemKindToolCall || item.Item.Kind == contracts.MuseItemKindUserShell
 	open := tool && !existing.opened
 	if open {
 		existing.opened = true
@@ -294,10 +295,15 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		a.persistItem(state, existing, false)
 	}
 	if item.Item.Kind == contracts.MuseItemKindAgentMessage || item.Item.Kind == contracts.MuseItemKindReasoning {
-		if finished && existing.retainedRevision >= item.Item.Revision {
-			state.generation.Discard(item.Item.ID)
-			for _, scope := range existing.generationScopes {
-				state.generation.Discard(scope)
+		if finished {
+			if current {
+				state.sink.ReportProgress(agent.CompleteModelProgress(item.Item.ID))
+			}
+			if existing.retainedRevision >= item.Item.Revision {
+				state.generation.Discard(item.Item.ID)
+				for _, scope := range existing.generationScopes {
+					state.generation.Discard(scope)
+				}
 			}
 		}
 	}
@@ -412,7 +418,7 @@ func (a *Agent) handleDelta(raw []byte, state *sessionState) {
 	}
 	a.stateMu.Lock()
 	item := state.items[delta.ItemID]
-	if item == nil || item.params.Item.Status != contracts.MuseItemStatusInProgress || item.cursors[delta.Cursor] {
+	if item == nil || item.params.Item.Status != contracts.MuseItemStatusInProgress || item.forceClosed || state.closedSpans.WasClosed(delta.ItemID) || item.cursors[delta.Cursor] {
 		a.stateMu.Unlock()
 		return
 	}
@@ -514,7 +520,8 @@ func (a *Agent) finishTurn(raw []byte, id, turnID string) {
 	current := a.currentSessionState(id, state)
 	a.stateMu.Unlock()
 	state.retry.Reset()
-	if a.captureFinalization(state, id, turnID, raw, completion(frame.Params.Outcome)) == nil {
+	ended := completion(frame.Params.Outcome)
+	if a.captureFinalization(state, id, turnID, raw, ended, ended == agent.MessageCompletionInterrupted) == nil {
 		return
 	}
 	a.retryFinalizations(state)

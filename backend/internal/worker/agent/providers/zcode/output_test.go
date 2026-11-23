@@ -29,7 +29,7 @@ func TestZCodeToolInvocations_KeepNativeLookupInClosingMetadata(t *testing.T) {
 		{name: "batch", eventType: contracts.ZCodeEventToolUpdated, payload: `{"kind":"batch","toolCallIds":["call"],"successCount":1}`},
 		{name: "result without opening", withoutOpening: true, eventType: contracts.ZCodeEventToolUpdated, payload: `{"kind":"result","toolCallId":"call","assistantMessageId":"message","toolName":"GetWorkflowRun","result":{"content":"computed42"}}`},
 		{name: "error without opening", withoutOpening: true, eventType: contracts.ZCodeEventToolUpdated, payload: `{"kind":"error","toolCallId":"call","assistantMessageId":"message","toolName":"GetWorkflowRun","error":{"message":"failed"}}`},
-		{name: "incomplete", eventType: contracts.ZCodeEventTurnCompleted, payload: `{"resultType":"success"}`},
+		{name: "incomplete", eventType: contracts.ZCodeEventTurnCompleted, payload: `{"resultType":"cancelled"}`},
 	} {
 		t.Run(closing.name, func(t *testing.T) {
 			t.Parallel()
@@ -299,7 +299,7 @@ func TestHandleZCodeOutput_TurnCompleted_PersistsTheDividerAndResetsSpans(t *tes
 	require.Equal(t, 1, sink.MessageCount())
 	msg := sink.Messages()[0]
 	assert.True(t, msg.TurnEnd, "turn.completed must route through PersistTurnEnd")
-	assert.Equal(t, 1, sink.ResetSpanCount())
+	assert.Equal(t, 0, sink.ResetSpanCount(), "normal turn.completed keeps open spans alive")
 
 	var env map[string]any
 	require.NoError(t, json.Unmarshal(msg.Content, &env))
@@ -370,8 +370,8 @@ func TestHandleZCodeOutput_CancelledTurnClosesARunningCallAsInterruptedAndCounts
 	assert.Equal(t, []int{1}, agenttest.TurnToolUseCounts(t, sink.Messages()))
 }
 
-// A completed turn closes a call that never reported its end as failed, and the native
-// count already holds that call, so the divider states the native count alone.
+// A completed turn leaves an unfinished call open across the turn boundary,
+// and the divider states the native count alone.
 func TestHandleZCodeOutput_CompletedTurnClosesALostCallAsFailedAndKeepsTheNativeCount(t *testing.T) {
 	t.Parallel()
 
@@ -384,8 +384,9 @@ func TestHandleZCodeOutput_CompletedTurnClosesALostCallAsFailedAndKeepsTheNative
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{"response":"done","toolCallCount":2,"resultType":"success"}`))
 
-	require.Equal(t, 2, sink.MessageCount())
-	assert.Equal(t, agent.MessageCompletionError, sink.Messages()[0].Completion)
+	require.Equal(t, 1, sink.MessageCount())
+	assert.True(t, sink.Messages()[0].TurnEnd)
+	assert.Empty(t, sink.ClosedSpans())
 	assert.Equal(t, []int{2}, agenttest.TurnToolUseCounts(t, sink.Messages()))
 }
 
@@ -547,27 +548,188 @@ func TestHandleZCodeOutput_KeepsReasoningDeltasVerbatim(t *testing.T) {
 func TestHandleZCodeOutput_TurnFailurePersistsIncompleteToolOutput(t *testing.T) {
 	t.Parallel()
 
+	t.Run("interrupted Turn 2 closes Turn 1 and Turn 2 tools and resets progress when idle", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.ControlSink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"printf partial"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventTurnFailed,
+			`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+
+		// Non-interrupted error turn keeps the open tool and its live output progress alive.
+		require.Equal(t, 2, sink.MessageCount())
+		assert.False(t, sink.Messages()[0].Closing)
+		assert.True(t, sink.Messages()[1].TurnEnd)
+		assert.Empty(t, sink.ClosedSpans())
+		assert.Equal(t, int64(14), sink.ProgressSnapshot().OutputBytes)
+		for _, p := range sink.ProgressUpdates() {
+			assert.NotEqual(t, agent.ProgressOutputReset, p.Operation, "still-open tool output progress must survive non-interrupted turn end")
+		}
+
+		// An interrupted Turn 2 closes both Turn 1's and Turn 2's open non-background tools with their last frames.
+		a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-2", contracts.ZCodeEventTurnStarted, `{"turnNumber":2,"input":"next"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 6, "turn-2", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-2","toolName":"Bash","input":{"command":"sleep 30"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 7, "turn-2", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-2","outputBytes":9,"stdoutTail":"turn2 out"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 8, "turn-2", contracts.ZCodeEventTurnCompleted, `{"resultType":"cancelled"}`))
+
+		tool1Span := zcodeTestSpanID(t, sink, "tool-1")
+		tool2Span := zcodeTestSpanID(t, sink, "tool-2")
+		assert.Contains(t, sink.ClosedSpans(), tool1Span)
+		assert.Contains(t, sink.ClosedSpans(), tool2Span)
+
+		closings := make(map[string]agenttest.Message)
+		for _, row := range sink.Messages() {
+			if row.Closing {
+				closings[row.SpanID] = row
+			}
+		}
+		require.Contains(t, closings, tool1Span)
+		assert.JSONEq(t,
+			`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`,
+			zcodeEventPayload(t, closings[tool1Span].Content))
+		assert.Equal(t, agent.MessageCompletionInterrupted, closings[tool1Span].Completion)
+		require.Contains(t, closings, tool2Span)
+		assert.JSONEq(t,
+			`{"kind":"progress","toolCallId":"tool-2","outputBytes":9,"stdoutTail":"turn2 out"}`,
+			zcodeEventPayload(t, closings[tool2Span].Content))
+		assert.Equal(t, agent.MessageCompletionInterrupted, closings[tool2Span].Completion)
+
+		last := sink.Messages()[sink.MessageCount()-1]
+		assert.True(t, last.TurnEnd)
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("interrupted Turn 2 closes Turn 1 and Turn 2 tools while preserving background child and unsettled overlapping turn", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.ControlSink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"printf partial"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-bg","toolName":"Agent","input":{"prompt":"bg","run_in_background":true}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-1", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-bg","outputBytes":18,"stdoutTail":"bg progress output"}`))
+		bgSpan := zcodeTestSpanID(t, sink, "tool-bg")
+		seedZCodeLiveBackgroundChild(a, bgSpan, "child-bg")
+		a.HandleOutput(zcodeTurnEventLine(t, 6, "turn-1", contracts.ZCodeEventTurnFailed,
+			`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+		require.Empty(t, sink.ClosedSpans())
+
+		// Start an overlapping background turn that stays unsettled while Turn 2 is interrupted.
+		a.HandleOutput(zcodeTurnEventLine(t, 7, "turn-overlap", contracts.ZCodeEventTurnStarted,
+			`{"turnNumber":2,"inputSource":"background_task"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 8, "turn-overlap", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-overlap","toolName":"Bash","input":{"command":"sleep 60"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 9, "turn-overlap", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-overlap","outputBytes":11,"stdoutTail":"overlap out"}`))
+
+		// Open a tool in Turn 2 and interrupt Turn 2.
+		a.HandleOutput(zcodeTurnEventLine(t, 10, "turn-2", contracts.ZCodeEventTurnStarted, `{"turnNumber":3,"input":"next"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 11, "turn-2", contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"tool-2","toolName":"Bash","input":{"command":"sleep 30"}}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 12, "turn-2", contracts.ZCodeEventToolUpdated,
+			`{"kind":"progress","toolCallId":"tool-2","outputBytes":9,"stdoutTail":"turn2 out"}`))
+		a.HandleOutput(zcodeTurnEventLine(t, 13, "turn-2", contracts.ZCodeEventTurnCompleted, `{"resultType":"cancelled"}`))
+
+		tool1Span := zcodeTestSpanID(t, sink, "tool-1")
+		tool2Span := zcodeTestSpanID(t, sink, "tool-2")
+		overlapSpan := zcodeTestSpanID(t, sink, "tool-overlap")
+
+		assert.Contains(t, sink.ClosedSpans(), tool1Span)
+		assert.Contains(t, sink.ClosedSpans(), tool2Span)
+		assert.NotContains(t, sink.ClosedSpans(), bgSpan, "live background child must stay open on Turn 2 interrupt")
+		assert.NotContains(t, sink.ClosedSpans(), overlapSpan, "unsettled overlapping turn tool must stay open on Turn 2 interrupt")
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+		closings := make(map[string]agenttest.Message)
+		for _, row := range sink.Messages() {
+			if row.Closing {
+				closings[row.SpanID] = row
+			}
+		}
+		require.Contains(t, closings, tool1Span)
+		assert.JSONEq(t,
+			`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`,
+			zcodeEventPayload(t, closings[tool1Span].Content))
+		assert.Equal(t, agent.MessageCompletionInterrupted, closings[tool1Span].Completion)
+		require.Contains(t, closings, tool2Span)
+		assert.JSONEq(t,
+			`{"kind":"progress","toolCallId":"tool-2","outputBytes":9,"stdoutTail":"turn2 out"}`,
+			zcodeEventPayload(t, closings[tool2Span].Content))
+		assert.Equal(t, agent.MessageCompletionInterrupted, closings[tool2Span].Completion)
+		assert.NotContains(t, closings, bgSpan)
+		assert.NotContains(t, closings, overlapSpan)
+
+		assertZCodeToolOutputProgressLive(t, sink, bgSpan, "bg progress output")
+		assertZCodeToolOutputProgressLive(t, sink, overlapSpan, "overlap out")
+
+		// Confirm the unsettled overlapping turn's tool is still live and accepts its native result later.
+		a.HandleOutput(zcodeTurnEventLine(t, 14, "turn-overlap", contracts.ZCodeEventToolUpdated,
+			`{"kind":"result","toolCallId":"tool-overlap","result":{"content":"overlap done"}}`))
+		assert.Contains(t, sink.ClosedSpans(), overlapSpan)
+		last := sink.Messages()[sink.MessageCount()-1]
+		assert.True(t, last.Closing)
+		assert.Equal(t, overlapSpan, last.SpanID)
+		assert.JSONEq(t, `{"kind":"result","toolCallId":"tool-overlap","result":{"content":"overlap done"}}`, zcodeEventPayload(t, last.Content))
+	})
+}
+
+func seedZCodeLiveBackgroundChild(a *Agent, spanID, childAgentID string) {
+	a.children.mu.Lock()
+	if a.children.toolSpawns == nil {
+		a.children.toolSpawns = make(map[string]string)
+	}
+	if a.children.spawns == nil {
+		a.children.spawns = make(map[string]*zcodeSpawnRecord)
+	}
+	a.children.toolSpawns[spanID] = spanID
+	a.children.spawns[spanID] = &zcodeSpawnRecord{background: true, childAgentID: childAgentID}
+	a.children.mu.Unlock()
+}
+
+func assertZCodeToolOutputProgressLive(t *testing.T, sink *agenttest.ControlSink, spanID, wantTail string) {
+	t.Helper()
+	updates := sink.ProgressUpdates()
+	assert.Contains(t, updates, agent.OutputTailProgress(spanID, wantTail, false))
+	for _, update := range updates {
+		assert.NotEqual(t, agent.ProgressReset, update.Operation, "global progress reset must not wipe preserved tool progress")
+		if update.ScopeID == spanID {
+			assert.NotEqual(t, agent.ProgressOutputReset, update.Operation, "preserved tool output progress must not be reset")
+			assert.NotEqual(t, agent.ProgressOutputComplete, update.Operation, "preserved tool output progress must not be completed")
+		}
+	}
+}
+
+func TestHandleZCodeOutput_TurnEndPublishesWhenEarlierSettledTurnKeepsOpenTool(t *testing.T) {
+	t.Parallel()
+
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
-	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
-		`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"printf partial"}}`))
-	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
-		`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`))
-	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnFailed,
-		`{"error":{"type":"provider_error","code":"bad_gateway","message":"failed"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-1", contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"first"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-1", contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"tool-1","toolName":"Bash","input":{"command":"sleep 30"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-1", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
 
-	require.GreaterOrEqual(t, sink.MessageCount(), 3)
-	// The row is the LAST frame the agent sent for this call, byte for byte. An
-	// earlier build wrote a `result` event ZCode never sent, with a result object
-	// LeapMux invented. The partial output was already in the progress frame, and
-	// the failure is in LeapMux's own completion column.
-	assert.JSONEq(t,
-		`{"kind":"progress","toolCallId":"tool-1","outputBytes":14,"stdoutTail":"partial output"}`,
-		zcodeEventPayload(t, sink.Messages()[1].Content))
-	assert.Equal(t, agent.MessageCompletionError, sink.Messages()[1].Completion)
-	assert.True(t, sink.Messages()[1].Closing)
-	assert.Equal(t, zcodeTestSpanID(t, sink, "tool-1"), sink.Messages()[1].SpanID)
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn-2", contracts.ZCodeEventTurnStarted, `{"turnNumber":2,"input":"second"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-2", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+
+	require.Equal(t, 3, sink.MessageCount())
+	assert.True(t, sink.Messages()[1].TurnEnd, "Turn 1 divider must route through PersistTurnEnd")
+	assert.True(t, sink.Messages()[2].TurnEnd, "Turn 2 divider must route through PersistTurnEnd even while settled Turn 1 holds an open tool")
+	assert.Empty(t, sink.ClosedSpans(), "normal Turn 2 end keeps Turn 1's tool open")
 }
 
 // A tool call LeapMux knows of but the agent never announced has no opening row and
@@ -3136,7 +3298,7 @@ func TestHandleZCodeOutput_TurnOwnership_TwoBackgroundTurnsKeepSeparateState(t *
 	assert.Equal(t, 1, sink.NotificationCount())
 
 	a.HandleOutput(zcodeTurnEventLine(t, 7, "bg-1", contracts.ZCodeEventTurnCompleted,
-		`{"resultType":"success"}`))
+		`{"resultType":"cancelled"}`))
 
 	texts, closings = zcodePersistedTextsAndClosings(t, sink)
 	assert.Equal(t, []string{"two", "one"}, texts, "the first turn's text flushes once, at its own end")

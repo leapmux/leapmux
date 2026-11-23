@@ -821,3 +821,126 @@ func TestSteerIgnoresAMalformedEmptyEcho(t *testing.T) {
 	h.feed(fp, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":""}]}}`)
 	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, h.sink.SteerEchoReports())
 }
+
+func TestAmpIdleInterruptAndIdleProcessExitCloseOpenToolsAndResetSpans(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt closes open tools and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		fp := h.send("run command")
+		h.feed(fp, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"cmd":"sleep 30"}}],"stop_reason":"tool_use"}}`)
+		h.feed(fp, textLine("still running", stopReasonEndTurn))
+		require.False(t, h.turnActive())
+		require.Empty(t, h.sink.ClosedSpans())
+
+		require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
+		assert.Contains(t, h.sink.ClosedSpans(), "tu-1")
+		assert.Contains(t, h.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, h.sink.ProgressUpdates(), agent.ResetProgress())
+
+		var foundClosing bool
+		for _, m := range h.sink.Messages() {
+			if m.Closing && m.SpanID == "tu-1" {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionInterrupted, m.Completion)
+			}
+		}
+		assert.True(t, foundClosing, "idle interrupt must persist a closing row for the open tool")
+	})
+
+	t.Run("idle process exit closes open tools with process exit completion and resets spans", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		fp := h.send("run command")
+		h.feed(fp, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-2","name":"Bash","input":{"cmd":"sleep 30"}}],"stop_reason":"tool_use"}}`)
+		h.feed(fp, textLine("still running", stopReasonEndTurn))
+		require.False(t, h.turnActive())
+		require.Empty(t, h.sink.ClosedSpans())
+
+		fp.exit()
+		fp.awaitHandled(t)
+
+		assert.Contains(t, h.sink.ClosedSpans(), "tu-2")
+		assert.Contains(t, h.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, h.sink.ProgressUpdates(), agent.ResetProgress())
+
+		var foundClosing bool
+		for _, m := range h.sink.Messages() {
+			if m.Closing && m.SpanID == "tu-2" {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionError, m.Completion)
+			}
+		}
+		assert.True(t, foundClosing, "unexpected idle process exit must close open tools as error")
+	})
+
+	t.Run("idle discarding process exit closes open tools and resets spans without persisting rows", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		fp := h.send("run command")
+		h.feed(fp, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-discard","name":"Bash","input":{"cmd":"sleep 30"}}],"stop_reason":"tool_use"}}`)
+		h.feed(fp, textLine("still running", stopReasonEndTurn))
+		require.False(t, h.turnActive())
+		require.Empty(t, h.sink.ClosedSpans())
+
+		msgsBefore := h.sink.MessageCount()
+		h.agent.DiscardOutput()
+		fp.exit()
+		fp.awaitHandled(t)
+
+		assert.Equal(t, msgsBefore, h.sink.MessageCount(), "discarding exit must persist no closing or turn-end rows")
+		assert.Contains(t, h.sink.ClosedSpans(), "tu-discard")
+		assert.Contains(t, h.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, h.sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("idle Stop closes open tools and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		fp := h.send("run command")
+		h.feed(fp, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-stop","name":"Bash","input":{"cmd":"sleep 30"}}],"stop_reason":"tool_use"}}`)
+		h.feed(fp, textLine("still running", stopReasonEndTurn))
+		require.False(t, h.turnActive())
+		require.Empty(t, h.sink.ClosedSpans())
+
+		h.agent.Stop()
+
+		assert.Contains(t, h.sink.ClosedSpans(), "tu-stop")
+		assert.Contains(t, h.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, h.sink.ProgressUpdates(), agent.ResetProgress())
+
+		var foundClosing bool
+		for _, m := range h.sink.Messages() {
+			if m.Closing && m.SpanID == "tu-stop" {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionInterrupted, m.Completion)
+			}
+		}
+		assert.True(t, foundClosing, "idle Stop must persist an interrupted closing row for the open tool")
+	})
+
+	t.Run("idle Stop without a live process closes remaining open tools and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		h.feed(nil, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-stop-noproc","name":"Bash","input":{"cmd":"sleep 30"}}],"stop_reason":"tool_use"}}`)
+		h.feed(nil, textLine("still running", stopReasonEndTurn))
+		require.False(t, h.turnActive())
+		require.Empty(t, h.sink.ClosedSpans())
+
+		h.agent.Stop()
+
+		assert.Contains(t, h.sink.ClosedSpans(), "tu-stop-noproc")
+		assert.Contains(t, h.sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, h.sink.ProgressUpdates(), agent.ResetProgress())
+
+		var foundClosing bool
+		for _, m := range h.sink.Messages() {
+			if m.Closing && m.SpanID == "tu-stop-noproc" {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionInterrupted, m.Completion)
+			}
+		}
+		assert.True(t, foundClosing, "idle Stop without a live process must persist an interrupted closing row for remaining open tools")
+	})
+}

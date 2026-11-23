@@ -69,8 +69,13 @@ func (a *Agent) toolOutputTarget(subagentID, messageType string) (agent.Provider
 }
 
 func (a *Agent) onToolProgress(payload []byte, delta *lettaDelta, target agent.ProviderServices, subagentID string) {
+	toolKey := lettaToolKey(subagentID, delta.ToolCallID)
 	a.Mu.Lock()
-	tool := a.tools[lettaToolKey(subagentID, delta.ToolCallID)]
+	if delta.ToolCallID != "" && a.closedSpans.WasClosed(toolKey) {
+		a.Mu.Unlock()
+		return
+	}
+	tool := a.tools[toolKey]
 	owned := tool != nil && delta.RunID != "" && tool.runID == delta.RunID && !tool.ended()
 	a.Mu.Unlock()
 	span := agent.SpanInfo{}
@@ -94,8 +99,13 @@ func (a *Agent) onClientToolEnd(payload []byte, delta *lettaDelta, target agent.
 		a.onToolReturn(payload, delta, target, subagentID)
 		return
 	}
+	toolKey := lettaToolKey(subagentID, delta.ToolCallID)
 	a.Mu.Lock()
-	tool := a.tools[lettaToolKey(subagentID, delta.ToolCallID)]
+	if delta.ToolCallID != "" && a.closedSpans.WasClosed(toolKey) {
+		a.Mu.Unlock()
+		return
+	}
+	tool := a.tools[toolKey]
 	owned := tool != nil && tool.runID == delta.RunID && valid &&
 		(delta.Status == contracts.LettaToolStatusSuccess || delta.Status == contracts.LettaToolStatusError)
 	if owned {
@@ -135,7 +145,15 @@ func (a *Agent) finishToolOutputScope(subagentID string, target agent.ProviderSe
 // it sends `turn_finished`, and a process that ended sends nothing.
 func (a *Agent) closeToolScope(subagentID string, target agent.ProviderServices, completion agent.MessageCompletion) {
 	discarding := a.IsDiscardingOutput()
-	for _, tool := range a.takeScopeTools(subagentID) {
+	tools := a.takeScopeTools(subagentID)
+	if len(tools) > 0 {
+		a.Mu.Lock()
+		for _, tool := range tools {
+			a.closedSpans.MarkClosed(lettaToolKey(tool.subagentID, tool.id))
+		}
+		a.Mu.Unlock()
+	}
+	for _, tool := range tools {
 		target.ReportProgress(agent.CompleteOutputProgress(tool.spanID))
 		if !discarding {
 			a.persistContentTo(target, agent.MessageContent{Original: tool.row, Completion: tool.closingCompletion(completion)},

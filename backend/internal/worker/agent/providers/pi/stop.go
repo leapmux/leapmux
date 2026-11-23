@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 const piStopAbortDeliveryTimeout = time.Second
@@ -40,7 +41,7 @@ func (a *Agent) Stop() {
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // requestPiShutdownAbort permits delivery until its deadline, then returns the helper's completion channel.
@@ -83,7 +84,7 @@ func (a *Agent) Wait() error {
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 	return err
 }
 
@@ -105,7 +106,18 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return fmt.Errorf("agent is stopped")
 	}
 	if !turnActive {
-		return a.settleOpenDialogs(scope, stop)
+		settleErr := a.settleOpenDialogs(scope, stop)
+		if settleErr == nil {
+			a.Mu.Lock()
+			stillIdle := !a.currentTurnActive && !a.StoppedLocked() && a.turnGeneration == scope.turnGeneration
+			a.Mu.Unlock()
+			if stillIdle {
+				a.persistIncompletePiTools(agent.MessageCompletionInterrupted)
+				a.ResetCumulativeOutput()
+				providerkit.ResetSpansAndProgress(a.sink)
+			}
+		}
+		return settleErr
 	}
 	wait, writeErr := a.beginPiCommandObserved(CommandAbort, nil, func(raw json.RawMessage) {
 		a.observePiAbortReply(scope, raw)

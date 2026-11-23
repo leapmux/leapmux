@@ -187,13 +187,132 @@ func TestCodexInterruptStopsOnlyCommandsFromItsTurn(t *testing.T) {
 
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	requests := captured()
-	require.Len(t, requests, 3, "an interrupted model turn must also stop its native command process")
+	require.Len(t, requests, 4, "an interrupted model turn stops every open command on its thread across turns")
 	assert.Equal(t, "turn/interrupt", requests[0].Method)
 	assert.Equal(t, "thread/backgroundTerminals/list", requests[1].Method)
 	assert.Equal(t, "thread/backgroundTerminals/terminate", requests[2].Method)
-	assert.JSONEq(t, `{"threadId":"root-thread","processId":"41"}`, string(requests[2].Params))
+	assert.Equal(t, "thread/backgroundTerminals/terminate", requests[3].Method)
+	var terminated []string
+	for _, req := range requests[2:] {
+		var p struct {
+			ThreadID  string `json:"threadId"`
+			ProcessID string `json:"processId"`
+		}
+		require.NoError(t, json.Unmarshal(req.Params, &p))
+		assert.Equal(t, "root-thread", p.ThreadID)
+		terminated = append(terminated, p.ProcessID)
+	}
+	assert.ElementsMatch(t, []string{"41", "42"}, terminated)
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
-	assert.Len(t, captured(), 3, "the same stop must not repeat native requests")
+	assert.Len(t, captured(), 4, "the same stop must not repeat native requests")
+}
+
+func TestCodexIdleInterruptTerminatesAndClosesOnlySnapshottedItems(t *testing.T) {
+	t.Parallel()
+	var a *Agent
+	var sink *agenttest.ControlSink
+	var captured func() []capturedCodexStopRequest
+	a, sink, captured = newCommandStopAgent(t, func(request capturedCodexStopRequest) agenttest.RPCReply {
+		switch request.Method {
+		case codexListCommandProcessesMethod:
+			return agenttest.RPCReply{Result: json.RawMessage(`{"data":[{"itemId":"old-cmd","processId":"51"}]}`)}
+		case codexTerminateCommandProcessMethod:
+			// Simulate a concurrent Turn 2 opening a newer command while stopCodexCommands runs.
+			a.Mu.Lock()
+			a.mainTurn.id = "turn-2"
+			a.Mu.Unlock()
+			a.sink.OpenSpan("new-cmd", "")
+			rememberCommandForStop(t, a, "root-thread", "turn-2", "new-cmd", contracts.CodexItemTypeCommandExecution)
+			return agenttest.RPCReply{Result: json.RawMessage(`{"terminated":true}`)}
+		default:
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		}
+	})
+	a.mainTurn.id = ""
+	a.sink.OpenSpan("old-cmd", "")
+	rememberCommandForStop(t, a, "root-thread", "turn-1", "old-cmd", contracts.CodexItemTypeCommandExecution)
+
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	requests := captured()
+	require.Len(t, requests, 2)
+	assert.Equal(t, codexListCommandProcessesMethod, requests[0].Method)
+	assert.Equal(t, codexTerminateCommandProcessMethod, requests[1].Method)
+	assert.JSONEq(t, `{"threadId":"root-thread","processId":"51"}`, string(requests[1].Params))
+
+	// Only the snapshotted old-cmd was closed; Turn 2's new-cmd stays open and no global ResetSpans ran.
+	assert.Contains(t, sink.ClosedSpans(), "old-cmd")
+	assert.NotContains(t, sink.ClosedSpans(), "new-cmd")
+	assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+	a.Mu.Lock()
+	_, oldStillOpen := a.incompleteTools["old-cmd"]
+	_, newStillOpen := a.incompleteTools["new-cmd"]
+	a.Mu.Unlock()
+	assert.False(t, oldStillOpen)
+	assert.True(t, newStillOpen)
+}
+
+func TestCodexIdleInterruptSkipsWhenTurnHeldAndStillClosesSpansOnStopError(t *testing.T) {
+	t.Parallel()
+	t.Run("held turn does not run idle close", func(t *testing.T) {
+		t.Parallel()
+		a, sink, captured := newCommandStopAgent(t, func(request capturedCodexStopRequest) agenttest.RPCReply {
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+		a.mainTurn.id = ""
+		a.pendingStart = &codexPendingTurnStart{}
+		a.sink.OpenSpan("cmd-1", "")
+		rememberCommandForStop(t, a, "root-thread", "turn-1", "cmd-1", contracts.CodexItemTypeCommandExecution)
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Empty(t, captured())
+		assert.NotContains(t, sink.ClosedSpans(), "cmd-1")
+	})
+
+	t.Run("stop error still closes local spans and resets progress", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newCommandStopAgent(t, func(request capturedCodexStopRequest) agenttest.RPCReply {
+			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"list failed"}`)}
+		})
+		a.mainTurn.id = ""
+		a.sink.OpenSpan("cmd-err", "")
+		rememberCommandForStop(t, a, "root-thread", "turn-1", "cmd-err", contracts.CodexItemTypeCommandExecution)
+		a.sink.ReportProgress(agent.OutputTailProgress("cmd-err", "partial", false))
+
+		err := a.Interrupt(agent.StopContext{})
+		require.ErrorContains(t, err, "list failed")
+		assert.Contains(t, sink.ClosedSpans(), "cmd-err")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+	})
+}
+
+func TestCodexStopWaitAndReplaceMainThreadResetSpans(t *testing.T) {
+	t.Parallel()
+	for _, action := range []string{"stop", "wait", "replace"} {
+		t.Run(action, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "main-thread"
+			a.sink.OpenSpan("cmd-open", "")
+			rememberCommandForStop(t, a, "main-thread", "turn-1", "cmd-open", contracts.CodexItemTypeCommandExecution)
+
+			switch action {
+			case "stop":
+				a.SimulateExitForTest()
+				a.Stop()
+			case "wait":
+				a.SimulateExitForTest()
+				require.NoError(t, a.Wait())
+			case "replace":
+				_, err := a.replaceMainThread(codexThreadResult{ID: "fresh-thread"})
+				require.NoError(t, err)
+			}
+			assert.Contains(t, sink.ClosedSpans(), "cmd-open")
+			assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		})
+	}
 }
 
 func TestCodexCommandListValidation(t *testing.T) {

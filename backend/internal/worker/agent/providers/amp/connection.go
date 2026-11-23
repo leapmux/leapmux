@@ -278,6 +278,11 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 	// and its row must not claim a stop.
 	a.closeAllShellRows(processShellExitStatus(proc))
 	if stopped || a.discarding() {
+		a.mu.Lock()
+		open := a.takeOpenToolsLocked()
+		a.mu.Unlock()
+		a.closeIncompleteTools(open, proc.ProcessExitCompletion())
+		providerkit.ResetSpansAndProgress(a.sink)
 		return
 	}
 
@@ -286,7 +291,7 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 	recoverSteers := a.prepareSteerRecovery()
 	message := exitMessage(proc, threadID, stderr)
 	ended, turnFailed := false, false
-	a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
+	a.endTurn(true, func(turn turnState) (agent.MessageCompletion, []byte) {
 		ended = true
 		if turn.interruptRequested {
 			return agent.MessageCompletionInterrupted, errorResultLine(threadID, interruptedMessage)
@@ -294,6 +299,13 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 		turnFailed = true
 		return agent.MessageCompletionError, errorResultLine(threadID, message)
 	})
+	if !ended {
+		a.mu.Lock()
+		open := a.takeOpenToolsLocked()
+		a.mu.Unlock()
+		a.closeIncompleteTools(open, proc.ProcessExitCompletion())
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	resume := proc.resumesThreadAfterExit(turnFailed)
 	if !ended && !proc.sawResult.Load() && !proc.IntentionalStopRequested() {
 		// An idle process died with no `result`. Nothing awaits a reply, so the

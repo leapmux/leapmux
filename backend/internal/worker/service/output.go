@@ -409,15 +409,42 @@ func (h *OutputHandler) bgTaskCtx() context.Context {
 func (h *OutputHandler) ResetSpanTracker(agentID string) {
 	mutation := h.transcriptMutationMutex(agentID)
 	mutation.Lock()
-	defer mutation.Unlock()
+	var publish bool
 	if value, found := h.rootSinks.Load(agentID); found {
 		sink := value.(*agentOutputSink)
 		if sink.usesLifetimeSpanTracker() {
-			sink.rebindSpanTracker()
-			return
+			publish = sink.rebindSpanTrackerLocked()
+		} else {
+			sink.clearPermissionChecks()
+			publish = sink.currentSpanTracker().ResetChanged()
+			h.trackers.reset(agentID)
+		}
+	} else if h.trackers != nil {
+		if tracker, kind, ok := h.trackers.get(agentID); ok {
+			publish = tracker.ResetChanged() && kind == spanTrackerRoot
 		}
 	}
-	h.trackers.reset(agentID)
+	mutation.Unlock()
+	if publish {
+		h.publishSpanActivity(agentID, settleImmediate)
+	}
+}
+
+// hasOpenRootSpans reports whether the root agent currently holds any active
+// span without allocating.
+func (h *OutputHandler) hasOpenRootSpans(rootAgentID string) bool {
+	if rootAgentID == "" {
+		return false
+	}
+	if value, ok := h.rootSinks.Load(rootAgentID); ok {
+		return value.(*agentOutputSink).currentSpanTracker().HasActiveSpans()
+	}
+	if h.trackers != nil {
+		if tracker, kind, ok := h.trackers.get(rootAgentID); ok && kind == spanTrackerRoot {
+			return tracker.HasActiveSpans()
+		}
+	}
+	return false
 }
 
 // SetAutoRetryFuncs wires the automatic-retry callbacks the input queue owns:
@@ -885,11 +912,7 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 		outputGeneration: source.OutputGeneration,
 		messageSession:   &nativeSessionFact{id: source.AgentSessionID},
 	}
-	if s.usesLifetimeSpanTracker() {
-		s.spanTracker.Store(h.trackers.replace(agentID, spanTrackerRoot))
-	} else {
-		s.spanTracker.Store(h.rootTracker(agentID))
-	}
+	s.spanTracker.Store(h.trackers.replace(agentID, spanTrackerRoot))
 	s.progress = newGenerationProgressPublisher(&h.progressPublishers, func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	}, s.currentMessageSessionID)
@@ -1170,8 +1193,13 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 	content.WriteReceipt.RecordStoredWrite(true)
 	owner.activity.mu.Lock()
 	if owner.currentLocked() {
+		tracker := s.currentSpanTracker()
 		s.sessionInfoMu.Lock()
-		clear(s.activePermissionChecks)
+		for key := range s.activePermissionChecks {
+			if !tracker.HasSpan(key.spanID) {
+				delete(s.activePermissionChecks, key)
+			}
+		}
 		s.sessionInfoMu.Unlock()
 		if countKnown {
 			value := count
@@ -1349,15 +1377,49 @@ func (s *agentOutputSink) currentSpanTracker() *SpanTracker {
 	return s.spanTracker.Load()
 }
 
-func (s *agentOutputSink) rebindSpanTracker() {
+func (s *agentOutputSink) deletePermissionChecksForSpan(spanID string) {
+	if spanID == "" {
+		return
+	}
+	s.sessionInfoMu.Lock()
+	for key := range s.activePermissionChecks {
+		if key.spanID == spanID {
+			delete(s.activePermissionChecks, key)
+		}
+	}
+	s.sessionInfoMu.Unlock()
+}
+
+func (s *agentOutputSink) clearPermissionChecks() {
+	s.sessionInfoMu.Lock()
+	clear(s.activePermissionChecks)
+	s.sessionInfoMu.Unlock()
+}
+
+func (s *agentOutputSink) rebindSpanTrackerLocked() bool {
+	s.clearPermissionChecks()
+	hadActive := s.currentSpanTracker() != nil && s.currentSpanTracker().HasActiveSpans()
 	kind := spanTrackerRoot
 	if s.root != nil {
 		kind = spanTrackerChild
 	}
 	s.spanTracker.Store(s.h.trackers.replace(s.agentID, kind))
+	return s.root == nil && s.registeredCurrent() && hadActive
+}
+
+func (s *agentOutputSink) rebindSpanTracker() {
+	if s.rebindSpanTrackerLocked() {
+		s.h.publishSpanActivity(s.agentID, settleImmediate)
+	}
 }
 
 func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
+	if s.root == nil && s.registeredCurrent() {
+		if s.currentSpanTracker().OpenSpanChanged(spanID, parentSpanID) {
+			s.h.publishSpanActivity(s.agentID, settleImmediate)
+		}
+		return
+	}
 	s.currentSpanTracker().OpenSpan(spanID, parentSpanID)
 }
 
@@ -1365,10 +1427,24 @@ func (s *agentOutputSink) CloseSpan(spanID string) {
 	// The call behind a closed span keeps no live tail. See PersistMessage for why
 	// the drop sits on both events.
 	s.progress.dropTail(spanID)
+	s.deletePermissionChecksForSpan(spanID)
+	if s.root == nil && s.registeredCurrent() {
+		if s.currentSpanTracker().CloseSpanChanged(spanID) {
+			s.h.publishSpanActivity(s.agentID, settleHeld)
+		}
+		return
+	}
 	s.currentSpanTracker().CloseSpan(spanID)
 }
 
 func (s *agentOutputSink) ResetSpans() {
+	s.clearPermissionChecks()
+	if s.root == nil && s.registeredCurrent() {
+		if s.currentSpanTracker().ResetChanged() {
+			s.h.publishSpanActivity(s.agentID, settleImmediate)
+		}
+		return
+	}
 	s.currentSpanTracker().Reset()
 }
 
@@ -2479,8 +2555,9 @@ func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[strin
 	}
 }
 
-// SessionInfoReplayEvents restores cached state and active permission checks after a reconnect.
-// The counters come first. Each check then gets its own event, in session and span order.
+// SessionInfoReplayEvents restores cached state, active running-tool output
+// tails, and active permission checks after a reconnect. The counters come
+// first, followed by each active tail and each check in session and span order.
 // These events use sequence -1 because no transcript row stores live state.
 func (h *OutputHandler) SessionInfoReplayEvents(agentID string) []*leapmuxv1.AgentEvent {
 	sink := h.sinkForAgent(agentID)
@@ -2497,6 +2574,9 @@ func (h *OutputHandler) SessionInfoReplayEvents(agentID string) []*leapmuxv1.Age
 	var events []*leapmuxv1.AgentEvent
 	if len(info) > 0 {
 		events = append(events, sessionInfoEvent(agentID, info))
+	}
+	for _, tail := range sink.progress.tailSnapshots() {
+		events = append(events, sessionInfoEvent(agentID, map[string]interface{}{contracts.SessionInfoKeyRunningTool: tail}))
 	}
 	for _, check := range sink.permissionCheckSnapshots() {
 		events = append(events, sessionInfoEvent(agentID, map[string]interface{}{contracts.SessionInfoKeyRunningTool: check}))

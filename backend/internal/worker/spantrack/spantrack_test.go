@@ -1146,3 +1146,107 @@ func TestSpanTracker_FreezePreservesIndependentGeometry(t *testing.T) {
 	assert.Equal(t, lines, actualLines)
 	assert.Equal(t, color, actualColor)
 }
+
+func TestSpanTrackerCapsClosedSpanTypes(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.SetSpanType("active-1", "Bash")
+	tracker.OpenSpan("active-1", "")
+	tracker.SetSpanType("active-2", "Read")
+	tracker.OpenSpan("active-2", "")
+
+	const totalClosed = 1500
+	for i := 0; i < totalClosed; i++ {
+		id := fmt.Sprintf("closed-%d", i)
+		tracker.SetSpanType(id, "Tool")
+		tracker.OpenSpan(id, "")
+		tracker.CloseSpan(id)
+	}
+
+	assert.Equal(t, "Bash", tracker.GetSpanType("active-1"))
+	assert.Equal(t, "Read", tracker.GetSpanType("active-2"))
+
+	evictBoundary := totalClosed - maxClosedSpanTypes
+	for i := 0; i < evictBoundary; i++ {
+		assert.Empty(t, tracker.GetSpanType(fmt.Sprintf("closed-%d", i)), "oldest closed span %d must evict", i)
+	}
+	for i := evictBoundary; i < totalClosed; i++ {
+		assert.Equal(t, "Tool", tracker.GetSpanType(fmt.Sprintf("closed-%d", i)), "recent closed span %d must survive", i)
+	}
+	assert.LessOrEqual(t, len(tracker.spanTypes), maxClosedSpanTypes+2)
+	assert.LessOrEqual(t, len(tracker.closedSpanTypes), maxClosedSpanTypes)
+}
+
+func TestSpanTrackerRetainsReopenedAndPendingSpanTypesDuringEviction(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.SetSpanType("S", "Shell")
+	tracker.OpenSpan("S", "")
+	tracker.CloseSpan("S")
+	tracker.OpenSpan("S", "")
+
+	tracker.SetSpanType("P", "PendingTool")
+	tracker.OpenSpan("P", "")
+	tracker.CloseSpan("P")
+	tracker.ReserveSpanColor("P", "")
+
+	for i := 0; i < 1100; i++ {
+		id := fmt.Sprintf("other-%d", i)
+		tracker.SetSpanType(id, "Other")
+		tracker.OpenSpan(id, "")
+		tracker.CloseSpan(id)
+	}
+
+	assert.Equal(t, "Shell", tracker.GetSpanType("S"), "reopened active span must survive eviction of its earlier closed slot")
+	assert.Equal(t, "PendingTool", tracker.GetSpanType("P"), "pending reserved span must survive eviction of its earlier closed slot")
+}
+
+func TestSpanTrackerHasActiveSpansAndHasSpan(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	assert.False(t, tracker.HasActiveSpans())
+	assert.False(t, tracker.HasSpan(""))
+	assert.False(t, tracker.HasSpan("span-1"))
+
+	tracker.OpenSpan("span-1", "")
+	assert.True(t, tracker.HasActiveSpans())
+	assert.True(t, tracker.HasSpan("span-1"))
+	assert.False(t, tracker.HasSpan("span-2"))
+
+	tracker.OpenSpan("span-2", "span-1")
+	assert.True(t, tracker.HasActiveSpans())
+	assert.True(t, tracker.HasSpan("span-2"))
+
+	tracker.CloseSpan("span-1")
+	assert.True(t, tracker.HasActiveSpans())
+	assert.False(t, tracker.HasSpan("span-1"))
+	assert.True(t, tracker.HasSpan("span-2"))
+
+	tracker.Reset()
+	assert.False(t, tracker.HasActiveSpans())
+	assert.False(t, tracker.HasSpan("span-2"))
+}
+
+func TestSpanTrackerEdgeTransitions(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	assert.False(t, tracker.ResetChanged(), "empty reset is not a transition")
+	assert.False(t, tracker.CloseSpanChanged("missing"), "closing while empty is not a transition")
+
+	assert.True(t, tracker.OpenSpanChanged("s1", ""), "0 -> 1 must report change")
+	assert.False(t, tracker.OpenSpanChanged("s2", ""), "1 -> 2 must not report change")
+	assert.False(t, tracker.OpenSpanChanged("s2", ""), "duplicate open while non-empty must not report change")
+
+	assert.False(t, tracker.CloseSpanChanged("missing"), "closing unknown span while active must not report change")
+	assert.False(t, tracker.CloseSpanChanged("s1"), "2 -> 1 must not report change")
+	assert.True(t, tracker.CloseSpanChanged("s2"), "1 -> 0 must report change")
+	assert.False(t, tracker.CloseSpanChanged("s2"), "duplicate close while empty must not report change")
+
+	assert.True(t, tracker.OpenSpanChanged("s3", ""), "0 -> 1 after close must report change")
+	assert.True(t, tracker.ResetChanged(), ">0 -> 0 via ResetChanged must report change")
+	assert.False(t, tracker.ResetChanged(), "second ResetChanged must not report change")
+}

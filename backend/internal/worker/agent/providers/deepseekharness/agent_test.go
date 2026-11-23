@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/coder/websocket"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -381,4 +382,200 @@ func TestNativeModelErrorKeepsTheRemoteConnectionAndWaitsForTheDurableTurnEnd(t 
 	assert.False(t, a.active)
 	require.NoError(t, a.SendInput("Continue after the actual native model failure.", nil))
 	assert.Equal(t, int32(1), inputCalls.Load())
+}
+
+func TestDeepSeekIdleInterruptStopAndStreamFailureCloseToolsAndWorkflows(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt closes root open tools and preserves child stream and bgtask", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		childStream := &sessionStream{sessionID: "native-child", parentSessionID: "native-root", childAgentID: "stored-child", lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{})}
+		a.streams["child"] = childStream
+		require.NoError(t, a.sink.UpsertBackgroundTask(bgtask.Upsert{
+			Role: bgtask.RoleChildTask, RowKey: "native-child", Kind: bgtask.KindSubagent, ChildAgentID: "stored-child", Status: bgtask.StatusRunning,
+		}))
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"turn/start","seq":1,"time":1000,"data":{}}`)))
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool/call","seq":2,"time":1001,"data":{"callId":"root-call","name":"bash"}}`)))
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"turn/end","seq":3,"time":1002,"data":{"reason":{"kind":"completed"}}}`)))
+		require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"tool/call","seq":1,"time":1001,"data":{"callId":"child-call","name":"read"}}`)))
+		require.Empty(t, sink.ClosedSpans())
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Equal(t, []string{"root-call"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Empty(t, sink.Child("stored-child").ClosedSpans(), "idle root interrupt must preserve continuable child tools")
+		row, exists := sink.BackgroundTask("native-child")
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
+
+	t.Run("Stop closes root and child pending tools and open workflows", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		done := make(chan struct{})
+		close(done)
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "deepseek-test", ProviderName: "dsh", Ctx: a.Context(), Cancel: func() {}, ProcessDone: done, Stdin: agenttest.NopStdin(io.Discard)})
+		childStream := &sessionStream{sessionID: "native-child", parentSessionID: "native-root", childAgentID: "stored-child", lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{})}
+		a.streams["child"] = childStream
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"callId":"root-stop","name":"bash"}}`)))
+		require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"callId":"child-stop","name":"read"}}`)))
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool-workflow/run-start","seq":2,"time":1001,"data":{"runId":"wf-1","name":"Build"}}`)))
+
+		a.Stop()
+		assert.Contains(t, sink.ClosedSpans(), "root-stop")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.Child("stored-child").ClosedSpans(), "child-stop")
+		assert.Contains(t, sink.Child("stored-child").TurnLifecycle(), "reset_spans")
+		wf, exists := sink.BackgroundTask("deepseek-workflow:wf-1")
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusStopped, wf.Status)
+	})
+
+	t.Run("reportStreamFailure closes open workflows and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		done := make(chan struct{})
+		close(done)
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "deepseek-test", ProviderName: "dsh", Ctx: a.Context(), Cancel: func() {}, ProcessDone: done, Stdin: agenttest.NopStdin(io.Discard)})
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"callId":"root-fail","name":"bash"}}`)))
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool-workflow/run-start","seq":2,"time":1001,"data":{"runId":"wf-fail","name":"Deploy"}}`)))
+
+		a.reportStreamFailure(errors.New("connection lost"))
+		assert.Contains(t, sink.ClosedSpans(), "root-fail")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		wf, exists := sink.BackgroundTask("deepseek-workflow:wf-fail")
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusFailed, wf.Status)
+	})
+
+	t.Run("Wait closes tools workflows and active turn when process exits before websocket EOF", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, nil)
+			if !assert.NoError(t, err) {
+				return
+			}
+			defer func() { _ = conn.CloseNow() }()
+			// Hold the socket open until the client closes it so Process.Wait wins the race.
+			for {
+				if _, _, err := conn.Read(r.Context()); err != nil {
+					return
+				}
+			}
+		}))
+		t.Cleanup(server.Close)
+		endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+		require.NoError(t, err)
+		t.Cleanup(endpoint.Close)
+
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		done := make(chan struct{})
+		close(done)
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+			AgentID: "deepseek-wait", ProviderName: "dsh", Ctx: a.Context(), Cancel: func() {}, ProcessDone: done, Stdin: agenttest.NopStdin(io.Discard),
+		})
+		a.rpc = remoteRPC{endpoint: endpoint}
+		require.NoError(t, a.openConnection(a.Context()))
+
+		childStream := &sessionStream{sessionID: "native-child", parentSessionID: "native-root", childAgentID: "stored-child", lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{})}
+		a.streams["child"] = childStream
+		a.active = true
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"callId":"root-wait","name":"bash"}}`)))
+		require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"callId":"child-wait","name":"read"}}`)))
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool-workflow/run-start","seq":2,"time":1001,"data":{"runId":"wf-wait","name":"Build"}}`)))
+
+		require.NoError(t, a.Wait())
+
+		assert.Equal(t, []string{"root-wait"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.TurnLifecycle(), "turn_active:false")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("root-wait"))
+		assert.False(t, a.active)
+
+		var rootClose agenttest.Message
+		for _, msg := range sink.Messages() {
+			if msg.SpanID == "root-wait" && msg.Closing {
+				rootClose = msg
+			}
+		}
+		assert.Equal(t, agent.MessageCompletionError, rootClose.Completion)
+
+		childSink := sink.Child("stored-child")
+		assert.Equal(t, []string{"child-wait"}, childSink.ClosedSpans())
+		assert.Contains(t, childSink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, childSink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, childSink.ProgressUpdates(), agent.CompleteOutputProgress("child-wait"))
+
+		wf, exists := sink.BackgroundTask("deepseek-workflow:wf-wait")
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusFailed, wf.Status)
+	})
+
+	t.Run("Wait with nil connection and DiscardOutput still resets spans closes workflows and clears active turn", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		done := make(chan struct{})
+		close(done)
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+			AgentID: "deepseek-wait-discard", ProviderName: "dsh", Ctx: a.Context(), Cancel: func() {}, ProcessDone: done, Stdin: agenttest.NopStdin(io.Discard),
+		})
+		a.active = true
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"callId":"root-discard","name":"bash"}}`)))
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool-workflow/run-start","seq":2,"time":1001,"data":{"runId":"wf-discard","name":"Lint"}}`)))
+		countBeforeExit := sink.MessageCount()
+		a.DiscardOutput()
+
+		require.NoError(t, a.Wait())
+
+		assert.Equal(t, countBeforeExit, sink.MessageCount(), "discarding exit must not persist synthetic closing rows")
+		assert.Equal(t, []string{"root-discard"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.TurnLifecycle(), "turn_active:false")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("root-discard"))
+		assert.False(t, a.active)
+		wf, exists := sink.BackgroundTask("deepseek-workflow:wf-discard")
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusFailed, wf.Status)
+	})
+
+	t.Run("Stop followed by Wait runs exit cleanup once and clears active turn", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		done := make(chan struct{})
+		close(done)
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+			AgentID: "deepseek-stop-wait", ProviderName: "dsh", Ctx: a.Context(), Cancel: func() {}, ProcessDone: done, Stdin: agenttest.NopStdin(io.Discard),
+		})
+		a.active = true
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"callId":"root-once","name":"bash"}}`)))
+		require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool-workflow/run-start","seq":2,"time":1001,"data":{"runId":"wf-once","name":"Test"}}`)))
+
+		a.Stop()
+		lifecycleAfterStop := len(sink.TurnLifecycle())
+		progressAfterStop := len(sink.ProgressUpdates())
+		messagesAfterStop := sink.MessageCount()
+
+		require.NoError(t, a.Wait())
+
+		assert.Equal(t, lifecycleAfterStop, len(sink.TurnLifecycle()), "Wait after Stop must not duplicate teardown lifecycle events")
+		assert.Equal(t, progressAfterStop, len(sink.ProgressUpdates()), "Wait after Stop must not duplicate progress resets")
+		assert.Equal(t, messagesAfterStop, sink.MessageCount())
+		assert.False(t, a.active)
+		assert.Contains(t, sink.TurnLifecycle(), "turn_active:false")
+		wf, exists := sink.BackgroundTask("deepseek-workflow:wf-once")
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusStopped, wf.Status)
+	})
 }

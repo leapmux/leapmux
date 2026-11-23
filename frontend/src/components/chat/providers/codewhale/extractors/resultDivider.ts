@@ -29,6 +29,7 @@ export function codewhaleResultDivider(parsed: unknown): TurnEnd | null {
     case CODEWHALE_TURN_STATUS.Canceled:
       return {
         label: turnEndLabel('interrupted', { durationMs }),
+        interrupted: true,
       }
     case CODEWHALE_TURN_STATUS.Failed: {
       const error = pickString(turn, CODEWHALE_TURN_FIELD.Error).trim()

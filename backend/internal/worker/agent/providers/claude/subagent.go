@@ -315,6 +315,7 @@ func (a *Agent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		// Downstream code treats the released span like any ended span.
 		// Its recorded type remains available, so tool_result still persists the actual tool name.
 		a.sink.CloseSpan(ev.ToolUseID)
+		a.openTools.markWorkflowSpanReleased(ev.ToolUseID)
 	}
 
 	// Pre-create the child transcript for a Task subagent (local_agent).
@@ -604,6 +605,23 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	if err := a.sink.CloseBackgroundTask(ev.TaskID, status); err != nil {
 		slog.Warn("claude task_notification close failed", "task_id", ev.TaskID, "error", err)
 	}
+	if childID := a.tasks.childForTask(ev.TaskID); childID != "" {
+		if status == bgtask.StatusStopped || status == bgtask.StatusInterrupted || status == bgtask.StatusFailed {
+			if childSink := a.sink.ChildSink(childID); childSink != nil {
+				entries := a.openTools.drain(childID)
+				if len(entries) > 0 {
+					completion := agent.MessageCompletionInterrupted
+					if status == bgtask.StatusFailed {
+						completion = agent.MessageCompletionError
+					}
+					providerkit.CloseToolSpans(childSink, entries, completion, claudeBuildClosingRow, false)
+				}
+				providerkit.ResetSpansAndProgress(childSink)
+			}
+		} else {
+			a.openTools.forgetChild(childID)
+		}
+	}
 	// A Workflow run's agent rows close with it (workflow.go): a snapshot
 	// settles each agent that finished, and the run's own outcome ends the
 	// rest.
@@ -773,12 +791,15 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 		if err != nil || !accepted {
 			return err
 		}
-		return a.completeClaudeNativeFrame(frame, a.persistClaudeChildFrame(sequence, frame, spawnSpanID, taskID))
+		return a.completeClaudeNativeFrame(frame, a.persistClaudeChildFrame(sequence, frame, childID, spawnSpanID, taskID))
 	})
 }
 
-func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame, spawnSpanID, taskID string) error {
+func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame *claudeConversationFrame, childID, spawnSpanID, taskID string) error {
 	env, msgType := frame.envelope, frame.msgType
+	if msgType == claudeMsgTypeUser && frame.prepared == nil && a.openTools.allToolResultsForceClosed(childID, env.ContentBlocks()) {
+		return nil
+	}
 	if frame.report != nil {
 		_, err := sequence.Persist(*frame.report)
 		return err
@@ -835,11 +856,14 @@ func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame
 				frame.spans.SetSpanType(block.ID, block.Name)
 				if !claudeToolSpawnsSubagent(block.Name) {
 					frame.spans.OpenSpan(block.ID, spawnSpanID)
+					a.openTools.open(childID, block.ID, block.Name, spawnSpanID, frame.content.AgentSessionID, frame.content.Original)
 				}
 			}
 		}
 	case claudeMsgTypeUser:
-		claudeCloseToolResultSpans(frame.spans, env)
+		claudeCloseToolResultSpans(frame.spans, env, func(id string) {
+			a.openTools.completeNative(childID, id)
+		})
 	case claudeMsgTypeResult:
 		if live {
 			a.finishClaudeChildResult(frame.prepared.FrozenContent().Completion, env.IsError, spawnSpanID, taskID)
@@ -1298,6 +1322,21 @@ func (i *claudeTaskIndex) taskIDForChild(childID string) string {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return i.transcripts.childTask[childID]
+}
+
+// childForTask resolves the child transcript id linked to taskID, or "".
+func (i *claudeTaskIndex) childForTask(taskID string) string {
+	if taskID == "" {
+		return ""
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for childID, linkedTaskID := range i.transcripts.childTask {
+		if linkedTaskID == taskID {
+			return childID
+		}
+	}
+	return ""
 }
 
 // forgetTaskIndex removes both directions of every tool-use ID linked to a task.

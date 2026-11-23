@@ -21,6 +21,7 @@ export function commandCodeResultDivider(parsed: unknown, completion?: MessageCo
   if (completion === MessageCompletion.INTERRUPTED || reason === 'interrupted') {
     return {
       label: turnEndLabel('interrupted', { durationMs }),
+      interrupted: true,
     }
   }
   if (reason === 'run_error') {

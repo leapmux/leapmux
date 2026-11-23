@@ -20,29 +20,30 @@ import (
 const geminiChildPollInterval = 250 * time.Millisecond
 
 type geminiChildTranscript struct {
-	services      agent.ProviderServices
-	query         agent.StoredSessionQuery
-	rootSessionID string
-	rootAgentID   string
-	clock         quartz.Clock
-	ctx           context.Context
-	cancel        context.CancelFunc
-	done          chan struct{}
-	wake          chan struct{}
-	lifecycleMu   sync.Mutex
-	started       bool
-	closed        bool
-	stopOnce      sync.Once
-	activityMu    sync.Mutex
-	activeCalls   map[string]bool
-	passMu        sync.Mutex
-	children      map[string]string
-	files         map[string]os.FileInfo
+	services          agent.ProviderServices
+	query             agent.StoredSessionQuery
+	rootSessionID     string
+	rootAgentID       string
+	clock             quartz.Clock
+	ctx               context.Context
+	cancel            context.CancelFunc
+	done              chan struct{}
+	wake              chan struct{}
+	lifecycleMu       sync.Mutex
+	started           bool
+	closed            bool
+	stopOnce          sync.Once
+	activityMu        sync.Mutex
+	activeCalls       map[string]bool
+	passMu            sync.Mutex
+	children          map[string]string
+	completedChildren map[string]struct{}
+	files             map[string]os.FileInfo
 }
 
 func newGeminiChildTranscript(ctx context.Context, clock quartz.Clock, services agent.ProviderServices, query agent.StoredSessionQuery, rootSessionID, rootAgentID string) *geminiChildTranscript {
 	ctx, cancel := context.WithCancel(ctx)
-	return &geminiChildTranscript{services: services, query: query, rootSessionID: rootSessionID, rootAgentID: rootAgentID, clock: clock, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1), activeCalls: make(map[string]bool), children: make(map[string]string), files: make(map[string]os.FileInfo)}
+	return &geminiChildTranscript{services: services, query: query, rootSessionID: rootSessionID, rootAgentID: rootAgentID, clock: clock, ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1), activeCalls: make(map[string]bool), children: make(map[string]string), completedChildren: make(map[string]struct{}), files: make(map[string]os.FileInfo)}
 }
 
 func (transcript *geminiChildTranscript) start() {
@@ -162,6 +163,8 @@ func (transcript *geminiChildTranscript) flush(final bool, completion agent.Mess
 				continue
 			}
 			transcript.services.CleanupChildAgent(childID)
+			delete(transcript.children, key)
+			transcript.completedChildren[key] = struct{}{}
 		}
 	}
 }
@@ -204,7 +207,19 @@ func (a *Agent) finishNativeChildren(completion agent.MessageCompletion) {
 	}
 }
 
+func (a *Agent) pollNativeChildren() {
+	a.childMu.Lock()
+	children := a.children
+	a.childMu.Unlock()
+	if children != nil {
+		children.flush(false, agent.MessageCompletionComplete)
+	}
+}
+
 func (transcript *geminiChildTranscript) persist(session geminiSession) error {
+	if _, done := transcript.completedChildren[session.SessionID]; done {
+		return nil
+	}
 	writes, err := geminiChildWrites(session)
 	if err != nil {
 		return err
@@ -255,6 +270,8 @@ func (transcript *geminiChildTranscript) persist(session geminiSession) error {
 			return err
 		}
 		transcript.services.CleanupChildAgent(childID)
+		delete(transcript.children, session.SessionID)
+		transcript.completedChildren[session.SessionID] = struct{}{}
 	}
 	return nil
 }

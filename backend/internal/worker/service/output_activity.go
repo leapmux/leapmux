@@ -382,6 +382,21 @@ func (h *OutputHandler) publishStopMark(agentID, rootAgentID string) {
 	}()
 }
 
+// publishSpanActivity republishes a root agent's activity after its open-span
+// set transitions between empty and non-empty, off the caller's goroutine so
+// OpenSpan/CloseSpan/ResetSpans never block stdout readers or acquire st.mu
+// under provider locks.
+func (h *OutputHandler) publishSpanActivity(rootAgentID string, mode settleMode) {
+	if rootAgentID == "" || !h.beginActivityRefresh() {
+		return
+	}
+	seq := h.activitySeq.Add(1)
+	go func() {
+		defer h.activityRefreshes.Done()
+		h.refreshActivityFrom(rootAgentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, mode)
+	}()
+}
+
 // CancelHeldSettles drops every settle window still open. Shutdown calls it
 // BEFORE it joins the deferred refreshes, so no timer reads the registry or
 // broadcasts once the caller closes the database.
@@ -408,7 +423,10 @@ func (h *OutputHandler) CancelHeldSettles() {
 type activityInputs struct {
 	registryWorking bool
 	activeTasks     int32
-	processAlive    bool
+	// hasOpenSpans is populated under st.mu so it stays atomic with
+	// SettleIdleRootStop resetting spans and rotating st.scope.
+	hasOpenSpans bool
+	processAlive bool
 	// childID is empty for a root, which is what selects the roll-up rule.
 	childID string
 }
@@ -433,24 +451,28 @@ func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentAc
 	if in.childID != "" {
 		return idleOrWorking(in.registryWorking || in.activeTasks > 0)
 	}
-	// The turn the provider reports, minus the one the reader stopped. The flag
-	// stays true until the provider answers the stop, and that answer is a whole
-	// round trip away -- so every read of it below is this value, or the
-	// Interrupt button puts its own spinner back. See stopRequestedLocked.
+	// The turn and open root spans the provider reports, minus a stop the user
+	// requested. The flags stay true until the provider answers the stop, and
+	// that answer is a whole round trip away -- so every read below uses these
+	// values, or the Interrupt button puts its own spinner back. See
+	// stopRequestedLocked.
 	//
-	// It covers the TURN alone. A background task the agent launched runs on
-	// past a stop, and activeTasks still reports it.
-	turnRunning := st.turnActive && !st.stopRequestedLocked()
-	// A prompt with no turn behind it does NOT make the agent wait: a shell task
-	// can ask for permission after its agent's turn ended, and what a close would
-	// interrupt there is the task, which activeTasks already reports.
-	if len(st.pendingControl) > 0 && turnRunning {
+	// Background tasks in the registry outlive a root stop, so activeTasks and
+	// registryWorking are not masked by stopRequestedLocked.
+	stopped := st.stopRequestedLocked()
+	turnRunning := st.turnActive && !stopped
+	spansRunning := in.hasOpenSpans && !stopped
+	// A prompt with neither an active turn nor an open root span behind it does
+	// NOT make the agent wait: a background task can ask for permission after
+	// its agent's turn ended, and what a close would interrupt there is the
+	// task, which activeTasks already reports.
+	if len(st.pendingControl) > 0 && (turnRunning || spansRunning) {
 		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER
 	}
 	if len(st.pendingControl) > 0 {
 		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
 	}
-	return idleOrWorking(turnRunning || in.registryWorking || in.activeTasks > 0)
+	return idleOrWorking(turnRunning || spansRunning || in.registryWorking || in.activeTasks > 0)
 }
 
 // settleCanResumeLocked answers whether a wake can undo the stop this refresh
@@ -775,6 +797,11 @@ func (h *OutputHandler) activitySnapshotFrom(agentID, rootAgentID string, rows [
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if in.childID == "" {
+		// Read open root spans under st.mu so this snapshot stays atomic with
+		// SettleIdleRootStop resetting spans and rotating st.scope.
+		in.hasOpenSpans = h.hasOpenRootSpans(rootAgentID)
+	}
 	return AgentActivity{State: activityStateLocked(st, in), ActiveTasks: in.activeTasks}
 }
 
@@ -800,7 +827,12 @@ func (h *OutputHandler) externalActivityInputs(agentID, rootAgentID string, rows
 		activity.activeTasks += hidden.activeTasks
 		activity.working = activity.working || hidden.working
 	}
-	return activityInputs{activeTasks: activity.activeTasks, registryWorking: activity.working, processAlive: h.isProcessRunning(rootAgentID), childID: childID}
+	return activityInputs{
+		activeTasks:     activity.activeTasks,
+		registryWorking: activity.working,
+		processAlive:    h.isProcessRunning(rootAgentID),
+		childID:         childID,
+	}
 }
 
 // hiddenActiveTasks reports how many still-running rows the display cap dropped
@@ -1018,6 +1050,11 @@ func (h *OutputHandler) enqueueActivity(st *agentActivity, agentID, rootAgentID 
 		// that cancels and then drops itself takes the settle with it, and the tab
 		// keeps a spinner for an agent whose process is gone.
 		st.cancelSettleLocked(h)
+	}
+	if in.childID == "" && in.processAlive {
+		// Read open root spans under st.mu so this derivation stays atomic with
+		// SettleIdleRootStop resetting spans and rotating st.scope.
+		in.hasOpenSpans = h.hasOpenRootSpans(rootAgentID)
 	}
 	state := activityStateLocked(st, in)
 	if st.hasPublished && st.published == state {
@@ -1313,7 +1350,11 @@ func (h *OutputHandler) adoptTurnPublisher(rootAgentID string, publisher any) {
 // The clear-context dispatch calls this method for a root.
 // A child can still publish its own turn flag for input queue admission.
 func (h *OutputHandler) TurnActive(agentID string) bool {
-	st := h.activityFor(agentID, agentID)
+	v, ok := h.activity.Load(agentID)
+	if !ok {
+		return false
+	}
+	st := v.(*agentActivity)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return st.turnActive

@@ -2,6 +2,7 @@ package antigravity
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -488,14 +489,19 @@ func (a *Agent) publishContextUsage(state *cascadeState, usage *contextWindowUsa
 	state.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: values})
 }
 
-func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion) (err error) {
+func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion) error {
+	return a.endTurnWithTeardown(state, completion, false)
+}
+
+func (a *Agent) endTurnWithTeardown(state *cascadeState, completion agent.MessageCompletion, teardown bool) (err error) {
 	a.Mu.Lock()
 	if !a.cascadeInstalledLocked(state) || state.turnPhase != cascadeTurnActive {
 		a.Mu.Unlock()
 		return nil
 	}
 	state.turnPhase = cascadeTurnFinalizing
-	if state.interrupted {
+	interrupted := state.interrupted
+	if interrupted {
 		completion = agent.MessageCompletionInterrupted
 	} else if len(state.heldErrorStep) > 0 {
 		completion = agent.MessageCompletionError
@@ -512,8 +518,9 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 		}
 	}()
 
+	includeToolSteps := interrupted || teardown
 	if !a.IsDiscardingOutput() {
-		if err := a.flushOpenSteps(state, completion); err != nil {
+		if err := a.flushOpenSteps(state, completion, includeToolSteps); err != nil {
 			return err
 		}
 	}
@@ -572,13 +579,15 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 	}
 	backgroundOpen := len(state.background) > 0
 	a.Mu.Unlock()
-	if !backgroundOpen {
-		state.sink.ResetSpans()
+	if includeToolSteps {
+		if !backgroundOpen || teardown {
+			providerkit.ResetSpansAndProgress(state.sink)
+		} else {
+			state.sink.ReportProgress(agent.ResetModelProgress())
+		}
+	} else {
+		state.sink.ReportProgress(agent.ResetModelProgress())
 	}
-	if !a.cascadeInstalled(state) {
-		return nil
-	}
-	state.sink.ReportProgress(agent.ResetProgress())
 	a.Mu.Lock()
 	if !a.cascadeInstalledLocked(state) {
 		a.Mu.Unlock()
@@ -586,6 +595,7 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 	}
 	state.turnPhase = cascadeTurnIdle
 	state.sendInFlight = false
+	state.interrupted = false
 	state.heldErrorStep = nil
 	state.retryPending = false
 	seq := a.NextTurnSeq()
@@ -602,24 +612,39 @@ func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion)
 	return nil
 }
 
-func (a *Agent) flushOpenSteps(state *cascadeState, completion agent.MessageCompletion) error {
+func (a *Agent) flushOpenSteps(state *cascadeState, completion agent.MessageCompletion, includeToolSteps bool) error {
 	a.Mu.Lock()
 	type pending struct {
 		index int
 		raw   json.RawMessage
 	}
 	var pendingSteps []pending
-	for index := range state.turnSteps {
-		record := state.steps[index]
-		if record == nil || record.consumed || len(record.raw) == 0 {
-			continue
+	if includeToolSteps {
+		for index, record := range state.steps {
+			if record == nil || record.consumed || len(record.raw) == 0 {
+				continue
+			}
+			if _, background := state.background[index]; background {
+				continue
+			}
+			pendingSteps = append(pendingSteps, pending{index: index, raw: append(json.RawMessage(nil), record.raw...)})
 		}
-		if _, background := state.background[index]; background {
-			continue
+	} else {
+		for index := range state.turnSteps {
+			record := state.steps[index]
+			if record == nil || record.consumed || len(record.raw) == 0 || record.toolStep {
+				continue
+			}
+			if _, background := state.background[index]; background {
+				continue
+			}
+			pendingSteps = append(pendingSteps, pending{index: index, raw: append(json.RawMessage(nil), record.raw...)})
 		}
-		pendingSteps = append(pendingSteps, pending{index: index, raw: append(json.RawMessage(nil), record.raw...)})
 	}
 	a.Mu.Unlock()
+	slices.SortFunc(pendingSteps, func(left, right pending) int {
+		return cmp.Compare(left.index, right.index)
+	})
 	for _, item := range pendingSteps {
 		step, err := decodeStep(item.raw)
 		if err != nil {
@@ -690,7 +715,7 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 	state.sendInFlight = false
 	rootBeforeStart := state.parent == nil && !state.seenUpdate
 	active := state.turnPhase != cascadeTurnIdle
-	hasOpenState := state.rowOpen || len(state.controls) > 0 || len(state.background) > 0
+	hasOpenState := state.rowOpen || len(state.controls) > 0 || len(state.background) > 0 || hasOpenToolStepsLocked(state)
 	seq := a.NextTurnSeq()
 	state.connectedOnce.Do(func() { close(state.connected) })
 	a.Mu.Unlock()
@@ -716,7 +741,7 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 		if !a.cascadeCurrent(state) {
 			return
 		}
-		if err := a.endTurn(state, agent.MessageCompletionError); err != nil {
+		if err := a.finishCascadeOutput(state, agent.MessageCompletionError); err != nil {
 			slog.Error("antigravity finish failed stream", "agent_id", a.AgentID(), "error", err)
 		}
 		go a.stop(state)
@@ -729,14 +754,23 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 		if !a.cascadeCurrent(state) {
 			return
 		}
-		if err := a.endTurn(state, agent.MessageCompletionError); err != nil {
+		a.retireAllInteractions(state)
+		a.closeBackgroundTasks(state, bgtask.StatusEndedWithUnknownOutcome)
+		if err := a.finishCascadeOutput(state, agent.MessageCompletionError); err != nil {
 			slog.Error("antigravity finish failed child stream", "agent_id", a.AgentID(), "error", err)
 		}
-		a.retireAllInteractions(state)
 		a.closeChildRow(state, bgtask.StatusFailed)
-		a.closeBackgroundTasks(state, bgtask.StatusEndedWithUnknownOutcome)
 		providerkit.PublishSteerableTurnActiveTo(state.sink, false, seq)
 	}
+}
+
+func hasOpenToolStepsLocked(state *cascadeState) bool {
+	for _, record := range state.steps {
+		if record != nil && !record.consumed && record.toolStep && len(record.raw) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) closeChildRow(state *cascadeState, status bgtask.Status) {

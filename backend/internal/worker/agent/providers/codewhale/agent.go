@@ -350,6 +350,17 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return fmt.Errorf("agent is stopped")
 	}
 	if threadID == "" || turnID == "" {
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && a.turnID == ""
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		a.persistIncompleteTools(agent.MessageCompletionInterrupted)
+		a.ResetCumulativeOutput()
+		providerkit.ResetSpansAndProgress(a.sink)
 		return nil
 	}
 	if err := a.interruptTurn(threadID, turnID, a.APITimeout()); err != nil {
@@ -491,7 +502,7 @@ func (a *Agent) finishAfterExit(completion agent.MessageCompletion) {
 	if cleared {
 		a.PublishTurnActive()
 	}
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // DiscardOutput drops the output of a process that is about to restart. The

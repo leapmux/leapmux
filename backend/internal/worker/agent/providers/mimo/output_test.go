@@ -285,7 +285,7 @@ func TestMiMoRemovedPartKeepsAPublishedToolUntilTurnEnd(t *testing.T) {
 		eventJSON(t, "message.part.removed", map[string]any{"sessionID": testSessionID, "messageID": "message", "partID": "part"}),
 	)
 	require.Len(t, sink.Messages(), 1)
-	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+	feed(a, nativeAbortMarker(t, "message", "message"), statusEvent(t, contracts.MiMoStatusTypeIdle))
 	assert.Contains(t, sink.ClosedSpans(), "part")
 	rows := sink.Messages()
 	require.Len(t, rows, 3)
@@ -334,7 +334,7 @@ func TestMiMoRemovedPartKeepsAToolOpeningRetainedByTheOutputQueue(t *testing.T) 
 	assert.Empty(t, sink.ClosedSpans(), "a retained opening must keep its span until the native call ends")
 	feed(a, eventJSON(t, "message.part.removed", map[string]any{"sessionID": testSessionID, "messageID": "message", "partID": "part"}))
 	controlled.rejectAll.Store(false)
-	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+	feed(a, nativeAbortMarker(t, "message", "message"), statusEvent(t, contracts.MiMoStatusTypeIdle))
 	rows := sink.Messages()
 	require.Len(t, rows, 3)
 	assert.Equal(t, "part", rows[0].SpanID)
@@ -1367,6 +1367,7 @@ func TestTurnEndPrunesFinishedBookkeeping(t *testing.T) {
 		toolPartEvent(t, "prt_cut", "msg_main", contracts.MiMoToolBash, "call-cut", running),
 		messageEvent(t, "msg_sub", roleAssistant, actorID, false),
 		toolPartEvent(t, "prt_sub", "msg_sub", contracts.MiMoToolBash, "call-sub", running),
+		nativeAbortMarker(t, "message", "msg_main"),
 		messageEvent(t, "msg_main", roleAssistant, mainActorID, true),
 		statusEvent(t, contracts.MiMoStatusTypeIdle),
 	)
@@ -1592,24 +1593,96 @@ func TestTurnEndClosesWhatTheTurnLeftOpen(t *testing.T) {
 			tc.end(t, a)
 
 			messages := sink.Messages()
-			require.Len(t, messages, 4, "opener, unfinished text, unfinished call, divider")
-			_, text, completion := assembledText(t, messages[1].Content)
-			assert.Equal(t, "Half a sen", text)
-			assert.Equal(t, string(tc.completion), completion)
-			assert.True(t, messages[2].Closing)
-			assert.Equal(t, "prt_1", messages[2].SpanID)
-			assert.Equal(t, tc.completion, messages[2].Completion)
-			assert.True(t, messages[3].TurnEnd)
-			assert.Equal(t, tc.completion, messages[3].Completion)
-			assert.Equal(t, tc.divider, rowTypes(t, messages[3:])[0])
+			if tc.completion == agent.MessageCompletionInterrupted {
+				require.Len(t, messages, 4, "opener, unfinished text, unfinished call, divider")
+				_, text, completion := assembledText(t, messages[1].Content)
+				assert.Equal(t, "Half a sen", text)
+				assert.Equal(t, string(tc.completion), completion)
+				assert.True(t, messages[2].Closing)
+				assert.Equal(t, "prt_1", messages[2].SpanID)
+				assert.Equal(t, tc.completion, messages[2].Completion)
+				assert.True(t, messages[3].TurnEnd)
+				assert.Equal(t, tc.completion, messages[3].Completion)
+				assert.Equal(t, tc.divider, rowTypes(t, messages[3:])[0])
+				assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+				assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+				// A later update of the call that the interrupted turn closed changes nothing.
+				feed(a, toolPartEvent(t, "prt_1", "msg_1", contracts.MiMoToolBash, "call-1", toolState{Status: contracts.MiMoToolStatusError,
+					Input: map[string]any{"command": "sleep 100"}, Error: "aborted"}))
+				assert.Len(t, sink.Messages(), 4)
+			} else {
+				require.Len(t, messages, 3, "opener, unfinished text, divider (open call survives non-interrupted turn)")
+				_, text, completion := assembledText(t, messages[1].Content)
+				assert.Equal(t, "Half a sen", text)
+				assert.Equal(t, string(tc.completion), completion)
+				assert.True(t, messages[2].TurnEnd)
+				assert.Equal(t, tc.completion, messages[2].Completion)
+				assert.Equal(t, tc.divider, rowTypes(t, messages[2:])[0])
+				assert.Empty(t, sink.ClosedSpans())
+				assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+				assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+				// A later real completion of the surviving call closes it cleanly.
+				feed(a, toolPartEvent(t, "prt_1", "msg_1", contracts.MiMoToolBash, "call-1", toolState{Status: contracts.MiMoToolStatusCompleted,
+					Input: map[string]any{"command": "sleep 100"}, Output: "done"}))
+				require.Len(t, sink.Messages(), 4)
+				assert.True(t, sink.Messages()[3].Closing)
+				assert.Equal(t, "prt_1", sink.Messages()[3].SpanID)
+			}
 
 			assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, turnLifecycleWithoutResets(sink.TurnLifecycle()),
 				"the divider persists before the clear")
+		})
+	}
+}
 
-			// A later update of the call that the turn end closed changes nothing.
-			feed(a, toolPartEvent(t, "prt_1", "msg_1", contracts.MiMoToolBash, "call-1", toolState{Status: contracts.MiMoToolStatusError,
-				Input: map[string]any{"command": "sleep 100"}, Error: "aborted"}))
-			assert.Len(t, sink.Messages(), 4)
+func TestMiMoNormalAndFailedTurnPreserveOpenTools(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		endEvents  func(t *testing.T) [][]byte
+		completion agent.MessageCompletion
+	}{
+		{
+			name: "normal idle",
+			endEvents: func(t *testing.T) [][]byte {
+				return [][]byte{statusEvent(t, contracts.MiMoStatusTypeIdle)}
+			},
+			completion: agent.MessageCompletionComplete,
+		},
+		{
+			name: "non-interrupted error",
+			endEvents: func(t *testing.T) [][]byte {
+				return [][]byte{
+					eventJSON(t, contracts.MiMoEventSessionError, map[string]any{"sessionID": testSessionID,
+						"error": map[string]any{"name": "APIError", "data": map[string]any{"message": "boom"}}}),
+					statusEvent(t, contracts.MiMoStatusTypeIdle),
+				}
+			},
+			completion: agent.MessageCompletionError,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSinkTestAgent(t)
+			feed(a,
+				statusEvent(t, contracts.MiMoStatusTypeBusy),
+				messageEvent(t, "msg_1", roleAssistant, mainActorID, false),
+				toolPartEvent(t, "prt_open", "msg_1", contracts.MiMoToolBash, "call-open", toolState{
+					Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "sleep 60"},
+				}),
+			)
+			feed(a, tc.endEvents(t)...)
+
+			rows := sink.Messages()
+			require.Len(t, rows, 2)
+			assert.False(t, rows[0].Closing)
+			assert.True(t, rows[1].TurnEnd)
+			assert.Equal(t, tc.completion, rows[1].Completion)
+			assert.Empty(t, sink.ClosedSpans())
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
 		})
 	}
 }

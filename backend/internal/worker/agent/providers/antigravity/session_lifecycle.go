@@ -378,13 +378,29 @@ func (a *Agent) nativeCancellationIDsLocked(states []*cascadeState) []string {
 	return ids
 }
 
+func (a *Agent) finishCascadeOutput(state *cascadeState, completion agent.MessageCompletion) error {
+	a.Mu.Lock()
+	active := a.cascadeInstalledLocked(state) && state.turnPhase == cascadeTurnActive
+	a.Mu.Unlock()
+	if active {
+		return a.endTurnWithTeardown(state, completion, true)
+	}
+	if !a.IsDiscardingOutput() {
+		if err := a.flushOpenSteps(state, completion, true); err != nil {
+			return err
+		}
+	}
+	providerkit.ResetSpansAndProgress(state.sink)
+	return nil
+}
+
 func (a *Agent) finishCascades(states []*cascadeState, completion agent.MessageCompletion, status bgtask.Status) {
 	var root *cascadeState
 	for _, state := range states {
 		a.retireAllInteractions(state)
 		a.closeBackgroundTasks(state, status)
 		if state.parent != nil {
-			if err := a.endTurn(state, completion); err != nil {
+			if err := a.finishCascadeOutput(state, completion); err != nil {
 				slog.Error("antigravity finish child output", "agent_id", a.AgentID(), "error", err)
 			}
 			a.closeChildRow(state, status)
@@ -397,7 +413,7 @@ func (a *Agent) finishCascades(states []*cascadeState, completion agent.MessageC
 		}
 	}
 	if root != nil {
-		if err := a.endTurn(root, completion); err != nil {
+		if err := a.finishCascadeOutput(root, completion); err != nil {
 			slog.Error("antigravity finish root output", "agent_id", a.AgentID(), "error", err)
 		}
 	}
@@ -410,12 +426,51 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		a.Mu.Unlock()
 		return nil
 	}
-	root.interrupted = true
+	active := root.turnPhase != cascadeTurnIdle || root.sendInFlight
+	var interruptGen uint64
+	if active {
+		root.interruptGen++
+		interruptGen = root.interruptGen
+		root.interrupted = true
+	}
 	a.Mu.Unlock()
 	// An idle foreground can still own native background tasks. Their cancellation
 	// must reach the runtime even when the local turn already ended.
 	if err := a.rpc.cancel(a.Context(), root.id); err != nil {
+		if active {
+			a.Mu.Lock()
+			if root.interruptGen == interruptGen {
+				root.interrupted = false
+			}
+			a.Mu.Unlock()
+		}
 		return fmt.Errorf("cancel the Antigravity turn: %w", err)
+	}
+	if !active {
+		a.Mu.Lock()
+		stillIdle := a.cascadeCurrentLocked(root) && !root.closed && root.turnPhase == cascadeTurnIdle && !root.sendInFlight
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		if !a.IsDiscardingOutput() {
+			if err := a.flushOpenSteps(root, agent.MessageCompletionInterrupted, true); err != nil {
+				slog.Error("antigravity flush idle interrupted steps", "agent_id", a.AgentID(), "error", err)
+			}
+		}
+		a.Mu.Lock()
+		current := a.cascadeCurrentLocked(root)
+		hasBackground := len(root.background) > 0
+		a.Mu.Unlock()
+		if !current {
+			return nil
+		}
+		if hasBackground {
+			root.sink.ReportProgress(agent.ResetModelProgress())
+			stop.PreserveOpenSpans()
+		} else {
+			providerkit.ResetSpansAndProgress(root.sink)
+		}
 	}
 	return nil
 }

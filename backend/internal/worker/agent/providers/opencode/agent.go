@@ -198,7 +198,20 @@ func (a *Agent) Interrupt(_ agent.StopContext) error {
 		return err
 	}
 	if !interrupted {
-		return a.restoreRun(a.Context(), run)
+		if err := a.restoreRun(a.Context(), run); err != nil {
+			return err
+		}
+		a.dispatch.Lock()
+		defer a.dispatch.Unlock()
+		run.mu.Lock()
+		stillActive := run.active || run.compacting
+		run.mu.Unlock()
+		if !stillActive {
+			if err := run.tools.finish(agent.MessageCompletionInterrupted); err != nil {
+				return err
+			}
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
 	}
 	return nil
 }
@@ -244,7 +257,20 @@ func (a *Agent) InterruptChild(key string, _ agent.StopContext) error {
 		return err
 	}
 	if !interrupted {
-		return a.restoreRun(a.Context(), run)
+		if err := a.restoreRun(a.Context(), run); err != nil {
+			return err
+		}
+		a.dispatch.Lock()
+		defer a.dispatch.Unlock()
+		run.mu.Lock()
+		stillActive := run.active || run.compacting
+		run.mu.Unlock()
+		if !stillActive {
+			if err := run.tools.finish(agent.MessageCompletionInterrupted); err != nil {
+				return err
+			}
+			providerkit.ResetSpansAndProgress(run.sink)
+		}
 	}
 	return nil
 }

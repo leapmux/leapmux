@@ -84,13 +84,27 @@ func TestCodexTurnActive_ChildThreadCompletionLeavesTheRootTurnOpen(t *testing.T
 func TestTurnEndPrecedesTheClear_Codex(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.ControlSink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	t.Run("normal turn keeps spans open", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newCodexAgentWithSink(agent.NewProviderServices(sink))
 
-	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`)))
-	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-42","status":"completed"}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-42","status":"completed"}}}`)))
 
-	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+		assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	})
+
+	t.Run("interrupted turn resets spans after turn_end", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-43"}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-43","status":"interrupted"}}}`)))
+
+		assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	})
 }
 
 func TestCodexTurnActive_IssuesRisingOrderingTokens(t *testing.T) {

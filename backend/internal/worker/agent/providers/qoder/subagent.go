@@ -558,7 +558,19 @@ func (a *Agent) finishChildTask(event *qoderTaskEvent) bool {
 	a.mu.Lock()
 	delete(a.childTaskIDs, event.ToolUseID)
 	a.mu.Unlock()
-	a.finishNotifications(a.sink.ChildSink(childID), event.ToolUseID, status == bgtask.StatusStopped)
+	childSink := a.sink.ChildSink(childID)
+	if status == bgtask.StatusStopped || status == bgtask.StatusFailed {
+		toolCompletion := agent.MessageCompletionError
+		if status == bgtask.StatusStopped {
+			toolCompletion = agent.MessageCompletionInterrupted
+		}
+		a.closeOpenToolsForTarget(childSink, childID, toolCompletion, true)
+		providerkit.ResetSpansAndProgress(childSink)
+	}
+	a.toolMu.Lock()
+	delete(a.childTools, childID)
+	a.toolMu.Unlock()
+	a.finishNotifications(childSink, event.ToolUseID, status == bgtask.StatusStopped)
 	if err := a.sink.CloseBackgroundTask(event.ToolUseID, status); err != nil {
 		providerkit.LogRegistryRefusal("qoder", "close child", err)
 	}
@@ -609,7 +621,7 @@ func (a *Agent) routeChildFrame(raw []byte) bool {
 	if frame.Type == contracts.QoderFrameKindUser && !qoderUserFrameHasToolResult(raw) {
 		return true
 	}
-	if stored, _ := a.persistNativeToolFrame(childSink, raw); stored {
+	if stored, _ := a.persistNativeToolFrame(childSink, childID, raw); stored {
 		return true
 	}
 	sessionID := frame.SessionID

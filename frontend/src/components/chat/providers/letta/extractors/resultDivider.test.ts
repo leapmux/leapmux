@@ -17,7 +17,7 @@ describe('lettaResultDivider', () => {
   // The Worker records how the native `stop_reason` ended the turn, so the divider
   // reads that record and never the stop words of one Letta Code release.
   it('reads a turn that the Worker recorded as interrupted as an interrupted turn', () => {
-    expect(lettaResultDivider(turnFinished('cancelled'), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
+    expect(lettaResultDivider(turnFinished('cancelled'), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', interrupted: true })
   })
 
   it('reads a turn that the Worker recorded as failed as a failed turn', () => {

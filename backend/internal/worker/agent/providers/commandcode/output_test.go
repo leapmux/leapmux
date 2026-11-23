@@ -392,3 +392,90 @@ func TestCommandCodeTurnFrames(t *testing.T) {
 		return sink.TurnActiveCalls
 	})
 }
+
+func TestCommandCodeNormalAndErrorTurnPreserveOpenTools(t *testing.T) {
+	t.Parallel()
+	for _, stopReason := range []string{"end_turn", "run_error"} {
+		t.Run(stopReason, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			a.startTurn("turn_1")
+			feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "call-1", "toolName": "shell_command", "input": map[string]string{"command": "sleep 30"}})
+			feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": stopReason})
+			assert.Empty(t, sink.ClosedSpans(), "non-interrupted turn must keep open tool span alive")
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+			// Native tool_completed arriving later closes the span cleanly once.
+			feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "call-1", "toolName": "shell_command", "result": []map[string]string{{"type": "text", "text": "done"}}})
+			assert.Equal(t, []string{"call-1"}, sink.ClosedSpans())
+		})
+	}
+}
+
+func TestCommandCodeInterruptedTurnAndIdleInterruptCloseToolsInOrderAndSuppressLateResult(t *testing.T) {
+	t.Parallel()
+	t.Run("interrupted turn closes open tools in order and drops late tool_completed", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("turn_1")
+		feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "call-z", "toolName": "shell_command", "input": map[string]string{"command": "first"}})
+		feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "call-a", "toolName": "shell_command", "input": map[string]string{"command": "second"}})
+		feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": "interrupted"})
+		assert.Equal(t, []string{"call-z", "call-a"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("call-z"))
+		assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("call-a"))
+
+		countBeforeLate := sink.MessageCount()
+		feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "call-z", "toolName": "shell_command", "result": []map[string]string{{"type": "text", "text": "late"}}})
+		assert.Equal(t, countBeforeLate, sink.MessageCount(), "late tool_completed after interrupt must not append a duplicate row")
+		assert.Equal(t, []string{"call-z", "call-a"}, sink.ClosedSpans())
+	})
+
+	t.Run("idle interrupt closes open cross-turn tools and resets spans and progress", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("turn_1")
+		feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "call-1", "toolName": "shell_command", "input": map[string]string{"command": "first"}})
+		feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "call-2", "toolName": "shell_command", "input": map[string]string{"command": "second"}})
+		feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": "end_turn"})
+		require.Empty(t, sink.ClosedSpans())
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Equal(t, []string{"call-1", "call-2"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+}
+
+func TestCommandCodeFinishStreamClosesIdleAndDiscardingOpenTools(t *testing.T) {
+	t.Parallel()
+	t.Run("idle finishStream closes cross-turn open tool", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("turn_1")
+		feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "call-idle", "toolName": "shell_command", "input": map[string]string{"command": "sleep 30"}})
+		feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": "end_turn"})
+		require.Empty(t, sink.ClosedSpans())
+
+		a.finishStream()
+		assert.Equal(t, []string{"call-idle"}, sink.ClosedSpans())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("discarding finishStream skips closing rows while resetting spans and progress", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("turn_1")
+		feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "call-disc", "toolName": "shell_command", "input": map[string]string{"command": "sleep 30"}})
+		countBeforeDiscard := sink.MessageCount()
+		a.DiscardOutput()
+		a.finishStream()
+		assert.Equal(t, countBeforeDiscard, sink.MessageCount())
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+}

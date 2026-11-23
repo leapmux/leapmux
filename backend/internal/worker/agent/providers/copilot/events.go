@@ -470,6 +470,9 @@ func (a *Agent) reportNativeToolOutput(sink agent.ProviderServices, data json.Ra
 	if err := json.Unmarshal(data, &frame); err != nil || frame.ToolCallID == "" {
 		return
 	}
+	if a.closedSpans.WasClosed(frame.ToolCallID) {
+		return
+	}
 	tool := a.openTools[frame.ToolCallID]
 	if frame.PartialOutput != "" {
 		if tool != nil {
@@ -503,6 +506,9 @@ func (a *Agent) reportNativeShellOutput(sink agent.ProviderServices, data json.R
 		Sequence   *int64 `json:"sequence"`
 	}
 	if err := json.Unmarshal(data, &frame); err != nil || frame.ToolCallID == "" || frame.Sequence == nil || *frame.Sequence < 0 {
+		return
+	}
+	if a.closedSpans.WasClosed(frame.ToolCallID) {
 		return
 	}
 	tool := a.openTools[frame.ToolCallID]
@@ -545,8 +551,10 @@ func copilotTurnWasAborted(data json.RawMessage) bool {
 
 func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 	a.resetNativeRetry("")
-	if !a.setNativeTurnActive(false) {
-		// Idle before a turn or after its end supplies no new transcript boundary.
+	if !a.nativeTurnActive() {
+		// Idle before a turn or after its end supplies no new transcript boundary,
+		// while still publishing the idle turn signal.
+		a.setNativeTurnActive(false)
 		return
 	}
 	// A segment the runtime never finished ends with the turn. It reads as interrupted
@@ -556,9 +564,10 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 	if aborted {
 		completion = agent.MessageCompletionInterrupted
 	}
-	a.closeStreamedNativeText(completion)
-	a.closeOpenNativeTools()
-	a.sink.ReportProgress(agent.ResetProgress())
+	a.closeStreamedNativeText(nil, completion)
+	if aborted {
+		a.closeOpenNativeTools(nil, agent.MessageCompletionInterrupted)
+	}
 	// The runtime states no count, so the Worker states its own, zero included. The
 	// browser rings the completion sound for a turn that states no count, and an
 	// explicit zero keeps a turn without tools quiet.
@@ -568,36 +577,54 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, uses), agent.SpanInfo{}); err != nil {
 		slog.Error("Persist Copilot turn end", "agent_id", a.AgentID(), "error", err)
 	}
+	if aborted {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
+	a.setNativeTurnActive(false)
 }
 
-// closeOpenNativeTools ends every call the runtime started and never finished.
+func (a *Agent) isDiscardingOutput() bool {
+	return a.copilotConnection != nil && a.IsDiscardingOutput()
+}
+
+// closeOpenNativeTools ends every open call owned by target (nil for root,
+// non-nil for that child transcript only).
 //
-// An interrupted turn can omit the completion frame. Without a closing row, the card keeps its running badge.
-// The closing row contains the native start frame. LeapMux's completion column states that the call did not finish.
-// The rows keep the order in which the calls opened.
-func (a *Agent) closeOpenNativeTools() {
-	open := a.openTools
-	a.openTools = nil
-	ids := make([]string, 0, len(open))
-	for id := range open {
+// An interrupted turn or teardown can omit the completion frame. Without a closing row,
+// the card keeps its running badge. The closing row contains the native start frame,
+// LeapMux's completion column states the outcome, and rows keep opening order.
+func (a *Agent) closeOpenNativeTools(target *copilotNativeChild, completion agent.MessageCompletion) {
+	discarding := a.isDiscardingOutput()
+	var ids []string
+	matched := make(map[string]*copilotOpenTool)
+	for id, tool := range a.openTools {
+		if tool.child != target {
+			continue
+		}
 		ids = append(ids, id)
+		matched[id] = tool
+		delete(a.openTools, id)
+		a.closedSpans.MarkClosed(id)
 	}
 	sort.Slice(ids, func(left, right int) bool {
-		if open[ids[left]].order != open[ids[right]].order {
-			return open[ids[left]].order < open[ids[right]].order
+		if matched[ids[left]].order != matched[ids[right]].order {
+			return matched[ids[left]].order < matched[ids[right]].order
 		}
 		return ids[left] < ids[right]
 	})
 	for _, id := range ids {
-		tool := open[id]
+		tool := matched[id]
 		sink := a.sinkFor(tool.child)
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
-			Original:       tool.startFrame,
-			AgentSessionID: a.currentNativeSessionID(),
-			Completion:     agent.MessageCompletionInterrupted,
-		}, agent.SpanInfo{SpanID: id, SpanType: tool.name, Closing: true}); err != nil {
-			slog.Error("Persist Copilot interrupted tool", "agent_id", a.AgentID(), "tool_call_id", id, "error", err)
+		if !discarding {
+			if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
+				Original:       tool.startFrame,
+				AgentSessionID: a.currentNativeSessionID(),
+				Completion:     completion,
+			}, agent.SpanInfo{SpanID: id, SpanType: tool.name, Closing: true}); err != nil {
+				slog.Error("Persist Copilot incomplete tool", "agent_id", a.AgentID(), "tool_call_id", id, "error", err)
+			}
 		}
+		sink.ReportProgress(agent.CompleteOutputProgress(id))
 		if !tool.spawns {
 			sink.CloseSpan(id)
 		}
@@ -612,6 +639,7 @@ func (a *Agent) startNativeTool(raw []byte, event copilotEvent) {
 		a.persistNativeFrameTo(a.sinkFor(a.childForEvent(event)), raw, agent.SpanInfo{})
 		return
 	}
+	a.closedSpans.Reopen(start.ToolCallID)
 	child := a.childForEvent(event)
 	tool := &copilotOpenTool{
 		child: child, name: start.ToolName,
@@ -646,6 +674,9 @@ func (a *Agent) completeNativeTool(raw []byte, event copilotEvent) {
 	if err := json.Unmarshal(event.Data, &complete); err != nil || complete.ToolCallID == "" {
 		slog.Warn("Read Copilot tool completion", "agent_id", a.AgentID(), "error", err)
 		a.persistNativeFrameTo(a.sinkFor(a.childForEvent(event)), raw, agent.SpanInfo{})
+		return
+	}
+	if a.closedSpans.WasClosed(complete.ToolCallID) {
 		return
 	}
 	tool := a.openTools[complete.ToolCallID]
@@ -946,21 +977,35 @@ func (a *Agent) dropStreamedNativeText(scope string) {
 	})
 }
 
-// closeStreamedNativeText stores every segment the runtime streamed and never
+// closeStreamedNativeText stores every segment owned by target (nil for root,
+// non-nil for that child transcript only) that the runtime streamed and never
 // finished, as LeapMux's own assembled message.
 //
 // The runtime marks deltas ephemeral and sends a message frame only when the message completes.
 // The assembled row retains the text from those deltas. Its completion column states that the segment did not finish.
-func (a *Agent) closeStreamedNativeText(completion agent.MessageCompletion) {
-	segments := a.nativeTextSegments
-	a.nativeTextSegments = nil
-	for _, segment := range segments {
+func (a *Agent) closeStreamedNativeText(target *copilotNativeChild, completion agent.MessageCompletion) {
+	discarding := a.isDiscardingOutput()
+	wantAgentID := ""
+	if target != nil {
+		wantAgentID = target.nativeAgentID
+	}
+	var closing []copilotStreamedText
+	var remaining []copilotStreamedText
+	for _, segment := range a.nativeTextSegments {
+		if segment.agentID == wantAgentID {
+			closing = append(closing, segment)
+		} else {
+			remaining = append(remaining, segment)
+		}
+	}
+	a.nativeTextSegments = remaining
+	for _, segment := range closing {
 		raw, ok, err := a.nativeText.Finish(segment.scope, completion)
 		if err != nil {
 			slog.Error("Assemble Copilot streamed text", "agent_id", a.AgentID(), "scope", segment.scope, "error", err)
 			continue
 		}
-		if !ok {
+		if !ok || discarding {
 			continue
 		}
 		sink := segment.sink

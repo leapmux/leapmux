@@ -1,12 +1,16 @@
 package claude
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3352,4 +3356,314 @@ func TestClaudeRetriesTheResolutionBeforeItsAnswer(t *testing.T) {
 	assert.Equal(t, []map[string]interface{}{{"type": "api_retry_resolved"}}, sink.LeapMuxNotifications())
 	assert.Equal(t, []bool{true}, sink.resolvedBeforeMessage)
 	require.Len(t, sink.Messages(), 1)
+}
+
+func TestClaudeNormalAndErrorResultPreserveOpenToolSpan(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result string
+	}{
+		{name: "normal success", result: `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`},
+		{name: "non-interrupted api error", result: `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"api_error","result":"boom"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+			require.NoError(t, a.SendInput("run bash", nil))
+			a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+			a.HandleOutput([]byte(tc.result))
+
+			assert.NotContains(t, sink.ClosedSpans(), "tool-1")
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			require.Len(t, sink.Messages(), 2)
+			assert.True(t, sink.Messages()[1].TurnEnd)
+
+			// Native tool_result later closes tool-1 cleanly once.
+			a.HandleOutput([]byte(`{"type":"user","uuid":"u2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"done"}]}}`))
+			assert.Contains(t, sink.ClosedSpans(), "tool-1")
+			require.Len(t, sink.Messages(), 3)
+			assert.True(t, sink.Messages()[2].Closing)
+		})
+	}
+}
+
+type claudeInterruptedRetrySink struct {
+	agenttest.Sink
+	failClosingSpan string
+	failTurnEndOnce bool
+}
+
+func (s *claudeInterruptedRetrySink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if span.Closing && s.failClosingSpan != "" && span.SpanID == s.failClosingSpan {
+		s.failClosingSpan = ""
+		return errors.New("transient closing row write failure")
+	}
+	return s.Sink.PersistMessage(source, content, span)
+}
+
+func (s *claudeInterruptedRetrySink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	if s.failTurnEndOnce {
+		s.failTurnEndOnce = false
+		return errors.New("transient turn end write failure")
+	}
+	return s.Sink.PersistTurnEnd(content, span)
+}
+
+type claudeReserveErrorSink struct {
+	agent.ProviderServices
+	failReserve atomic.Bool
+}
+
+func (s *claudeReserveErrorSink) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
+	if s.failReserve.Load() {
+		return nil, errors.New("transcript retired")
+	}
+	return s.ProviderServices.ReserveTranscriptOutput(queue, writes...)
+}
+
+func newClaudeRespondingInterruptAgent(t *testing.T, services agent.ProviderServices, apiTimeout time.Duration) *Agent {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	stdinReader, stdinWriter := io.Pipe()
+	a := &Agent{
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
+			AgentID:      "test-agent",
+			ProviderName: "claude",
+			Stdin:        stdinWriter,
+			Ctx:          ctx,
+			Cancel:       cancel,
+			ProcessDone:  make(chan struct{}),
+			StderrDone:   make(chan struct{}),
+			APITimeout:   apiTimeout,
+		}),
+		sink: services,
+	}
+	go func() {
+		scanner := bufio.NewScanner(stdinReader)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			var req struct {
+				Type      string `json:"type"`
+				RequestID string `json:"request_id"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &req) != nil || req.Type != "control_request" || req.RequestID == "" {
+				continue
+			}
+			resp, _ := json.Marshal(map[string]any{
+				"type": "control_response",
+				"response": map[string]any{
+					"subtype":    "success",
+					"request_id": req.RequestID,
+					"response":   map[string]any{},
+				},
+			})
+			a.handlePendingControlResponse(providerkit.ParseLine(resp))
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = stdinWriter.Close()
+		_ = stdinReader.Close()
+	})
+	return a
+}
+
+func TestClaudeInterruptedResultPersistsClosingRowsBeforeDivider(t *testing.T) {
+	t.Parallel()
+
+	t.Run("direct", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		services := agent.NewProviderServices(sink)
+		a, _ := newClaudeAgentWithStdin(services)
+		require.NoError(t, a.SendInput("run bash", nil))
+		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 42))
+		services.ReportProgress(agent.OutputTailProgress("tool-1", "working...", false))
+		require.Equal(t, int64(42), sink.ProgressSnapshot().OutputBytes)
+
+		a.noteInterruptRequested()
+		a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`))
+
+		rows := sink.Messages()
+		require.Len(t, rows, 3)
+		assert.Equal(t, "tool-1", rows[0].SpanID)
+		assert.False(t, rows[0].Closing)
+		assert.Equal(t, "tool-1", rows[1].SpanID)
+		assert.True(t, rows[1].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+		assert.True(t, rows[2].TurnEnd)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+		assert.Contains(t, sink.ClosedSpans(), "tool-1")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("retries across ErrOutputInFlight and transient write errors without duplicating closing rows", func(t *testing.T) {
+		t.Parallel()
+		sink := &claudeInterruptedRetrySink{}
+		services := agent.NewProviderServices(sink)
+		a, _ := newClaudeAgentWithStdin(services)
+		require.NoError(t, a.SendInput("run bash", nil))
+		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}},{"type":"tool_use","id":"tool-2","name":"Bash","input":{"command":"sleep 20"}}]}}`))
+		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 12))
+		services.ReportProgress(agent.OutputTailProgress("tool-1", "out1", false))
+		services.ReportProgress(agent.OutputDeltaProgress("tool-2", 24))
+		services.ReportProgress(agent.OutputTailProgress("tool-2", "out2", false))
+		require.Len(t, sink.Messages(), 1)
+		require.Equal(t, int64(36), sink.ProgressSnapshot().OutputBytes)
+
+		// Hold the output queue with ErrOutputInFlight before feeding the interrupted result.
+		queue := agent.OutputQueueFor(services)
+		require.NotNil(t, queue)
+		blocker := agent.NewOutputOwner()
+		queue.Append(agent.OutputWrite{Owner: blocker, Label: "in-flight blocker", Run: func() error {
+			return agent.ErrOutputInFlight
+		}})
+
+		a.noteInterruptRequested()
+		a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`))
+		assert.Len(t, sink.Messages(), 1, "blocked queue retains interrupted result until release")
+		assert.Equal(t, int64(36), sink.ProgressSnapshot().OutputBytes)
+
+		// Release the ErrOutputInFlight blocker, then fail once on the second closing row and once on turn end.
+		sink.failClosingSpan = "tool-2"
+		sink.failTurnEndOnce = true
+		queue.ClearOwner(blocker)
+
+		err := agent.FlushPendingOutput(services)
+		require.Error(t, err)
+		require.Len(t, sink.Messages(), 2, "first closing row persisted before transient failure on second closing row")
+		assert.Equal(t, "tool-1", sink.Messages()[1].SpanID)
+		assert.True(t, sink.Messages()[1].Closing)
+
+		err = agent.FlushPendingOutput(services)
+		require.Error(t, err)
+		require.Len(t, sink.Messages(), 3, "retry resumes at tool-2 without duplicating tool-1")
+		assert.Equal(t, "tool-2", sink.Messages()[2].SpanID)
+		assert.True(t, sink.Messages()[2].Closing)
+
+		require.NoError(t, agent.FlushPendingOutput(services))
+		rows := sink.Messages()
+		require.Len(t, rows, 4, "final retry persists divider without duplicating any closing row")
+		assert.Equal(t, "tool-1", rows[1].SpanID)
+		assert.True(t, rows[1].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+		assert.Equal(t, "tool-2", rows[2].SpanID)
+		assert.True(t, rows[2].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+		assert.True(t, rows[3].TurnEnd)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[3].Completion)
+		assert.Contains(t, sink.ClosedSpans(), "tool-1")
+		assert.Contains(t, sink.ClosedSpans(), "tool-2")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+}
+
+func TestClaudeIdleInterruptClosesOpenToolsInSequenceAndSuppressesLateResult(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closes open root tools and clears progress via Interrupt", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		services := agent.NewProviderServices(sink)
+		a := newClaudeRespondingInterruptAgent(t, services, 2*time.Second)
+
+		require.NoError(t, a.SendInput("run bash", nil))
+		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+		services.ReportProgress(agent.OutputDeltaProgress("tool-1", 42))
+		services.ReportProgress(agent.OutputTailProgress("tool-1", "running...", false))
+		a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
+		require.NotContains(t, sink.ClosedSpans(), "tool-1")
+		require.Equal(t, int64(42), sink.ProgressSnapshot().OutputBytes)
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+
+		rows := sink.Messages()
+		require.Len(t, rows, 3)
+		assert.Equal(t, "tool-1", rows[2].SpanID)
+		assert.True(t, rows[2].Closing)
+		assert.Equal(t, agent.MessageCompletionInterrupted, rows[2].Completion)
+		assert.Contains(t, sink.ClosedSpans(), "tool-1")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+		// Late native tool_result for tool-1 must be suppressed without duplicating a closing row.
+		a.HandleOutput([]byte(`{"type":"user","uuid":"u-late","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"late"}]}}`))
+		assert.Len(t, sink.Messages(), 3)
+	})
+
+	t.Run("returns promptly when sequence reservation fails", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		reserveSink := &claudeReserveErrorSink{ProviderServices: agent.NewProviderServices(sink)}
+		a := newClaudeRespondingInterruptAgent(t, reserveSink, 5*time.Second)
+
+		require.NoError(t, a.SendInput("run bash", nil))
+		a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+		a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`))
+
+		reserveSink.failReserve.Store(true)
+		start := time.Now()
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Less(t, time.Since(start), time.Second, "reservation failure must skip waiting on done")
+	})
+}
+
+func TestClaudeLateToolProgressAfterForceCloseDoesNotBroadcast(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	services := agent.NewProviderServices(sink)
+	a, _ := newClaudeAgentWithStdin(services)
+	require.NoError(t, a.SendInput("run tools", nil))
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[` +
+		`{"type":"tool_use","id":"tool-bash","name":"Bash","input":{"command":"sleep 10"}},` +
+		`{"type":"tool_use","id":"tool-agent","name":"Agent","input":{"description":"sub"}},` +
+		`{"type":"tool_use","id":"tool-wf","name":"Workflow","input":{"name":"wf"}}` +
+		`]}}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"wf-task","tool_use_id":"tool-wf","task_type":"local_workflow","workflow_name":"wf"}`))
+
+	// While tool-bash is open, its tool_progress heartbeat broadcasts normally.
+	a.HandleOutput([]byte(`{"type":"tool_progress","tool_use_id":"tool-bash-heartbeat-0","tool_name":"Bash","parent_tool_use_id":"tool-bash","elapsed_time_seconds":30,"heartbeat":true}`))
+	require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyRunningTool), 1)
+
+	// Interrupt force-closes tool-bash, while tool-agent was never tracked in openTools and tool-wf was released.
+	a.noteInterruptRequested()
+	a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`))
+	require.Contains(t, sink.ClosedSpans(), "tool-bash")
+
+	before := len(sink.SessionInfoValues(contracts.SessionInfoKeyRunningTool))
+	// Late heartbeat for the force-closed tool-bash must be suppressed.
+	a.HandleOutput([]byte(`{"type":"tool_progress","tool_use_id":"tool-bash-heartbeat-1","tool_name":"Bash","parent_tool_use_id":"tool-bash","elapsed_time_seconds":60,"heartbeat":true}`))
+	assert.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyRunningTool), before,
+		"late tool_progress for a force-closed tool must not broadcast running_tool")
+
+	// Spawning Agent/Task tools and released workflow spans are not force-closed and keep broadcasting.
+	a.HandleOutput([]byte(`{"type":"tool_progress","tool_use_id":"agent_msg_1","tool_name":"Agent","parent_tool_use_id":"tool-agent","elapsed_time_seconds":0,"subagent_type":"general-purpose","subagent_retry":{"attempt":1,"max_retries":3,"retry_delay_ms":1000}}`))
+	a.HandleOutput([]byte(`{"type":"tool_progress","tool_use_id":"tool-wf-heartbeat-0","tool_name":"Workflow","parent_tool_use_id":"tool-wf","elapsed_time_seconds":30,"heartbeat":true}`))
+	assert.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyRunningTool), before+2)
+}
+
+func TestClaudeProcessExitClosesOpenToolsAndResetsSpans(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	require.NoError(t, a.SendInput("run bash", nil))
+	a.HandleOutput([]byte(`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"tool_use","id":"tool-exit","name":"Bash","input":{"command":"sleep 10"}}]}}`))
+	a.NoteIntentionalStop()
+	a.finishClaudeProcessExit()
+
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.Equal(t, "tool-exit", rows[1].SpanID)
+	assert.True(t, rows[1].Closing)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+	assert.Contains(t, sink.ClosedSpans(), "tool-exit")
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
 }

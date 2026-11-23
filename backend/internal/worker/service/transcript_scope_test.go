@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
@@ -141,4 +142,57 @@ func TestTranscriptScopeRejectsForeignAuthorityAndCapturedRows(t *testing.T) {
 	_, err = wrapped.CaptureTranscript(agent.MessageContent{}, agent.SpanInfo{})
 	require.Error(t, err)
 	assert.Empty(t, requireRootOutputSink(t, svc.Output, "scope-reject").currentSpanTracker().ActiveSpans())
+}
+
+func TestRetainedLiveTranscriptFrameSpansPublishActivityAndPrunePermissions(t *testing.T) {
+	t.Parallel()
+
+	svc, services := setupRootSink(t, "frame-spans-root")
+	settles := holdSettles(t, svc.Output)
+	svc.Output.processRunning = func(string) bool { return true }
+	svc.Output.NoteAgentProcessStarted("frame-spans-root")
+	svc.Output.WaitActivityRefreshes()
+
+	captured := services.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	frameOwner, ok := captured.Publication.Owner().(agent.TranscriptFrameOwner)
+	require.True(t, ok)
+	frameSpans := frameOwner.TranscriptFrameSpans()
+
+	frameSpans.OpenSpan("live-frame-span", "")
+	svc.Output.WaitActivityRefreshes()
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("frame-spans-root", "frame-spans-root").State)
+
+	services.BroadcastSessionInfo(permissionCheckInfo("sess", "live-frame-span", true))
+	require.NotEmpty(t, svc.Output.SessionInfoReplayEvents("frame-spans-root"))
+
+	frameSpans.CloseSpan("live-frame-span")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("frame-spans-root", "frame-spans-root").State)
+	testutil.RequireEventually(t, func() bool { return len(settles.openWindows()) == 1 })
+	require.Equal(t, 1, settles.close())
+	svc.Output.WaitActivityRefreshes()
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivityPublished("frame-spans-root", "frame-spans-root"))
+	assert.Empty(t, svc.Output.SessionInfoReplayEvents("frame-spans-root"),
+		"closing via live root frame.spans must prune permission checks")
+
+	// ResetSpans via frame.spans also clears permission checks and activity.
+	frameSpans.OpenSpan("live-frame-span-2", "")
+	services.BroadcastSessionInfo(permissionCheckInfo("sess", "live-frame-span-2", true))
+	frameSpans.ResetSpans()
+	svc.Output.WaitActivityRefreshes()
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("frame-spans-root", "frame-spans-root").State)
+	assert.Empty(t, svc.Output.SessionInfoReplayEvents("frame-spans-root"))
+
+	// ResetSpanTracker / rebindSpanTracker clears active spans, permission checks, and publishes activity.
+	services.OpenSpan("rebind-span", "")
+	services.BroadcastSessionInfo(permissionCheckInfo("sess", "rebind-span", true))
+	svc.Output.ResetSpanTracker("frame-spans-root")
+	svc.Output.WaitActivityRefreshes()
+	assert.False(t, svc.Output.hasOpenRootSpans("frame-spans-root"))
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.Output.AgentActivitySnapshot("frame-spans-root", "frame-spans-root").State)
+	assert.Empty(t, svc.Output.SessionInfoReplayEvents("frame-spans-root"))
 }

@@ -86,6 +86,7 @@ type cascadeState struct {
 	sendInFlight      bool
 	heldErrorStep     json.RawMessage
 	interrupted       bool
+	interruptGen      uint64
 	retryPending      bool
 	planPath          string
 	contextWindow     int64

@@ -89,14 +89,49 @@ func (scope *capturedTranscriptScope) CaptureTranscript(content agent.MessageCon
 	return captured, nil
 }
 
-func (scope *capturedTranscriptScope) OpenSpan(id, parent string) { scope.tracker.OpenSpan(id, parent) }
+func (scope *capturedTranscriptScope) isCurrentLiveRoot() bool {
+	return scope.retainedLive &&
+		scope.anchor != nil &&
+		scope.anchor.sink != nil &&
+		scope.anchor.sink.root == nil &&
+		scope.anchor.sink.registeredCurrent() &&
+		scope.tracker == scope.anchor.sink.currentSpanTracker()
+}
+
+func (scope *capturedTranscriptScope) OpenSpan(id, parent string) {
+	if scope.isCurrentLiveRoot() {
+		if scope.tracker.OpenSpanChanged(id, parent) {
+			scope.anchor.sink.h.publishSpanActivity(scope.anchor.sink.agentID, settleImmediate)
+		}
+		return
+	}
+	scope.tracker.OpenSpan(id, parent)
+}
+
 func (scope *capturedTranscriptScope) CloseSpan(id string) {
 	if scope.retainedLive {
 		scope.anchor.dropOutputTail(id)
 	}
+	if scope.isCurrentLiveRoot() {
+		scope.anchor.sink.deletePermissionChecksForSpan(id)
+		if scope.tracker.CloseSpanChanged(id) {
+			scope.anchor.sink.h.publishSpanActivity(scope.anchor.sink.agentID, settleHeld)
+		}
+		return
+	}
 	scope.tracker.CloseSpan(id)
 }
-func (scope *capturedTranscriptScope) ResetSpans() { scope.tracker.Reset() }
+
+func (scope *capturedTranscriptScope) ResetSpans() {
+	if scope.isCurrentLiveRoot() {
+		scope.anchor.sink.clearPermissionChecks()
+		if scope.tracker.ResetChanged() {
+			scope.anchor.sink.h.publishSpanActivity(scope.anchor.sink.agentID, settleImmediate)
+		}
+		return
+	}
+	scope.tracker.Reset()
+}
 func (scope *capturedTranscriptScope) SetSpanType(id, kind string) {
 	scope.tracker.SetSpanType(id, kind)
 }

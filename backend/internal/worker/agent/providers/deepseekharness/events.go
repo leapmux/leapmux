@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 type sessionStream struct {
@@ -23,6 +25,7 @@ type sessionStream struct {
 	tools           int32
 	pending         map[string][]byte
 	pendingOrder    []string
+	closedSpans     providerkit.ClosedSpanSet
 	startedAt       int64
 	ready           chan struct{}
 	readyOnce       bool
@@ -453,12 +456,21 @@ func (a *Agent) reportStreamFailure(err error) {
 	clear(a.controls)
 	a.Mu.Unlock()
 	var cleanupError error
+	resetRoot := false
 	for _, stream := range streams {
 		cleanupError = errors.Join(cleanupError, a.finishPendingTools(stream, agent.MessageCompletionError))
-		if stream.childAgentID != "" {
+		sink := a.streamSink(stream)
+		providerkit.ResetSpansAndProgress(sink)
+		if stream.childAgentID == "" {
+			resetRoot = true
+		} else {
 			cleanupError = errors.Join(cleanupError, a.childTurnState(stream.sessionID, false, agent.MessageCompletionError))
 		}
 	}
+	if !resetRoot {
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
+	a.closeOpenWorkflows(bgtask.StatusFailed)
 	for id, control := range controls {
 		control.sink.CancelControlRequest(id)
 	}
@@ -469,6 +481,7 @@ func (a *Agent) reportStreamFailure(err error) {
 	a.flushPendingErrors(err.Error())
 	a.persistAgentError(err.Error())
 	a.setTurnState(false)
+	a.exitCleaned = true
 	// Stop can wait for the process. Keep the Remote reader free to finish during that wait.
 	// Wait joins this owned stop operation before it removes the private output files.
 	go func() {

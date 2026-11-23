@@ -53,11 +53,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 					transcript.Reset()
 				},
 				PromptEnded: func(_ error, stopped bool) acp.PromptEnding {
-					completion := agent.MessageCompletionComplete
 					if stopped {
-						completion = agent.MessageCompletionInterrupted
+						a.finishNativeChildren(agent.MessageCompletionInterrupted)
+					} else {
+						a.pollNativeChildren()
 					}
-					a.finishNativeChildren(completion)
 					return acp.PromptEnding{}
 				},
 				BeforeWaitCleanup: func() {

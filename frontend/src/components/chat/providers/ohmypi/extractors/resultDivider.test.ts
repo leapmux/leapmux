@@ -31,7 +31,7 @@ describe('ohMyPiResultDivider', () => {
   })
 
   it('reads an aborted turn and a length limit', () => {
-    expect(ohMyPiResultDivider(end('aborted'))).toEqual({ label: 'Turn interrupted' })
+    expect(ohMyPiResultDivider(end('aborted'))).toEqual({ label: 'Turn interrupted', interrupted: true })
     expect(ohMyPiResultDivider(end('length'))).toEqual({ label: 'Turn ended (length limit)' })
   })
 
@@ -60,11 +60,11 @@ describe('ohMyPiResultDivider', () => {
   })
 
   it('reads a stop the reader asked for, whatever the frame says', () => {
-    expect(ohMyPiResultDivider(end('error', { errorMessage: 'aborted' }), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
+    expect(ohMyPiResultDivider(end('error', { errorMessage: 'aborted' }), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', interrupted: true })
     expect(ohMyPiResultDivider({
       ...end('stop'),
       duration_ms: 2000,
-    }, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (2.0s)' })
+    }, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (2.0s)', interrupted: true })
   })
 
   it('reads the frame for a completion other than a stop the reader asked for', () => {
@@ -93,7 +93,7 @@ describe('ohMyPiResultDivider', () => {
     expect(ohMyPiResultDivider({
       ...end('aborted'),
       isTerminal: false,
-    })).toEqual({ label: 'Turn interrupted (more work follows)' })
+    })).toEqual({ label: 'Turn interrupted (more work follows)', interrupted: true })
     expect(ohMyPiResultDivider({
       ...end('length'),
       isTerminal: false,

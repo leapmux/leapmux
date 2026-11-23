@@ -631,16 +631,18 @@ func (a *Agent) reconcileToolProgress(partID string, target *mimoTranscriptTarge
 }
 
 // resetUnownedRootSpans keeps successful fallback openings while their native child runs.
-func (a *Agent) resetUnownedRootSpans() {
+// It returns true if and only if it reset the root span tracker.
+func (a *Agent) resetUnownedRootSpans() bool {
 	a.Mu.Lock()
 	for _, call := range a.tools {
 		if call.actorID != mainActorID && call.openingTarget != nil && call.openingTarget.childID == "" && call.lastFrame != nil {
 			a.Mu.Unlock()
-			return
+			return false
 		}
 	}
 	a.Mu.Unlock()
 	a.sink.ResetSpans()
+	return true
 }
 
 func retainedToolPart(raw []byte) (mimoPart, error) {
@@ -1750,10 +1752,12 @@ func (a *Agent) endTurn(idle []byte) {
 
 	a.endLiveCompactions(mainActorID)
 
-	// Each call that this closes clears its own output count. A subagent's call
-	// can still run, so the counts are not reset as a whole.
+	// Each call closed on interruption clears its own output count. Normal and
+	// non-interrupted error turns keep running tools and their spans open.
 	a.flushActorText(mainActorID, completion)
-	a.closeUnfinishedTools(mainActorID, completion)
+	if completion == agent.MessageCompletionInterrupted {
+		a.closeUnfinishedTools(mainActorID, completion)
+	}
 	a.sink.ReportProgress(agent.ResetModelProgress())
 	content := a.turnEndContent(divider, completion)
 	// The native session fact travels IN the content: the captured write
@@ -1780,7 +1784,11 @@ func (a *Agent) endTurn(idle []byte) {
 		a.removeFailureLocked(selected)
 		a.Mu.Unlock()
 	}
-	a.resetUnownedRootSpans()
+	if completion == agent.MessageCompletionInterrupted {
+		if a.resetUnownedRootSpans() {
+			a.sink.ReportProgress(agent.ResetProgress())
+		}
+	}
 
 	a.Mu.Lock()
 	a.turnActive = false

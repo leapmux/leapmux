@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // Agent owns one native connection and its current session.
@@ -42,12 +43,13 @@ type Agent struct {
 	activityRevision   uint64
 
 	// outputMu serializes the reader goroutine against every caller that replaces
-	// or ends the session. It also guards the three maps below, which only those
-	// two paths touch.
-	outputMu  sync.Mutex
-	closing   bool
-	children  map[string]*copilotNativeChild
-	openTools map[string]*copilotOpenTool
+	// or ends the session. It also guards the maps and closedSpans below, which
+	// only those two paths touch.
+	outputMu    sync.Mutex
+	closing     bool
+	children    map[string]*copilotNativeChild
+	openTools   map[string]*copilotOpenTool
+	closedSpans providerkit.ClosedSpanSet
 	// nextNativeToolOrder numbers the open calls, so a turn that ends with several
 	// of them closes each one in the order the runtime opened it.
 	nextNativeToolOrder uint64
@@ -139,12 +141,19 @@ func (a *Agent) offReader(key string, work func()) {
 func (a *Agent) stopNativeConnection() {
 	a.outputMu.Lock()
 	a.closing = true
-	a.clearNativeChildren()
+	a.clearNativeChildren(agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 	a.clearNativeControls()
 	a.outputMu.Unlock()
+	providerkit.ResetSpansAndProgress(a.sink)
 	a.forgetNativeControlEvents()
 	a.clearNativeCompaction()
 	a.copilotConnection.Stop()
+}
+
+func (a *Agent) nativeTurnActive() bool {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.active
 }
 
 // PublishTurnActive republishes the Worker-visible turn state.
@@ -483,7 +492,18 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	}
 	a.steers.Settle(a.sink)
 	_, err := a.requestNativeSession("abort", nil)
-	return err
+	if err != nil {
+		return err
+	}
+	if !a.nativeTurnActive() {
+		a.outputMu.Lock()
+		if !a.nativeTurnActive() && !a.closing {
+			a.closeOpenNativeTools(nil, agent.MessageCompletionInterrupted)
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
+		a.outputMu.Unlock()
+	}
+	return nil
 }
 
 func (a *Agent) Stop() {
@@ -509,21 +529,25 @@ func (a *Agent) Stop() {
 		}
 	}
 	a.copilotConnection.Stop()
+	completion := a.ProcessExitCompletion()
 	a.outputMu.Lock()
-	a.clearNativeChildren()
+	a.clearNativeChildren(completion, agent.IncompleteTaskStatus(completion))
 	a.clearNativeControls()
 	a.outputMu.Unlock()
+	providerkit.ResetSpansAndProgress(a.sink)
 	a.clearNativeCompaction()
 	a.setNativeTurnActive(false)
 }
 
 func (a *Agent) Wait() error {
 	err := a.copilotConnection.Wait()
+	completion := a.ProcessExitCompletion()
 	a.outputMu.Lock()
 	a.closing = true
-	a.clearNativeChildren()
+	a.clearNativeChildren(completion, agent.IncompleteTaskStatus(completion))
 	a.clearNativeControls()
 	a.outputMu.Unlock()
+	providerkit.ResetSpansAndProgress(a.sink)
 	a.forgetNativeControlEvents()
 	a.clearNativeCompaction()
 	a.setNativeTurnActive(false)

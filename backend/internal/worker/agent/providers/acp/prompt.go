@@ -111,6 +111,19 @@ func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, e
 	b.finishOwnedPromptRequest(sessionID, target, response, err)
 }
 
+func acpResponseStopReason(response json.RawMessage) string {
+	if len(response) == 0 {
+		return ""
+	}
+	var payload struct {
+		StopReason string `json:"stopReason"`
+	}
+	if json.Unmarshal(response, &payload) != nil {
+		return ""
+	}
+	return payload.StopReason
+}
+
 func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, response json.RawMessage, err error) {
 	b.sessionMu.RLock()
 	defer b.sessionMu.RUnlock()
@@ -120,45 +133,46 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 	if !current {
 		return
 	}
-	b.turnMu.Lock()
-	b.Mu.Lock()
-	ownsPrompt := b.promptTarget == target && !b.promptOutputDrained
-	b.Mu.Unlock()
-	b.turnMu.Unlock()
-	if !ownsPrompt {
-		return
-	}
-	stopped := b.IsStopped() || b.acpInterruptRequested()
-	var ending PromptEnding
-	if b.hooks.PromptEnded != nil {
-		ending = b.hooks.PromptEnded(err, stopped)
-	}
 	// The reader must finish accepting each tool before the callback detaches its state.
 	// Capture and archive recovery run after this lock releases.
 	b.sessionUpdates.mu.Lock()
 	b.turnMu.Lock()
 	b.Mu.Lock()
-	ownsPrompt = b.promptTarget == target && !b.promptOutputDrained
-	b.Mu.Unlock()
+	ownsPrompt := b.promptTarget == target && !b.promptOutputDrained
 	if !ownsPrompt {
+		b.Mu.Unlock()
 		b.turnMu.Unlock()
 		b.sessionUpdates.mu.Unlock()
 		return
 	}
-	turn, _ := b.drainPromptTurnLocked()
+	stopped := b.StoppedLocked() || b.interruptRequested || acpResponseStopReason(response) == "cancelled"
+	b.Mu.Unlock()
+	var turn acpTurnSnapshot
+	if stopped {
+		turn, _ = b.drainPromptTurnLocked()
+	} else {
+		turn, _ = b.drainPromptTurnKeepingToolsLocked()
+	}
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()
 	b.turnMu.Unlock()
 	b.sessionUpdates.mu.Unlock()
+	var ending PromptEnding
+	if b.hooks.PromptEnded != nil {
+		ending = b.hooks.PromptEnded(err, stopped)
+	}
 	switch {
 	case err == nil && response != nil:
-		textCompletion, incomplete := b.turnOutputCompletions()
+		textCompletion, incomplete := b.turnOutputCompletions(stopped)
 		b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agent.TranscriptServices, count int) {
-			b.persistPromptResponseTo(writer, response, count, sessionID)
+			b.persistPromptResponseTo(writer, response, count, sessionID, stopped)
 		})
 	case err == nil || stopped:
 		b.finishRootSnapshot(turn, agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted, RootTranscriptPromptEnded, nil)
+		if stopped {
+			b.resetCompletedRootSpans(sessionID, true)
+		}
 	default:
 		b.finishFailedRootSnapshot(turn, err, ending)
 	}

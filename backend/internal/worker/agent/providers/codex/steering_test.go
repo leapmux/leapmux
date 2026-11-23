@@ -149,11 +149,15 @@ func TestCodexPendingSteerDefersTheTurnEndUntilItsReply(t *testing.T) {
 			}
 			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: expected, Count: 1}}, sink.SteerEchoReports())
 			lifecycle := sink.TurnLifecycle()
-			require.Len(t, lifecycle, 5)
+			expectedTail := []string{"turn_end", "turn_active:false"}
+			if outcome == "interrupted" {
+				expectedTail = []string{"turn_end", "reset_spans", "turn_active:false"}
+			}
+			require.Len(t, lifecycle, 2+len(expectedTail))
 			assert.Equal(t, "turn_active:true", lifecycle[0])
 			lifecycle = lifecycle[1:]
 			assert.True(t, strings.HasPrefix(lifecycle[0], "steer-"))
-			assert.Equal(t, []string{"turn_end", "reset_spans", "turn_active:false"}, lifecycle[1:])
+			assert.Equal(t, expectedTail, lifecycle[1:])
 		})
 	}
 }
@@ -208,7 +212,7 @@ func TestCodexNativeSteerEchoBeforeTheReplyReportsOnce(t *testing.T) {
 	close(release)
 	require.NoError(t, <-finished)
 	assert.Len(t, sink.SteerEchoReports(), 1)
-	assert.Equal(t, []string{"turn_active:true", "steer-echoed:1", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
+	assert.Equal(t, []string{"turn_active:true", "steer-echoed:1", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
 }
 
 func TestCodexSteerUsesExpectedActiveTurn(t *testing.T) {

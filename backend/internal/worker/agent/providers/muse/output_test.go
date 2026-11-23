@@ -223,7 +223,7 @@ func TestUnknownTurnOutcomeRetainsContentWithoutInventingAnError(t *testing.T) {
 	item := resultItem("unfinished-tool", "call", "origin")
 	item.Item.Revision = 1
 	item.Item.Status = contracts.MuseItemStatusInProgress
-	tool := feed(t, a, contracts.MuseMethodItemStarted, item)
+	feed(t, a, contracts.MuseMethodItemStarted, item)
 	divider := feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "futureFinal"})
 	retained := 0
 	for _, message := range sink.successful {
@@ -235,16 +235,15 @@ func TestUnknownTurnOutcomeRetainsContentWithoutInventingAnError(t *testing.T) {
 		assert.Equal(t, "session", message.AgentSessionID)
 		if message.TurnEnd {
 			assert.Equal(t, divider, message.Content)
-		} else if message.SpanID == "unfinished-tool" {
-			assert.Equal(t, tool, message.Content)
 		} else {
+			assert.NotEqual(t, "unfinished-tool", message.SpanID, "an unknown non-interrupted outcome keeps the running tool open")
 			var text map[string]any
 			require.NoError(t, json.Unmarshal(message.Content, &text))
 			assert.Equal(t, "native partial text", text["text"])
 			assert.Equal(t, "finished", text["completion"])
 		}
 	}
-	assert.Equal(t, 3, retained)
+	assert.Equal(t, 2, retained)
 	assert.Empty(t, a.sessions["session"].turnID)
 }
 
@@ -854,4 +853,350 @@ func TestRetainedMuseCompactionDoesNotSubmitAnotherCopyOnReplay(t *testing.T) {
 	require.Len(t, notifications, 1)
 	assert.Equal(t, raw, notifications[0].Content)
 	assert.False(t, queue.HasPending())
+}
+
+func TestMuseNormalAndErrorTurnPreserveBackgroundAndOpenTools(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{contracts.MuseTurnOutcomeCompleted, contracts.MuseTurnOutcomeFailed} {
+		t.Run(outcome, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			a.startTurn("session", "turn-1")
+			turn := "turn-1"
+			feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+				SessionID: "session",
+				Item: nativeItem{
+					ID: "tool-bg", Kind: contracts.MuseItemKindToolCall, Tool: "bash", Background: true,
+					Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn,
+				},
+			})
+			feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+				SessionID: "session",
+				Item: nativeItem{
+					ID: "tool-fg", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+					Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn,
+				},
+			})
+			feed(t, a, contracts.MuseMethodItemDelta, map[string]any{
+				"sessionId": "session", "itemId": "tool-bg", "field": "output", "viewCursor": "c1", "delta": "still running\n",
+			})
+			feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{
+				"sessionId": "session", "turnId": "turn-1", "terminal": outcome,
+			})
+
+			assert.Empty(t, sink.ClosedSpans())
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+			assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+			var closing int
+			for _, m := range sink.Messages() {
+				if m.Closing && (m.SpanID == "tool-bg" || m.SpanID == "tool-fg") {
+					closing++
+				}
+			}
+			assert.Zero(t, closing, "non-interrupted turn must keep open tools alive")
+			row, found := sink.BackgroundTask(museBackgroundTaskRowKey("session", "tool-bg"))
+			require.True(t, found, "background tool must register a bgtask row")
+			assert.Equal(t, bgtask.KindShell, row.Kind)
+			assert.Equal(t, bgtask.StatusRunning, row.Status, "non-interrupted turn must keep background tool running")
+		})
+	}
+}
+
+func TestMuseTurnTwoInterruptAndIdleInterruptCloseTurnOneToolsAndSuppressLateRevision(t *testing.T) {
+	t.Parallel()
+
+	t.Run("turn two interrupt closes turn one open tools and suppresses late revision and delta while updating background task", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("session", "turn-1")
+		turn1 := "turn-1"
+		feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "tool-1", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+				Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+			},
+		})
+		feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "tool-bg", Kind: contracts.MuseItemKindToolCall, Tool: "bash", Background: true,
+				Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+			},
+		})
+		feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{
+			"sessionId": "session", "turnId": "turn-1", "terminal": contracts.MuseTurnOutcomeCompleted,
+		})
+		require.Empty(t, sink.ClosedSpans())
+		bgKey := museBackgroundTaskRowKey("session", "tool-bg")
+		bgRow, found := sink.BackgroundTask(bgKey)
+		require.True(t, found)
+		require.Equal(t, bgtask.StatusRunning, bgRow.Status)
+
+		a.startTurn("session", "turn-2")
+		feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{
+			"sessionId": "session", "turnId": "turn-2", "terminal": contracts.MuseTurnOutcomeCancelled,
+		})
+		assert.Contains(t, sink.ClosedSpans(), "tool-1")
+		assert.Contains(t, sink.ClosedSpans(), "tool-bg")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		bgRow, found = sink.BackgroundTask(bgKey)
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, bgRow.Status, "interrupt must preserve independent background tool bgtask row")
+
+		msgsBefore := sink.MessageCount()
+		progressBefore := len(sink.ProgressUpdates())
+		// Late delta and late completed revisions must not revive progress or duplicate closing rows,
+		// while still letting observeChildOrTask close the background tool's bgtask row.
+		feed(t, a, contracts.MuseMethodItemDelta, map[string]any{
+			"sessionId": "session", "itemId": "tool-1", "field": "output", "viewCursor": "late-c", "delta": "late output",
+		})
+		feed(t, a, contracts.MuseMethodItemDelta, map[string]any{
+			"sessionId": "session", "itemId": "tool-bg", "field": "output", "viewCursor": "late-bg", "delta": "late bg output",
+		})
+		feed(t, a, contracts.MuseMethodItemCompleted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "tool-1", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+				Revision: 2, Status: contracts.MuseItemStatusCompleted, TurnID: &turn1,
+			},
+		})
+		feed(t, a, contracts.MuseMethodItemCompleted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "tool-bg", Kind: contracts.MuseItemKindToolCall, Tool: "bash", Background: true,
+				Revision: 2, Status: contracts.MuseItemStatusCompleted, TurnID: &turn1,
+			},
+		})
+		assert.Equal(t, msgsBefore, sink.MessageCount(), "late revisions must not persist duplicate closing rows")
+		assert.Equal(t, progressBefore, len(sink.ProgressUpdates()), "late deltas must not revive progress")
+		bgRow, found = sink.BackgroundTask(bgKey)
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusSucceeded, bgRow.Status, "late completed revision must still close background tool bgtask row via observeChildOrTask")
+	})
+
+	t.Run("idle interrupt closes cross-turn tool without synthetic turn end", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("session", "turn-1")
+		turn1 := "turn-1"
+		feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "tool-idle", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+				Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+			},
+		})
+		feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{
+			"sessionId": "session", "turnId": "turn-1", "terminal": contracts.MuseTurnOutcomeCompleted,
+		})
+		require.Empty(t, sink.ClosedSpans())
+
+		turnEndsBefore := 0
+		for _, m := range sink.Messages() {
+			if m.TurnEnd {
+				turnEndsBefore++
+			}
+		}
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Contains(t, sink.ClosedSpans(), "tool-idle")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+
+		turnEndsAfter := 0
+		var foundClosing bool
+		for _, m := range sink.Messages() {
+			if m.TurnEnd {
+				turnEndsAfter++
+			}
+			if m.Closing && m.SpanID == "tool-idle" {
+				foundClosing = true
+				assert.Equal(t, agent.MessageCompletionInterrupted, m.Completion)
+			}
+		}
+		assert.Equal(t, turnEndsBefore, turnEndsAfter, "idle interrupt must not write a synthetic turn.end")
+		assert.True(t, foundClosing)
+	})
+
+	t.Run("idle interrupt with nil session is a no-op", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		delete(a.sessions, a.sessionID)
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Empty(t, sink.ClosedSpans())
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Empty(t, sink.Messages())
+	})
+
+	t.Run("idle interrupt with retired session is a no-op", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("session", "turn-1")
+		turn1 := "turn-1"
+		feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "tool-retired", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+				Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+			},
+		})
+		feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{
+			"sessionId": "session", "turnId": "turn-1", "terminal": contracts.MuseTurnOutcomeCompleted,
+		})
+		require.Empty(t, sink.ClosedSpans())
+
+		a.sessions[a.sessionID].retired = true
+		msgsBefore := sink.MessageCount()
+		progressBefore := len(sink.ProgressUpdates())
+		lifecycleBefore := len(sink.TurnLifecycle())
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Empty(t, sink.ClosedSpans())
+		assert.Equal(t, lifecycleBefore, len(sink.TurnLifecycle()))
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Equal(t, progressBefore, len(sink.ProgressUpdates()))
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Equal(t, msgsBefore, sink.MessageCount())
+	})
+}
+
+func TestMuseIdleRetireSessionStatesClosesOpenTools(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	a.startTurn("session", "turn-1")
+	turn1 := "turn-1"
+	feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+		SessionID: "session",
+		Item: nativeItem{
+			ID: "tool-exit", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+			Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+		},
+	})
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{
+		"sessionId": "session", "turnId": "turn-1", "terminal": contracts.MuseTurnOutcomeCompleted,
+	})
+	require.Empty(t, sink.ClosedSpans())
+
+	a.retireHost(agent.MessageCompletionError)
+	assert.Contains(t, sink.ClosedSpans(), "tool-exit")
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+}
+
+func TestMuseCompletesModelProgressOnItemEndAndResetsOnInterruptAndClear(t *testing.T) {
+	t.Parallel()
+
+	t.Run("completes model progress for agentMessage and reasoning items", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("session", "turn-1")
+		turn1 := "turn-1"
+		feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "msg-1", Kind: contracts.MuseItemKindAgentMessage,
+				Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+			},
+		})
+		feed(t, a, contracts.MuseMethodItemDelta, map[string]any{
+			"sessionId": "session", "itemId": "msg-1", "field": "text", "viewCursor": "m1", "delta": "hello",
+		})
+		feed(t, a, contracts.MuseMethodItemCompleted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "msg-1", Kind: contracts.MuseItemKindAgentMessage,
+				Revision: 2, Status: contracts.MuseItemStatusCompleted, TurnID: &turn1,
+			},
+		})
+		assert.Contains(t, sink.ProgressUpdates(), agent.CompleteModelProgress("msg-1"))
+
+		feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "reason-1", Kind: contracts.MuseItemKindReasoning,
+				Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+			},
+		})
+		feed(t, a, contracts.MuseMethodItemDelta, map[string]any{
+			"sessionId": "session", "itemId": "reason-1", "field": "summary.0", "viewCursor": "r1", "delta": "thinking",
+		})
+		feed(t, a, contracts.MuseMethodItemCompleted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "reason-1", Kind: contracts.MuseItemKindReasoning,
+				Revision: 2, Status: contracts.MuseItemStatusCompleted, TurnID: &turn1,
+			},
+		})
+		assert.Contains(t, sink.ProgressUpdates(), agent.CompleteModelProgress("reason-1"))
+	})
+
+	t.Run("resets spans and progress on interrupted turn", func(t *testing.T) {
+		t.Parallel()
+		a, sink := testAgent(t)
+		a.startTurn("session", "turn-1")
+		turn1 := "turn-1"
+		feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+			SessionID: "session",
+			Item: nativeItem{
+				ID: "msg-cut", Kind: contracts.MuseItemKindAgentMessage,
+				Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+			},
+		})
+		feed(t, a, contracts.MuseMethodItemDelta, map[string]any{
+			"sessionId": "session", "itemId": "msg-cut", "field": "text", "viewCursor": "m-cut", "delta": "partial",
+		})
+		feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{
+			"sessionId": "session", "turnId": "turn-1", "terminal": contracts.MuseTurnOutcomeCancelled,
+		})
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	for _, tc := range []struct {
+		name        string
+		replacement string
+		openTool    bool
+	}{
+		{name: "ClearContext resets spans and progress via retired session cleanup", replacement: "replacement", openTool: true},
+		{name: "ClearContext resets spans and progress via fallback when session ID is unchanged", replacement: "session"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			if tc.openTool {
+				a.startTurn("session", "turn-1")
+				turn1 := "turn-1"
+				feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+					SessionID: "session",
+					Item: nativeItem{
+						ID: "tool-clear", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+						Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+					},
+				})
+				feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{
+					"sessionId": "session", "turnId": "turn-1", "terminal": contracts.MuseTurnOutcomeCompleted,
+				})
+				require.Empty(t, sink.ClosedSpans())
+			}
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+				if method == methodSessionStart {
+					return agenttest.RPCReply{Result: json.RawMessage(`{"session":{"sessionId":"` + tc.replacement + `","modelId":null,"activeTurnId":null}}`)}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			}})
+
+			lifecycleBefore := len(sink.TurnLifecycle())
+			progressBefore := len(sink.ProgressUpdates())
+			id, err := a.ClearContext()
+			require.NoError(t, err)
+			assert.Equal(t, tc.replacement, id)
+			if tc.openTool {
+				assert.Contains(t, sink.ClosedSpans(), "tool-clear")
+			}
+			assert.Contains(t, sink.TurnLifecycle()[lifecycleBefore:], "reset_spans")
+			assert.Contains(t, sink.ProgressUpdates()[progressBefore:], agent.ResetProgress())
+		})
+	}
 }

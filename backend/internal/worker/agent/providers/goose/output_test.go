@@ -330,3 +330,23 @@ func TestGoosePromptFailureDoesNotReuseAnotherPromptsMessage(t *testing.T) {
 	assert.True(t, a.finishGoosePrompt(err, false).NoteWritten)
 	assert.False(t, a.finishGoosePrompt(err, false).NoteWritten, "a later failure without native text still needs a host note")
 }
+
+func TestGooseClearProviderStateResetsDelegationAndOutputState(t *testing.T) {
+	t.Parallel()
+	a := newGooseOutputAgent(agent.NewProviderServices(&agenttest.Sink{}))
+	a.Mu.Lock()
+	a.gooseChildRenames = map[string]string{"spawn-1": "sess-1"}
+	a.gooseOutput = map[string]gooseOutputState{"call-1": {sequence: 3, bytes: 10}}
+	a.activeDelegations = map[string]struct{}{"sess-1": {}}
+	a.promptOutput = goosePromptOutputState{goalArmed: true, lastMessageID: "msg-1"}
+	a.Mu.Unlock()
+
+	a.clearGooseState()
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Empty(t, a.gooseChildRenames)
+	assert.Empty(t, a.gooseOutput)
+	assert.Empty(t, a.activeDelegations)
+	assert.Equal(t, goosePromptOutputState{}, a.promptOutput)
+}

@@ -47,7 +47,20 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		a.turn.interruptRequested = true
 	}
 	a.Mu.Unlock()
-	if !turn.active || sessionID == "" || waitsForRun || turn.settling {
+	if !turn.active {
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && !a.turn.active
+		lead := a.out.lead
+		a.Mu.Unlock()
+		if stillIdle {
+			a.closeOpenTools(lead, agent.MessageCompletionInterrupted)
+			providerkit.ResetSpansAndProgress(a.sink)
+		}
+		return nil
+	}
+	if sessionID == "" || waitsForRun || turn.settling {
 		return nil
 	}
 	err := a.abortRun(sessionID)
@@ -203,16 +216,17 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion, message string)
 		if completion == agent.MessageCompletionInterrupted {
 			reason = runReasonAborted
 		}
-		a.endTurn(completion, runEndRow(sessionID, reason, message))
+		a.endTurnWithTeardown(completion, runEndRow(sessionID, reason, message), true)
 	} else {
 		a.withdrawAllControls()
 		a.settleSpawns(completion)
+		a.closeOpenTools(lead, completion)
 	}
 	status := bgtask.StatusStopped
 	if completion == agent.MessageCompletionError {
 		status = bgtask.StatusInterrupted
 	}
 	a.closeTeamRuns(status)
-	a.sink.ReportProgress(agent.ResetProgress())
+	providerkit.ResetSpansAndProgress(a.sink)
 	a.PublishTurnActive()
 }

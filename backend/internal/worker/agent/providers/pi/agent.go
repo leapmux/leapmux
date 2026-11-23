@@ -68,6 +68,7 @@ type Agent struct {
 	sessionStatsMu        sync.Mutex
 	generationBuffer      providerkit.GenerationBuffer
 	toolStates            map[string]*piToolState
+	closedSpans           providerkit.ClosedSpanSet
 	nextToolOrder         uint64
 	questionDialogs       map[string]*piQuestionSource
 	customQuestionAnswers map[piQuestionKey]*piCustomQuestionAnswer
@@ -428,6 +429,7 @@ func (a *Agent) ClearContext() (string, error) {
 	// Without this reset, the process retains that spawn prompt indefinitely.
 	// A reused tool-call ID would also open the new transcript with the old instruction.
 	clear(a.toolStates)
+	a.closedSpans.Reset()
 	a.clearPiQuestionStateLocked()
 	// The plan menu this mark refers to died with the replaced session.
 	a.freshImplementationPending = false
@@ -436,8 +438,8 @@ func (a *Agent) ClearContext() (string, error) {
 	handle := a.sessionHandleLocked()
 	a.Mu.Unlock()
 	a.PublishTurnActive()
-	// The session was replaced. Clear all live progress before the next turn.
-	a.sink.ReportProgress(agent.ResetProgress())
+	// The session was replaced. Clear all live spans and progress before the next turn.
+	providerkit.ResetSpansAndProgress(a.sink)
 	if handle == "" {
 		return "", fmt.Errorf("the new Pi session has no handle")
 	}

@@ -199,7 +199,7 @@ func TestNativeAssemblyEndsShutdownInterruptionWhileTheServerRemainsAlive(t *tes
 			require.Len(t, rows, 1)
 			assert.True(t, rows[0].TurnEnd)
 			assert.Equal(t, agent.MessageCompletionInterrupted, rows[0].Completion)
-			assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+			assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, sink.TurnLifecycle())
 			assert.False(t, a.root.PublishTurnActive().Active)
 		})
 	}
@@ -299,4 +299,22 @@ func TestNativeAssemblyCompleteSettingsKeepModelInheritance(t *testing.T) {
 			assert.Equal(t, originalOptions, options, "the facade must not mutate the caller's options")
 		})
 	}
+}
+
+func TestOpenCodeRetireRunResetsSpansAndProgress(t *testing.T) {
+	t.Parallel()
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	a, sink := assemblyAgent(t, rpc)
+	a.root.setNativeActivity(true, false)
+	require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.tool.input.started", map[string]any{"sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_retire", "name": "shell"})))
+	require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.tool.called", map[string]any{"sessionID": "ses_1", "assistantMessageID": "msg_1", "id": "call_retire", "input": map[string]any{"command": "sleep 30"}, "executed": false})))
+	require.NoError(t, a.acceptNativeEvent(t.Context(), assemblyEvent(t, "session.execution.succeeded", map[string]any{"sessionID": "ses_1"})))
+	require.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+
+	a.dispatch.Lock()
+	err := a.retireRunLocked(a.root, agent.MessageCompletionInterrupted)
+	a.dispatch.Unlock()
+	require.NoError(t, err)
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
 }

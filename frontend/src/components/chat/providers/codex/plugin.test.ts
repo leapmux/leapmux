@@ -124,7 +124,7 @@ describe('codex result divider', () => {
       expect(plugin?.transcript.extractDivider!({
         turn: { id: 'turn-1', status },
       }), status)
-        .toEqual({ label: 'Turn interrupted' })
+        .toEqual({ label: 'Turn interrupted', interrupted: true })
     }
   })
 

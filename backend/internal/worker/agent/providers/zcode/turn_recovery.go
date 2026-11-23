@@ -998,7 +998,7 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 	foreground := !background && a.foregroundTurnID == owner.id && !owner.settled
 	publishTurnEnd := foreground
 	for _, other := range a.turns {
-		if other != owner && (!other.settled || a.hasActiveZCodeToolLocked(other)) {
+		if other != owner && !other.settled {
 			publishTurnEnd = false
 			break
 		}
@@ -1064,11 +1064,23 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 		return true
 	}
 
-	closed := a.persistIncompleteZCodeToolsForTurn(owner, settle.callCompletion)
+	closed := 0
+	interrupted := settle.callCompletion == agent.MessageCompletionInterrupted
+	if interrupted {
+		var target *zcodeTurnState
+		if owner.background {
+			target = owner
+		}
+		closed = a.persistIncompleteZCodeToolsFor(target, settle.callCompletion, "", true)
+	}
 
 	a.resetZCodeTurnProgress(owner)
 	settle.persistEnd(closed, publishTurnEnd)
-	a.resetZCodeSpansWhenIdle()
+	if interrupted {
+		if a.resetZCodeSpansWhenIdle() {
+			a.sink.ReportProgress(agent.ResetProgress())
+		}
+	}
 
 	// The app-server's own reading is authoritative, and reading it takes an RPC --
 	// which the read loop must stay free to deliver, so it cannot run inline here.
@@ -1077,17 +1089,18 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 }
 
 // resetZCodeSpansWhenIdle retains span state until every overlapping owner ends.
-// A locally stopped owner can still hold a running tool that needs its span.
-func (a *Agent) resetZCodeSpansWhenIdle() {
+// It returns true if and only if it reset the root span tracker.
+func (a *Agent) resetZCodeSpansWhenIdle() bool {
 	a.Mu.Lock()
 	for _, owner := range a.turns {
 		if !owner.settled || a.hasActiveZCodeToolLocked(owner) {
 			a.Mu.Unlock()
-			return
+			return false
 		}
 	}
 	a.Mu.Unlock()
 	a.sink.ResetSpans()
+	return true
 }
 
 // zcodeRecoverySettlement settles a recovered turn: its scopes and tools close

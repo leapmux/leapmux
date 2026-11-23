@@ -510,3 +510,90 @@ func TestAntigravityRetiredCompactionOutcomeKeepsItsSession(t *testing.T) {
 	a.endManualCompaction(old, providerkit.CompactionEndAborted)
 	assert.Equal(t, []string{old.id}, sink.sessionIDs)
 }
+
+func TestAntigravityIdleInterruptDoesNotLatchInterruptedFlagAndRollbackUsesGen(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt leaves interrupted flag false and closes idle non-background tool", func(t *testing.T) {
+		t.Parallel()
+		rpc, _ := fakeAntigravityRPC(t)
+		a, sink := testAgent(t)
+		a.rpc = rpc
+		cmd := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"cmd-1"}},"runCommand":{"command":"sleep 30"}}`)
+		feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{cmd}))
+		feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+		require.Empty(t, sink.ClosedSpans())
+
+		var preserved bool
+		require.NoError(t, a.Interrupt(agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })))
+		assert.False(t, a.root.interrupted, "idle interrupt must not latch root.interrupted for Turn 2")
+		assert.False(t, preserved)
+		assert.Contains(t, sink.ClosedSpans(), "cmd-1")
+		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	})
+
+	t.Run("idle interrupt with background task sets PreserveOpenSpans and preserves background tail", func(t *testing.T) {
+		t.Parallel()
+		rpc, _ := fakeAntigravityRPC(t)
+		a, sink := testAgent(t)
+		a.rpc = rpc
+		a.root.background[4] = backgroundTask{rowKey: "shell", stepIndex: 4}
+
+		var preserved bool
+		require.NoError(t, a.Interrupt(agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })))
+		assert.True(t, preserved, "live background shell must set PreserveOpenSpans on idle interrupt")
+		assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+		assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelProgress())
+	})
+
+	t.Run("failed active cancel rolls back interrupted flag using interruptGen", func(t *testing.T) {
+		t.Parallel()
+		a, _ := testAgent(t)
+		endpoint, err := providerkit.NewHTTPEndpoint("http://127.0.0.1:1", nil)
+		require.NoError(t, err)
+		t.Cleanup(endpoint.Close)
+		a.rpc = antigravityRPC{endpoint: endpoint, timeout: time.Second}
+		a.beginTurn(a.root)
+		err = a.Interrupt(agent.StopContext{})
+		require.Error(t, err)
+		assert.False(t, a.root.interrupted, "failed cancel must roll back root.interrupted")
+	})
+
+	t.Run("stale failed cancel does not roll back newer concurrent cancel", func(t *testing.T) {
+		t.Parallel()
+		a, _ := testAgent(t)
+		var calls atomic.Int32
+		firstEntered := make(chan struct{})
+		releaseFirst, unblockFirst := newTestGate(t)
+		a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, languageServerService+"CancelCascadeInvocation", r.URL.Path)
+			if calls.Add(1) == 1 {
+				close(firstEntered)
+				<-releaseFirst
+				http.Error(w, "stale cancel failed", http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+		})
+		a.beginTurn(a.root)
+
+		firstErr := make(chan error, 1)
+		go func() {
+			firstErr <- a.Interrupt(agent.StopContext{})
+		}()
+		receiveTestValue(t, firstEntered)
+
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		unblockFirst()
+		require.Error(t, receiveTestValue(t, firstErr))
+
+		a.Mu.Lock()
+		interrupted := a.root.interrupted
+		gen := a.root.interruptGen
+		a.Mu.Unlock()
+		assert.True(t, interrupted, "stale failed cancel must preserve root.interrupted set by a newer concurrent cancel")
+		assert.Equal(t, uint64(2), gen)
+	})
+}

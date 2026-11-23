@@ -28,13 +28,22 @@ import (
 // kimiStopStepTimeout limits each native stop step.
 const kimiStopStepTimeout = 2 * time.Second
 
-// Interrupt aborts the main agent's running turn. A turn that is not running
-// needs nothing.
+// Interrupt aborts the main agent's running turn, or closes still-open root
+// tool spans across turns when idle.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	sessionID, active := a.sessionID, a.turnActive
 	a.Mu.Unlock()
 	if !active {
+		a.dispatchMu.Lock()
+		defer a.finishDispatch()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && !a.turnActive
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		a.closeOpenConversationToolsAcrossTurns(a.run(kimiMainAgentID), agent.MessageCompletionInterrupted, true)
 		return nil
 	}
 	if err := kimiCheckID("session", sessionID); err != nil {

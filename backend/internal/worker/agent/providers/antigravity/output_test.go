@@ -467,3 +467,41 @@ func TestAntigravityBlankPlannerKeepsUnrecoveredError(t *testing.T) {
 	assert.True(t, rows[0].TurnEnd)
 	assert.Equal(t, agent.MessageCompletionError, rows[0].Completion)
 }
+
+func TestAntigravityNormalTurnFlushesNonToolStepsAndPreservesOpenToolStepAndTail(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	planner := plannerStep(contracts.AntigravityStepStatusGenerating, "partial answer")
+	cmd := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"cmd-1"}},"runCommand":{"command":"sleep 30","combinedOutput":{"full":"live line\n"}}}`)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0, 1}, []json.RawMessage{planner, cmd}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+
+	// Non-tool planner step flushed, tool step kept open, live tail preserved, no global ResetProgress.
+	assert.Empty(t, sink.ClosedSpans())
+	assert.NotContains(t, sink.TurnLifecycle(), "reset_spans")
+	assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress())
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelProgress())
+	assert.Contains(t, sink.ProgressUpdates(), agent.OutputTailProgress("cmd-1", "live line\n", false))
+	assert.True(t, a.root.steps[0].consumed, "non-tool planner step must flush at normal turn end")
+	assert.False(t, a.root.steps[1].consumed, "open tool step must stay alive across normal turn end")
+}
+
+func TestAntigravityTurnTwoInterruptClosesTurnOneToolStepInSortedOrder(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	cmd1 := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"cmd-1"}},"runCommand":{"command":"sleep 30"}}`)
+	cmd2 := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"cmd-2"}},"runCommand":{"command":"sleep 40"}}`)
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{cmd1}))
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+	require.Empty(t, sink.ClosedSpans())
+
+	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{1}, []json.RawMessage{cmd2}))
+	a.Mu.Lock()
+	a.root.interrupted = true
+	a.Mu.Unlock()
+	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+
+	assert.Equal(t, []string{"cmd-1", "cmd-2"}, sink.ClosedSpans(), "interrupted Turn 2 closes Turn 1 and Turn 2 tool steps in ascending step index order")
+	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+}

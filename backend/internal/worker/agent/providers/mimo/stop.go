@@ -34,7 +34,27 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
-	if !active || sessionID == "" {
+	if !active {
+		a.dispatchMu.Lock()
+		defer a.dispatchMu.Unlock()
+		a.Mu.Lock()
+		stillIdle := !a.StoppedLocked() && !a.turnActive
+		a.Mu.Unlock()
+		if !stillIdle {
+			return nil
+		}
+		a.closeUnfinishedTools(mainActorID, agent.MessageCompletionInterrupted)
+		if a.sink != nil {
+			if a.resetUnownedRootSpans() {
+				a.sink.ReportProgress(agent.ResetProgress())
+			} else {
+				a.sink.ReportProgress(agent.ResetModelProgress())
+				stop.PreserveOpenSpans()
+			}
+		}
+		return nil
+	}
+	if sessionID == "" {
 		return nil
 	}
 	// Record the pending attempt before the request leaves. Native abort events
