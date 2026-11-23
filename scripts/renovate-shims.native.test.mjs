@@ -214,7 +214,17 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       'frontend/bun.lock': readFileSync(resolve(root, 'frontend/bun.lock')),
       'desktop/rust/Cargo.lock': readFileSync(resolve(root, 'desktop/rust/Cargo.lock')),
     })
-    const source = `const {writeToolShims}=await import(${JSON.stringify(new URL('./renovate-shims.mjs', import.meta.url).href)}); const {readFileSync}=await import('node:fs'); writeToolShims({root:process.argv[1],policy:JSON.parse(readFileSync(process.argv[2],'utf8')),prepared:{authorized:{'desktop/rust/Cargo.lock':{'glib@0.20.0':[]}}}}); process.stdout.write(process.versions.bun??'node')`
+    const source = `
+      const { writeToolShims } = await import(${JSON.stringify(new URL('./renovate-shims.mjs', import.meta.url).href)});
+      const { readFileSync } = await import('node:fs');
+      writeToolShims({
+        root: process.argv[1],
+        policy: JSON.parse(readFileSync(process.argv[2], 'utf8')),
+        prepared: { authorized: { 'desktop/rust/Cargo.lock': { 'glib@0.20.0': [] } } },
+        now: Date.parse('2026-10-31T00:00:00Z'),
+      });
+      process.stdout.write(process.versions.bun ?? 'node');
+    `
     const started = spawnSync('node', [
       '--input-type=module',
       '-e',
@@ -228,8 +238,8 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
     const policy = JSON.parse(readFileSync(paths.policy, 'utf8'))
     expect(policy).toEqual({
       version: 1,
-      cutoff: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/),
-      ageSeconds: 259200,
+      cutoff: '2026-10-24T00:00:00Z',
+      ageSeconds: 604800,
       realTools: {
         bun: Bun.which('bun'),
         cargo: Bun.which('cargo'),

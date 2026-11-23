@@ -102,6 +102,8 @@ function tauriFixture({ core = false, proposedCore = '2.11.0', gtk = null } = {}
 }
 
 describe('reconcileTauri', () => {
+  const publishedAt = '2026-01-01T00:00:00.000Z'
+
   it('does not modify an earlier pair when a later pair has no compatible target', async () => {
     const { proposed, trusted } = tauriFixture({ core: true, proposedCore: '2.12.0' })
     const files = [
@@ -111,7 +113,6 @@ describe('reconcileTauri', () => {
       'desktop/rust/Cargo.lock',
     ]
     const before = files.map(file => readFileSync(resolve(proposed, file), 'utf8'))
-    const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     const calls = []
     await expect(reconcileTauri({
       root: proposed,
@@ -143,7 +144,6 @@ describe('reconcileTauri', () => {
   })
   it('starts registry reads for every changed pair before waiting for responses', async () => {
     const { proposed, trusted, lock } = tauriFixture({ core: true, proposedCore: '2.12.0' })
-    const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     const pending = []
     let released = false
     const version = url => url.includes('plugin-opener')
@@ -182,7 +182,6 @@ describe('reconcileTauri', () => {
   })
   it('includes a previously unchanged core pair when a plugin requires a newer core', async () => {
     const { proposed, trusted, lock } = tauriFixture({ core: true })
-    const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     const request = async url => isCrateIndexRead(url)
       ? crateIndexResponse((url.includes('plugin-opener')
           ? ['2.6.0', '2.7.0']
@@ -237,7 +236,6 @@ describe('reconcileTauri', () => {
   // the gtk requirement of each tauri release, or undefined for a release without gtk.
   function moveCore(gtkOf) {
     const { proposed, trusted, lock } = tauriFixture({ core: true, gtk: '0.18' })
-    const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     const request = async (url) => {
       if (isCrateIndexRead(url)) {
         return crateIndexResponse((url.includes('plugin-opener')
@@ -364,7 +362,6 @@ describe('reconcileTauri', () => {
   })
   it('adds an exact JavaScript companion when Cargo moves to a new minor', async () => {
     const { proposed, trusted, lock } = tauriFixture()
-    const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     await reconcileTauri({
       root: proposed,
       trusted,
@@ -391,7 +388,6 @@ describe('reconcileTauri', () => {
   })
   it('does not downgrade an explicit proposal to an older compatible minor', async () => {
     const { proposed, trusted } = tauriFixture()
-    const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     await expect(reconcileTauri({
       root: proposed,
       trusted,
@@ -451,8 +447,6 @@ describe('reconcileTauri', () => {
     })).rejects.toThrow('Security processing requires the authorized fixes of the prepared file.')
   })
   it('selects a young authorized fix on a security branch only', async () => {
-    const day = 86400000
-    const old = new Date(Date.now() - 4 * day).toISOString()
     // Old enough for a security fix (two hours), and too young for a routine update.
     const young = new Date(Date.now() - 3 * 3600000).toISOString()
     const attempt = (crates, security) => {
@@ -482,13 +476,13 @@ describe('reconcileTauri', () => {
         ],
         request: async url => isCrateIndexRead(url)
           ? crateIndexResponse([
-              { vers: '2.5.0', pubtime: old },
+              { vers: '2.5.0', pubtime: publishedAt },
               { vers: '2.6.0', pubtime: young },
             ])
           : Response.json(url.includes('/dependencies')
               ? { dependencies: [] }
               : {
-                  time: { '2.5.0': old, '2.6.0': old },
+                  time: { '2.5.0': publishedAt, '2.6.0': publishedAt },
                 }),
         run: (command) => {
           calls.push(command)

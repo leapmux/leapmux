@@ -26,8 +26,8 @@ describe('releaseAgeMs', () => {
     ])
       expect(() => releaseAgeMs({ minimumReleaseAge, minimumReleaseAgeBuffer: null }), String(minimumReleaseAge)).toThrow('positive duration')
   })
-  it('reads the repository policy as three days', () => {
-    expect(releaseAgeMs(JSON.parse(readFileSync(resolve(root, 'renovate.json'), 'utf8')))).toBe(3 * 86400000)
+  it('reads the repository policy as seven days', () => {
+    expect(releaseAgeMs(JSON.parse(readFileSync(resolve(root, 'renovate.json'), 'utf8')))).toBe(7 * 86400000)
   })
 })
 

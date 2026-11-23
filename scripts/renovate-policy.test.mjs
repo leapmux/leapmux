@@ -451,7 +451,7 @@ describe('renovate policy with the pinned engine', () => {
       npm: { '@tauri-apps/api': '2.11.1' },
       cargo: { tauri: '2.11.3' },
     }, {
-      now: Date.parse('2026-10-26T00:00:00Z'),
+      now: Date.parse('2026-10-28T00:00:00Z'),
       request: async url => isCrateIndexRead(url)
         ? crateIndexResponse(['2.12.0', '2.13.0', '2.13.2'].map(vers => ({
             name: 'tauri',
@@ -568,7 +568,7 @@ describe('renovate policy with the pinned engine', () => {
     }
     const young = {
       version: '2.0.0',
-      releaseTimestamp: new Date(Date.now() - 86400000).toISOString(),
+      releaseTimestamp: new Date(Date.now() - 6 * 86400000).toISOString(),
     }
     const missing = { version: '2.0.1' }
     for (const candidate of [young, missing]) {
@@ -577,7 +577,7 @@ describe('renovate policy with the pinned engine', () => {
     }
     const older = {
       version: '2.0.0',
-      releaseTimestamp: new Date(Date.now() - 4 * 86400000).toISOString(),
+      releaseTimestamp: new Date(Date.now() - 8 * 86400000).toISOString(),
     }
     const result = await filterInternalChecks(settings, get('semver'), 'major', [
       older,

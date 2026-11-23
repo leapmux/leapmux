@@ -651,7 +651,7 @@ Each run creates and maintains routine branches, lockfile maintenance, and secur
 - Security fixes, including major fixes, bypass dashboard approval.
   Renovate proposes a security fix once the patched version is two hours old.
   Within those two hours, Renovate stops the whole run when the artifacts of a new security branch fail, so a younger fix waits for the next run.
-- Every new dependency version needs a release timestamp and a release age of at least three days.
+- Routine updates require each new dependency version to have a release timestamp and be at least seven days old.
   `Required CI` rejects a pull request whose lockfiles add a younger version, whoever opens it.
   To take a younger version, wait until it is old enough, and then run the check again.
   Renovate already holds a new bun or cargo version to the age while it writes a branch.

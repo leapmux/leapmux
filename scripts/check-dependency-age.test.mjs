@@ -13,6 +13,7 @@ const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
 
 const now = Date.parse('2026-10-31T00:00:00Z')
+const sevenDaysAgo = '2026-10-24T00:00:00.000Z'
 const fourDays = '2026-10-27T00:00:00Z'
 const oneHour = '2026-10-30T23:00:00Z'
 
@@ -159,7 +160,7 @@ describe('checkDependencyAge', () => {
       now,
       readers: offlineReaders,
       openAlerts: noAlerts,
-      times: timeTable({ 'foo@1.4.1': fourDays }),
+      times: timeTable({ 'foo@1.4.1': sevenDaysAgo }),
     })).toEqual([])
   })
   it('requires the head ref before it reads anything', async () => {
@@ -199,7 +200,7 @@ describe('checkDependencyAge', () => {
     writeFiles(checkout, {
       'frontend/bun.lock': bunLock(['a@1.0.0', 'young@1.0.0']),
     })
-    const times = timeTable({ 'a@1.1.0': fourDays, 'young@1.0.0': oneHour })
+    const times = timeTable({ 'a@1.1.0': sevenDaysAgo, 'young@1.0.0': oneHour })
     expect(await checkDependencyAge({
       base,
       head,
@@ -238,13 +239,14 @@ describe('checkDependencyAge', () => {
       { file: 'frontend/bun.lock', identity: 'a@1.1.0', message: 'a@1.1.0 was published at 2026-10-30T23:00:00.000Z, less than 3 days 30 minutes ago.' },
     ])
   })
-  it('accepts a version four days old and rejects one an hour old with its file and identity', async () => {
+  it('accepts a version exactly seven days old and rejects one published a millisecond later', async () => {
     const { checkout, base } = repository({
       'frontend/bun.lock': bunLock(['a@1.0.0']),
     }, {
       'frontend/bun.lock': bunLock(['a@1.1.0', '@s/b@2.0.0']),
     })
-    const times = timeTable({ 'a@1.1.0': fourDays, '@s/b@2.0.0': oneHour })
+    const justAfterCutoff = '2026-10-24T00:00:00.001Z'
+    const times = timeTable({ 'a@1.1.0': sevenDaysAgo, '@s/b@2.0.0': justAfterCutoff })
     const violations = await checkDependencyAge({
       base,
       headRef: 'renovate/frontend',
@@ -254,9 +256,9 @@ describe('checkDependencyAge', () => {
       times,
     })
     expect(violations).toEqual([
-      { file: 'frontend/bun.lock', identity: '@s/b@2.0.0', message: '@s/b@2.0.0 was published at 2026-10-30T23:00:00.000Z, less than 3 days ago.' },
+      { file: 'frontend/bun.lock', identity: '@s/b@2.0.0', message: '@s/b@2.0.0 was published at 2026-10-24T00:00:00.001Z, less than 7 days ago.' },
     ])
-    expect(annotations(violations)).toEqual(['::error file=frontend/bun.lock::@s/b@2.0.0 was published at 2026-10-30T23:00:00.000Z, less than 3 days ago.'])
+    expect(annotations(violations)).toEqual(['::error file=frontend/bun.lock::@s/b@2.0.0 was published at 2026-10-24T00:00:00.001Z, less than 7 days ago.'])
     expect(times.reads.sort()).toEqual(['@s/b@2.0.0', 'a@1.1.0'])
   })
   it('rejects a version without a release timestamp', async () => {
@@ -290,7 +292,7 @@ describe('checkDependencyAge', () => {
         now,
         readers: advisoryReaders([]),
         openAlerts: noAlerts,
-        times: timeTable({ 'foo@1.4.1': fourDays }),
+        times: timeTable({ 'foo@1.4.1': sevenDaysAgo }),
       })
       expect(violations, headRef).toEqual([
         { file: 'desktop/rust/Cargo.lock', identity: 'foo@1.4.1', message: 'cargo would downgrade foo from 1.4.2 to 1.4.1.' },
@@ -306,7 +308,7 @@ describe('checkDependencyAge', () => {
       'desktop/go/go.mod': null,
       'site/go.mod': null,
     })
-    const times = timeTable({ 'renovate@44.0.0': oneHour, 'json5@2.2.3': fourDays })
+    const times = timeTable({ 'renovate@44.0.0': oneHour, 'json5@2.2.3': sevenDaysAgo })
     expect(await checkDependencyAge({
       base,
       headRef: 'renovate/renovate',
@@ -315,7 +317,7 @@ describe('checkDependencyAge', () => {
       readers: offlineReaders,
       times,
     })).toEqual([
-      { file: '.github/renovate/bun.lock', identity: 'renovate@44.0.0', message: 'renovate@44.0.0 was published at 2026-10-30T23:00:00.000Z, less than 3 days ago.' },
+      { file: '.github/renovate/bun.lock', identity: 'renovate@44.0.0', message: 'renovate@44.0.0 was published at 2026-10-30T23:00:00.000Z, less than 7 days ago.' },
     ])
     expect(times.reads.sort()).toEqual(['json5@2.2.3', 'renovate@44.0.0'])
   })
@@ -397,7 +399,7 @@ describe('checkDependencyAge', () => {
         },
       }
       // Null alerts fail any read of them, so the check reads no alert either.
-      expect((await check(['fixed-pkg@1.2.0'], ['fixed-pkg@1.2.3'], readers, { 'fixed-pkg@1.2.3': fourDays }, null)).identities).toEqual([])
+      expect((await check(['fixed-pkg@1.2.0'], ['fixed-pkg@1.2.3'], readers, { 'fixed-pkg@1.2.3': sevenDaysAgo }, null)).identities).toEqual([])
       expect(advisoryReads).toEqual([])
     })
     it('exempts nothing for a package without an open alert, although an advisory lists its fix', async () => {
@@ -453,7 +455,7 @@ describe('checkDependencyAge', () => {
       }
       expect(await checkDependencyAge({
         ...options,
-        times: timeTable({ 'fixed-pkg@1.2.3': oneHour, 'other@1.0.1': fourDays }),
+        times: timeTable({ 'fixed-pkg@1.2.3': oneHour, 'other@1.0.1': sevenDaysAgo }),
       })).toEqual([])
       expect(warnings).toEqual(['Skipped the security fixes of other in frontend/bun.lock: Advisory read failed: 503'])
       // The skipped package exempts nothing, so its young version still fails.
@@ -816,7 +818,7 @@ describe('main', () => {
       readers: offlineReaders,
       times: timeTable({ 'a@1.1.0': oneHour }),
     })).toBe(1)
-    expect(stdout.lines).toEqual(['::error file=frontend/bun.lock::a@1.1.0 was published at 2026-10-30T23:00:00.000Z, less than 3 days ago.\n'])
+    expect(stdout.lines).toEqual(['::error file=frontend/bun.lock::a@1.1.0 was published at 2026-10-30T23:00:00.000Z, less than 7 days ago.\n'])
     expect(stderr.lines).toEqual([])
   })
   it('returns 0 when every new version is old enough', async () => {
@@ -833,7 +835,7 @@ describe('main', () => {
       checkout,
       now,
       readers: offlineReaders,
-      times: timeTable({ 'a@1.1.0': fourDays }),
+      times: timeTable({ 'a@1.1.0': sevenDaysAgo }),
     })).toBe(0)
     expect(stdout.lines).toEqual(['Every version that the lockfiles add meets the minimum release age.\n'])
   })
@@ -864,7 +866,7 @@ describe('main', () => {
     })).toBe(1)
     expect(stdout.lines).toEqual([
       '::warning::Skipped the security fixes of a in frontend/bun.lock: Advisory read failed: 503%0Aretry later\n',
-      '::error file=frontend/bun.lock::a@1.1.0 was published at 2026-10-30T23:00:00.000Z, less than 3 days ago.\n',
+      '::error file=frontend/bun.lock::a@1.1.0 was published at 2026-10-30T23:00:00.000Z, less than 7 days ago.\n',
     ])
   })
   it('returns 1 with the reason when the check cannot read the base revision', async () => {
