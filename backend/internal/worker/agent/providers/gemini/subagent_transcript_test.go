@@ -301,3 +301,193 @@ func TestGeminiIdleInterruptFinishesNativeChildren(t *testing.T) {
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusInterrupted, row.Status, "idle Interrupt must finish lingering Gemini native children")
 }
+
+type geminiConcurrentObserveServices struct {
+	agent.ProviderServices
+	once     sync.Once
+	onUpsert func()
+}
+
+func (services *geminiConcurrentObserveServices) UpsertBackgroundTask(upsert bgtask.Upsert) error {
+	if err := services.ProviderServices.UpsertBackgroundTask(upsert); err != nil {
+		return err
+	}
+	services.once.Do(services.onUpsert)
+	return nil
+}
+
+func TestGeminiChildTranscriptIdleStartupClosesHistoricalNonGoalRow(t *testing.T) {
+	t.Parallel()
+	transcript, sink, path := geminiChildTranscriptFixture(t)
+	goalChildID := "22222222-2222-4222-8222-222222222222"
+	goalPath := filepath.Join(filepath.Dir(path), goalChildID+".jsonl")
+	_, hash := geminiProjectIdentity(transcript.query.WorkingDir)
+	writeGeminiSession(t, goalPath, goalChildID, hash, "subagent", "completed goal child")
+	appendGeminiChildRecord(t, goalPath, `{"id":"goal-complete-model","type":"gemini","content":"","toolCalls":[{"id":"complete_task__goal-end","name":"complete_task","args":{"result":{"response":"done"}},"status":"success","result":[{"functionResponse":{"response":{"output":"Output submitted and task completed."}}}]}]}`)
+
+	transcript.start()
+	defer transcript.stop(agent.MessageCompletionInterrupted)
+
+	testutil.RequireEventually(t, func() bool {
+		row, found := sink.BackgroundTask(geminiNativeChildID)
+		return found && row.Status == bgtask.StatusEndedWithUnknownOutcome
+	})
+	goalRow, found := sink.BackgroundTask(goalChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusSucceeded, goalRow.Status)
+}
+
+func TestGeminiChildTranscriptConcurrentObserveDuringStartupKeepsChildRunning(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := geminiChildTranscriptFixture(t)
+	clock := transcript.clock.(*quartz.Mock)
+	tickerTrap := clock.Trap().NewTicker("gemini", "child-transcript")
+	defer tickerTrap.Close()
+
+	transcript.services = &geminiConcurrentObserveServices{
+		ProviderServices: agent.NewProviderServices(sink),
+		onUpsert: func() {
+			transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__concurrent","status":"in_progress"}`))
+		},
+	}
+
+	transcript.start()
+	defer transcript.stop(agent.MessageCompletionInterrupted)
+
+	ctx := testutil.DeadlineContext(t)
+	assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+	row, found := sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+}
+
+func TestGeminiChildTranscriptMidTurnStatusClosesAfterGraceTick(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name               string
+		fastBeforeStart    bool
+		finalFrameStatus   string
+		appendCompleteTask bool
+		wantStatus         bgtask.Status
+	}{
+		{
+			name:             "slow completed without complete_task",
+			finalFrameStatus: "completed",
+			wantStatus:       bgtask.StatusSucceeded,
+		},
+		{
+			name:               "late complete_task wins during grace wait",
+			finalFrameStatus:   "failed",
+			appendCompleteTask: true,
+			wantStatus:         bgtask.StatusSucceeded,
+		},
+		{
+			name:             "fast start and finish before start wakes",
+			fastBeforeStart:  true,
+			finalFrameStatus: "completed",
+			wantStatus:       bgtask.StatusSucceeded,
+		},
+		{
+			name:             "mid-turn failed",
+			finalFrameStatus: "failed",
+			wantStatus:       bgtask.StatusFailed,
+		},
+		{
+			name:             "mid-turn cancelled",
+			finalFrameStatus: "cancelled",
+			wantStatus:       bgtask.StatusStopped,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			transcript, sink, path := geminiChildTranscriptFixture(t)
+			clock := transcript.clock.(*quartz.Mock)
+			tickerTrap := clock.Trap().NewTicker("gemini", "child-transcript")
+			defer tickerTrap.Close()
+			graceTrap := clock.Trap().NewTimer("gemini", "child-transcript-grace")
+			defer graceTrap.Close()
+
+			ctx := testutil.DeadlineContext(t)
+			startFrame := json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__midturn","status":"in_progress"}`)
+			endFrame := json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"invoke_agent__midturn","status":"` + tc.finalFrameStatus + `"}`)
+
+			if tc.fastBeforeStart {
+				transcript.observe("root", startFrame)
+				transcript.observe("root", endFrame)
+				transcript.start()
+				defer transcript.stop(agent.MessageCompletionInterrupted)
+			} else {
+				transcript.observe("root", startFrame)
+				transcript.start()
+				defer transcript.stop(agent.MessageCompletionInterrupted)
+				assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+				transcript.observe("root", endFrame)
+			}
+
+			assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, graceTrap))
+			row, found := sink.BackgroundTask(geminiNativeChildID)
+			require.True(t, found)
+			assert.Equal(t, bgtask.StatusRunning, row.Status, "child must stay running during the grace tick")
+
+			if tc.appendCompleteTask {
+				appendGeminiChildRecord(t, path, `{"id":"late-complete-model","type":"gemini","content":"","toolCalls":[{"id":"complete_task__late-end","name":"complete_task","args":{"result":{"response":"late findings"}},"status":"success","result":[{"functionResponse":{"response":{"output":"Output submitted and task completed."}}}]}]}`)
+			}
+			clock.Advance(geminiChildPollInterval).MustWait(ctx)
+			testutil.RequireEventually(t, func() bool {
+				got, ok := sink.BackgroundTask(geminiNativeChildID)
+				return ok && got.Status == tc.wantStatus
+			})
+		})
+	}
+}
+
+func TestGeminiChildTranscriptNewCallDuringGraceCancelsPendingClose(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := geminiChildTranscriptFixture(t)
+	clock := transcript.clock.(*quartz.Mock)
+	tickerTrap := clock.Trap().NewTicker("gemini", "child-transcript")
+	defer tickerTrap.Close()
+	graceTrap := clock.Trap().NewTimer("gemini", "child-transcript-grace")
+	defer graceTrap.Close()
+
+	ctx := testutil.DeadlineContext(t)
+	transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__first","status":"in_progress"}`))
+	transcript.start()
+	defer transcript.stop(agent.MessageCompletionInterrupted)
+
+	assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+	transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"invoke_agent__first","status":"completed"}`))
+	assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, graceTrap))
+
+	transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__second","status":"in_progress"}`))
+	assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+	row, found := sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+}
+
+func TestGeminiFinishNativeChildrenClearsActiveCallsAndStopsTicker(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := geminiChildTranscriptFixture(t)
+	clock := transcript.clock.(*quartz.Mock)
+	tickerTrap := clock.Trap().NewTicker("gemini", "child-transcript")
+	defer tickerTrap.Close()
+
+	a := &Agent{children: transcript}
+	transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__cancelled","status":"in_progress"}`))
+	transcript.start()
+	defer transcript.stop(agent.MessageCompletionInterrupted)
+
+	ctx := testutil.DeadlineContext(t)
+	assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+
+	a.finishNativeChildren(agent.MessageCompletionInterrupted)
+	assert.False(t, transcript.active())
+	row, found := sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
+	testutil.RequireEventually(t, func() bool {
+		_, pending := clock.Peek()
+		return !pending
+	})
+}

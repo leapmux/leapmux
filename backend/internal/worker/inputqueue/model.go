@@ -244,13 +244,15 @@ type SnapshotItem struct {
 }
 
 type Snapshot struct {
-	AgentID             string
-	Revision            uint64
-	Paused              bool
-	PauseReason         leapmuxv1.AgentInputQueuePauseReason
-	ActiveTurn          bool
-	ActiveTurnSteerable bool
-	Items               []SnapshotItem
+	AgentID                     string
+	Revision                    uint64
+	Paused                      bool
+	PauseReason                 leapmuxv1.AgentInputQueuePauseReason
+	ActiveTurn                  bool
+	ActiveTurnSteerable         bool
+	ActiveBackgroundWork        bool
+	BypassBackgroundWorkInputID string
+	Items                       []SnapshotItem
 	// NextDeadline is the earliest scheduled_at among the items that this
 	// snapshot shows as future, or zero when none is. The store derives it at
 	// the same instant as every Position and ReorderGroup, and the Manager

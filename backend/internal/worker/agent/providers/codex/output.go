@@ -167,6 +167,9 @@ func (a *Agent) handleCodexOutputLocked(line *providerkit.ParsedLine) {
 	case codexMethodThreadClosed:
 		a.handleThreadClosed(line.Params)
 
+	case contracts.CodexMethodThreadStatusChanged:
+		a.handleThreadStatusChanged(line.Params)
+
 	// The session goal. These are claimed out of the `default:` case below on
 	// purpose: Codex reports the goal after EVERY completed tool call, so the
 	// fallback wrote a raw-JSON row per tool call, and each of those rows also
@@ -355,6 +358,9 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 
 func (a *Agent) handleChildTurnStarted(threadID, turnID string, route codexChildRoute) {
 	a.activateCollabChild(threadID)
+	a.Mu.Lock()
+	a.codexChildStateLocked(threadID).sawActiveStatus = true
+	a.Mu.Unlock()
 	a.setChildTurnID(threadID, turnID)
 	a.flushCodexChildGeneration(threadID, agent.MessageCompletionInterrupted)
 	route.childSink.ReportProgress(agent.ResetModelProgress())
@@ -515,7 +521,7 @@ func (a *Agent) handleCodexItemStartedForSink(
 		if err := providerkit.OpenToolSpan(sink, agent.MessageContent{Original: event.params}, event.itemID, event.itemType, spawns); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", agentID, "error", err)
 		}
-		a.registerCollabReceivers(collab, event.itemID, event.threadID)
+		a.registerCollabReceivers(collab, event.itemID, event.threadID, false)
 	}
 }
 
@@ -642,7 +648,7 @@ func (a *Agent) handleCodexItemCompletedForSink(
 		}
 		sink.CloseSpan(event.itemID)
 		if collab != nil {
-			a.registerCollabReceivers(collab, event.itemID, event.threadID)
+			a.registerCollabReceivers(collab, event.itemID, event.threadID, true)
 			a.collabAgentsStatesToRegistry(collab)
 		}
 	case contracts.CodexItemTypeReasoning:
@@ -858,6 +864,9 @@ func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage
 	if transition.finished() {
 		a.completeCodexChildRun(threadID, transition)
 	} else if transition.activity != "" {
+		if transition.status == bgtask.StatusPaused {
+			a.pauseCollabChild(threadID)
+		}
 		providerkit.LogRegistryRefusal("codex", "update status",
 			a.sink.UpdateBackgroundTaskStatus(threadID, transition.status, transition.activity))
 	}
@@ -1383,12 +1392,68 @@ func (a *Agent) publishCodexPermissionCheck(threadID, targetItemID string, check
 	providerkit.PublishPermissionCheck(sink, targetItemID, checking)
 }
 
-// handleThreadClosed drops the notice. A main thread that closes under the
-// running worker gets one warning log.
+// handleThreadClosed logs a warning for the main thread and closes any still-working
+// child thread row as stopped while keeping durable child identity for later reuse.
 func (a *Agent) handleThreadClosed(params json.RawMessage) {
 	threadID := providerkit.StringField(params, "threadId")
-	if threadID != "" && a.isMainThreadID(threadID) {
+	if threadID == "" {
+		return
+	}
+	if a.isMainThreadID(threadID) {
 		slog.Warn("codex closed the main thread", "agent_id", a.AgentID(), "thread", threadID)
+		return
+	}
+	a.completeCodexChildRun(threadID, codexChildTransition{
+		status:     bgtask.StatusStopped,
+		completion: agent.MessageCompletionInterrupted,
+	})
+}
+
+// handleThreadStatusChanged tracks child thread status transitions as a fallback
+// when Codex settles a child without emitting turn/completed. Main-thread status
+// updates are ignored because turn/started and turn/completed own main turn state.
+func (a *Agent) handleThreadStatusChanged(params json.RawMessage) {
+	var notif struct {
+		ThreadID string `json:"threadId"`
+		Status   struct {
+			Type string `json:"type"`
+		} `json:"status"`
+	}
+	if json.Unmarshal(params, &notif) != nil || notif.ThreadID == "" || a.isMainThreadID(notif.ThreadID) {
+		return
+	}
+	switch notif.Status.Type {
+	case "active":
+		a.Mu.Lock()
+		a.codexChildStateLocked(notif.ThreadID).sawActiveStatus = true
+		a.Mu.Unlock()
+	case "systemError":
+		a.completeCodexChildRun(notif.ThreadID, codexChildTransition{
+			status:     bgtask.StatusFailed,
+			completion: agent.MessageCompletionError,
+		})
+	case "notLoaded":
+		a.Mu.Lock()
+		state := a.collabChildren[notif.ThreadID]
+		running := state != nil && state.phase == codexChildRunning
+		a.Mu.Unlock()
+		if running {
+			a.completeCodexChildRun(notif.ThreadID, codexChildTransition{
+				status:     bgtask.StatusEndedWithUnknownOutcome,
+				completion: agent.MessageCompletionComplete,
+			})
+		}
+	case "idle":
+		a.Mu.Lock()
+		state := a.collabChildren[notif.ThreadID]
+		closeIdle := state != nil && state.phase == codexChildRunning && state.turnID == "" && state.sawActiveStatus
+		a.Mu.Unlock()
+		if closeIdle {
+			a.completeCodexChildRun(notif.ThreadID, codexChildTransition{
+				status:     bgtask.StatusEndedWithUnknownOutcome,
+				completion: agent.MessageCompletionComplete,
+			})
+		}
 	}
 }
 

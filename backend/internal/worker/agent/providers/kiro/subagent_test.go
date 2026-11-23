@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -264,4 +265,94 @@ func TestKiroToolCallThatIsNoSpawnClaimsNothing(t *testing.T) {
 	a.HandleOutput(toolCall(t, "run_command_t_sh", "in_progress"))
 
 	assert.Empty(t, sink.BackgroundTasks())
+}
+
+func TestKiroAlreadyFinalSubagentToolCallClosesWithoutLeakingRouteState(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		status     string
+		rawOutput  any
+		wantStatus bgtask.Status
+		wantReport string
+	}{
+		{
+			name:       "completed with report",
+			status:     "completed",
+			rawOutput:  "  CHILD RESULT: done  ",
+			wantStatus: bgtask.StatusSucceeded,
+			wantReport: "CHILD RESULT: done",
+		},
+		{
+			name:       "failed without report",
+			status:     "failed",
+			wantStatus: bgtask.StatusFailed,
+		},
+		{
+			name:       "cancelled with blank report",
+			status:     "cancelled",
+			rawOutput:  "   ",
+			wantStatus: bgtask.StatusStopped,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+
+			extra := map[string]any{}
+			if tc.rawOutput != nil {
+				extra["rawOutput"] = tc.rawOutput
+			}
+
+			// Direct detector check.
+			metaRaw, err := json.Marshal(spawnMeta())
+			require.NoError(t, err)
+			inputRaw, err := json.Marshal(spawnInput)
+			require.NoError(t, err)
+			var outputRaw json.RawMessage
+			if tc.rawOutput != nil {
+				outputRaw, err = json.Marshal(tc.rawOutput)
+				require.NoError(t, err)
+			}
+			obs := a.subagentFromToolCall(acp.ToolCallEnvelope{
+				ToolCallID: kiroSpawnCallID,
+				Status:     tc.status,
+				RawInput:   inputRaw,
+				RawOutput:  outputRaw,
+				Meta:       metaRaw,
+			})
+			require.NotNil(t, obs)
+			assert.Equal(t, tc.wantStatus, obs.Status)
+			assert.True(t, obs.CloseRow)
+			if tc.wantReport != "" {
+				assert.Equal(t, kiroSpawnCallID, obs.ReportID)
+				assert.Equal(t, tc.wantReport, obs.Report.Text)
+			} else {
+				assert.Empty(t, obs.ReportID)
+				assert.Empty(t, obs.Report.Text)
+			}
+			a.stateMu.Lock()
+			assert.Empty(t, a.children.rowBySubtask, "final tool_call must not leak rowBySubtask")
+			assert.Empty(t, a.children.subtaskBySpawn, "final tool_call must not leak subtaskBySpawn")
+			a.stateMu.Unlock()
+
+			// Full HandleOutput path.
+			a.HandleOutput(spawnFrame(t, "tool_call", tc.status, extra))
+			task, ok := sink.BackgroundTask(kiroSpawnCallID)
+			require.True(t, ok)
+			assert.Equal(t, tc.wantStatus, task.Status)
+			assert.True(t, task.Status.IsFinished())
+			require.NotEmpty(t, task.ChildAgentID)
+			child := sink.Child(task.ChildAgentID)
+			if tc.wantReport != "" {
+				assert.Equal(t, []string{tc.wantReport}, reportTexts(child))
+			} else {
+				assert.Empty(t, reportTexts(child))
+			}
+			a.stateMu.Lock()
+			assert.Empty(t, a.children.rowBySubtask)
+			assert.Empty(t, a.children.subtaskBySpawn)
+			a.stateMu.Unlock()
+		})
+	}
 }

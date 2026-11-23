@@ -149,6 +149,9 @@ type subagentState struct {
 	activeForm string
 	// report is what the subagent yielded, the row's report when it ends.
 	report string
+	// run is the 1-based run number for this rowKey so reused turns write
+	// distinct report IDs.
+	run int
 }
 
 // rowUpsert returns the registry row of a running subagent, from what the worker
@@ -305,15 +308,21 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 		description = firstLine(spec.Task)
 	}
 	childID := ""
-	if payload.ParentToolCallID != "" {
-		id, err := parentSink.EnsureChildAgent(agent.ChildAgentSpec{
-			RegistryRole: bgtask.RoleChildTask,
-			SpawnSpanID:  payload.ParentToolCallID, ProviderChildKey: rowKey, Title: title})
-		if err != nil {
-			slog.Warn("omp subagent child transcript failed", "agent_id", a.AgentID(), "subagent", payload.ID, "error", err)
-		} else {
-			childID = id
-		}
+	id, err := parentSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      payload.ParentToolCallID,
+		ProviderChildKey: rowKey,
+		Title:            title,
+	})
+	if err != nil {
+		slog.Warn("omp subagent child transcript failed", "agent_id", a.AgentID(), "subagent", payload.ID, "error", err)
+	} else {
+		childID = id
+	}
+	if _, status, found, err := a.sink.LookupBackgroundTask(rowKey); err != nil {
+		slog.Warn("omp subagent lookup failed", "agent_id", a.AgentID(), "subagent", payload.ID, "error", err)
+	} else if found && status.IsFinished() {
+		providerkit.LogRegistryRefusal("ohmypi", "revive", a.sink.ReviveBackgroundTask(rowKey))
 	}
 	state := &subagentState{id: payload.ID, rowKey: rowKey, childID: childID, title: title, description: description}
 	if childID != "" {
@@ -324,6 +333,11 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 	if a.subagents == nil {
 		a.subagents = make(map[string]*subagentState)
 	}
+	if a.subagentRuns == nil {
+		a.subagentRuns = make(map[string]int)
+	}
+	a.subagentRuns[rowKey]++
+	state.run = a.subagentRuns[rowKey]
 	a.subagents[payload.ID] = state
 	a.Mu.Unlock()
 	providerkit.LogRegistryRefusal("ohmypi", "upsert", a.sink.UpsertBackgroundTask(row))
@@ -358,10 +372,14 @@ func (a *Agent) finishSubagent(state *subagentState, status bgtask.Status) {
 	report := state.report
 	a.Mu.Unlock()
 	if report != "" && state.childID != "" {
+		reportID := "omp:" + state.rowKey
+		if state.run > 1 {
+			reportID = fmt.Sprintf("omp:%s#%d", state.rowKey, state.run)
+		}
 		providerkit.PersistChildSubagentReport(a.sink, agent.ChildSubagentReportWrite{
 			RowKey: state.rowKey,
 			Write: agent.SubagentReportWrite{
-				ReportID: "omp:" + state.rowKey,
+				ReportID: reportID,
 				Report:   agent.SubagentReport{Label: state.title, Text: report},
 			},
 		})
@@ -708,26 +726,172 @@ func (a *Agent) openBackgroundShell(toolCallID string, args, result json.RawMess
 	}))
 }
 
+// shellJobStatus maps an omp async shell job status to a final registry status.
+// An absent status defaults to StatusSucceeded because older async-result frames
+// omit status on normal completion.
+func shellJobStatus(status string) bgtask.Status {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "error":
+		return bgtask.StatusFailed
+	case "aborted", "cancelled", "killed", "stopped":
+		return bgtask.StatusStopped
+	case "completed", "succeeded", "":
+		return bgtask.StatusSucceeded
+	default:
+		return bgtask.StatusEndedWithUnknownOutcome
+	}
+}
+
+func isNonFinalShellStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running", "pending", "queued", "in_progress":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Agent) closeTrackedShell(jobID string, status bgtask.Status) {
+	if jobID == "" {
+		return
+	}
+	a.Mu.Lock()
+	rowKey, ok := a.shells[jobID]
+	delete(a.shells, jobID)
+	a.Mu.Unlock()
+	if ok {
+		providerkit.LogRegistryRefusal("ohmypi", "close", a.sink.CloseBackgroundTask(rowKey, status))
+	}
+}
+
 // closeDeliveredShells closes the SHELL rows of the jobs an async-result message
 // delivers. The message states each finished job in `details.jobs`.
 func (a *Agent) closeDeliveredShells(details json.RawMessage) {
 	var envelope struct {
 		Jobs []struct {
-			JobID string `json:"jobId"`
+			JobID  string `json:"jobId"`
+			Status string `json:"status"`
 		} `json:"jobs"`
 	}
 	if len(details) == 0 || json.Unmarshal(details, &envelope) != nil {
 		return
 	}
 	for _, job := range envelope.Jobs {
-		a.Mu.Lock()
-		rowKey, ok := a.shells[job.JobID]
-		delete(a.shells, job.JobID)
-		a.Mu.Unlock()
-		if ok {
-			providerkit.LogRegistryRefusal("ohmypi", "close", a.sink.CloseBackgroundTask(rowKey, bgtask.StatusSucceeded))
-		}
+		a.closeTrackedShell(job.JobID, shellJobStatus(job.Status))
 	}
+}
+
+// closeWaitedShells closes tracked SHELL rows that a `wait` tool call resolved.
+// Waiting on a background job suppresses a later async-result frame.
+func (a *Agent) closeWaitedShells(args, result json.RawMessage, isError bool) {
+	type waitedJob struct {
+		JobID  string `json:"jobId"`
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		State  string `json:"state"`
+	}
+	var envelope toolResultEnvelope
+	var details struct {
+		Jobs   []waitedJob `json:"jobs"`
+		JobID  string      `json:"jobId"`
+		ID     string      `json:"id"`
+		Status string      `json:"status"`
+		State  string      `json:"state"`
+	}
+	if len(result) > 0 && json.Unmarshal(result, &envelope) == nil && len(envelope.Details) > 0 {
+		_ = json.Unmarshal(envelope.Details, &details)
+	}
+	firstNonEmpty := func(a, b string) string {
+		if strings.TrimSpace(a) != "" {
+			return strings.TrimSpace(a)
+		}
+		return strings.TrimSpace(b)
+	}
+	if len(details.Jobs) > 0 {
+		for _, job := range details.Jobs {
+			id := firstNonEmpty(job.JobID, job.ID)
+			st := firstNonEmpty(job.Status, job.State)
+			if id == "" || isNonFinalShellStatus(st) {
+				continue
+			}
+			a.closeTrackedShell(id, shellJobStatus(st))
+		}
+		return
+	}
+	if id := firstNonEmpty(details.JobID, details.ID); id != "" {
+		st := firstNonEmpty(details.Status, details.State)
+		if !isNonFinalShellStatus(st) {
+			a.closeTrackedShell(id, shellJobStatus(st))
+		}
+		return
+	}
+	if isError || len(args) == 0 {
+		return
+	}
+	var call struct {
+		JobID  string   `json:"jobId"`
+		ID     string   `json:"id"`
+		JobIDs []string `json:"jobIds"`
+		IDs    []string `json:"ids"`
+	}
+	if json.Unmarshal(args, &call) != nil {
+		return
+	}
+	st := firstNonEmpty(details.Status, details.State)
+	if isNonFinalShellStatus(st) {
+		return
+	}
+	status := shellJobStatus(st)
+	if id := firstNonEmpty(call.JobID, call.ID); id != "" {
+		a.closeTrackedShell(id, status)
+	}
+	for _, id := range call.JobIDs {
+		a.closeTrackedShell(strings.TrimSpace(id), status)
+	}
+	for _, id := range call.IDs {
+		a.closeTrackedShell(strings.TrimSpace(id), status)
+	}
+}
+
+const (
+	procURIPrefix  = "proc://"
+	procKillSuffix = "/kill"
+)
+
+func procKillJobID(target string) (string, bool) {
+	rest, ok := strings.CutPrefix(target, procURIPrefix)
+	if !ok {
+		return "", false
+	}
+	jobID, ok := strings.CutSuffix(rest, procKillSuffix)
+	if !ok || jobID == "" || strings.Contains(jobID, "/") {
+		return "", false
+	}
+	return jobID, true
+}
+
+// closeCancelledShell closes a tracked SHELL row when a `write` call targets
+// `proc://<jobID>/kill`, which cancels the job and suppresses async-result.
+func (a *Agent) closeCancelledShell(args json.RawMessage) {
+	if len(args) == 0 {
+		return
+	}
+	var call struct {
+		Path string `json:"path"`
+		URI  string `json:"uri"`
+	}
+	if json.Unmarshal(args, &call) != nil {
+		return
+	}
+	target := strings.TrimSpace(call.Path)
+	if target == "" {
+		target = strings.TrimSpace(call.URI)
+	}
+	jobID, ok := procKillJobID(target)
+	if !ok {
+		return
+	}
+	a.closeTrackedShell(jobID, bgtask.StatusStopped)
 }
 
 // closeAllShells closes every SHELL row, when the session is replaced. omp drops

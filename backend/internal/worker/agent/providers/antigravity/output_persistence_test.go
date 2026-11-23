@@ -141,7 +141,7 @@ func TestAntigravityPersistenceLiveFailurePinsReplayCursor(t *testing.T) {
 			t.Cleanup(a.streamCancel)
 			a.installRoot("cascade", false)
 			if background {
-				a.root.background[0] = backgroundTask{rowKey: "shell", stepIndex: 0}
+				a.root.background["shell"] = backgroundTask{rowKey: "shell", stepIndex: 0}
 			}
 			raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"live-command","name":"run_command"}},"runCommand":{"commandLine":"echo marker"}}`)
 			update := updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{raw})

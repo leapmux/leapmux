@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func (a *Agent) restoreRun(ctx context.Context, run *openCodeRun) error {
@@ -146,6 +147,15 @@ func (a *Agent) restoreRunLocked(ctx context.Context, run *openCodeRun) error {
 			return err
 		}
 		if err := run.tools.finish(agent.MessageCompletionInterrupted); err != nil {
+			return err
+		}
+		if pending == nil && run.childAgentID != "" {
+			if err := run.sink.CloseBackgroundTask(run.id, bgtask.StatusEndedWithUnknownOutcome); err != nil {
+				return err
+			}
+		}
+	} else if run.childAgentID != "" {
+		if err := run.sink.ReviveBackgroundTask(run.id); err != nil {
 			return err
 		}
 	}

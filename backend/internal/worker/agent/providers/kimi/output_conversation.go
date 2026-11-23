@@ -91,7 +91,8 @@ func (a *Agent) conversationTurnOutput(run *kimiRun, turn *kimiConversationTurnS
 	if publication := output.turns[turn.header.TurnID]; publication != nil {
 		return publication, nil
 	}
-	if run.agentID != kimiMainAgentID && (!a.activateChildLifetime(run) || !a.reviveNativeChildRow(run)) {
+	live := turn.header.Status == contracts.KimiConversationStatusRunning && *turn.header.Ordinal >= output.latestOrdinal
+	if run.agentID != kimiMainAgentID && (!a.activateChildLifetime(run) || live && !a.reviveNativeChildRow(run)) {
 		return nil, fmt.Errorf("the Kimi child turn has no current transcript lifetime")
 	}
 	sink := a.runSink(run)
@@ -221,7 +222,7 @@ func (a *Agent) applyConversationFrame(run *kimiRun, output *kimiConversationOut
 			a.projectConversationTurn(run, turn, frame)
 		}
 		if output.activeTurnID != "" && output.document.turns[output.activeTurnID] == nil {
-			a.finishConversationActivity(run, output.activeTurnID)
+			a.finishWithdrawnConversationTurn(run, output.activeTurnID)
 		}
 	case "turn.started", "turn.ended":
 		a.projectConversationTurn(run, output.document.turns[frame.Turn.TurnID], frame)
@@ -302,8 +303,8 @@ func (a *Agent) applyConversationFrame(run *kimiRun, output *kimiConversationOut
 		}
 	case "turns.removed":
 		a.withdrawAbsentConversationInvocations(run, output.document)
-		if slices.Contains(frame.TurnIDs, output.activeTurnID) {
-			a.finishConversationActivity(run, output.activeTurnID)
+		if output.activeTurnID != "" && slices.Contains(frame.TurnIDs, output.activeTurnID) {
+			a.finishWithdrawnConversationTurn(run, output.activeTurnID)
 		}
 	}
 	return nil
@@ -332,10 +333,11 @@ func (a *Agent) projectConversationTurn(run *kimiRun, turn *kimiConversationTurn
 	}
 	turn.projectionPending = true
 	output := run.conversation
-	if run.agentID != kimiMainAgentID && output.turns[turn.header.TurnID] == nil && (!a.activateChildLifetime(run) || !a.reviveNativeChildRow(run)) {
+	live := turn.header.Status == contracts.KimiConversationStatusRunning && *turn.header.Ordinal >= output.latestOrdinal
+	if run.agentID != kimiMainAgentID && output.turns[turn.header.TurnID] == nil && (!a.activateChildLifetime(run) || live && !a.reviveNativeChildRow(run)) {
 		return
 	}
-	if turn.header.Status == contracts.KimiConversationStatusRunning && *turn.header.Ordinal >= output.latestOrdinal {
+	if live {
 		output.latestOrdinal = *turn.header.Ordinal
 		if output.activeTurnID != turn.header.TurnID {
 			if output.activeTurnID != "" {

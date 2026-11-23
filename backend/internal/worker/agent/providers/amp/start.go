@@ -131,6 +131,7 @@ func newAgent(opts agent.Options, sink agent.ProviderServices, config launchConf
 		clock:          clock,
 		ctx:            ctx,
 		cancel:         cancel,
+		pidAliveFn:     ampProcessAlive,
 		threadID:       opts.ResumeSessionID,
 		agentMode:      launchAgentMode(opts),
 		fastMode:       launchFastMode(opts),

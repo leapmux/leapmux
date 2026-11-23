@@ -131,7 +131,7 @@ func (a *Agent) clearProviderState() {
 	providerkit.EndCompaction(a.Sink())
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
-	a.children.spawns = nil
+	a.children = childState{}
 	a.tools = toolInputs{}
 	a.steer = steerQueue{}
 	a.compressPending = nil

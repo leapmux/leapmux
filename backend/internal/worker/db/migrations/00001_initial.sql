@@ -306,6 +306,10 @@ CREATE TABLE agent_input_queue_state (
     active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
     active_turn_steerable INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_steerable IN (0, 1)),
     active_input_id TEXT NOT NULL DEFAULT '',
+    -- Non-empty when Preempt interrupted an active turn while background work
+    -- was running so that head item dispatches on turn end even if background
+    -- work continues. Cleared on accept, failure, edit, move, delete, pause, or recovery.
+    bypass_background_work_input_id TEXT NOT NULL DEFAULT '',
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- The queue is paused exactly when pause_reason is not NULL, and a pause
     -- always has an owner.

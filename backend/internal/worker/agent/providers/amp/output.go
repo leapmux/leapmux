@@ -462,7 +462,7 @@ func (a *Agent) closeToolCall(block ampBlock, row []byte) {
 	if tool.subagent {
 		a.closeSubagentRow(tool.id, subagentStatus(block.IsError))
 	}
-	a.noteShellResult(tool, toolResultText(block.Content))
+	a.noteShellResult(tool, toolResultText(block.Content), block.IsError)
 }
 
 // finishTurn ends the running turn with a completion the caller already knows.

@@ -23,16 +23,19 @@ var errCodebuddyChildRoute = errors.New("the CodeBuddy workflow child route fail
 type codebuddyTaskIndex struct {
 	mu               sync.Mutex
 	spawnRoutes      map[string]codebuddyChildRoute
+	closedRoutes     map[string]codebuddyChildRoute
 	workflowNames    map[string]string
 	workflowChildren map[string]map[string]codebuddyWorkflowChild
 	workflowByChild  map[string]string
 	pendingEnds      map[string]bgtask.Status
 }
 
-// codebuddyChildRoute keeps the canonical row and its optional transcript together.
+// codebuddyChildRoute keeps the canonical row, optional transcript, and
+// background ownership together.
 type codebuddyChildRoute struct {
-	rowKey  string
-	childID string
+	rowKey     string
+	childID    string
+	background bool
 }
 
 func (i *codebuddyTaskIndex) child(spawnID string) (string, string) {
@@ -42,13 +45,35 @@ func (i *codebuddyTaskIndex) child(spawnID string) (string, string) {
 	return route.rowKey, route.childID
 }
 
+func (i *codebuddyTaskIndex) route(spawnID string) (codebuddyChildRoute, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	route, ok := i.spawnRoutes[spawnID]
+	return route, ok
+}
+
+func (i *codebuddyTaskIndex) anyRoute(spawnID string) (codebuddyChildRoute, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if route, ok := i.spawnRoutes[spawnID]; ok {
+		return route, true
+	}
+	route, ok := i.closedRoutes[spawnID]
+	return route, ok
+}
+
 func (i *codebuddyTaskIndex) rememberChild(spawnID, rowKey, childID string) {
+	i.rememberChildRoute(spawnID, rowKey, childID, false)
+}
+
+func (i *codebuddyTaskIndex) rememberChildRoute(spawnID, rowKey, childID string, background bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.spawnRoutes == nil {
 		i.spawnRoutes = make(map[string]codebuddyChildRoute)
 	}
-	i.spawnRoutes[spawnID] = codebuddyChildRoute{rowKey: rowKey, childID: childID}
+	i.spawnRoutes[spawnID] = codebuddyChildRoute{rowKey: rowKey, childID: childID, background: background}
+	delete(i.closedRoutes, spawnID)
 }
 
 func (i *codebuddyTaskIndex) rememberWorkflow(taskID, name string) {
@@ -127,9 +152,38 @@ func (i *codebuddyTaskIndex) forgetRow(rowKey string) {
 	defer i.mu.Unlock()
 	for spawnID, route := range i.spawnRoutes {
 		if route.rowKey == rowKey {
+			if i.closedRoutes == nil {
+				i.closedRoutes = make(map[string]codebuddyChildRoute)
+			}
+			i.closedRoutes[spawnID] = route
 			delete(i.spawnRoutes, spawnID)
 		}
 	}
+}
+
+func (i *codebuddyTaskIndex) takeForegroundRows() []string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	seen := make(map[string]struct{})
+	rowKeys := make([]string, 0)
+	for spawnID, route := range i.spawnRoutes {
+		if route.background {
+			continue
+		}
+		if route.rowKey != "" {
+			if _, dup := seen[route.rowKey]; !dup {
+				seen[route.rowKey] = struct{}{}
+				rowKeys = append(rowKeys, route.rowKey)
+			}
+		}
+		if i.closedRoutes == nil {
+			i.closedRoutes = make(map[string]codebuddyChildRoute)
+		}
+		i.closedRoutes[spawnID] = route
+		delete(i.spawnRoutes, spawnID)
+	}
+	sort.Strings(rowKeys)
+	return rowKeys
 }
 
 func (i *codebuddyTaskIndex) rememberEnd(taskID string, status bgtask.Status) {
@@ -221,7 +275,7 @@ func (a *Agent) handleTaskStarted(event *codebuddyTaskEvent) {
 			title = "Workflow"
 		}
 		a.tasks.rememberWorkflow(event.TaskID, title)
-	case "local_agent", "Agent":
+	case "local_agent", "Agent", "Task":
 		kind = bgtask.KindSubagent
 		if title == "" {
 			title = bgtask.FirstLine(event.Prompt)
@@ -239,12 +293,33 @@ func (a *Agent) handleTaskStarted(event *codebuddyTaskEvent) {
 		if spawnID == "" {
 			spawnID = event.TaskID
 		}
-		oldKey, knownChild := a.tasks.child(spawnID)
+		prior, found := a.tasks.anyRoute(spawnID)
+		oldKey, knownChild := prior.rowKey, prior.childID
+		if !found && spawnID != event.TaskID {
+			if lookupChild, _, exists, err := a.sink.LookupBackgroundTask(spawnID); err != nil {
+				slog.Warn("codebuddy: look up spawn child", "spawn_id", spawnID, "error", err)
+			} else if exists {
+				oldKey = spawnID
+				if knownChild == "" {
+					knownChild = lookupChild
+				}
+			}
+		}
 		if oldKey != "" && oldKey != event.TaskID {
 			providerkit.LogRegistryRefusal("codebuddy", "rename child", a.sink.RenameBackgroundTask(oldKey, event.TaskID))
 		}
-		a.tasks.rememberChild(spawnID, event.TaskID, knownChild)
-		a.ensureChildRow(spawnID, event.TaskID, title, event.Prompt, "", "", true)
+		if lookupChild, priorStatus, exists, err := a.sink.LookupBackgroundTask(event.TaskID); err != nil {
+			slog.Warn("codebuddy: look up child task", "task_id", event.TaskID, "error", err)
+		} else if exists {
+			if knownChild == "" {
+				knownChild = lookupChild
+			}
+			if priorStatus.IsFinished() {
+				providerkit.LogRegistryRefusal("codebuddy", "revive child", a.sink.ReviveBackgroundTask(event.TaskID))
+			}
+		}
+		a.tasks.rememberChildRoute(spawnID, event.TaskID, knownChild, true)
+		a.ensureChildRow(spawnID, event.TaskID, title, event.Prompt, true)
 	} else {
 		upsert := bgtask.Upsert{
 			RowKey: event.TaskID, Kind: kind, ParentAgentID: a.AgentID(),
@@ -485,19 +560,23 @@ func (a *Agent) replayWorkflowChild(runID string, child codebuddyWorkflowChild, 
 	return nil
 }
 
-// ensureChildRow links one native subagent to a virtual child transcript.
-func (a *Agent) ensureChildRow(spawnID, rowKey, title, prompt, groupKey, groupLabel string, open bool) string {
+// ensureChildRow links one native subagent to a virtual child transcript and
+// opens its registry row without reviving finished rows.
+func (a *Agent) ensureChildRow(spawnID, rowKey, title, prompt string, background bool) string {
 	if spawnID == "" {
 		return ""
 	}
 	if rowKey == "" {
 		rowKey = spawnID
 	}
-	knownRow, knownChild := a.tasks.child(spawnID)
-	if knownRow != "" {
-		rowKey = knownRow
+	var childID string
+	if known, ok := a.tasks.route(spawnID); ok {
+		if known.rowKey != "" {
+			rowKey = known.rowKey
+		}
+		childID = known.childID
+		background = background || known.background
 	}
-	childID := knownChild
 	if childID == "" {
 		var err error
 		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{
@@ -508,30 +587,22 @@ func (a *Agent) ensureChildRow(spawnID, rowKey, title, prompt, groupKey, groupLa
 			return ""
 		}
 	}
-	if open {
-		_, priorStatus, exists, err := a.sink.LookupBackgroundTask(rowKey)
-		if err != nil {
-			slog.Warn("codebuddy: look up child", "row_key", rowKey, "error", err)
-		} else if exists && priorStatus.IsFinished() {
-			providerkit.LogRegistryRefusal("codebuddy", "revive child", a.sink.ReviveBackgroundTask(rowKey))
-		}
-		providerkit.LogRegistryRefusal("codebuddy", "upsert child", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-			RowKey: rowKey, Kind: bgtask.KindSubagent, ChildAgentID: childID,
-			ParentAgentID: a.AgentID(), GroupKey: groupKey, GroupLabel: groupLabel,
-			Title: title, Status: bgtask.StatusRunning,
-		}))
-	}
+	providerkit.LogRegistryRefusal("codebuddy", "upsert child", a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: rowKey, Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		ParentAgentID: a.AgentID(),
+		Title:         title, Status: bgtask.StatusRunning,
+	}))
 	if prompt != "" {
 		if err := a.sink.PersistChildPrompt(childID, prompt); err != nil {
 			slog.Warn("codebuddy: persist child prompt", "row_key", rowKey, "error", err)
 		}
 	}
-	a.tasks.rememberChild(spawnID, rowKey, childID)
+	a.tasks.rememberChildRoute(spawnID, rowKey, childID, background)
 	return childID
 }
 
-// observeAgentToolUses opens foreground Agent rows. Those calls need no native
-// task_started frame: CodeBuddy forwards child messages under their tool-use id.
+// observeAgentToolUses opens child rows for Agent and Task tool calls, recording
+// whether each call requested background execution.
 func (a *Agent) observeAgentToolUses(raw []byte) {
 	var frame struct {
 		Message struct {
@@ -540,8 +611,9 @@ func (a *Agent) observeAgentToolUses(raw []byte) {
 				ID    string `json:"id"`
 				Name  string `json:"name"`
 				Input struct {
-					Description string `json:"description"`
-					Prompt      string `json:"prompt"`
+					Description     string `json:"description"`
+					Prompt          string `json:"prompt"`
+					RunInBackground bool   `json:"run_in_background"`
 				} `json:"input"`
 			} `json:"content"`
 		} `json:"message"`
@@ -557,12 +629,12 @@ func (a *Agent) observeAgentToolUses(raw []byte) {
 		if title == "" {
 			title = bgtask.FirstLine(block.Input.Prompt)
 		}
-		a.ensureChildRow(block.ID, block.ID, title, block.Input.Prompt, "", "", true)
+		a.ensureChildRow(block.ID, block.ID, title, block.Input.Prompt, block.Input.RunInBackground)
 	}
 }
 
-// observeAgentToolResults closes a foreground child when its Agent tool ends.
-// A background child has a separate task id and closes on task_notification.
+// observeAgentToolResults closes a foreground child when its tool ends, and closes
+// a background child only when its launch tool result reports an error.
 func (a *Agent) observeAgentToolResults(raw []byte) {
 	var frame struct {
 		Message struct {
@@ -580,16 +652,50 @@ func (a *Agent) observeAgentToolResults(raw []byte) {
 		if block.Type != "tool_result" || block.ToolUseID == "" {
 			continue
 		}
-		rowKey, _ := a.tasks.child(block.ToolUseID)
-		if rowKey != block.ToolUseID {
+		route, ok := a.tasks.route(block.ToolUseID)
+		if !ok || route.rowKey == "" {
+			continue
+		}
+		if route.background && !block.IsError {
 			continue
 		}
 		status := bgtask.StatusSucceeded
 		if block.IsError {
 			status = bgtask.StatusFailed
 		}
+		a.finishTask(route.rowKey, status, "")
+	}
+}
+
+// closeForegroundChildren closes every open foreground child row while leaving
+// background children running.
+func (a *Agent) closeForegroundChildren(status bgtask.Status) {
+	for _, rowKey := range a.tasks.takeForegroundRows() {
 		a.finishTask(rowKey, status, "")
 	}
+}
+
+// lookupChildForFrame resolves an existing child transcript for a forwarded
+// frame without opening or reviving any registry row.
+func (a *Agent) lookupChildForFrame(spawnID string) string {
+	lookupKey := spawnID
+	if route, ok := a.tasks.anyRoute(spawnID); ok {
+		if route.childID != "" {
+			return route.childID
+		}
+		if route.rowKey != "" {
+			lookupKey = route.rowKey
+		}
+	}
+	childID, _, exists, err := a.sink.LookupBackgroundTask(lookupKey)
+	if err != nil {
+		slog.Warn("codebuddy: look up child frame", "spawn_id", spawnID, "row_key", lookupKey, "error", err)
+		return ""
+	}
+	if !exists {
+		return ""
+	}
+	return childID
 }
 
 // routeChildFrame sends a forwarded child frame to the child's transcript.
@@ -603,8 +709,7 @@ func (a *Agent) routeChildFrame(frameType string, raw []byte) bool {
 	if json.Unmarshal(raw, &envelope) != nil || envelope.ParentToolUseID == "" {
 		return false
 	}
-	rowKey, _ := a.tasks.child(envelope.ParentToolUseID)
-	childID := a.ensureChildRow(envelope.ParentToolUseID, rowKey, "", "", "", "", rowKey == "")
+	childID := a.lookupChildForFrame(envelope.ParentToolUseID)
 	if childID == "" {
 		return true
 	}

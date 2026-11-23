@@ -197,3 +197,26 @@ func TestBufferedChildNotificationCannotAcquireAReassignedRoot(t *testing.T) {
 	b.finishSessionUpdates()
 	assert.False(t, called)
 }
+
+func TestIsReplayUpdateHookSkipsProviderUpdatesBeforeLoadCutoff(t *testing.T) {
+	t.Parallel()
+	b, _ := newChildRouteBase(t)
+	var seen []string
+	b.hooks.IsReplayUpdate = func(updateType string) bool {
+		return updateType == "subagent_spawned"
+	}
+	b.hooks.SessionUpdateHandler = func(_ string, _ agent.ProviderServices, raw json.RawMessage) bool {
+		seen = append(seen, string(raw))
+		return true
+	}
+
+	b.beginSessionUpdates()
+	replayFrame := `{"sessionUpdate":"subagent_spawned","id":"old"}`
+	liveFrame := `{"sessionUpdate":"subagent_spawned","id":"live"}`
+	b.handleACPSessionUpdate(sessionUpdate(t, "session-1", replayFrame))
+	b.markSessionReplayCutoff()
+	b.handleACPSessionUpdate(sessionUpdate(t, "session-1", liveFrame))
+	b.finishSessionUpdates()
+
+	assert.Equal(t, []string{liveFrame}, seen)
+}

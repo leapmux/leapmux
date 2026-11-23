@@ -156,3 +156,197 @@ func TestCodebuddyForegroundAgentRoutesItsForwardedChildTranscript(t *testing.T)
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 }
+
+func TestCodebuddyLateChildFrameDoesNotReviveFinishedRow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU1","name":"Agent","input":{"description":"Inspect","prompt":"Run check."}}]}}`))
+	a.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"TU1","content":"done","is_error":false}]}}`))
+
+	row, ok := sink.BackgroundTask("TU1")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	childID := row.ChildAgentID
+	require.NotEmpty(t, childID)
+
+	// A late forwarded child frame must keep the finished row closed and never revive it.
+	a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"TU1","message":{"role":"assistant","content":[{"type":"text","text":"late child note"}]}}`))
+	row, ok = sink.BackgroundTask("TU1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.Empty(t, sink.RevivedTasks())
+	messages := sink.Child(childID).Messages()
+	require.Len(t, messages, 2)
+	assert.Contains(t, string(messages[1].Content), "late child note")
+
+	// A forwarded frame for an unknown parent tool must not open a phantom running row.
+	a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"unknown-parent","message":{"role":"assistant","content":[{"type":"text","text":"orphan"}]}}`))
+	_, exists := sink.BackgroundTask("unknown-parent")
+	assert.False(t, exists)
+	assert.Equal(t, 2, sink.MessageCount(), "forwarded child frames stay out of the root transcript")
+}
+
+func TestCodebuddyObserveAgentToolResultsBackgroundVsError(t *testing.T) {
+	t.Parallel()
+	t.Run("background launch success before task_started stays running", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-bg-ok","name":"Agent","input":{"description":"BG worker","prompt":"Work.","run_in_background":true}}]}}`))
+		a.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"TU-bg-ok","content":"Launched","is_error":false}]}}`))
+
+		row, ok := sink.BackgroundTask("TU-bg-ok")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
+
+	t.Run("background launch error before task_started closes as failed", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-bg-err","name":"Agent","input":{"description":"BG worker","prompt":"Work.","run_in_background":true}}]}}`))
+		a.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"TU-bg-err","content":"spawn failed","is_error":true}]}}`))
+
+		row, ok := sink.BackgroundTask("TU-bg-err")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+	})
+
+	t.Run("background launch error after task_started closes renamed row as failed", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-bg-err2","name":"Agent","input":{"description":"BG worker","prompt":"Work.","run_in_background":true}}]}}`))
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-bg-err2","tool_use_id":"TU-bg-err2","task_type":"Agent","description":"BG worker"}`))
+		a.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"TU-bg-err2","content":"spawn failed","is_error":true}]}}`))
+
+		row, ok := sink.BackgroundTask("task-bg-err2")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+	})
+}
+
+func TestCodebuddyTurnEndAndProcessExitCloseForegroundChildrenOnly(t *testing.T) {
+	t.Parallel()
+	t.Run("handleResult closes foreground rows and keeps background rows", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-fg","name":"Agent","input":{"description":"FG child","prompt":"Do foreground work."}},{"type":"tool_use","id":"TU-bg","name":"Agent","input":{"description":"BG child","prompt":"Do background work.","run_in_background":true}}]}}`))
+		// A background task_started with empty tool_use_id uses task_id as its spawnID;
+		// foreground closing must rely on the explicit background flag, not rowKey == spawnID.
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-no-tool","task_type":"local_agent","description":"Toolless BG"}`))
+
+		a.HandleOutput([]byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}`))
+
+		fg, ok := sink.BackgroundTask("TU-fg")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, fg.Status)
+
+		bg, ok := sink.BackgroundTask("TU-bg")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, bg.Status)
+
+		toollessBG, ok := sink.BackgroundTask("task-no-tool")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, toollessBG.Status)
+	})
+
+	t.Run("normal handleResult closes foreground row with unknown outcome", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-fg-ok","name":"Agent","input":{"description":"FG child","prompt":"Work."}}]}}`))
+		a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"result":"done"}`))
+
+		fg, ok := sink.BackgroundTask("TU-fg-ok")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, fg.Status)
+	})
+
+	t.Run("interrupted handleResult closes foreground row as stopped", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-fg-int","name":"Agent","input":{"description":"FG child","prompt":"Work."}}]}}`))
+		a.mu.Lock()
+		a.interruptRequests = map[uint64]struct{}{1: {}}
+		a.mu.Unlock()
+		a.HandleOutput([]byte(codebuddyResultAbortedStreaming))
+
+		fg, ok := sink.BackgroundTask("TU-fg-int")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, fg.Status)
+	})
+
+	t.Run("cleanupAfterProcessExit closes foreground rows and keeps background rows", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-fg-exit","name":"Task","input":{"description":"FG exit","prompt":"Work."}},{"type":"tool_use","id":"TU-bg-exit","name":"Agent","input":{"description":"BG exit","prompt":"Work.","run_in_background":true}}]}}`))
+
+		a.NoteIntentionalStop()
+		a.cleanupAfterProcessExit()
+
+		fg, ok := sink.BackgroundTask("TU-fg-exit")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, fg.Status)
+
+		bg, ok := sink.BackgroundTask("TU-bg-exit")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, bg.Status)
+	})
+}
+
+func TestCodebuddyTaskTypeTaskOpensAndCloses(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-task-1","task_type":"Task","description":"Inspect package","prompt":"Check files."}`))
+
+	row, ok := sink.BackgroundTask("task-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.KindSubagent, row.Kind)
+	assert.NotEmpty(t, row.ChildAgentID)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","summary":"All clear."}`))
+	row, ok = sink.BackgroundTask("task-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}
+
+func TestCodebuddyOutOfOrderToolResultBeforeTaskStartedReusesChild(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+
+	// Tool call arrives without run_in_background, and tool_result lands before task_started.
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-ooo","name":"Task","input":{"description":"Delayed BG","prompt":"Investigate."}}]}}`))
+	before, ok := sink.BackgroundTask("TU-ooo")
+	require.True(t, ok)
+	require.NotEmpty(t, before.ChildAgentID)
+
+	a.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"TU-ooo","content":"Backgrounded","is_error":false}]}}`))
+	closed, ok := sink.BackgroundTask("TU-ooo")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, closed.Status)
+
+	// Late task_started must rename TU-ooo -> task-ooo, revive it, and reuse the existing child.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-ooo","tool_use_id":"TU-ooo","task_type":"Task","description":"Delayed BG"}`))
+
+	_, oldExists := sink.BackgroundTask("TU-ooo")
+	assert.False(t, oldExists, "old spawn row key must be renamed to task_id")
+	row, ok := sink.BackgroundTask("task-ooo")
+	require.True(t, ok)
+	assert.Equal(t, before.ChildAgentID, row.ChildAgentID)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, []string{"task-ooo"}, sink.RevivedTasks())
+	assert.Len(t, sink.ChildAgentIDs(), 1)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-ooo","status":"completed","summary":"Done."}`))
+	row, ok = sink.BackgroundTask("task-ooo")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}

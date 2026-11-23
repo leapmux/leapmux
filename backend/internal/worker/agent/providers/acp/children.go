@@ -404,12 +404,83 @@ func (b *Base) WithChildTranscript(target ChildSessionTarget, capture func(agent
 	})
 }
 
-// ReviveChildRow reopens the activity of an exactly identified native child.
+// ReviveChildRow reopens the activity of an exactly identified native child,
+// including a row that was previously closed or marked finished in the registry.
 // The provider calls it after observing that child's native resumed lifetime.
 func (b *Base) ReviveChildRow(target ChildSessionTarget) error {
-	return b.WithChildTranscript(target, func(services agent.ProviderServices) error {
-		return services.ReviveBackgroundTask(target.RowKey)
+	if !target.valid() {
+		return agent.ErrChildRouteNotReady
+	}
+	return b.WithSessionID(func(sessionID string) error {
+		if sessionID != target.RootSessionID {
+			return agent.ErrChildRouteNotReady
+		}
+		b.Mu.Lock()
+		stopped := b.StoppedLocked()
+		b.Mu.Unlock()
+		if stopped {
+			return agent.ErrChildRouteNotReady
+		}
+		b.children.mu.Lock()
+		_, refused := b.children.refused[target.RowKey]
+		active := b.children.active[target.RowKey]
+		ref, known := b.children.agents[target.RowKey]
+		b.children.mu.Unlock()
+		if refused {
+			return agent.ErrChildRouteNotReady
+		}
+		if active != nil {
+			active.feedMu.Lock()
+			if b.childIdentityRefused(target.RowKey) || active.childSink.MessageSessionID() != target.SessionID {
+				active.feedMu.Unlock()
+				return agent.ErrChildRouteNotReady
+			}
+			err := active.childSink.ReviveBackgroundTask(target.RowKey)
+			active.feedMu.Unlock()
+			if err != nil {
+				return err
+			}
+			b.reopenChildRoute(target.RowKey)
+			b.openRows.opened(target.RowKey)
+			return nil
+		}
+		if !known {
+			if b.sink == nil {
+				return agent.ErrChildRouteNotReady
+			}
+			childAgentID, _, found, err := b.sink.LookupBackgroundTask(target.RowKey)
+			if err != nil || !found || childAgentID == "" {
+				return agent.ErrChildRouteNotReady
+			}
+			ref = childAgentRef{id: childAgentID, parent: b.sink}
+		}
+		if ref.parent == nil || ref.id == "" {
+			return agent.ErrChildRouteNotReady
+		}
+		childSink := ref.parent.ChildSink(ref.id)
+		if childSink == nil || childSink.MessageSessionID() != target.SessionID {
+			return agent.ErrChildRouteNotReady
+		}
+		if b.childIdentityRefused(target.RowKey) {
+			return agent.ErrChildRouteNotReady
+		}
+		if err := childSink.ReviveBackgroundTask(target.RowKey); err != nil {
+			return err
+		}
+		b.reopenChildRoute(target.RowKey)
+		b.openRows.opened(target.RowKey)
+		return nil
 	})
+}
+
+// reopenChildRoute clears the closed route marker for rowKey without touching refusal state.
+func (b *Base) reopenChildRoute(rowKey string) {
+	if rowKey == "" {
+		return
+	}
+	b.children.mu.Lock()
+	delete(b.children.closed, rowKey)
+	b.children.mu.Unlock()
 }
 
 // FinishChildTurn persists the text that rowKey's child assembled before its turn ended.
@@ -550,6 +621,17 @@ func (b *Base) ApplySubagentObservationForSession(sessionID string, observation 
 	}
 	child.applySubagentObservation(observation)
 	return true
+}
+
+// ApplySubagentObservationForSessionOffReader serializes an off-reader subagent
+// observation against session replacement and flushes queued registry writes
+// after releasing sessionUpdates.mu.
+func (b *Base) ApplySubagentObservationForSessionOffReader(sessionID string, obs *SubagentObservation) bool {
+	b.sessionUpdates.mu.Lock()
+	applied := b.ApplySubagentObservationForSession(sessionID, obs)
+	b.sessionUpdates.mu.Unlock()
+	b.FlushRegistryObservations()
+	return applied
 }
 
 // OpenToolSink returns the transcript services that hold toolCallID open in sessionID.

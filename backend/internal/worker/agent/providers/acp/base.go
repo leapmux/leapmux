@@ -1776,6 +1776,9 @@ type SubagentObservation struct {
 	Prompt string
 	// CloseRow gives the row its final Status after the upsert when true.
 	CloseRow bool
+	// ReviveRow reopens an already-finished row before applying a non-final upsert.
+	// Providers set it when a subagent or workflow resumes under the same RowKey.
+	ReviveRow bool
 	// Spawns identifies a subagent launch request, including a request with invalid arguments.
 	// It owns no span, so a long run does not move concurrent tools one column right.
 	//

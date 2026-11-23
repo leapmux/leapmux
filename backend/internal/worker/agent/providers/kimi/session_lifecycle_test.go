@@ -1233,7 +1233,11 @@ func TestKimiResyncWithoutTheTaskListClosesNoUnlistedSubagent(t *testing.T) {
 			assert.Equal(t, bgtask.StatusRunning, row.Status)
 			assert.True(t, rig.agent.ActiveChildTurnState(row.RowKey).Active)
 			assert.NotContains(t, child.TurnActives()[before:], false)
-			assert.Equal(t, bgtask.StatusRunning, nativeTaskOf(t, rig.sink, spec.taskID).Status)
+			expectedTaskStatus := bgtask.StatusRunning
+			if refusedWatch {
+				expectedTaskStatus = bgtask.StatusEndedWithUnknownOutcome
+			}
+			assert.Equal(t, expectedTaskStatus, nativeTaskOf(t, rig.sink, spec.taskID).Status)
 			last, _ := rig.sink.LastTurnActive()
 			assert.True(t, last)
 			rig.fake.mu.Lock()

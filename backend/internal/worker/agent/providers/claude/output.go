@@ -525,6 +525,10 @@ func (a *Agent) processAssistantBlocks(env *messageEnvelope, spans agent.SpanSer
 	// Determine the parent span for any Agent tool_use blocks.
 	parentSpanID := env.ParentToolUseID
 
+	// Record subagent spawn names before task_started so a later SendMessage
+	// addressing the subagent by name resolves to its task_id.
+	a.claudeRememberSubagentSpawnsFromBlocks(env)
+
 	// A SendMessage here may be about to restart a finished subagent. Record the
 	// recipient before the tool runs, because the task_started it produces cannot
 	// be told from a session resume's hydration burst on its own. This is the

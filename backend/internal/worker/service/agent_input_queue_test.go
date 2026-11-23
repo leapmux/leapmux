@@ -2661,3 +2661,280 @@ func TestParseQueueScheduleRequiresARepresentableUTCYear(t *testing.T) {
 		})
 	}
 }
+
+type recordingChildSteererAgent struct {
+	agent.Agent
+	mu          sync.Mutex
+	childInputs []string
+}
+
+var _ agent.ChildSteerer = (*recordingChildSteererAgent)(nil)
+
+func (a *recordingChildSteererAgent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
+	a.mu.Lock()
+	a.childInputs = append(a.childInputs, childKey+":"+input.Content)
+	a.mu.Unlock()
+	return agent.ChildInputResult{StartsTurn: false}, nil
+}
+
+func (a *recordingChildSteererAgent) SteerChildInput(string, string, []*leapmuxv1.Attachment) error {
+	return nil
+}
+
+func (a *recordingChildSteererAgent) ActiveChildTurnState(string) agent.TurnState {
+	return agent.TurnState{}
+}
+
+func (a *recordingChildSteererAgent) sentChildInputs() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.childInputs)
+}
+
+func TestAgentInputQueueBackgroundWorkRootHoldDrainAndSteer(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	svc, dispatcher, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	rootSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	var running agent.Agent
+	start := func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+		started, err := claudetest.StartEcho(ctx, opts, sink)
+		if err != nil {
+			return nil, err
+		}
+		running = started
+		return started, nil
+	}
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: "agent-1", WorkingDir: workingDir,
+	}, rootSink, start)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+
+	require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "bg-1", Role: bgtask.RoleTaskOutcome, Kind: bgtask.KindShell,
+		Title: "sleep 10", Status: bgtask.StatusRunning,
+	}))
+
+	// Enqueue while root turn is idle and bg-1 runs -> held with CanSteer == true.
+	enqWriter := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "msg-1", Text: "wait for task",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	}, enqWriter)
+	enqResp := decodeQueueResponse(t, enqWriter, &leapmuxv1.EnqueueAgentInputResponse{})
+	require.Len(t, enqResp.GetSnapshot().GetItems(), 1)
+	assert.Equal(t, "msg-1", enqResp.GetSnapshot().GetItems()[0].GetId())
+	assert.True(t, enqResp.GetSnapshot().GetItems()[0].GetCanSteer())
+
+	// Closing bg-1 must notify InputQueue and auto-drain msg-1.
+	require.NoError(t, rootSink.CloseBackgroundTask("bg-1", bgtask.StatusSucceeded))
+	require.Eventually(t, func() bool {
+		snap, snapErr := svc.InputQueue.Snapshot(ctx, "agent-1")
+		return snapErr == nil && len(snap.Items) == 0
+	}, inputQueueWait, 10*time.Millisecond)
+	// End the provider's real turn via its native result envelope so SendInput accepts the next turn.
+	running.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	require.Eventually(t, func() bool {
+		snap, snapErr := svc.InputQueue.Snapshot(ctx, "agent-1")
+		return snapErr == nil && !snap.ActiveTurn
+	}, inputQueueWait, 10*time.Millisecond)
+
+	// Repeat with bg-2 running and click Steer -> dispatches immediately.
+	require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "bg-2", Role: bgtask.RoleTaskOutcome, Kind: bgtask.KindShell,
+		Title: "sleep 20", Status: bgtask.StatusRunning,
+	}))
+	enqWriter2 := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "msg-2", Text: "steer now",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	}, enqWriter2)
+	enqResp2 := decodeQueueResponse(t, enqWriter2, &leapmuxv1.EnqueueAgentInputResponse{})
+	require.Len(t, enqResp2.GetSnapshot().GetItems(), 1)
+	assert.True(t, enqResp2.GetSnapshot().GetItems()[0].GetCanSteer())
+
+	steerWriter := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceSteerQueuedAgentInputProcedure, &leapmuxv1.SteerQueuedAgentInputRequest{
+		AgentId: "agent-1", InputId: "msg-2",
+	}, steerWriter)
+	steerResp := decodeQueueResponse(t, steerWriter, &leapmuxv1.SteerQueuedAgentInputResponse{})
+	assert.Empty(t, steerResp.GetSnapshot().GetItems())
+	var msgCount int
+	require.NoError(t, svc.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE agent_id = 'agent-1' AND id IN ('msg-1', 'msg-2')`).Scan(&msgCount))
+	assert.Equal(t, 2, msgCount)
+}
+
+func TestAgentInputQueueBackgroundWorkNonSteerablePreempt(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	svc, dispatcher, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: workingDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+	}))
+	var interrupts atomic.Int32
+	start := func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+		inner, err := agenttest.NonSteerable(claudetest.StartSilent)(ctx, opts, sink)
+		if err != nil {
+			return nil, err
+		}
+		return countingNonSteerableAgent{Agent: inner, interrupts: &interrupts}, nil
+	}
+	rootSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: "agent-1", WorkingDir: workingDir,
+	}, rootSink, start)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+
+	require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "bg-1", Role: bgtask.RoleTaskOutcome, Kind: bgtask.KindShell,
+		Title: "sleep 10", Status: bgtask.StatusRunning,
+	}))
+
+	enqWriter := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "msg-1", Text: "preempt idle bg",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	}, enqWriter)
+	enqResp := decodeQueueResponse(t, enqWriter, &leapmuxv1.EnqueueAgentInputResponse{})
+	require.Len(t, enqResp.GetSnapshot().GetItems(), 1)
+	assert.True(t, enqResp.GetSnapshot().GetItems()[0].GetCanPreempt())
+
+	preemptWriter := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure, &leapmuxv1.PreemptQueuedAgentInputRequest{
+		AgentId: "agent-1", InputId: "msg-1",
+	}, preemptWriter)
+	preemptResp := decodeQueueResponse(t, preemptWriter, &leapmuxv1.PreemptQueuedAgentInputResponse{})
+	assert.Empty(t, preemptResp.GetSnapshot().GetItems())
+	assert.Zero(t, interrupts.Load(), "Preempt while idle with background work must dispatch directly without Interrupt")
+}
+
+func TestAgentInputQueueBackgroundWorkRetiredChildAndProcessExitWakeUp(t *testing.T) {
+	t.Parallel()
+
+	t.Run("retired child wakes via BackgroundWorkChangedTree when grandchild finishes", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		svc, _, _ := setupTestService(t)
+		workingDir := t.TempDir()
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: "agent-1", WorkingDir: workingDir,
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		}))
+		var steerer *recordingChildSteererAgent
+		start := func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+			inner, err := claudetest.StartSilent(ctx, opts, sink)
+			if err != nil {
+				return nil, err
+			}
+			steerer = &recordingChildSteererAgent{Agent: inner}
+			return steerer, nil
+		}
+		rootSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
+		_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+			AgentID: "agent-1", WorkingDir: workingDir,
+		}, rootSink, start)
+		require.NoError(t, err)
+		t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+
+		childID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{
+			ProviderChildKey: "child-key", Title: "Worker", RegistryRole: bgtask.RoleChildTask,
+		})
+		require.NoError(t, err)
+		require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: "grand-1", Role: bgtask.RoleTaskOutcome, Kind: bgtask.KindShell,
+			ParentAgentID: childID, Title: "grandchild", Status: bgtask.StatusRunning,
+		}))
+		// Finish child canonical row and remove it from treeChildren to simulate a retired/evicted child.
+		require.NoError(t, rootSink.CloseBackgroundTask("child-key", bgtask.StatusSucceeded))
+		svc.Output.ForgetActivity(childID)
+
+		_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+			ID: "child-msg", AgentID: childID, Text: "follow up",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		})
+		require.NoError(t, err)
+		snap, err := svc.InputQueue.Snapshot(ctx, childID)
+		require.NoError(t, err)
+		assert.True(t, snap.ActiveBackgroundWork)
+		assert.Empty(t, steerer.sentChildInputs())
+
+		// Closing the grandchild must wake the retired child via ListQueuedAgentIDsInTree.
+		require.NoError(t, rootSink.CloseBackgroundTask("grand-1", bgtask.StatusSucceeded))
+		require.Eventually(t, func() bool {
+			return len(steerer.sentChildInputs()) == 1
+		}, inputQueueWait, 10*time.Millisecond)
+		assert.Equal(t, []string{"child-key:follow up"}, steerer.sentChildInputs())
+	})
+
+	t.Run("applyBackgroundTaskExit wakes and drains held root queue", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		svc, dispatcher, _ := setupTestService(t)
+		workingDir := t.TempDir()
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: "agent-1", WorkingDir: workingDir,
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		}))
+		rootSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+		_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+			AgentID: "agent-1", WorkingDir: workingDir,
+		}, rootSink, claudetest.StartEcho)
+		require.NoError(t, err)
+		t.Cleanup(func() { svc.Agents.StopAndWaitAgent("agent-1") })
+
+		require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: "bg-exit", Role: bgtask.RoleTaskOutcome, Kind: bgtask.KindShell,
+			Title: "long job", Status: bgtask.StatusRunning,
+		}))
+		enqWriter := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
+			AgentId: "agent-1", InputId: "exit-msg", Text: "after exit",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		}, enqWriter)
+		enqResp := decodeQueueResponse(t, enqWriter, &leapmuxv1.EnqueueAgentInputResponse{})
+		require.Len(t, enqResp.GetSnapshot().GetItems(), 1)
+		assert.True(t, enqResp.GetSnapshot().GetItems()[0].GetCanSteer())
+
+		// Confirm exit-msg remains held before applyBackgroundTaskExit runs.
+		heldSnap, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		require.True(t, heldSnap.ActiveBackgroundWork)
+		require.Len(t, heldSnap.Items, 1)
+		var msgCount int
+		require.NoError(t, svc.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE agent_id = 'agent-1' AND id = 'exit-msg'`).Scan(&msgCount))
+		require.Zero(t, msgCount, "exit-msg must stay held before applyBackgroundTaskExit")
+
+		// Wrap the background-work callback to prove applyBackgroundTaskExit itself triggers the wake-up.
+		var bgNotifications atomic.Int32
+		prev := svc.Output.backgroundWorkChanged
+		svc.Output.SetBackgroundWorkFunc(func(rootAgentID string) {
+			if rootAgentID == "agent-1" {
+				bgNotifications.Add(1)
+			}
+			if prev != nil {
+				prev(rootAgentID)
+			}
+		})
+
+		gen := svc.Output.sinkForAgent("agent-1").outputGeneration
+		require.NoError(t, svc.Output.applyBackgroundTaskExit("agent-1", 0, gen, bgtask.StatusStopped))
+		assert.Equal(t, int32(1), bgNotifications.Load(), "applyBackgroundTaskExit must notify InputQueue")
+		require.Eventually(t, func() bool {
+			snap, snapErr := svc.InputQueue.Snapshot(ctx, "agent-1")
+			return snapErr == nil && len(snap.Items) == 0
+		}, inputQueueWait, 10*time.Millisecond)
+		require.NoError(t, svc.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE agent_id = 'agent-1' AND id = 'exit-msg'`).Scan(&msgCount))
+		assert.Equal(t, 1, msgCount)
+	})
+}

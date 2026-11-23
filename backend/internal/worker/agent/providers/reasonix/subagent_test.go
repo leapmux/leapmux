@@ -442,3 +442,176 @@ func TestReasonixReadOnlyReportPreservesWhitespace(t *testing.T) {
 		assert.Equal(t, report, reasonixSubagentReport(report, false))
 	}
 }
+
+func TestReasonixSubagentFromFinalToolCallClosesRow(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		status string
+		want   bgtask.Status
+	}{
+		{status: "completed", want: bgtask.StatusSucceeded},
+		{status: "failed", want: bgtask.StatusFailed},
+		{status: "cancelled", want: bgtask.StatusStopped},
+	} {
+		t.Run(tt.status, func(t *testing.T) {
+			t.Parallel()
+			obs := reasonixSubagentFromToolCall(acp.ToolCallEnvelope{
+				ToolCallID: "tc-final-" + tt.status,
+				Title:      "task",
+				Status:     tt.status,
+				RawInput:   json.RawMessage(`{"description":"Quick check","prompt":"Check status"}`),
+			})
+			require.NotNil(t, obs)
+			assert.Equal(t, tt.want, obs.Status)
+			assert.True(t, obs.CloseRow)
+			assert.True(t, obs.Spawns)
+
+			base, sink := reasonixTaskObservationFixture()
+			frame, err := json.Marshal(map[string]any{
+				"sessionUpdate": "tool_call",
+				"toolCallId":    "tc-final-" + tt.status,
+				"title":         "task",
+				"kind":          "other",
+				"status":        tt.status,
+				"rawInput":      map[string]any{"description": "Quick check", "prompt": "Check status"},
+			})
+			require.NoError(t, err)
+			base.HandleToolCallForTest(frame)
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, tt.want, rows[0].Status)
+			assert.True(t, rows[0].Status.IsFinished())
+		})
+	}
+}
+
+func TestReasonixAddedSubagentToolsOpenAndClose(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		tool       string
+		rawInput   string
+		wantTitle  string
+		wantPrompt string
+		readOnly   bool
+	}{
+		{
+			tool:       "fleet",
+			rawInput:   `{"description":"Migrate workers","goal":"Update every worker package"}`,
+			wantTitle:  "Migrate workers",
+			wantPrompt: "Update every worker package",
+		},
+		{
+			tool:       "parallel_tasks",
+			rawInput:   `{"goal":"Run linters in parallel"}`,
+			wantTitle:  "parallel_tasks",
+			wantPrompt: "Run linters in parallel",
+		},
+		{
+			tool:       "research",
+			rawInput:   `{"query":"How does token refresh work?"}`,
+			wantTitle:  "research",
+			wantPrompt: "How does token refresh work?",
+		},
+		{
+			tool:       "review",
+			rawInput:   `{"instructions":"Check error handling in store.go"}`,
+			wantTitle:  "review",
+			wantPrompt: "Check error handling in store.go",
+		},
+		{
+			tool:       "security_review",
+			rawInput:   `{"task":"Audit session cookie flags"}`,
+			wantTitle:  "security_review",
+			wantPrompt: "Audit session cookie flags",
+		},
+		{
+			tool:       "run_skill",
+			rawInput:   `{"skill":"fix-lint","prompt":"Fix all lint errors"}`,
+			wantTitle:  "fix-lint",
+			wantPrompt: "Fix all lint errors",
+		},
+		{
+			tool:       "read_only_skill",
+			rawInput:   `{"skill_name":"dep-audit","instructions":"Inspect go.mod"}`,
+			wantTitle:  "dep-audit",
+			wantPrompt: "Inspect go.mod",
+			readOnly:   true,
+		},
+	}
+
+	const quotedFailure = "Subagent outcome: status=failed retryable=false\n\nFinal answer:\nQuoted prose"
+	for _, tc := range cases {
+		for _, wrapped := range []bool{false, true} {
+			mode := "direct"
+			if wrapped {
+				mode = "capability"
+			}
+			t.Run(tc.tool+"/"+mode, func(t *testing.T) {
+				t.Parallel()
+				title := tc.tool
+				rawInput := json.RawMessage(tc.rawInput)
+				if wrapped {
+					title = "use_capability"
+					var err error
+					rawInput, err = json.Marshal(map[string]any{
+						"action":        "call",
+						"capability_id": "tool:" + tc.tool,
+						"arguments":     json.RawMessage(tc.rawInput),
+					})
+					require.NoError(t, err)
+				}
+
+				base, sink := reasonixTaskObservationFixture()
+				opening, err := json.Marshal(map[string]any{
+					"sessionUpdate": "tool_call",
+					"toolCallId":    "call-" + tc.tool + "-" + mode,
+					"title":         title,
+					"kind":          "other",
+					"status":        "pending",
+					"rawInput":      rawInput,
+				})
+				require.NoError(t, err)
+				base.HandleToolCallForTest(opening)
+
+				rows := sink.BackgroundTasks()
+				require.Len(t, rows, 1)
+				assert.Equal(t, tc.wantTitle, rows[0].Title)
+				assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+				require.NotEmpty(t, rows[0].ChildAgentID)
+				child := sink.Child(rows[0].ChildAgentID)
+				require.Len(t, child.Messages(), 1)
+				assert.JSONEq(t, mustJSON(t, map[string]string{"content": tc.wantPrompt}), string(child.Messages()[0].Content))
+
+				update, err := json.Marshal(map[string]any{
+					"sessionUpdate": "tool_call_update",
+					"toolCallId":    "call-" + tc.tool + "-" + mode,
+					"title":         title,
+					"rawInput":      rawInput,
+					"status":        "completed",
+					"content":       []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": quotedFailure}}},
+				})
+				require.NoError(t, err)
+				base.HandleToolCallUpdateForTest(update)
+
+				rows = sink.BackgroundTasks()
+				require.Len(t, rows, 1)
+				reports := child.LeapMuxNotifications()
+				require.Len(t, reports, 1)
+				if tc.readOnly {
+					assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status, "read_only_skill preserves plain report text")
+					assert.Equal(t, quotedFailure, reports[0]["text"])
+				} else {
+					assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
+					assert.Equal(t, "Quoted prose", reports[0]["text"])
+				}
+			})
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
+}

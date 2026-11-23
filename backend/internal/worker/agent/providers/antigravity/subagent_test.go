@@ -104,11 +104,11 @@ func TestAntigravityBackgroundShellStatus(t *testing.T) {
 
 func TestAntigravityBackgroundPatchPreservesOtherTasks(t *testing.T) {
 	a, _ := testAgent(t)
-	a.root.background[2] = backgroundTask{rowKey: "old", stepIndex: 2, slot: 0}
-	a.root.background[4] = backgroundTask{rowKey: "other", stepIndex: 4, slot: 1}
+	a.root.background["old"] = backgroundTask{rowKey: "old", stepIndex: 2, slot: 0}
+	a.root.background["other"] = backgroundTask{rowKey: "other", stepIndex: 4, slot: 1}
 	assert.NoError(t, a.applyBackgroundTasks(a.root, &backgroundTasksPatch{TotalLength: 2}, false))
-	assert.Contains(t, a.root.background, 2)
-	assert.Contains(t, a.root.background, 4)
+	assert.Contains(t, a.root.background, "old")
+	assert.Contains(t, a.root.background, "other")
 	assert.NoError(t, a.applyBackgroundTasks(a.root, nil, true))
 	assert.Empty(t, a.root.background)
 }
@@ -153,14 +153,14 @@ func TestAntigravitySendChildRevivesRowOnNativeTurn(t *testing.T) {
 
 func TestAntigravityBackgroundSlotReplacementAndEmptyPatch(t *testing.T) {
 	a, _ := testAgent(t)
-	a.root.background[2] = backgroundTask{rowKey: "old", stepIndex: 2, slot: 0}
-	a.root.background[6] = backgroundTask{rowKey: "other", stepIndex: 6, slot: 1}
+	a.root.background["old"] = backgroundTask{rowKey: "old", stepIndex: 2, slot: 0}
+	a.root.background["other"] = backgroundTask{rowKey: "other", stepIndex: 6, slot: 1}
 	var patch backgroundTasksPatch
 	require.NoError(t, json.Unmarshal([]byte(`{"indices":[0],"backgroundTasks":[{"taskSnapshot":{"taskId":"new","stepIndex":4}}],"totalLength":2}`), &patch))
 	require.NoError(t, a.applyBackgroundTasks(a.root, &patch, false))
-	assert.NotContains(t, a.root.background, 2)
-	assert.Contains(t, a.root.background, 4)
-	assert.Contains(t, a.root.background, 6)
+	assert.NotContains(t, a.root.background, "old")
+	assert.Contains(t, a.root.background, "new")
+	assert.Contains(t, a.root.background, "other")
 	require.NoError(t, a.applyBackgroundTasks(a.root, nil, false))
 	assert.Len(t, a.root.background, 2)
 	require.NoError(t, a.applyBackgroundTasks(a.root, &backgroundTasksPatch{TotalLength: 0}, false))
@@ -182,7 +182,7 @@ func TestAntigravityRemovedBackgroundOutcomes(t *testing.T) {
 			a, sink := testAgent(t)
 			a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprintf(w, `{"steps":[%s]}`, tc.step) })
 			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "shell", Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
-			a.root.background[2] = backgroundTask{rowKey: "shell", stepIndex: 2}
+			a.root.background["shell"] = backgroundTask{rowKey: "shell", stepIndex: 2}
 			a.root.steps[2] = &stepState{status: "CORTEX_STEP_STATUS_RUNNING"}
 			require.NoError(t, a.applyBackgroundTasks(a.root, nil, true))
 			row, ok := sink.BackgroundTask("shell")
@@ -207,7 +207,7 @@ func TestAntigravityRemovedBackgroundFetchesOneSuffix(t *testing.T) {
 	for slot, index := range []int{2, 4} {
 		key := fmt.Sprintf("shell-%d", index)
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: key, Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
-		a.root.background[index] = backgroundTask{rowKey: key, stepIndex: index, slot: slot}
+		a.root.background[key] = backgroundTask{rowKey: key, stepIndex: index, slot: slot}
 		a.root.steps[index] = &stepState{status: "CORTEX_STEP_STATUS_RUNNING"}
 	}
 	require.NoError(t, a.applyBackgroundTasks(a.root, nil, true))
@@ -226,7 +226,7 @@ func TestAntigravityBackgroundIdentitySurvivesStepIndexChange(t *testing.T) {
 		_, _ = w.Write([]byte(`{"steps":[{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_DONE"}]}`))
 	})
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "same-shell", Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
-	a.root.background[2] = backgroundTask{rowKey: "same-shell", stepIndex: 2, slot: 0}
+	a.root.background["same-shell"] = backgroundTask{rowKey: "same-shell", stepIndex: 2, slot: 0}
 	a.root.steps[2] = &stepState{status: "CORTEX_STEP_STATUS_RUNNING"}
 	var patch backgroundTasksPatch
 	require.NoError(t, json.Unmarshal([]byte(`{"indices":[0],"totalLength":1,"backgroundTasks":[{"taskSnapshot":{"taskId":"same-shell","stepIndex":4}}]}`), &patch))
@@ -236,6 +236,156 @@ func TestAntigravityBackgroundIdentitySurvivesStepIndexChange(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.True(t, row.EndedAt.IsZero())
-	assert.NotContains(t, a.root.background, 2)
-	assert.Contains(t, a.root.background, 4)
+	assert.Contains(t, a.root.background, "same-shell")
+	assert.Equal(t, 4, a.root.background["same-shell"].stepIndex)
+}
+
+func TestAntigravityAlreadyIdleFirstChildUpdateClosesRow(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		interrupted bool
+		steps       []json.RawMessage
+		wantStatus  bgtask.Status
+		wantError   bool
+	}{
+		{
+			name:       "succeeded without steps",
+			wantStatus: bgtask.StatusSucceeded,
+		},
+		{
+			name:       "succeeded with done step",
+			steps:      []json.RawMessage{plannerStep(contracts.AntigravityStepStatusDone, "already finished")},
+			wantStatus: bgtask.StatusSucceeded,
+		},
+		{
+			name:       "failed with held error",
+			steps:      []json.RawMessage{json.RawMessage(`{"type":"CORTEX_STEP_TYPE_ERROR_MESSAGE","status":"CORTEX_STEP_STATUS_DONE","errorMessage":{"error":{"userErrorMessage":"child exploded"}}}`)},
+			wantStatus: bgtask.StatusFailed,
+			wantError:  true,
+		},
+		{
+			name:        "interrupted",
+			interrupted: true,
+			wantStatus:  bgtask.StatusStopped,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, sink, child := childLifecycleTestAgent(t)
+			if tc.interrupted {
+				child.interrupted = true
+			}
+			var indices []int
+			for i := range tc.steps {
+				indices = append(indices, i)
+			}
+			update := updateWithSteps(cascadeStatusIdle, indices, tc.steps)
+			require.NoError(t, a.applyUpdate(child, update, true))
+			row, ok := sink.BackgroundTask(child.id)
+			require.True(t, ok)
+			assert.Equal(t, tc.wantStatus, row.Status)
+			assert.False(t, child.rowOpen)
+			if tc.wantError {
+				childSink := sink.Child(child.childAgentID)
+				require.NotEmpty(t, childSink.PersistedNotifications())
+				assert.Contains(t, string(childSink.PersistedNotifications()[0].Content), "child exploded")
+			}
+		})
+	}
+}
+
+func TestAntigravityPostTurnChildDeltaDoesNotReviveFinishedRow(t *testing.T) {
+	for _, status := range []string{"", cascadeStatusIdle} {
+		name := status
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			a, sink, child := childLifecycleTestAgent(t)
+			require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusRunning}, false))
+			require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusIdle}, false))
+			row, ok := sink.BackgroundTask(child.id)
+			require.True(t, ok)
+			require.Equal(t, bgtask.StatusSucceeded, row.Status)
+			beforeRevives := len(sink.RevivedTasks())
+
+			delta := updateWithSteps(status, []int{0}, []json.RawMessage{plannerStep(contracts.AntigravityStepStatusDone, "late child note")})
+			require.NoError(t, a.applyUpdate(child, delta, false))
+
+			assert.Len(t, sink.RevivedTasks(), beforeRevives, "post-turn child delta must not call ReviveBackgroundTask")
+			row, _ = sink.BackgroundTask(child.id)
+			assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+			assert.False(t, child.rowOpen)
+			messages := transcriptMessages(sink.Child(child.childAgentID))
+			require.Len(t, messages, 1)
+			assert.Contains(t, string(messages[0].Content), "late child note")
+		})
+	}
+}
+
+func TestAntigravitySharedStepIndexBackgroundTasksSettleIndependently(t *testing.T) {
+	a, sink := testAgent(t)
+	var openPatch backgroundTasksPatch
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"indices": [0, 1],
+		"totalLength": 2,
+		"backgroundTasks": [
+			{"taskSnapshot": {"taskId": "task-a", "description": "cmd a", "stepIndex": 0}},
+			{"taskSnapshot": {"taskId": "task-b", "description": "cmd b", "stepIndex": 0}}
+		]
+	}`), &openPatch))
+	require.NoError(t, a.applyBackgroundTasks(a.root, &openPatch, true))
+	rowA, okA := sink.BackgroundTask("task-a")
+	rowB, okB := sink.BackgroundTask("task-b")
+	require.True(t, okA)
+	require.True(t, okB)
+	assert.Equal(t, bgtask.StatusRunning, rowA.Status)
+	assert.Equal(t, bgtask.StatusRunning, rowB.Status)
+
+	// Remove task-a while task-b remains on the same stepIndex.
+	var removeAPatch backgroundTasksPatch
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"indices": [0],
+		"totalLength": 1,
+		"backgroundTasks": [
+			{"taskSnapshot": {"taskId": "task-b", "description": "cmd b", "stepIndex": 0}}
+		]
+	}`), &removeAPatch))
+	require.NoError(t, a.applyBackgroundTasks(a.root, &removeAPatch, false))
+	rowA, _ = sink.BackgroundTask("task-a")
+	rowB, _ = sink.BackgroundTask("task-b")
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, rowA.Status)
+	assert.Equal(t, bgtask.StatusRunning, rowB.Status)
+
+	// Two remaining tasks sharing stepIndex 2 both close when step 2 finishes.
+	var pairPatch backgroundTasksPatch
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"indices": [0, 1],
+		"totalLength": 2,
+		"backgroundTasks": [
+			{"taskSnapshot": {"taskId": "task-c", "description": "cmd c", "stepIndex": 2}},
+			{"taskSnapshot": {"taskId": "task-d", "description": "cmd d", "stepIndex": 2}}
+		]
+	}`), &pairPatch))
+	require.NoError(t, a.applyBackgroundTasks(a.root, &pairPatch, true))
+	step := antigravityStep{Type: contracts.AntigravityStepTypeRunCommand, Status: contracts.AntigravityStepStatusDone}
+	a.root.steps[2] = &stepState{}
+	require.NoError(t, a.applyStep(a.root, 2, step, json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_DONE"}`)))
+	rowC, _ := sink.BackgroundTask("task-c")
+	rowD, _ := sink.BackgroundTask("task-d")
+	assert.Equal(t, bgtask.StatusSucceeded, rowC.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rowD.Status)
+
+	// Empty taskId entries are skipped without polluting state.background.
+	var emptyIDPatch backgroundTasksPatch
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"indices": [0, 1],
+		"totalLength": 2,
+		"backgroundTasks": [
+			{"taskSnapshot": {"taskId": "", "description": "blank", "stepIndex": 5}},
+			{"taskSnapshot": {"taskId": "task-e", "description": "cmd e", "stepIndex": 5}}
+		]
+	}`), &emptyIDPatch))
+	require.NoError(t, a.applyBackgroundTasks(a.root, &emptyIDPatch, true))
+	assert.NotContains(t, a.root.background, "")
+	assert.Contains(t, a.root.background, "task-e")
 }

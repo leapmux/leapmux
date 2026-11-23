@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -24,8 +25,9 @@ func (s *kimiStream) readTaskState(ctx context.Context, sessionID string, addres
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), kimiStreamWriteTimeout)
 		defer cancel()
-		err := s.sendTaskCommand(cleanup, kimiFrameTaskUnwatch, sessionID, address.ownerAgentID, address.taskID)
-		resultErr = errors.Join(resultErr, err)
+		if err := s.sendTaskCommand(cleanup, kimiFrameTaskUnwatch, sessionID, address.ownerAgentID, address.taskID); err != nil {
+			slog.Warn("unwatch the Kimi task after state read", "session_id", sessionID, "agent_id", address.ownerAgentID, "task_id", address.taskID, "error", err)
+		}
 	}()
 	response, err := s.requestTask(ctx, kimiFrameTaskWatch, sessionID, address.ownerAgentID, address.taskID)
 	if err != nil {

@@ -154,6 +154,9 @@ type Hooks struct {
 	// The dispatcher supplies the services of the current root or an attached child session.
 	// It releases routing locks before this handler runs. True means that the handler consumed the update.
 	SessionUpdateHandler func(sessionID string, owner agent.ProviderServices, update json.RawMessage) bool
+	// IsReplayUpdate reports whether a provider-specific sessionUpdate kind is
+	// conversation history that session/load replays before the load reply.
+	IsReplayUpdate func(updateType string) bool
 	// SessionMetadataHandler reads the provider `_meta` of a session update of
 	// the main session. It returns true for an update that it consumed, and the
 	// base then does not dispatch the update. update is the whole update, for a

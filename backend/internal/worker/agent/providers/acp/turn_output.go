@@ -724,18 +724,18 @@ func (o *acpTurnOutput) completeToolLocked(toolCallID string) string {
 	return o.forgetToolLocked(toolCallID)
 }
 
-// claimFinalTool atomically claims final-row emission for toolCallID. It
-// returns false if toolCallID was already closed so duplicate final frames
-// write no duplicate closing row and add no extra tool-use count.
-func (o *acpTurnOutput) claimFinalTool(toolCallID string) bool {
+// claimFinalTool atomically claims final-row emission for toolCallID and
+// returns any previously remembered subagent row key. It returns false if
+// toolCallID was already closed so duplicate final frames write no duplicate
+// closing row and add no extra tool-use count.
+func (o *acpTurnOutput) claimFinalTool(toolCallID string) (string, bool) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
 	if o.closedSpans.kind(toolCallID) != acpSpanNotClosed {
-		return false
+		return "", false
 	}
 	o.closedSpans.mark(toolCallID, acpSpanClosedNative)
-	o.completeToolLocked(toolCallID)
-	return true
+	return o.completeToolLocked(toolCallID), true
 }
 
 // mergeToolUpdate folds one update into the call's merged fields and records the

@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 type droidFailNotificationSink struct {
@@ -986,4 +987,59 @@ func TestDroidLateToolResultAfterInterruptSuppressed(t *testing.T) {
 	assert.Len(t, sink.Messages(), countAfterInterrupt)
 	assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
 	assert.Zero(t, a.outputStates["main-session"].turnToolUse)
+}
+
+func TestDroidChildSessionSettledClosesOpenChildWithoutTranscriptNotification(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status string
+		want   bgtask.Status
+	}{
+		{name: "completed", status: "completed", want: bgtask.StatusSucceeded},
+		{name: "failed", status: "failed", want: bgtask.StatusFailed},
+		{name: "cancelled", status: "cancelled", want: bgtask.StatusInterrupted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSteerAgent(t)
+			a.HandleOutput([]byte(droidTaskCall))
+			a.HandleOutput([]byte(droidChildAvailable))
+			row, ok := sink.BackgroundTask("child-1")
+			require.True(t, ok)
+			require.Equal(t, bgtask.StatusRunning, row.Status)
+			require.True(t, a.ActiveChildTurnState("child-1").Active)
+
+			payload := fmt.Sprintf(`{"type":"child_session_settled","childSessionId":"child-1","toolUseId":"task-1","status":%q}`, tc.status)
+			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(payload)))
+
+			row, ok = sink.BackgroundTask("child-1")
+			require.True(t, ok)
+			assert.Equal(t, tc.want, row.Status, "child_session_settled must close the open child row")
+			assert.False(t, a.ActiveChildTurnState("child-1").Active, "child_session_settled must disarm childTurns")
+			assert.Empty(t, sink.PersistedNotifications(), "child_session_settled must not persist a transcript notification")
+		})
+	}
+}
+
+func TestDroidBackgroundProcessesChangedOpensAndClosesShellRows(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"background_processes_changed","processes":[{"id":"proc-1","command":"npm run dev","status":"running"}]}`)))
+	assert.Empty(t, sink.PersistedNotifications(), "background_processes_changed must not persist as an unknown notification")
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindShell, tasks[0].Kind)
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+	assert.Equal(t, "npm run dev", tasks[0].Title)
+	assert.True(t, tasks[0].TitleIsCommand)
+	rowKey := tasks[0].RowKey
+
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"background_processes_changed","processes":[]}`)))
+	assert.Empty(t, sink.PersistedNotifications())
+	closed, ok := sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.True(t, closed.Status.IsFinished(), "removing a process from background_processes_changed must close its shell row")
+	assert.False(t, closed.EndedAt.IsZero())
 }

@@ -21,6 +21,10 @@ const (
 	openCodeEventMessageUpdated = "message.updated"
 	openCodeEventPartUpdated    = "message.part.updated"
 	openCodeEventPartDelta      = "message.part.delta"
+	openCodeEventSessionError   = "session.error"
+	openCodeEventSessionDeleted = "session.deleted"
+	openCodeStatusTypeBusy      = "busy"
+	openCodeStatusTypeIdle      = "idle"
 )
 
 type openCodeMessageState struct {
@@ -44,9 +48,13 @@ func (b *FamilyBase) handleDaemonEvent(raw json.RawMessage) {
 	if json.Unmarshal(raw, &event) != nil {
 		return
 	}
-	sessionID := providerkit.StringField(event.Properties, "sessionID")
-	if sessionID == "" || !b.IsCurrentSession(sessionID) {
-		slog.Debug("ignore OpenCode event outside the current session", "agent_id", b.AgentID(), "type", event.Type)
+	sessionID := daemonEventSessionID(event.Properties)
+	if sessionID == "" {
+		slog.Debug("ignore OpenCode event without a session ID", "agent_id", b.AgentID(), "type", event.Type)
+		return
+	}
+	if !b.IsCurrentSession(sessionID) {
+		b.handleChildDaemonEvent(sessionID, event.Type, event.Properties)
 		return
 	}
 	switch event.Type {
@@ -109,11 +117,26 @@ func (b *FamilyBase) handleDaemonEvent(raw json.RawMessage) {
 			b.daemonMu.Unlock()
 			b.persistDaemonNotification(raw, sessionID)
 			b.retryResolution.NoteRetry()
-		case "idle":
+		case openCodeStatusTypeIdle:
 			b.retryResolution.Reset()
 			providerkit.EndCompaction(b.Sink())
 		}
 	}
+}
+
+func daemonEventSessionID(properties json.RawMessage) string {
+	if sessionID := providerkit.StringField(properties, "sessionID"); sessionID != "" {
+		return sessionID
+	}
+	var payload struct {
+		Info struct {
+			ID string `json:"id"`
+		} `json:"info"`
+	}
+	if json.Unmarshal(properties, &payload) != nil {
+		return ""
+	}
+	return payload.Info.ID
 }
 
 func (b *FamilyBase) persistDaemonNotification(raw json.RawMessage, sessionID string) {
@@ -193,14 +216,25 @@ func (b *FamilyBase) clearSessionState() {
 	rootSessionID := b.CurrentSessionID()
 	b.childSessionsMu.Lock()
 	for callID, child := range b.childSessions {
-		if child.rootSessionID != rootSessionID {
+		if rootSessionID == "" || child.rootSessionID != rootSessionID {
 			delete(b.childSessions, callID)
+		}
+	}
+	b.earlyChildEvents = nil
+	for callID, owner := range b.finalizedTaskCalls {
+		if rootSessionID == "" || owner != rootSessionID {
+			delete(b.finalizedTaskCalls, callID)
+		}
+	}
+	for callID, reused := range b.reusedTaskCalls {
+		if rootSessionID == "" || reused.rootSessionID != rootSessionID {
+			delete(b.reusedTaskCalls, callID)
 		}
 	}
 	b.childSessionsMu.Unlock()
 	b.childStopMu.Lock()
 	for callID, owner := range b.stoppedChildren {
-		if owner != rootSessionID {
+		if rootSessionID == "" || owner != rootSessionID {
 			delete(b.stoppedChildren, callID)
 		}
 	}

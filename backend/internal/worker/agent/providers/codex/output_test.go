@@ -3382,7 +3382,7 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 		{providerStatus: "canceled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
 		{providerStatus: "interrupted", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
 		{providerStatus: "aborted", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
-		{providerStatus: "futureStatus", wantStatus: bgtask.StatusRunning},
+		{providerStatus: "futureStatus", wantStatus: bgtask.StatusEndedWithUnknownOutcome, wantFinished: true},
 	}
 	for _, test := range tests {
 		test := test
@@ -3397,12 +3397,13 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 	}
 
 	transition := codexChildTurnTransition(json.RawMessage(`{"turn":`))
-	assert.Equal(t, bgtask.StatusRunning, transition.status)
-	assert.False(t, transition.finished())
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, transition.status)
+	assert.True(t, transition.finished())
 	assert.Empty(t, transition.activity)
 }
 
-// An interrupted activity pauses the row. A later interaction resumes it.
+// An interrupted activity pauses the row. Interacted does not revive a paused
+// child; the child's own turn/started resumes it.
 func TestCodexSubAgentActivity_InterruptedPausesTheRun(t *testing.T) {
 	t.Parallel()
 
@@ -3422,15 +3423,17 @@ func TestCodexSubAgentActivity_InterruptedPausesTheRun(t *testing.T) {
 	assert.True(t, a.handleCodexSubAgentActivity(interacted, "main-thread"))
 	rows = sink.BackgroundTasks()
 	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusPaused, rows[0].Status, "interacted alone does not revive a paused child")
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"thr-1","turn":{"id":"turn-2"}}}`)))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
 	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
 	assert.True(t, rows[0].Status.IsWorking())
 }
 
-// subAgentActivity is the THIRD writer that reports a collab child active again,
-// and it had no coverage for the reopen at all. The upsert absorbs a non-final
-// status against a final row, so without the reopen an `interacted` lands its
-// "received input" activity on a row that still reads "completed" -- the sidebar
-// then shows a finished subagent that just took a message.
+// A finished child reopens when a genuine resume/turn starts, while an
+// interacted activity updates ActiveForm only once the child is running.
 func TestHandleCodexOutput_ASubAgentActivityReopensAFinishedChild(t *testing.T) {
 	t.Parallel()
 
@@ -3439,7 +3442,7 @@ func TestHandleCodexOutput_ASubAgentActivityReopensAFinishedChild(t *testing.T) 
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
-	resumed := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"collabAgentToolCall","id":"call-2","tool":"resumeAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"more work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	resumed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"collabAgentToolCall","id":"call-2","tool":"resumeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"more work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running"}}}}}`
 	interacted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"subAgentActivity","agentThreadId":"child-1","kind":"interacted"}}}`
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
@@ -3451,14 +3454,15 @@ func TestHandleCodexOutput_ASubAgentActivityReopensAFinishedChild(t *testing.T) 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(resumed)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(interacted)))
 
-	assert.Equal(t, []string{"child-1"}, sink.RevivedTasks(), "the activity reopens the re-registered child")
-	_, status, ok, _ = sink.LookupBackgroundTask("child-1")
+	assert.Equal(t, []string{"child-1"}, sink.RevivedTasks(), "resumeAgent reopens the finished child")
+	row, ok := sink.BackgroundTask("child-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusRunning, status)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, "received input", row.ActiveForm)
 }
 
-// A V2 interaction is itself live restart evidence. It does not need a legacy
-// resumeAgent collab item before it can reopen the durable child route.
+// A V2 child's own turn/started reopens the durable child route without a
+// legacy collab item, whereas an interacted activity alone does not revive it.
 func TestHandleCodexOutput_ASubAgentActivityReopensWithoutALegacyCollabItem(t *testing.T) {
 	t.Parallel()
 
@@ -3468,12 +3472,15 @@ func TestHandleCodexOutput_ASubAgentActivityReopensWithoutALegacyCollabItem(t *t
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
 	interacted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"subAgentActivity","agentThreadId":"child-1","kind":"interacted"}}}`
+	childTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-child-2"}}}`
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(completed)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(interacted)))
+	assert.Empty(t, sink.RevivedTasks(), "interacted alone must not revive a finished child")
 
-	assert.Equal(t, []string{"child-1"}, sink.RevivedTasks(), "the activity reopens the child")
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(childTurn)))
+	assert.Equal(t, []string{"child-1"}, sink.RevivedTasks(), "child turn/started reopens the child")
 	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusRunning, status)

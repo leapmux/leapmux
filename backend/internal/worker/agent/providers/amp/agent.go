@@ -57,6 +57,9 @@ type Agent struct {
 	stderrFn func(proc *ampProcess) string
 	// exportFn supplies native history in tests. Production runs the export command.
 	exportFn func(context.Context, string) ([]byte, error)
+	// pidAliveFn probes local PID liveness for background shell commands.
+	// Production defaults to ampProcessAlive; tests inject a deterministic probe.
+	pidAliveFn func(int) bool
 
 	// userEnvMu guards the three fields below. The first process start that
 	// reads the user's shell settles them.
@@ -100,15 +103,17 @@ type Agent struct {
 	closedSpans providerkit.ClosedSpanSet
 	// shells holds the registry row of each background command of the running
 	// process, by PID. See subagent.go.
-	shells    map[int]string
-	nextOrder uint64
+	shells             map[int]string
+	shellPollerRunning bool
+	nextOrder          uint64
 	// contextUsage is the last context-usage broadcast, so an unchanged reading
 	// is not broadcast again.
 	contextUsage map[string]any
 	// lastStderr is the stderr of the last process that exited.
 	lastStderr string
 
-	discard atomic.Bool
+	shellPollerWG sync.WaitGroup
+	discard       atomic.Bool
 	// done closes when Stop finishes.
 	done     chan struct{}
 	stopOnce sync.Once
@@ -553,6 +558,7 @@ func (a *Agent) stop() {
 		completion = proc.ProcessExitCompletion()
 		shellStatus = processShellExitStatus(proc)
 	}
+	a.shellPollerWG.Wait()
 	var message string
 	if proc != nil && completion == agent.MessageCompletionError {
 		message = exitMessage(proc, threadID, a.exitStderr(proc))

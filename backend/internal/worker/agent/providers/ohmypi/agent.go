@@ -109,6 +109,9 @@ type Agent struct {
 	root *conversation
 	// subagents indexes the live subagents by omp's agent id.
 	subagents map[string]*subagentState
+	// subagentRuns counts started runs per subagent row key so reused turns
+	// persist distinct report IDs without colliding with earlier runs.
+	subagentRuns map[string]int
 	// spawns keeps the tasks of each `task` call, keyed by the call id, until the
 	// lifecycle frame of each of its subagents arrives. See rememberSpawns.
 	spawns map[string]*taskSpawn

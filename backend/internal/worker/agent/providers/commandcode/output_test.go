@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -478,4 +479,35 @@ func TestCommandCodeFinishStreamClosesIdleAndDiscardingOpenTools(t *testing.T) {
 		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
 		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
 	})
+}
+
+func TestCompleteTurnClosesForegroundChildrenOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		stopReason string
+		wantStatus bgtask.Status
+	}{
+		{name: "normal turn end stops open foreground child", stopReason: "end_turn", wantStatus: bgtask.StatusStopped},
+		{name: "error turn end fails open foreground child", stopReason: "run_error", wantStatus: bgtask.StatusFailed},
+		{name: "interrupted turn end stops open foreground child", stopReason: "interrupted", wantStatus: bgtask.StatusStopped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, sink := testAgent(t)
+			a.startTurn("turn_1")
+			feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "fg_spawn", "toolName": "agent", "input": map[string]any{"description": "Foreground child", "prompt": "Work."}})
+			feedEvent(t, a, map[string]any{"type": "subagent_start", "toolCallId": "fg_spawn", "subagentType": "general", "description": "Foreground child", "background": false})
+			feedEvent(t, a, map[string]any{"type": "tool_queued", "toolCallId": "bg_spawn", "toolName": "agent", "input": map[string]any{"description": "Background child", "prompt": "Work in bg.", "run_in_background": true}})
+			feedEvent(t, a, map[string]any{"type": "subagent_start", "toolCallId": "bg_spawn", "subagentType": "general", "description": "Background child", "background": true})
+
+			feedMethod(t, a, "turn/completed", map[string]any{"turnId": "turn_1", "stopReason": tc.stopReason})
+
+			fgRow, fgExists := sink.BackgroundTask(childRowKey("native-session", "fg_spawn"))
+			require.True(t, fgExists)
+			assert.Equal(t, tc.wantStatus, fgRow.Status)
+
+			bgRow, bgExists := sink.BackgroundTask(childRowKey("native-session", "bg_spawn"))
+			require.True(t, bgExists)
+			assert.Equal(t, bgtask.StatusRunning, bgRow.Status, "background child must stay running across turn completion")
+		})
+	}
 }

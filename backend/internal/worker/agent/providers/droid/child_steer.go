@@ -35,6 +35,24 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	if backgroundRunning {
 		return agent.ChildInputResult{StartsTurn: true}, agent.ErrAgentBusy
 	}
+	a.dispatchMu.Lock()
+	if a.childAgents == nil {
+		a.childAgents = make(map[string]string)
+	}
+	if a.childAgents[childKey] == "" {
+		a.childAgents[childKey] = childID
+	}
+	a.dispatchMu.Unlock()
+
+	a.tailMu.Lock()
+	hasTail := a.childTails[childKey] != nil
+	a.tailMu.Unlock()
+	var initial *droidArchivePosition
+	var probeErr error
+	if !hasTail {
+		initial, probeErr = a.probeChildArchiveEnd(childKey)
+	}
+
 	child, err := a.childConnection(childKey, childID)
 	if err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
@@ -42,8 +60,13 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	if err := child.SendInputForSession(childKey, input.Content, input.Attachments); err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
-	providerkit.LogRegistryRefusal("droid", "revive child", a.sink.ReviveBackgroundTask(childKey))
-	a.resumeChildTail(childKey)
+	if probeErr == nil {
+		ready := make(chan struct{})
+		if a.resumeChildTail(childKey, initial, ready) {
+			providerkit.LogRegistryRefusal("droid", "revive child", a.sink.ReviveBackgroundTask(childKey))
+			close(ready)
+		}
+	}
 	a.finishExitedChild(childKey, child)
 	return agent.ChildInputResult{
 

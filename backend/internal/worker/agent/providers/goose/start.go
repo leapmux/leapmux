@@ -48,7 +48,7 @@ func (a *Agent) hooks() acp.Hooks {
 		// and keeps it running (observeGooseSubagentUpdate). The spawn
 		// tool_call itself carries _meta.goose.toolCall
 		// {toolName:"delegate", extensionName:"summon"}.
-		SubagentFromToolCall:       gooseSubagentFromToolCall,
+		SubagentFromToolCall:       a.observeGooseSubagentCall,
 		SubagentFromToolCallUpdate: a.observeGooseSubagentUpdate,
 		ToolNotification:           a.observeGooseToolNotification,
 		// Goose sends its live status and its usage totals ONLY to a client

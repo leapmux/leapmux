@@ -58,6 +58,10 @@ const copilotExecutionBackground = "background"
 // (ChildCapabilities).
 const copilotOptionExecutionMode = "execution-mode"
 
+// copilotReadBackgroundTasks is the offReader key for reconciling background
+// task promotions after `session.background_tasks_changed`.
+const copilotReadBackgroundTasks = "background-tasks"
+
 // copilotTaskInput is the `task` tool's argument object.
 type copilotTaskInput struct {
 	Name        string `json:"name"`
@@ -133,6 +137,11 @@ func (a *Agent) startNativeSubagent(raw []byte, event copilotEvent) {
 		a.persistNativeFrameTo(owner, raw, agent.SpanInfo{})
 		return
 	}
+	if _, status, found, lookupErr := owner.LookupBackgroundTask(event.AgentID); lookupErr != nil {
+		slog.Warn("Lookup Copilot subagent before start", "agent_id", a.AgentID(), "native_agent_id", event.AgentID, "error", lookupErr)
+	} else if found && status.IsFinished() {
+		providerkit.LogRegistryRefusal("copilot", "revive subagent", owner.ReviveBackgroundTask(event.AgentID))
+	}
 	child := &copilotNativeChild{
 		sink: owner.ChildSink(workerAgentID), owner: owner, ownerAgentID: ownerAgentID,
 		workerAgentID: workerAgentID, nativeAgentID: event.AgentID, spawnToolCallID: started.ToolCallID,
@@ -177,6 +186,9 @@ func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 		status = bgtask.StatusFailed
 	}
 	if child == nil {
+		if event.AgentID != "" {
+			providerkit.LogRegistryRefusal("copilot", "close subagent", a.sink.CloseBackgroundTask(event.AgentID, status))
+		}
 		a.persistNativeFrame(raw, agent.SpanInfo{})
 		return
 	}
@@ -218,6 +230,42 @@ func (a *Agent) markNativeChildIdle(child *copilotNativeChild) {
 	a.publishChildTurn(child, false)
 	child.sink.ReportProgress(agent.ResetOutputProgress(copilotResponseSizeScope))
 	child.sink.ReportProgress(agent.ResetModelProgress())
+}
+
+// handleBackgroundTasksChanged queries Copilot's task list off the reader
+// goroutine and promotes any running sync subagent that moved to the background.
+// offReader holds sessionMu for reading, so the lock order remains sessionMu -> outputMu.
+func (a *Agent) handleBackgroundTasksChanged() {
+	raw, err := a.requestNativeSession("tasks.list", nil)
+	if err != nil {
+		slog.Warn("List Copilot background tasks", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	var list copilotTaskList
+	if err := json.Unmarshal(raw, &list); err != nil {
+		slog.Warn("Read Copilot background task list", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
+	if a.closing {
+		return
+	}
+	for _, task := range list.Tasks {
+		if task.Type != copilotTaskTypeAgent {
+			continue
+		}
+		child := a.childForSpawnToolCall(task.ToolCallID)
+		if child == nil && task.ID != "" {
+			child = a.children[task.ID]
+		}
+		if child == nil || child.background {
+			continue
+		}
+		child.background = true
+		child.sink.PersistSettingsRefresh(optionmap.Map{copilotOptionExecutionMode: copilotExecutionBackground})
+		a.publishChildTurn(child, !child.idle)
+	}
 }
 
 // resumeNativeChild reopens the row of an idle background subagent whose next

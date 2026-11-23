@@ -435,11 +435,13 @@ func (a *Agent) Wait() error {
 	return err
 }
 
-// cleanupAfterProcessExit stops archive retries and clears controls, open tools, and turn state.
+// cleanupAfterProcessExit stops archive retries and clears controls, open
+// tools, open foreground children, and turn state.
 func (a *Agent) cleanupAfterProcessExit() {
 	a.stopWorkflowArchiveRetries()
 	a.withdrawControls()
 	a.closeOpenTools(a.ProcessExitCompletion(), false, true)
+	a.closeForegroundChildren(agent.IncompleteTaskStatus(a.ProcessExitCompletion()))
 	a.setTurnActive(false)
 }
 

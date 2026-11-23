@@ -566,3 +566,140 @@ func TestGooseInterruptedPromptClosesActiveDelegatedSubagent(t *testing.T) {
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
 }
+
+func TestACP_GooseDelegateResumeRevivesExistingSubagent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tool_call parses resume and revives without a phantom spawn span", func(t *testing.T) {
+		t.Parallel()
+		obs := gooseSubagentFromToolCall(acp.ToolCallEnvelope{
+			ToolCallID: "resume-call-1",
+			Title:      "delegate",
+			RawInput:   json.RawMessage(`{"resume":"20261019_2","instructions":"Continue analysis."}`),
+			Meta:       json.RawMessage(`{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}`),
+		})
+		require.NotNil(t, obs)
+		assert.Equal(t, "20261019_2", obs.RowKey)
+		assert.Equal(t, bgtask.StatusRunning, obs.Status)
+		assert.True(t, obs.ReviveRow)
+		assert.True(t, obs.Spawns)
+		assert.Empty(t, obs.ChildSpawnSpanID)
+		assert.Equal(t, "Continue analysis.", obs.Prompt)
+	})
+
+	t.Run("tool_call_update recognizes resumed ack, meta session id, and failed resume", func(t *testing.T) {
+		t.Parallel()
+		var resumedContent []acp.ToolCallBlock
+		require.NoError(t, json.Unmarshal([]byte(`[{"type":"content","content":{"type":"text","text":"Resumed subagent 20261019_2"}}]`), &resumedContent))
+		resumed := gooseSubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+			ToolCallID: "resume-call-1",
+			Status:     "completed",
+			Content:    resumedContent,
+		})
+		require.NotNil(t, resumed)
+		assert.Equal(t, "20261019_2", resumed.RowKey)
+		assert.Empty(t, resumed.RenameFrom)
+		assert.Equal(t, bgtask.StatusRunning, resumed.Status)
+		assert.True(t, resumed.ReviveRow)
+		assert.False(t, resumed.CloseRow)
+
+		metaAck := gooseSubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+			ToolCallID: "delegate-call-1",
+			Status:     "completed",
+			Meta:       json.RawMessage(`{"goose":{"subagentSessionId":"20261019_3"}}`),
+		})
+		require.NotNil(t, metaAck)
+		assert.Equal(t, "20261019_3", metaAck.RowKey)
+		assert.Equal(t, "delegate-call-1", metaAck.RenameFrom)
+		assert.Equal(t, bgtask.StatusRunning, metaAck.Status)
+		assert.False(t, metaAck.CloseRow)
+
+		var failedContent []acp.ToolCallBlock
+		require.NoError(t, json.Unmarshal([]byte(`[{"type":"content","content":{"type":"text","text":"Resume failed"}}]`), &failedContent))
+		failed := gooseSubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+			ToolCallID: "resume-call-2",
+			Status:     "failed",
+			Meta:       json.RawMessage(`{"goose":{"subagentSessionId":"20261019_2"}}`),
+			Content:    failedContent,
+		})
+		require.NotNil(t, failed)
+		assert.Equal(t, "20261019_2", failed.RowKey)
+		assert.Equal(t, bgtask.StatusFailed, failed.Status)
+		assert.True(t, failed.CloseRow)
+		assert.Equal(t, acp.ModeCloseOnly, failed.Mode)
+		assert.Equal(t, "Resume failed", failed.Report.Text)
+	})
+
+	t.Run("resuming notice revives the existing row", func(t *testing.T) {
+		t.Parallel()
+		obs := gooseSubagentNotice("Resuming subagent 20261019_2 (Continue analysis.)")
+		require.NotNil(t, obs)
+		assert.Equal(t, "20261019_2", obs.RowKey)
+		assert.Equal(t, bgtask.StatusRunning, obs.Status)
+		assert.True(t, obs.ReviveRow)
+		assert.False(t, obs.CloseRow)
+	})
+
+	t.Run("job 2 resume revives job 1 row without creating a phantom row", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newGooseOutputAgent(agent.NewProviderServices(sink))
+		hooks := a.HooksForTest()
+		hooks.SubagentFromToolCall = a.observeGooseSubagentCall
+		hooks.SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+
+		// Job 1 spawns, acknowledges, and completes.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-1","title":"delegate","status":"pending","rawInput":{"instructions":"Job 1"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent 20261019_2"}}]}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_2 completed"}}}}`))
+
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, "20261019_2", rows[0].RowKey)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+		childID := rows[0].ChildAgentID
+		require.NotEmpty(t, childID)
+
+		// Job 2 resumes the same subagent via rawInput.resume and Resumed ACK.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-2","title":"delegate","status":"pending","rawInput":{"resume":"20261019_2","instructions":"Job 2"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-2","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Resumed subagent 20261019_2"}}]}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Resuming subagent 20261019_2 (Job 2)"}}}}`))
+
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1, "resume must not create a phantom toolCallId row")
+		assert.Equal(t, "20261019_2", rows[0].RowKey)
+		assert.Equal(t, childID, rows[0].ChildAgentID)
+		assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+		assert.Contains(t, sink.RevivedTasks(), "20261019_2")
+
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_2 completed"}}}}`))
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+
+		// Job 3 resumes via _meta.goose.subagentSessionId when gooseChildRenames already maps delegate-3 -> 20261019_2.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-3","title":"delegate","status":"pending","rawInput":{"resume":"20261019_2","instructions":"Job 3"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-3","status":"completed","_meta":{"goose":{"subagentSessionId":"20261019_2"}}}`))
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, "20261019_2", rows[0].RowKey)
+		assert.Equal(t, childID, rows[0].ChildAgentID)
+		assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_2 completed"}}}}`))
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+
+		// Job 4 failed resume closes the resumed session row as failed without a phantom row.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-4","title":"delegate","status":"pending","rawInput":{"resume":"20261019_2","instructions":"Job 4"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-4","status":"failed","content":[{"type":"content","content":{"type":"text","text":"Resume rejected"}}]}`))
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, "20261019_2", rows[0].RowKey)
+		assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
+		a.Mu.Lock()
+		_, stillOpen := a.activeDelegations["20261019_2"]
+		a.Mu.Unlock()
+		assert.False(t, stillOpen, "a failed resume must remove the row from activeDelegations")
+	})
+}

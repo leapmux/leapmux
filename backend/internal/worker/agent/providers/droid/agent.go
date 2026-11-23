@@ -68,17 +68,18 @@ type Agent struct {
 	contextRefreshQueued  bool
 
 	// dispatchMu guards these maps and every droidOutputState.
-	childSpawns        map[string]droidChildSpawn
-	childAgents        map[string]string
-	childAnnouncements map[string]droidChildAnnouncementID
-	outputStates       map[string]*droidOutputState
-	mcpFailures        map[string]string
-	retryResolution    providerkit.RetryResolution
-	steers             providerkit.SteerLedger
-	outputQueue        agent.OutputQueue
-	tailMu             sync.Mutex
-	childTails         map[string]*droidChildTail
-	tailClosing        bool
+	childSpawns         map[string]droidChildSpawn
+	childAgents         map[string]string
+	childAnnouncements  map[string]droidChildAnnouncementID
+	backgroundProcesses map[string]struct{}
+	outputStates        map[string]*droidOutputState
+	mcpFailures         map[string]string
+	retryResolution     providerkit.RetryResolution
+	steers              providerkit.SteerLedger
+	outputQueue         agent.OutputQueue
+	tailMu              sync.Mutex
+	childTails          map[string]*droidChildTail
+	tailClosing         bool
 	// beforeChildTailStateRead controls the replay lock order in tests only.
 	beforeChildTailStateRead func()
 	// beforeChildTailStart controls Stop during a deferred start in tests only.

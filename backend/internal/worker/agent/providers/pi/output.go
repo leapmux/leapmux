@@ -89,6 +89,8 @@ type piToolState struct {
 	PartialResult json.RawMessage
 	Description   string
 	Order         uint64
+	rowKey        string
+	resumed       bool
 }
 
 // piExtensionUIRequestHeader captures the routing fields of an
@@ -451,7 +453,7 @@ func (a *Agent) handlePiMessageEnd(raw []byte) {
 	content := a.piMessageEndContent(raw)
 	content.Completion = a.piMessageTextCompletion(raw)
 	// Update child status from the nested custom message before persisting it.
-	piApplySubagentNotification(a.sink, raw)
+	a.applyPiSubagentNotification(raw)
 	a.persistPiThinking(raw)
 	if err := a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
 		slog.Error("pi persist message_end", "agent_id", a.AgentID(), "error", err)
@@ -637,6 +639,10 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 		parent.ToolName != contracts.PiToolAgent && parent.ToolName != contracts.PiToolSubagentWorkflow {
 		parentSpanID = env.ParentToolCallID
 	}
+	initialRowKey := ""
+	if env.ToolName == contracts.PiToolAgent {
+		initialRowKey = env.ToolCallID
+	}
 	a.toolStates[env.ToolCallID] = &piToolState{
 		nested:      parentSpanID != "",
 		ToolName:    env.ToolName,
@@ -644,13 +650,15 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 		StartFrame:  append([]byte(nil), raw...),
 		Description: description,
 		Order:       a.nextToolOrder,
+		rowKey:      initialRowKey,
 	}
 	a.nextToolOrder++
 	a.Mu.Unlock()
 	// The spawn prompt, kept whole for the child transcript's first message.
 	// pi-subagents declares it `prompt` on the nested-agent tool
 	// (src/nested-tools.ts); a non-subagent tool simply has none.
-	if prompt := piExtractPrompt(input); prompt != "" {
+	prompt := piExtractPrompt(input)
+	if prompt != "" {
 		a.toolCallPrompts.Remember(env.ToolCallID, prompt)
 	}
 
@@ -666,9 +674,31 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.AgentID(), "error", err)
 	}
 	if env.ToolName == contracts.PiToolAgent {
+		if resumeID := piExtractResumeID(input); resumeID != "" {
+			childID, status, found, err := a.sink.LookupBackgroundTask(resumeID)
+			if err != nil {
+				slog.Warn("pi resumed subagent lookup failed", "agent_id", a.AgentID(), "resume_id", resumeID, "error", err)
+			} else if found {
+				if status.IsFinished() {
+					providerkit.LogRegistryRefusal("pi", "revive", a.sink.ReviveBackgroundTask(resumeID))
+				}
+				if childID != "" && prompt != "" {
+					if err := a.sink.PersistChildUserMessage(childID, prompt); err != nil {
+						slog.Warn("pi persist resumed subagent prompt failed", "agent_id", a.AgentID(), "row_key", resumeID, "error", err)
+					}
+				}
+				a.Mu.Lock()
+				if tool := a.toolStates[env.ToolCallID]; tool != nil {
+					tool.rowKey = resumeID
+					tool.resumed = true
+				}
+				a.Mu.Unlock()
+				return
+			}
+		}
 		piEnsureSubagentChild(
 			a.sink, env.ToolCallID, env.ToolCallID, env.ToolCallID,
-			description, piExtractPrompt(input),
+			description, prompt,
 		)
 	}
 }
@@ -808,17 +838,36 @@ func (a *Agent) handlePiToolExecutionUpdate(raw []byte) {
 
 	a.Mu.Lock()
 	toolName := env.ToolName
-	if tool := a.toolStates[env.ToolCallID]; tool != nil && tool.ToolName != "" {
-		toolName = tool.ToolName
+	rowKey := env.ToolCallID
+	resumed := false
+	if tool := a.toolStates[env.ToolCallID]; tool != nil {
+		if tool.ToolName != "" {
+			toolName = tool.ToolName
+		}
+		if tool.rowKey != "" {
+			rowKey = tool.rowKey
+		}
+		resumed = tool.resumed
 	}
 	a.Mu.Unlock()
 	// Other extensions also use status fields. Only Agent describes a child here.
 	if toolName == contracts.PiToolAgent {
-		if obs := piSubagentFromDetails(partial.Details, env.ToolCallID, a.toolCallTitle(env.ToolCallID)); obs != nil {
-			if obs.RowKey != env.ToolCallID {
-				if err := a.sink.RenameBackgroundTask(env.ToolCallID, obs.RowKey); err != nil {
+		title := a.toolCallTitle(env.ToolCallID)
+		if resumed {
+			title = ""
+		}
+		if obs := piSubagentFromDetails(partial.Details, rowKey, title); obs != nil {
+			if obs.RowKey != rowKey {
+				if err := a.sink.RenameBackgroundTask(rowKey, obs.RowKey); err != nil {
 					slog.Warn("pi rename active subagent task failed", "agent_id", a.AgentID(), "tool_call", env.ToolCallID, "child_agent_id", obs.RowKey, "error", err)
-					obs.RowKey = env.ToolCallID
+					obs.RowKey = rowKey
+				} else {
+					a.Mu.Lock()
+					if tool := a.toolStates[env.ToolCallID]; tool != nil {
+						tool.rowKey = obs.RowKey
+					}
+					a.Mu.Unlock()
+					a.renameOpenBgTask(rowKey, obs.RowKey)
 				}
 			}
 			if err := a.sink.UpsertBackgroundTask(*obs); err != nil {
@@ -848,8 +897,16 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 	delete(a.toolStates, env.ToolCallID)
 	a.clearPiQuestionToolLocked(env.ToolCallID)
 	title := ""
+	rowKey := env.ToolCallID
+	resumed := false
+	var startArgs json.RawMessage
 	if tool != nil {
 		title = tool.Description
+		if tool.rowKey != "" {
+			rowKey = tool.rowKey
+		}
+		resumed = tool.resumed
+		startArgs = tool.Args
 	}
 	a.Mu.Unlock()
 	a.ClearCumulativeOutput(env.ToolCallID)
@@ -866,29 +923,68 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 	a.reportPiGoalResult(env.ToolName, env.Result)
 
 	prompt := a.toolCallPrompts.Take(env.ToolCallID)
-	if env.ToolName == contracts.PiToolAgent {
-		piApplySubagentEnd(a.sink, env.Result, env.ToolCallID, title, prompt)
-	} else if env.ToolName == contracts.PiToolSubagentWorkflow && !env.IsError {
-		var result struct {
-			Details struct {
-				TaskID string `json:"taskId"`
-			} `json:"details"`
+	switch env.ToolName {
+	case contracts.PiToolAgent:
+		finalKey, stillRunning := piApplySubagentEndState(a.sink, env.Result, env.ToolCallID, rowKey, title, prompt, env.IsError, resumed)
+		if stillRunning {
+			a.trackOpenBgTask(finalKey)
+		} else {
+			a.untrackOpenBgTask(rowKey)
+			a.untrackOpenBgTask(finalKey)
 		}
-		if json.Unmarshal(env.Result, &result) == nil && result.Details.TaskID != "" {
-			logUpsertRefusal(a.sink.UpsertBackgroundTask(bgtask.Upsert{
-				RowKey: result.Details.TaskID, Kind: bgtask.KindSubagent, Title: title, Status: bgtask.StatusRunning,
-			}))
+	case contracts.PiToolSubagentWorkflow:
+		if !env.IsError {
+			var result struct {
+				Details struct {
+					TaskID string `json:"taskId"`
+				} `json:"details"`
+			}
+			if json.Unmarshal(env.Result, &result) == nil && result.Details.TaskID != "" {
+				logUpsertRefusal(a.sink.UpsertBackgroundTask(bgtask.Upsert{
+					RowKey: result.Details.TaskID, Kind: bgtask.KindSubagent, Title: title, Status: bgtask.StatusRunning,
+				}))
+				a.trackOpenBgTask(result.Details.TaskID)
+			}
+		}
+	case piToolGetSubagentResult:
+		args := env.Args
+		if len(args) == 0 {
+			args = startArgs
+		}
+		if closedKey := piApplyGetSubagentResult(a.sink, args, env.Result); closedKey != "" {
+			a.untrackOpenBgTask(closedKey)
 		}
 	}
 }
 
 func (a *Agent) discardIncompletePiTools() {
+	a.discardIncompletePiToolsWithStatus(bgtask.StatusStopped)
+}
+
+func (a *Agent) discardIncompletePiToolsWithStatus(status bgtask.Status) {
 	a.Mu.Lock()
+	var openAgentRows []string
+	for toolCallID, tool := range a.toolStates {
+		if tool != nil && tool.ToolName == contracts.PiToolAgent {
+			rowKey := tool.rowKey
+			if rowKey == "" {
+				rowKey = toolCallID
+			}
+			openAgentRows = append(openAgentRows, rowKey)
+		}
+	}
 	a.clearPiQuestionStateLocked()
 	a.toolStates = nil
 	a.nextToolOrder = 0
 	a.Mu.Unlock()
 	a.toolCallPrompts.Clear()
+	if a.sink == nil {
+		return
+	}
+	for _, rowKey := range openAgentRows {
+		providerkit.LogRegistryRefusal("pi", "close", a.sink.CloseBackgroundTask(rowKey, status))
+		a.untrackOpenBgTask(rowKey)
+	}
 }
 
 // clearStartlessPiTools releases tool_execution_update state and cumulative
@@ -912,8 +1008,9 @@ func (a *Agent) clearStartlessPiTools() {
 }
 
 func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {
+	status := piSubagentStatusForCompletion(completion)
 	if a.IsDiscardingOutput() {
-		a.discardIncompletePiTools()
+		a.discardIncompletePiToolsWithStatus(status)
 		return
 	}
 	a.Mu.Lock()
@@ -950,6 +1047,14 @@ func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {
 		// Otherwise, paths without agent_end retain it for the full process lifetime.
 		a.ClearCumulativeOutput(toolCallID)
 		a.sink.ReportProgress(agent.CompleteOutputProgress(toolCallID))
+		if tool.ToolName == contracts.PiToolAgent {
+			rowKey := tool.rowKey
+			if rowKey == "" {
+				rowKey = toolCallID
+			}
+			providerkit.LogRegistryRefusal("pi", "close", a.sink.CloseBackgroundTask(rowKey, status))
+			a.untrackOpenBgTask(rowKey)
+		}
 		// An agent that never announced the call opened no row and reserved no span.
 		if len(tool.StartFrame) == 0 {
 			continue

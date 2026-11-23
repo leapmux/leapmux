@@ -125,6 +125,31 @@ const (
 	agentRunStatusInterrupted = "interrupted"
 )
 
+// Upstream agent tool action aliases that only the worker interprets.
+const (
+	agentActionSpawn    = "spawn"
+	agentActionRun      = "run"
+	agentActionJoin     = "join"
+	agentActionAwait    = "await"
+	agentActionBlock    = "block"
+	agentActionFollowup = "followup"
+	agentActionFollowUp = "follow_up"
+	agentActionSteer    = "steer"
+)
+
+// workflowJournalEntry is one tagged WorkflowJournalRecord JSONL line written
+// to a workflow run journal. Snapshot lines carry the run state under "run";
+// progress and event lines carry no run status.
+type workflowJournalEntry struct {
+	Kind string              `json:"kind"`
+	Run  *workflowJournalRun `json:"run"`
+}
+
+type workflowJournalRun struct {
+	RunID  string `json:"run_id"`
+	Status string `json:"status"`
+}
+
 // Process environment the worker sets for the runtime.
 const (
 	// envRuntimeToken carries the bearer token. It never reaches argv, where any

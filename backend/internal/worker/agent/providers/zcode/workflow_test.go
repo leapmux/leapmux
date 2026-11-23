@@ -165,8 +165,8 @@ func TestZCodeWorkflowRunsEndTheUnsettledNodesOfAnEndedRun(t *testing.T) {
 	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, upserts[1].Status)
 }
 
-// A removed run ends its own row and every remaining ask row. A removed node
-// writes no more rows.
+// A removed run ends its own row and every remaining ask row. A removed active
+// node closes as stopped and writes no further rows when the run later ends.
 func TestZCodeWorkflowRunsRemoval(t *testing.T) {
 	t.Parallel()
 	runs := newZCodeWorkflowRuns(t)
@@ -177,12 +177,14 @@ func TestZCodeWorkflowRunsRemoval(t *testing.T) {
 	frame := zcodeWorkflowDelta("", nil)
 	frame["payload"].(map[string]any)["deltas"].([]map[string]any)[0]["removedNodes"] = []map[string]any{{"siteId": "ask#2", "ordinal": 1}}
 	upserts, _ := runs.apply(zcodeLogicalFrame(t, frame))
-	assert.Empty(t, upserts)
+	require.Len(t, upserts, 1, "removing an active emitted node must close its row")
+	assert.Equal(t, "create-flow/ask#2#1", upserts[0].RowKey)
+	assert.Equal(t, bgtask.StatusStopped, upserts[0].Status)
 	upserts, ended := runs.apply(zcodeLogicalFrame(t, map[string]any{"payload": map[string]any{"kind": "deltas", "deltas": []map[string]any{
 		{"op": "workflowRun.removed", "runId": zcodeTestRunID, "revision": 3},
 	}}}))
 	assert.True(t, ended)
-	require.Len(t, upserts, 2, "the removed node writes nothing")
+	require.Len(t, upserts, 2, "the removed node writes nothing more when the run ends")
 	assert.Equal(t, "create-flow", upserts[0].RowKey)
 	assert.Equal(t, bgtask.KindWorkflow, upserts[0].Kind)
 	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, upserts[0].Status)

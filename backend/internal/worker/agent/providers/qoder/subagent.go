@@ -19,11 +19,31 @@ import (
 )
 
 const (
-	qoderTaskStarted      = "task_started"
-	qoderTaskNotification = "task_notification"
-	qoderTaskLocalAgent   = "local_agent"
-	qoderWorkflowAgent    = "workflow-subagent"
+	qoderTaskStarted           = "task_started"
+	qoderTaskNotification      = "task_notification"
+	qoderTaskLocalAgent        = "local_agent"
+	qoderTaskLocalBash         = "local_bash"
+	qoderTaskInProcessTeammate = "in_process_teammate"
+	qoderWorkflowAgent         = "workflow-subagent"
 )
+
+// qoderBgTask tracks one non-agent background task (such as local_bash) so
+// task_updated, task_notification, and background_tasks_changed can close it.
+type qoderBgTask struct {
+	rowKey    string
+	toolUseID string
+}
+
+type qoderTaskPatch struct {
+	Status string `json:"status"`
+}
+
+type qoderBackgroundTaskEntry struct {
+	ID        string `json:"id"`
+	TaskID    string `json:"task_id"`
+	ToolUseID string `json:"tool_use_id"`
+	Status    string `json:"status"`
+}
 
 // A workflow key combines the native session ID with the model tool ID.
 // The output loop owns active runs. Archive retries keep the captured key.
@@ -51,16 +71,18 @@ type qoderWorkflowChild struct {
 // Qoder reports one task on the root stream before it forwards child frames.
 // Its tool-use ID also appears on each child as parent_tool_use_id.
 type qoderTaskEvent struct {
-	SessionID    string `json:"session_id"`
-	Subtype      string `json:"subtype"`
-	TaskID       string `json:"task_id"`
-	ToolUseID    string `json:"tool_use_id"`
-	TaskType     string `json:"task_type"`
-	SubagentType string `json:"subagent_type"`
-	Description  string `json:"description"`
-	Prompt       string `json:"prompt"`
-	Status       string `json:"status"`
-	OutputFile   string `json:"output_file"`
+	SessionID    string          `json:"session_id"`
+	Subtype      string          `json:"subtype"`
+	TaskID       string          `json:"task_id"`
+	ToolUseID    string          `json:"tool_use_id"`
+	TaskType     string          `json:"task_type"`
+	SubagentType string          `json:"subagent_type"`
+	Description  string          `json:"description"`
+	Command      string          `json:"command"`
+	Prompt       string          `json:"prompt"`
+	Status       string          `json:"status"`
+	Patch        *qoderTaskPatch `json:"patch"`
+	OutputFile   string          `json:"output_file"`
 	// Replay text requires the canonical archive to prove its final status.
 	requireFinalStatus bool
 }
@@ -94,7 +116,11 @@ func (a *Agent) handleWorkflowReplayCompletion(raw []byte) {
 	event.requireFinalStatus = true
 	key := qoderWorkflowKey{sessionID: frame.SessionID, toolUseID: event.ToolUseID}
 	run := a.workflows[key]
-	if run == nil || run.taskID == "" || run.taskID != event.TaskID || run.runID == "" {
+	if run == nil {
+		a.retryPendingWorkflowArchive(key)
+		return
+	}
+	if run.taskID == "" || run.taskID != event.TaskID || run.runID == "" {
 		return
 	}
 	a.finishWorkflow(&event, run)
@@ -293,31 +319,317 @@ func (a *Agent) handleTaskEvent(raw []byte) bool {
 	}
 	switch event.Subtype {
 	case qoderTaskStarted:
-		if event.TaskType != qoderTaskLocalAgent {
+		switch event.TaskType {
+		case qoderTaskLocalAgent:
+			if event.SubagentType == qoderWorkflowAgent {
+				return a.startWorkflowChild(&event)
+			}
+			if event.TaskID == "" || event.ToolUseID == "" {
+				slog.Warn("qoder child start lacks an identity", "agent_id", a.AgentID())
+				return true
+			}
+			return a.startChildTask(&event, event.ToolUseID, "Subagent")
+		case qoderTaskInProcessTeammate:
+			rowKey := event.ToolUseID
+			if rowKey == "" {
+				rowKey = event.TaskID
+			}
+			if rowKey == "" {
+				slog.Warn("qoder teammate start lacks an identity", "agent_id", a.AgentID())
+				return true
+			}
+			return a.startChildTask(&event, rowKey, "Teammate")
+		case qoderTaskLocalBash:
+			if event.TaskID == "" {
+				return false
+			}
+			return a.startBackgroundShellTask(&event)
+		default:
 			return false
 		}
-		if event.SubagentType == qoderWorkflowAgent {
-			return a.startWorkflowChild(&event)
-		}
-		if event.TaskID == "" || event.ToolUseID == "" {
-			slog.Warn("qoder child start lacks an identity", "agent_id", a.AgentID())
-			return true
-		}
-		return a.startChildTask(&event)
 	case qoderTaskNotification:
-		if event.TaskID == "" || event.ToolUseID == "" {
+		if event.TaskID == "" && event.ToolUseID == "" {
 			return false
 		}
-		key := a.workflowKey(event.SessionID, event.ToolUseID)
-		if run := a.workflows[key]; run != nil {
-			return a.finishWorkflow(&event, run)
+		return a.settleTaskEvent(&event, false)
+	case qoderSubtypeTaskUpdated:
+		if event.Status == "" && event.Patch != nil {
+			event.Status = event.Patch.Status
 		}
-		if a.retryPendingWorkflowArchive(key) || strings.HasPrefix(event.TaskID, "wf-") {
+		if _, ok := qoderFinalChildStatus(event.Status); !ok {
 			return true
 		}
-		return a.finishChildTask(&event)
+		a.settleTaskEvent(&event, true)
+		return true
+	case qoderSubtypeBackgroundTasksChanged:
+		a.handleBackgroundTasksChanged(raw)
+		return true
 	default:
 		return false
+	}
+}
+
+func (a *Agent) startBackgroundShellTask(event *qoderTaskEvent) bool {
+	title := bgtask.FirstLine(event.Description)
+	titleIsCommand := false
+	if title == "" && event.Command != "" {
+		title = bgtask.FirstLine(event.Command)
+		titleIsCommand = true
+	}
+	if title == "" {
+		title = bgtask.FirstLine(event.Prompt)
+	}
+	if title == "" {
+		title = "Background shell"
+	}
+	rowKey := event.TaskID
+	a.mu.Lock()
+	if a.bgTasks == nil {
+		a.bgTasks = make(map[string]qoderBgTask)
+	}
+	a.bgTasks[event.TaskID] = qoderBgTask{
+		rowKey:    rowKey,
+		toolUseID: event.ToolUseID,
+	}
+	a.mu.Unlock()
+	providerkit.LogRegistryRefusal("qoder", "start background shell", a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:         rowKey,
+		Kind:           bgtask.KindShell,
+		Title:          title,
+		TitleIsCommand: titleIsCommand,
+		Status:         bgtask.StatusRunning,
+	}))
+	return true
+}
+
+func (a *Agent) settleTaskEvent(event *qoderTaskEvent, fromUpdate bool) bool {
+	if closed, handled := a.closeTrackedBgTask(event); handled {
+		return closed
+	}
+	if event.ToolUseID == "" && event.TaskID != "" {
+		a.resolveToolUseIDByTaskID(event)
+	}
+	if event.ToolUseID == "" {
+		if strings.HasPrefix(event.TaskID, "wf-") {
+			return true
+		}
+		return fromUpdate
+	}
+	key := a.workflowKey(event.SessionID, event.ToolUseID)
+	if run := a.workflows[key]; run != nil {
+		return a.finishWorkflow(event, run)
+	}
+	if a.retryPendingWorkflowArchive(key) || strings.HasPrefix(event.TaskID, "wf-") {
+		return true
+	}
+	return a.finishChildTask(event)
+}
+
+func (a *Agent) closeTrackedBgTask(event *qoderTaskEvent) (bool, bool) {
+	a.mu.Lock()
+	var (
+		bg     qoderBgTask
+		taskID string
+		found  bool
+	)
+	if event.TaskID != "" {
+		bg, found = a.bgTasks[event.TaskID]
+		taskID = event.TaskID
+	} else if event.ToolUseID != "" {
+		for id, entry := range a.bgTasks {
+			if entry.toolUseID == event.ToolUseID {
+				bg, taskID, found = entry, id, true
+				break
+			}
+		}
+	}
+	if !found {
+		a.mu.Unlock()
+		return false, false
+	}
+	status, ok := qoderFinalChildStatus(event.Status)
+	if !ok {
+		a.mu.Unlock()
+		slog.Warn("qoder background task status is unknown", "agent_id", a.AgentID(), "status", event.Status)
+		return true, true
+	}
+	delete(a.bgTasks, taskID)
+	a.mu.Unlock()
+	providerkit.LogRegistryRefusal("qoder", "close background task", a.sink.CloseBackgroundTask(bg.rowKey, status))
+	return true, true
+}
+
+func (a *Agent) resolveToolUseIDByTaskID(event *qoderTaskEvent) {
+	a.mu.Lock()
+	for rowKey, taskID := range a.childTaskIDs {
+		if taskID == event.TaskID {
+			event.ToolUseID = rowKey
+			a.mu.Unlock()
+			return
+		}
+	}
+	sessionID := event.SessionID
+	if sessionID == "" {
+		sessionID = a.sessionID
+	}
+	a.mu.Unlock()
+
+	var fallbackKey qoderWorkflowKey
+	for key, run := range a.workflows {
+		if run.taskID != event.TaskID {
+			continue
+		}
+		if key.sessionID == sessionID {
+			event.ToolUseID = key.toolUseID
+			event.SessionID = key.sessionID
+			return
+		}
+		if fallbackKey.toolUseID == "" {
+			fallbackKey = key
+		}
+	}
+	if fallbackKey.toolUseID != "" {
+		event.ToolUseID = fallbackKey.toolUseID
+		event.SessionID = fallbackKey.sessionID
+		return
+	}
+
+	a.archiveMu.Lock()
+	for key, job := range a.archiveJobs {
+		if job.run.taskID != event.TaskID {
+			continue
+		}
+		if key.sessionID == sessionID {
+			event.ToolUseID = key.toolUseID
+			event.SessionID = key.sessionID
+			a.archiveMu.Unlock()
+			return
+		}
+		if fallbackKey.toolUseID == "" {
+			fallbackKey = key
+		}
+	}
+	a.archiveMu.Unlock()
+	if fallbackKey.toolUseID != "" {
+		event.ToolUseID = fallbackKey.toolUseID
+		event.SessionID = fallbackKey.sessionID
+	}
+}
+
+func (a *Agent) handleBackgroundTasksChanged(raw []byte) {
+	var frame struct {
+		Tasks           json.RawMessage `json:"tasks"`
+		BackgroundTasks json.RawMessage `json:"background_tasks"`
+	}
+	if json.Unmarshal(raw, &frame) != nil {
+		return
+	}
+	tasksRaw := frame.Tasks
+	if !providerkit.RawPresent(tasksRaw) {
+		tasksRaw = frame.BackgroundTasks
+	}
+	if !providerkit.RawPresent(tasksRaw) {
+		return
+	}
+	var entries []qoderBackgroundTaskEntry
+	if json.Unmarshal(tasksRaw, &entries) != nil {
+		return
+	}
+	reportedActive := make(map[string]bool, len(entries))
+	reportedFinal := make(map[string]bgtask.Status)
+	reportedFinalRaw := make(map[string]string)
+	for _, entry := range entries {
+		id := entry.TaskID
+		if id == "" {
+			id = entry.ID
+		}
+		if status, final := qoderFinalChildStatus(entry.Status); final {
+			if id != "" {
+				reportedFinal[id] = status
+				reportedFinalRaw[id] = entry.Status
+			}
+			if entry.ToolUseID != "" {
+				reportedFinal[entry.ToolUseID] = status
+				reportedFinalRaw[entry.ToolUseID] = entry.Status
+			}
+			continue
+		}
+		if id != "" {
+			reportedActive[id] = true
+		}
+		if entry.ToolUseID != "" {
+			reportedActive[entry.ToolUseID] = true
+		}
+	}
+
+	type pendingClose struct {
+		rowKey string
+		status bgtask.Status
+	}
+	var bgCloses []pendingClose
+	var childCloses []pendingClose
+	a.mu.Lock()
+	for taskID, bg := range a.bgTasks {
+		if status, final := reportedFinal[taskID]; final {
+			bgCloses = append(bgCloses, pendingClose{rowKey: bg.rowKey, status: status})
+			delete(a.bgTasks, taskID)
+		} else if bg.toolUseID != "" {
+			if status, final := reportedFinal[bg.toolUseID]; final {
+				bgCloses = append(bgCloses, pendingClose{rowKey: bg.rowKey, status: status})
+				delete(a.bgTasks, taskID)
+			} else if !reportedActive[taskID] && !reportedActive[bg.toolUseID] {
+				bgCloses = append(bgCloses, pendingClose{rowKey: bg.rowKey, status: bgtask.StatusEndedWithUnknownOutcome})
+				delete(a.bgTasks, taskID)
+			}
+		} else if !reportedActive[taskID] {
+			bgCloses = append(bgCloses, pendingClose{rowKey: bg.rowKey, status: bgtask.StatusEndedWithUnknownOutcome})
+			delete(a.bgTasks, taskID)
+		}
+	}
+	for rowKey, taskID := range a.childTaskIDs {
+		if status, final := reportedFinal[taskID]; final {
+			childCloses = append(childCloses, pendingClose{rowKey: rowKey, status: status})
+			delete(a.childTaskIDs, rowKey)
+		} else if status, final := reportedFinal[rowKey]; final {
+			childCloses = append(childCloses, pendingClose{rowKey: rowKey, status: status})
+			delete(a.childTaskIDs, rowKey)
+		} else if !reportedActive[taskID] && !reportedActive[rowKey] {
+			childCloses = append(childCloses, pendingClose{rowKey: rowKey, status: bgtask.StatusEndedWithUnknownOutcome})
+			delete(a.childTaskIDs, rowKey)
+		}
+	}
+	a.mu.Unlock()
+
+	for _, item := range bgCloses {
+		providerkit.LogRegistryRefusal("qoder", "close background task", a.sink.CloseBackgroundTask(item.rowKey, item.status))
+	}
+	for _, item := range childCloses {
+		a.closeChildTaskRow(item.rowKey, item.status)
+	}
+	type workflowClose struct {
+		run    *qoderWorkflowRun
+		status string
+	}
+	var workflowCloses []workflowClose
+	for _, run := range a.workflows {
+		if run.taskID != "" {
+			if rawStatus, final := reportedFinalRaw[run.taskID]; final {
+				workflowCloses = append(workflowCloses, workflowClose{run: run, status: rawStatus})
+				continue
+			}
+		}
+		if rawStatus, final := reportedFinalRaw[run.key.toolUseID]; final {
+			workflowCloses = append(workflowCloses, workflowClose{run: run, status: rawStatus})
+		}
+	}
+	for _, item := range workflowCloses {
+		a.finishWorkflow(&qoderTaskEvent{
+			SessionID: item.run.key.sessionID,
+			Subtype:   qoderSubtypeBackgroundTasksChanged,
+			TaskID:    item.run.taskID,
+			ToolUseID: item.run.key.toolUseID,
+			Status:    item.status,
+		}, item.run)
 	}
 }
 
@@ -368,6 +680,10 @@ func (a *Agent) finishWorkflow(event *qoderTaskEvent, run *qoderWorkflowRun) boo
 	if err != nil {
 		slog.Warn("qoder workflow archive unavailable", "agent_id", a.AgentID(), "error", err)
 		if event.requireFinalStatus {
+			if errors.Is(err, errQoderArchiveIncomplete) {
+				delete(a.workflows, run.key)
+				a.startWorkflowArchiveRetry(*event, run, status)
+			}
 			return true
 		}
 		if errors.Is(err, errQoderArchiveIncomplete) {
@@ -465,32 +781,34 @@ func (a *Agent) closeWorkflowWithoutArchive(run *qoderWorkflowRun, status bgtask
 	a.reportWorkflowArchiveFailure(readErr)
 }
 
-func (a *Agent) startChildTask(event *qoderTaskEvent) bool {
+func (a *Agent) startChildTask(event *qoderTaskEvent, rowKey, fallbackTitle string) bool {
 	title := event.Description
 	if title == "" {
-		title = "Subagent"
+		title = fallbackTitle
 	}
 	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildTask,
 
-		SpawnSpanID: event.ToolUseID, ProviderChildKey: event.ToolUseID, Title: title,
+		SpawnSpanID: rowKey, ProviderChildKey: rowKey, Title: title,
 		Options: optionmap.Map{qoderOptionChildKind: qoderChildKindTask},
 	})
 	if err != nil {
 		providerkit.LogRegistryRefusal("qoder", "open child", err)
 		return true
 	}
-	a.mu.Lock()
-	if a.childTaskIDs == nil {
-		a.childTaskIDs = make(map[string]string)
+	if event.TaskID != "" {
+		a.mu.Lock()
+		if a.childTaskIDs == nil {
+			a.childTaskIDs = make(map[string]string)
+		}
+		a.childTaskIDs[rowKey] = event.TaskID
+		a.mu.Unlock()
 	}
-	a.childTaskIDs[event.ToolUseID] = event.TaskID
-	a.mu.Unlock()
 	if err := a.sink.PersistChildPrompt(childID, event.Prompt); err != nil {
 		slog.Error("qoder persist child prompt", "agent_id", a.AgentID(), "error", err)
 	}
 	providerkit.LogRegistryRefusal("qoder", "start child", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey:       event.ToolUseID,
+		RowKey:       rowKey,
 		Kind:         bgtask.KindSubagent,
 		ChildAgentID: childID,
 		Title:        title,
@@ -534,7 +852,7 @@ func qoderFinalChildStatus(status string) (bgtask.Status, bool) {
 		return bgtask.StatusSucceeded, true
 	case "failed":
 		return bgtask.StatusFailed, true
-	case "stopped", "cancelled":
+	case "stopped", "cancelled", "killed":
 		return bgtask.StatusStopped, true
 	default:
 		return bgtask.StatusUnspecified, false
@@ -542,7 +860,7 @@ func qoderFinalChildStatus(status string) (bgtask.Status, bool) {
 }
 
 func (a *Agent) finishChildTask(event *qoderTaskEvent) bool {
-	childID, _, found, err := a.sink.LookupBackgroundTask(event.ToolUseID)
+	childID, existingStatus, found, err := a.sink.LookupBackgroundTask(event.ToolUseID)
 	if err != nil {
 		providerkit.LogRegistryRefusal("qoder", "find finished child", err)
 		return true
@@ -555,9 +873,30 @@ func (a *Agent) finishChildTask(event *qoderTaskEvent) bool {
 		slog.Warn("qoder child status is unknown", "agent_id", a.AgentID(), "status", event.Status)
 		return true
 	}
+	a.finishResolvedChild(event.ToolUseID, childID, existingStatus, status)
+	return true
+}
+
+func (a *Agent) closeChildTaskRow(rowKey string, status bgtask.Status) bool {
+	childID, existingStatus, found, err := a.sink.LookupBackgroundTask(rowKey)
+	if err != nil {
+		providerkit.LogRegistryRefusal("qoder", "find finished child", err)
+		return true
+	}
+	if !found || childID == "" {
+		return false
+	}
+	a.finishResolvedChild(rowKey, childID, existingStatus, status)
+	return true
+}
+
+func (a *Agent) finishResolvedChild(rowKey, childID string, existingStatus, status bgtask.Status) {
 	a.mu.Lock()
-	delete(a.childTaskIDs, event.ToolUseID)
+	delete(a.childTaskIDs, rowKey)
 	a.mu.Unlock()
+	if existingStatus.IsFinished() {
+		return
+	}
 	childSink := a.sink.ChildSink(childID)
 	if status == bgtask.StatusStopped || status == bgtask.StatusFailed {
 		toolCompletion := agent.MessageCompletionError
@@ -570,13 +909,12 @@ func (a *Agent) finishChildTask(event *qoderTaskEvent) bool {
 	a.toolMu.Lock()
 	delete(a.childTools, childID)
 	a.toolMu.Unlock()
-	a.finishNotifications(childSink, event.ToolUseID, status == bgtask.StatusStopped)
-	if err := a.sink.CloseBackgroundTask(event.ToolUseID, status); err != nil {
+	a.finishNotifications(childSink, rowKey, status == bgtask.StatusStopped)
+	if err := a.sink.CloseBackgroundTask(rowKey, status); err != nil {
 		providerkit.LogRegistryRefusal("qoder", "close child", err)
 	}
-	a.clearChildStream(event.ToolUseID)
+	a.clearChildStream(rowKey)
 	a.sink.CleanupChildAgent(childID)
-	return true
 }
 
 // routeChildFrame keeps every known forwarded message out of the root tab.

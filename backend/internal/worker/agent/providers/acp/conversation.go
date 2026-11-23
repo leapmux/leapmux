@@ -310,11 +310,11 @@ func (c *conversation) completeToolOutput(toolCallID string) {
 	}
 }
 
-func (c *conversation) rememberToolSubagentRow(toolCallID string, obs *SubagentObservation) {
-	if toolCallID == "" || obs == nil || obs.RowKey == "" || obs.CloseRow {
+func (c *conversation) rememberToolSubagentRow(toolCallID, rowKey string, obs *SubagentObservation) {
+	if toolCallID == "" || rowKey == "" || obs == nil || obs.CloseRow || obs.Status.IsFinished() {
 		return
 	}
-	c.out.rememberSubagentRow(toolCallID, obs.RowKey)
+	c.out.rememberSubagentRow(toolCallID, rowKey)
 }
 
 func (c *conversation) handleToolCall(update json.RawMessage) {
@@ -341,7 +341,8 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 	// Claim before invoking provider hooks so duplicate inline-final frames do
 	// not mutate hook state or retain toolSubagentRows entries.
 	if StatusIsFinal(tc.Status) {
-		if !c.out.claimFinalTool(tc.ToolCallID) {
+		prevRowKey, claimed := c.out.claimFinalTool(tc.ToolCallID)
+		if !claimed {
 			return
 		}
 		var obs *SubagentObservation
@@ -350,7 +351,21 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 		}
 		opened := sink.GetSpanType(tc.ToolCallID) != ""
 		c.completeToolOutput(tc.ToolCallID)
-		c.applySubagentObservation(obs)
+		finalObs := obs
+		if finalObs != nil && !finalObs.CloseRow && !finalObs.Status.IsFinished() {
+			cloned := *finalObs
+			cloned.Status = FinalStatus(tc.Status)
+			cloned.CloseRow = true
+			finalObs = &cloned
+		} else if finalObs == nil && prevRowKey != "" {
+			finalObs = &SubagentObservation{
+				RowKey:   prevRowKey,
+				Status:   FinalStatus(tc.Status),
+				CloseRow: true,
+				Mode:     ModeCloseOnly,
+			}
+		}
+		c.applySubagentObservation(finalObs)
 		if err := writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
@@ -368,7 +383,6 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 	if c.b.hooks.SubagentFromToolCall != nil {
 		obs = c.b.hooks.SubagentFromToolCall(tc)
 	}
-	c.rememberToolSubagentRow(tc.ToolCallID, obs)
 	c.rememberIncompleteTool(tc.ToolCallID, update, target)
 
 	// A subagent spawn owns no span: its output lands in its own child
@@ -382,7 +396,8 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 	} else {
 		c.rememberToolRequest(tc.ToolCallID, update, receipt, target)
 	}
-	c.applySubagentObservation(obs)
+	rowKey := c.applySubagentObservation(obs)
+	c.rememberToolSubagentRow(tc.ToolCallID, rowKey, obs)
 }
 
 // rememberIncompleteTool retains a tool call that opened but has not ended.
@@ -473,8 +488,8 @@ func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
 	// Kilo final updates close on the final-status branch below.
 	if c.b.hooks.SubagentFromToolCallUpdate != nil {
 		if obs := c.b.hooks.SubagentFromToolCallUpdate(tcu); obs != nil {
-			c.rememberToolSubagentRow(tcu.ToolCallID, obs)
-			c.applySubagentObservation(obs)
+			rowKey := c.applySubagentObservation(obs)
+			c.rememberToolSubagentRow(tcu.ToolCallID, rowKey, obs)
 			// A spawn recognized only HERE already opened a span at its
 			// tool_call, so give that span back now. Kilo is why: it opens the
 			// spawn with `rawInput: {}` and fills the spawn shape only on the
@@ -518,7 +533,7 @@ func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
 		// dropped earlier bytes.
 		sink.ReportProgress(agent.OutputTailProgress(tcu.ToolCallID, full, limited))
 	case "completed", "failed", "cancelled":
-		if !c.out.claimFinalTool(tcu.ToolCallID) {
+		if _, claimed := c.out.claimFinalTool(tcu.ToolCallID); !claimed {
 			return
 		}
 		c.completeToolOutput(tcu.ToolCallID)
@@ -560,21 +575,22 @@ func (c *conversation) handlePlan(update json.RawMessage) {
 // The child agent is created through the sink of THIS conversation, so a
 // subagent that a subagent spawns becomes a child of that subagent. Every
 // registry write reaches the root owner whichever sink makes it.
-func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
+func (c *conversation) applySubagentObservation(obs *SubagentObservation) string {
 	sink := c.sink()
 	if obs == nil || obs.RowKey == "" || sink == nil {
-		return
+		return ""
 	}
 	b := c.b
 	if obs.RegistryOnly {
 		if err := c.applyRegistryObservation(obs); err != nil {
 			slog.Warn("admit ACP registry observation", "provider", b.ProviderName(), "row_key", obs.RowKey, "error", err)
+			return ""
 		}
-		return
+		return obs.RowKey
 	}
 	if obs.CloseRow && !obs.Status.IsFinished() {
 		slog.Warn("refuse ACP registry close with a nonfinal status", "provider", b.ProviderName(), "row_key", obs.RowKey, "status", obs.Status)
-		return
+		return ""
 	}
 	final := obs.CloseRow || obs.Status.IsFinished()
 	// A refused row requires explicit successful validation before any observation write.
@@ -584,17 +600,18 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		b.refuseChild(obs.RowKey)
 		b.refuseChild(obs.RenameFrom)
 		if obs.ChildAgentKey == "" {
-			return
+			return ""
 		}
 		var err error
 		childAgentID, err = c.resolveObservedChild(obs)
 		if err != nil || childAgentID == "" {
-			return
+			return ""
 		}
 		validated = true
 	}
 	rowKey := obs.RowKey
 	promptKey := obs.RowKey
+	deferredRename := false
 	// Rename an ordinary spawn before resolution so native final updates attach to one row.
 	// A known refusal requires validation first and cannot authorize a rename by itself.
 	if obs.RenameFrom != "" && obs.RenameFrom != obs.RowKey {
@@ -604,23 +621,43 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 			// Keep all later work on the row that still exists. Creating a child
 			// under the new key after a failed rename would split one task in two.
 			rowKey = obs.RenameFrom
+		} else if obs.ReviveRow && !final {
+			// Defer renameChildConversation until ReviveBackgroundTask succeeds so
+			// b.children.closed[obs.RowKey] stays intact if revival fails.
+			b.openRows.closed(obs.RenameFrom)
+			deferredRename = true
 		} else {
 			b.renameChildConversation(obs.RenameFrom, obs.RowKey)
 			b.openRows.renamed(obs.RenameFrom, obs.RowKey)
+		}
+	}
+	revived := false
+	if obs.ReviveRow && !final && rowKey == obs.RowKey {
+		if err := sink.ReviveBackgroundTask(rowKey); err != nil {
+			providerkit.LogRegistryRefusal("acp", "revive subagent", err)
+			return ""
+		}
+		revived = true
+		if deferredRename {
+			b.renameChildConversation(obs.RenameFrom, obs.RowKey)
 		}
 	}
 	if !validated && (obs.ChildAgentKey != "" || obs.ChildSpawnSpanID != "") && rowKey == obs.RowKey {
 		var err error
 		childAgentID, err = c.resolveObservedChild(obs)
 		if errors.Is(err, agent.ErrChildIdentityRefused) {
-			return
+			return ""
 		}
 	}
 	if childAgentID != "" {
 		b.rememberChildAgent(rowKey, childAgentID, sink)
 	}
+	if revived {
+		b.reopenChildRoute(rowKey)
+		b.openRows.opened(rowKey)
+	}
 	if b.childIdentityRefused(rowKey) {
-		return
+		return ""
 	}
 	if obs.Prompt != "" {
 		b.subagentPrompts.Remember(obs.RowKey, obs.Prompt)
@@ -635,8 +672,9 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		}
 	}
 	// A rename+close operates on the existing spawn row. It skips the upsert
-	// because the rename already preserved the row's fields.
-	if obs.Mode != ModeCloseOnly && obs.RenameFrom == "" {
+	// because the rename already preserved the row's fields. A rename+revive
+	// still upserts the revived fields onto obs.RowKey.
+	if obs.Mode != ModeCloseOnly && (obs.RenameFrom == "" || revived) {
 		if !final {
 			if err := sink.UpsertBackgroundTask(registryObservationUpsert(*obs, rowKey, childAgentID, c.agentID())); err != nil {
 				slog.Warn("acp subagent upsert failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
@@ -679,7 +717,7 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		}
 	}
 	if b.childIdentityRefused(rowKey) {
-		return
+		return ""
 	}
 	if obs.CloseRow {
 		// Flush buffered native child rows before the report and registry completion.
@@ -687,7 +725,7 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		b.finishChildConversation(rowKey, obs.Status)
 	}
 	if b.childIdentityRefused(rowKey) {
-		return
+		return ""
 	}
 	if obs.Report.Text != "" {
 		if lookupOK && childAgentID != "" {
@@ -708,12 +746,12 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		}
 		if err := c.appendFinalRegistryObservation(rowKey, *obs, childAgentID, cleanup); err != nil {
 			slog.Warn("admit final ACP registry observation", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
-			return
+			return ""
 		}
 	}
 	if obs.CloseRow {
 		if b.childIdentityRefused(rowKey) {
-			return
+			return ""
 		}
 		// The row is over, so an unspent prompt has no transcript left to open.
 		//
@@ -730,6 +768,7 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 		// The admitted batch retains the exact native outcome and cleanup parent.
 		b.forgetChild(rowKey)
 	}
+	return rowKey
 }
 
 // resolveObservedChild validates one native child through its creating delegate.

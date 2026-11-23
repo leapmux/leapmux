@@ -48,10 +48,34 @@ const grokWorkflowRowPrefix = "workflow:"
 // grokTaskRowPrefix keys the registry row of one background shell command.
 const grokTaskRowPrefix = "task:"
 
+// Additional Grok spawn tool names observed across builds.
+const (
+	grokToolTask      = "task"
+	grokToolTaskTitle = "Task"
+	grokToolAgent     = "Agent"
+)
+
+func isGrokSpawnTool(name string) bool {
+	switch name {
+	case contracts.GrokToolSpawnSubagent, grokToolTask, grokToolTaskTitle, grokToolAgent:
+		return true
+	default:
+		return false
+	}
+}
+
 // pendingSpawn is one spawn tool call that still waits for its child session.
 type pendingSpawn struct {
-	toolCallID  string
-	description string
+	toolCallID   string
+	description  string
+	subagentType string
+}
+
+// grokEarlyFinish buffers a subagent_finished notification that arrived before
+// the matching background tool_call_update or subagent_spawned frame.
+type grokEarlyFinish struct {
+	status bgtask.Status
+	report string
 }
 
 // childState is what links Grok's child sessions to LeapMux's registry rows.
@@ -66,6 +90,15 @@ type childState struct {
 	// backgroundSpawns maps the subagent id a background spawn announced to
 	// the tool call that spawned it.
 	backgroundSpawns map[string]string
+	// earlyFinished buffers subagent_finished outcomes for subagents not yet
+	// linked through backgroundSpawns or subagent_spawned.
+	earlyFinished map[string]grokEarlyFinish
+	// finishedRowKeys retains subagent_id -> rowKey after completion so a later
+	// wake revives the original registry row instead of creating a duplicate.
+	finishedRowKeys map[string]string
+	// settledBeforeSpawn marks subagent IDs settled via earlyFinished during a
+	// background tool_call_update before their initial subagent_spawned arrived.
+	settledBeforeSpawn map[string]bool
 	// subagents maps the id of each subagent that runs to its registry row and
 	// its child session. subagentByRow and subagentBySession map back to the
 	// id: a stop reaches Grok under the id, and the end of a turn in the child
@@ -76,6 +109,9 @@ type childState struct {
 	subagentBySession map[string]string
 	// workflows maps a workflow run id to its name, the label of its group.
 	workflows map[string]string
+	// finishedWorkflows tracks workflow run IDs whose row reached a finished
+	// status so a subsequent transition back to working revives the row.
+	finishedWorkflows map[string]bool
 	// interrupted records the subagents this process stopped through
 	// InterruptChild. A cancel we asked for is a USER interrupt, so the closing
 	// row reports StatusInterrupted and the divider reads "Subagent
@@ -142,6 +178,18 @@ func (c *childState) takeInterrupted(subagentID string) bool {
 	return true
 }
 
+// rememberFinishedRowKeyLocked retains the subagent's registry row key for
+// subsequent wake reuse. Caller must hold stateMu.
+func (c *childState) rememberFinishedRowKeyLocked(subagentID, rowKey string) {
+	if subagentID == "" || rowKey == "" {
+		return
+	}
+	if c.finishedRowKeys == nil {
+		c.finishedRowKeys = make(map[string]string)
+	}
+	c.finishedRowKeys[subagentID] = rowKey
+}
+
 // grokToolMeta is the part of a tool call's `_meta["x.ai/tool"]` that LeapMux reads.
 type grokToolMeta struct {
 	Name string `json:"name"`
@@ -165,8 +213,9 @@ func grokToolOf(meta json.RawMessage) (grokToolMeta, bool) {
 // first tool_call carries the model's own arguments. Whether the child runs in
 // the background is read from the spawn's result, not from these arguments.
 type grokSpawnInput struct {
-	Prompt      string `json:"prompt"`
-	Description string `json:"description"`
+	Prompt       string `json:"prompt"`
+	Description  string `json:"description"`
+	SubagentType string `json:"subagent_type"`
 }
 
 // subagentFromToolCall claims a spawn at its first frame. The row and the child
@@ -174,19 +223,28 @@ type grokSpawnInput struct {
 // prompt before the child says anything.
 func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
 	tool, ok := grokToolOf(tc.Meta)
-	if !ok || tool.Name != contracts.GrokToolSpawnSubagent {
+	if !ok || !isGrokSpawnTool(tool.Name) {
 		return nil
 	}
 	var input grokSpawnInput
 	_ = json.Unmarshal(tc.RawInput, &input)
-	title := strings.TrimSpace(input.Description)
+	desc := strings.TrimSpace(input.Description)
+	subagentType := strings.TrimSpace(input.SubagentType)
 	a.stateMu.Lock()
 	if a.children.spawnTools == nil {
 		a.children.spawnTools = make(map[string]bool)
 	}
 	a.children.spawnTools[tc.ToolCallID] = true
-	a.children.pending = append(a.children.pending, pendingSpawn{toolCallID: tc.ToolCallID, description: title})
+	a.children.pending = append(a.children.pending, pendingSpawn{
+		toolCallID:   tc.ToolCallID,
+		description:  desc,
+		subagentType: subagentType,
+	})
 	a.stateMu.Unlock()
+	title := desc
+	if title == "" {
+		title = subagentType
+	}
 	if title == "" {
 		title = "Grok subagent"
 	}
@@ -229,12 +287,30 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 			text = acp.ToolCallText(tcu.Content)
 		}
 		if match := grokBackgroundSpawnID.FindStringSubmatch(text); match != nil {
+			subagentID := match[1]
 			a.stateMu.Lock()
 			a.dropPendingLocked(tcu.ToolCallID)
+			if early, hasEarly := a.children.earlyFinished[subagentID]; hasEarly {
+				delete(a.children.earlyFinished, subagentID)
+				a.children.rememberFinishedRowKeyLocked(subagentID, tcu.ToolCallID)
+				if a.children.settledBeforeSpawn == nil {
+					a.children.settledBeforeSpawn = make(map[string]bool)
+				}
+				a.children.settledBeforeSpawn[subagentID] = true
+				a.stateMu.Unlock()
+				return &acp.SubagentObservation{
+					RowKey:   tcu.ToolCallID,
+					Status:   early.status,
+					CloseRow: true,
+					Mode:     acp.ModeCloseOnly,
+					ReportID: subagentID,
+					Report:   agent.SubagentReport{Text: early.report},
+				}
+			}
 			if a.children.backgroundSpawns == nil {
 				a.children.backgroundSpawns = make(map[string]string)
 			}
-			a.children.backgroundSpawns[match[1]] = tcu.ToolCallID
+			a.children.backgroundSpawns[subagentID] = tcu.ToolCallID
 			a.stateMu.Unlock()
 			return nil
 		}
@@ -279,10 +355,38 @@ type grokSubagentSpawned struct {
 	Description    string `json:"description"`
 	WorkflowRunID  string `json:"workflow_run_id"`
 	AgentAddress   string `json:"agentAddress"`
+	WakeOrigin     string `json:"wake_origin"`
 }
 
-// handleSubagentSpawned links a child session to its registry row, and opens
-// a row for a child that no tool call spawned.
+func (a *Agent) takePendingSpawnLocked(rawDesc, subagentType string) (string, bool) {
+	if rawDesc != "" {
+		for i, spawn := range a.children.pending {
+			if spawn.description == rawDesc {
+				a.children.pending = append(a.children.pending[:i], a.children.pending[i+1:]...)
+				return spawn.toolCallID, true
+			}
+		}
+		return "", false
+	}
+	if subagentType != "" {
+		for i, spawn := range a.children.pending {
+			if spawn.description == "" && spawn.subagentType == subagentType {
+				a.children.pending = append(a.children.pending[:i], a.children.pending[i+1:]...)
+				return spawn.toolCallID, true
+			}
+		}
+	}
+	for i, spawn := range a.children.pending {
+		if spawn.description == "" {
+			a.children.pending = append(a.children.pending[:i], a.children.pending[i+1:]...)
+			return spawn.toolCallID, true
+		}
+	}
+	return "", false
+}
+
+// handleSubagentSpawned links a child session to its registry row, opens a row
+// for a child that no tool call spawned, and revives a finished row on wake.
 func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessage) {
 	if rootSessionID == "" || !a.IsCurrentSession(rootSessionID) {
 		return
@@ -296,39 +400,80 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 	if childSession == "" {
 		childSession = spawned.SubagentID
 	}
-	title := strings.TrimSpace(spawned.Description)
+	rawDesc := strings.TrimSpace(spawned.Description)
+	subagentType := strings.TrimSpace(spawned.SubagentType)
+	title := rawDesc
 	if title == "" {
-		title = spawned.SubagentType
+		title = subagentType
 	}
+	wakeOrigin := strings.TrimSpace(spawned.WakeOrigin)
 
 	a.stateMu.Lock()
+	if a.children.settledBeforeSpawn[spawned.SubagentID] && wakeOrigin == "" {
+		delete(a.children.settledBeforeSpawn, spawned.SubagentID)
+		a.stateMu.Unlock()
+		return
+	}
+	delete(a.children.settledBeforeSpawn, spawned.SubagentID)
+
+	revive := false
 	rowKey, linked := a.children.backgroundSpawns[spawned.SubagentID]
 	if linked {
 		delete(a.children.backgroundSpawns, spawned.SubagentID)
+	} else if prevRowKey, wasFinished := a.children.finishedRowKeys[spawned.SubagentID]; wasFinished {
+		delete(a.children.finishedRowKeys, spawned.SubagentID)
+		rowKey, linked, revive = prevRowKey, true, true
 	} else if spawned.WorkflowRunID == "" {
-		for i, spawn := range a.children.pending {
-			if spawn.description == title {
-				rowKey, linked = spawn.toolCallID, true
-				a.children.pending = append(a.children.pending[:i], a.children.pending[i+1:]...)
-				break
-			}
-		}
+		rowKey, linked = a.takePendingSpawnLocked(rawDesc, subagentType)
 	}
 	if !linked {
 		rowKey = spawned.SubagentID
 	}
 	groupLabel := a.children.workflows[spawned.WorkflowRunID]
+	if early, hasEarly := a.children.earlyFinished[spawned.SubagentID]; hasEarly {
+		delete(a.children.earlyFinished, spawned.SubagentID)
+		a.children.rememberFinishedRowKeyLocked(spawned.SubagentID, rowKey)
+		a.stateMu.Unlock()
+		if !linked {
+			obs := &acp.SubagentObservation{
+				RowKey:        rowKey,
+				ChildAgentKey: rowKey,
+				Title:         title,
+				Status:        bgtask.StatusRunning,
+			}
+			if spawned.WorkflowRunID != "" {
+				obs.GroupKey = spawned.WorkflowRunID
+				obs.GroupLabel = groupLabel
+			}
+			a.ApplySubagentObservation(obs)
+		}
+		a.ApplySubagentObservation(&acp.SubagentObservation{
+			RowKey:   rowKey,
+			Status:   early.status,
+			CloseRow: true,
+			Mode:     acp.ModeCloseOnly,
+			ReportID: spawned.SubagentID,
+			Report:   agent.SubagentReport{Text: early.report},
+		})
+		return
+	}
 	a.children.link(spawned.SubagentID, linkedSubagent{rootSessionID: rootSessionID, rowKey: rowKey, childSession: childSession, agentAddress: spawned.AgentAddress})
 	a.stateMu.Unlock()
 
-	if !linked {
-		// A child with no spawn tool call opens its own row and transcript. The
-		// subagent id stands in for the spawn span, which no row holds.
+	if !revive && !linked && a.Sink() != nil {
+		if _, existingStatus, found, err := a.Sink().LookupBackgroundTask(rowKey); err == nil && found && existingStatus.IsFinished() {
+			revive = true
+		}
+	}
+	if !linked || revive {
+		// A child with no spawn tool call opens its own row and transcript, and
+		// a woken child revives its finished row before streaming Job 2.
 		obs := &acp.SubagentObservation{
 			RowKey:        rowKey,
 			ChildAgentKey: rowKey,
 			Title:         title,
 			Status:        bgtask.StatusRunning,
+			ReviveRow:     revive,
 		}
 		if spawned.WorkflowRunID != "" {
 			obs.GroupKey = spawned.WorkflowRunID
@@ -380,25 +525,62 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 		slog.Warn("grok subagent_finished unreadable", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	a.stateMu.Lock()
-	child, known := a.children.unlink(finished.SubagentID)
-	interrupted := a.children.takeInterrupted(finished.SubagentID)
-	a.stateMu.Unlock()
-	rowKey := child.rowKey
-	if !known {
-		rowKey = finished.SubagentID
-	}
 	report := finished.Output
 	if report == "" {
 		report = finished.Error
 	}
 	status := grokSubagentStatus(finished.Status)
+
+	a.stateMu.Lock()
+	child, known := a.children.unlink(finished.SubagentID)
+	interrupted := a.children.takeInterrupted(finished.SubagentID)
+	rowKey := child.rowKey
+	if !known {
+		if bgRowKey, bgFound := a.children.backgroundSpawns[finished.SubagentID]; bgFound {
+			delete(a.children.backgroundSpawns, finished.SubagentID)
+			if a.children.settledBeforeSpawn == nil {
+				a.children.settledBeforeSpawn = make(map[string]bool)
+			}
+			a.children.settledBeforeSpawn[finished.SubagentID] = true
+			rowKey, known = bgRowKey, true
+		} else if prevRowKey, prevFound := a.children.finishedRowKeys[finished.SubagentID]; prevFound {
+			rowKey, known = prevRowKey, true
+		}
+	}
+	if known {
+		a.children.rememberFinishedRowKeyLocked(finished.SubagentID, rowKey)
+	}
+	a.stateMu.Unlock()
+
 	// A cancel WE asked for is a user interrupt, not a plain stop: the row
 	// closes as StatusInterrupted and the divider reads "Subagent interrupted".
 	// A subagent that completed before the cancel reached it keeps its
 	// completion.
 	if interrupted && status != bgtask.StatusSucceeded {
 		status = bgtask.StatusInterrupted
+	}
+	if !known {
+		buffer := false
+		if a.Sink() != nil {
+			if _, _, found, err := a.Sink().LookupBackgroundTask(finished.SubagentID); err == nil && !found {
+				buffer = true
+			}
+		} else {
+			buffer = true
+		}
+		if buffer {
+			a.stateMu.Lock()
+			if a.children.earlyFinished == nil {
+				a.children.earlyFinished = make(map[string]grokEarlyFinish)
+			}
+			a.children.earlyFinished[finished.SubagentID] = grokEarlyFinish{status: status, report: report}
+			a.stateMu.Unlock()
+			return
+		}
+		rowKey = finished.SubagentID
+		a.stateMu.Lock()
+		a.children.rememberFinishedRowKeyLocked(finished.SubagentID, rowKey)
+		a.stateMu.Unlock()
 	}
 	a.ApplySubagentObservation(&acp.SubagentObservation{
 		RowKey:   rowKey,
@@ -547,9 +729,46 @@ func grokChildMessageResult(raw json.RawMessage) error {
 	}
 }
 
+type grokCancelOutcome int
+
+const (
+	grokCancelAccepted grokCancelOutcome = iota
+	grokCancelAlreadyFinished
+	grokCancelNotFound
+	grokCancelDeclined
+)
+
+func grokCancelReplyOutcome(raw json.RawMessage) grokCancelOutcome {
+	if len(raw) == 0 {
+		return grokCancelAccepted
+	}
+	var reply struct {
+		Cancelled *bool  `json:"cancelled"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+		Error     string `json:"error"`
+	}
+	if json.Unmarshal(raw, &reply) != nil {
+		return grokCancelAccepted
+	}
+	for _, field := range []string{reply.Status, reply.Reason, reply.Error} {
+		switch strings.ToLower(strings.TrimSpace(field)) {
+		case "already_finished":
+			return grokCancelAlreadyFinished
+		case "not_found":
+			return grokCancelNotFound
+		}
+	}
+	if reply.Cancelled != nil && !*reply.Cancelled {
+		return grokCancelDeclined
+	}
+	return grokCancelAccepted
+}
+
 // InterruptChild stops one subagent. childKey is the registry row key.
 func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
-	return a.WithSessionID(func(rootSessionID string) error {
+	var closeSessionID, closeRowKey string
+	err := a.WithSessionID(func(rootSessionID string) error {
 		subagentID, child, ok := a.ownedChild(rootSessionID, childKey)
 		if !ok {
 			// The row carries no live child: it finished, or this process never
@@ -560,8 +779,25 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 		if err != nil {
 			return fmt.Errorf("marshal the Grok subagent stop: %w", err)
 		}
-		if _, err := a.SendRequest(grokSubagentCancelMethod, params, a.APITimeout()); err != nil {
+		response, err := a.SendRequest(grokSubagentCancelMethod, params, a.APITimeout())
+		if err != nil {
 			return fmt.Errorf("stop the Grok subagent: %w", err)
+		}
+		switch grokCancelReplyOutcome(response) {
+		case grokCancelAlreadyFinished, grokCancelDeclined:
+			return nil
+		case grokCancelNotFound:
+			a.stateMu.Lock()
+			if current, found := a.children.subagents[subagentID]; found && current == child {
+				a.children.unlink(subagentID)
+				a.children.rememberFinishedRowKeyLocked(subagentID, child.rowKey)
+				closeSessionID = rootSessionID
+				closeRowKey = child.rowKey
+			}
+			a.stateMu.Unlock()
+			return nil
+		case grokCancelAccepted:
+			// Fall through to mark the child interrupted.
 		}
 		// Mark after the cancel acked: the closer that reaches the transcript
 		// spends this, and the divider then reads "Subagent interrupted" rather
@@ -573,10 +809,22 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 		a.stateMu.Unlock()
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if closeRowKey != "" {
+		a.ApplySubagentObservationForSessionOffReader(closeSessionID, &acp.SubagentObservation{
+			RowKey:   closeRowKey,
+			Status:   bgtask.StatusStopped,
+			CloseRow: true,
+			Mode:     acp.ModeCloseOnly,
+		})
+	}
+	return nil
 }
 
 // grokWorkflowStatus maps the status word of `workflow_updated`, and states
-// whether the run still runs.
+// whether the run still runs or is paused.
 func grokWorkflowStatus(status string) bgtask.Status {
 	switch status {
 	case "complete":
@@ -585,9 +833,11 @@ func grokWorkflowStatus(status string) bgtask.Status {
 		return bgtask.StatusFailed
 	case "cancelled", "interrupted":
 		return bgtask.StatusStopped
+	case grokGoalStatusUserPaused, grokGoalStatusBackOffPaused, grokGoalStatusNoProgressPaused,
+		grokGoalStatusInfraPaused, grokGoalStatusBlocked, grokGoalStatusBudgetLimited:
+		return bgtask.StatusPaused
 	default:
-		// active, the four paused words, blocked and budget_limited: the run
-		// exists and can go on, so its row stays open and its activity says why.
+		// active and unknown statuses keep the row open without claiming completion.
 		return bgtask.StatusRunning
 	}
 }
@@ -619,20 +869,36 @@ func (a *Agent) handleWorkflowUpdated(update json.RawMessage) {
 	if name == "" {
 		name = "Workflow"
 	}
+	status := grokWorkflowStatus(workflow.Status)
+	rowKey := grokWorkflowRowPrefix + workflow.RunID
+	revive := false
 	a.stateMu.Lock()
 	if a.children.workflows == nil {
 		a.children.workflows = make(map[string]string)
 	}
 	a.children.workflows[workflow.RunID] = name
+	if status.IsFinished() {
+		if a.children.finishedWorkflows == nil {
+			a.children.finishedWorkflows = make(map[string]bool)
+		}
+		a.children.finishedWorkflows[workflow.RunID] = true
+	} else if status == bgtask.StatusRunning && a.children.finishedWorkflows[workflow.RunID] {
+		revive = true
+		delete(a.children.finishedWorkflows, workflow.RunID)
+	}
 	a.stateMu.Unlock()
 
-	status := grokWorkflowStatus(workflow.Status)
+	if !revive && status == bgtask.StatusRunning && a.Sink() != nil {
+		if _, existingStatus, found, err := a.Sink().LookupBackgroundTask(rowKey); err == nil && found && existingStatus.IsFinished() {
+			revive = true
+		}
+	}
 	title := name
 	if objective := strings.TrimSpace(workflow.Objective); objective != "" {
 		title = name + ": " + objective
 	}
 	a.ApplySubagentObservation(&acp.SubagentObservation{
-		RowKey:     grokWorkflowRowPrefix + workflow.RunID,
+		RowKey:     rowKey,
 		Kind:       bgtask.KindWorkflow,
 		Title:      title,
 		Activity:   grokWorkflowActivity(workflow.Status, workflow.CurrentPhase, workflow.PauseMessage, workflow.ActiveAgents),
@@ -640,6 +906,7 @@ func (a *Agent) handleWorkflowUpdated(update json.RawMessage) {
 		GroupKey:   workflow.RunID,
 		GroupLabel: name,
 		CloseRow:   status.IsFinished(),
+		ReviveRow:  revive,
 	})
 	var report string
 	switch status {

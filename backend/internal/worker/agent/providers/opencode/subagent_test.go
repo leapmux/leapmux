@@ -169,3 +169,55 @@ func TestNativeChildrenRequireAnOwnedAncestor(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeChildSessionDeletedClosesRowBeforeCleanup(t *testing.T) {
+	t.Parallel()
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	a, sink := assemblyAgent(t, rpc)
+	a.dispatch.Lock()
+	run, err := a.installChildLocked(openCodeSessionInfo{ID: "ses_child", ParentID: "ses_1", Agent: "general"}, a.root, "spawn")
+	a.dispatch.Unlock()
+	require.NoError(t, err)
+
+	origCleanup := run.childLease.Cleanup
+	var statusAtCleanup bgtask.Status
+	cleanedUp := false
+	run.childLease.Cleanup = func() bool {
+		cleanedUp = true
+		if item, ok := sink.BackgroundTask("ses_child"); ok {
+			statusAtCleanup = item.Status
+		}
+		return origCleanup()
+	}
+
+	deleted := assemblyEvent(t, "session.deleted", map[string]any{"sessionID": "ses_child"})
+	require.NoError(t, a.acceptNativeEvent(t.Context(), deleted))
+	assert.True(t, cleanedUp, "child lease cleanup must run")
+	assert.Equal(t, bgtask.StatusInterrupted, statusAtCleanup, "child row must close before childLease.Cleanup runs")
+	item, ok := sink.BackgroundTask("ses_child")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusInterrupted, item.Status)
+}
+
+func TestNativeChildExecutionStartedRevivesFinishedRow(t *testing.T) {
+	t.Parallel()
+	rpc := openCodeTestRPC(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	a, sink := assemblyAgent(t, rpc)
+	a.dispatch.Lock()
+	_, err := a.installChildLocked(openCodeSessionInfo{ID: "ses_child", ParentID: "ses_1", Agent: "general"}, a.root, "spawn")
+	a.dispatch.Unlock()
+	require.NoError(t, err)
+
+	ended := assemblyEvent(t, "session.execution.succeeded", map[string]any{"sessionID": "ses_child"})
+	require.NoError(t, a.acceptNativeEvent(t.Context(), ended))
+	item, ok := sink.BackgroundTask("ses_child")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, item.Status)
+
+	started := assemblyEvent(t, "session.execution.started", map[string]any{"sessionID": "ses_child"})
+	require.NoError(t, a.acceptNativeEvent(t.Context(), started))
+	assert.Equal(t, []string{"ses_child"}, sink.RevivedTasks())
+	item, ok = sink.BackgroundTask("ses_child")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, item.Status)
+}

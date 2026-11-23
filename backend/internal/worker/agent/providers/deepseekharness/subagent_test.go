@@ -341,3 +341,95 @@ func TestContinuableChildTurnStatePublishesMonotonicTransitions(t *testing.T) {
 		assert.Empty(t, sink.Child(virtualID).TurnStates(), "one-shot child must remain registry-only")
 	})
 }
+
+func TestWorkflowEndClosesRemainingChildren(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	root := a.streams["root"]
+	a.children["child-ended"] = &nativeChild{agentID: "stored-ended", active: true}
+	a.children["child-open"] = &nativeChild{agentID: "stored-open", active: true}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleChildTask, RowKey: "child-ended", Kind: bgtask.KindSubagent, ChildAgentID: "stored-ended", Status: bgtask.StatusRunning}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleChildTask, RowKey: "child-open", Kind: bgtask.KindSubagent, ChildAgentID: "stored-open", Status: bgtask.StatusRunning}))
+
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowStart, []byte(`{"runId":"wf-1","name":"Audit"}`)))
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowAgentStart, []byte(`{"runId":"wf-1","childId":"child-ended","seq":1,"label":"Step 1"}`)))
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowAgentStart, []byte(`{"runId":"wf-1","childId":"child-open","seq":2,"label":"Step 2"}`)))
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowAgentEnd, []byte(`{"runId":"wf-1","seq":1,"outcome":"completed"}`)))
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowEnd, []byte(`{"runId":"wf-1","stopReason":"failed"}`)))
+
+	endedRow, ok := sink.BackgroundTask("child-ended")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, endedRow.Status)
+
+	openRow, ok := sink.BackgroundTask("child-open")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, openRow.Status, "workflow run-end must close remaining open children")
+	assert.False(t, a.ActiveChildTurnState("child-open").Active)
+
+	wfRow, ok := sink.BackgroundTask("deepseek-workflow:wf-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, wfRow.Status)
+}
+
+func TestOutOfOrderWorkflowAgentStartAttachesWhenChildArrives(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	connection, opens := serveFollows(t, func(_ int, streamID string) map[string]any { return emptySnapshot(streamID) })
+	a := newOfflineAgent(t, sink)
+	a.conn = connection
+	root := a.streams["root"]
+
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowStart, []byte(`{"runId":"wf-early","name":"Plan"}`)))
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowAgentStart, []byte(`{"runId":"wf-early","childId":"child-late","seq":1,"label":"Draft"}`)), "early workflow agent start must not return a stream-fatal error")
+	require.NoError(t, a.beginChild(root, []byte(`{"version":0,"childId":"child-late","childCreatedAt":1000,"mode":"one-shot","label":"Fallback"}`)))
+	<-opens
+
+	row, ok := sink.BackgroundTask("child-late")
+	require.True(t, ok)
+	assert.Equal(t, "deepseek-workflow:wf-early", row.GroupKey)
+	assert.Equal(t, "Plan", row.GroupLabel)
+	assert.Equal(t, "Draft", row.Title)
+}
+
+func TestBeginOwnedChildAcceptsExternalAndUnknownModesWithoutCrashing(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"external", "unknown"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			raw := []byte(`{"version":0,"childId":"child-` + mode + `","childCreatedAt":1000,"mode":"` + mode + `","label":"Non-owned"}`)
+			require.NoError(t, a.beginChild(a.streams["root"], raw))
+			assert.Empty(t, sink.BackgroundTasks())
+		})
+	}
+}
+
+func TestBindChildResultMatchesUniqueNamedChildAndDoesNotCrashWhenUnmatched(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	descriptor := nativeChildDescriptor{ID: "child-uuid-1", Parent: "native-root", Mode: "continuable", Label: "reviewer"}
+	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: descriptor.ID,
+		Title:            descriptor.Label,
+		Options:          optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode},
+	})
+	require.NoError(t, err)
+	a.childCatalog[descriptor.ID] = descriptor
+	a.children[descriptor.ID] = &nativeChild{descriptor: descriptor, agentID: virtualID}
+	sink.SetSpanType("spawn-named", contracts.DeepseekHarnessToolSubagent)
+	sink.SetSpanType("spawn-missing", contracts.DeepseekHarnessToolSubagent)
+
+	namedRaw := []byte(`{"turn":1,"message":{"toolCallId":"spawn-named","role":"tool","content":[{"type":"text","text":"started subagent reviewer"}],"isError":false}}`)
+	require.NoError(t, a.bindChildResult(a.streams["root"], "spawn-named", namedRaw))
+	span, err := sink.ChildSpawnSpan(virtualID)
+	require.NoError(t, err)
+	assert.Equal(t, "spawn-named", span)
+	assert.Equal(t, "spawn-named", a.children[descriptor.ID].spawnID)
+
+	missingRaw := []byte(`{"turn":1,"message":{"toolCallId":"spawn-missing","role":"tool","content":[{"type":"text","text":"started subagent nonexistent"}],"isError":false}}`)
+	require.NoError(t, a.bindChildResult(a.streams["root"], "spawn-missing", missingRaw), "unmatched child result must warn instead of crashing the stream")
+}

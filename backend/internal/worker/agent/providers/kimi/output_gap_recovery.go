@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 type kimiInvocationRecovery struct {
@@ -116,10 +118,12 @@ func (a *Agent) recoverDiscoveredNativeTask(target *kimiDiscoveredTask) {
 	cancel()
 	if err != nil {
 		slog.Warn("recover Kimi task identity from native output", "agent_id", a.AgentID(), "task_id", target.address.taskID, "error", err)
+		a.settleUnrecoverableDiscoveredTask(target)
 		return
 	}
 	if state.validate() != nil || state.TaskID != target.address.taskID {
 		slog.Warn("refuse invalid Kimi task state", "agent_id", a.AgentID(), "task_id", target.address.taskID)
+		a.settleUnrecoverableDiscoveredTask(target)
 		return
 	}
 	matchesCreator := kimiDiscoveredTaskMatches(target, state)
@@ -142,6 +146,34 @@ func (a *Agent) recoverDiscoveredNativeTask(target *kimiDiscoveredTask) {
 	}
 	target.complete = true
 	a.applyNativeTaskStateBound(target.address.ownerAgentID, state, target.invocation)
+}
+
+func (a *Agent) settleUnrecoverableDiscoveredTask(target *kimiDiscoveredTask) {
+	sessionID := target.invocation.identity.sessionID
+	a.dispatchMu.Lock()
+	defer a.finishDispatch()
+	a.Mu.Lock()
+	current := a.sessionID == sessionID && !a.StoppedLocked() && !a.ProcessExitedLocked()
+	existing := a.tasks[target.address]
+	a.Mu.Unlock()
+	if !current || existing != nil {
+		return
+	}
+	owner := a.observedDiscoveredTaskOwner(target)
+	if owner == nil {
+		return
+	}
+	invocation := target.invocation
+	if target.complete || !invocation.finished {
+		return
+	}
+	target.complete = true
+	if target.childID != "" {
+		if invTarget := invocation.targets[target.childID]; invTarget != nil && invTarget.nativeTask == target && invTarget.status == bgtask.StatusUnspecified {
+			invTarget.status = bgtask.StatusEndedWithUnknownOutcome
+		}
+	}
+	a.projectChildInvocation(owner, invocation)
 }
 
 // The public item supplies the exact task identity. Command rewrites do not

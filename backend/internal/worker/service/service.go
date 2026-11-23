@@ -689,6 +689,11 @@ func New(cfg Config) *Service {
 			slog.Warn("refresh agent input metadata after process state changed failed", "agent_id", agentID, "error", err)
 		}
 	})
+	svc.Output.SetBackgroundWorkFunc(func(rootAgentID string) {
+		if err := svc.InputQueue.BackgroundWorkChangedTree(bgCtx(), rootAgentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+			slog.Warn("reconcile agent input queue tree after background work changed failed", "root_agent_id", rootAgentID, "error", err)
+		}
+	})
 	// The one turn flag every provider publishes. A queue that already closed
 	// admission refuses it, and a Worker shutdown stops every agent it runs --
 	// so that refusal is the expected end of the signal, not a fault to report.

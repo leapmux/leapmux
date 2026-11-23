@@ -321,6 +321,10 @@ type OutputHandler struct {
 	// inputProcessState refreshes root metadata after process health changes.
 	// It reads current health rather than retaining provider-supplied state.
 	inputProcessState func(agentID string)
+	// backgroundWorkChanged reconciles queued input across a root agent's tree
+	// after a committed background-task mutation. Set via SetBackgroundWorkFunc
+	// in service.New; nil in tests that build an OutputHandler directly.
+	backgroundWorkChanged func(rootAgentID string)
 	// requeueDroppedInput queues input that a provider dropped as the reader's
 	// next message, and reports whether this call added it. Set via
 	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
@@ -517,6 +521,12 @@ func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, admission agent
 // SetInputProcessStateFunc wires process-readiness publication before output starts.
 func (h *OutputHandler) SetInputProcessStateFunc(fn func(agentID string)) {
 	h.inputProcessState = fn
+}
+
+// SetBackgroundWorkFunc wires background-task registry mutations to the input
+// queue before output processing starts.
+func (h *OutputHandler) SetBackgroundWorkFunc(fn func(rootAgentID string)) {
+	h.backgroundWorkChanged = fn
 }
 
 // SetRequeueDroppedInputFunc wires the input queue that takes back the input a

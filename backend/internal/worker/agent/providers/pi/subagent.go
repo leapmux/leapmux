@@ -17,6 +17,71 @@ import (
 // in this file map its tool results and its notifications onto background-task
 // registry rows.
 
+// piToolGetSubagentResult is the Go-only tool name for pi-subagents result
+// polling, which suppresses a separate subagent-notification when it returns a
+// final status.
+const piToolGetSubagentResult = "get_subagent_result"
+
+func (a *Agent) trackOpenBgTask(rowKey string) {
+	if rowKey == "" {
+		return
+	}
+	a.Mu.Lock()
+	if a.openBgTasks == nil {
+		a.openBgTasks = make(map[string]struct{})
+	}
+	a.openBgTasks[rowKey] = struct{}{}
+	a.Mu.Unlock()
+}
+
+func (a *Agent) untrackOpenBgTask(rowKey string) {
+	if rowKey == "" {
+		return
+	}
+	a.Mu.Lock()
+	delete(a.openBgTasks, rowKey)
+	a.Mu.Unlock()
+}
+
+func (a *Agent) renameOpenBgTask(oldKey, newKey string) {
+	if oldKey == "" || newKey == "" || oldKey == newKey {
+		return
+	}
+	a.Mu.Lock()
+	if _, ok := a.openBgTasks[oldKey]; ok {
+		delete(a.openBgTasks, oldKey)
+		a.openBgTasks[newKey] = struct{}{}
+	}
+	a.Mu.Unlock()
+}
+
+func (a *Agent) closeOpenBgTasks(status bgtask.Status) {
+	a.Mu.Lock()
+	rowKeys := make([]string, 0, len(a.openBgTasks))
+	for rowKey := range a.openBgTasks {
+		rowKeys = append(rowKeys, rowKey)
+	}
+	clear(a.openBgTasks)
+	a.Mu.Unlock()
+	if a.sink == nil {
+		return
+	}
+	for _, rowKey := range rowKeys {
+		providerkit.LogRegistryRefusal("pi", "close", a.sink.CloseBackgroundTask(rowKey, status))
+	}
+}
+
+func piSubagentStatusForCompletion(completion agent.MessageCompletion) bgtask.Status {
+	switch completion {
+	case agent.MessageCompletionError:
+		return bgtask.StatusFailed
+	case agent.MessageCompletionFinished:
+		return bgtask.StatusEndedWithUnknownOutcome
+	default:
+		return bgtask.StatusStopped
+	}
+}
+
 // toolCallTitle returns the description recorded at tool_execution_start for
 // the registry title (empty when none was recorded).
 func (a *Agent) toolCallTitle(toolCallID string) string {
@@ -30,7 +95,7 @@ func (a *Agent) toolCallTitle(toolCallID string) string {
 
 // logUpsertRefusal records a background-task row the registry REFUSED.
 //
-// A thin name over the shared `providerkit.LogRegistryRefusal`, kept because these seven
+// A thin name over the shared `providerkit.LogRegistryRefusal`, kept because these
 // call sites read better without the two constant arguments repeated at each
 // one. The RULE is the shared helper's; this only states the provider once.
 func logUpsertRefusal(err error) {
@@ -86,6 +151,21 @@ func piExtractPrompt(input json.RawMessage) string {
 	return in.Prompt
 }
 
+// piExtractResumeID pulls the target subagent ID out of an Agent({resume})
+// tool_execution_start input, or "" when absent.
+func piExtractResumeID(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var in struct {
+		Resume string `json:"resume"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(in.Resume)
+}
+
 // piSubagentDetails contains child status from Agent result details.
 type piSubagentDetails struct {
 	Status   string `json:"status"`
@@ -117,12 +197,12 @@ func piSubagentFromDetails(details json.RawMessage, toolCallID, title string) *b
 }
 
 // piFinalStatus maps a pi-subagents result status to the registry final
-// status. completed/steered→Completed, error→Failed, stopped/aborted→Stopped.
+// status. completed/steered→Completed, error/failed→Failed, stopped/aborted→Stopped.
 func piFinalStatus(s string) (bgtask.Status, bool) {
 	switch s {
 	case "completed", "steered":
 		return bgtask.StatusSucceeded, true
-	case "error":
+	case "error", "failed":
 		return bgtask.StatusFailed, true
 	case "stopped", "aborted":
 		return bgtask.StatusStopped, true
@@ -182,57 +262,70 @@ var piAgentIDRe = regexp.MustCompile(`(?m)^Agent ID: (\S+)\s*$`)
 // a background re-key. status:"background" re-keys the row to details.agentId
 // and leaves it Running (fallback: regex "Agent ID: (\S+)" over result text).
 func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallID, title, prompt string) {
-	if len(result) == 0 {
-		return
+	piApplySubagentEndState(sink, result, toolCallID, toolCallID, title, prompt, false, false)
+}
+
+// piApplySubagentEndState applies a tool_execution_end outcome for an Agent
+// call, returning the effective registry row key and whether the row remains
+// running in the background.
+func piApplySubagentEndState(sink subagentServices, result json.RawMessage, toolCallID, rowKey, title, prompt string, isError, resumed bool) (string, bool) {
+	currentKey := rowKey
+	if currentKey == "" {
+		currentKey = toolCallID
 	}
 	var envelope piPartialResult
 	var d piSubagentDetails
-	if json.Unmarshal(result, &envelope) == nil && json.Unmarshal(envelope.Details, &d) == nil && d.Status != "" {
-		childID := ""
-		if d.AgentID != "" {
-			var err error
-			childID, _, _, err = sink.LookupBackgroundTask(d.AgentID)
-			if err != nil {
-				slog.Warn("pi subagent stable child lookup failed", "agent_id", d.AgentID, "error", err)
+	if len(result) > 0 && json.Unmarshal(result, &envelope) == nil && json.Unmarshal(envelope.Details, &d) == nil && d.Status != "" {
+		if !resumed {
+			childID := ""
+			if d.AgentID != "" {
+				var err error
+				childID, _, _, err = sink.LookupBackgroundTask(d.AgentID)
+				if err != nil {
+					slog.Warn("pi subagent stable child lookup failed", "agent_id", d.AgentID, "error", err)
+				}
 			}
-		}
-		if childID == "" {
-			piEnsureSubagentChild(sink, toolCallID, toolCallID, toolCallID, title, prompt)
+			if childID == "" {
+				piEnsureSubagentChild(sink, toolCallID, currentKey, currentKey, title, prompt)
+			}
 		}
 		// A rename that failed leaves the row under its original key. The final status
 		// must still reach that key, or the registry keeps a Running row for a call
 		// that ended: piApplySubagentNotification cannot repair it, because it writes
 		// to the agent id and the row is not there.
 		renamed := true
-		if d.AgentID != "" && d.AgentID != toolCallID {
-			if err := sink.RenameBackgroundTask(toolCallID, d.AgentID); err != nil {
+		if d.AgentID != "" && d.AgentID != currentKey {
+			if err := sink.RenameBackgroundTask(currentKey, d.AgentID); err != nil {
 				slog.Warn("pi rename subagent task failed", "tool_call_id", toolCallID, "error", err)
 				renamed = false
 			}
 		}
-		if d.Status == "background" {
-			if agentID := d.AgentID; renamed && agentID != "" && agentID != toolCallID {
-				piEnsureSubagentChild(sink, toolCallID, agentID, agentID, title, prompt)
-			}
-			// No agent id, or a rename that failed: the row stays keyed by toolCallID
-			// as-is (still running).
-			return
+		finalKey := d.AgentID
+		if finalKey == "" || !renamed {
+			finalKey = currentKey
 		}
-		// An unrecognized status must NOT give a final status to the row (piFinalStatus
-		// returns ok=false for it). Upsert as Running so a future final event
-		// can still close it, matching piApplySubagentNotification's contract.
+		if d.Status == "background" && !isError {
+			if !resumed && renamed && d.AgentID != "" && d.AgentID != currentKey {
+				piEnsureSubagentChild(sink, toolCallID, d.AgentID, d.AgentID, title, prompt)
+			}
+			// No agent id, or a rename that failed: the row stays keyed by currentKey
+			// as-is (still running).
+			return finalKey, true
+		}
+		// An unrecognized status must NOT give a final status to the row unless
+		// the tool call itself failed (isError). Otherwise keep it Running so a
+		// future final event can still close it.
 		status, ok := piFinalStatus(d.Status)
-		rowKey := d.AgentID
-		if rowKey == "" || !renamed {
-			rowKey = toolCallID
+		if !ok && isError {
+			status, ok = bgtask.StatusFailed, true
 		}
 		if report := piSubagentReportText(result); report != "" {
-			reportID := d.AgentID
-			if reportID == "" || !renamed {
+			reportID := finalKey
+			if resumed {
 				reportID = toolCallID
 			}
 			providerkit.PersistChildSubagentReport(sink, agent.ChildSubagentReportWrite{
-				RowKey: rowKey,
+				RowKey: finalKey,
 				Write: agent.SubagentReportWrite{
 					ReportID: reportID,
 					Report:   agent.SubagentReport{Text: report},
@@ -240,50 +333,150 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 			})
 		}
 		if ok {
-			// A final-status upsert already stamps ended_at and the monotonic-final
-			// guard makes the row absorbing; no separate CloseBackgroundTask needed
-			// (it would early-return on the now-finished row).
-			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title, Status: status}))
-		} else {
-			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title, ActiveForm: d.Activity, Status: bgtask.StatusRunning}))
+			if resumed {
+				providerkit.LogRegistryRefusal("pi", "close", sink.CloseBackgroundTask(finalKey, status))
+			} else {
+				// A final-status upsert already stamps ended_at and the monotonic-final
+				// guard makes the row absorbing; no separate CloseBackgroundTask needed
+				// (it would early-return on the now-finished row).
+				logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: finalKey, Kind: bgtask.KindSubagent, Title: title, Status: status}))
+			}
+			return finalKey, false
 		}
-		return
+		upsertTitle := title
+		if resumed {
+			upsertTitle = ""
+		}
+		logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: finalKey, Kind: bgtask.KindSubagent, Title: upsertTitle, ActiveForm: d.Activity, Status: bgtask.StatusRunning}))
+		return finalKey, true
 	}
 	// Fallback: regex over the result text for an Agent ID (a background agent
-	// whose details did not parse). Key the row off the deterministic toolCallID
-	// so a later final event can close it; the captured agent id only refines
-	// the title. Free-form prose that mentions "Agent ID:" mid-sentence does not
-	// match the anchored regex. The result may be a JSON-encoded string, so
-	// decode it first; fall back to the raw text if it is not a string.
-	var content strings.Builder
-	for _, block := range envelope.Content {
-		if block.Type == ContentBlockText {
-			content.WriteString(block.Text)
-		}
-	}
-	s := content.String()
-	var asString string
-	if json.Unmarshal(result, &asString) == nil {
-		s = asString
-	}
-	if strings.Contains(s, "Agent ID:") {
-		if m := piAgentIDRe.FindStringSubmatch(s); len(m) > 1 {
-			piEnsureSubagentChild(sink, toolCallID, toolCallID, toolCallID, title, prompt)
-			rowTitle := title
-			if rowTitle == "" {
-				rowTitle = "background agent " + m[1]
+	// whose details did not parse). Rename the row from currentKey to the
+	// captured agent ID so later notifications and get_subagent_result calls
+	// resolve the same row. Free-form prose that mentions "Agent ID:"
+	// mid-sentence does not match the anchored regex.
+	if !isError && len(result) > 0 {
+		var content strings.Builder
+		for _, block := range envelope.Content {
+			if block.Type == ContentBlockText {
+				content.WriteString(block.Text)
 			}
-			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{
-				RowKey: toolCallID, Kind: bgtask.KindSubagent, Title: rowTitle, Status: bgtask.StatusRunning,
-			}))
+		}
+		s := content.String()
+		var asString string
+		if json.Unmarshal(result, &asString) == nil {
+			s = asString
+		}
+		if strings.Contains(s, "Agent ID:") {
+			if m := piAgentIDRe.FindStringSubmatch(s); len(m) > 1 {
+				agentID := m[1]
+				if !resumed {
+					piEnsureSubagentChild(sink, toolCallID, currentKey, currentKey, title, prompt)
+				}
+				finalKey := agentID
+				if finalKey != currentKey {
+					if err := sink.RenameBackgroundTask(currentKey, finalKey); err != nil {
+						slog.Warn("pi rename subagent task failed", "tool_call_id", toolCallID, "error", err)
+						finalKey = currentKey
+					}
+				}
+				rowTitle := title
+				if resumed {
+					rowTitle = ""
+				} else if rowTitle == "" {
+					rowTitle = "background agent " + agentID
+				}
+				logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{
+					RowKey: finalKey, Kind: bgtask.KindSubagent, Title: rowTitle, Status: bgtask.StatusRunning,
+				}))
+				return finalKey, true
+			}
 		}
 	}
+	// No details.status and no background Agent ID: close any open row for this
+	// call without creating a phantom row when none exists.
+	status := bgtask.StatusStopped
+	if isError {
+		status = bgtask.StatusFailed
+	}
+	if currentKey != "" {
+		providerkit.LogRegistryRefusal("pi", "close", sink.CloseBackgroundTask(currentKey, status))
+	}
+	return currentKey, false
+}
+
+// piApplyGetSubagentResult closes a background subagent row when a
+// get_subagent_result tool call returns a final status (suppressing a separate
+// subagent-notification). Returns the closed agent ID, or "" when no row closed.
+func piApplyGetSubagentResult(sink subagentServices, args, result json.RawMessage) string {
+	if sink == nil || len(result) == 0 {
+		return ""
+	}
+	var envelope piPartialResult
+	if json.Unmarshal(result, &envelope) != nil {
+		return ""
+	}
+	var details struct {
+		AgentID       string `json:"agentId"`
+		ID            string `json:"id"`
+		Status        string `json:"status"`
+		ResultPreview string `json:"resultPreview"`
+	}
+	if len(envelope.Details) > 0 {
+		_ = json.Unmarshal(envelope.Details, &details)
+	}
+	agentID := strings.TrimSpace(details.AgentID)
+	if agentID == "" {
+		agentID = strings.TrimSpace(details.ID)
+	}
+	if agentID == "" && len(args) > 0 {
+		var call struct {
+			AgentID string `json:"agentId"`
+			ID      string `json:"id"`
+		}
+		if json.Unmarshal(args, &call) == nil {
+			agentID = strings.TrimSpace(call.AgentID)
+			if agentID == "" {
+				agentID = strings.TrimSpace(call.ID)
+			}
+		}
+	}
+	if agentID == "" || details.Status == "" {
+		return ""
+	}
+	status, ok := piFinalStatus(details.Status)
+	if !ok {
+		return ""
+	}
+	report := piSubagentReportText(result)
+	if report == "" {
+		report = strings.TrimSpace(details.ResultPreview)
+	}
+	if report != "" {
+		providerkit.PersistChildSubagentReport(sink, agent.ChildSubagentReportWrite{
+			RowKey: agentID,
+			Write: agent.SubagentReportWrite{
+				ReportID: agentID,
+				Report:   agent.SubagentReport{Text: report},
+			},
+		})
+	}
+	providerkit.LogRegistryRefusal("pi", "close", sink.CloseBackgroundTask(agentID, status))
+	return agentID
 }
 
 // piApplySubagentNotification sniffs a customType:"subagent-notification"
 // message and updates/closes the registry from its details (including
 // details.others[] for group nudges). The message itself still persists.
 func piApplySubagentNotification(sink subagentServices, raw []byte) {
+	piApplySubagentNotificationTracked(sink, raw, nil, nil)
+}
+
+func (a *Agent) applyPiSubagentNotification(raw []byte) {
+	piApplySubagentNotificationTracked(a.sink, raw, a.trackOpenBgTask, a.untrackOpenBgTask)
+}
+
+func piApplySubagentNotificationTracked(sink subagentServices, raw []byte, onOpen, onClose func(string)) {
 	type details struct {
 		ID          string `json:"id"`
 		Status      string `json:"status"`
@@ -316,8 +509,14 @@ func piApplySubagentNotification(sink subagentServices, raw []byte) {
 				},
 			})
 			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: d.ID, Kind: bgtask.KindSubagent, Title: d.Description, Status: status}))
+			if onClose != nil {
+				onClose(d.ID)
+			}
 		} else {
 			logUpsertRefusal(sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: d.ID, Kind: bgtask.KindSubagent, Title: d.Description, Status: bgtask.StatusRunning}))
+			if onOpen != nil {
+				onOpen(d.ID)
+			}
 		}
 	}
 	applyOne(envelope.Message.Details.details)

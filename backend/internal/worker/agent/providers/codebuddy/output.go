@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // readOutputLoop reads NDJSON frames from stdout until the process exits.
@@ -307,6 +308,14 @@ func (a *Agent) handleResult(raw []byte) {
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("codebuddy: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
+	foregroundStatus := bgtask.StatusEndedWithUnknownOutcome
+	switch {
+	case interrupted:
+		foregroundStatus = bgtask.StatusStopped
+	case result.IsError:
+		foregroundStatus = bgtask.StatusFailed
+	}
+	a.closeForegroundChildren(foregroundStatus)
 	if interrupted {
 		providerkit.ResetSpansAndProgress(a.sink)
 	}

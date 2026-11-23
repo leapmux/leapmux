@@ -1,6 +1,7 @@
 package droid
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // Droid writes a child session to its own JSONL file while it runs. The
@@ -30,12 +32,21 @@ const (
 	droidArchiveLineLimit    = 16 << 20
 )
 
+// droidArchivePosition holds a validated pre-send archive offset so a resumed
+// tail skips earlier turns without replaying them.
+type droidArchivePosition struct {
+	offset     int64
+	headerSeen bool
+	fileInfo   os.FileInfo
+}
+
 type droidChildTail struct {
 	agent     *Agent
 	sessionID string
 	dataRoot  string
 	workDir   string
 	clock     quartz.Clock
+	ready     <-chan struct{}
 
 	mu           sync.Mutex
 	offset       int64
@@ -52,43 +63,158 @@ type droidChildTail struct {
 	stopped  chan struct{}
 }
 
-func newDroidChildTail(a *Agent, sessionID, dataRoot string) *droidChildTail {
+func newDroidChildTail(a *Agent, sessionID, dataRoot string, initial *droidArchivePosition, ready <-chan struct{}) *droidChildTail {
 	clock := a.clock
 	if clock == nil {
 		clock = quartz.NewReal()
 	}
-	return &droidChildTail{
+	tail := &droidChildTail{
 		agent: a, sessionID: sessionID, dataRoot: dataRoot,
-		workDir: a.workingDir, clock: clock,
+		workDir: a.workingDir, clock: clock, ready: ready,
 		done: make(chan struct{}), stopped: make(chan struct{}),
 	}
+	if initial != nil && initial.headerSeen {
+		tail.offset = initial.offset
+		tail.headerSeen = true
+		tail.fileInfo = initial.fileInfo
+	}
+	return tail
+}
+
+// probeChildArchiveEnd verifies the child archive header through a root
+// confined to the Factory data directory and returns the current EOF offset.
+// A missing directory or file returns (nil, nil) so a brand-new archive starts
+// cleanly at offset 0.
+func (a *Agent) probeChildArchiveEnd(sessionID string) (pos *droidArchivePosition, err error) {
+	if !filepath.IsAbs(a.workingDir) || !validDroidSessionID(sessionID) {
+		return nil, errors.New("droid child archive path is not valid")
+	}
+	dataRoot := droidDataRoot(agent.StoredSessionQuery{HomeDir: a.homeDir})
+	if dataRoot == "" {
+		return nil, errors.New("droid data root is unavailable")
+	}
+	root, err := os.OpenRoot(dataRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer func() {
+		if closeErr := root.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	project := filepath.Join(droidSessionsDirName, droidSanitizeCwd(a.workingDir))
+	for _, dir := range []string{droidSessionsDirName, project} {
+		info, statErr := root.Lstat(dir)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return nil, nil
+			}
+			return nil, statErr
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("droid child archive directory is not a regular directory: %s", dir)
+		}
+	}
+	fileName := filepath.Join(project, sessionID+droidSessionSuffix)
+	pathInfo, err := root.Lstat(fileName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return nil, errors.New("droid child archive is not a regular file")
+	}
+	file, err := root.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(pathInfo, opened) {
+		return nil, errors.New("droid child archive file changed identity")
+	}
+	if opened.Size() == 0 {
+		return nil, nil
+	}
+	reader := bufio.NewReaderSize(io.LimitReader(file, droidArchiveLineLimit+1), 4096)
+	firstLine, readErr := reader.ReadBytes('\n')
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return nil, readErr
+	}
+	if !bytes.HasSuffix(firstLine, []byte{'\n'}) {
+		if len(firstLine) > droidArchiveLineLimit {
+			return nil, errors.New("droid child archive header exceeds limit")
+		}
+		return nil, nil
+	}
+	var record droidArchiveRecord
+	if err := json.Unmarshal(bytes.TrimSpace(firstLine), &record); err != nil {
+		return nil, fmt.Errorf("droid child archive header unreadable: %w", err)
+	}
+	if record.Type != droidSessionStartType || record.ID != sessionID || !sessionstore.SameDir(record.Cwd, a.workingDir) {
+		return nil, errors.New("droid child archive identity mismatch")
+	}
+	return &droidArchivePosition{
+		offset:     opened.Size(),
+		headerSeen: true,
+		fileInfo:   opened,
+	}, nil
 }
 
 // startChildTail starts one reader for a native child that the registry linked.
 func (a *Agent) startChildTail(sessionID string) {
-	a.ensureChildTail(sessionID, false)
+	a.ensureChildTail(sessionID, false, nil, nil)
 }
 
-// resumeChildTail follows a send that the native child process accepted.
-func (a *Agent) resumeChildTail(sessionID string) {
-	a.ensureChildTail(sessionID, true)
+// resumeChildTail follows a send that the native child process accepted and
+// reports whether a healthy tail is tracking the child archive.
+func (a *Agent) resumeChildTail(sessionID string, initial *droidArchivePosition, ready <-chan struct{}) bool {
+	return a.ensureChildTail(sessionID, true, initial, ready)
 }
 
-func (a *Agent) ensureChildTail(sessionID string, continuation bool) {
+// resumeChildTailFromEOF resumes tailing a child session after a Task({resume})
+// announcement, starting at EOF if no previous tail exists in memory.
+func (a *Agent) resumeChildTailFromEOF(sessionID string) {
+	a.tailMu.Lock()
+	hasTail := a.childTails[sessionID] != nil
+	a.tailMu.Unlock()
+	var initial *droidArchivePosition
+	if !hasTail {
+		pos, err := a.probeChildArchiveEnd(sessionID)
+		if err == nil {
+			initial = pos
+		}
+	}
+	a.ensureChildTail(sessionID, true, initial, nil)
+}
+
+func (a *Agent) ensureChildTail(sessionID string, continuation bool, initial *droidArchivePosition, ready <-chan struct{}) bool {
 	if a.beforeChildTailStart != nil {
 		a.beforeChildTailStart()
 	}
 	if !filepath.IsAbs(a.workingDir) || !validDroidSessionID(sessionID) {
-		return
+		return false
 	}
 	dataRoot := droidDataRoot(agent.StoredSessionQuery{HomeDir: a.homeDir})
 	if dataRoot == "" {
-		return
+		return false
 	}
 	a.tailMu.Lock()
 	if a.tailClosing {
 		a.tailMu.Unlock()
-		return
+		return false
 	}
 	if a.childTails == nil {
 		a.childTails = make(map[string]*droidChildTail)
@@ -99,16 +225,21 @@ func (a *Agent) ensureChildTail(sessionID string, continuation bool) {
 			a.beforeChildTailStateRead()
 		}
 		old.mu.Lock()
-		if !old.finished || old.invalid {
-			if continuation && !old.invalid {
+		if old.invalid {
+			old.mu.Unlock()
+			a.tailMu.Unlock()
+			return false
+		}
+		if !old.finished {
+			if continuation {
 				old.pendingTurns++
 			}
 			old.mu.Unlock()
 			a.tailMu.Unlock()
-			return
+			return true
 		}
 	}
-	tail := newDroidChildTail(a, sessionID, dataRoot)
+	tail := newDroidChildTail(a, sessionID, dataRoot, initial, ready)
 	if old != nil {
 		tail.offset = old.offset
 		tail.headerSeen = old.headerSeen
@@ -121,6 +252,7 @@ func (a *Agent) ensureChildTail(sessionID string, continuation bool) {
 	}
 	tail.start()
 	a.tailMu.Unlock()
+	return true
 }
 
 // markChildTailsClosing prevents a deferred notification from starting a tail
@@ -149,6 +281,15 @@ func (t *droidChildTail) start() {
 	go func() {
 		defer close(t.stopped)
 		defer ticker.Stop()
+		if t.ready != nil {
+			select {
+			case <-t.ready:
+			case <-t.done:
+				return
+			case <-t.agent.Context().Done():
+				return
+			}
+		}
 		t.poll()
 		for !t.isDone() {
 			select {
@@ -160,6 +301,9 @@ func (t *droidChildTail) start() {
 				t.poll()
 			}
 		}
+		if t.isInvalid() {
+			t.closeInvalidChild()
+		}
 	}()
 }
 
@@ -168,10 +312,41 @@ func (t *droidChildTail) stop() {
 	<-t.stopped
 }
 
+// finish marks the tail finished when no continuation turn is pending and stops
+// its poll loop so settled children do not leak a 250ms ticker.
+func (t *droidChildTail) finish() {
+	t.mu.Lock()
+	if t.pendingTurns > 0 {
+		t.mu.Unlock()
+		return
+	}
+	t.finished = true
+	t.mu.Unlock()
+	t.stop()
+}
+
 func (t *droidChildTail) isDone() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.finished || t.invalid
+}
+
+func (t *droidChildTail) isInvalid() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.invalid
+}
+
+// closeInvalidChild closes any still-open registry row when the archive reader
+// aborts on an invalid file. Runs outside t.mu to preserve lock order.
+func (t *droidChildTail) closeInvalidChild() {
+	t.agent.dispatchMu.Lock()
+	defer t.agent.dispatchMu.Unlock()
+	_, status, exists, err := t.agent.sink.LookupBackgroundTask(t.sessionID)
+	if err != nil || !exists || status.IsFinished() {
+		return
+	}
+	t.agent.closeChildSession(t.sessionID, bgtask.StatusEndedWithUnknownOutcome)
 }
 
 // poll reads complete lines through a path confined to the Factory data root.

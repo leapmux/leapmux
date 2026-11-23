@@ -201,10 +201,17 @@ func (a *Agent) handleFrame(line []byte) {
 		return
 	}
 	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
+	flush := false
+	defer func() {
+		a.dispatchMu.Unlock()
+		if flush {
+			a.flushOutputQueue()
+		}
+	}()
 	if a.outputEnded || a.IsDiscardingOutput() {
 		return
 	}
+	flush = true
 	var head struct {
 		Type       string          `json:"type"`
 		Runtime    *runtimeScope   `json:"runtime"`
@@ -231,7 +238,7 @@ func (a *Agent) handleFrame(line []byte) {
 	case contracts.LettaMessageTurnFinished:
 		a.onTurnFinished(line)
 	case contracts.LettaMessageUpdateSubagentState:
-		a.onSubagentState(head.Subagents)
+		a.onSubagentState(head.Subagents, head.Runtime)
 	case contracts.LettaMessageUpdateLoopStatus:
 		a.onLoopStatus(head.LoopStatus)
 	case contracts.LettaMessageControlRequest:

@@ -49,8 +49,8 @@ type outputState struct {
 	// lead is the lead's own transcript.
 	lead *transcript
 	// toolOwner maps each tool call that started and did not finish to the
-	// transcript that shows it. Cline states no agent on a tool event, and the
-	// call's id is what routes its later events.
+	// transcript that shows it, so later updates and finishes follow the opening
+	// call even when payloads carry no agent metadata.
 	toolOwner map[string]*transcript
 	// dropped holds the tool calls whose start reached no transcript: the calls
 	// of a subagent whose output the worker could not attribute (subagent.go).
@@ -58,6 +58,10 @@ type outputState struct {
 	dropped map[string]bool
 	// spawns holds each spawn_agent call that runs, by tool call id.
 	spawns map[string]*spawnCall
+	// spawnsByAgent indexes active spawn_agent calls by their bound native agent.agentId.
+	spawnsByAgent map[string]*spawnCall
+	// leadAgentID records the native agent.agentId of the lead when tagged events state it.
+	leadAgentID string
 	// claimed holds the stored child sessions that a backfill used, so two
 	// subagents with the same task never take one session.
 	claimed map[string]bool
@@ -68,11 +72,12 @@ type outputState struct {
 
 func newOutputState() outputState {
 	return outputState{
-		lead:      newTranscript(""),
-		toolOwner: make(map[string]*transcript),
-		dropped:   make(map[string]bool),
-		spawns:    make(map[string]*spawnCall),
-		claimed:   make(map[string]bool),
+		lead:          newTranscript(""),
+		toolOwner:     make(map[string]*transcript),
+		dropped:       make(map[string]bool),
+		spawns:        make(map[string]*spawnCall),
+		spawnsByAgent: make(map[string]*spawnCall),
+		claimed:       make(map[string]bool),
 	}
 }
 
@@ -103,6 +108,8 @@ type transcript struct {
 	// written counts what reached this transcript live, so a later backfill
 	// from Cline's stored messages writes only the rest (subagent.go).
 	written writtenCounts
+	// contextUsage holds the last context-usage broadcast for a child transcript.
+	contextUsage map[string]any
 }
 
 // openTool is one tool call that started and did not finish.
@@ -656,10 +663,8 @@ func (a *Agent) endTurnWithTeardown(completion agent.MessageCompletion, row []by
 	a.afterTurn(change.continuePlan && turn.actModeApproved && completion == agent.MessageCompletionComplete)
 }
 
-// handleUsageUpdated broadcasts the context usage of the lead's last request.
-// The hub marks a teammate's usage as a teammate's; a subagent's usage it marks
-// as the lead's, so a usage event that arrives while a subagent runs is the
-// subagent's and changes nothing here.
+// handleUsageUpdated broadcasts context usage for the lead or a tagged child transcript.
+// Untagged payloads keep the lead-only guard while any subagent runs.
 func (a *Agent) handleUsageUpdated(payload json.RawMessage) {
 	var usage struct {
 		Delta struct {
@@ -668,11 +673,20 @@ func (a *Agent) handleUsageUpdated(payload json.RawMessage) {
 			CacheReadTokens  int64 `json:"cacheReadTokens"`
 			CacheWriteTokens int64 `json:"cacheWriteTokens"`
 		} `json:"delta"`
-		Agent struct {
-			Kind string `json:"kind"`
-		} `json:"agent"`
+		Agent eventAgent `json:"agent"`
 	}
-	if json.Unmarshal(payload, &usage) != nil || usage.Agent.Kind != "lead" || a.spawnRuns() {
+	if json.Unmarshal(payload, &usage) != nil {
+		return
+	}
+	var target *transcript
+	a.Mu.Lock()
+	if usage.Agent.hasTag() {
+		target, _ = a.routeTaggedLocked(usage.Agent)
+	} else if usage.Agent.Kind == agentKindLead && len(a.out.spawns) == 0 {
+		target = a.out.lead
+	}
+	a.Mu.Unlock()
+	if target == nil {
 		return
 	}
 	// Cline's input count includes the cached tokens, and it is the size of the
@@ -692,11 +706,17 @@ func (a *Agent) handleUsageUpdated(payload json.RawMessage) {
 		reading[contracts.ContextUsageFieldContextWindow] = window
 	}
 	a.Mu.Lock()
-	changed := !maps.Equal(reading, a.contextUsage)
-	a.contextUsage = reading
+	var changed bool
+	if target == a.out.lead {
+		changed = !maps.Equal(reading, a.contextUsage)
+		a.contextUsage = reading
+	} else {
+		changed = !maps.Equal(reading, target.contextUsage)
+		target.contextUsage = reading
+	}
 	a.Mu.Unlock()
 	if changed {
-		a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: maps.Clone(reading)})
+		a.sinkFor(target).BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: maps.Clone(reading)})
 	}
 }
 

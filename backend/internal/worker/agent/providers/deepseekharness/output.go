@@ -10,17 +10,22 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+)
+
+const (
+	deepseekEventJobRegistered = "job/registered"
+	deepseekEventJobSettled    = "job/settled"
 )
 
 // These native records update internal state or repeat content that another event supplies.
-// Only the Worker reads this drop list. dsh 0.2.1-rc.2 adds `job/registered` and `job/settled`
-// around each bash command; tool/call and tool/result already state that command and its outcome.
+// Only the Worker reads this drop list.
 var silentSessionEvents = map[string]struct{}{
 	"agent-preset/selected": {}, "approval/asked": {}, "approval/decided": {}, "approval/policy": {},
 	contracts.DeepseekHarnessEventAssistantAttempt: {}, "command/done": {}, "command/run": {},
 	"compaction/prune": {}, "compaction/summary": {}, "developer/message": {},
 	"feedback/message-delete": {}, "feedback/message-put": {}, "feedback/record": {}, "hook/invoked": {},
-	"image/offload": {}, "job/registered": {}, "job/settled": {}, "model/selection": {}, "permission/preset": {}, "request/header": {},
+	"image/offload": {}, "model/selection": {}, "permission/preset": {}, "request/header": {},
 	"sandbox/mode": {}, "schedule/change": {}, "session-log-deepseek/delivery-accepted": {},
 	"session/end-seed": {}, "session/title": {}, "session/title-llm-request": {}, "step/start": {}, "step/end": {},
 	"subagent/descriptor": {}, "subagent/model-selection-policy": {}, "system/message": {},
@@ -67,6 +72,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		stream.startedAt = event.Time
 		if stream.childAgentID == "" {
 			a.setTurnState(true)
+		} else if stream.replaying {
+			stream.replaySawTurnStart = true
+			stream.replayTurnOpen = true
 		} else {
 			if err := a.childTurnState(stream.sessionID, true, agent.MessageCompletionComplete); err != nil {
 				return err
@@ -241,6 +249,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		}
 		if stream.childAgentID == "" {
 			a.setTurnState(false)
+		} else if stream.replaying {
+			stream.replayTurnOpen = false
+			stream.replayLastCompletion = completion
 		} else {
 			if err := a.childTurnState(stream.sessionID, false, completion); err != nil {
 				return err
@@ -301,6 +312,10 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		return a.beginChild(stream, event.Data)
 	case contracts.DeepseekHarnessEventWorkflowStart, contracts.DeepseekHarnessEventWorkflowEnd, contracts.DeepseekHarnessEventWorkflowAgentStart, contracts.DeepseekHarnessEventWorkflowAgentEnd:
 		return a.workflowEvent(stream, event.Type, event.Data)
+	case deepseekEventJobRegistered:
+		return applyJobRegistered(sink, event.Data)
+	case deepseekEventJobSettled:
+		return applyJobSettled(sink, event.Data)
 	case contracts.DeepseekHarnessEventTodoWrite:
 		content.Completion = agent.MessageCompletionComplete
 		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
@@ -468,4 +483,84 @@ func (a *Agent) handleAssistantStream(stream *sessionStream, raw []byte) error {
 		a.streamSink(stream).ReportProgress(agent.ModelTextProgress(frame.AttemptID, text))
 	}
 	return nil
+}
+
+func applyJobRegistered(sink agent.ProviderServices, raw []byte) error {
+	var job struct {
+		JobID       string `json:"jobId"`
+		ID          string `json:"id"`
+		Command     string `json:"command"`
+		Label       string `json:"label"`
+		Description string `json:"description"`
+	}
+	if json.Unmarshal(raw, &job) != nil {
+		return nil
+	}
+	jobID := strings.TrimSpace(job.JobID)
+	if jobID == "" {
+		jobID = strings.TrimSpace(job.ID)
+	}
+	if jobID == "" {
+		return nil
+	}
+	title := strings.TrimSpace(job.Command)
+	titleIsCommand := title != ""
+	if title == "" {
+		title = strings.TrimSpace(job.Label)
+	}
+	if title == "" {
+		title = strings.TrimSpace(job.Description)
+	}
+	if title == "" {
+		title = jobID
+	}
+	return sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:         "deepseek-job:" + jobID,
+		Kind:           bgtask.KindShell,
+		Title:          title,
+		TitleIsCommand: titleIsCommand,
+		Status:         bgtask.StatusRunning,
+	})
+}
+
+func applyJobSettled(sink agent.ProviderServices, raw []byte) error {
+	var job struct {
+		JobID    string `json:"jobId"`
+		ID       string `json:"id"`
+		Status   string `json:"status"`
+		Outcome  string `json:"outcome"`
+		ExitCode *int   `json:"exitCode"`
+	}
+	if json.Unmarshal(raw, &job) != nil {
+		return nil
+	}
+	jobID := strings.TrimSpace(job.JobID)
+	if jobID == "" {
+		jobID = strings.TrimSpace(job.ID)
+	}
+	if jobID == "" {
+		return nil
+	}
+	status := bgtask.StatusSucceeded
+	word := strings.TrimSpace(job.Outcome)
+	if word == "" {
+		word = strings.TrimSpace(job.Status)
+	}
+	switch word {
+	case "completed", "succeeded", "success", "ok":
+		status = bgtask.StatusSucceeded
+	case "cancelled", "canceled", "aborted", "interrupted":
+		status = bgtask.StatusInterrupted
+	case "killed", "stopped":
+		status = bgtask.StatusStopped
+	case "failed", "error", "timed_out", "timeout":
+		status = bgtask.StatusFailed
+	case "":
+		if job.ExitCode != nil && *job.ExitCode != 0 {
+			status = bgtask.StatusFailed
+		}
+	default:
+		status = bgtask.StatusEndedWithUnknownOutcome
+	}
+	return sink.CloseBackgroundTask("deepseek-job:"+jobID, status)
 }

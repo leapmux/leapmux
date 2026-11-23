@@ -7,6 +7,9 @@ import (
 	"sort"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 type kimiNativeTaskState struct {
@@ -153,6 +156,7 @@ func (a *Agent) recoverNativeTask(sessionID string, address kimiTaskAddress) {
 	cancel()
 	if err != nil {
 		slog.Warn("recover Kimi task state", "agent_id", a.AgentID(), "task_id", address.taskID, "error", err)
+		a.settleUnrecoverableNativeTask(sessionID, address)
 		return
 	}
 	a.dispatchMu.Lock()
@@ -162,6 +166,43 @@ func (a *Agent) recoverNativeTask(sessionID string, address kimiTaskAddress) {
 	a.Mu.Unlock()
 	if current {
 		a.applyNativeTaskState(address.ownerAgentID, state)
+	}
+}
+
+func (a *Agent) settleUnrecoverableNativeTask(sessionID string, address kimiTaskAddress) {
+	a.dispatchMu.Lock()
+	defer a.finishDispatch()
+	a.Mu.Lock()
+	task := a.tasks[address]
+	if a.sessionID != sessionID || a.StoppedLocked() || a.ProcessExitedLocked() || task == nil || task.ended {
+		a.Mu.Unlock()
+		return
+	}
+	kind := task.kind
+	rowKey := task.rowKey
+	if rowKey == "" {
+		rowKey = kimiTaskRowKey(sessionID, address.ownerAgentID, address.taskID)
+		task.rowKey = rowKey
+	}
+	task.ended = true
+	task.endStatus = bgtask.StatusEndedWithUnknownOutcome
+	task.projectionPending = false
+	a.Mu.Unlock()
+	if kind != kimiTaskKindAgent && kind != kimiTaskKindProcess {
+		return
+	}
+	writer := a.sink
+	if kind == kimiTaskKindAgent {
+		if sink := a.runSink(a.run(address.ownerAgentID)); sink != nil {
+			writer = sink
+		}
+	}
+	err := a.queueRegistryClose(writer, rowKey, bgtask.StatusEndedWithUnknownOutcome)
+	providerkit.LogRegistryRefusal("kimi", "close", err)
+	if kind == kimiTaskKindAgent {
+		a.Mu.Lock()
+		task.childEndRetained = agent.OutputRetained(err)
+		a.Mu.Unlock()
 	}
 }
 

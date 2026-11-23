@@ -29,16 +29,18 @@ type diracTaskletOutcome struct {
 }
 
 type diracTaskletRecord struct {
-	ID             string               `json:"id"`
-	RootTaskID     string               `json:"rootTaskId"`
-	ConversationID string               `json:"conversationUlid"`
-	Title          *string              `json:"title"`
-	Prompt         *string              `json:"prompt"`
-	Role           string               `json:"role"`
-	CreatedAt      *float64             `json:"createdAt"`
-	NativeOutcome  json.RawMessage      `json:"outcome"`
-	Outcome        *diracTaskletOutcome `json:"-"`
-	lifecycle      diracTaskletLifecycle
+	ID               string               `json:"id"`
+	RootTaskID       string               `json:"rootTaskId"`
+	ConversationID   string               `json:"conversationUlid"`
+	Title            *string              `json:"title"`
+	Prompt           *string              `json:"prompt"`
+	Role             string               `json:"role"`
+	CreatedAt        *float64             `json:"createdAt"`
+	NativeOutcome    json.RawMessage      `json:"outcome"`
+	Outcome          *diracTaskletOutcome `json:"-"`
+	unmatchedOutcome *diracTaskletOutcome `json:"-"`
+	outcomeMismatch  bool                 `json:"-"`
+	lifecycle        diracTaskletLifecycle
 }
 
 type diracStoredTasklet struct {
@@ -324,9 +326,13 @@ func readDiracTaskletRecord(root sessionstore.ArchiveRoot, taskID, id string) (r
 		return diracTaskletRecord{}, fmt.Errorf("the Dirac tasklet changed its owner or outcome during the journal read")
 	}
 	record.lifecycle = journal.Lifecycle
-	// Native savedSettledRecord requires the exact durable outcome event. The
-	// native host can reuse an identical event across explicit resumptions.
+	// Native savedSettledRecord writes tasklet.json and tasklet_events.json
+	// separately. Defer settlement while the journal catches up, and keep the
+	// validated native outcome so the watcher can settle after the grace window
+	// or on process exit.
 	if record.Outcome != nil && !agent.JSONCanonicalEqual(record.NativeOutcome, journal.Outcome) {
+		record.unmatchedOutcome = record.Outcome
+		record.outcomeMismatch = true
 		record.Outcome = nil
 	}
 	return record, nil

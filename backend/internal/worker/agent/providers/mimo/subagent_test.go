@@ -1395,3 +1395,67 @@ func TestMiMoNonInterruptedFallbackChildExitDoesNotBlockRootSpanReset(t *testing
 		})
 	}
 }
+
+func TestOutOfOrderActorStatusRenamesToSpawnSpanID(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, server := newTestAgent(t, agent.NewProviderServices(sink))
+
+	// Deliver actor.status: running BEFORE the spawn tool part links the actor.
+	feed(a,
+		actorRegisteredEvent(t, actorID, true),
+		actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""),
+	)
+	synthKey := testSessionID + "/" + actorID
+	require.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, synthKey).Status)
+	originalChildID := backgroundTask(t, sink, synthKey).ChildAgentID
+	require.NotEmpty(t, originalChildID)
+
+	// Now linkSpawn arrives with the real span ID.
+	a.linkSpawn(spawnSpanID, actorID, "Probe helper", "SUBAGENT-WORK")
+
+	_, oldStillPresent := sink.BackgroundTask(synthKey)
+	assert.False(t, oldStillPresent, "synthesized key must be renamed to the spawn span ID")
+	row := backgroundTask(t, sink, spawnSpanID)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, originalChildID, row.ChildAgentID)
+
+	// Finish Job 1 and simulate a worker restart with restoreActorLinks.
+	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
+	require.Equal(t, bgtask.StatusSucceeded, backgroundTask(t, sink, spawnSpanID).Status)
+
+	restarted, _ := newTestAgent(t, agent.NewProviderServices(sink))
+	restarted.rpc = a.rpc
+	respondWithSpawnHistory(t, server)
+	restarted.restoreResumedSession(restarted.Context(), testSessionID)
+
+	feed(restarted, actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 2, ""))
+	assert.Equal(t, []string{originalChildID}, sink.ChildAgentIDs(), "resumed actor must resolve the exact same child transcript")
+	assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, spawnSpanID).Status)
+	assert.Equal(t, []string{spawnSpanID}, sink.RevivedTasks())
+}
+
+func TestResumedActorTurnRevivesClosedRowWithoutPriorChild(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, server := newTestAgent(t, agent.NewProviderServices(sink))
+
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
+	require.Equal(t, bgtask.StatusSucceeded, backgroundTask(t, sink, spawnSpanID).Status)
+	childID := backgroundTask(t, sink, spawnSpanID).ChildAgentID
+	turnCountBefore := len(sink.Child(childID).TurnActives())
+
+	// Simulate Worker restart: fresh Agent sharing the same sink, restored via restoreActorLinks.
+	restarted, _ := newTestAgent(t, agent.NewProviderServices(sink))
+	restarted.rpc = a.rpc
+	respondWithSpawnHistory(t, server)
+	restarted.restoreResumedSession(restarted.Context(), testSessionID)
+	require.Empty(t, restarted.actors[actorID].childAgentID, "precondition: restoreActorLinks leaves hadChild == false")
+	require.True(t, restarted.actors[actorID].closed, "precondition: restoreActorLinks leaves wasClosed == true")
+
+	feed(restarted, actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 2, ""))
+	assert.Equal(t, []string{spawnSpanID}, sink.RevivedTasks(), "startActorTurn must revive closed row even when hadChild is false")
+	assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, spawnSpanID).Status)
+	assert.Equal(t, turnCountBefore+1, len(sink.Child(childID).TurnActives()), "child turn active must be published once, not twice")
+}

@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func (a *Agent) messageContent(raw []byte) agent.MessageContent {
@@ -242,7 +243,7 @@ func (a *Agent) handleEvent(raw []byte) {
 		contracts.CommandCodeEventSkillLoaded, contracts.CommandCodeEventModError,
 		contracts.CommandCodeEventContinuationRecovery, contracts.CommandCodeEventToolHooks:
 		// The shared membership table selects the notification write below.
-	case contracts.CommandCodeEventSubagentStart, contracts.CommandCodeEventSubagentStop, contracts.CommandCodeEventSubagentProgress:
+	case contracts.CommandCodeEventSubagentStart, contracts.CommandCodeEventSubagentStop, contracts.CommandCodeEventSubagentProgress, eventSubagentBackgrounded:
 		a.observeChild(raw, event)
 	case contracts.CommandCodeEventPermissionModeChanged:
 		a.Mu.Lock()
@@ -344,8 +345,12 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	closeTools := completion == agent.MessageCompletionInterrupted || teardown
 	if closeTools {
 		a.closeUnfinishedTools(completion)
-		a.closeChildren(agent.IncompleteTaskStatus(completion), true)
 	}
+	childCloseStatus := bgtask.StatusStopped
+	if completion == agent.MessageCompletionError {
+		childCloseStatus = bgtask.StatusFailed
+	}
+	a.closeChildren(childCloseStatus, true)
 	a.endUnfinishedCompaction(compactionFailure)
 	duration := max(int64(0), a.clock.Now().Sub(started).Milliseconds())
 	metadata, err := json.Marshal(map[string]any{contracts.MessageMetadataFieldDurationMs: duration, contracts.SessionInfoKeyContextUsage: usage})

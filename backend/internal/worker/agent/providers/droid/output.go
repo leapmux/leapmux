@@ -34,6 +34,15 @@ func (a *Agent) HandleOutput(content []byte) {
 	a.handleFrame(content)
 }
 
+// droidDispatchAction carries post-dispatch tail work that must run after
+// dispatchFrame releases dispatchMu so tail.mu -> dispatchMu lock order holds.
+type droidDispatchAction struct {
+	startTailChildID  string
+	resumeTailChildID string
+	settledChildID    string
+	settledStatus     bgtask.Status
+}
+
 // handleFrame dispatches one stream-jsonrpc message. It runs on the process's
 // reader goroutine and on HandleOutput.
 func (a *Agent) handleFrame(line []byte) {
@@ -50,15 +59,20 @@ func (a *Agent) handleFrame(line []byte) {
 		return
 	}
 
-	childSessionID := a.dispatchFrame(line, &env)
-	if childSessionID != "" {
-		a.startChildTail(childSessionID)
+	action := a.dispatchFrame(line, &env)
+	switch {
+	case action.startTailChildID != "":
+		a.startChildTail(action.startTailChildID)
+	case action.resumeTailChildID != "":
+		a.resumeChildTailFromEOF(action.resumeTailChildID)
+	case action.settledChildID != "":
+		a.settleChildSession(action.settledChildID, action.settledStatus)
 	}
 }
 
 // dispatchFrame keeps native event state in order. A child archive starts after
 // this method releases dispatchMu because its reader can dispatch more events.
-func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) string {
+func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) droidDispatchAction {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 
@@ -77,13 +91,13 @@ func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) string {
 			} else {
 				a.settleStartup(a.adoptSessionID(env))
 			}
-			return ""
+			return droidDispatchAction{}
 		}
 		if a.handleCompactionResponse(*env) {
-			return ""
+			return droidDispatchAction{}
 		}
 		if a.settleReply(*env) {
-			return ""
+			return droidDispatchAction{}
 		}
 		if env.Error != nil {
 			slog.Debug("droid: request failed", "agent_id", a.AgentID(), "error", env.Error)
@@ -91,7 +105,7 @@ func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) string {
 	default:
 		slog.Debug("droid: unknown envelope type", "agent_id", a.AgentID(), "type", env.Type)
 	}
-	return ""
+	return droidDispatchAction{}
 }
 
 // droidNotification is the params of droid.session_notification.
@@ -107,11 +121,11 @@ type droidNotifHead struct {
 
 // handleNotification dispatches one session notification. The worker persists
 // the notification payload verbatim so the browser plugin reads the same shape.
-func (a *Agent) handleNotification(env *droidEnvelope) string {
+func (a *Agent) handleNotification(env *droidEnvelope) droidDispatchAction {
 	var params droidNotification
 	if err := json.Unmarshal(env.Params, &params); err != nil {
 		slog.Debug("droid: bad notification params", "agent_id", a.AgentID(), "error", err)
-		return ""
+		return droidDispatchAction{}
 	}
 	payload := params.Notification
 	if len(payload) == 0 {
@@ -121,7 +135,7 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 	var head droidNotifHead
 	if err := json.Unmarshal(payload, &head); err != nil {
 		slog.Debug("droid: bad notification payload", "agent_id", a.AgentID(), "error", err)
-		return ""
+		return droidDispatchAction{}
 	}
 	if head.Type == contracts.DroidNotificationChildSessionAvailable {
 		return a.onChildSessionAvailable(params.SessionID, payload)
@@ -129,7 +143,7 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 	target, ok := a.outputTargetFor(params.SessionID)
 	if !ok {
 		slog.Debug("droid: notification from an unknown session", "agent_id", a.AgentID(), "session_id", params.SessionID)
-		return ""
+		return droidDispatchAction{}
 	}
 	a.flushPendingOutput(target)
 	defer a.releaseEndedOutput(target)
@@ -157,9 +171,24 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 		if target.childSessionID == "" {
 			a.onSettingsUpdated(payload)
 		}
+	case droidNotificationChildSessionSettled:
+		var settled struct {
+			ChildSessionID string `json:"childSessionId"`
+			Status         string `json:"status"`
+		}
+		if json.Unmarshal(payload, &settled) == nil && settled.ChildSessionID != "" {
+			return droidDispatchAction{
+				settledChildID: settled.ChildSessionID,
+				settledStatus:  droidSettledChildStatus(settled.Status),
+			}
+		}
+	case droidNotificationBackgroundProcessesChanged:
+		if target.childSessionID == "" {
+			a.onBackgroundProcessesChanged(payload)
+		}
 	case contracts.DroidNotificationSessionTitleUpdated, contracts.DroidNotificationSessionTokenUsageChanged,
 		contracts.DroidNotificationToolExecutionHeartbeat, contracts.DroidNotificationPermissionResolved,
-		droidNotificationChildSessionSettled, droidNotificationQueuedMessagesChanged, droidNotificationScriptOracleChanged:
+		droidNotificationQueuedMessagesChanged, droidNotificationScriptOracleChanged:
 	// These native state updates supply no transcript content.
 	case contracts.DroidNotificationHookExecutionStarted, contracts.DroidNotificationStructuredOutput:
 	// LeapMux asks for no structured output. A hook reports its result separately.
@@ -194,7 +223,7 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 		// browser can still draw it, and leave the turn flag alone.
 		a.persistNotification(payload, target)
 	}
-	return ""
+	return droidDispatchAction{}
 }
 
 // persistNotification stores a notification row verbatim.
@@ -208,8 +237,174 @@ func (a *Agent) persistRow(payload []byte, span agent.SpanInfo, target droidOutp
 }
 
 // onChildSessionAvailable registers a native child under its parent session.
-func (a *Agent) onChildSessionAvailable(parentSessionID string, payload []byte) string {
-	return a.registerChildSession(parentSessionID, payload)
+func (a *Agent) onChildSessionAvailable(parentSessionID string, payload []byte) droidDispatchAction {
+	childSessionID, resumed := a.registerChildSession(parentSessionID, payload)
+	if childSessionID == "" {
+		return droidDispatchAction{}
+	}
+	if resumed {
+		return droidDispatchAction{resumeTailChildID: childSessionID}
+	}
+	return droidDispatchAction{startTailChildID: childSessionID}
+}
+
+// droidSettledChildStatus maps a child_session_settled status word onto a final
+// registry status.
+func droidSettledChildStatus(status string) bgtask.Status {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "completed", "succeeded", "success":
+		return bgtask.StatusSucceeded
+	case "cancelled", "canceled", "interrupted":
+		return bgtask.StatusInterrupted
+	case "stopped", "killed":
+		return bgtask.StatusStopped
+	case "failed", "error":
+		return bgtask.StatusFailed
+	default:
+		return bgtask.StatusEndedWithUnknownOutcome
+	}
+}
+
+// settleChildSession drains any active child archive tail outside dispatchMu
+// and closes the child registry row if the archive did not already settle it.
+func (a *Agent) settleChildSession(childSessionID string, status bgtask.Status) {
+	a.tailMu.Lock()
+	tail := a.childTails[childSessionID]
+	a.tailMu.Unlock()
+	if tail != nil {
+		tail.poll()
+	}
+	childID, currentStatus, exists, err := a.sink.LookupBackgroundTask(childSessionID)
+	if err != nil || !exists || currentStatus.IsFinished() {
+		return
+	}
+	a.dispatchMu.Lock()
+	if a.childAgents == nil {
+		a.childAgents = make(map[string]string)
+	}
+	if a.childAgents[childSessionID] == "" && childID != "" {
+		a.childAgents[childSessionID] = childID
+	}
+	a.closeChildSession(childSessionID, status)
+	a.dispatchMu.Unlock()
+	if tail != nil {
+		tail.finish()
+	}
+}
+
+type droidBackgroundProcess struct {
+	ID          string `json:"id"`
+	ProcessID   string `json:"processId"`
+	PID         int    `json:"pid"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+	Label       string `json:"label"`
+	Status      string `json:"status"`
+	ExitCode    *int   `json:"exitCode"`
+}
+
+func (p droidBackgroundProcess) key() string {
+	if id := strings.TrimSpace(p.ID); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(p.ProcessID); id != "" {
+		return id
+	}
+	if p.PID > 0 {
+		return strconv.Itoa(p.PID)
+	}
+	return ""
+}
+
+func droidBackgroundProcessStatus(proc droidBackgroundProcess) bgtask.Status {
+	switch strings.ToLower(strings.TrimSpace(proc.Status)) {
+	case "", "running", "started", "starting", "active":
+		return bgtask.StatusRunning
+	case "pending", "queued":
+		return bgtask.StatusPending
+	case "completed", "succeeded", "exited", "done":
+		if proc.ExitCode != nil && *proc.ExitCode != 0 {
+			return bgtask.StatusFailed
+		}
+		return bgtask.StatusSucceeded
+	case "failed", "error":
+		return bgtask.StatusFailed
+	case "killed", "stopped", "cancelled", "canceled", "terminated":
+		return bgtask.StatusStopped
+	default:
+		return bgtask.StatusRunning
+	}
+}
+
+// onBackgroundProcessesChanged reconciles Droid's reported active background
+// processes against shell rows in the task registry. Runs under dispatchMu.
+func (a *Agent) onBackgroundProcessesChanged(payload []byte) {
+	var n struct {
+		Processes           *[]droidBackgroundProcess `json:"processes"`
+		BackgroundProcesses *[]droidBackgroundProcess `json:"backgroundProcesses"`
+	}
+	if err := json.Unmarshal(payload, &n); err != nil {
+		slog.Debug("droid: read background processes", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	var list []droidBackgroundProcess
+	switch {
+	case n.Processes != nil:
+		list = *n.Processes
+	case n.BackgroundProcesses != nil:
+		list = *n.BackgroundProcesses
+	default:
+		return
+	}
+	if a.backgroundProcesses == nil {
+		a.backgroundProcesses = make(map[string]struct{})
+	}
+	active := make(map[string]struct{}, len(list))
+	for _, proc := range list {
+		id := proc.key()
+		if id == "" {
+			continue
+		}
+		rowKey := droidBackgroundProcessRowPrefix + id
+		status := droidBackgroundProcessStatus(proc)
+		if status.IsFinished() {
+			if _, tracked := a.backgroundProcesses[rowKey]; tracked {
+				providerkit.LogRegistryRefusal("droid", "close background process", a.sink.CloseBackgroundTask(rowKey, status))
+				delete(a.backgroundProcesses, rowKey)
+			}
+			continue
+		}
+		title, isCommand := strings.TrimSpace(proc.Description), false
+		if title == "" {
+			title = strings.TrimSpace(proc.Label)
+		}
+		if title == "" && strings.TrimSpace(proc.Command) != "" {
+			title, isCommand = strings.TrimSpace(proc.Command), true
+		}
+		if title == "" {
+			title = "Background process"
+		}
+		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:         rowKey,
+			Kind:           bgtask.KindShell,
+			ParentAgentID:  a.AgentID(),
+			Title:          title,
+			TitleIsCommand: isCommand,
+			Status:         status,
+		}); err != nil {
+			providerkit.LogRegistryRefusal("droid", "upsert background process", err)
+			continue
+		}
+		active[rowKey] = struct{}{}
+		a.backgroundProcesses[rowKey] = struct{}{}
+	}
+	for rowKey := range a.backgroundProcesses {
+		if _, ok := active[rowKey]; ok {
+			continue
+		}
+		providerkit.LogRegistryRefusal("droid", "close background process", a.sink.CloseBackgroundTask(rowKey, bgtask.StatusEndedWithUnknownOutcome))
+		delete(a.backgroundProcesses, rowKey)
+	}
 }
 
 // onMcpStatusChanged stores a changed nonempty set of server failures.

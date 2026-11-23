@@ -20,7 +20,7 @@ import (
 const (
 	fastagentArchiveRetryInterval = 250 * time.Millisecond
 	fastagentArchiveRetryMax      = 4 * time.Second
-	fastagentArchiveDeadline      = 2 * time.Minute
+	fastagentArchiveDeadline      = 5 * time.Second
 	fastagentArchiveTimerTag      = "fastagent-child-archive"
 )
 
@@ -47,8 +47,79 @@ type fastagentChildState struct {
 	lastError      error
 }
 
+func fastagentRawOutputText(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var text *string
+	if json.Unmarshal(raw, &text) != nil || text == nil {
+		return "", false
+	}
+	return *text, true
+}
+
 func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
-	return a.observeSubagentCall(tc.ToolCallID, tc.Title, tc.RawInput)
+	if !acp.StatusIsFinal(tc.Status) {
+		return a.observeSubagentCall(tc.ToolCallID, tc.Title, tc.RawInput)
+	}
+	if tc.ToolCallID == "" {
+		return nil
+	}
+	input, valid := fastagentSubagentRequest(tc.Title, tc.RawInput)
+	status := acp.FinalStatus(tc.Status)
+	if !valid {
+		a.childMu.Lock()
+		existing := a.childState[tc.ToolCallID]
+		a.childMu.Unlock()
+		if existing == nil || !a.finishFastagentChild(existing) {
+			return nil
+		}
+		obs := &acp.SubagentObservation{
+			RowKey:   existing.rowKey,
+			Status:   status,
+			CloseRow: true,
+			Mode:     acp.ModeCloseOnly,
+		}
+		if text, ok := fastagentRawOutputText(tc.RawOutput); ok && text != "" {
+			obs.ReportID = existing.rowKey
+			obs.Report = agent.SubagentReport{Text: text, Status: bgtask.StatusWire(status)}
+		}
+		return obs
+	}
+	label := input.Label
+	if label == "" {
+		label = "Subagent"
+	}
+	sessionID := a.CurrentSessionID()
+	rowKey := fastagentChildRowKey(sessionID, tc.ToolCallID)
+	a.childMu.Lock()
+	if _, done := a.childDone[tc.ToolCallID]; done {
+		a.childMu.Unlock()
+		return nil
+	}
+	if existing := a.childState[tc.ToolCallID]; existing != nil {
+		delete(a.childState, tc.ToolCallID)
+		close(existing.done)
+	}
+	if a.childDone == nil {
+		a.childDone = make(map[string]struct{})
+	}
+	a.childDone[tc.ToolCallID] = struct{}{}
+	a.childMu.Unlock()
+	obs := &acp.SubagentObservation{
+		RowKey:        rowKey,
+		ChildAgentKey: rowKey,
+		Title:         label,
+		Prompt:        input.Message,
+		Status:        status,
+		CloseRow:      true,
+		Spawns:        true,
+	}
+	if text, ok := fastagentRawOutputText(tc.RawOutput); ok && text != "" {
+		obs.ReportID = rowKey
+		obs.Report = agent.SubagentReport{Text: text, Status: bgtask.StatusWire(status)}
+	}
+	return obs
 }
 
 type fastagentSubagentInput struct {
@@ -113,9 +184,8 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 	a.childMu.Lock()
 	state, known := a.childState[tcu.ToolCallID]
 	if known && !state.finalSeen {
-		var resultText *string
-		if len(tcu.RawOutput) > 0 && json.Unmarshal(tcu.RawOutput, &resultText) == nil && resultText != nil {
-			state.resultText = *resultText
+		if text, ok := fastagentRawOutputText(tcu.RawOutput); ok {
+			state.resultText = text
 			state.resultSeen = true
 		}
 		state.finalSeen = true
@@ -175,13 +245,17 @@ func (a *Agent) clearChildState() {
 	a.childMu.Unlock()
 }
 
-// retryChildArchives gives a completed turn one more immediate archive read.
-func (a *Agent) retryChildArchives(_ error, _ bool) acp.PromptEnding {
+// retryChildArchives gives completed subagents one more immediate archive read
+// and closes any subagents that never reached a final tool update before the turn ended.
+func (a *Agent) retryChildArchives(err error, stopped bool) acp.PromptEnding {
 	a.childMu.Lock()
 	var pending []*fastagentChildState
+	var incomplete []*fastagentChildState
 	for _, state := range a.childState {
 		if state.finalSeen {
 			pending = append(pending, state)
+		} else {
+			incomplete = append(incomplete, state)
 		}
 	}
 	a.childMu.Unlock()
@@ -191,6 +265,21 @@ func (a *Agent) retryChildArchives(_ error, _ bool) acp.PromptEnding {
 		} else {
 			a.startFastagentArchiveRetry(state)
 		}
+	}
+	incompleteStatus := bgtask.StatusStopped
+	if err != nil && !stopped {
+		incompleteStatus = bgtask.StatusFailed
+	}
+	for _, state := range incomplete {
+		if !a.finishFastagentChild(state) {
+			continue
+		}
+		a.ApplySubagentObservation(&acp.SubagentObservation{
+			RowKey:   state.rowKey,
+			Status:   incompleteStatus,
+			CloseRow: true,
+			Mode:     acp.ModeCloseOnly,
+		})
 	}
 	return acp.PromptEnding{}
 }
@@ -205,6 +294,9 @@ func (a *Agent) replayFastagentChild(state *fastagentChildState) *acp.SubagentOb
 	archive, err := readFastagentChildArchive(a.home, state.sessionID, state)
 	if err != nil {
 		a.noteFastagentArchiveError(state, err)
+		if errors.Is(err, errFastagentArchiveAmbiguous) {
+			return a.failFastagentChildArchiveLocked(state, "Child transcript is ambiguous")
+		}
 		return nil
 	}
 	if !a.claimFastagentChild(state, archive.childID) {
@@ -316,7 +408,7 @@ func (a *Agent) retryFastagentChild(state *fastagentChildState, stop <-chan stru
 	for {
 		remaining := state.deadline.Sub(clock.Now())
 		if remaining <= 0 {
-			if obs := a.failFastagentChildArchive(state, "Child transcript unavailable after two minutes"); obs != nil {
+			if obs := a.failFastagentChildArchive(state, "Child transcript unavailable after 5 seconds"); obs != nil {
 				a.ApplySubagentObservation(obs)
 			}
 			return
@@ -342,7 +434,7 @@ func (a *Agent) retryFastagentChild(state *fastagentChildState, stop <-chan stru
 			return
 		}
 		if !clock.Now().Before(state.deadline) {
-			if obs := a.failFastagentChildArchive(state, "Child transcript unavailable after two minutes"); obs != nil {
+			if obs := a.failFastagentChildArchive(state, "Child transcript unavailable after 5 seconds"); obs != nil {
 				a.ApplySubagentObservation(obs)
 			}
 			return
@@ -354,17 +446,35 @@ func (a *Agent) retryFastagentChild(state *fastagentChildState, stop <-chan stru
 func (a *Agent) failFastagentChildArchive(state *fastagentChildState, reason string) *acp.SubagentObservation {
 	state.replayMu.Lock()
 	defer state.replayMu.Unlock()
+	return a.failFastagentChildArchiveLocked(state, reason)
+}
+
+func (a *Agent) failFastagentChildArchiveLocked(state *fastagentChildState, reason string) *acp.SubagentObservation {
+	a.childMu.Lock()
+	finalStatus := state.finalStatus
+	resultText := state.resultText
+	a.childMu.Unlock()
 	if !a.fastagentChildCurrent(state) || !a.finishFastagentChild(state) {
 		return nil
 	}
-	detail := "the archive did not become readable"
-	if state.lastError != nil {
-		detail = state.lastError.Error()
+	status := finalStatus
+	if !status.IsFinished() {
+		status = bgtask.StatusFailed
 	}
-	message := reason + ": " + detail
+	report := agent.SubagentReport{Status: bgtask.StatusWire(status)}
+	if resultText != "" {
+		report.Text = resultText
+	} else {
+		detail := "the archive did not become readable"
+		if state.lastError != nil {
+			detail = state.lastError.Error()
+		}
+		report.Label = "Archive unavailable"
+		report.Text = reason + ": " + detail
+	}
 	return &acp.SubagentObservation{
-		RowKey: state.rowKey, Title: state.title, Status: bgtask.StatusFailed, CloseRow: true,
+		RowKey: state.rowKey, Title: state.title, Status: status, CloseRow: true,
 		ReportID: state.rowKey,
-		Report:   agent.SubagentReport{Label: "Archive unavailable", Text: message, Status: "failed"},
+		Report:   report,
 	}
 }

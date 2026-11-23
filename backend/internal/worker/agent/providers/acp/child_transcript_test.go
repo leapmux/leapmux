@@ -94,3 +94,65 @@ func TestWithChildTranscriptRefusesForeignAndClosedTargets(t *testing.T) {
 		})
 	}
 }
+
+func TestReviveChildRowReopensClosedFinishedChildDirectly(t *testing.T) {
+	t.Parallel()
+	b, sink := newChildRouteBase(t)
+	spawn := &SubagentObservation{RowKey: "native-key", ChildAgentKey: "native-key", ChildAgentSessionID: "native-child-session", Title: "Native child", Status: bgtask.StatusRunning}
+	b.ApplySubagentObservation(spawn)
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "native-key", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly})
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	require.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+
+	target := ChildSessionTarget{RootSessionID: "session-1", SessionID: "native-child-session", RowKey: "native-key"}
+	require.NoError(t, b.ReviveChildRow(target))
+	assert.Equal(t, bgtask.StatusRunning, sink.BackgroundTasks()[0].Status)
+
+	var selected agent.ProviderServices
+	require.NoError(t, b.WithChildTranscript(target, func(services agent.ProviderServices) error {
+		selected = services
+		return nil
+	}))
+	require.NotNil(t, selected)
+	assert.Equal(t, "native-child-session", selected.MessageSessionID())
+	assert.Contains(t, b.openRows.takeAll(), "native-key")
+}
+
+func TestReviveChildRowRejectsRefusedMismatchedAndFailingClosedChild(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"refused", "session_mismatch", "revive_error"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			b, sink := newChildRouteBase(t)
+			spawn := &SubagentObservation{RowKey: "native-key", ChildAgentKey: "native-key", ChildAgentSessionID: "native-child-session", Title: "Native child", Status: bgtask.StatusRunning}
+			b.ApplySubagentObservation(spawn)
+			b.ApplySubagentObservation(&SubagentObservation{RowKey: "native-key", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly})
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			target := ChildSessionTarget{RootSessionID: "session-1", SessionID: "native-child-session", RowKey: "native-key"}
+			reviveErr := errors.New("revive refused")
+			switch mode {
+			case "refused":
+				b.refuseChild("native-key")
+			case "session_mismatch":
+				target.SessionID = "other-child-session"
+			case "revive_error":
+				sink.Child(rows[0].ChildAgentID).ReviveErr = reviveErr
+			}
+
+			err := b.ReviveChildRow(target)
+			if mode == "revive_error" {
+				require.ErrorIs(t, err, reviveErr)
+			} else {
+				require.ErrorIs(t, err, agent.ErrChildRouteNotReady)
+			}
+			b.children.mu.Lock()
+			_, stillClosed := b.children.closed["native-key"]
+			b.children.mu.Unlock()
+			assert.True(t, stillClosed)
+			assert.NotContains(t, b.openRows.takeAll(), "native-key")
+			assert.Equal(t, bgtask.StatusSucceeded, sink.BackgroundTasks()[0].Status)
+		})
+	}
+}

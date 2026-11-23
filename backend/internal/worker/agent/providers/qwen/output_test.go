@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -625,4 +626,34 @@ func TestQwenRetryAttemptCase(t *testing.T) {
 		Want:      []agenttest.RetryAttemptText{{Text: "ANSWER-AFTER-RETRY", Completion: agent.MessageCompletionComplete}},
 		Discarded: []string{"partial reasoning "},
 	})
+}
+
+func TestQwenQueueOverflowReconcilesFinishedAndAbsentBackgroundTasks(t *testing.T) {
+	t.Parallel()
+	const tasks = `[
+		{"kind":"agent","id":"general-purpose-call_686a7e3e21","toolUseId":"call_686a7e3e21","status":"failed"}
+	]`
+	a, sink, requests := newQwenAgent(t, nil, qwenTaskResponder(tasks, `{"cancelled":true}`))
+
+	// Open a background agent (reported finished in task list) and a background shell (absent from task list).
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_686a7e3e21","status":"pending","title":"Agent","kind":"other","rawInput":{"description":"Helper"},"_meta":{"toolName":"agent"}}`))
+	a.HandleOutput(backgroundLaunchResult(t, "/etc/passwd.jsonl"))
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_sh","status":"pending","kind":"execute","rawInput":{"command":"sleep 5","is_background":true},"_meta":{"toolName":"run_shell_command"}}`))
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_sh","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Background shell started.\nid: bg_gone\npid: 9\n"}}],"_meta":{"toolName":"run_shell_command"}}`))
+
+	agentKey := qwenAgentRowKey(qwenTestSession, "call_686a7e3e21")
+	require.Equal(t, bgtask.StatusRunning, func() bgtask.Status { r, _ := sink.BackgroundTask(agentKey); return r.Status }())
+	require.Equal(t, bgtask.StatusRunning, func() bgtask.Status { r, _ := sink.BackgroundTask("shell:bg_gone"); return r.Status }())
+
+	a.HandleOutput(backgroundNotice(t, "background_notification", map[string]any{"kind": "queue", "status": "dropped"}))
+
+	testutil.RequireEventually(t, func() bool {
+		agentRow, ok1 := sink.BackgroundTask(agentKey)
+		shellRow, ok2 := sink.BackgroundTask("shell:bg_gone")
+		return ok1 && ok2 && agentRow.Status == bgtask.StatusFailed && shellRow.Status == bgtask.StatusEndedWithUnknownOutcome
+	}, "queue overflow must reconcile finished and absent background tasks via detached RPC")
+
+	lists := requestsFor(requests(), qwenTaskListMethod)
+	require.NotEmpty(t, lists)
+	assert.Equal(t, true, lists[0].Params["includeWorkflows"], "reconciliation must request workflows alongside agents and shells")
 }

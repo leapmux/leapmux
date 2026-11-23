@@ -137,10 +137,12 @@ func workflowChildStatus(child nativeWorkflowChild) bgtask.Status {
 		if child.Outcome == contracts.MuseItemStatusCompleted {
 			if len(child.FailureKind) > 0 {
 				var failure *string
-				if json.Unmarshal(child.FailureKind, &failure) != nil || failure == nil {
+				if json.Unmarshal(child.FailureKind, &failure) != nil {
 					return bgtask.StatusEndedWithUnknownOutcome
 				}
-				return bgtask.StatusFailed
+				if failure != nil {
+					return bgtask.StatusFailed
+				}
 			}
 			return bgtask.StatusSucceeded
 		}

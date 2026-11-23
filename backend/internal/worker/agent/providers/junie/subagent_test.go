@@ -2,12 +2,14 @@ package junie
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -26,6 +28,7 @@ func newJunieChildTestAgent(t *testing.T) (*Agent, *agenttest.Sink) {
 	a, sink := newJunieGoalAgent(t)
 	a.SetSessionIDForTest("junie-main")
 	a.HooksForTest().SessionMetadataHandler = a.handleSessionMetadata
+	a.HooksForTest().PromptEnded = a.finishOpenChildren
 	return a, sink
 }
 
@@ -260,4 +263,149 @@ func writeJunieChildState(t *testing.T, home, sessionID, prompt, marker string) 
 	events := append(append(spawn, '\n'), updated...)
 	events = append(events, '\n')
 	require.NoError(t, os.WriteFile(filepath.Join(directory, "events.jsonl"), events, 0o600))
+}
+
+func TestJuniePromptEndedClosesOpenChildrenWithoutDiskTail(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		response json.RawMessage
+		err      error
+		want     bgtask.Status
+	}{
+		{
+			name:     "normal end closes open child stopped",
+			response: json.RawMessage(`{"stopReason":"end_turn"}`),
+			want:     bgtask.StatusStopped,
+		},
+		{
+			name: "prompt error closes open child failed",
+			err:  errors.New("prompt failed"),
+			want: bgtask.StatusFailed,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newJunieChildTestAgent(t)
+			a.SetPromptActiveForTest(true)
+			a.HandleSessionUpdateForTest(junieSessionUpdate(t, "junie-main", map[string]any{
+				"sessionUpdate": "subagent_spawned", "subagentSessionId": "junie-child-no-tail",
+				"name": "junie-cli-docs", "task": "Answer the question.",
+			}))
+			assert.Empty(t, a.childTails, "non-disk-backed session creates no disk tail")
+			row, ok := sink.BackgroundTask("junie-child-no-tail")
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+			a.FinishPromptRequestForTest("junie-main", tc.response, tc.err)
+			// finishOwnedPromptRequest holds sessionMu.RLock across PromptEnded,
+			// so queued registry closes flush once sessionMu releases.
+			a.FlushRegistryObservations()
+			row, ok = sink.BackgroundTask("junie-child-no-tail")
+			require.True(t, ok)
+			assert.Equal(t, tc.want, row.Status)
+		})
+	}
+}
+
+func TestJunieLateDuplicateSubagentSpawnedAfterFinishIsIgnored(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("JUNIE_HOME", home)
+	const sessionID = "session-260928-061937-xr13"
+	const prompt = "Read /work/note.txt and report the marker."
+	writeJunieChildState(t, home, sessionID, prompt, "FIRST_MARKER")
+
+	a, sink := newJunieChildTestAgent(t)
+	clock := testutil.NewQuartzMock(t)
+	a.clock = clock
+	a.SetContextForTest(t.Context())
+	a.SetSessionIDForTest(sessionID)
+
+	spawn := junieSessionUpdate(t, sessionID, map[string]any{
+		"sessionUpdate": "subagent_spawned", "subagentSessionId": junieTestChildSessionID,
+		"name": "leapmux-e2e-child", "task": prompt,
+	})
+	a.HandleSessionUpdateForTest(spawn)
+	defer a.stopChildTails()
+
+	a.childTailMu.Lock()
+	assert.NotNil(t, a.childTails[junieTestChildSessionID])
+	a.childTailMu.Unlock()
+
+	a.HandleSessionUpdateForTest(junieSessionUpdate(t, sessionID, map[string]any{
+		"sessionUpdate": "subagent_state_update", "subagentSessionId": junieTestChildSessionID, "state": "completed",
+	}))
+	row, ok := sink.BackgroundTask(junieTestChildSessionID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Re-delivering a late duplicate subagent_spawned must not spawn an orphaned poller.
+	a.HandleSessionUpdateForTest(spawn)
+	a.childTailMu.Lock()
+	assert.Nil(t, a.childTails[junieTestChildSessionID], "late duplicate spawn must not start a poller")
+	a.childTailMu.Unlock()
+	_, pending := clock.Peek()
+	assert.False(t, pending, "late duplicate spawn must not schedule a ticker")
+	row, ok = sink.BackgroundTask(junieTestChildSessionID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}
+
+func TestJuniePromptEndedStoppedErrorAndDiskTailFinalPoll(t *testing.T) {
+	t.Run("stopped with error closes child stopped", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newJunieChildTestAgent(t)
+		a.HandleSessionUpdateForTest(junieSessionUpdate(t, "junie-main", map[string]any{
+			"sessionUpdate": "subagent_spawned", "subagentSessionId": "junie-child-stopped",
+			"name": "junie-cli-docs", "task": "Answer the question.",
+		}))
+		a.finishOpenChildren(errors.New("cancelled"), true)
+		row, ok := sink.BackgroundTask("junie-child-stopped")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, row.Status)
+	})
+
+	t.Run("disk tail polls before close and blocks late duplicate spawn", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("JUNIE_HOME", home)
+		const sessionID = "session-260928-061937-xr13"
+		const prompt = "Read /work/note.txt and report the marker."
+		writeJunieChildState(t, home, sessionID, prompt, "The action is in progress.")
+
+		a, sink := newJunieChildTestAgent(t)
+		clock := testutil.NewQuartzMock(t)
+		a.clock = clock
+		a.SetContextForTest(t.Context())
+		a.SetSessionIDForTest(sessionID)
+		a.SetPromptActiveForTest(true)
+
+		spawn := junieSessionUpdate(t, sessionID, map[string]any{
+			"sessionUpdate": "subagent_spawned", "subagentSessionId": junieTestChildSessionID,
+			"name": "leapmux-e2e-child", "task": prompt,
+		})
+		a.HandleSessionUpdateForTest(spawn)
+		defer a.stopChildTails()
+
+		// Replace state.json with the final tool result before PromptEnded runs.
+		writeJunieChildState(t, home, sessionID, prompt, "FINAL_POLL_MARKER")
+		a.FinishPromptRequestForTest(sessionID, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+		// finishOwnedPromptRequest holds sessionMu.RLock across PromptEnded,
+		// so queued registry closes flush once sessionMu releases.
+		a.FlushRegistryObservations()
+
+		row, ok := sink.BackgroundTask(junieTestChildSessionID)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, row.Status)
+		assert.Contains(t, strings.Join(junieChildMessageContents(sink, row.ChildAgentID), "\n"), "FINAL_POLL_MARKER")
+		_, pending := clock.Peek()
+		assert.False(t, pending, "PromptEnded must stop the child poller")
+
+		// A late duplicate spawn after PromptEnded must also be ignored.
+		a.HandleSessionUpdateForTest(spawn)
+		a.childTailMu.Lock()
+		assert.Nil(t, a.childTails[junieTestChildSessionID])
+		a.childTailMu.Unlock()
+		_, pending = clock.Peek()
+		assert.False(t, pending)
+	})
 }

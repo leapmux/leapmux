@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -341,4 +343,83 @@ func TestSendChildInputCarriesAttachments(t *testing.T) {
 		"type": "base64", "mediaType": "application/pdf", "data": "JVBERg==", "name": "sample.pdf",
 	}}, params["files"])
 	assert.Empty(t, rootStdin.frames(), "the parent process must not receive the child's attachment")
+}
+
+func TestSendChildInputAfterResumeSeeksPastJobOneAndClosesOnJobTwo(t *testing.T) {
+	a, sink, clock, dir, work := droidArchiveHarness(t)
+	// Seed Job 1 archive on disk and a finished registry row with no in-memory childAgents/childTails (simulating resume).
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path,
+		droidArchiveStart(archiveChildID, work),
+		`{"type":"message","id":"job1-msg","message":{"role":"assistant","content":[{"type":"text","text":"JOB1_ONLY_TEXT"}]}}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
+	)
+	childAgentID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "droid-tool-task-1", ProviderChildKey: archiveChildID, Title: "Inspect the note"})
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask, RowKey: archiveChildID, Kind: bgtask.KindSubagent,
+		ChildAgentID: childAgentID, ParentAgentID: a.AgentID(), Title: "Inspect the note", Status: bgtask.StatusSucceeded,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask(archiveChildID, bgtask.StatusSucceeded))
+	bindDroidArchiveChild(t, a)
+
+	require.NoError(t, agenttest.SendChildInput(a, archiveChildID, agent.ChildInput{Content: "run job 2"}))
+
+	a.dispatchMu.Lock()
+	mappedChildID := a.childAgents[archiveChildID]
+	a.dispatchMu.Unlock()
+	assert.Equal(t, childAgentID, mappedChildID, "SendChildInput after resume must populate childAgents")
+
+	row, ok := sink.BackgroundTask(archiveChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "SendChildInput must revive the finished child row")
+
+	appendDroidArchive(t, path,
+		`{"type":"message","id":"job2-msg","message":{"role":"assistant","content":[{"type":"text","text":"JOB2_LIVE_TEXT"}]}}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`,
+	)
+	advanceDroidArchive(t, clock)
+	testutil.RequireEventually(t, func() bool {
+		r, exists := sink.BackgroundTask(archiveChildID)
+		return exists && r.Status == bgtask.StatusSucceeded && archiveRowsContain(childArchiveRows(sink, archiveChildID), "JOB2_LIVE_TEXT")
+	}, "resumed tail must read Job 2 and close the child row on Job 2 outcome")
+	assert.False(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "JOB1_ONLY_TEXT"),
+		"resumed tail must start at Job 1 EOF and never replay Job 1 messages")
+}
+
+func TestSendChildInputDoesNotReviveWhenTailSetupFails(t *testing.T) {
+	t.Run("corrupt archive header", func(t *testing.T) {
+		a, sink, _, dir, work := droidArchiveHarness(t)
+		path := filepath.Join(dir, archiveChildID+".jsonl")
+		appendDroidArchive(t, path, droidArchiveStart("d43e95b8-2c61-4ce8-8765-dbecde5fa3a1", work))
+		childAgentID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "droid-tool-task-1", ProviderChildKey: archiveChildID, Title: "Inspect the note"})
+		require.NoError(t, err)
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			Role: bgtask.RoleChildTask, RowKey: archiveChildID, Kind: bgtask.KindSubagent,
+			ChildAgentID: childAgentID, ParentAgentID: a.AgentID(), Title: "Inspect the note", Status: bgtask.StatusSucceeded,
+		}))
+		require.NoError(t, sink.CloseBackgroundTask(archiveChildID, bgtask.StatusSucceeded))
+		bindDroidArchiveChild(t, a)
+
+		require.NoError(t, agenttest.SendChildInput(a, archiveChildID, agent.ChildInput{Content: "run job 2"}))
+		row, ok := sink.BackgroundTask(archiveChildID)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status, "failed tail setup must not revive row into stuck Running")
+		assert.Empty(t, sink.RevivedTasks())
+	})
+
+	t.Run("missing working dir", func(t *testing.T) {
+		t.Parallel()
+		a, _, _, _ := newBoundChildAgent(t)
+		// newBoundChildAgent leaves workingDir empty so tail setup cannot succeed.
+		require.NoError(t, agenttest.SendChildInput(a, steerChildID, agent.ChildInput{Content: "run job 2"}))
+		_, status, exists, err := a.sink.LookupBackgroundTask(steerChildID)
+		require.NoError(t, err)
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusSucceeded, status, "invalid workingDir must not revive row without a healthy tail")
+	})
 }

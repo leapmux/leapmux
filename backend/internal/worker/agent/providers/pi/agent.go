@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // Agent manages a single pi --mode rpc process and its remote procedure call (RPC) transport.
@@ -65,14 +66,18 @@ type Agent struct {
 	// Pi exposes token/cost information in assistant messages and via
 	// get_session_stats. Keep the latest normalized snapshot here so persisted
 	// message_end / agent_end events can rehydrate the frontend after reconnect.
-	sessionCostUsd        float64
-	sessionCostKnown      bool
-	latestContextUsage    map[string]any
-	usageGeneration       uint64
-	sessionStatsMu        sync.Mutex
-	generationBuffer      providerkit.GenerationBuffer
-	toolStates            map[string]*piToolState
-	closedSpans           providerkit.ClosedSpanSet
+	sessionCostUsd     float64
+	sessionCostKnown   bool
+	latestContextUsage map[string]any
+	usageGeneration    uint64
+	sessionStatsMu     sync.Mutex
+	generationBuffer   providerkit.GenerationBuffer
+	toolStates         map[string]*piToolState
+	closedSpans        providerkit.ClosedSpanSet
+	// openBgTasks tracks registry row keys for background Agent and
+	// SubagentWorkflow runs so ClearContext, Stop, and Wait close them.
+	// Guarded by a.Mu.
+	openBgTasks map[string]struct{}
 	nextToolOrder         uint64
 	questionDialogs       map[string]*piQuestionSource
 	customQuestionAnswers map[piQuestionKey]*piCustomQuestionAnswer
@@ -412,6 +417,7 @@ func (a *Agent) ClearContext() (string, error) {
 	}
 	a.flushPiGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompletePiTools(agent.MessageCompletionInterrupted)
+	a.closeOpenBgTasks(bgtask.StatusStopped)
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	a.applyStateResponse(stateRaw)
 	a.Mu.Lock()

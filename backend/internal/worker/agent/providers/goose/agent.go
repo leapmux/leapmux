@@ -34,9 +34,9 @@ type Agent struct {
 	// that arrives after the ack still names the spawn id, so it must reach
 	// the renamed row.
 	gooseChildRenames map[string]string
-	// activeDelegations tracks foreground delegated subagent session IDs
-	// started in this session until a completed/failed notice or interrupted
-	// prompt closes them. Guarded by a.Mu.
+	// activeDelegations tracks open Goose delegated subagent row keys until a
+	// completed/failed notice, prompt error/interrupt, or idle interrupt closes
+	// them. Guarded by a.Mu.
 	activeDelegations map[string]struct{}
 }
 

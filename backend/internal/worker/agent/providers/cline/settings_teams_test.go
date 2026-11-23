@@ -221,7 +221,7 @@ func TestAgentTeamsRefusedRebuild(t *testing.T) {
 	require.NoError(t, r.agent.SendInput("Continue with the restored team setting.", nil))
 }
 
-func TestAgentTeamsPreservesTeammateState(t *testing.T) {
+func TestAgentTeamsRebuildClosesTeammateRuns(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	root := r.sessionID()
@@ -235,13 +235,14 @@ func TestAgentTeamsPreservesTeammateState(t *testing.T) {
 	require.Len(t, r.hub.commandsNamed(commandSessionCreate), 2)
 	after, ok := r.sink.BackgroundTask(teamRowPrefix + "run_team_setting")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusRunning, after.Status)
+	assert.Equal(t, bgtask.StatusStopped, after.Status)
 	assert.Equal(t, before.ChildAgentID, after.ChildAgentID)
 	assert.NotEmpty(t, after.ChildAgentID)
 	assert.Equal(t, notices, r.sink.NotificationCount())
 	r.agent.Mu.Lock()
-	run := r.agent.team.runs["run_team_setting"]
+	runs := len(r.agent.team.runs)
+	busy := r.agent.team.busy()
 	r.agent.Mu.Unlock()
-	require.NotNil(t, run)
-	assert.False(t, run.ended)
+	assert.Zero(t, runs)
+	assert.False(t, busy)
 }

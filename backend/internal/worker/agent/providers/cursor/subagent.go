@@ -22,6 +22,7 @@ func (a *Agent) clearTaskToolCalls() {
 	clear(a.taskToolCalls)
 	clear(a.taskReports)
 	clear(a.nativeTasks)
+	clear(a.backgroundTaskCalls)
 }
 
 // rememberTaskToolCall notes that toolCallID is Cursor's `task` tool.
@@ -76,12 +77,20 @@ func (a *Agent) finishedObservation(tcu acp.ToolCallUpdateEnvelope) *acp.Subagen
 	if observation == nil || !wasTaskTool {
 		return observation
 	}
+	rowKey := bgtask.NormalizeRowKey(tcu.ToolCallID)
+	background := cursorToolCallRanInBackground(tcu.RawOutput)
 	a.Mu.Lock()
-	native, found := a.nativeTasks[bgtask.NormalizeRowKey(tcu.ToolCallID)]
+	native, found := a.nativeTasks[rowKey]
+	if !found && background && rowKey != "" {
+		if a.backgroundTaskCalls == nil {
+			a.backgroundTaskCalls = make(map[string]bool)
+		}
+		a.backgroundTaskCalls[rowKey] = true
+	}
 	a.Mu.Unlock()
 	if found && native.status.IsFinished() {
 		observation.Status = native.status
-	} else if found && cursorToolCallRanInBackground(tcu.RawOutput) {
+	} else if found && background {
 		observation.Status = bgtask.StatusRunning
 		observation.CloseRow = false
 	}
@@ -229,8 +238,14 @@ func (a *Agent) handleCursorSubagentLifecycle(updateType string, metadata map[st
 	return a.applyCursorSubagentLifecycle(a.CurrentSessionID(), a.Sink(), updateType, metadata, update)
 }
 
+// isCursorSubagentLifecycleUpdate reports whether an ACP session update kind is
+// one of Cursor's subagent lifecycle notifications.
+func isCursorSubagentLifecycleUpdate(updateType string) bool {
+	return updateType == "subagent_spawned" || updateType == "subagent_state_update"
+}
+
 func (a *Agent) applyCursorSubagentLifecycle(parentSessionID string, owner agent.ProviderServices, updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool {
-	if updateType != "subagent_spawned" && updateType != "subagent_state_update" {
+	if !isCursorSubagentLifecycleUpdate(updateType) {
 		return false
 	}
 	rootSessionID, served := a.SessionRoot(parentSessionID)
@@ -250,8 +265,25 @@ func (a *Agent) applyCursorSubagentLifecycle(parentSessionID string, owner agent
 			slog.Warn("Read Cursor child task", "agent_id", a.AgentID(), "tool_call_id", identity.ToolCallID, "error", err)
 			return true
 		}
-		if found && (childID == "" || status.IsFinished()) {
+		if found && childID == "" {
 			return true
+		}
+		if found && status.IsFinished() {
+			a.Mu.Lock()
+			reviveBackground := a.backgroundTaskCalls[rowKey]
+			delete(a.backgroundTaskCalls, rowKey)
+			a.Mu.Unlock()
+			if !reviveBackground {
+				return true
+			}
+			if !a.ApplySubagentObservationForSession(parentSessionID, &acp.SubagentObservation{
+				RowKey:        rowKey,
+				ChildAgentKey: rowKey,
+				Status:        bgtask.StatusRunning,
+				ReviveRow:     true,
+			}) {
+				return true
+			}
 		}
 		if !found {
 			title := lifecycle.Name
@@ -273,6 +305,7 @@ func (a *Agent) applyCursorSubagentLifecycle(parentSessionID string, owner agent
 		if a.nativeTasks == nil {
 			a.nativeTasks = make(map[string]cursorNativeTask)
 		}
+		delete(a.backgroundTaskCalls, rowKey)
 		a.nativeTasks[rowKey] = cursorNativeTask{sessionID: lifecycle.SessionID, parentSessionID: parentSessionID, status: bgtask.StatusRunning}
 		a.Mu.Unlock()
 		a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: rootSessionID, SessionID: lifecycle.SessionID, RowKey: rowKey})

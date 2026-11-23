@@ -272,6 +272,8 @@ func (a *Agent) dispatchClaudeTaskEvent(event *claudeTaskEnvelope) {
 			a.handleClaudeTaskProgress(event)
 		case contracts.ClaudeHiddenSystemSubtypeTaskNotification:
 			a.handleClaudeTaskNotification(event)
+		case contracts.ClaudeHiddenSystemSubtypeTaskUpdated:
+			a.handleClaudeTaskUpdated(event)
 		}
 		return nil
 	})

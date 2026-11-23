@@ -26,20 +26,21 @@ const (
 
 // These event values have only worker readers.
 const (
-	eventTextDelta         = "text_delta"
-	eventThinkingDelta     = "thinking_delta"
-	eventThinkingStart     = "thinking_start"
-	eventMessageStart      = "message_start"
-	eventMessageUpdate     = "message_update"
-	eventTurnStart         = "turn_start"
-	eventTurnEnd           = "turn_end"
-	eventModelRequestStart = "model_request_start"
-	eventToolRunning       = "tool_running"
-	eventInterrupted       = "interrupted"
-	eventSessionTitled     = "session_titled"
-	eventModelTrace        = "model_trace"
-	eventToolInputCoerced  = "tool_input_coerced"
-	eventToolInputRepaired = "tool_input_repaired"
+	eventTextDelta            = "text_delta"
+	eventThinkingDelta        = "thinking_delta"
+	eventThinkingStart        = "thinking_start"
+	eventMessageStart         = "message_start"
+	eventMessageUpdate        = "message_update"
+	eventTurnStart            = "turn_start"
+	eventTurnEnd              = "turn_end"
+	eventModelRequestStart    = "model_request_start"
+	eventToolRunning          = "tool_running"
+	eventInterrupted          = "interrupted"
+	eventSessionTitled        = "session_titled"
+	eventModelTrace           = "model_trace"
+	eventToolInputCoerced     = "tool_input_coerced"
+	eventToolInputRepaired    = "tool_input_repaired"
+	eventSubagentBackgrounded = "subagent_backgrounded"
 )
 
 type sessionView struct {

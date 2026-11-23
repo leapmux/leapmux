@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -396,4 +397,138 @@ func TestSubagentTitleConformance(t *testing.T) {
 		title, _ := subagentRow(tc.Tool, tc.Input)
 		assert.Equal(t, tc.Title, title, tc.Why)
 	}
+}
+
+func TestShellLivenessPollerClosesExitedPIDOnce(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	ctx := testutil.DeadlineContext(t)
+
+	var alive atomic.Bool
+	alive.Store(true)
+	probed := make(chan int, 8)
+	h.agent.pidAliveFn = func(pid int) bool {
+		result := alive.Load()
+		probed <- pid
+		return result
+	}
+
+	var closes atomic.Int32
+	h.sink.OnCloseBackgroundTask = func(string, bgtask.Status) { closes.Add(1) }
+
+	tickerTrap := h.clock.Trap().NewTicker("amp", "shell-liveness")
+	defer tickerTrap.Close()
+
+	fp := startBackgroundCommand(h, "npm run dev", 4242)
+	assert.Equal(t, ampShellPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+
+	// Advancing a tick while the PID is alive leaves the shell row running.
+	h.clock.Advance(ampShellPollInterval).MustWait(ctx)
+	select {
+	case pid := <-probed:
+		assert.Equal(t, 4242, pid)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for live PID probe")
+	}
+	row, ok := h.sink.BackgroundTask(shellRowKey("TU-dev"))
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, int32(0), closes.Load())
+
+	// Once the PID exits, the next tick closes the row once with StatusEndedWithUnknownOutcome.
+	alive.Store(false)
+	h.clock.Advance(ampShellPollInterval).MustWait(ctx)
+	select {
+	case pid := <-probed:
+		assert.Equal(t, 4242, pid)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for dead PID probe")
+	}
+	require.Eventually(t, func() bool {
+		r, exists := h.sink.BackgroundTask(shellRowKey("TU-dev"))
+		return exists && r.Status == bgtask.StatusEndedWithUnknownOutcome
+	}, 30*time.Second, time.Millisecond)
+	assert.Equal(t, int32(1), closes.Load())
+
+	// Stopping the agent after poller close must drain shellPollerWG and not double-close.
+	h.agent.Stop()
+	fp.awaitHandled(t)
+	assert.Equal(t, int32(1), closes.Load())
+}
+
+func TestShellLivenessPollerRestartsAfterEmptying(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	ctx := testutil.DeadlineContext(t)
+
+	var alive atomic.Bool
+	alive.Store(false)
+	h.agent.pidAliveFn = func(int) bool { return alive.Load() }
+
+	tickerTrap := h.clock.Trap().NewTicker("amp", "shell-liveness")
+	defer tickerTrap.Close()
+
+	fp := startBackgroundCommand(h, "npm run dev", 4242)
+	assert.Equal(t, ampShellPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+
+	// First tick closes PID 4242; second tick observes empty a.shells and exits the poller.
+	h.clock.Advance(ampShellPollInterval).MustWait(ctx)
+	require.Eventually(t, func() bool {
+		r, exists := h.sink.BackgroundTask(shellRowKey("TU-dev"))
+		return exists && r.Status == bgtask.StatusEndedWithUnknownOutcome
+	}, 30*time.Second, time.Millisecond)
+	h.clock.Advance(ampShellPollInterval).MustWait(ctx)
+	require.Eventually(t, func() bool {
+		h.agent.mu.Lock()
+		defer h.agent.mu.Unlock()
+		return !h.agent.shellPollerRunning
+	}, 30*time.Second, time.Millisecond)
+
+	// Starting a second background command spawns a new poller and closes it when dead.
+	h.feed(fp, assistantLine("["+toolUseBlock("TU-dev-2", contracts.AmpShellToolShellCommand, `{"command":"npm run watch"}`)+"]", "tool_use"))
+	h.feed(fp, toolResultLine("TU-dev-2", `{"output":"watching\n","running":true,"pid":4243}`, false))
+	assert.Equal(t, ampShellPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+	h.clock.Advance(ampShellPollInterval).MustWait(ctx)
+	require.Eventually(t, func() bool {
+		r, exists := h.sink.BackgroundTask(shellRowKey("TU-dev-2"))
+		return exists && r.Status == bgtask.StatusEndedWithUnknownOutcome
+	}, 30*time.Second, time.Millisecond)
+}
+
+func TestNonJSONShellToolErrorClosesDeadProcess(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		tool  string
+		text  string
+		alive bool
+		want  bgtask.Status
+	}{
+		{name: "kill error on live process keeps row running", tool: contracts.AmpShellToolShellCommandKill, text: "Error: transient failure", alive: true, want: bgtask.StatusRunning},
+		{name: "status error on live process keeps row running", tool: contracts.AmpShellToolShellCommandStatus, text: "Error: transient failure", alive: true, want: bgtask.StatusRunning},
+		{name: "plugin error prefix keeps row running even when dead", tool: contracts.AmpShellToolShellCommandKill, text: "Plugin error: denied by policy", alive: false, want: bgtask.StatusRunning},
+		{name: "tool rejected by plugin prefix keeps row running even when dead", tool: contracts.AmpShellToolShellCommandStatus, text: "Tool rejected by plugin: rule 75", alive: false, want: bgtask.StatusRunning},
+		{name: "kill error on dead process closes as stopped", tool: contracts.AmpShellToolShellCommandKill, text: "Error: ESRCH: no such process", alive: false, want: bgtask.StatusStopped},
+		{name: "status error on dead process closes as failed", tool: contracts.AmpShellToolShellCommandStatus, text: "Error: ESRCH: no such process", alive: false, want: bgtask.StatusFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			h.agent.pidAliveFn = func(int) bool { return tc.alive }
+			fp := startBackgroundCommand(h, "npm run dev", 4242)
+			h.feed(fp, assistantLine("["+toolUseBlock("TU-err", tc.tool, `{"pid":4242}`)+"]", "tool_use"))
+			h.feed(fp, toolResultLine("TU-err", tc.text, true))
+
+			row, ok := h.sink.BackgroundTask(shellRowKey("TU-dev"))
+			require.True(t, ok)
+			assert.Equal(t, tc.want, row.Status)
+		})
+	}
+}
+
+func TestAmpProcessAliveBoundaries(t *testing.T) {
+	t.Parallel()
+	assert.False(t, ampProcessAlive(0))
+	assert.False(t, ampProcessAlive(-1))
+	assert.True(t, ampProcessAlive(os.Getpid()))
 }

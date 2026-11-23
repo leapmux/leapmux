@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -265,7 +266,7 @@ func junieChildToolRecords(data []byte, link junieChildLink, childName, prompt s
 		return nil, errJunieStateNotReady
 	}
 	if selected.TypeID != childName || selected.DisplayName != childName ||
-		len(selected.Tasks) == 0 || selected.Tasks[0] != prompt {
+		!slices.Contains(selected.Tasks, prompt) {
 		return nil, errors.New("junie child state differs from its ACP announcement")
 	}
 	var out []junieToolRecord
@@ -458,22 +459,39 @@ func (a *Agent) startChildTail(childSessionID, childName, prompt string) {
 		return
 	}
 	a.childTailMu.Lock()
-	defer a.childTailMu.Unlock()
+	if _, finished := a.finishedChildren[childSessionID]; finished || a.childTails[childSessionID] != nil {
+		a.childTailMu.Unlock()
+		return
+	}
+	a.childTailMu.Unlock()
+
+	tail := newJunieChildTail(a, rootSessionID, childSessionID, childName, prompt)
+	tail.start()
+
+	a.childTailMu.Lock()
+	_, finished := a.finishedChildren[childSessionID]
+	_, open := a.openChildren[childSessionID]
+	if finished || !open || a.childTails[childSessionID] != nil {
+		a.childTailMu.Unlock()
+		tail.stop()
+		return
+	}
 	if a.childTails == nil {
 		a.childTails = make(map[string]*junieChildTail)
 	}
-	if a.childTails[childSessionID] != nil {
-		return
-	}
-	tail := newJunieChildTail(a, rootSessionID, childSessionID, childName, prompt)
-	tail.start()
 	a.childTails[childSessionID] = tail
+	a.childTailMu.Unlock()
 }
 
 func (a *Agent) finishChildTail(childSessionID string) {
 	a.childTailMu.Lock()
 	tail := a.childTails[childSessionID]
 	delete(a.childTails, childSessionID)
+	delete(a.openChildren, childSessionID)
+	if a.finishedChildren == nil {
+		a.finishedChildren = make(map[string]struct{})
+	}
+	a.finishedChildren[childSessionID] = struct{}{}
 	a.childTailMu.Unlock()
 	if tail != nil {
 		tail.stop()
@@ -485,6 +503,8 @@ func (a *Agent) stopChildTails() {
 	a.childTailMu.Lock()
 	tails := a.childTails
 	a.childTails = nil
+	a.openChildren = nil
+	a.finishedChildren = nil
 	a.childTailMu.Unlock()
 	for _, tail := range tails {
 		tail.stop()

@@ -63,6 +63,9 @@ func decodeDiracTaskletJournal(raw []byte, taskletID string) (diracTaskletJourna
 				return journal, fmt.Errorf("the Dirac tasklet lifecycle has an unknown state")
 			}
 			journal.Lifecycle = diracTaskletLifecycle{ID: event.ID, State: communication.State, Assignment: communication.Assignment, Raw: rawEvent}
+			if communication.State == "resumed" {
+				journal.Outcome = nil
+			}
 		case "outcome":
 			var outcome diracTaskletOutcome
 			if err := json.Unmarshal(communication.Outcome, &outcome); err != nil || !outcome.valid() {

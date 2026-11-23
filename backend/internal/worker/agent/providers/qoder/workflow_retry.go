@@ -28,12 +28,23 @@ type qoderArchiveJob struct {
 	done   bool
 }
 
+func qoderArchiveFallbackStatus(event qoderTaskEvent, status bgtask.Status) bgtask.Status {
+	if event.requireFinalStatus {
+		return bgtask.StatusEndedWithUnknownOutcome
+	}
+	return status
+}
+
 func (a *Agent) startWorkflowArchiveRetry(event qoderTaskEvent, run *qoderWorkflowRun, status bgtask.Status) {
 	job := &qoderArchiveJob{event: event, run: run, status: status}
 	a.archiveMu.Lock()
 	if a.archiveStopped {
 		a.archiveMu.Unlock()
-		a.closeWorkflowWithoutArchive(run, status, errors.New("the qoder process exited before its workflow archive was ready"))
+		a.closeWorkflowWithoutArchive(run, qoderArchiveFallbackStatus(event, status), errors.New("the qoder process exited before its workflow archive was ready"))
+		return
+	}
+	if a.archiveJobs[run.key] != nil {
+		a.archiveMu.Unlock()
 		return
 	}
 	if a.archiveJobs == nil {
@@ -118,7 +129,7 @@ func (a *Agent) tryWorkflowArchive(job *qoderArchiveJob) bool {
 	}
 	if err != nil {
 		slog.Warn("qoder workflow archive retry refused", "agent_id", a.AgentID(), "error", err)
-		a.closeWorkflowWithoutArchive(job.run, job.status, err)
+		a.closeWorkflowWithoutArchive(job.run, qoderArchiveFallbackStatus(job.event, job.status), err)
 	} else {
 		a.applyWorkflowArchive(job.run, job.status, archive)
 	}
@@ -132,7 +143,7 @@ func (a *Agent) failWorkflowArchive(job *qoderArchiveJob, err error) {
 	if job.done {
 		return
 	}
-	a.closeWorkflowWithoutArchive(job.run, job.status, err)
+	a.closeWorkflowWithoutArchive(job.run, qoderArchiveFallbackStatus(job.event, job.status), err)
 	a.finishWorkflowArchiveJob(job)
 }
 

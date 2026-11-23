@@ -243,6 +243,9 @@ func (a *Agent) applyBackgroundTasks(state *cascadeState, patch *backgroundTasks
 			if slot < 0 || slot >= patch.TotalLength {
 				continue
 			}
+			if snapshot.TaskSnapshot.TaskID == "" {
+				continue
+			}
 			logPath := snapshot.TaskSnapshot.LogURI
 			if parsed, err := url.Parse(logPath); err == nil && parsed.Scheme == "file" {
 				logPath = parsed.Path
@@ -258,20 +261,16 @@ func (a *Agent) applyBackgroundTasks(state *cascadeState, patch *backgroundTasks
 			}
 		}
 	}
-	current := make(map[int]backgroundTask, len(slots))
+	current := make(map[string]backgroundTask, len(slots))
 	publish := make([]backgroundTask, 0, len(slots))
 	for _, task := range slots {
-		current[task.stepIndex] = task
+		current[task.rowKey] = task
 		publish = append(publish, task)
 	}
 	state.background = current
-	retained := make(map[string]struct{}, len(current))
-	for _, task := range current {
-		retained[task.rowKey] = struct{}{}
-	}
 	var removed []backgroundTask
 	for _, task := range previous {
-		if _, keeps := retained[task.rowKey]; !keeps {
+		if _, keeps := current[task.rowKey]; !keeps {
 			state.closingBackground[task.rowKey] = task
 			removed = append(removed, task)
 		}
@@ -337,11 +336,25 @@ func (a *Agent) finishRemovedBackgroundTasks(state *cascadeState, tasks []backgr
 	return persistErr
 }
 
-func (a *Agent) backgroundForStep(state *cascadeState, index int) (backgroundTask, bool) {
+func hasBackgroundForStepLocked(state *cascadeState, index int) bool {
+	for _, task := range state.background {
+		if task.stepIndex == index {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) backgroundForStep(state *cascadeState, index int) []backgroundTask {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	task, ok := state.background[index]
-	return task, ok
+	var tasks []backgroundTask
+	for _, task := range state.background {
+		if task.stepIndex == index {
+			tasks = append(tasks, task)
+		}
+	}
+	return tasks
 }
 
 func (a *Agent) finishBackgroundStep(state *cascadeState, task backgroundTask, step antigravityStep) {

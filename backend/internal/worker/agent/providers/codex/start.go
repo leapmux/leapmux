@@ -52,8 +52,6 @@ var codexOptedOutNotificationMethods = []string{
 	codexMethodAccountGatewayOAuthChanged,
 	// LeapMux reads the thread/start response.
 	contracts.CodexMethodThreadStarted,
-	// turn/started and turn/completed own the turn state.
-	contracts.CodexMethodThreadStatusChanged,
 	// Read cursors for multi-client apps.
 	contracts.CodexMethodThreadReadStateChanged,
 	// Another Codex client's queue.

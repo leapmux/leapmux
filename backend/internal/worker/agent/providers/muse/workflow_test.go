@@ -59,7 +59,7 @@ func TestWorkflowChildStatusUsesFailureKindPresence(t *testing.T) {
 		{name: "empty failure class", fields: `"terminal":"completed","failureKind":""`, want: bgtask.StatusFailed},
 		{name: "cancelled", fields: `"terminal":"cancelled","failureKind":"native_failure"`, want: bgtask.StatusStopped},
 		{name: "failed", fields: `"terminal":"failed","failureKind":"native_failure"`, want: bgtask.StatusFailed},
-		{name: "null failure class", fields: `"terminal":"completed","failureKind":null`, want: bgtask.StatusEndedWithUnknownOutcome},
+		{name: "null failure class", fields: `"terminal":"completed","failureKind":null`, want: bgtask.StatusSucceeded},
 		{name: "number failure class", fields: `"terminal":"completed","failureKind":0`, want: bgtask.StatusEndedWithUnknownOutcome},
 		{name: "object failure class", fields: `"terminal":"completed","failureKind":{}`, want: bgtask.StatusEndedWithUnknownOutcome},
 	} {

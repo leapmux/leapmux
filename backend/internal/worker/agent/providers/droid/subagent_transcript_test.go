@@ -436,7 +436,7 @@ func TestDroidChildTailContinuesAtSavedOffset(t *testing.T) {
 		`{"type":"message","id":"assistant-second","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_SECOND_TURN"}]}}`,
 		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`,
 	)
-	// SendChildInput resumes this same native session through startChildTail.
+	// Continuation calls reuse the saved offset through ensureChildTail.
 	a.startChildTail(archiveChildID)
 	a.tailMu.Lock()
 	second := a.childTails[archiveChildID]
@@ -749,4 +749,19 @@ func TestDroidChildArchiveValidatesIdentityAndReadOffset(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, count, "a second poll does not repeat an earlier record")
+}
+
+func TestDroidChildTailInvalidArchiveClosesOpenChildRow(t *testing.T) {
+	a, sink, clock, dir, _ := droidArchiveHarness(t)
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path, `{not valid json`)
+
+	a.HandleOutput([]byte(droidTaskCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
+	advanceDroidArchive(t, clock)
+
+	testutil.RequireEventually(t, func() bool {
+		row, ok := sink.BackgroundTask(archiveChildID)
+		return ok && row.Status == bgtask.StatusEndedWithUnknownOutcome && !a.ActiveChildTurnState(archiveChildID).Active
+	}, "invalid child archive must close open child row and disarm childTurns")
 }

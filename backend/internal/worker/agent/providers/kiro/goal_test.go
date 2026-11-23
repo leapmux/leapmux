@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func TestKiroGoalSetBuildsTheGoalCommand(t *testing.T) {
@@ -580,4 +581,126 @@ func TestKiroLatestOpenGoalRun(t *testing.T) {
 	assert.False(t, found)
 	_, found = latestOpenGoalRun(runs[3:], kiroTestSession)
 	assert.False(t, found)
+}
+
+func TestKiroGoalRecoverySeedsWorkflowStepsForNodeAndRunComplete(t *testing.T) {
+	t.Parallel()
+	inspectReply := `{
+		"workflowId":"` + kiroRunID + `",
+		"state":{
+			"status":"running",
+			"inputs":{"prompt":"Ship it"},
+			"root":{
+				"nodeId":"` + kiroRunID + `",
+				"type":"sequence",
+				"status":"running",
+				"children":[{
+					"nodeId":"goal-loop",
+					"type":"repeat",
+					"status":"running",
+					"children":[
+						{
+							"nodeId":"goal-loop#0",
+							"type":"sequence",
+							"iteration":0,
+							"status":"completed",
+							"children":[{"nodeId":"work","type":"step","status":"completed","sessionId":"sess_finished"}]
+						},
+						{
+							"nodeId":"goal-loop#1",
+							"type":"sequence",
+							"iteration":1,
+							"status":"running",
+							"children":[{"nodeId":"work","type":"step","status":"running","sessionId":"` + kiroStepSession + `"}]
+						}
+					]
+				}]
+			}
+		}
+	}`
+	listReply := `{"runs":[{"workflowId":"` + kiroRunID + `","workflowName":"goal","status":"running","updatedAt":"2026-09-24T05:00:00.000Z","parentSessionId":"` + kiroTestSession + `"}]}`
+
+	t.Run("node_complete closes seeded active step", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newKiroAgent(t, agent.Options{}, goalResponder(map[string]string{
+			kiroWorkflowListMethod:    listReply,
+			kiroWorkflowInspectMethod: inspectReply,
+		}))
+		// Simulate the persisted running step row from before the restart.
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: kiroStepSession, Kind: bgtask.KindSubagent, Title: "goal · work #2", Status: bgtask.StatusRunning,
+		}))
+
+		require.NoError(t, a.recoverGoalRunOf(kiroTestSession))
+
+		a.stateMu.Lock()
+		seeded := a.workflows.runs[kiroRunID]
+		require.NotNil(t, seeded, "recovered open run must be seeded into workflows.runs")
+		assert.Equal(t, map[string]string{kiroRunID + "/goal-loop/iter-1/work": kiroStepSession}, seeded.steps)
+		a.stateMu.Unlock()
+
+		// Deliver node_complete without sessionId or prior node_start.
+		a.HandleOutput(nodeComplete(t, 1, kiroRunCompleted, "done"))
+
+		step, ok := sink.BackgroundTask(kiroStepSession)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, step.Status)
+	})
+
+	t.Run("run_complete closes seeded active step", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newKiroAgent(t, agent.Options{}, goalResponder(map[string]string{
+			kiroWorkflowListMethod:    listReply,
+			kiroWorkflowInspectMethod: inspectReply,
+		}))
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: kiroStepSession, Kind: bgtask.KindSubagent, Title: "goal · work #2", Status: bgtask.StatusRunning,
+		}))
+
+		require.NoError(t, a.recoverGoalRunOf(kiroTestSession))
+		a.HandleOutput(runComplete(t, kiroRunAborted, map[string]any{}))
+
+		step, ok := sink.BackgroundTask(kiroStepSession)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, step.Status)
+	})
+
+	t.Run("does not overwrite newer live workflow run", func(t *testing.T) {
+		t.Parallel()
+		a, _, _ := newKiroAgent(t, agent.Options{}, goalResponder(map[string]string{
+			kiroWorkflowListMethod:    listReply,
+			kiroWorkflowInspectMethod: inspectReply,
+		}))
+		a.HandleOutput(runStart(t, kiroGoalWorkflowName))
+		a.HandleOutput(nodeStart(t, 0, "sess_live"))
+
+		require.NoError(t, a.recoverGoalRunOf(kiroTestSession))
+
+		a.stateMu.Lock()
+		defer a.stateMu.Unlock()
+		run := a.workflows.runs[kiroRunID]
+		require.NotNil(t, run)
+		assert.Equal(t, map[string]string{kiroRunID + "/goal-loop/iter-0/work": "sess_live"}, run.steps)
+	})
+
+	t.Run("dropped when session swapped during inspect", func(t *testing.T) {
+		t.Parallel()
+		var a *Agent
+		replies := goalResponder(map[string]string{
+			kiroWorkflowListMethod:    listReply,
+			kiroWorkflowInspectMethod: inspectReply,
+		})
+		a, _, _ = newKiroAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+			if req.Method == kiroWorkflowInspectMethod {
+				a.SetSessionIDForTest("session-2")
+			}
+			return replies(req)
+		})
+
+		require.NoError(t, a.recoverGoalRunOf(kiroTestSession))
+
+		a.stateMu.Lock()
+		defer a.stateMu.Unlock()
+		assert.Empty(t, a.workflows.runs)
+	})
 }

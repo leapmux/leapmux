@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -19,6 +21,7 @@ const (
 	routeEvents          = "/event"
 	routeSessions        = "/session"
 	routeSessionStatus   = "/session/status"
+	routeWorkflows       = "/workflows"
 	routeConfig          = "/config"
 	routeConfigProviders = "/config/providers"
 	routeAgents          = "/agent"
@@ -272,6 +275,61 @@ func (r mimoRPC) sessionStatuses(ctx context.Context) (map[string]mimoStatus, er
 	statuses := map[string]mimoStatus{}
 	err := r.do(ctx, http.MethodGet, routeSessionStatus, nil, &statuses)
 	return statuses, err
+}
+
+// mimoActorSnapshot is one entry of GET /session/:id/actors.
+type mimoActorSnapshot struct {
+	ActorID         string `json:"actorID"`
+	Status          string `json:"status"`
+	ExecutionActive *bool  `json:"executionActive"`
+	LastOutcome     string `json:"lastOutcome"`
+	TurnCount       int    `json:"turnCount"`
+	Error           string `json:"error"`
+	LastError       string `json:"lastError"`
+}
+
+func (s mimoActorSnapshot) isRunning() bool {
+	if s.ExecutionActive != nil {
+		return *s.ExecutionActive
+	}
+	return s.Status == contracts.MiMoActorStatusRunning
+}
+
+func (s mimoActorSnapshot) errorText() string {
+	if s.Error != "" {
+		return s.Error
+	}
+	return s.LastError
+}
+
+// sessionActors returns the runtime execution snapshot of every actor in a session.
+func (r mimoRPC) sessionActors(ctx context.Context, sessionID string) ([]mimoActorSnapshot, error) {
+	path, err := sessionPath(sessionID, "actors")
+	if err != nil {
+		return nil, err
+	}
+	var actors []mimoActorSnapshot
+	err = r.do(ctx, http.MethodGet, path, nil, &actors)
+	return actors, err
+}
+
+// mimoWorkflowRun is one entry of GET /workflows?sessionID=:id.
+type mimoWorkflowRun struct {
+	RunID     string `json:"runID"`
+	SessionID string `json:"sessionID"`
+	Status    string `json:"status"`
+}
+
+// sessionWorkflows returns the dynamic workflow runs of one session.
+func (r mimoRPC) sessionWorkflows(ctx context.Context, sessionID string) ([]mimoWorkflowRun, error) {
+	if _, err := pathSegment("session", sessionID); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+	var runs []mimoWorkflowRun
+	err := r.endpoint.DoQuery(ctx, http.MethodGet, routeWorkflows, url.Values{"sessionID": {sessionID}}, nil, &runs)
+	return runs, err
 }
 
 // messages returns the main agent's messages of a session. A subagent's

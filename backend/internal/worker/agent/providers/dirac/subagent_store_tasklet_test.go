@@ -90,7 +90,11 @@ func TestDiracTaskletMetadataWaitsForTheDurableOutcomeEvent(t *testing.T) {
 			metadata, err := readDiracTaskletMetadata(root, "dirac-session")
 			require.NoError(t, err)
 			require.Len(t, metadata.Tasklets, 1)
-			assert.Nil(t, metadata.Tasklets[0].Record.Outcome, "the native record alone does not prove committed settlement")
+			record := metadata.Tasklets[0].Record
+			assert.Nil(t, record.Outcome, "an immediate read defers settlement until the journal catches up or the grace window elapses")
+			assert.True(t, record.outcomeMismatch)
+			require.NotNil(t, record.unmatchedOutcome)
+			assert.Equal(t, bgtask.StatusSucceeded, record.unmatchedOutcome.status())
 		})
 	}
 }

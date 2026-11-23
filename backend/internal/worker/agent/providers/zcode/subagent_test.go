@@ -1138,3 +1138,227 @@ func TestZCodeBackgroundTaskPublishesItsFinalStateBeforeRetiringTheChild(t *test
 	assert.Equal(t, []bgtask.Status{bgtask.StatusStopped}, sink.statusesAtCleanup,
 		"retiring a still-working activity entry before the final registry update leaves its published spinner unchanged")
 }
+
+func TestZCodeTaskToolSpawnsSubagent(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"task-spawn-1","toolName":"Task","input":{"description":"audit files","prompt":"Check all files."}}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1, "Task tool must open a subagent registry row")
+	assert.Equal(t, bgtask.KindSubagent, rows[0].Kind)
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+	assert.Equal(t, "audit files", rows[0].Title)
+	require.NotEmpty(t, rows[0].ChildAgentID)
+
+	spanID := zcodeTestSpanID(t, &sink.Sink, "task-spawn-1")
+	assert.True(t, a.zcodeForegroundSpawnResultPending(spanID), "Task tool must count as a pending foreground spawn")
+
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"task-spawn-1","result":{"success":true,"content":"All checked."}}`))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+}
+
+func TestZCodeBackgroundLaunchRecognizesAllFourUpstreamFormats(t *testing.T) {
+	t.Parallel()
+	current4 := strings.Join([]string{
+		contracts.ZCodeAgentLaunchHeader,
+		contracts.ZCodeAgentLaunchIdentityPrefix + "agent-1" + contracts.ZCodeAgentLaunchIdentityMiddle + "agent-1" + contracts.ZCodeAgentLaunchIdentitySuffix,
+		contracts.ZCodeAgentLaunchBackground,
+		contracts.ZCodeAgentLaunchWait,
+	}, "\n")
+	previous := "Agent Explore started in background.\nagentId: agent-2\noutputFile: /tmp/out.log\nYou will be notified when the Agent completes."
+	legacy := "backgroundTaskId: bg-3\nRuntime will wait for this background Agent to finish."
+	jsonBackgrounded := `{"status":"backgrounded","backgroundTaskId":"bg-4"}`
+	jsonAsyncLaunched := `{"status":"async_launched","agentId":"agent-5","outputFile":"/tmp/a5.log"}`
+
+	for _, toolName := range []string{contracts.ZCodeToolNameAgent, contracts.ZCodeToolNameTask} {
+		for _, tc := range []struct {
+			name    string
+			content string
+			want    bool
+		}{
+			{"current", current4, true},
+			{"previous", previous, true},
+			{"legacy", legacy, true},
+			{"json backgrounded", jsonBackgrounded, true},
+			{"json async_launched", jsonAsyncLaunched, true},
+			{"plain report", "I found 3 files.", false},
+			{"json other status", `{"status":"completed","agentId":"agent-5"}`, false},
+		} {
+			t.Run(toolName+"/"+tc.name, func(t *testing.T) {
+				result, err := json.Marshal(map[string]any{"success": true, "content": tc.content})
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, zcodeSubagentLaunchedInBackground(zcodeToolUpdated{ToolName: toolName, Result: result}))
+			})
+		}
+	}
+}
+
+func TestZCodeSendMessageRevivesFinishedSubagent(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"sess_subagent_agent_1", "agent_1"} {
+		t.Run("target="+target, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _, _ := newZCodeLifecycleChild(t)
+			spanID := zcodeTestSpanID(t, &sink.Sink, "spawn-1")
+
+			// Finish Job 1.
+			a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
+			a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleEnd))
+			require.True(t, a.children.hasEnded(spanID))
+			row, ok := sink.BackgroundTask("sess_subagent_agent_1")
+			require.True(t, ok)
+			require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+			// SendMessage targeting the finished subagent must clear ended and revive the row.
+			a.HandleOutput(zcodeEventLine(t, 7, contracts.ZCodeEventToolUpdated,
+				fmt.Sprintf(`{"kind":"scheduled","toolCallId":"sm-1","toolName":"SendMessage","input":{"to":%q,"message":"Run job 2"}}`, target)))
+			a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventToolUpdated,
+				`{"kind":"result","toolCallId":"sm-1","result":{"success":true,"content":"Message delivered."}}`))
+
+			assert.False(t, a.children.hasEnded(spanID), "SendMessage must clear ended[spanID]")
+			assert.Equal(t, []string{"sess_subagent_agent_1"}, sink.RevivedTasks())
+			row, ok = sink.BackgroundTask("sess_subagent_agent_1")
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+			// Job 2 runs and finishes cleanly under the same row and child transcript.
+			a.HandleOutput(zcodeEventLine(t, 9, contracts.ZCodeEventSessionUpdated,
+				`{"taskId":"agent_1_job2","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","childSessionId":"sess_subagent_agent_1","description":"file census","status":"running"}`))
+			a.HandleOutput(zcodeEventLine(t, 10, contracts.ZCodeEventSessionUpdated,
+				`{"taskId":"agent_1_job2","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","childSessionId":"sess_subagent_agent_1","description":"file census","status":"completed"}`))
+			row, ok = sink.BackgroundTask("sess_subagent_agent_1")
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+			assert.Len(t, sink.ChildAgentIDs(), 1, "reused subagent keeps one child transcript")
+		})
+	}
+}
+
+func TestZCodeSendMessageDoesNotReviveBeforeSuccessfulResult(t *testing.T) {
+	t.Parallel()
+	a, sink, _, _ := newZCodeLifecycleChild(t)
+	spanID := zcodeTestSpanID(t, &sink.Sink, "spawn-1")
+
+	// Finish Job 1.
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
+	a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleEnd))
+	require.True(t, a.children.hasEnded(spanID))
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Scheduled-only SendMessage must NOT revive before completion.
+	a.HandleOutput(zcodeEventLine(t, 7, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"sm-err","toolName":"SendMessage","input":{"to":"sess_subagent_agent_1","message":"Run job 2"}}`))
+	assert.True(t, a.children.hasEnded(spanID), "scheduled SendMessage must not clear ended[spanID]")
+	assert.Empty(t, sink.RevivedTasks())
+	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Errored SendMessage must keep the child ended.
+	a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventToolUpdated,
+		`{"kind":"error","toolCallId":"sm-err","error":{"message":"permission denied"}}`))
+	assert.True(t, a.children.hasEnded(spanID))
+	assert.Empty(t, sink.RevivedTasks())
+	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// SendMessage result with success:false must keep the child ended.
+	a.HandleOutput(zcodeEventLine(t, 9, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"sm-false","toolName":"SendMessage","input":{"to":"sess_subagent_agent_1","message":"Run job 2"}}`))
+	a.HandleOutput(zcodeEventLine(t, 10, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"sm-false","result":{"success":false,"content":"rejected"}}`))
+	assert.True(t, a.children.hasEnded(spanID))
+	assert.Empty(t, sink.RevivedTasks())
+	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Upstream ZCode structured failure: success:true with display.status:"failed" must keep the child ended.
+	a.HandleOutput(zcodeEventLine(t, 11, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"sm-display-fail","toolName":"SendMessage","input":{"to":"sess_subagent_agent_1","message":"Run job 2"}}`))
+	a.HandleOutput(zcodeEventLine(t, 12, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"sm-display-fail","result":{"success":true,"content":"Cannot resume subagent","display":{"kind":"local_agent_message","status":"failed","error":"target missing"}}}`))
+	assert.True(t, a.children.hasEnded(spanID), "display.status=failed must not clear ended[spanID]")
+	assert.Empty(t, sink.RevivedTasks())
+	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Successful SendMessage result without repeated input still resolves target from scheduled input and revives once.
+	a.HandleOutput(zcodeEventLine(t, 13, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"sm-ok","toolName":"SendMessage","input":{"to":"sess_subagent_agent_1","message":"Run job 2"}}`))
+	assert.True(t, a.children.hasEnded(spanID))
+	a.HandleOutput(zcodeEventLine(t, 14, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"sm-ok","result":{"success":true,"content":"Message delivered."}}`))
+	assert.False(t, a.children.hasEnded(spanID))
+	assert.Equal(t, []string{"sess_subagent_agent_1"}, sink.RevivedTasks())
+	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+}
+
+func TestZCodeSendMessageFastJob2CompletesBeforeSendMessageResult(t *testing.T) {
+	t.Parallel()
+	a, sink, _, _ := newZCodeLifecycleChild(t)
+	spanID := zcodeTestSpanID(t, &sink.Sink, "spawn-1")
+	childIDs := sink.ChildAgentIDs()
+	require.Len(t, childIDs, 1)
+	childID := childIDs[0]
+
+	// Finish Job 1.
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
+	a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleEnd))
+	require.True(t, a.children.hasEnded(spanID))
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	parentMessagesBefore := len(sink.Messages())
+
+	// SendMessage is scheduled; before its result arrives, Job 2 emits resumed lifecycle,
+	// a child tool call, and completes cleanly.
+	a.HandleOutput(zcodeEventLine(t, 7, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"sm-fast","toolName":"SendMessage","input":{"to":"sess_subagent_agent_1","message":"Fast job 2"}}`))
+	assert.True(t, a.children.hasEnded(spanID), "scheduled SendMessage alone does not revive")
+
+	// Resumed lifecycle event arrives while SendMessage is still in flight.
+	a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent_1","agentType":"Explore","childSessionId":"sess_subagent_agent_1","parentToolCallId":"spawn-1","description":"file census","status":"running","resumed":true}`))
+	assert.False(t, a.children.hasEnded(spanID), "resumed lifecycle during pending SendMessage must revive child")
+	assert.Equal(t, []string{"sess_subagent_agent_1"}, sink.RevivedTasks())
+	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// Child tool call emitted before SendMessage result must route to child transcript, not parent.
+	parentMessagesAfterScheduled := len(sink.Messages())
+	require.Greater(t, parentMessagesAfterScheduled, parentMessagesBefore)
+	childMessagesBefore := len(sink.Child(childID).Messages())
+	a.HandleOutput(zcodeEventLine(t, 9, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"child-tool-job2","toolName":"Read","source":"subagent","agentId":"agent_1","childSessionId":"sess_subagent_agent_1","parentToolCallId":"spawn-1","input":{"path":"a.go"}}`))
+	a.HandleOutput(zcodeEventLine(t, 10, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"child-tool-job2","source":"subagent","agentId":"agent_1","childSessionId":"sess_subagent_agent_1","parentToolCallId":"spawn-1","result":{"success":true,"content":"ok"}}`))
+	assert.Equal(t, parentMessagesAfterScheduled, len(sink.Messages()), "child tool call must not leak into parent transcript")
+	assert.Greater(t, len(sink.Child(childID).Messages()), childMessagesBefore, "child tool call must route into child transcript")
+
+	// Job 2 finishes before SendMessage result arrives.
+	a.HandleOutput(zcodeEventLine(t, 11, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"agent_1_job2","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","childSessionId":"sess_subagent_agent_1","description":"file census","status":"completed"}`))
+	a.HandleOutput(zcodeEventLine(t, 12, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent_1","agentType":"Explore","childSessionId":"sess_subagent_agent_1","parentToolCallId":"spawn-1","description":"file census","status":"completed","summaryText":"Job 2 done."}`))
+	require.True(t, a.children.hasEnded(spanID))
+	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Late SendMessage result must NOT re-revive the already-finished Job 2 row.
+	a.HandleOutput(zcodeEventLine(t, 13, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"sm-fast","result":{"success":true,"content":"Message delivered."}}`))
+	assert.True(t, a.children.hasEnded(spanID), "late SendMessage result must not revive finished Job 2")
+	assert.Equal(t, []string{"sess_subagent_agent_1"}, sink.RevivedTasks(), "must not revive a second time")
+	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}

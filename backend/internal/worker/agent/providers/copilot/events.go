@@ -373,17 +373,20 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		a.retryNativeTurn(event.AgentID, sink)
 		return
 	case contracts.CopilotEventAssistantTurnStart:
-		if child == nil && !a.closing {
+		if event.AgentID == "" && !a.closing {
 			a.setNativeTurnActive(true)
 		}
 		// A background subagent that a message woke starts its next turn.
 		a.resumeNativeChild(child)
 	case contracts.CopilotEventSessionIdle:
-		if child == nil {
+		if event.AgentID == "" {
 			a.endNativeTurn(raw, copilotTurnWasAborted(event.Data))
 			return
 		}
 		a.resetNativeRetry(event.AgentID)
+	case contracts.CopilotEventSessionBackgroundTasksChanged:
+		a.offReader(copilotReadBackgroundTasks, a.handleBackgroundTasksChanged)
+		return
 	case contracts.CopilotEventSessionCompactionStart:
 		providerkit.PublishCompaction(sink, providerkit.StringField(event.Data, "trigger"))
 		return

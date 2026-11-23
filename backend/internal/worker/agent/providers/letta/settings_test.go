@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func beginNativeMode(t *testing.T, fake *fakeAppServer, a *Agent, mode string) (<-chan agent.SettingsApplyResult, map[string]any) {
@@ -118,4 +119,88 @@ func TestModeSyncReplyCannotConfirmAnotherRuntime(t *testing.T) {
 	result, snapshot := beginNativeMode(t, fake, a, contracts.LettaModeUnrestricted)
 	fake.replies <- []byte(fmt.Sprintf(`{"type":"sync_response","request_id":%q,"runtime":{"agent_id":"foreign","conversation_id":"foreign"},"success":true}`, snapshot["request_id"]))
 	assert.Equal(t, contracts.LettaModeStandard, waitModeResult(t, result).ConfirmedOptions()[agent.OptionIDPermissionMode])
+}
+
+func TestLettaDeviceStatusTracksBackgroundProcesses(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	currentRuntime := map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"}
+
+	// Frame with no current_permission_mode still tracks background_processes.
+	openFrame, err := json.Marshal(map[string]any{
+		"type":    "update_device_status",
+		"runtime": currentRuntime,
+		"device_status": map[string]any{
+			"background_processes": []any{
+				map[string]any{"process_id": "bash-1", "kind": "bash", "command": "npm run dev", "status": "running"},
+				map[string]any{"process_id": "mon-1", "kind": "monitor", "description": "Watch build", "status": "running"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(openFrame)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 2)
+	byTitle := map[string]bgtask.Item{}
+	for _, task := range tasks {
+		byTitle[task.Title] = task
+	}
+	bashRow, ok := byTitle["npm run dev"]
+	require.True(t, ok)
+	assert.Equal(t, bgtask.KindShell, bashRow.Kind)
+	assert.True(t, bashRow.TitleIsCommand)
+	assert.Equal(t, bgtask.StatusRunning, bashRow.Status)
+
+	monRow, ok := byTitle["Watch build"]
+	require.True(t, ok)
+	assert.Equal(t, bgtask.KindShell, monRow.Kind)
+	assert.False(t, monRow.TitleIsCommand)
+	assert.Equal(t, bgtask.StatusRunning, monRow.Status)
+
+	// Omitted and null background_processes must NOT evict tracked shells.
+	a.HandleOutput([]byte(lettaLiveDeviceStatus))
+	nullFrame, err := json.Marshal(map[string]any{
+		"type":          "update_device_status",
+		"runtime":       currentRuntime,
+		"device_status": map[string]any{"current_permission_mode": "standard", "background_processes": nil},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(nullFrame)
+
+	// Foreign runtime empty array must NOT evict tracked shells.
+	foreignFrame, err := json.Marshal(map[string]any{
+		"type":          "update_device_status",
+		"runtime":       map[string]any{"agent_id": "agent-other", "conversation_id": "local-conv-1"},
+		"device_status": map[string]any{"background_processes": []any{}},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(foreignFrame)
+
+	row, ok := sink.BackgroundTask(bashRow.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	row, ok = sink.BackgroundTask(monRow.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// Explicit finished status closes bash-1 as succeeded, and omitting mon-1 closes it with unknown outcome.
+	closeFrame, err := json.Marshal(map[string]any{
+		"type":    "update_device_status",
+		"runtime": currentRuntime,
+		"device_status": map[string]any{
+			"background_processes": []any{
+				map[string]any{"process_id": "bash-1", "kind": "bash", "command": "npm run dev", "status": "completed", "exit_code": 0},
+			},
+		},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(closeFrame)
+
+	row, ok = sink.BackgroundTask(bashRow.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	row, ok = sink.BackgroundTask(monRow.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
 }

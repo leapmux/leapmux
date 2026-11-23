@@ -72,15 +72,28 @@ func (a *Agent) observeChild(raw []byte, event nativeEvent) {
 	if state == nil {
 		return
 	}
+	if event.Type == eventSubagentBackgrounded {
+		a.Mu.Lock()
+		state.background = true
+		a.Mu.Unlock()
+		return
+	}
 	if event.Type == contracts.CommandCodeEventSubagentProgress {
 		if err := a.sink.PersistChildMessage(state.childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, agent.SpanInfo{}); err != nil {
 			slog.Warn("persist Command Code child activity", "error", err)
 		}
 		return
 	}
-	if event.Type == contracts.CommandCodeEventSubagentStop && state.background {
+	if event.Type == contracts.CommandCodeEventSubagentStop {
 		status := childStatus(event.Status)
+		if !status.IsFinished() {
+			status = bgtask.StatusSucceeded
+		}
 		a.Mu.Lock()
+		if !state.background {
+			a.Mu.Unlock()
+			return
+		}
 		state.finishedStatus = status
 		identified := state.identified
 		a.Mu.Unlock()
@@ -92,7 +105,7 @@ func (a *Agent) observeChild(raw []byte, event nativeEvent) {
 
 func childStatus(status string) bgtask.Status {
 	switch status {
-	case "interrupted", "stopped", "cancelled":
+	case "interrupted", "stopped", "cancelled", "killed", "aborted":
 		return bgtask.StatusStopped
 	case "failed", "run_error":
 		return bgtask.StatusFailed
@@ -139,23 +152,39 @@ func (a *Agent) finishChildTool(event nativeEvent, opening openTool) {
 	a.Mu.Lock()
 	state := a.children[event.ToolCallID]
 	sessionID := a.sessionID
+	var background bool
+	var rowKey string
+	if state != nil {
+		background = state.background
+		rowKey = state.rowKey
+	}
 	a.Mu.Unlock()
 	if state == nil {
 		return
 	}
 	text := nativeText(event.Result)
-	if state.background {
-		match := nativeAgentID.FindStringSubmatch(text)
-		if len(match) != 2 {
+	if background {
+		if event.Type != contracts.CommandCodeEventToolCompleted {
+			a.Mu.Lock()
+			status := state.finishedStatus
+			a.Mu.Unlock()
+			if !status.IsFinished() {
+				status = bgtask.StatusFailed
+			}
+			a.finishChild(event.ToolCallID, state, status)
 			return
 		}
-		key := childRowKey(sessionID, match[1])
-		if err := a.sink.RenameBackgroundTask(state.rowKey, key); err != nil {
-			slog.Warn("identify a Command Code background child", "error", err)
-			return
+		if match := nativeAgentID.FindStringSubmatch(text); len(match) == 2 {
+			key := childRowKey(sessionID, match[1])
+			if err := a.sink.RenameBackgroundTask(rowKey, key); err != nil {
+				slog.Warn("identify a Command Code background child", "error", err)
+			} else {
+				a.Mu.Lock()
+				state.rowKey = key
+				a.Mu.Unlock()
+			}
 		}
 		a.Mu.Lock()
-		state.rowKey = key
 		state.identified = true
 		status := state.finishedStatus
 		a.Mu.Unlock()
@@ -172,7 +201,7 @@ func (a *Agent) finishChildTool(event nativeEvent, opening openTool) {
 		status = bgtask.StatusStopped
 	}
 	if text != "" {
-		write := agent.ChildSubagentReportWrite{RowKey: state.rowKey, Write: agent.SubagentReportWrite{ReportID: "result:" + event.ToolCallID, Report: agent.SubagentReport{Label: state.label, Text: text, Status: bgtask.StatusWire(status)}}}
+		write := agent.ChildSubagentReportWrite{RowKey: rowKey, Write: agent.SubagentReportWrite{ReportID: "result:" + event.ToolCallID, Report: agent.SubagentReport{Label: state.label, Text: text, Status: bgtask.StatusWire(status)}}}
 		if _, err := a.sink.PersistChildSubagentReport(write); err != nil {
 			slog.Warn("persist a Command Code child report", "error", err)
 		}
@@ -181,13 +210,20 @@ func (a *Agent) finishChildTool(event nativeEvent, opening openTool) {
 }
 
 func (a *Agent) finishChild(callID string, state *childState, status bgtask.Status) {
-	if err := a.sink.CloseBackgroundTask(state.rowKey, status); err != nil {
-		slog.Warn("close a Command Code child task", "error", err)
-	}
-	a.sink.CleanupChildAgent(state.childID)
 	a.Mu.Lock()
+	rowKey := state.rowKey
+	childID := state.childID
 	delete(a.children, callID)
 	a.Mu.Unlock()
+	if err := a.sink.CloseBackgroundTask(rowKey, status); err != nil {
+		slog.Warn("close a Command Code child task", "error", err)
+	}
+	a.sink.CleanupChildAgent(childID)
+}
+
+type closingChild struct {
+	rowKey  string
+	childID string
 }
 
 func (a *Agent) closeChildren(status bgtask.Status, foregroundOnly bool) {
@@ -195,12 +231,12 @@ func (a *Agent) closeChildren(status bgtask.Status, foregroundOnly bool) {
 		return
 	}
 	a.Mu.Lock()
-	var closing []*childState
+	closing := make([]closingChild, 0, len(a.children))
 	for id, child := range a.children {
 		if foregroundOnly && child.background {
 			continue
 		}
-		closing = append(closing, child)
+		closing = append(closing, closingChild{rowKey: child.rowKey, childID: child.childID})
 		delete(a.children, id)
 	}
 	a.Mu.Unlock()

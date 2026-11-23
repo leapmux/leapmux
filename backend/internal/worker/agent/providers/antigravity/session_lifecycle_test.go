@@ -161,7 +161,7 @@ func TestAntigravityInterruptCancelsNativeBackgroundWork(t *testing.T) {
 			if active {
 				a.beginTurn(a.root)
 			}
-			a.root.background[4] = backgroundTask{rowKey: "shell", stepIndex: 4}
+			a.root.background["shell"] = backgroundTask{rowKey: "shell", stepIndex: 4}
 			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "shell", Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
 			require.NoError(t, a.Interrupt(agent.StopContext{}))
 			calls := requests("CancelCascadeInvocation")
@@ -178,7 +178,7 @@ func TestAntigravityInterruptCancelsNativeBackgroundWork(t *testing.T) {
 func TestAntigravityInterruptBackgroundCancellationFailureKeepsTaskOpen(t *testing.T) {
 	a, sink := testAgent(t)
 	a.rpc = testAntigravityRPC(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
-	a.root.background[4] = backgroundTask{rowKey: "shell", stepIndex: 4}
+	a.root.background["shell"] = backgroundTask{rowKey: "shell", stepIndex: 4}
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "shell", Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
 	assert.ErrorContains(t, a.Interrupt(agent.StopContext{}), "cancel the Antigravity turn")
 	row, ok := sink.BackgroundTask("shell")
@@ -190,7 +190,7 @@ func TestAntigravityInterruptChildCancelsOnlyItsNativeBackgroundWork(t *testing.
 	a, sink, child := childLifecycleTestAgent(t)
 	rpc, requests := fakeAntigravityRPC(t)
 	a.rpc = rpc
-	child.background[4] = backgroundTask{rowKey: "child-shell", stepIndex: 4}
+	child.background["child-shell"] = backgroundTask{rowKey: "child-shell", stepIndex: 4}
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "child-shell", Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
 	require.NoError(t, a.InterruptChild(child.id, agent.StopContext{}))
 	calls := requests("CancelCascadeInvocation")
@@ -538,7 +538,7 @@ func TestAntigravityIdleInterruptDoesNotLatchInterruptedFlagAndRollbackUsesGen(t
 		rpc, _ := fakeAntigravityRPC(t)
 		a, sink := testAgent(t)
 		a.rpc = rpc
-		a.root.background[4] = backgroundTask{rowKey: "shell", stepIndex: 4}
+		a.root.background["shell"] = backgroundTask{rowKey: "shell", stepIndex: 4}
 
 		var preserved bool
 		require.NoError(t, a.Interrupt(agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })))

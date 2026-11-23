@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -563,4 +564,37 @@ func TestDeepSeekNormalAndErrorTurnPreserveOpenToolsAndSuppressLateResultAfterIn
 		assert.Equal(t, countBeforeLate, sink.MessageCount(), "late tool/result after interrupt must be suppressed")
 		assert.Equal(t, []string{"call-1"}, sink.ClosedSpans())
 	})
+}
+
+func TestJobRegisteredAndSettledTrackShellBackgroundTasks(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	root := a.streams["root"]
+
+	// Empty data is a no-op and writes no transcript rows or background tasks.
+	require.NoError(t, a.handleSessionEvent(root, []byte(`{"type":"job/registered","seq":1,"time":1000,"data":{}}`)))
+	require.NoError(t, a.handleSessionEvent(root, []byte(`{"type":"job/settled","seq":2,"time":1001,"data":{}}`)))
+	assert.Empty(t, sink.BackgroundTasks())
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+
+	// Registered job with jobId upserts a KindShell row without persisting transcript rows.
+	require.NoError(t, a.handleSessionEvent(root, []byte(`{"type":"job/registered","seq":3,"time":1002,"data":{"jobId":"job-1","command":"npm test"}}`)))
+	row, ok := sink.BackgroundTask("deepseek-job:job-1")
+	require.True(t, ok, "job/registered with jobId must open a KindShell row")
+	assert.Equal(t, bgtask.KindShell, row.Kind)
+	assert.Equal(t, "npm test", row.Title)
+	assert.True(t, row.TitleIsCommand)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+
+	// Settled job closes the KindShell row without persisting transcript rows.
+	require.NoError(t, a.handleSessionEvent(root, []byte(`{"type":"job/settled","seq":4,"time":1003,"data":{"jobId":"job-1","outcome":"failed"}}`)))
+	row, ok = sink.BackgroundTask("deepseek-job:job-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func TestLettaRetryDiscardsThePartial(t *testing.T) {
@@ -1011,4 +1012,41 @@ func TestLettaIdleInterruptAndDiscardingExitResetSpansAndProgress(t *testing.T) 
 		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
 		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
 	})
+}
+
+func TestLettaFinishOutputAfterExitClosesOpenBackgroundProcesses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		completion agent.MessageCompletion
+		wantStatus bgtask.Status
+	}{
+		{name: "interrupted", completion: agent.MessageCompletionInterrupted, wantStatus: bgtask.StatusStopped},
+		{name: "error", completion: agent.MessageCompletionError, wantStatus: bgtask.StatusFailed},
+		{name: "complete", completion: agent.MessageCompletionComplete, wantStatus: bgtask.StatusEndedWithUnknownOutcome},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newLettaChildTestAgent(t)
+			frame, err := json.Marshal(map[string]any{
+				"type":    "update_device_status",
+				"runtime": map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"},
+				"device_status": map[string]any{
+					"background_processes": []any{
+						map[string]any{"process_id": "bash-exit-1", "kind": "bash", "command": "sleep 60", "status": "running"},
+					},
+				},
+			})
+			require.NoError(t, err)
+			a.HandleOutput(frame)
+			tasks := sink.BackgroundTasks()
+			require.Len(t, tasks, 1)
+			require.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+
+			a.finishOutputAfterExit(tc.completion)
+			closed, ok := sink.BackgroundTask(tasks[0].RowKey)
+			require.True(t, ok)
+			assert.Equal(t, tc.wantStatus, closed.Status)
+		})
+	}
 }

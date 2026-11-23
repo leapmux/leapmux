@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,6 +19,9 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -2418,5 +2422,669 @@ func TestPauseAndEndTurnKeepsTheEarlierPause(t *testing.T) {
 		final := readQueuePauseState(t, database)
 		assert.Equal(t, pauseOwnerArchive, final.owner)
 		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, final.reason)
+	})
+}
+
+func insertBackgroundTaskRow(t *testing.T, database *sql.DB, ownerID, rowKey string, seq int64, kind leapmuxv1.BackgroundTaskKind, role bgtask.Role, childAgentID, parentAgentID string, status bgtask.Status) {
+	t.Helper()
+	_, err := database.ExecContext(t.Context(), `
+		INSERT INTO agent_background_tasks
+		(owner_agent_id, output_generation, row_key, seq, kind, role, child_agent_id, parent_agent_id, status)
+		VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+		ownerID, rowKey, seq, kind, role, childAgentID, parentAgentID, status)
+	require.NoError(t, err)
+}
+
+func createChildAgentRow(t *testing.T, database *sql.DB, id, parentID string) {
+	t.Helper()
+	_, err := database.ExecContext(t.Context(), `
+		INSERT INTO agents (id, working_dir, agent_provider, parent_agent_id)
+		VALUES (?, ?, ?, ?)`,
+		id, t.TempDir(), leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, parentID)
+	require.NoError(t, err)
+}
+
+func TestStoreBackgroundWorkHoldsRootDispatchAndReportsEmptyQueue(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	for _, status := range []bgtask.Status{bgtask.StatusPending, bgtask.StatusRunning} {
+		t.Run("working status "+status.String(), func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+				leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", status)
+
+			// Empty queue (no state row yet, head < 0) still reports ActiveBackgroundWork.
+			emptySnap, err := store.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			assert.True(t, emptySnap.ActiveBackgroundWork)
+
+			// Ensure state row exists with empty queue (head < 0) and still reports ActiveBackgroundWork.
+			_, _, err = store.TurnEnded(ctx, "agent-1", false)
+			require.NoError(t, err)
+			emptyWithState, err := store.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			assert.True(t, emptyWithState.ActiveBackgroundWork)
+
+			snap, err := store.Enqueue(ctx, NewItem{
+				ID: "in-1", AgentID: "agent-1",
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello",
+			})
+			require.NoError(t, err)
+			assert.True(t, snap.ActiveBackgroundWork)
+			require.Len(t, snap.Items, 1)
+			assert.True(t, snap.Items[0].CanSteer)
+			assert.True(t, snap.Items[0].CanPreempt)
+
+			prepared, after, err := store.PrepareDispatch(ctx, "agent-1", false)
+			require.NoError(t, err)
+			assert.Nil(t, prepared, "working background task must hold automatic root dispatch")
+			assert.True(t, after.ActiveBackgroundWork)
+		})
+	}
+
+	for _, status := range []bgtask.Status{bgtask.StatusPaused, bgtask.StatusSucceeded} {
+		t.Run("non-working status "+status.String(), func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+				leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", status)
+
+			_, err := store.Enqueue(ctx, NewItem{
+				ID: "in-1", AgentID: "agent-1",
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello",
+			})
+			require.NoError(t, err)
+
+			prepared, snap, err := store.PrepareDispatch(ctx, "agent-1", false)
+			require.NoError(t, err)
+			require.NotNil(t, prepared, "non-working background task must not hold automatic dispatch")
+			assert.False(t, snap.ActiveBackgroundWork)
+		})
+	}
+}
+
+func TestStoreBackgroundWorkScopesChildToDescendantsOnly(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("admits when sibling, root shell, own canonical row, or root row across empty child_agent_id shell run", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		createChildAgentRow(t, database, "child-a", "agent-1")
+		createChildAgentRow(t, database, "child-b", "agent-1")
+
+		// (a) sibling Child B and root shell are RUNNING.
+		insertBackgroundTaskRow(t, database, "agent-1", "sibling-b", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, bgtask.RoleChildTask, "child-b", "", bgtask.StatusRunning)
+		insertBackgroundTaskRow(t, database, "agent-1", "root-shell", 2,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		// (b) Child A's own canonical activity row is RUNNING.
+		insertBackgroundTaskRow(t, database, "agent-1", "self-a", 3,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, bgtask.RoleChildTask, "child-a", "", bgtask.StatusRunning)
+		// (c) Child A has a finished shell row with child_agent_id = '' while root-shell (parent_agent_id = '') is RUNNING.
+		insertBackgroundTaskRow(t, database, "agent-1", "child-a-shell", 4,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "child-a", bgtask.StatusSucceeded)
+
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "in-a", AgentID: "child-a",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hi child",
+		})
+		require.NoError(t, err)
+
+		prepared, snap, err := store.PrepareDispatch(ctx, "child-a", false)
+		require.NoError(t, err)
+		require.NotNil(t, prepared, "child dispatch must not be held by sibling, own row, or root rows")
+		assert.False(t, snap.ActiveBackgroundWork)
+	})
+
+	t.Run("holds when direct child under child-a is running", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		createChildAgentRow(t, database, "child-a", "agent-1")
+		insertBackgroundTaskRow(t, database, "agent-1", "child-a-shell", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "child-a", bgtask.StatusRunning)
+
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "in-a", AgentID: "child-a",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hi child",
+		})
+		require.NoError(t, err)
+
+		prepared, snap, err := store.PrepareDispatch(ctx, "child-a", false)
+		require.NoError(t, err)
+		assert.Nil(t, prepared, "direct descendant running under child-a must hold child-a dispatch")
+		assert.True(t, snap.ActiveBackgroundWork)
+	})
+
+	t.Run("holds when grandchild under child-a is running", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		createChildAgentRow(t, database, "child-a", "agent-1")
+		createChildAgentRow(t, database, "mid", "child-a")
+		createChildAgentRow(t, database, "grandchild", "mid")
+		insertBackgroundTaskRow(t, database, "agent-1", "mid-row", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, bgtask.RoleChildTask, "mid", "child-a", bgtask.StatusSucceeded)
+		insertBackgroundTaskRow(t, database, "agent-1", "grand-row", 2,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, bgtask.RoleChildTask, "grandchild", "mid", bgtask.StatusRunning)
+
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "in-a", AgentID: "child-a",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hi child",
+		})
+		require.NoError(t, err)
+
+		prepared, snap, err := store.PrepareDispatch(ctx, "child-a", false)
+		require.NoError(t, err)
+		assert.Nil(t, prepared, "running grandchild must hold child-a dispatch")
+		assert.True(t, snap.ActiveBackgroundWork)
+	})
+}
+
+func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("PrepareBypassBackgroundWork admission and explicit refusals", func(t *testing.T) {
+		t.Parallel()
+		clock := testutil.NewQuartzMock(t)
+		database := newQueueDatabase(t)
+		store := NewStore(database, clock)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "in-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "first",
+		})
+		require.NoError(t, err)
+
+		// Wrong or empty input ID -> ErrNotHead.
+		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "", true)
+		assert.ErrorIs(t, err, ErrNotHead)
+		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "other", true)
+		assert.ErrorIs(t, err, ErrNotHead)
+
+		// Active turn refuses with ErrSteeringState (allowPaused) / ErrPreemptionState (!allowPaused).
+		_, _, err = store.TurnStarted(ctx, "agent-1", true)
+		require.NoError(t, err)
+		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", true)
+		assert.ErrorIs(t, err, ErrSteeringState)
+		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", false)
+		assert.ErrorIs(t, err, ErrPreemptionState)
+		_, _, err = store.TurnEnded(ctx, "agent-1", false)
+		require.NoError(t, err)
+
+		// Editing item refuses explicitly.
+		_, _, _, err = store.BeginEdit(ctx, "agent-1", "in-1", "client-1", false)
+		require.NoError(t, err)
+		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", true)
+		assert.ErrorIs(t, err, ErrSteeringState)
+		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", false)
+		assert.ErrorIs(t, err, ErrPreemptionState)
+		_, err = store.CancelEdit(ctx, "agent-1", "in-1", "client-1")
+		require.NoError(t, err)
+
+		// Paused queue: allowPaused=false refuses with ErrPreemptionState; allowPaused=true admits.
+		_, err = store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+		require.NoError(t, err)
+		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", false)
+		assert.ErrorIs(t, err, ErrPreemptionState)
+
+		prepared, snap, err := store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", true)
+		require.NoError(t, err)
+		require.NotNil(t, prepared)
+		assert.False(t, prepared.Steering)
+		assert.Positive(t, prepared.ReservedSeq)
+		assert.True(t, snap.ActiveTurn)
+		assert.True(t, snap.Paused)
+		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, snap.Items[0].State)
+
+		// Scheduled future head refuses with ErrScheduled in both allowPaused modes.
+		future := clock.Now().UTC().Add(time.Minute)
+		database2 := newQueueDatabase(t)
+		store2 := NewStore(database2, clock)
+		insertBackgroundTaskRow(t, database2, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		_, err = store2.Enqueue(ctx, NewItem{
+			ID: "sched-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "later",
+			ScheduledAt: &future,
+		})
+		require.NoError(t, err)
+		_, _, err = store2.PrepareBypassBackgroundWork(ctx, "agent-1", "sched-1", true)
+		assert.ErrorIs(t, err, ErrScheduled)
+		_, _, err = store2.PrepareBypassBackgroundWork(ctx, "agent-1", "sched-1", false)
+		assert.ErrorIs(t, err, ErrScheduled)
+	})
+
+	t.Run("RecordPreemptBypass and ClearPreemptBypass", func(t *testing.T) {
+		t.Parallel()
+		_, store := newStoreFixture(t)
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "in-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "first",
+		})
+		require.NoError(t, err)
+
+		// Idle turn refuses RecordPreemptBypass.
+		_, err = store.RecordPreemptBypass(ctx, "agent-1", "in-1")
+		assert.ErrorIs(t, err, ErrPreemptionState)
+
+		// Active turn with NO background work still succeeds.
+		_, _, err = store.TurnStarted(ctx, "agent-1", false)
+		require.NoError(t, err)
+		_, err = store.RecordPreemptBypass(ctx, "agent-1", "wrong")
+		assert.ErrorIs(t, err, ErrNotHead)
+
+		snap, err := store.RecordPreemptBypass(ctx, "agent-1", "in-1")
+		require.NoError(t, err)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+
+		// Non-matching ClearPreemptBypass preserves it.
+		snap, err = store.ClearPreemptBypass(ctx, "agent-1", "other")
+		require.NoError(t, err)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+
+		// Matching ClearPreemptBypass clears it.
+		snap, err = store.ClearPreemptBypass(ctx, "agent-1", "in-1")
+		require.NoError(t, err)
+		assert.Empty(t, snap.BypassBackgroundWorkInputID)
+	})
+
+	t.Run("operations preserving bypass_background_work_input_id", func(t *testing.T) {
+		t.Parallel()
+		clock := testutil.NewQuartzMock(t)
+		database := newQueueDatabase(t)
+		store := NewStore(database, clock)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "in-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "first",
+		})
+		require.NoError(t, err)
+		future := clock.Now().UTC().Add(time.Minute)
+		_, err = store.Enqueue(ctx, NewItem{
+			ID: "in-sched", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "later",
+			ScheduledAt: &future,
+		})
+		require.NoError(t, err)
+		_, _, err = store.TurnStarted(ctx, "agent-1", false)
+		require.NoError(t, err)
+		_, err = store.RecordPreemptBypass(ctx, "agent-1", "in-1")
+		require.NoError(t, err)
+
+		// RefreshForBackgroundWork preserves bypass.
+		snap, changed, err := store.RefreshForBackgroundWork(ctx, "agent-1")
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+
+		// RefreshSnapshot preserves bypass.
+		snap, err = store.RefreshSnapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+
+		// Non-control Enqueue preserves bypass.
+		snap, err = store.Enqueue(ctx, NewItem{
+			ID: "in-2", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "second",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+
+		// scheduleAutoRetry and cancelAutoRetries preserve bypass.
+		snap, err = store.scheduleAutoRetry(ctx, "agent-1", agent.AutoRetrySchedule{
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+		snap, _, err = store.cancelAutoRetries(ctx, "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+		require.NoError(t, err)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+
+		// MatureScheduled preserves bypass.
+		clock.Advance(2 * time.Minute)
+		snap, matured, err := store.MatureScheduled(ctx, "agent-1", future)
+		require.NoError(t, err)
+		assert.True(t, matured)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+
+		// setTurnState (TurnEnded) preserves bypass so automatic drain admits in-1.
+		snap, _, err = store.TurnEnded(ctx, "agent-1", false)
+		require.NoError(t, err)
+		assert.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+
+		prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+		require.NoError(t, err)
+		require.NotNil(t, prepared, "bypassed head must admit on turn end despite running background task")
+		assert.Equal(t, "in-1", prepared.Item.ID)
+	})
+
+	t.Run("operations clearing bypass_background_work_input_id", func(t *testing.T) {
+		t.Parallel()
+		setupWithBypass := func(t *testing.T) (*sql.DB, *Store) {
+			t.Helper()
+			database, store := newStoreFixture(t)
+			_, err := store.Enqueue(ctx, NewItem{
+				ID: "in-1", AgentID: "agent-1",
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "first",
+			})
+			require.NoError(t, err)
+			_, err = store.Enqueue(ctx, NewItem{
+				ID: "in-2", AgentID: "agent-1",
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "second",
+			})
+			require.NoError(t, err)
+			_, _, err = store.TurnStarted(ctx, "agent-1", false)
+			require.NoError(t, err)
+			snap, err := store.RecordPreemptBypass(ctx, "agent-1", "in-1")
+			require.NoError(t, err)
+			require.Equal(t, "in-1", snap.BypassBackgroundWorkInputID)
+			return database, store
+		}
+		assertCleared := func(t *testing.T, store *Store) {
+			t.Helper()
+			snap, err := store.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			assert.Empty(t, snap.BypassBackgroundWorkInputID)
+		}
+
+		t.Run("Accept clears unconditionally even when active_input_id changed", func(t *testing.T) {
+			t.Parallel()
+			database, store := setupWithBypass(t)
+			insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+				leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+			_, _, err := store.TurnEnded(ctx, "agent-1", false)
+			require.NoError(t, err)
+			prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+			require.NoError(t, err)
+			require.NotNil(t, prepared)
+			// Simulate provider ending turn before Accept so active_input_id no longer matches.
+			_, _, err = store.TurnEnded(ctx, "agent-1", false)
+			require.NoError(t, err)
+			_, snap, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+			require.NoError(t, err)
+			assert.Empty(t, snap.BypassBackgroundWorkInputID)
+		})
+
+		t.Run("Delete", func(t *testing.T) {
+			t.Parallel()
+			_, store := setupWithBypass(t)
+			_, err := store.Delete(ctx, "agent-1", "in-2")
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("BeginEdit and Update", func(t *testing.T) {
+			t.Parallel()
+			database, store := setupWithBypass(t)
+			_, _, _, err := store.BeginEdit(ctx, "agent-1", "in-1", "c1", false)
+			require.NoError(t, err)
+			assertCleared(t, store)
+			// Re-set bypass directly to test Update also clears it.
+			_, err = database.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = 'in-1' WHERE agent_id = 'agent-1'`)
+			require.NoError(t, err)
+			_, err = store.Update(ctx, UpdateRequest{
+				AgentID: "agent-1", InputID: "in-1", ClientID: "c1", ExpectedVersion: 1, Text: "edited",
+			})
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("Move", func(t *testing.T) {
+			t.Parallel()
+			_, store := setupWithBypass(t)
+			_, err := store.Move(ctx, "agent-1", "in-2", "in-1")
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("RequeueBusy", func(t *testing.T) {
+			t.Parallel()
+			_, store := setupWithBypass(t)
+			_, _, err := store.TurnEnded(ctx, "agent-1", false)
+			require.NoError(t, err)
+			prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+			require.NoError(t, err)
+			require.NotNil(t, prepared)
+			_, err = store.RequeueBusy(ctx, "agent-1", prepared.Item.ID, false)
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("RequeueAndPause", func(t *testing.T) {
+			t.Parallel()
+			_, store := setupWithBypass(t)
+			_, _, err := store.TurnEnded(ctx, "agent-1", false)
+			require.NoError(t, err)
+			prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+			require.NoError(t, err)
+			require.NotNil(t, prepared)
+			_, err = store.RequeueAndPause(ctx, "agent-1", prepared.Item.ID, assert.AnError,
+				leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("FailDispatch", func(t *testing.T) {
+			t.Parallel()
+			_, store := setupWithBypass(t)
+			_, _, err := store.TurnEnded(ctx, "agent-1", false)
+			require.NoError(t, err)
+			prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+			require.NoError(t, err)
+			require.NotNil(t, prepared)
+			_, err = store.FailDispatch(ctx, "agent-1", prepared.Item.ID, assert.AnError, false)
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("SetPaused(true)", func(t *testing.T) {
+			t.Parallel()
+			_, store := setupWithBypass(t)
+			_, err := store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("pauseAndEndTurn and replacePauseAndEndTurn", func(t *testing.T) {
+			t.Parallel()
+			database, store := setupWithBypass(t)
+			pauseAgentAndEndTurn(t, database, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped)
+			assertCleared(t, store)
+
+			_, err := database.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = 'in-1' WHERE agent_id = 'agent-1'`)
+			require.NoError(t, err)
+			tx, err := database.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			require.NoError(t, replacePauseAndEndTurn(ctx, tx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED, pauseOwnerDelivery))
+			require.NoError(t, tx.Commit())
+			assertCleared(t, store)
+		})
+
+		t.Run("pauseForPlannedRestart and finishPlannedRestart", func(t *testing.T) {
+			t.Parallel()
+			database, store := setupWithBypass(t)
+			_, _, err := store.pauseForPlannedRestart(ctx, "agent-1")
+			require.NoError(t, err)
+			assertCleared(t, store)
+
+			_, err = database.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = 'in-1' WHERE agent_id = 'agent-1'`)
+			require.NoError(t, err)
+			_, _, err = store.finishPlannedRestart(ctx, "agent-1", false, false)
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("pauseForInputRecovery and finishInputRecovery", func(t *testing.T) {
+			t.Parallel()
+			database, store := setupWithBypass(t)
+			_, prev, err := store.pauseForInputRecovery(ctx, "agent-1")
+			require.NoError(t, err)
+			assertCleared(t, store)
+
+			_, err = database.ExecContext(ctx, `UPDATE agent_input_queue_state SET bypass_background_work_input_id = 'in-1' WHERE agent_id = 'agent-1'`)
+			require.NoError(t, err)
+			_, _, err = store.finishInputRecovery(ctx, "agent-1", prev, true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED)
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("placeControlReply", func(t *testing.T) {
+			t.Parallel()
+			_, store := setupWithBypass(t)
+			_, err := store.Enqueue(ctx, NewItem{
+				ID: "reply-1", AgentID: "agent-1",
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "yes",
+			})
+			require.NoError(t, err)
+			assertCleared(t, store)
+		})
+
+		t.Run("Recover clears unconditionally even when idle and no unconfirmed items", func(t *testing.T) {
+			t.Parallel()
+			_, store := setupWithBypass(t)
+			_, _, err := store.TurnEnded(ctx, "agent-1", false)
+			require.NoError(t, err)
+			before, err := store.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			require.False(t, before.ActiveTurn)
+			require.Equal(t, "in-1", before.BypassBackgroundWorkInputID)
+
+			snaps, err := store.Recover(ctx)
+			require.NoError(t, err)
+			require.Len(t, snaps, 1)
+			assert.Empty(t, snaps[0].BypassBackgroundWorkInputID)
+			assertCleared(t, store)
+		})
+	})
+}
+
+func TestStoreBackgroundWorkRefreshTreeAndExemptions(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("RefreshForBackgroundWork skips empty queue and bumps non-empty queue", func(t *testing.T) {
+		t.Parallel()
+		_, store := newStoreFixture(t)
+		_, _, err := store.TurnEnded(ctx, "agent-1", false)
+		require.NoError(t, err)
+		before, err := store.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+
+		snap, changed, err := store.RefreshForBackgroundWork(ctx, "agent-1")
+		require.NoError(t, err)
+		assert.False(t, changed)
+		assert.Equal(t, before.Revision, snap.Revision)
+
+		enqueued, err := store.Enqueue(ctx, NewItem{
+			ID: "in-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello",
+		})
+		require.NoError(t, err)
+
+		refreshed, changed, err := store.RefreshForBackgroundWork(ctx, "agent-1")
+		require.NoError(t, err)
+		assert.True(t, changed)
+		assert.Equal(t, enqueued.Revision+1, refreshed.Revision)
+	})
+
+	t.Run("ListQueuedAgentIDsInTree finds queued root, child, and closed child while excluding empty queues", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		createChildAgentRow(t, database, "child-queued", "agent-1")
+		createChildAgentRow(t, database, "child-empty", "agent-1")
+		createChildAgentRow(t, database, "child-closed", "child-empty")
+		_, err := database.ExecContext(ctx, `UPDATE agents SET closed_at = '2026-01-01T00:00:00Z' WHERE id = 'child-closed'`)
+		require.NoError(t, err)
+
+		for _, agentID := range []string{"agent-1", "child-queued", "child-closed"} {
+			_, err := store.Enqueue(ctx, NewItem{
+				ID: "in-" + agentID, AgentID: agentID,
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hi",
+			})
+			require.NoError(t, err)
+		}
+
+		ids, err := store.ListQueuedAgentIDsInTree(ctx, "agent-1")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"agent-1", "child-closed", "child-queued"}, ids)
+	})
+
+	t.Run("control replies, approved context replacement, and PrepareRetry admit while background work runs", func(t *testing.T) {
+		t.Parallel()
+		for _, kind := range []leapmuxv1.AgentInputKind{
+			leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+			leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
+		} {
+			database, store := newStoreFixture(t)
+			insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+				leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+			_, err := store.Enqueue(ctx, NewItem{ID: "reply", AgentID: "agent-1", Kind: kind, Text: "ok"})
+			require.NoError(t, err)
+			prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+			require.NoError(t, err)
+			require.NotNil(t, prepared, "control reply kind %v must admit despite active background work", kind)
+		}
+
+		// Approved requiresContextReplacement admits despite active background work.
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "plan", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, Text: "execute", PrepareContext: true,
+		})
+		require.NoError(t, err)
+		require.NoError(t, dbtest.StoreControlResponse(ctx, database, gendb.ControlResponseAnswer{
+			AgentID: "agent-1", RequestID: "req-1", ClaimToken: "claim-1",
+			State:   leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED,
+			InputID: "plan", PlanApprovalSettings: []byte(`{}`),
+		}))
+		prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+		require.NoError(t, err)
+		require.NotNil(t, prepared, "approved context replacement must admit despite active background work")
+
+		// PrepareRetry admits despite active background work.
+		database2, store2 := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database2, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		_, err = store2.Enqueue(ctx, NewItem{
+			ID: "retry-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "try again",
+		})
+		require.NoError(t, err)
+		prepared, _, err = store2.PrepareRetry(ctx, "agent-1")
+		require.NoError(t, err)
+		require.NotNil(t, prepared, "PrepareRetry must admit despite active background work")
+	})
+
+	t.Run("scheduled future head stays refused behind active background work", func(t *testing.T) {
+		t.Parallel()
+		clock := testutil.NewQuartzMock(t)
+		database := newQueueDatabase(t)
+		store := NewStore(database, clock)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+
+		future := clock.Now().UTC().Add(time.Minute)
+		snap, err := store.Enqueue(ctx, NewItem{
+			ID: "future", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "wait",
+			ScheduledAt: &future,
+		})
+		require.NoError(t, err)
+		require.Len(t, snap.Items, 1)
+		assert.False(t, snap.Items[0].CanSteer)
+		assert.False(t, snap.Items[0].CanPreempt)
+
+		prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+		require.NoError(t, err)
+		assert.Nil(t, prepared)
 	})
 }

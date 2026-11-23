@@ -505,6 +505,13 @@ func TestInputRecoveryKeepsWorkAndControlsUntilApproval(t *testing.T) {
 				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{AgentID: owner, RequestID: "pending", Payload: []byte(`{}`), NonBlocking: kind == "closed child question"})
 			}
 			enqueueRecoveryInput(t, svc, id, "held-input")
+			if kind == "background task" {
+				// Automatic drain holds ordinary input behind active background
+				// work; an explicit Preempt bypasses the hold and reaches input
+				// recovery without stopping the running background task first.
+				_, err := svc.InputQueue.Preempt(t.Context(), id, "held-input")
+				require.NoError(t, err)
+			}
 			recoveryQueuedItem(t, svc, id, "held-input")
 			assert.False(t, starts.fake(0).wasStopped())
 			if kind == "background task" {

@@ -24,9 +24,12 @@ type Agent struct {
 	workingDir string
 	// clock drives reads of the native child snapshots while a child runs.
 	clock quartz.Clock
-	// childTailMu guards the readers keyed by their ACP child session IDs.
-	childTailMu sync.Mutex
-	childTails  map[string]*junieChildTail
+	// childTailMu guards childTails, openChildren, and finishedChildren keyed
+	// by their ACP child session IDs.
+	childTailMu      sync.Mutex
+	childTails       map[string]*junieChildTail
+	openChildren     map[string]struct{}
+	finishedChildren map[string]struct{}
 
 	// goalMu guards the goal-report bookkeeping. It is separate from Base.Mu so
 	// the goal fold never takes the base lock.

@@ -586,3 +586,30 @@ func TestAnInterruptDuringThePlanSwitchStopsTheContinuation(t *testing.T) {
 	r.agent.Mu.Unlock()
 	assert.Equal(t, contracts.ClinePermissionModeAct, mode)
 }
+
+func TestRebuildSessionClosesOpenTeamRunsAndResetsTeamState(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	root := r.sessionID()
+	r.hub.store(root, []any{})
+	r.feed(t, contracts.ClineEventTeamProgress, teamProgressPayload(root, contracts.ClineTeamRunEventRunStarted, "run_1", "researcher"))
+	r.feed(t, contracts.ClineEventTeamProgress, teamProgressPayload(root, contracts.ClineTeamRunEventRunQueued, "run_2", "writer"))
+
+	err := r.agent.rebuildSession(clineSettings{model: testModel, effort: agent.EffortAuto, permissionMode: contracts.ClinePermissionModePlan})
+	require.NoError(t, err)
+
+	for _, runID := range []string{"run_1", "run_2"} {
+		item, ok := r.sink.BackgroundTask(teamRowPrefix + runID)
+		require.True(t, ok, "team row %s must exist", runID)
+		assert.Equal(t, bgtask.StatusStopped, item.Status, "rebuildSession stops %s", runID)
+	}
+	r.agent.Mu.Lock()
+	busy := r.agent.team.busy()
+	runs := len(r.agent.team.runs)
+	r.agent.Mu.Unlock()
+	assert.False(t, busy, "rebuildSession clears active team runs")
+	assert.Zero(t, runs, "rebuildSession resets a.team")
+
+	r.feed(t, eventAssistantDelta, map[string]any{"text": "lead"})
+	assert.True(t, r.turnActive(), "no stale team state suppresses lead output after rebuild")
+}

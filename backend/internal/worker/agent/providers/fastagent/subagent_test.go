@@ -296,7 +296,7 @@ func TestFastagentSubagentArchiveNeverReusesAClaimedIdenticalResult(t *testing.T
 	a.ApplySubagentObservation(oldFinal)
 	assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
 
-	newTimer, _ := testutil.NewTimerTraps(t, clock, fastagentArchiveTimerTag)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, fastagentArchiveTimerTag)
 	newChild := a.observeSubagentCall("acp-new", "subagent", input)
 	require.NotNil(t, newChild)
 	a.ApplySubagentObservation(newChild)
@@ -306,26 +306,20 @@ func TestFastagentSubagentArchiveNeverReusesAClaimedIdenticalResult(t *testing.T
 	require.NotNil(t, newFinal)
 	require.False(t, newFinal.CloseRow, "the old native child already belongs to another ACP row")
 	a.ApplySubagentObservation(newFinal)
-	call := newTimer.MustWait(ctx)
+	testutil.WaitForTimer(t, ctx, newTimer)
 	writeFastagentChildArchive(t, home, "session-1", "child-new", "model-new", "history_agent.json")
 	writeFastagentParentResultHistory(t, home, "session-1",
 		fastagentParentResultFixture{modelCallID: "model-old", childID: "child-old", text: "SAME_RESULT"},
 		fastagentParentResultFixture{modelCallID: "model-new", childID: "child-new", text: "SAME_RESULT"},
 	)
 	a.HooksForTest().PromptEnded(nil, false)
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
 	row, ok := sink.BackgroundTask(newChild.RowKey)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusRunning, row.Status)
-	state := a.childState["acp-new"]
-	require.NotNil(t, state)
-	state.deadline = clock.Now().Add(fastagentArchiveRetryInterval)
-	call.MustRelease(ctx)
-	clock.Advance(fastagentArchiveRetryInterval).MustWait(ctx)
-	assert.Equal(t, bgtask.StatusFailed, waitFastagentChildClose(t, ctx, sink))
-	row, ok = sink.BackgroundTask(newChild.RowKey)
-	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Len(t, sink.Child(row.ChildAgentID).Messages(), 1, "the ambiguous archive reaches neither child transcript")
+	assert.Empty(t, a.childState)
 }
 
 func TestFastagentSubagentArchiveKeepsTheRouteAfterAFirstDeliveryFailure(t *testing.T) {
@@ -403,20 +397,21 @@ func TestFastagentSubagentArchiveDeadlineClosesFailed(t *testing.T) {
 	assert.Equal(t, fastagentArchiveRetryInterval, call.Duration)
 	state := a.childState["call-deadline"]
 	require.NotNil(t, state)
+	assert.Equal(t, 5*time.Second, fastagentArchiveDeadline)
 	assert.Equal(t, started.Add(fastagentArchiveDeadline), state.deadline)
 	// The retry goroutine waits inside NewTimer until this test shortens the deadline.
 	state.deadline = started.Add(fastagentArchiveRetryInterval)
 	call.MustRelease(ctx)
 
 	clock.Advance(fastagentArchiveRetryInterval).MustWait(ctx)
-	assert.Equal(t, bgtask.StatusFailed, waitFastagentChildClose(t, ctx, sink))
+	assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
 	row, ok := sink.BackgroundTask(spawn.RowKey)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	notifications := sink.Child(row.ChildAgentID).LeapMuxNotifications()
 	encoded, err := json.Marshal(notifications)
 	require.NoError(t, err)
-	assert.Contains(t, string(encoded), "Child transcript unavailable after two minutes")
+	assert.Contains(t, string(encoded), "Child transcript unavailable after 5 seconds")
 }
 
 func TestFastagentSubagentArchiveClearCancelsThePendingTimer(t *testing.T) {
@@ -457,10 +452,10 @@ func TestFastagentSubagentArchiveProcessExitCancelsThePendingTimer(t *testing.T)
 
 	a.CancelForTest()
 	stopTimer.MustWait(ctx).MustRelease(ctx)
-	assert.Equal(t, bgtask.StatusFailed, waitFastagentChildClose(t, ctx, sink))
+	assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
 	row, ok := sink.BackgroundTask(spawn.RowKey)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	notifications := sink.Child(row.ChildAgentID).LeapMuxNotifications()
 	encoded, err := json.Marshal(notifications)
 	require.NoError(t, err)
@@ -509,10 +504,10 @@ func TestFastagentSubagentWaitKeepsArchiveCloseBeforeExitCleanup(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("Wait did not finish after the child archive row closed")
 	}
-	assert.Equal(t, bgtask.StatusFailed, waitFastagentChildClose(t, ctx, sink))
+	assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
 	row, ok := sink.BackgroundTask(spawn.RowKey)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 func TestFastagentSubagentArchiveBacksOffAfterRepeatedReadFailures(t *testing.T) {
@@ -537,5 +532,143 @@ func TestFastagentSubagentArchiveBacksOffAfterRepeatedReadFailures(t *testing.T)
 	assert.Equal(t, time.Second, third)
 	a.CancelForTest()
 	stopTimer.MustWait(ctx).MustRelease(ctx)
-	assert.Equal(t, bgtask.StatusFailed, waitFastagentChildClose(t, ctx, sink))
+	assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
+}
+
+func TestFastagentSubagentArchiveFallbackPreservesResultTextAndNonFinalFallsBackToFailed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserves resultText on deadline", func(t *testing.T) {
+		t.Parallel()
+		a, sink, clock := newFastagentSubagentAgentForRPC(t, t.TempDir())
+		newTimer, _ := testutil.NewTimerTraps(t, clock, fastagentArchiveTimerTag)
+		ctx := testutil.DeadlineContext(t)
+		spawn := a.observeSubagentCall("call-result", "subagent", json.RawMessage(`{"message":"Count files","label":"Count files"}`))
+		require.NotNil(t, spawn)
+		a.ApplySubagentObservation(spawn)
+		final := a.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+			ToolCallID: "call-result", Status: "completed", RawOutput: json.RawMessage(`"DIRECT_RESULT_TEXT"`),
+		})
+		require.NotNil(t, final)
+		require.False(t, final.CloseRow)
+		a.ApplySubagentObservation(final)
+
+		for elapsed := time.Duration(0); elapsed < 5*time.Second; {
+			interval := testutil.WaitForTimer(t, ctx, newTimer)
+			clock.Advance(interval).MustWait(ctx)
+			elapsed += interval
+		}
+		assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
+		row, ok := sink.BackgroundTask(spawn.RowKey)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		encoded, err := json.Marshal(sink.Child(row.ChildAgentID).LeapMuxNotifications())
+		require.NoError(t, err)
+		assert.Contains(t, string(encoded), "DIRECT_RESULT_TEXT")
+		assert.NotContains(t, string(encoded), "Child transcript unavailable")
+	})
+
+	t.Run("non-final status falls back to failed", func(t *testing.T) {
+		t.Parallel()
+		a, _, _ := newFastagentSubagentAgentForRPC(t, t.TempDir())
+		spawn := a.observeSubagentCall("call-nonfinal", "subagent", json.RawMessage(`{"message":"Count files","label":"Count files"}`))
+		require.NotNil(t, spawn)
+		state := a.childState["call-nonfinal"]
+		require.NotNil(t, state)
+		state.finalStatus = bgtask.StatusRunning
+		obs := a.failFastagentChildArchive(state, "Child transcript unavailable after 5 seconds")
+		require.NotNil(t, obs)
+		assert.Equal(t, bgtask.StatusFailed, obs.Status)
+		assert.True(t, obs.CloseRow)
+	})
+}
+
+func TestFastagentSubagentAmbiguousArchiveClosesImmediatelyWithoutWaiting(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	writeFastagentChildArchive(t, home, "session-1", "child-a", "model-a", "history_agent.json")
+	writeFastagentChildArchive(t, home, "session-1", "child-b", "model-b", "history_agent.json")
+
+	a, sink, clock := newFastagentSubagentAgentForRPC(t, home)
+	spawn := a.observeSubagentCall("call-ambiguous", "subagent", json.RawMessage(`{"message":"Count files","label":"Count files"}`))
+	require.NotNil(t, spawn)
+	a.ApplySubagentObservation(spawn)
+
+	final := a.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+		ToolCallID: "call-ambiguous", Status: "completed",
+	})
+	require.NotNil(t, final)
+	require.True(t, final.CloseRow, "an ambiguous archive must close immediately without waiting for the deadline")
+	assert.Equal(t, bgtask.StatusSucceeded, final.Status)
+	a.ApplySubagentObservation(final)
+	_, pending := clock.Peek()
+	assert.False(t, pending, "no archive retry timer should be scheduled for a permanent ambiguity")
+	assert.Empty(t, a.childState)
+	row, ok := sink.BackgroundTask(spawn.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}
+
+func TestFastagentSubagentFinalToolCallClosesDirectlyWithoutLeakingState(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newFastagentSubagentAgentForRPC(t, t.TempDir())
+	obs := a.subagentFromToolCall(acp.ToolCallEnvelope{
+		ToolCallID: "call-final-ok",
+		Title:      "local/subagent",
+		Status:     "completed",
+		RawInput:   json.RawMessage(`{"message":"Count files","label":"Fast child"}`),
+		RawOutput:  json.RawMessage(`"FINAL_RESULT"`),
+	})
+	require.NotNil(t, obs)
+	assert.True(t, obs.Spawns)
+	assert.True(t, obs.CloseRow)
+	assert.Equal(t, bgtask.StatusSucceeded, obs.Status)
+	assert.Equal(t, "FINAL_RESULT", obs.Report.Text)
+	assert.Empty(t, a.childState, "already-final tool_call must not leak childState")
+	a.ApplySubagentObservation(obs)
+	row, ok := sink.BackgroundTask(obs.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	failedObs := a.subagentFromToolCall(acp.ToolCallEnvelope{
+		ToolCallID: "call-final-err",
+		Title:      "subagent",
+		Status:     "failed",
+		RawInput:   json.RawMessage(`{"message":"Count files"}`),
+	})
+	require.NotNil(t, failedObs)
+	assert.True(t, failedObs.Spawns)
+	assert.True(t, failedObs.CloseRow)
+	assert.Equal(t, bgtask.StatusFailed, failedObs.Status)
+	assert.Empty(t, a.childState)
+}
+
+func TestFastagentSubagentPromptEndedClosesIncompleteChildren(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		err      error
+		stopped  bool
+		expected bgtask.Status
+	}{
+		{name: "idle end", err: nil, stopped: false, expected: bgtask.StatusStopped},
+		{name: "cancelled", err: context.Canceled, stopped: true, expected: bgtask.StatusStopped},
+		{name: "error", err: context.DeadlineExceeded, stopped: false, expected: bgtask.StatusFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newFastagentSubagentAgentForRPC(t, t.TempDir())
+			spawn := a.observeSubagentCall("call-incomplete", "subagent", json.RawMessage(`{"message":"Count files","label":"Count files"}`))
+			require.NotNil(t, spawn)
+			a.ApplySubagentObservation(spawn)
+			require.NotEmpty(t, a.childUpdateRoute("", map[string]json.RawMessage{"parentToolCallId": json.RawMessage(`"call-incomplete"`)}))
+
+			a.HooksForTest().PromptEnded(tc.err, tc.stopped)
+			row, ok := sink.BackgroundTask(spawn.RowKey)
+			require.True(t, ok)
+			assert.Equal(t, tc.expected, row.Status)
+			assert.Empty(t, a.childState)
+			assert.Empty(t, a.childUpdateRoute("", map[string]json.RawMessage{"parentToolCallId": json.RawMessage(`"call-incomplete"`)}))
+		})
+	}
 }

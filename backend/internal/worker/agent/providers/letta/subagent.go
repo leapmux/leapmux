@@ -3,7 +3,9 @@ package letta
 import (
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -38,11 +40,67 @@ type lettaNativeChild struct {
 	ParentConversationID string `json:"parent_conversation_id"`
 }
 
+// lettaBackgroundProcessRowPrefix namespaces device_status background shell rows
+// so their keys never collide with native subagent IDs.
+const lettaBackgroundProcessRowPrefix = "letta-bg:"
+
+// queueRegistryWrite enqueues a background-task mutation on the root output
+// queue so transient storage errors retry in FIFO order. Callbacks capture only
+// immutable values and must never acquire dispatchMu.
+func (a *Agent) queueRegistryWrite(label string, write func() error) error {
+	if a.sink == nil {
+		return nil
+	}
+	if queue := agent.OutputQueueFor(a.sink); queue != nil {
+		queue.Append(agent.OutputWrite{Label: label, Run: write})
+		return nil
+	}
+	return write()
+}
+
+func (a *Agent) queueRegistryUpsert(upsert bgtask.Upsert) error {
+	sink := a.sink
+	return a.queueRegistryWrite("upsert Letta background task", func() error {
+		return sink.UpsertBackgroundTask(upsert)
+	})
+}
+
+func (a *Agent) queueRegistryRevive(rowKey string) error {
+	sink := a.sink
+	return a.queueRegistryWrite("revive Letta background task", func() error {
+		return sink.ReviveBackgroundTask(rowKey)
+	})
+}
+
+func (a *Agent) queueRegistryClose(rowKey string, status bgtask.Status) error {
+	sink := a.sink
+	return a.queueRegistryWrite("close Letta background task", func() error {
+		return sink.CloseBackgroundTask(rowKey, status)
+	})
+}
+
+// flushOutputQueue drains queued registry writes outside dispatchMu.
+func (a *Agent) flushOutputQueue() {
+	if a.sink == nil {
+		return
+	}
+	queue := agent.OutputQueueFor(a.sink)
+	if queue == nil {
+		return
+	}
+	if err := queue.Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+		slog.Warn("letta: flush queued registry output failed", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
 // onSubagentState projects native child snapshots into Worker child rows.
-func (a *Agent) onSubagentState(payload json.RawMessage) {
+func (a *Agent) onSubagentState(payload json.RawMessage, scope *runtimeScope) {
 	var children []lettaNativeChild
 	if err := json.Unmarshal(payload, &children); err != nil {
 		slog.Warn("letta: child snapshot is unreadable", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if children == nil {
 		return
 	}
 	counts := make(map[string]int, len(children))
@@ -54,6 +112,19 @@ func (a *Agent) onSubagentState(payload json.RawMessage) {
 			continue
 		}
 		a.observeChild(child)
+	}
+	if !a.ownsRuntime(scope) {
+		return
+	}
+	var evicted []string
+	for id, child := range a.children {
+		if child.registered && !child.closed && counts[id] == 0 {
+			evicted = append(evicted, id)
+		}
+	}
+	sort.Strings(evicted)
+	for _, id := range evicted {
+		a.closeChild(id, a.children[id], bgtask.StatusEndedWithUnknownOutcome)
 	}
 }
 
@@ -100,7 +171,16 @@ func (a *Agent) observeChild(native lettaNativeChild) {
 		return
 	}
 	if child.closed {
-		return
+		if status.IsFinished() {
+			return
+		}
+		if err := a.queueRegistryRevive(native.ID); err != nil {
+			slog.Warn("letta: revive child failed", "agent_id", a.AgentID(), "subagent_id", native.ID, "error", err)
+			return
+		}
+		child.closed = false
+		child.reportWritten = false
+		child.lastText = ""
 	}
 	if !child.prompted {
 		if err := a.sink.PersistChildPrompt(child.agentID, child.prompt); err != nil {
@@ -113,7 +193,7 @@ func (a *Agent) observeChild(native lettaNativeChild) {
 	if status.IsFinished() {
 		rowStatus = bgtask.StatusRunning
 	}
-	if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
+	if err := a.queueRegistryUpsert(bgtask.Upsert{
 		RowKey: native.ID, Kind: bgtask.KindSubagent, ChildAgentID: child.agentID,
 		ParentAgentID: a.AgentID(), Title: child.title, Status: rowStatus,
 	}); err != nil {
@@ -124,15 +204,21 @@ func (a *Agent) observeChild(native lettaNativeChild) {
 	if !status.IsFinished() {
 		return
 	}
-	a.flushGenerationFor(native.ID, lettaChildCompletion(status))
-	a.finishOpenCompaction(a.sink.ChildSink(child.agentID), native.ID, lettaChildCompletion(status))
-	a.flushHeldErrors(a.sink.ChildSink(child.agentID), native.ID, "")
-	a.retryForTarget(native.ID).Reset()
-	if err := a.sink.CloseBackgroundTask(native.ID, status); err != nil {
-		slog.Warn("letta: finish child failed", "agent_id", a.AgentID(), "subagent_id", native.ID, "error", err)
+	a.closeChild(native.ID, child, status)
+}
+
+func (a *Agent) closeChild(childID string, child *lettaChild, status bgtask.Status) {
+	completion := lettaChildCompletion(status)
+	childSink := a.sink.ChildSink(child.agentID)
+	a.flushGenerationFor(childID, completion)
+	a.finishOpenCompaction(childSink, childID, completion)
+	a.flushHeldErrors(childSink, childID, "")
+	a.retryForTarget(childID).Reset()
+	if err := a.queueRegistryClose(childID, status); err != nil {
+		slog.Warn("letta: finish child failed", "agent_id", a.AgentID(), "subagent_id", childID, "error", err)
 		return
 	}
-	a.finishToolOutputScope(native.ID, a.sink.ChildSink(child.agentID))
+	a.finishToolOutputScope(childID, childSink)
 	child.closed = true
 }
 
@@ -335,13 +421,150 @@ func (a *Agent) finishChildFromNotification(notice lettaTaskNotification) {
 		child.reportWritten = true
 	}
 	if !child.closed {
-		if err := a.sink.CloseBackgroundTask(childID, status); err != nil {
+		if err := a.queueRegistryClose(childID, status); err != nil {
 			slog.Warn("letta: finish child from task failed", "agent_id", a.AgentID(), "subagent_id", childID, "error", err)
 			return
 		}
 		a.finishToolOutputScope(childID, a.sink.ChildSink(child.agentID))
 		child.closed = true
 		a.retryForTarget(childID).Reset()
+	}
+}
+
+type lettaBackgroundProcess struct {
+	ProcessID   string `json:"process_id"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	ExitCode    *int   `json:"exit_code"`
+	SubagentID  string `json:"subagent_id"`
+}
+
+func (p lettaBackgroundProcess) key() string {
+	if id := strings.TrimSpace(p.ProcessID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(p.ID)
+}
+
+func lettaBackgroundProcessStatus(proc lettaBackgroundProcess) bgtask.Status {
+	switch strings.ToLower(strings.TrimSpace(proc.Status)) {
+	case "", "running", "started", "starting", "active":
+		return bgtask.StatusRunning
+	case "pending", "queued":
+		return bgtask.StatusPending
+	case "completed", "succeeded", "exited", "done":
+		if proc.ExitCode != nil && *proc.ExitCode != 0 {
+			return bgtask.StatusFailed
+		}
+		return bgtask.StatusSucceeded
+	case "failed", "error":
+		return bgtask.StatusFailed
+	case "killed", "stopped", "cancelled", "canceled", "terminated":
+		return bgtask.StatusStopped
+	default:
+		return bgtask.StatusRunning
+	}
+}
+
+func lettaExitStatus(completion agent.MessageCompletion) bgtask.Status {
+	switch completion {
+	case agent.MessageCompletionError:
+		return bgtask.StatusFailed
+	case agent.MessageCompletionInterrupted:
+		return bgtask.StatusStopped
+	default:
+		return bgtask.StatusEndedWithUnknownOutcome
+	}
+}
+
+// reconcileBackgroundProcesses diffs device_status.background_processes against
+// tracked shell rows under dispatchMu.
+func (a *Agent) reconcileBackgroundProcesses(processes []lettaBackgroundProcess) {
+	if a.backgroundProcesses == nil {
+		a.backgroundProcesses = make(map[string]struct{})
+	}
+	active := make(map[string]struct{}, len(processes))
+	handled := make(map[string]struct{}, len(processes))
+	for _, proc := range processes {
+		if proc.Kind == "agent_task" && strings.TrimSpace(proc.SubagentID) != "" {
+			continue
+		}
+		id := proc.key()
+		if id == "" {
+			continue
+		}
+		rowKey := lettaBackgroundProcessRowPrefix + id
+		status := lettaBackgroundProcessStatus(proc)
+		if status.IsFinished() {
+			delete(active, rowKey)
+			handled[rowKey] = struct{}{}
+			if _, tracked := a.backgroundProcesses[rowKey]; tracked {
+				if err := a.queueRegistryClose(rowKey, status); err != nil {
+					slog.Warn("letta: close background process failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
+					continue
+				}
+				delete(a.backgroundProcesses, rowKey)
+			}
+			continue
+		}
+		title, isCommand := strings.TrimSpace(proc.Description), false
+		if title == "" && strings.TrimSpace(proc.Command) != "" {
+			title, isCommand = strings.TrimSpace(proc.Command), true
+		}
+		if title == "" {
+			title = "Background process"
+		}
+		if err := a.queueRegistryUpsert(bgtask.Upsert{
+			RowKey:         rowKey,
+			Kind:           bgtask.KindShell,
+			ParentAgentID:  a.AgentID(),
+			Title:          title,
+			TitleIsCommand: isCommand,
+			Status:         status,
+		}); err != nil {
+			slog.Warn("letta: upsert background process failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
+			continue
+		}
+		active[rowKey] = struct{}{}
+		handled[rowKey] = struct{}{}
+		a.backgroundProcesses[rowKey] = struct{}{}
+	}
+	var evicted []string
+	for rowKey := range a.backgroundProcesses {
+		if _, stillActive := active[rowKey]; !stillActive {
+			if _, alreadyHandled := handled[rowKey]; !alreadyHandled {
+				evicted = append(evicted, rowKey)
+			}
+		}
+	}
+	sort.Strings(evicted)
+	for _, rowKey := range evicted {
+		if err := a.queueRegistryClose(rowKey, bgtask.StatusEndedWithUnknownOutcome); err != nil {
+			slog.Warn("letta: close evicted background process failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
+			continue
+		}
+		delete(a.backgroundProcesses, rowKey)
+	}
+}
+
+func (a *Agent) closeBackgroundProcesses(status bgtask.Status) {
+	if len(a.backgroundProcesses) == 0 {
+		return
+	}
+	rowKeys := make([]string, 0, len(a.backgroundProcesses))
+	for rowKey := range a.backgroundProcesses {
+		rowKeys = append(rowKeys, rowKey)
+	}
+	sort.Strings(rowKeys)
+	for _, rowKey := range rowKeys {
+		if err := a.queueRegistryClose(rowKey, status); err != nil {
+			slog.Warn("letta: finish background process failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
+			continue
+		}
+		delete(a.backgroundProcesses, rowKey)
 	}
 }
 

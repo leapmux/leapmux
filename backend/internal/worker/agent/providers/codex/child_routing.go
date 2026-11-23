@@ -57,16 +57,22 @@ func parseCollabToolCall(item json.RawMessage) *codexCollabAgentToolCall {
 	return nil
 }
 
+const (
+	codexCollabToolSendInput   = "sendInput"
+	codexCollabToolResumeAgent = "resumeAgent"
+)
+
 // registerCollabReceiver records one legacy spawn route. Multi-Agent V2 later
 // replaces these identity fields from its authoritative started activity.
-func (a *Agent) registerCollabReceiver(threadID, spawnCorrelationID, parentThreadID string) bool {
+func (a *Agent) registerCollabReceiver(threadID, spawnCorrelationID, parentThreadID string, fromCompleted bool) bool {
 	if threadID == "" {
 		return false
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	state := a.codexChildStateLocked(threadID)
-	changed := state.phase != codexChildRunning
+	shouldActivate := !fromCompleted || (state.phase != codexChildInactive && state.phase != codexChildPaused)
+	changed := shouldActivate && state.phase != codexChildRunning
 	if state.spawnCorrelationID == "" && spawnCorrelationID != "" {
 		state.spawnCorrelationID = spawnCorrelationID
 		changed = true
@@ -81,7 +87,7 @@ func (a *Agent) registerCollabReceiver(threadID, spawnCorrelationID, parentThrea
 	if changed {
 		a.invalidateCodexChildRoutesLocked()
 	}
-	if state.phase != codexChildClosing {
+	if shouldActivate && state.phase != codexChildClosing {
 		a.activateCodexChildStateLocked(state)
 	}
 	return changed
@@ -90,44 +96,105 @@ func (a *Agent) registerCollabReceiver(threadID, spawnCorrelationID, parentThrea
 func (a *Agent) registerCollabReceivers(
 	collab *codexCollabAgentToolCall,
 	spawnCorrelationID, parentThreadID string,
+	fromCompleted bool,
 ) {
 	if collab == nil {
 		return
 	}
 	for _, receiverID := range collab.ReceiverThreadIds {
-		if collab.Tool == codexCollabToolSpawnAgent {
+		switch collab.Tool {
+		case codexCollabToolSpawnAgent:
 			a.recordCollabChildPromptTitle(receiverID, collab.Prompt)
 			a.rememberCollabChildPrompt(receiverID, collab.Prompt)
-			a.registerCollabReceiver(receiverID, spawnCorrelationID, parentThreadID)
-			continue
+			a.registerCollabReceiver(receiverID, spawnCorrelationID, parentThreadID, fromCompleted)
+		case codexCollabToolSendInput, codexCollabToolResumeAgent:
+			// Only sendInput and resumeAgent start new work on an existing child.
+			// wait and closeAgent carry snapshots only and must never revive a finished child.
+			a.activateCollabChildForWake(receiverID, spawnCorrelationID, fromCompleted)
 		}
-		// A wait, message, resume, or close call proves activity only. Its call
-		// ID and sender do not identify the receiver's spawn or direct parent.
-		a.activateCollabChild(receiverID)
 	}
 }
 
+// activateCollabChildForWake activates a child on sendInput/resumeAgent while
+// ignoring stale item/completed frames whose item/started already triggered a
+// child turn that has since finished or paused.
+func (a *Agent) activateCollabChildForWake(threadID, itemID string, fromCompleted bool) {
+	if threadID == "" {
+		return
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	state := a.codexChildStateLocked(threadID)
+	if !fromCompleted {
+		if itemID != "" {
+			if state.startedWakeItems == nil {
+				state.startedWakeItems = make(map[string]struct{})
+			}
+			state.startedWakeItems[itemID] = struct{}{}
+		}
+		a.activateCodexChildStateLocked(state)
+		return
+	}
+	_, seenStart := state.startedWakeItems[itemID]
+	delete(state.startedWakeItems, itemID)
+	if seenStart && (state.phase == codexChildInactive || state.phase == codexChildPaused) {
+		return
+	}
+	a.activateCodexChildStateLocked(state)
+}
+
 // lookupCodexChildRoute reads an existing route without creating transcript
-// state. Call ensureCodexChildRoute when the current lifecycle event permits
-// child creation.
+// state, falling back to durable registry lookup for resumed sessions. Call
+// ensureCodexChildRoute when the current lifecycle event permits child creation.
 func (a *Agent) lookupCodexChildRoute(threadID string) (codexChildRoute, bool) {
 	if threadID == "" || a.isMainThreadID(threadID) {
 		return codexChildRoute{}, false
 	}
 	a.Mu.Lock()
-	state, ok := a.collabChildren[threadID]
-	if !ok || state == nil || state.childAgentID == "" {
-		a.Mu.Unlock()
-		return codexChildRoute{}, false
-	}
-	if state.resolvedRoute != nil {
+	rootThreadID := a.threadID
+	state := a.collabChildren[threadID]
+	if state != nil && state.resolvedRoute != nil {
 		route := *state.resolvedRoute
 		a.Mu.Unlock()
 		return route, true
 	}
-	childAgentID := state.childAgentID
-	parentThreadID := state.parentThreadID
+	var childAgentID, parentThreadID string
+	if state != nil && state.childAgentID != "" {
+		childAgentID = state.childAgentID
+		parentThreadID = state.parentThreadID
+	}
 	a.Mu.Unlock()
+
+	if childAgentID == "" {
+		if a.sink == nil {
+			return codexChildRoute{}, false
+		}
+		lookedUpID, _, found, err := a.sink.LookupBackgroundTask(threadID)
+		if err != nil || !found || lookedUpID == "" {
+			return codexChildRoute{}, false
+		}
+		a.Mu.Lock()
+		if a.threadID != rootThreadID {
+			a.Mu.Unlock()
+			return codexChildRoute{}, false
+		}
+		state = a.codexChildStateLocked(threadID)
+		if state.resolvedRoute != nil {
+			route := *state.resolvedRoute
+			a.Mu.Unlock()
+			return route, true
+		}
+		if state.childAgentID == "" {
+			state.childAgentID = lookedUpID
+		}
+		childAgentID = state.childAgentID
+		if state.parentThreadID == "" {
+			state.parentThreadID = a.threadID
+		}
+		parentThreadID = state.parentThreadID
+		a.Mu.Unlock()
+	}
+
 	parentSink, parentAgentID, ok := a.codexServicesForThread(parentThreadID)
 	if !ok {
 		return codexChildRoute{}, false
@@ -139,7 +206,7 @@ func (a *Agent) lookupCodexChildRoute(threadID string) (codexChildRoute, bool) {
 		childSink:     parentSink.ChildSink(childAgentID),
 	}
 	a.Mu.Lock()
-	if a.collabChildren[threadID] != state || state.childAgentID != childAgentID {
+	if a.threadID != rootThreadID || a.collabChildren[threadID] != state || state.childAgentID != childAgentID {
 		a.Mu.Unlock()
 		return codexChildRoute{}, false
 	}

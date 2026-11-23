@@ -216,6 +216,9 @@ type Agent struct {
 	// workflows tracks the session's workflow runs. Guarded by a.Mu. See
 	// workflow.go.
 	workflows zcodeWorkflowRuns
+	// openShellTasks tracks row keys of currently open KindShell background
+	// tasks so ClearContext can close them. Guarded by a.Mu.
+	openShellTasks map[string]struct{}
 	// stopsInFlight counts the session/stop requests that Interrupt and
 	// SendRawInput sent and that ZCode has not answered yet. Guarded by a.Mu.
 	stopsInFlight int

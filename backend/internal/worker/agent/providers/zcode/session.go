@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // zcodeSessionObservationIdentity fixes the lifetime and observation order before an RPC.
@@ -453,6 +456,10 @@ func (a *Agent) retireZCodeSessionState(sessionID string) {
 	a.endZCodeCompaction()
 	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompleteZCodeTools(agent.MessageCompletionInterrupted)
+	activeSpawns := a.children.activeSpawns()
+	for _, spawn := range activeSpawns {
+		a.persistIncompleteZCodeToolsForChild(spawn.spanID, agent.MessageCompletionInterrupted)
+	}
 	a.Mu.Lock()
 	a.clearZCodeTurnsLocked()
 	a.compactionSessionID = ""
@@ -464,9 +471,20 @@ func (a *Agent) retireZCodeSessionState(sessionID string) {
 	clear(a.toolInvocations)
 	a.nextToolOrder = 0
 	upserts := a.workflows.clear(agent.IncompleteTaskStatus(agent.MessageCompletionInterrupted))
+	shellRowKeys := slices.Sorted(maps.Keys(a.openShellTasks))
+	clear(a.openShellTasks)
 	a.Mu.Unlock()
 	a.publishZCodeModelAPIRetryLocked()
 	a.upsertZCodeWorkflowRows(upserts)
+	for _, spawn := range activeSpawns {
+		providerkit.LogRegistryRefusal("zcode", "close", a.sink.CloseBackgroundTask(spawn.registryKey, bgtask.StatusStopped))
+		if spawn.childAgentID != "" {
+			a.sink.CleanupChildAgent(spawn.childAgentID)
+		}
+	}
+	for _, rowKey := range shellRowKeys {
+		providerkit.LogRegistryRefusal("zcode", "close", a.sink.CloseBackgroundTask(rowKey, bgtask.StatusStopped))
+	}
 	a.withdrawPendingControls()
 	a.toolCallPrompts.Clear()
 	a.children.clear()

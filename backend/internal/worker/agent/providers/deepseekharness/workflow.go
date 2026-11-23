@@ -15,6 +15,14 @@ type nativeWorkflow struct {
 	Children map[int]string
 }
 
+type pendingWorkflowChild struct {
+	RunID      string
+	GroupKey   string
+	GroupLabel string
+	Label      string
+	Sequence   int
+}
+
 func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) error {
 	var data struct {
 		RunID      string `json:"runId"`
@@ -44,8 +52,22 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 			run.Children[data.Sequence] = data.ChildID
 			a.workflows[data.RunID] = run
 		}
+		if exists && child == nil && data.Sequence > 0 && data.ChildID != "" {
+			if a.pendingWorkflowChildren == nil {
+				a.pendingWorkflowChildren = map[string]pendingWorkflowChild{}
+			}
+			a.pendingWorkflowChildren[data.ChildID] = pendingWorkflowChild{
+				RunID:      data.RunID,
+				GroupKey:   key,
+				GroupLabel: run.Name,
+				Label:      data.Label,
+				Sequence:   data.Sequence,
+			}
+			a.Mu.Unlock()
+			return nil
+		}
 		a.Mu.Unlock()
-		if !exists || child == nil || data.Sequence <= 0 {
+		if !exists || data.Sequence <= 0 || data.ChildID == "" {
 			return fmt.Errorf("DeepSeek Harness workflow work has no owned run or child")
 		}
 		return sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: data.ChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.agentID, GroupKey: key, GroupLabel: run.Name, Title: data.Label, Status: bgtask.StatusRunning})
@@ -53,6 +75,13 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 		a.Mu.Lock()
 		run, exists := a.workflows[data.RunID]
 		childID := run.Children[data.Sequence]
+		if exists && childID != "" {
+			delete(run.Children, data.Sequence)
+			delete(a.pendingWorkflowChildren, childID)
+			if child := a.children[childID]; child != nil {
+				child.active = false
+			}
+		}
 		a.Mu.Unlock()
 		if !exists || childID == "" {
 			return fmt.Errorf("DeepSeek Harness workflow completion has no owned work")
@@ -70,8 +99,28 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 		return sink.CloseBackgroundTask(childID, status)
 	case contracts.DeepseekHarnessEventWorkflowEnd:
 		a.Mu.Lock()
-		_, exists := a.workflows[data.RunID]
+		run, exists := a.workflows[data.RunID]
 		delete(a.workflows, data.RunID)
+		var openSeqs []int
+		if exists {
+			openSeqs = make([]int, 0, len(run.Children))
+			for seq := range run.Children {
+				openSeqs = append(openSeqs, seq)
+			}
+			slices.Sort(openSeqs)
+		}
+		remainingChildren := make([]string, 0, len(openSeqs))
+		for _, seq := range openSeqs {
+			childID := run.Children[seq]
+			if childID == "" {
+				continue
+			}
+			remainingChildren = append(remainingChildren, childID)
+			delete(a.pendingWorkflowChildren, childID)
+			if child := a.children[childID]; child != nil {
+				child.active = false
+			}
+		}
 		a.Mu.Unlock()
 		if !exists {
 			return fmt.Errorf("DeepSeek Harness workflow completion has no owned run")
@@ -81,6 +130,11 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 			status = bgtask.StatusFailed
 			if data.StopReason == "cancelled" {
 				status = bgtask.StatusInterrupted
+			}
+		}
+		for _, childID := range remainingChildren {
+			if err := sink.CloseBackgroundTask(childID, status); err != nil {
+				return err
 			}
 		}
 		return sink.CloseBackgroundTask(key, status)

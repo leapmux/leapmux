@@ -654,7 +654,17 @@ func (h *OutputHandler) applyBackgroundTaskExit(rootID string, minimumGeneration
 	}
 	// Derive the current tree rather than announcing that a replacement process exited.
 	h.refreshActivityTree(rootID, settleImmediate)
+	h.notifyBackgroundWorkChanged(rootID)
 	return nil
+}
+
+// notifyBackgroundWorkChanged reconciles queued input across rootAgentID's tree
+// after a background-task registry mutation commits. Callers must invoke it
+// strictly after releasing cache.Mu.
+func (h *OutputHandler) notifyBackgroundWorkChanged(rootAgentID string) {
+	if h.backgroundWorkChanged != nil {
+		h.backgroundWorkChanged(rootAgentID)
+	}
 }
 
 // --- agentOutputSink: ProviderServices registry + child-transcript methods ---
@@ -777,6 +787,7 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 		s.h.broadcastBackgroundTasks(s.rootAgentID, change.rows)
 		// Linking changes the child's activity. Refresh after the cache lock is released because refresh reads that cache.
 		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
+		s.h.notifyBackgroundWorkChanged(s.rootAgentID)
 	}
 	return childID, nil
 }
@@ -1250,6 +1261,7 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 		// released the cache lock before returning, and refreshing reads that
 		// same cache.
 		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
+		s.h.notifyBackgroundWorkChanged(s.rootAgentID)
 	}
 	return nil
 }
@@ -1549,6 +1561,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	if change.changed {
 		s.h.broadcastBackgroundTasks(s.rootAgentID, change.rows)
 		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
+		s.h.notifyBackgroundWorkChanged(s.rootAgentID)
 	}
 	return nil
 }

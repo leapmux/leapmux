@@ -258,7 +258,7 @@ func (a *Agent) handleSystemTo(target agent.ProviderServices, raw []byte, owner 
 			return
 		case contracts.QoderSystemSubtypeInterrupt:
 			return
-		case qoderTaskStarted, qoderTaskNotification:
+		case qoderTaskStarted, qoderTaskNotification, qoderSubtypeTaskUpdated, qoderSubtypeBackgroundTasksChanged:
 			if root && a.handleTaskEvent(raw) {
 				return
 			}

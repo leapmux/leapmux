@@ -356,7 +356,7 @@ func (a *Agent) finalizeStep(state *cascadeState, index int, step antigravitySte
 	if step.Type == contracts.AntigravityStepTypeInvokeSubagent {
 		a.linkSubagentResults(state, index, step)
 	}
-	if background, ok := a.backgroundForStep(state, index); ok {
+	for _, background := range a.backgroundForStep(state, index) {
 		a.finishBackgroundStep(state, background, step)
 	}
 	if state.parent == nil && step.Status == contracts.AntigravityStepStatusDone {
@@ -626,7 +626,7 @@ func (a *Agent) flushOpenSteps(state *cascadeState, completion agent.MessageComp
 		if !includeToolSteps && record.toolStep {
 			return
 		}
-		if _, background := state.background[index]; background {
+		if hasBackgroundForStepLocked(state, index) {
 			return
 		}
 		pendingSteps = append(pendingSteps, pending{index: index, raw: append(json.RawMessage(nil), record.raw...)})
@@ -777,6 +777,42 @@ func hasOpenToolStepsLocked(state *cascadeState) bool {
 	return false
 }
 
+func (a *Agent) closeIdleChildOnUpdate(state *cascadeState) error {
+	a.Mu.Lock()
+	if !a.cascadeInstalledLocked(state) || state.parent == nil || !state.rowOpen || state.turnPhase != cascadeTurnIdle {
+		a.Mu.Unlock()
+		return nil
+	}
+	status := bgtask.StatusSucceeded
+	if state.interrupted {
+		status = bgtask.StatusStopped
+	} else if len(state.heldErrorStep) > 0 {
+		status = bgtask.StatusFailed
+	}
+	heldErrorStep := append(json.RawMessage(nil), state.heldErrorStep...)
+	a.Mu.Unlock()
+	if !a.IsDiscardingOutput() && len(heldErrorStep) > 0 {
+		raw, err := scrubStep(heldErrorStep, "")
+		if err != nil {
+			return err
+		}
+		if _, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw, Completion: agent.MessageCompletionError, AgentSessionID: state.id}); !agent.OutputRetained(err) {
+			slog.Error("antigravity persist agent error", "agent_id", a.AgentID(), "error", err)
+			return err
+		}
+	}
+	if !a.cascadeInstalled(state) {
+		return nil
+	}
+	a.closeChildRow(state, status)
+	a.Mu.Lock()
+	if a.cascadeInstalledLocked(state) {
+		state.heldErrorStep = nil
+		state.retryPending = false
+	}
+	a.Mu.Unlock()
+	return nil
+}
 func (a *Agent) closeChildRow(state *cascadeState, status bgtask.Status) {
 	queue := a.sink.OutputQueue()
 	a.Mu.Lock()

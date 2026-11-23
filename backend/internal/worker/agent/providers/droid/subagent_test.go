@@ -2,8 +2,11 @@ package droid
 
 import (
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -89,4 +92,83 @@ func TestUnknownNativeSessionCannotWriteIntoTheRoot(t *testing.T) {
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, sink.PersistedNotifications())
 	assert.Empty(t, sink.TurnActives(), "an unknown session cannot move the root turn")
+}
+
+func TestDroidTaskResumeRevivesChildAndResumesTailFromEOF(t *testing.T) {
+	a, sink, clock, dir, work := droidArchiveHarness(t)
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path,
+		droidArchiveStart(archiveChildID, work),
+		`{"type":"message","id":"job1-msg","message":{"role":"assistant","content":[{"type":"text","text":"TASK_JOB1_ANSWER"}]}}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
+	)
+	a.HandleOutput([]byte(droidTaskCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
+	advanceDroidArchive(t, clock)
+	testutil.RequireEventually(t, func() bool {
+		row, ok := sink.BackgroundTask(archiveChildID)
+		return ok && row.Status == bgtask.StatusSucceeded && archiveRowsContain(childArchiveRows(sink, archiveChildID), "TASK_JOB1_ANSWER")
+	}, "Job 1 completes and closes its row")
+
+	// Deliver Task({resume: archiveChildID}) and matching child_session_available.
+	resumeCall := fmt.Sprintf(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"task-2","name":"Task","input":{"subagent_type":"explorer","description":"Inspect again","prompt":"Continue with Job 2","resume":%q}}}}}`, archiveChildID)
+	a.HandleOutput([]byte(resumeCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-2")))
+
+	row, ok := sink.BackgroundTask(archiveChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "Task({resume}) must revive the finished child row")
+	assert.True(t, a.ActiveChildTurnState(archiveChildID).Active, "Task({resume}) must re-arm the child turn")
+	assert.True(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "Continue with Job 2"),
+		"Task({resume}) must persist the Job 2 follow-up prompt to the child transcript")
+
+	appendDroidArchive(t, path,
+		`{"type":"message","id":"job2-msg","message":{"role":"assistant","content":[{"type":"text","text":"TASK_JOB2_ANSWER"}]}}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`,
+	)
+	advanceDroidArchive(t, clock)
+	testutil.RequireEventually(t, func() bool {
+		r, exists := sink.BackgroundTask(archiveChildID)
+		return exists && r.Status == bgtask.StatusSucceeded && archiveRowsContain(childArchiveRows(sink, archiveChildID), "TASK_JOB2_ANSWER")
+	}, "resumed tail must read Job 2 and close on Job 2 outcome")
+}
+
+func TestDroidTaskResumeAfterRestartResolvesChildFromRegistry(t *testing.T) {
+	a, sink, clock, dir, work := droidArchiveHarness(t)
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path,
+		droidArchiveStart(archiveChildID, work),
+		`{"type":"message","id":"job1-msg","message":{"role":"assistant","content":[{"type":"text","text":"RESTART_JOB1_TEXT"}]}}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
+	)
+	childAgentID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "droid-tool-task-1", ProviderChildKey: archiveChildID, Title: "Inspect the note"})
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask, RowKey: archiveChildID, Kind: bgtask.KindSubagent,
+		ChildAgentID: childAgentID, ParentAgentID: a.AgentID(), Title: "Inspect the note", Status: bgtask.StatusSucceeded,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask(archiveChildID, bgtask.StatusSucceeded))
+
+	resumeCall := fmt.Sprintf(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"task-2","name":"Task","input":{"subagent_type":"explorer","description":"Inspect again","prompt":"Resume after restart","resume":%q}}}}}`, archiveChildID)
+	a.HandleOutput([]byte(resumeCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-2")))
+
+	row, ok := sink.BackgroundTask(archiveChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.True(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "Resume after restart"))
+
+	appendDroidArchive(t, path,
+		`{"type":"message","id":"job2-msg","message":{"role":"assistant","content":[{"type":"text","text":"RESTART_JOB2_TEXT"}]}}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`,
+	)
+	advanceDroidArchive(t, clock)
+	testutil.RequireEventually(t, func() bool {
+		r, exists := sink.BackgroundTask(archiveChildID)
+		return exists && r.Status == bgtask.StatusSucceeded && archiveRowsContain(childArchiveRows(sink, archiveChildID), "RESTART_JOB2_TEXT")
+	}, "resumed tail after restart must read Job 2 and close")
+	assert.False(t, archiveRowsContain(childArchiveRows(sink, archiveChildID), "RESTART_JOB1_TEXT"),
+		"resumed tail after restart must start at EOF and skip Job 1")
 }

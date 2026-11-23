@@ -70,6 +70,11 @@ func TestHelperProcessCursorCLI(*testing.T) {
 			if scenario == "load" {
 				return `{"models":{"currentModelId":"gpt-5.4","availableModels":[{"modelId":"default","name":"Auto"},{"modelId":"gpt-5.4","name":"GPT-5.4"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]}}`, false, true
 			}
+			if scenario == "load-replay" {
+				_, _ = os.Stdout.WriteString(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-resume","update":{"sessionUpdate":"subagent_spawned","subagentSessionId":"replayed-child-session","name":"explore","task":"Historical task.","_meta":{"cursor":{"toolCallId":"replayed-task","agentId":"replayed-child"}}}}}` + "\n")
+				_, _ = os.Stdout.WriteString(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-resume","update":{"sessionUpdate":"subagent_state_update","subagentSessionId":"replayed-child-session","state":"completed","_meta":{"cursor":{"toolCallId":"replayed-task","agentId":"replayed-child"}}}}}` + "\n")
+				return `{"models":{"currentModelId":"gpt-5.4","availableModels":[{"modelId":"default","name":"Auto"},{"modelId":"gpt-5.4","name":"GPT-5.4"}]},"modes":{"currentModeId":"plan","availableModes":[{"id":"agent","name":"Agent"},{"id":"plan","name":"Plan"},{"id":"ask","name":"Ask"}]}}`, false, true
+			}
 			return "", false, false
 		case acp.MethodSessionSetConfigOption, acp.MethodSessionSetModel, acp.MethodSessionSetMode, acp.MethodSessionPrompt:
 			return `{}`, false, true

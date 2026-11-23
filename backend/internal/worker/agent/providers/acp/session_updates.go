@@ -137,7 +137,7 @@ func (b *Base) finishSessionUpdates() {
 	b.sessionUpdates.buffering = false
 	b.sessionUpdates.replayCutoff = -1
 	for index, update := range pending {
-		if index < cutoff && update.dispatch == nil && isConversationReplay(update.raw) {
+		if index < cutoff && update.dispatch == nil && b.isConversationReplay(update.raw) {
 			slog.Debug("Drop ACP session replay covered by the load reply", "provider", b.ProviderName(), "agent_id", b.AgentID())
 			continue
 		}
@@ -162,7 +162,7 @@ var conversationReplayKinds = map[string]bool{
 // isConversationReplay reports whether one buffered notification is a
 // conversation update. Malformed params count as live: a broken frame is a
 // defect to see, not history to drop.
-func isConversationReplay(params json.RawMessage) bool {
+func (b *Base) isConversationReplay(params json.RawMessage) bool {
 	var wrapper struct {
 		Update struct {
 			SessionUpdate string `json:"sessionUpdate"`
@@ -171,7 +171,8 @@ func isConversationReplay(params json.RawMessage) bool {
 	if json.Unmarshal(params, &wrapper) != nil {
 		return false
 	}
-	return conversationReplayKinds[wrapper.Update.SessionUpdate]
+	kind := wrapper.Update.SessionUpdate
+	return conversationReplayKinds[kind] || (b.hooks.IsReplayUpdate != nil && b.hooks.IsReplayUpdate(kind))
 }
 
 // flushPreviousSessionUpdates dispatches buffered updates for the current session.

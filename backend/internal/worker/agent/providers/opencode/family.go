@@ -126,7 +126,7 @@ func FamilyHooks(f *FamilyBase) acp.Hooks {
 		// The family omits child-session events from the root ACP stream. The
 		// family base loads each running child session into the agent, so the
 		// child's own updates reach its transcript (FamilyBase.followChildSession).
-		SubagentFromToolCall:       SubagentFromToolCall,
+		SubagentFromToolCall:       f.subagentFromToolCall,
 		SubagentFromToolCallUpdate: f.subagentFromToolCallUpdate,
 		// Auto-approve answers each permission request once, as the
 		// family's own --auto option does in its clients (AutoApproveGroup).

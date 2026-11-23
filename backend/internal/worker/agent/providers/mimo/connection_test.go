@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -271,4 +272,63 @@ func TestEventStreamStopsWaitingWhenTheProcessExits(t *testing.T) {
 func TestSyntheticIdleEventReadsAsTheRealOne(t *testing.T) {
 	t.Parallel()
 	assert.JSONEq(t, string(statusEvent(t, contracts.MiMoStatusTypeIdle)), string(syntheticIdleEvent(testSessionID)))
+}
+
+func TestEventStreamReconnectReconcilesActorsAndWorkflows(t *testing.T) {
+	t.Parallel()
+	t.Run("idle actor and completed workflow close on reconnect", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.DeadlineContext(t)
+		a, sink, server := newControlTestAgent(t)
+		clock := useMockClock(t, a)
+		reconnect := clock.Trap().NewTimer(mimoStreamReconnectTimerTag)
+		defer reconnect.Close()
+		startTestStream(t, a, server)
+
+		spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+		feed(a, workflowEvent(t, eventWorkflowStarted, testSessionID, "wf_1", map[string]any{"name": "review"}))
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, &sink.Sink, spawnSpanID).Status)
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, &sink.Sink, "mimo-workflow:wf_1").Status)
+
+		server.respond("GET /session/ses_test/actors", http.StatusOK,
+			`[{"actorID":"general-1","status":"idle","executionActive":false,"lastOutcome":"success","turnCount":1}]`)
+		server.respond("GET /workflows", http.StatusOK,
+			`[{"runID":"wf_1","sessionID":"ses_test","status":"completed"}]`)
+
+		server.endStreams()
+		clock.Advance(testutil.WaitForTimer(t, ctx, reconnect)).MustWait(ctx)
+		awaitStreamOpened(t, server)
+
+		waitFor(t, func() bool {
+			return backgroundTask(t, &sink.Sink, spawnSpanID).Status == bgtask.StatusSucceeded &&
+				backgroundTask(t, &sink.Sink, "mimo-workflow:wf_1").Status == bgtask.StatusSucceeded
+		}, "reconnect reconciles idle actor and finished workflow")
+	})
+
+	t.Run("absent actor and absent workflow close with unknown outcome on reconnect", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.DeadlineContext(t)
+		a, sink, server := newControlTestAgent(t)
+		clock := useMockClock(t, a)
+		reconnect := clock.Trap().NewTimer(mimoStreamReconnectTimerTag)
+		defer reconnect.Close()
+		startTestStream(t, a, server)
+
+		spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+		feed(a, workflowEvent(t, eventWorkflowStarted, testSessionID, "wf_2", map[string]any{"name": "audit"}))
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, &sink.Sink, spawnSpanID).Status)
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, &sink.Sink, "mimo-workflow:wf_2").Status)
+
+		server.respond("GET /session/ses_test/actors", http.StatusOK, `[]`)
+		server.respond("GET /workflows", http.StatusOK, `[]`)
+
+		server.endStreams()
+		clock.Advance(testutil.WaitForTimer(t, ctx, reconnect)).MustWait(ctx)
+		awaitStreamOpened(t, server)
+
+		waitFor(t, func() bool {
+			return backgroundTask(t, &sink.Sink, spawnSpanID).Status == bgtask.StatusEndedWithUnknownOutcome &&
+				backgroundTask(t, &sink.Sink, "mimo-workflow:wf_2").Status == bgtask.StatusEndedWithUnknownOutcome
+		}, "reconnect closes absent actor and workflow")
+	})
 }
