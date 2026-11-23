@@ -15,7 +15,6 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/settingsregistry"
@@ -71,7 +70,7 @@ func (r *workersChangedRecorder) reset() {
 
 func newDeregisterTestStore(t *testing.T) store.Store {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
@@ -829,14 +828,11 @@ func assertDeregistrationRecovers(t *testing.T, newStore func(t *testing.T) stor
 func TestOwnerDeregisterRecoversWithoutTheNotifier(t *testing.T) {
 	assertDeregistrationRecovers(t, newDeregisterTestStore,
 		func(t *testing.T, st store.Store, effects *WorkerDeregisterEffects, ownerID, workerID string) error {
-			key := [32]byte{}
-			ks, err := keystore.New(map[uint32][32]byte{1: key})
-			require.NoError(t, err)
-			set := settingsregistry.NewManager(st, ks)
+			set := settingsregistry.NewManager(st)
 			require.NoError(t, set.Load(context.Background()))
 			svc := NewWorkerManagementService(st, hubtestutil.TestSecretHasher(), workermgr.New(NewWorkerReachAuthorizer(st)), effects, mail.NewStubSender(), mail.Renderer{}, set)
 			ownerCtx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(ownerID)})
-			_, err = svc.DeregisterWorker(ownerCtx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: workerID})
+			_, err := svc.DeregisterWorker(ownerCtx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: workerID})
 			return err
 		})
 }

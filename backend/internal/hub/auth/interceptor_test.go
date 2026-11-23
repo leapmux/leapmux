@@ -47,7 +47,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	connectServer := connect.NewServer(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer)
 
@@ -177,7 +177,7 @@ func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 	connectServer := connect.NewServer(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer)
 
@@ -216,7 +216,7 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser, TokenValidator: tv})
 	connectServer := connect.NewServer(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer)
 
@@ -316,7 +316,7 @@ func setupBearerTestServer(t *testing.T, opts auth.InterceptorOptions) (leapmuxv
 	opts.Store, opts.TokenValidator = st, tv
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, opts)
 	connectServer := connect.NewServer(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer)
 
@@ -452,7 +452,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	connectServer := connect.NewServer(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer)
 	server := httptest.NewServer(mux)
@@ -716,7 +716,7 @@ func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration,
 
 	hubtestutil.CreateTestAdmin(t, st)
 
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	if sessionDuration > 0 {
 		require.NoError(t, set.SetValue(context.Background(),
 			settings.KeySessionDurationSeconds, int64(sessionDuration/time.Second)))

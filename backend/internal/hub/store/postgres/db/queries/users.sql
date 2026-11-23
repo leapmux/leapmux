@@ -96,7 +96,7 @@ WHERE id = $4
 RETURNING id;
 
 -- name: UpdateUserEmail :one
-UPDATE users SET email = $1, email_verified = $2, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
+UPDATE users SET email = $1, email_verified = $2, pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $3
 RETURNING id;
 
@@ -180,24 +180,24 @@ WHERE id = sqlc.arg(id)
 
 -- name: ClearPendingEmailCode :exec
 -- ClearPendingEmailCode drops an undelivered code and KEEPS the pending
--- address. An empty token is the "no live code, address still pending"
+-- address. A NULL token is the "no live code, address still pending"
 -- state: ConsumeVerificationAttempt and ClearStalePendingEmails both
--- filter pending_email_token != '', so neither acts on it. The clear
+-- filter pending_email_token IS NOT NULL, so neither acts on it. The clear
 -- writes the caller's unblocked_at -- the failure window a refused send
 -- leaves -- so the gate above and the reported countdown agree that the
 -- retry a failed send invites waits out that window instead of landing at
 -- request speed; a NULL (the zero instant the caller binds) leaves no
 -- blockade at all. Unconditional on purpose: it undoes a mint that the
 -- relay refused.
-UPDATE users SET pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = sqlc.narg(unblocked_at), pending_email_attempts = 0, updated_at = NOW()
+UPDATE users SET pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = sqlc.narg(unblocked_at), pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $1;
 
 -- name: ClearPendingEmail :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
+UPDATE users SET pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $1;
 
 -- name: PromotePendingEmail :one
-UPDATE users SET email = pending_email, email_verified = TRUE, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
+UPDATE users SET email = pending_email, email_verified = TRUE, pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $1 AND pending_email != ''
 RETURNING id;
 
@@ -212,23 +212,23 @@ SET pending_email_attempts = pending_email_attempts + 1,
         WHEN pending_email_attempts + 1 > sqlc.arg(max_attempts) THEN sqlc.arg(now)
         ELSE pending_email_expires_at END,
     updated_at = NOW()
-WHERE id = $1 AND pending_email_token != ''
+WHERE id = $1 AND pending_email_token IS NOT NULL
 RETURNING *;
 
 -- name: ClearCompetingPendingEmails :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
+UPDATE users SET pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE pending_email = $1 AND id != $2;
 
 -- name: ClearStalePendingEmails :execresult
--- The second arm reaps a codeless row: a send the relay refused leaves the
+-- The second branch reaps a codeless row: a send the relay refused leaves the
 -- ADDRESS with no token and no expiry (ClearPendingEmailCode), so the
 -- expiry compare can never see it and an abandoned address would otherwise
 -- outlive the database. updated_at is the only instant such a row carries,
 -- and ClearPendingEmailCode stamps it.
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
+UPDATE users SET pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE pending_email != ''
-  AND ((pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
-    OR (pending_email_token = '' AND updated_at < sqlc.arg(codeless_cutoff)));
+  AND ((pending_email_token IS NOT NULL AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
+    OR (pending_email_token IS NULL AND updated_at < sqlc.arg(codeless_cutoff)));
 
 -- name: BumpUserAuthGeneration :one
 -- The query itself has no deleted_at guard, so it would act on a

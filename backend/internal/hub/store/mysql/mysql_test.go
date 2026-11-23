@@ -41,6 +41,20 @@ func startMySQLContainer(t *testing.T) string {
 	return dsn(host, port)
 }
 
+func TestOpenRejectsNilKeystore(t *testing.T) {
+	cfg := config.MySQLConfig{DSN: "test:test@tcp(127.0.0.1:3306)/leapmux_test?parseTime=true"}
+
+	st, err := mysqlstore.Open(cfg, nil)
+	require.Error(t, err)
+	assert.Nil(t, st)
+	assert.Contains(t, err.Error(), "keystore")
+
+	st, err = mysqlstore.OpenWithoutMigrate(cfg, nil)
+	require.Error(t, err)
+	assert.Nil(t, st)
+	assert.Contains(t, err.Error(), "keystore")
+}
+
 func TestMySQLStore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

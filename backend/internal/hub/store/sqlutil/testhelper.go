@@ -55,6 +55,56 @@ func ClearWorkerDeregisteringAt(ctx context.Context, exec func(context.Context, 
 	return exec(ctx, fmt.Sprintf("UPDATE workers SET deregistering_at = NULL WHERE id = %s AND deleted_at IS NULL", first), workerID)
 }
 
+// CopyWorkspaceTitleCiphertext copies the raw encrypted workspaces.title bytes
+// from srcWorkspaceID to dstWorkspaceID to verify AAD tampering detection.
+// Uses two separate queries and closes *sql.Rows before calling exec so
+// SQLite's SetMaxOpenConns(1) cannot deadlock and MySQL 8 avoids Error 1093
+// on self-referencing UPDATE subqueries.
+func CopyWorkspaceTitleCiphertext(ctx context.Context, db DBQuery, exec func(context.Context, string, ...any) error, style ParameterStyle, srcWorkspaceID, dstWorkspaceID string) error {
+	first, second, err := placeholders(style)
+	if err != nil {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT title FROM workspaces WHERE id = %s", first), srcWorkspaceID)
+	if err != nil {
+		return err
+	}
+	var raw []byte
+	found := false
+	if rows.Next() {
+		if scanErr := rows.Scan(&raw); scanErr != nil {
+			_ = rows.Close()
+			return scanErr
+		}
+		found = true
+	}
+	rowsErr := rows.Err()
+	if closeErr := rows.Close(); closeErr != nil && rowsErr == nil {
+		rowsErr = closeErr
+	}
+	if rowsErr != nil {
+		return rowsErr
+	}
+	if !found {
+		return fmt.Errorf("CopyWorkspaceTitleCiphertext: source workspace %q not found", srcWorkspaceID)
+	}
+	return exec(ctx, fmt.Sprintf("UPDATE workspaces SET title = %s WHERE id = %s", first, second), raw, dstWorkspaceID)
+}
+
+// SetSettingSecretRaw overwrites hub_settings.secret with raw ciphertext bytes
+// for a single key, used by tests simulating partial-column key skew.
+func SetSettingSecretRaw(ctx context.Context, exec func(context.Context, string, ...any) error, style ParameterStyle, key string, raw []byte) error {
+	first, second, err := placeholders(style)
+	if err != nil {
+		return err
+	}
+	keyCol := "key"
+	if style == ParameterStyleQuestionMark {
+		keyCol = "`key`"
+	}
+	return exec(ctx, fmt.Sprintf("UPDATE hub_settings SET secret = %s WHERE %s = %s", first, keyCol, second), raw, key)
+}
+
 // SetEntityColumnValue backdates one fixed column (deleted_at/created_at/
 // last_active_at/deregistering_at -- a literal, never caller input) on a validated entity
 // table. BOTH the entity and the column are checked against closed allowlists

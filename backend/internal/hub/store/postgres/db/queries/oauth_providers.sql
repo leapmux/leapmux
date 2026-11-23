@@ -16,11 +16,5 @@ FROM oauth_providers ORDER BY created_at;
 -- name: UpdateOAuthProviderEnabled :exec
 UPDATE oauth_providers SET enabled = $1 WHERE id = $2;
 
--- name: UpdateOAuthProviderClientSecret :exec
-UPDATE oauth_providers SET client_secret = $1 WHERE id = $2;
-
--- name: ListAllOAuthProvidersWithSecrets :many
-SELECT * FROM oauth_providers ORDER BY created_at;
-
 -- name: DeleteOAuthProvider :exec
 DELETE FROM oauth_providers WHERE id = $1;

@@ -115,7 +115,7 @@ func TestInterceptorVerificationPrecedesRateLimitAdmission(t *testing.T) {
 	t.Cleanup(finishVerification)
 	e := newTestManager(t, false, WithTurnstileEndpoint(verification.URL))
 	activateExternal(t, e, ProviderTurnstile, `{"site_key":"site-key"}`, "secret-key")
-	rateSettings := settings.NewManager(e.st, nil, ratelimit.SettingsDescriptors())
+	rateSettings := settings.NewManager(e.st, ratelimit.SettingsDescriptors())
 	require.NoError(t, rateSettings.Load(ctx))
 	key, ok := ratelimit.LimitKey(ratelimit.OpLoginAnonymous)
 	require.True(t, ok)

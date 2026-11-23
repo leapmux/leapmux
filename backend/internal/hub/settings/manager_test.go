@@ -45,12 +45,19 @@ type errTest string
 
 func (e errTest) Error() string { return string(e) }
 
+func newTestKeystore(t *testing.T) *keystore.Keystore {
+	t.Helper()
+	ks, err := keystore.NewRandom()
+	require.NoError(t, err)
+	return ks
+}
+
 // newSettingsTestStore is the bare in-memory store the cross-key cases
 // build their own manager over, when the shared newTestManager registry is
 // not the one under test.
 func newSettingsTestStore(t *testing.T) store.Store {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, newTestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	return st
@@ -68,17 +75,12 @@ func newTestManager(t *testing.T, extra ...Descriptor) (*Manager, *Key[testValue
 // registers more keys beside the test key and SMTP.
 func newTestManagerWithStore(t *testing.T, extra ...Descriptor) (*Manager, *Key[testValue], store.Store) {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, newTestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-
 	k := testKey()
-	m := NewManager(st, ks, append([]Descriptor{k, KeySMTP}, extra...))
+	m := NewManager(st, append([]Descriptor{k, KeySMTP}, extra...))
 	require.NoError(t, m.Load(context.Background()))
 	return m, k, st
 }
@@ -96,11 +98,9 @@ func TestDefaultsWhenNoRow(t *testing.T) {
 // test harnesses derive their timeouts from — to the core key's
 // effective default and to the seconds→duration conversions.
 func TestCoreTimeoutsDefaultAndDurationHelpers(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := newSettingsTestStore(t)
 
-	m := NewManager(st, nil, CoreDescriptors())
+	m := NewManager(st, CoreDescriptors())
 	v := KeyTimeouts.Of(m.Snapshot(context.Background()))
 	assert.Equal(t, DefaultTimeouts, v, "the timeouts key resolves to DefaultTimeouts")
 	assert.Equal(t, 10*time.Second, v.APITimeout())
@@ -243,17 +243,11 @@ func TestSubscribeFiresOnChangeOnly(t *testing.T) {
 func TestTTLRefreshPicksUpExternalWrites(t *testing.T) {
 	// The admin CLI is a separate process: it writes rows directly and the
 	// manager must converge on the next TTL expiry.
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
+	st := newSettingsTestStore(t)
 
 	k := testKey()
 	now := time.Now()
-	m := NewManager(st, ks, []Descriptor{k}, WithNow(func() time.Time { return now }))
+	m := NewManager(st, []Descriptor{k}, WithNow(func() time.Time { return now }))
 	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 
@@ -265,11 +259,9 @@ func TestTTLRefreshPicksUpExternalWrites(t *testing.T) {
 }
 
 func TestSnapshotServesDefaultsBeforeLoad(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := newSettingsTestStore(t)
 	k := testKey()
-	m := NewManager(st, nil, []Descriptor{k})
+	m := NewManager(st, []Descriptor{k})
 	snap := m.Snapshot(context.Background())
 	assert.Equal(t, 587, k.Of(snap).Port, "a never-loaded manager still answers with defaults")
 }
@@ -300,18 +292,12 @@ func (f *flakySettings) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 }
 
 func TestSnapshotServesLastGoodOnStoreFailure(t *testing.T) {
-	real, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = real.Close() })
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
+	real := newSettingsTestStore(t)
 
 	k := testKey()
 	now := time.Now()
 	st := &flakySettingsStore{Store: real}
-	m := NewManager(st, ks, []Descriptor{k}, WithNow(func() time.Time { return now }))
+	m := NewManager(st, []Descriptor{k}, WithNow(func() time.Time { return now }))
 	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 	require.NoError(t, m.Update(ctx, k, json.RawMessage(`{"host":"smtp.example.com"}`)))
@@ -341,16 +327,9 @@ func TestUpdateManyRefusesASecretHalfForANonSecretKey(t *testing.T) {
 }
 
 func TestEmailVerificationEffectiveDegradesWithoutSMTP(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := newSettingsTestStore(t)
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-
-	m := NewManager(st, ks, []Descriptor{KeySMTP})
+	m := NewManager(st, []Descriptor{KeySMTP})
 	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 
@@ -381,11 +360,9 @@ func upsertParams(key, value string, secret []byte) store.UpsertSettingParams {
 // non-zero default back over it and the hub silently re-arms the cap the
 // administrator lifted.
 func TestUpdateStoresExplicitZeroCap(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := newSettingsTestStore(t)
 
-	m := NewManager(st, nil, []Descriptor{KeyLimits})
+	m := NewManager(st, []Descriptor{KeyLimits})
 	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 
@@ -396,7 +373,7 @@ func TestUpdateStoresExplicitZeroCap(t *testing.T) {
 	// The stored document itself carries the zero: a fresh manager over
 	// the same rows reads it back, proving the round-trip rather than a
 	// cached view.
-	m2 := NewManager(st, nil, []Descriptor{KeyLimits})
+	m2 := NewManager(st, []Descriptor{KeyLimits})
 	require.NoError(t, m2.Load(ctx))
 	assert.EqualValues(t, 0, KeyLimits.Of(m2.Snapshot(ctx)).MaxConnectionsPerUser)
 	assert.EqualValues(t, 64, KeyLimits.Of(m2.Snapshot(ctx)).MaxWorkersPerUser,
@@ -432,33 +409,33 @@ func TestResetClearsSMTPRow(t *testing.T) {
 // over the only ciphertext), while a document that supplies the secret
 // fields explicitly is a rotation and is allowed.
 func TestUpdateRefusesToDropUndecryptableSecret(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	ks1 := newTestKeystore(t)
+	ks2 := newTestKeystore(t)
+	st, err := sqlite.OpenTestableWithKeystore(":memory:", ks2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-
-	key1, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks1, err := keystore.New(map[uint32][32]byte{1: key1})
-	require.NoError(t, err)
-
-	m1 := NewManager(st, ks1, []Descriptor{KeySMTP})
-	require.NoError(t, m1.Load(context.Background()))
 	ctx := context.Background()
-	require.NoError(t, m1.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls","password":"s3cret"}`)))
-	require.Equal(t, "s3cret", KeySMTP.Of(m1.Snapshot(ctx)).Password)
 
-	// A different key ring cannot decrypt the stored secret half.
-	key2, err := keystore.GenerateKey()
+	// Seed SMTP under active key ks2 so the public value stays decryptable,
+	// then overwrite only the secret column with a ks1 ciphertext.
+	m2 := NewManager(st, []Descriptor{KeySMTP})
+	require.NoError(t, m2.Load(ctx))
+	require.NoError(t, m2.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls","password":"temp"}`)))
+	rawSecret, err := ks1.SealBytes([]byte(`{"password":"s3cret"}`), keystore.SettingSecretAAD(KeySMTP.Name()))
 	require.NoError(t, err)
-	ks2, err := keystore.New(map[uint32][32]byte{1: key2})
-	require.NoError(t, err)
-	m2 := NewManager(st, ks2, []Descriptor{KeySMTP})
+	require.NoError(t, st.TestHelper().SetSettingSecretRaw(ctx, KeySMTP.Name(), rawSecret.Bytes()))
+
+	// Reload m2 over the tampered secret column.
 	require.NoError(t, m2.Load(ctx))
 
 	err = m2.Update(ctx, KeySMTP, json.RawMessage(`{"port":25}`))
 	require.ErrorContains(t, err, "cannot decrypt",
 		"a public-field update must not silently replace an unreadable secret")
-	require.Equal(t, "s3cret", KeySMTP.Of(m1.Snapshot(ctx)).Password,
+	// Verify the stored secret ciphertext still decrypts under ks1.
+	rowUnderKS1, err := st.TestHelper().WithKeystore(ks1).Settings().Get(ctx, KeySMTP.Name())
+	require.NoError(t, err)
+	require.NoError(t, rowUnderKS1.SecretDecryptErr)
+	assert.Contains(t, string(rowUnderKS1.Secret), `"s3cret"`,
 		"the stored ciphertext survives the refused write")
 
 	// An explicit rotation supplies the secret field and is allowed.
@@ -466,30 +443,26 @@ func TestUpdateRefusesToDropUndecryptableSecret(t *testing.T) {
 	require.Equal(t, "rotated", KeySMTP.Of(m2.Snapshot(ctx)).Password)
 }
 
-// undecryptableSMTPManager seeds an SMTP row whose secret half one key ring
-// encrypted, then returns a manager whose ring cannot read it -- the state
-// an operator reaches after a key version leaves the ring.
+// undecryptableSMTPManager seeds an SMTP row whose public value is encrypted
+// under the active key ring while its secret half is encrypted under another
+// key ring -- the state an operator reaches when a secret half cannot decrypt
+// while the public half stays readable.
 func undecryptableSMTPManager(t *testing.T) (*Manager, context.Context) {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	ks1 := newTestKeystore(t)
+	ks2 := newTestKeystore(t)
+	st, err := sqlite.OpenTestableWithKeystore(":memory:", ks2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 
-	key1, err := keystore.GenerateKey()
+	m := NewManager(st, []Descriptor{KeySMTP})
+	require.NoError(t, m.Load(ctx))
+	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(
+		`{"host":"smtp.example.com","from_address":"hub@example.com","password":"temp"}`)))
+	rawSecret, err := ks1.SealBytes([]byte(`{"password":"original"}`), keystore.SettingSecretAAD(KeySMTP.Name()))
 	require.NoError(t, err)
-	ks1, err := keystore.New(map[uint32][32]byte{1: key1})
-	require.NoError(t, err)
-	seeder := NewManager(st, ks1, []Descriptor{KeySMTP})
-	require.NoError(t, seeder.Load(ctx))
-	require.NoError(t, seeder.Update(ctx, KeySMTP, json.RawMessage(
-		`{"host":"smtp.example.com","from_address":"hub@example.com","password":"original"}`)))
-
-	key2, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks2, err := keystore.New(map[uint32][32]byte{1: key2})
-	require.NoError(t, err)
-	m := NewManager(st, ks2, []Descriptor{KeySMTP})
+	require.NoError(t, st.TestHelper().SetSettingSecretRaw(ctx, KeySMTP.Name(), rawSecret.Bytes()))
 	require.NoError(t, m.Load(ctx))
 	return m, ctx
 }
@@ -529,7 +502,7 @@ func TestSecretRotationIsAcceptedThroughEitherHalf(t *testing.T) {
 			err := m.Update(ctx, KeySMTP, json.RawMessage(`{"port":25}`))
 			require.ErrorContains(t, err, "cannot decrypt",
 				"a public-field write must not replace an unreadable secret")
-			var undecryptable *SecretUndecryptableError
+			var undecryptable *SettingUndecryptableError
 			require.ErrorAs(t, err, &undecryptable,
 				"the refusal is FailedPrecondition, not the caller's input")
 
@@ -541,6 +514,109 @@ func TestSecretRotationIsAcceptedThroughEitherHalf(t *testing.T) {
 		})
 	}
 }
+
+func TestValueDecryptErrDegradesReadAndRefusesPartialWrite(t *testing.T) {
+	ksA := newTestKeystore(t)
+	ksB := newTestKeystore(t)
+	stB, err := sqlite.OpenTestableWithKeystore(":memory:", ksB)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stB.Close() })
+	ctx := context.Background()
+
+	// Seed SMTP row (public value only, secret NULL) under key A so
+	// ValueDecryptErr triggers independently of SecretDecryptErr.
+	stA := stB.TestHelper().WithKeystore(ksA)
+	mA := NewManager(stA, []Descriptor{KeySMTP})
+	require.NoError(t, mA.Load(ctx))
+	valA := `{"host":"smtp-a.example.com","from_address":"a@example.com","port":2525}`
+	require.NoError(t, stA.Settings().Upsert(ctx, store.UpsertSettingParams{
+		Key:   KeySMTP.Name(),
+		Value: &valA,
+	}))
+
+	// Capture warn logs while loading Manager over key B.
+	var warnCount atomic.Int32
+	prev := slog.Default()
+	slog.SetDefault(slog.New(&warnCountingHandler{count: &warnCount}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mB := NewManager(stB, []Descriptor{KeySMTP})
+	require.NoError(t, mB.Load(ctx), "Load must degrade an undecryptable setting value instead of aborting")
+	assert.Empty(t, KeySMTP.Of(mB.Snapshot(ctx)).Host, "unreadable value must degrade to defaults")
+	assert.Empty(t, KeySMTP.Of(mB.Snapshot(ctx)).Password)
+	require.Equal(t, int32(1), warnCount.Load(), "first buildSnapshotWith must emit one warning")
+
+	// Second snapshot build on the same undecryptable row must not re-warn.
+	require.NoError(t, mB.Load(ctx))
+	assert.Equal(t, int32(1), warnCount.Load(), "consecutive snapshot builds must emit exactly one warning until replaced")
+
+	// Partial Update (both public-only and secret-bearing) must fail with
+	// *SettingUndecryptableError so omitted public fields are never silently
+	// overwritten with defaults.
+	var undecryptable *SettingUndecryptableError
+	err = mB.Update(ctx, KeySMTP, json.RawMessage(`{"port":25}`))
+	require.ErrorAs(t, err, &undecryptable)
+	err = mB.Update(ctx, KeySMTP, json.RawMessage(`{"password":"new-secret"}`))
+	require.ErrorAs(t, err, &undecryptable)
+
+	// Full replacement via SetValue succeeds.
+	replacement := KeySMTP.Default().(SMTPValue)
+	replacement.Host = "smtp-b.example.com"
+	replacement.FromAddress = "b@example.com"
+	replacement.Password = "secret-b"
+	require.NoError(t, mB.SetValue(ctx, KeySMTP, replacement))
+	assert.Equal(t, "smtp-b.example.com", KeySMTP.Of(mB.Snapshot(ctx)).Host)
+	assert.Equal(t, "secret-b", KeySMTP.Of(mB.Snapshot(ctx)).Password)
+
+	// Re-seed unreadable row under key A, reload, and verify ResetMany succeeds.
+	require.NoError(t, mA.SetValue(ctx, KeySMTP, replacement))
+	require.NoError(t, mB.Load(ctx))
+	require.NoError(t, mB.ResetMany(ctx, []Descriptor{KeySMTP}))
+	assert.False(t, mB.Snapshot(ctx).Customized(KeySMTP))
+}
+
+func TestBuildSnapshotWithValueDecryptErrPreservesDecryptableSecret(t *testing.T) {
+	st := newSettingsTestStore(t)
+	m := NewManager(st, []Descriptor{KeySMTP})
+
+	var warnCount atomic.Int32
+	prev := slog.Default()
+	slog.SetDefault(slog.New(&warnCountingHandler{count: &warnCount}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	rows := []store.SettingRow{{
+		Key:             KeySMTP.Name(),
+		ValueDecryptErr: errors.New("decrypt value failed"),
+		Secret:          []byte(`{"password":"still-readable"}`),
+	}}
+
+	snap1 := m.buildSnapshotWith(rows, nil)
+	assert.Empty(t, KeySMTP.Of(snap1).Host, "public fields must degrade to defaults")
+	assert.Equal(t, "still-readable", KeySMTP.Of(snap1).Password, "decryptable secret half must survive ValueDecryptErr")
+	assert.Equal(t, int32(1), warnCount.Load())
+
+	snap2 := m.buildSnapshotWith(rows, nil)
+	assert.Equal(t, "still-readable", KeySMTP.Of(snap2).Password)
+	assert.Equal(t, int32(1), warnCount.Load(), "second buildSnapshotWith with the same undecryptable row must not re-warn")
+}
+
+type warnCountingHandler struct {
+	count *atomic.Int32
+}
+
+func (h *warnCountingHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelWarn
+}
+
+func (h *warnCountingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn {
+		h.count.Add(1)
+	}
+	return nil
+}
+
+func (h *warnCountingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *warnCountingHandler) WithGroup(string) slog.Handler      { return h }
 
 // TestPublishRefreshDropsOvertakenSnapshot pins the publish ordering: a
 // refresh that started reading before a write committed must not
@@ -581,12 +657,10 @@ func TestWarnOnceClearsOnRecovery(t *testing.T) {
 	slog.SetDefault(slog.New(counting))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := newSettingsTestStore(t)
 
 	now := time.Now()
-	m := NewManager(st, nil, []Descriptor{k2()}, WithNow(func() time.Time { return now }), WithTTL(time.Minute))
+	m := NewManager(st, []Descriptor{k2()}, WithNow(func() time.Time { return now }), WithTTL(time.Minute))
 	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 
@@ -641,10 +715,8 @@ func (h *countingHandler) WithGroup(_ string) slog.Handler      { return h }
 // operator write wins, and a reset restores the dev default without a
 // restart.
 func TestSignupEnabledEffectiveDevDefaultNotCustomized(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
-	m := NewManager(st, nil, CoreDescriptors())
+	st := newSettingsTestStore(t)
+	m := NewManager(st, CoreDescriptors())
 	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 
@@ -801,21 +873,14 @@ func TestUpdateManyValidatesEveryKeyBeforeWritingAny(t *testing.T) {
 // whether the key HAS an encrypted half. The refusal belongs in the
 // manager, not in a handler, so every caller of the verb is covered.
 func TestUpdateManyRefusesASecretHalfForAKeyWithNoSecretFields(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := newSettingsTestStore(t)
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-
-	m := NewManager(st, ks, []Descriptor{KeySignupEnabled, testKey()})
+	m := NewManager(st, []Descriptor{KeySignupEnabled, testKey()})
 	require.NoError(t, m.Load(context.Background()))
 	ctx := context.Background()
 	partial := json.RawMessage(`{"pass":"hunter2"}`)
 
-	err = m.UpdateMany(ctx, []KeyWrite{
+	err := m.UpdateMany(ctx, []KeyWrite{
 		{Desc: KeySignupEnabled, Secret: partial},
 	})
 	require.Error(t, err)
@@ -1040,13 +1105,11 @@ func lockOrderKeys() (*Key[int64], *Key[int64]) {
 // test reads only its own write.
 func newLockOrderManager(t *testing.T) (*Manager, *lockOrderStore, *Key[int64], *Key[int64]) {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := newSettingsTestStore(t)
 	tracker := &lockOrderStore{Store: st, rec: &lockRecorder{}}
 
 	a, b := lockOrderKeys()
-	m := NewManager(tracker, nil, []Descriptor{a, b})
+	m := NewManager(tracker, []Descriptor{a, b})
 	require.NoError(t, m.Load(context.Background()))
 	tracker.rec.reset()
 	return m, tracker, a, b
@@ -1185,12 +1248,12 @@ func TestSettingsStoreDeclaresExactlyOneLockingRead(t *testing.T) {
 // TestPublishFromStoreHoldsTheReloadLockAcrossTheReadAndThePublish.
 func TestConcurrentOppositeKeySetWritesBothComplete(t *testing.T) {
 	dir := t.TempDir()
-	st, err := sqlite.Open(filepath.Join(dir, "settings.db"), sqlitedb.Config{})
+	st, err := sqlite.Open(filepath.Join(dir, "settings.db"), sqlitedb.Config{}, newTestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
 	a, b := lockOrderKeys()
-	m := NewManager(st, nil, []Descriptor{a, b})
+	m := NewManager(st, []Descriptor{a, b})
 	require.NoError(t, m.Load(context.Background()))
 
 	// Both keys already have a row, so the table lock covers them and the
@@ -1519,14 +1582,12 @@ func (s *lockOrderSettings) Delete(ctx context.Context, key string) error {
 // build. Every settings read then wedged forever, on the exact path a
 // startup outage takes.
 func TestSnapshotDegradesToDefaultsWhenTheStoreFailsBeforeAnyLoad(t *testing.T) {
-	real, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = real.Close() })
+	real := newSettingsTestStore(t)
 
 	k := testKey()
 	st := &flakySettingsStore{Store: real}
 	st.failed.Store(true)
-	m := NewManager(st, nil, []Descriptor{k})
+	m := NewManager(st, []Descriptor{k})
 
 	got := make(chan testValue, 1)
 	go func() { got <- k.Of(m.Snapshot(context.Background())) }()
@@ -1541,18 +1602,11 @@ func TestSnapshotDegradesToDefaultsWhenTheStoreFailsBeforeAnyLoad(t *testing.T) 
 // TestPostWriteReloadFailureDoesNotWedgeTheManager pins the same rule on
 // the post-commit reload, whose fallback has the identical shape.
 func TestPostWriteReloadFailureDoesNotWedgeTheManager(t *testing.T) {
-	real, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = real.Close() })
-
-	encKey, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: encKey})
-	require.NoError(t, err)
+	real := newSettingsTestStore(t)
 
 	k := testKey()
 	st := &postWriteFailStore{Store: real}
-	m := NewManager(st, ks, []Descriptor{k})
+	m := NewManager(st, []Descriptor{k})
 
 	done := make(chan error, 1)
 	go func() { done <- m.Update(context.Background(), k, json.RawMessage(`{"host":"a.example"}`)) }()
@@ -1645,9 +1699,7 @@ func (g *gatedSettings) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 // deterministic: a scheduler that never runs the second reload during that
 // window would leave an ordering-only assertion passing over broken code.
 func TestPublishFromStoreHoldsTheReloadLockAcrossTheReadAndThePublish(t *testing.T) {
-	real, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = real.Close() })
+	real := newSettingsTestStore(t)
 
 	gate := &gatedSettingsStore{
 		Store:   real,
@@ -1655,7 +1707,7 @@ func TestPublishFromStoreHoldsTheReloadLockAcrossTheReadAndThePublish(t *testing
 		release: make(chan struct{}),
 	}
 	a, _ := lockOrderKeys()
-	m := NewManager(gate, nil, []Descriptor{a})
+	m := NewManager(gate, []Descriptor{a})
 	ctx := context.Background()
 	require.NoError(t, m.Load(ctx))
 
@@ -1772,16 +1824,14 @@ func (s *cancelAfterCommitStore) RunInTransaction(ctx context.Context, fn func(t
 // consumer until the TTL expires. So a cancelled caller context must not
 // stop the reload.
 func TestPostCommitReloadSurvivesACancelledContext(t *testing.T) {
-	real, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = real.Close() })
+	real := newSettingsTestStore(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	st := &cancelAfterCommitStore{Store: real, cancel: cancel}
 
 	a, _ := lockOrderKeys()
-	m := NewManager(st, nil, []Descriptor{a})
+	m := NewManager(st, []Descriptor{a})
 	require.NoError(t, m.Load(context.Background()))
 
 	var published []any
@@ -1876,9 +1926,7 @@ func TestResetManyOfAKeyWithNoRowIsASilentNoOp(t *testing.T) {
 // transaction opens: the epoch does not move, because every committed write
 // publishes and advances it.
 func TestEveryWriteVerbRefusesAnUnregisteredKey(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := newSettingsTestStore(t)
 	ctx := context.Background()
 
 	stranger := NewKey[int64]("never.registered").WithDefault(int64(1))
@@ -1887,7 +1935,7 @@ func TestEveryWriteVerbRefusesAnUnregisteredKey(t *testing.T) {
 	// The cross-key rule counts its runs: the refusal must happen before
 	// prepareRows builds a candidate, so no rule sees the stranger at all.
 	var crossRuns int
-	m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(func(*Snapshot) error {
+	m := NewManager(st, []Descriptor{a, b}, WithCrossValidation(func(*Snapshot) error {
 		crossRuns++
 		return nil
 	}))
@@ -1977,7 +2025,7 @@ func TestEveryWriteVerbRunsTheCrossKeyRules(t *testing.T) {
 	} {
 		t.Run(tc.name+" refuses", func(t *testing.T) {
 			st := newSettingsTestStore(t)
-			m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(refuse))
+			m := NewManager(st, []Descriptor{a, b}, WithCrossValidation(refuse))
 			require.NoError(t, m.Load(ctx))
 			require.NoError(t, m.SetValue(ctx, a, int64(1)), "the first key alone is a legal state")
 			before := m.currentEpoch()
@@ -2003,7 +2051,7 @@ func TestEveryWriteVerbRunsTheCrossKeyRules(t *testing.T) {
 			}
 			return nil
 		}
-		m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(requireA))
+		m := NewManager(st, []Descriptor{a, b}, WithCrossValidation(requireA))
 		require.NoError(t, m.Load(ctx))
 		require.NoError(t, m.SetValue(ctx, a, int64(1)))
 		before := m.currentEpoch()

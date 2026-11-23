@@ -176,17 +176,18 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		user := SeedUser(t, st, "floor-user")
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
+		codeHash := FixtureSecretHash("floor-code")
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 			ClientID:      oauthapp.ControlCLIClientID,
 			GrantedScopes: authscope.NonAdminGrant().String(),
-			Code:          "floor-code",
+			CodeHash:      codeHash,
 			UserID:        userid.MustNew(user.ID),
 			CodeChallenge: "challenge",
 			ExpiresAt:     expiresAt,
 			Redemption:    store.RedemptionKindToken,
 		}))
 
-		code, err := st.OAuthAuthorizationCodes().GetActive(ctx, "floor-code", time.Now().UTC())
+		code, err := st.OAuthAuthorizationCodes().GetActive(ctx, codeHash, time.Now().UTC())
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, code.ExpiresAt)
 	})

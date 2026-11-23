@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -21,16 +22,17 @@ const closeTestGuard = 30 * time.Second
 
 // openStoreWithSetting opens a store on a file and writes one setting, so the
 // WAL holds frames for the checkpoint in close to copy.
-func openStoreWithSetting(t *testing.T) (st *sqliteStore, path string) {
+func openStoreWithSetting(t *testing.T) (st *sqliteStore, path string, ks *keystore.Keystore) {
 	t.Helper()
 	path = filepath.Join(t.TempDir(), "hub.db")
-	opened, err := Open(path, sqlitedb.Config{})
+	ks = testKeystore(t)
+	opened, err := Open(path, sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	value := `true`
 	require.NoError(t, opened.Settings().Upsert(context.Background(), store.UpsertSettingParams{
 		Key: "signup_enabled", Value: &value,
 	}))
-	return opened.(*sqliteStore), path
+	return opened.(*sqliteStore), path, ks
 }
 
 // closeWithGuard runs close with checkpointLimit on its own goroutine and
@@ -65,7 +67,7 @@ func walSize(t *testing.T, path string) int64 {
 // still runs. The WAL survives, and the next open recovers every write.
 func TestCloseGivesUpTheCheckpointWhenAWriterHoldsTheLock(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
-	st, path := openStoreWithSetting(t)
+	st, path, ks := openStoreWithSetting(t)
 
 	// _txlock=immediate makes BEGIN take the write lock, which the TRUNCATE
 	// checkpoint needs.
@@ -87,7 +89,7 @@ func TestCloseGivesUpTheCheckpointWhenAWriterHoldsTheLock(t *testing.T) {
 	require.NoError(t, tx.Rollback())
 	require.NoError(t, straggler.Close())
 
-	reopened, err := Open(path, sqlitedb.Config{})
+	reopened, err := Open(path, sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = reopened.Close() })
 	row, err := reopened.Settings().Get(context.Background(), "signup_enabled")
@@ -100,7 +102,7 @@ func TestCloseGivesUpTheCheckpointWhenAWriterHoldsTheLock(t *testing.T) {
 // the WAL into the database and truncates it.
 func TestCloseCheckpointsTheWAL(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
-	st, path := openStoreWithSetting(t)
+	st, path, _ := openStoreWithSetting(t)
 	require.Positive(t, walSize(t, path), "the write must reach the WAL before close")
 
 	closeWithGuard(t, st, closeCheckpointTimeout)

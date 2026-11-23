@@ -98,9 +98,8 @@ sql:
             go_type:
               type: "byte"
               slice: true
-          # An app's client secret and its stored icon. NULL means "public
-          # client" and "no icon", and both must read as a nil slice rather
-          # than an empty string in a NullString.
+          # An app's client secret. NULL means "public client" and must read as
+          # a nil slice rather than an empty string in a NullString.
           - column: "oauth_clients.secret_hash"
             go_type:
               type: "byte"
@@ -110,29 +109,191 @@ sql:
             go_type:
               type: "byte"
               slice: true
+          # Encrypted-at-rest columns (37 columns across 15 tables).
+          # Retyping them to opaque keystore.Ciphertext / NullCiphertext makes
+          # forgetting to seal on write or open on read a compile error.
+          # Kept in sync with sqlutil.PersistentEncryptedTables and
+          # sqlutil.TransientEncryptedTables by TestEncryptedRegistryMatchesSqlcOverrides.
+          - column: "users.password_hash"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "users.prefs"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "users.prefs"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "users.pending_email_token"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "users.pending_email_token"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "user_sessions.user_agent"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "user_sessions.ip_address"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "workspaces.title"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "workspace_sections.name"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "user_state.state_payload"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "user_op_batches.batch_payload"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "user_op_batches.transitions_payload"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "lifecycle_outbox.payload"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "worker_tab_publications.response_payload"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_clients.client_name"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
           - column: "oauth_clients.icon_blob"
             go_type:
-              type: "byte"
-              slice: true
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
           - column: "oauth_clients.icon_blob"
             nullable: true
             go_type:
-              type: "byte"
-              slice: true
-          # Keystore ciphertext: a NULL secret is a nil slice, not an empty
-          # string in a NullString.
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "oauth_clients.icon_media_type"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "oauth_clients.icon_media_type"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "oauth_clients.client_uri"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_clients.redirect_uris"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_clients.scopes"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_clients.grant_types"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "api_tokens.installation_name"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "api_tokens.granted_scopes"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "delegation_tokens.granted_scopes"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_providers.name"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_providers.issuer_url"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_providers.client_id"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_providers.client_secret"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_providers.scopes"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "passkey_credentials.public_key"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "passkey_credentials.aaguid"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "passkey_credentials.aaguid"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "passkey_credentials.transports"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "passkey_credentials.friendly_name"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "hub_settings.value"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "hub_settings.value"
+            nullable: true
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
           - column: "hub_settings.secret"
             go_type:
-              type: "byte"
-              slice: true
-          # Passkey AAGUID: keep as []byte (sqlc would map MySQL BINARY/VARBINARY
-          # to NullString otherwise).
-          - column: "passkey_credentials.aaguid"
-            go_type:
-              type: "byte"
-              slice: true
-          - column: "passkey_credentials.aaguid"
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "hub_settings.secret"
             nullable: true
             go_type:
-              type: "byte"
-              slice: true
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "NullCiphertext"
+          - column: "oauth_authorization_codes.code_challenge"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_authorization_codes.redirect_uri"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_authorization_codes.granted_scopes"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"
+          - column: "oauth_authorization_codes.installation_name"
+            go_type:
+              import: "github.com/leapmux/leapmux/internal/hub/keystore"
+              type: "Ciphertext"

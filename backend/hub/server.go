@@ -462,19 +462,19 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// never as part of the TCP merge input.
 	listenReports := listenReporter{set: listeners, configured: tcpEntries, local: localListenURLs}
 
-	st, err := storeopen.Open(context.Background(), cfg)
-	if err != nil {
-		return nil, acquired.close(
-			fmt.Errorf("open store: %w", err))
-	}
-	acquired.store = st
-
 	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
 	if err != nil {
 		return nil, acquired.close(
 			fmt.Errorf("load encryption keystore: %w", err))
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
+
+	st, err := storeopen.Open(context.Background(), cfg, ks)
+	if err != nil {
+		return nil, acquired.close(
+			fmt.Errorf("open store: %w", err))
+	}
+	acquired.store = st
 
 	// The settings manager is the hub's runtime configuration authority:
 	// every DB-backed setting (auth policy, SMTP, timeouts, limits,
@@ -483,7 +483,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// budgets, max message size) are fixed for the process's life. Loaded
 	// synchronously so a broken store fails startup, before the hub constructs
 	// any pool from a value it must never see change.
-	setMgr := settingsregistry.NewManager(st, ks)
+	setMgr := settingsregistry.NewManager(st)
 	if err := setMgr.Load(context.Background()); err != nil {
 		return nil, acquired.close(fmt.Errorf("load settings: %w", err))
 	}
@@ -815,7 +815,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
 		SessionHasher: hasher,
-		Store:         st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle, Keystore: ks,
+		Store:         st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle,
 		Mail: mailSender, Renderer: mailRenderer, Captcha: captchaMgr,
 		Listen: listenReports, SoloGate: authContexts.SoloGate(),
 		PendingOAuthSignups: pendingSignups, WebAuthnSessions: webauthnSessions,
@@ -843,7 +843,6 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		Config:              cfg,
 		Settings:            setMgr,
 		Lifecycle:           lifecycle,
-		Keystore:            ks,
 		OAuthStates:         oauthStates,
 		PendingOAuthSignups: pendingSignups,
 	})
@@ -886,7 +885,6 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		Lifecycle:            lifecycle,
 		Mail:                 mailSender,
 		Renderer:             mailRenderer,
-		Keystore:             ks,
 		WebAuthnSessions:     webauthnSessions,
 		DeviceAuthorizations: deviceAuths,
 	})
@@ -972,7 +970,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	adminWorkerSvc := service.NewAdminWorkerService(st, wMgr, workerEffects)
 	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer, adminWorkerSvc)
 
-	adminIdPSvc := service.NewAdminIdPService(st, ks, idpHandler)
+	adminIdPSvc := service.NewAdminIdPService(st, idpHandler)
 	leapmuxv1connect.RegisterAdminIdPServiceHandler(connectServer, adminIdPSvc)
 
 	// AppService is the app REGISTRATION surface, and it is deliberately NOT an

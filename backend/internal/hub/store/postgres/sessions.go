@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
@@ -17,7 +18,15 @@ type sessionStore struct{ conn *pgConn }
 
 var _ store.SessionStore = (*sessionStore)(nil)
 
-func fromDBSession(s gendb.UserSession) store.UserSession {
+func (c *pgConn) fromDBSession(s gendb.UserSession) (store.UserSession, error) {
+	userAgent, err := c.ks.OpenString(s.UserAgent, keystore.UserSessionUserAgentAAD(s.ID))
+	if err != nil {
+		return store.UserSession{}, err
+	}
+	ipAddress, err := c.ks.OpenString(s.IpAddress, keystore.UserSessionIPAddressAAD(s.ID))
+	if err != nil {
+		return store.UserSession{}, err
+	}
 	return store.UserSession{
 		SecretHash:         s.SecretHash,
 		ID:                 s.ID,
@@ -28,13 +37,21 @@ func fromDBSession(s gendb.UserSession) store.UserSession {
 		AuthGeneration:     s.AuthGeneration,
 		ElevationProvenAt:  s.ElevationProvenAt.Ptr(),
 		ElevationExpiresAt: s.ElevationExpiresAt.Ptr(),
-		UserAgent:          s.UserAgent,
-		IPAddress:          s.IpAddress,
+		UserAgent:          userAgent,
+		IPAddress:          ipAddress,
 		IssuedToClient:     s.IssuedToClient.String,
-	}
+	}, nil
 }
 
-func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSession {
+func (c *pgConn) fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) (store.ActiveSession, error) {
+	userAgent, err := c.ks.OpenString(r.UserAgent, keystore.UserSessionUserAgentAAD(r.ID))
+	if err != nil {
+		return store.ActiveSession{}, err
+	}
+	ipAddress, err := c.ks.OpenString(r.IpAddress, keystore.UserSessionIPAddressAAD(r.ID))
+	if err != nil {
+		return store.ActiveSession{}, err
+	}
 	return store.ActiveSession{
 		ID:           r.ID,
 		UserID:       r.UserID,
@@ -43,20 +60,28 @@ func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSessio
 		CreatedAt:    r.CreatedAt.Time,
 		LastActiveAt: r.LastActiveAt.Time,
 		ExpiresAt:    r.ExpiresAt.Time,
-		IPAddress:    r.IpAddress,
-		UserAgent:    r.UserAgent,
-	}
+		IPAddress:    ipAddress,
+		UserAgent:    userAgent,
+	}, nil
 }
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
+	userAgent, err := s.conn.ks.SealString(p.UserAgent, keystore.UserSessionUserAgentAAD(p.ID))
+	if err != nil {
+		return err
+	}
+	ipAddress, err := s.conn.ks.SealString(p.IPAddress, keystore.UserSessionIPAddressAAD(p.ID))
+	if err != nil {
+		return err
+	}
 	return (&pgStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		return mapErr(tx.(*pgStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 			SecretHash:         p.SecretHash,
 			ID:                 p.ID,
 			UserID:             p.UserID.String(),
 			ExpiresAt:          pgtime.New(p.ExpiresAt),
-			UserAgent:          p.UserAgent,
-			IpAddress:          p.IPAddress,
+			UserAgent:          userAgent,
+			IpAddress:          ipAddress,
 			IssuedToClient:     pgtype.Text{String: p.IssuedToClient, Valid: p.IssuedToClient != ""},
 			ElevationProvenAt:  pgtime.NewNull(p.ElevationProvenAt),
 			ElevationExpiresAt: pgtime.NewNull(p.ElevationExpiresAt),
@@ -72,7 +97,10 @@ func (s *sessionStore) GetByID(ctx context.Context, id string, now time.Time) (*
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	out := fromDBSession(sess)
+	out, err := s.conn.fromDBSession(sess)
+	if err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -162,19 +190,19 @@ func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSession
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.UserSession]{}, nil
 	}
-	return queryPage(ctx, p.Limit,
+	return queryPageErr(ctx, p.Limit,
 		func() (gendb.ListUserSessionsByUserIDParams, error) {
 			return listUserSessionsParams(owner, p.Cursor, p.Limit, now)
 		},
-		s.conn.q.ListUserSessionsByUserID, fromDBSession)
+		s.conn.q.ListUserSessionsByUserID, s.conn.fromDBSession)
 }
 
 func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams, now time.Time) (store.Page[store.ActiveSession], error) {
-	return queryPage(ctx, p.Limit,
+	return queryPageErr(ctx, p.Limit,
 		func() (gendb.ListAllActiveSessionsParams, error) {
 			return listAllActiveSessionsParams(p.Cursor, p.Limit, now)
 		},
-		s.conn.q.ListAllActiveSessions, fromDBActiveSessionRow)
+		s.conn.q.ListAllActiveSessions, s.conn.fromDBActiveSessionRow)
 }
 
 func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time.Time) (*store.SessionWithUser, error) {

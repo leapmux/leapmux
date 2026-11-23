@@ -32,7 +32,7 @@ var knownCustomEditors = map[string]bool{
 // CLI, and service tests construct) and the account-scope keys.
 func allDescriptors(t *testing.T) []settings.Descriptor {
 	t.Helper()
-	m := settingsregistry.NewManager(nil, nil)
+	m := settingsregistry.NewManager(nil)
 	require.NotEmpty(t, m.Registered())
 	return append(m.Registered(), usersettings.Default.Descriptors()...)
 }

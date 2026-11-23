@@ -31,7 +31,6 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
-	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
 // testCmdCtx is the dummy cmdCtx tests pass to leaf functions. The Path
@@ -39,24 +38,44 @@ import (
 // exercise — so an empty ctx is sufficient.
 var testCmdCtx = cmdCtx{}
 
-// createTestUser seeds a user row directly through the generated queries.
-// The old seeding path (`admin user create`) is now an online RPC; the
-// recover tree only creates the FIRST admin, so offline tests seed plain
-// users here. The hash is a placeholder: every test that goes through
-// runPasswordReset overwrites it.
-func createTestUser(t *testing.T, dir, username string) gendb.User {
+func openTestStore(t *testing.T, dir string) store.Store {
 	t.Helper()
-	_, q := openTestDB(t, dir)
-	id := id.Generate()
-	require.NoError(t, q.CreateUser(context.Background(), gendb.CreateUserParams{
-		ID:                    id,
+	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
+	require.NoError(t, err)
+	st, err := storeopen.Open(context.Background(), recoverConfig(dir), ks)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+// openExistingTestStore opens an already-initialized Hub store without running
+// migrations or re-seeding built-in oauth_clients, so rotation and key-version
+// tests observe the exact ciphertext left by the command under test.
+func openExistingTestStore(t *testing.T, dir string) store.Store {
+	t.Helper()
+	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
+	require.NoError(t, err)
+	st, err := storeopen.OpenWithoutMigrate(context.Background(), recoverConfig(dir), ks)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+// createTestUser seeds a user row through the store so all encrypted columns
+// carry valid ciphertext under dir's encryption.key. The hash is a placeholder:
+// every test that goes through runPasswordReset overwrites it.
+func createTestUser(t *testing.T, dir, username string) *store.User {
+	t.Helper()
+	st := openTestStore(t, dir)
+	userID := id.Generate()
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID:                    userID,
 		Username:              username,
 		PasswordHash:          "placeholder",
 		DisplayName:           username,
-		DisplayNameFolded:     username,
-		FirstCredentialExempt: 1,
+		FirstCredentialExempt: true,
 	}))
-	user, err := q.GetUserByUsername(context.Background(), username)
+	user, err := st.Users().GetByUsername(context.Background(), username)
 	require.NoError(t, err)
 	return user
 }
@@ -87,25 +106,18 @@ func openTestDB(t *testing.T, dir string) (*sql.DB, *gendb.Queries) {
 }
 
 // seedEncryptedOAuthProvider stores one OAuth provider whose client secret
-// is encrypted under the data dir's active key version — the state the old
-// `admin idp add` verb produced.
+// is encrypted under the data dir's active key version.
 func seedEncryptedOAuthProvider(t *testing.T, dir, secret string) {
 	t.Helper()
 	ctx := context.Background()
-	ks, err := keystore.LoadOrGenerate(filepath.Join(dir, "encryption.key"))
-	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st := openTestStore(t, dir)
 	provID := id.Generate()
-	enc, err := ks.Encrypt([]byte(secret), keystore.ProviderAAD(provID))
-	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 		ID:           provID,
 		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB,
 		Name:         "github",
 		ClientID:     "c1",
-		ClientSecret: enc,
+		ClientSecret: []byte(secret),
 		Enabled:      true,
 	}))
 }
@@ -115,37 +127,34 @@ func seedEncryptedOAuthProvider(t *testing.T, dir, secret string) {
 func seedCaptchaTurnstileSecret(t *testing.T, dir string) {
 	t.Helper()
 	ctx := context.Background()
-	ks, err := keystore.LoadOrGenerate(filepath.Join(dir, "encryption.key"))
-	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
-	enc, err := ks.Encrypt([]byte(`{"secret_key":"captcha-secret"}`), keystore.SettingsSecretAAD("captcha.turnstile"))
-	require.NoError(t, err)
+	st := openTestStore(t, dir)
 	value := `{"site_key":"1x000AA"}`
 	require.NoError(t, st.Settings().Upsert(ctx, store.UpsertSettingParams{
-		Key: "captcha.turnstile", Value: &value, Secret: enc,
+		Key: "captcha.turnstile", Value: &value, Secret: []byte(`{"secret_key":"captcha-secret"}`),
 	}))
 }
 
-func listSessions(t *testing.T, q *gendb.Queries, userID string) []gendb.UserSession {
+func listSessions(t *testing.T, st store.Store, userID string) []store.UserSession {
 	t.Helper()
-	sessions, err := q.ListUserSessionsByUserID(context.Background(), gendb.ListUserSessionsByUserIDParams{UserID: userID, Limit: 1000})
+	page, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{
+		UserID:     userid.MustNew(userID),
+		PageParams: store.PageParams{Limit: 1000},
+	}, time.Now().UTC())
 	require.NoError(t, err)
-	return sessions
+	return page.Rows
 }
 
-func createTestSession(t *testing.T, q *gendb.Queries, userID string, expiresAt time.Time) string {
+func createTestSession(t *testing.T, st store.Store, userID string, expiresAt time.Time) string {
 	t.Helper()
 
 	sessionID := id.Generate()
-	err := q.CreateUserSession(context.Background(), gendb.CreateUserSessionParams{
+	err := st.Sessions().Create(context.Background(), store.CreateSessionParams{
 		SecretHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
 		ID:         sessionID,
-		UserID:     userID,
-		ExpiresAt:  sqltime.NewSQLiteTime(expiresAt),
+		UserID:     userid.MustNew(userID),
+		ExpiresAt:  expiresAt,
 		UserAgent:  "test",
-		IpAddress:  "127.0.0.1",
+		IPAddress:  "127.0.0.1",
 	})
 	require.NoError(t, err)
 	return sessionID
@@ -252,35 +261,32 @@ func TestCLI_RemoveEncryptionKey_ReportsAbsentMaximumVersion(t *testing.T) {
 
 func TestCLI_ReencryptSecrets(t *testing.T) {
 	dir := setupTestDataDir(t)
-	keyPath := filepath.Join(dir, "encryption.key")
+	ctx := context.Background()
 
-	// Add a provider with an encrypted secret (seeded directly: the old
-	// seeding path was the `admin idp add` verb, now an RPC).
 	seedEncryptedOAuthProvider(t, dir, "original-secret")
 
 	// Rotate key.
-	_ = runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir})
+	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
 
 	// Re-encrypt.
-	err := runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir})
+	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
+
+	// Verify the ciphertext version is now 2 on disk and decrypts through the store.
+	_, q := openTestDB(t, dir)
+	providers, err := q.ListAllOAuthProviders(ctx)
+	require.NoError(t, err)
+	require.Len(t, providers, 1)
+	full, err := q.GetOAuthProviderByID(ctx, providers[0].ID)
 	require.NoError(t, err)
 
-	// Verify the encrypted secret can be decrypted with the new key only.
-	ks, _ := keystore.LoadFromFile(keyPath)
-	_, q := openTestDB(t, dir)
-	providers, _ := q.ListAllOAuthProviders(context.Background())
-	full, _ := q.GetOAuthProviderByID(context.Background(), providers[0].ID)
-
-	// The ciphertext should now be version 2.
-	ver, err := keystore.CiphertextVersion(full.ClientSecret)
+	ver, err := full.ClientSecret.Version()
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), ver, "re-encrypted secret should be version 2")
 
-	// Decrypting should return the original plaintext.
-	aad := keystore.ProviderAAD(providers[0].ID)
-	plain, err := ks.Decrypt(full.ClientSecret, aad)
+	st := openTestStore(t, dir)
+	got, err := st.OAuthProviders().GetByID(ctx, providers[0].ID)
 	require.NoError(t, err)
-	assert.Equal(t, "original-secret", string(plain))
+	assert.Equal(t, "original-secret", string(got.ClientSecret))
 }
 
 func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
@@ -291,29 +297,27 @@ func TestCLI_ReencryptSecrets_Idempotent(t *testing.T) {
 
 	ksBefore, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	providers, err := st.OAuthProviders().ListAllWithSecrets(ctx)
+	_, q := openTestDB(t, dir)
+	providers, err := q.ListAllOAuthProviders(ctx)
 	require.NoError(t, err)
 	require.Len(t, providers, 1)
-	before := append([]byte(nil), providers[0].ClientSecret...)
-	require.NoError(t, st.Close())
+	fullBefore, err := q.GetOAuthProviderByID(ctx, providers[0].ID)
+	require.NoError(t, err)
+	before := append([]byte(nil), fullBefore.ClientSecret.Bytes()...)
 
-	err = runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir})
-	require.NoError(t, err)
+	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
 
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
+	fullAfter, err := q.GetOAuthProviderByID(ctx, providers[0].ID)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
-	after, err := st.OAuthProviders().GetByID(ctx, providers[0].ID)
-	require.NoError(t, err)
-	assert.Equal(t, before, after.ClientSecret, "ciphertext must stay byte-identical when already at the active version")
-	ver, err := keystore.CiphertextVersion(after.ClientSecret)
+	assert.Equal(t, before, fullAfter.ClientSecret.Bytes(), "ciphertext must stay byte-identical when already at the active version")
+	ver, err := fullAfter.ClientSecret.Version()
 	require.NoError(t, err)
 	assert.Equal(t, ksBefore.ActiveVersion(), ver)
-	plain, err := ksBefore.Decrypt(after.ClientSecret, keystore.ProviderAAD(after.ID))
+
+	st := openTestStore(t, dir)
+	got, err := st.OAuthProviders().GetByID(ctx, providers[0].ID)
 	require.NoError(t, err)
-	assert.Equal(t, "secret", string(plain))
+	assert.Equal(t, "secret", string(got.ClientSecret))
 }
 
 func TestCLI_RemoveEncryptionKey_RefusesWhenReferenced(t *testing.T) {
@@ -344,40 +348,33 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T
 	dir := setupTestDataDir(t)
 	ctx := context.Background()
 
-	// Configure turnstile: the row's secret lands under key version 1
-	// (seeded directly; the old seeding path was the `admin captcha set`
-	// verb, now an RPC).
+	// Configure turnstile: the row lands under key version 1.
 	seedCaptchaTurnstileSecret(t, dir)
 
-	// Rotate to version 2; the captcha secret is still encrypted under v1.
+	// Rotate to version 2; the captcha row is still encrypted under v1.
 	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
 
-	// Removing v1 must be refused — it still encrypts the captcha secret.
+	// Removing v1 must be refused — it still encrypts the hub_settings row.
 	err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still encrypts")
-	assert.Contains(t, err.Error(), "settings secret")
+	assert.Contains(t, err.Error(), "hub settings")
 
-	// Reencrypt migrates the secret; it must decrypt under v2 with the
-	// same key-name-scoped AAD and the original plaintext.
+	// Reencrypt migrates the row; it must decrypt under v2 with the original plaintext.
 	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
-	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
+	st := openExistingTestStore(t, dir)
+	refs, err := st.KeyMaintenance().CountKeyVersionRefs(ctx, 1)
 	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	assert.Empty(t, refs)
+
 	row, err := st.Settings().Get(ctx, "captcha.turnstile")
 	require.NoError(t, err)
-	ver, err := keystore.CiphertextVersion(row.Secret)
-	require.NoError(t, err)
-	assert.Equal(t, uint32(2), ver, "reencrypt must migrate the captcha secret to the active version")
-	plain, err := ks.Decrypt(row.Secret, keystore.SettingsSecretAAD("captcha.turnstile"))
-	require.NoError(t, err, "the migrated secret must decrypt under its unchanged key-name-scoped AAD")
+	require.NoError(t, row.SecretDecryptErr)
 	var ts captcha.TurnstileRow
-	require.NoError(t, json.Unmarshal(plain, &ts))
+	require.NoError(t, json.Unmarshal(row.Secret, &ts))
 	assert.Equal(t, "captcha-secret", ts.SecretKey)
 
-	// With the secret migrated, v1 is unreferenced and removal succeeds.
+	// With the row migrated, v1 is unreferenced and removal succeeds.
 	require.NoError(t, runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir}))
 }
 
@@ -387,7 +384,7 @@ func TestCLI_RotatePepper_RequiresYes(t *testing.T) {
 	err := runRotatePepper(testCmdCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--yes")
-	for _, effect := range []string{"every session", "Worker auth token", "API and delegation tokens", "app secrets", "registration keys", "device codes"} {
+	for _, effect := range []string{"every session", "Worker auth token", "API and delegation tokens", "app secrets", "registration keys", "device codes", "OAuth authorization codes"} {
 		assert.Contains(t, err.Error(), effect)
 	}
 
@@ -418,10 +415,10 @@ func TestCLI_PasswordReset(t *testing.T) {
 	user := createTestUser(t, dir, "alice")
 
 	// Record original hash and create a session that should be deleted after reset.
-	_, q := openTestDB(t, dir)
-	original, err := q.GetUserByID(context.Background(), user.ID)
+	st := openTestStore(t, dir)
+	original, err := st.Users().GetByID(context.Background(), user.ID)
 	require.NoError(t, err)
-	createTestSession(t, q, user.ID, time.Now().UTC().Add(24*time.Hour))
+	createTestSession(t, st, user.ID, time.Now().UTC().Add(24*time.Hour))
 
 	err = runPasswordReset(testCmdCtx, []string{
 		"--id", user.ID,
@@ -431,14 +428,14 @@ func TestCLI_PasswordReset(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify hash changed.
-	_, q = openTestDB(t, dir)
+	st = openTestStore(t, dir)
 
-	updated, err := q.GetUserByID(context.Background(), user.ID)
+	updated, err := st.Users().GetByID(context.Background(), user.ID)
 	require.NoError(t, err)
 	assert.NotEqual(t, original.PasswordHash, updated.PasswordHash)
 
 	// Verify sessions deleted.
-	sessions := listSessions(t, q, user.ID)
+	sessions := listSessions(t, st, user.ID)
 	assert.Empty(t, sessions)
 }
 
@@ -448,9 +445,9 @@ func TestCLI_PasswordReset_PreservesOtherUserSessions(t *testing.T) {
 	bob := createTestUser(t, dir, "bob")
 
 	// Create sessions for both users.
-	_, q := openTestDB(t, dir)
-	createTestSession(t, q, alice.ID, time.Now().UTC().Add(24*time.Hour))
-	bobSessionID := createTestSession(t, q, bob.ID, time.Now().UTC().Add(24*time.Hour))
+	st := openTestStore(t, dir)
+	createTestSession(t, st, alice.ID, time.Now().UTC().Add(24*time.Hour))
+	bobSessionID := createTestSession(t, st, bob.ID, time.Now().UTC().Add(24*time.Hour))
 
 	// Reset alice's password.
 	err := runPasswordReset(testCmdCtx, []string{
@@ -461,9 +458,9 @@ func TestCLI_PasswordReset_PreservesOtherUserSessions(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify bob's session is still there.
-	_, q = openTestDB(t, dir)
+	st = openTestStore(t, dir)
 
-	sessions := listSessions(t, q, bob.ID)
+	sessions := listSessions(t, st, bob.ID)
 	require.Len(t, sessions, 1)
 	assert.Equal(t, bobSessionID, sessions[0].ID)
 }
@@ -510,8 +507,8 @@ func TestCLI_PasswordReset_ByUsername(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, q := openTestDB(t, dir)
-	updated, err := q.GetUserByID(context.Background(), user.ID)
+	st := openTestStore(t, dir)
+	updated, err := st.Users().GetByID(context.Background(), user.ID)
 	require.NoError(t, err)
 	assert.NotEqual(t, "placeholder", updated.PasswordHash)
 }
@@ -532,9 +529,9 @@ func TestCLI_PasswordReset_IdAndUsernameMutuallyExclusive(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--id and --username are mutually exclusive")
 
-	_, q := openTestDB(t, dir)
+	st := openTestStore(t, dir)
 	for _, username := range []string{"alice", "bob"} {
-		user, err := q.GetUserByUsername(context.Background(), username)
+		user, err := st.Users().GetByUsername(context.Background(), username)
 		require.NoError(t, err)
 		assert.Equalf(t, "placeholder", user.PasswordHash, "%s's password must not change", username)
 	}
@@ -559,8 +556,7 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 	ctx := context.Background()
 	user := createTestUser(t, dir, "alice")
 
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
+	st := openTestStore(t, dir)
 	tokenID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 		Issuance:         store.APITokenIssuanceAuthorizationCode,
@@ -573,7 +569,6 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 	}))
 	before, err := st.Users().GetByID(ctx, user.ID)
 	require.NoError(t, err)
-	require.NoError(t, st.Close())
 
 	require.NoError(t, runPasswordReset(testCmdCtx, []string{
 		"--id", user.ID,
@@ -581,9 +576,7 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 		"--data-dir", dir,
 	}))
 
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st = openTestStore(t, dir)
 	tokens, err := st.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
 		UserID:         &user.ID,
 		IncludeRevoked: true,
@@ -949,15 +942,13 @@ func TestCLI_PasswordReset_DeletesPasskeys(t *testing.T) {
 	user := createTestUser(t, dir, "pkuser")
 	ctx := context.Background()
 
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
+	st := openTestStore(t, dir)
 	pkID := id.Generate()
 	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
 		ID: pkID, UserID: user.ID, CredentialID: []byte("cred-" + pkID),
 		PublicKey: []byte("pubkey"), SignCount: 0, Transports: "[]",
-		FriendlyName: "Phone", KeyVersion: 1, CreatedAt: time.Now().UTC(),
+		FriendlyName: "Phone", CreatedAt: time.Now().UTC(),
 	}))
-	require.NoError(t, st.Close())
 
 	require.NoError(t, runPasswordReset(testCmdCtx, []string{
 		"--id", user.ID,
@@ -965,9 +956,7 @@ func TestCLI_PasswordReset_DeletesPasskeys(t *testing.T) {
 		"--data-dir", dir,
 	}))
 
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
+	st = openTestStore(t, dir)
 	rows, err := st.PasskeyCredentials().ListByUser(ctx, user.ID)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
@@ -978,21 +967,15 @@ func TestCLI_Reencrypt_MigratesPasskeyPublicKey(t *testing.T) {
 	ctx := context.Background()
 	keyPath := filepath.Join(dir, "encryption.key")
 
-	ks, err := keystore.LoadFromFile(keyPath)
-	require.NoError(t, err)
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
+	st := openTestStore(t, dir)
 	user := storetest.SeedUser(t, st, "pkreenc")
 	pkID := id.Generate()
 	plain := []byte("cose-public-key-bytes")
-	enc, err := ks.Encrypt(plain, keystore.PasskeyPublicKeyAAD(pkID))
-	require.NoError(t, err)
 	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
 		ID: pkID, UserID: user.ID, CredentialID: []byte("cred-" + pkID),
-		PublicKey: enc, SignCount: 0, Transports: "[]",
-		FriendlyName: "Key", KeyVersion: int64(ks.ActiveVersion()), CreatedAt: time.Now().UTC(),
+		PublicKey: plain, SignCount: 0, Transports: "[]",
+		FriendlyName: "Key", CreatedAt: time.Now().UTC(),
 	}))
-	require.NoError(t, st.Close())
 
 	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
 	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
@@ -1000,38 +983,166 @@ func TestCLI_Reencrypt_MigratesPasskeyPublicKey(t *testing.T) {
 	ks2, err := keystore.LoadFromFile(keyPath)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), ks2.ActiveVersion())
-	st, err = storeopen.Open(ctx, recoverConfig(dir))
+
+	st2 := openExistingTestStore(t, dir)
+	refs, err := st2.KeyMaintenance().CountKeyVersionRefs(ctx, 1)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
-	rows, err := st.PasskeyCredentials().ListByKeyVersion(ctx, 2)
+	assert.Empty(t, refs)
+
+	rows, err := st2.PasskeyCredentials().ListByUser(ctx, user.ID)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	dec, err := ks2.Decrypt(rows[0].PublicKey, keystore.PasskeyPublicKeyAAD(pkID))
-	require.NoError(t, err)
-	assert.Equal(t, plain, dec)
-	old, err := st.PasskeyCredentials().ListByKeyVersion(ctx, 1)
-	require.NoError(t, err)
-	assert.Empty(t, old)
+	assert.Equal(t, plain, rows[0].PublicKey)
 }
 
 func TestCLI_RemoveEncryptionKey_RefusesWhenPasskeyReferenced(t *testing.T) {
 	dir := setupTestDataDir(t)
 	ctx := context.Background()
 
-	st, err := storeopen.Open(ctx, recoverConfig(dir))
-	require.NoError(t, err)
+	st := openTestStore(t, dir)
 	user := storetest.SeedUser(t, st, "pkref")
 	pkID := id.Generate()
 	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
 		ID: pkID, UserID: user.ID, CredentialID: []byte("cred-" + pkID),
 		PublicKey: []byte("cipher"), SignCount: 0, Transports: "[]",
-		FriendlyName: "Key", KeyVersion: 1, CreatedAt: time.Now().UTC(),
+		FriendlyName: "Key", CreatedAt: time.Now().UTC(),
 	}))
-	require.NoError(t, st.Close())
 
 	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
-	err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still encrypts")
 	assert.Contains(t, err.Error(), "passkey")
+}
+
+func readBuiltInClientCiphertext(t *testing.T, dir string) []byte {
+	t.Helper()
+	sqlDB, _ := openTestDB(t, dir)
+	var raw []byte
+	require.NoError(t, sqlDB.QueryRow(
+		`SELECT client_name FROM oauth_clients WHERE client_id = ?`,
+		oauthapp.ControlCLIClientID,
+	).Scan(&raw))
+	require.NotEmpty(t, raw)
+	return raw
+}
+
+func TestRecoverEncryptionKey_ReencryptAndRemoveAcrossAllTables(t *testing.T) {
+	dir := setupTestDataDir(t)
+	ctx := context.Background()
+
+	// Seed persistent tables under key version 1 (openTestStore also seeds
+	// built-in oauth_clients under v1).
+	st := openTestStore(t, dir)
+	user := storetest.SeedUser(t, st, "rotuser")
+	sessID := createTestSession(t, st, user.ID, time.Now().UTC().Add(time.Hour))
+	wsID := storetest.SeedWorkspace(t, st, user.ID, "Encrypted Workspace")
+	secID := id.Generate()
+	require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+		ID:          secID,
+		UserID:      userid.MustNew(user.ID),
+		Name:        "Encrypted Section",
+		Position:    "a0",
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}))
+	prov := storetest.SeedOAuthProvider(t, st, "rotprov")
+	pkID := id.Generate()
+	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
+		ID: pkID, UserID: user.ID, CredentialID: []byte("cred-" + pkID),
+		PublicKey: []byte("rot-pubkey"), Transports: "[]", FriendlyName: "RotKey",
+		CreatedAt: time.Now().UTC(),
+	}))
+	settingVal := `{"site_key":"rot-site"}`
+	require.NoError(t, st.Settings().Upsert(ctx, store.UpsertSettingParams{
+		Key: "captcha.turnstile", Value: &settingVal, Secret: []byte(`{"secret_key":"rot-secret"}`),
+	}))
+	require.NoError(t, st.Close())
+
+	beforeClientCT := readBuiltInClientCiphertext(t, dir)
+
+	// Rotate to v2.
+	require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+
+	// remove --version 1 must fail naming affected tables and must not modify
+	// built-in oauth_clients ciphertext (it uses OpenWithoutMigrate).
+	err := runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir})
+	require.Error(t, err)
+	for _, want := range []string{"still encrypts", "users", "workspaces", "OAuth clients", "hub settings"} {
+		assert.Contains(t, err.Error(), want)
+	}
+	assert.Equal(t, beforeClientCT, readBuiltInClientCiphertext(t, dir),
+		"remove must not modify built-in oauth_clients ciphertext")
+
+	// Re-encrypt all persistent tables to v2, then remove v1.
+	require.NoError(t, runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}))
+	require.NoError(t, runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir}))
+
+	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
+	require.NoError(t, err)
+	assert.Equal(t, []uint32{2}, ks.Versions())
+
+	// Reopen without migrating or reseeding under the v2-only keystore and verify
+	// every seeded record (including built-in oauth_clients) decrypts cleanly.
+	st2 := openExistingTestStore(t, dir)
+	gotUser, err := st2.Users().GetByID(ctx, user.ID)
+	require.NoError(t, err)
+	assert.Equal(t, user.Username, gotUser.Username)
+	assert.Equal(t, user.PasswordHash, gotUser.PasswordHash)
+	gotSess, err := st2.Sessions().GetByID(ctx, sessID, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1", gotSess.IPAddress)
+	gotWs, err := st2.Workspaces().GetByID(ctx, wsID)
+	require.NoError(t, err)
+	assert.Equal(t, "Encrypted Workspace", gotWs.Title)
+	gotSec, err := st2.WorkspaceSections().GetByID(ctx, secID)
+	require.NoError(t, err)
+	assert.Equal(t, "Encrypted Section", gotSec.Name)
+	gotProv, err := st2.OAuthProviders().GetByID(ctx, prov.ID)
+	require.NoError(t, err)
+	assert.Equal(t, prov.Name, gotProv.Name)
+	assert.Equal(t, prov.ClientSecret, gotProv.ClientSecret)
+	gotBuiltIn, err := st2.OAuthClients().Get(ctx, oauthapp.ControlCLIClientID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, gotBuiltIn.ClientName)
+	gotPK, err := st2.PasskeyCredentials().GetByID(ctx, pkID)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("rot-pubkey"), gotPK.PublicKey)
+	gotSetting, err := st2.Settings().Get(ctx, "captcha.turnstile")
+	require.NoError(t, err)
+	require.NotNil(t, gotSetting.Value)
+	assert.Equal(t, settingVal, *gotSetting.Value)
+	assert.Equal(t, `{"secret_key":"rot-secret"}`, string(gotSetting.Secret))
+}
+
+func TestRecoverExistingCommands_FailLoudlyWhenKeyFileMissing(t *testing.T) {
+	dir := setupTestDataDir(t)
+	user := createTestUser(t, dir, "missingkeyuser")
+	beforeClientCT := readBuiltInClientCiphertext(t, dir)
+
+	keyPath := filepath.Join(dir, "encryption.key")
+	require.NoError(t, os.Remove(keyPath))
+
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{"reencrypt", func() error { return runReencryptSecrets(testCmdCtx, []string{"--data-dir", dir}) }},
+		{"remove", func() error { return runRemoveEncryptionKey(testCmdCtx, []string{"--version", "1", "--data-dir", dir}) }},
+		{"password reset", func() error {
+			return runPasswordReset(testCmdCtx, []string{"--id", user.ID, "--password", "NewPassword2!", "--data-dir", dir})
+		}},
+		{"db version", func() error { return runDBVersion(testCmdCtx, []string{"--data-dir", dir}) }},
+		{"db migrate", func() error { return runDBMigrate(testCmdCtx, []string{"--data-dir", dir}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run()
+			require.Error(t, err, "%s must fail when encryption.key is missing", tc.name)
+			assert.Contains(t, err.Error(), "encryption key file not found", "%s must report missing encryption.key", tc.name)
+			assert.Contains(t, err.Error(), keyPath, "%s error must include missing key path", tc.name)
+			assert.NoFileExists(t, keyPath, "%s must not auto-generate encryption.key", tc.name)
+			assert.Equal(t, beforeClientCT, readBuiltInClientCiphertext(t, dir),
+				"%s must not modify oauth_clients", tc.name)
+		})
+	}
 }

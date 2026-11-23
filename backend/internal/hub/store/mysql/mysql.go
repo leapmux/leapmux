@@ -6,6 +6,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -40,16 +42,41 @@ type mysqlConn struct {
 	adminMembershipLocked bool
 	transactionContext    context.Context
 	shared                *mysqlShared
+	ks                    *keystore.Keystore
 	exec                  gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
 	q                     *gendb.Queries
 }
 
-// Open opens a MySQL database, runs migrations, and returns a Store.
+// Open opens a MySQL database, runs migrations, seeds built-ins, and returns a Store.
 // The DSN should be a go-sql-driver/mysql DSN string, e.g.
 // "user:password@tcp(host:port)/dbname". Open forces parseTime,
 // loc=UTC, and session time_zone='+00:00' because the schema stores
 // revocation cursors in DATETIME columns and compares them directly.
-func Open(cfg config.MySQLConfig) (store.Store, error) {
+func Open(cfg config.MySQLConfig, ks *keystore.Keystore) (store.Store, error) {
+	st, err := openWithoutMigrate(cfg, ks)
+	if err != nil {
+		return nil, err
+	}
+	// One call is the whole boot: migrate, then seed and reconcile the
+	// built-in registrations. Migrator() wraps the raw migrator so every
+	// caller that migrates this store later completes the same sequence.
+	if err := st.Migrator().Migrate(context.Background()); err != nil {
+		_ = st.conn.shared.db.Close()
+		return nil, fmt.Errorf("migrate mysql: %w", err)
+	}
+	return st, nil
+}
+
+// OpenWithoutMigrate opens a MySQL database and initializes its migrator
+// without running migrations or seeding built-in rows.
+func OpenWithoutMigrate(cfg config.MySQLConfig, ks *keystore.Keystore) (store.Store, error) {
+	return openWithoutMigrate(cfg, ks)
+}
+
+func openWithoutMigrate(cfg config.MySQLConfig, ks *keystore.Keystore) (*mysqlStore, error) {
+	if ks == nil {
+		return nil, errors.New("open mysql: keystore is required")
+	}
 	dsn, err := normalizeMySQLDSN(cfg.DSN)
 	if err != nil {
 		return nil, err
@@ -84,18 +111,10 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("init mysql migrator: %w", err)
 	}
-	st := &mysqlStore{conn: newPoolConn(&mysqlShared{
+	return &mysqlStore{conn: newPoolConn(&mysqlShared{
 		db:       sqlDB,
 		migrator: mig,
-	}, sqlDB)}
-	// One call is the whole boot: migrate, then seed and reconcile the
-	// built-in registrations. Migrator() wraps the raw migrator so every
-	// caller that migrates this store later completes the same sequence.
-	if err := st.Migrator().Migrate(context.Background()); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("migrate mysql: %w", err)
-	}
-	return st, nil
+	}, sqlDB, ks)}, nil
 }
 
 // newPoolConn builds the NON-transactional conn, and it is the only way to
@@ -122,10 +141,11 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 //
 // The pool arrives as an argument rather than through shared.db so a test can
 // supply a stand-in and prove the wiring, not merely the wrapper.
-func newPoolConn(shared *mysqlShared, db gendb.DBTX) *mysqlConn {
+func newPoolConn(shared *mysqlShared, db gendb.DBTX, ks *keystore.Keystore) *mysqlConn {
 	retrying := conflictRetryDBTX{inner: db}
 	return &mysqlConn{
 		shared: shared,
+		ks:     ks,
 		exec:   retrying,
 		q:      gendb.New(retrying),
 	}
@@ -316,6 +336,9 @@ func (s *mysqlStore) OAuthClients() store.OAuthClientStore {
 	return &oauthClientStore{conn: s.conn}
 }
 func (s *mysqlStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
+func (s *mysqlStore) KeyMaintenance() store.KeyMaintenanceStore {
+	return &keyMaintenanceStore{conn: s.conn}
+}
 
 // Migrator wraps the raw goose migrator so a completed migration also seeds
 // and reconciles the built-in registrations -- the boot sequence, wherever it
@@ -390,6 +413,7 @@ func (c *mysqlConn) runTransaction(ctx context.Context, adminMembershipLocked bo
 		adminMembershipLocked: adminMembershipLocked,
 		transactionContext:    ctx,
 		shared:                c.shared,
+		ks:                    c.ks,
 		exec:                  tx,
 		// WithTx rebuilds Queries over the transaction, which deliberately
 		// drops the statement-level retry: inside a transaction the whole

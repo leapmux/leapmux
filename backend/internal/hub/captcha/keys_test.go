@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,14 +19,10 @@ import (
 // CLI, and settingsregistry all use.
 func crossRuleManager(t *testing.T) *settings.Manager {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-	m := settings.NewManager(st, ks, SettingsDescriptors(),
+	m := settings.NewManager(st, SettingsDescriptors(),
 		settings.WithCrossValidation(SelectedConfigured))
 	require.NoError(t, m.Load(context.Background()))
 	return m

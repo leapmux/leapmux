@@ -12,7 +12,6 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -44,15 +43,12 @@ type Service struct {
 	w        *gowebauthn.WebAuthn
 	rp       RPConfig
 	store    store.Store
-	ks       *keystore.Keystore
 	sessions *SessionStore
 }
 
-// NewService constructs a WebAuthn service from RP config and collaborators.
-func NewService(rp RPConfig, st store.Store, ks *keystore.Keystore, sessions *SessionStore) (*Service, error) {
-	if ks == nil {
-		return nil, fmt.Errorf("webauthn service requires keystore")
-	}
+// NewService constructs a WebAuthn service from RP config, a store, and an
+// in-memory ceremony session store.
+func NewService(rp RPConfig, st store.Store, sessions *SessionStore) (*Service, error) {
 	w, err := newGoWebAuthn(rp)
 	if err != nil {
 		return nil, fmt.Errorf("create webauthn: %w", err)
@@ -60,7 +56,7 @@ func NewService(rp RPConfig, st store.Store, ks *keystore.Keystore, sessions *Se
 	if sessions == nil {
 		sessions = NewSessionStore()
 	}
-	return &Service{w: w, rp: rp, store: st, ks: ks, sessions: sessions}, nil
+	return &Service{w: w, rp: rp, store: st, sessions: sessions}, nil
 }
 
 // newGoWebAuthn builds the hub's one go-webauthn instance from RPConfig, so
@@ -399,10 +395,10 @@ func (s *Service) FinishElevation(ctx context.Context, userID, sessionID, creden
 	return identity, err
 }
 
-// StoreCredential encrypts and persists a passkey credential row through the
-// given store, so a caller that commits inside a transaction writes the row
-// in that same transaction. It returns the persisted row, built from the
-// same values it wrote, so the credential-to-row mapping has one home.
+// StoreCredential persists a passkey credential row through the given store,
+// so a caller that commits inside a transaction writes the row in that same
+// transaction. It returns the persisted row, built from the same values it
+// wrote, so the credential-to-row mapping has one home.
 func (s *Service) StoreCredential(ctx context.Context, st store.Store, rowID, userID string, cred FinishedSignUpCredential, friendlyName string) (*store.PasskeyCredential, error) {
 	// The default lives at the WRITE, not at one caller: every path that
 	// stores a credential gets it, and a row with an empty name renders as
@@ -410,23 +406,18 @@ func (s *Service) StoreCredential(ctx context.Context, st store.Store, rowID, us
 	if friendlyName == "" {
 		friendlyName = "Passkey"
 	}
-	encKey, keyVersion, err := s.encryptPublicKey(rowID, cred.PublicKey)
-	if err != nil {
-		return nil, err
-	}
 	now := time.Now().UTC()
 	if err := st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
 		ID:             rowID,
 		UserID:         userID,
 		CredentialID:   cred.CredentialID,
-		PublicKey:      encKey,
+		PublicKey:      cred.PublicKey,
 		SignCount:      cred.SignCount,
 		AAGUID:         cred.AAGUID,
 		BackupEligible: cred.BackupEligible,
 		BackupState:    cred.BackupState,
 		Transports:     cred.Transports,
 		FriendlyName:   friendlyName,
-		KeyVersion:     keyVersion,
 		CreatedAt:      now,
 	}); err != nil {
 		return nil, err
@@ -441,7 +432,6 @@ func (s *Service) StoreCredential(ctx context.Context, st store.Store, rowID, us
 		BackupState:    cred.BackupState,
 		Transports:     cred.Transports,
 		FriendlyName:   friendlyName,
-		KeyVersion:     keyVersion,
 		CreatedAt:      now,
 	}, nil
 }
@@ -549,17 +539,13 @@ func (s *Service) loadUser(ctx context.Context, userID string) (*user, int64, er
 	credentialRowIDs := make(map[string]string, len(creds))
 	for _, c := range creds {
 		credentialRowIDs[string(c.CredentialID)] = c.ID
-		pub, err := s.decryptPublicKey(c.ID, c.PublicKey)
-		if err != nil {
-			return nil, 0, fmt.Errorf("decrypt passkey %s: %w", c.ID, err)
-		}
 		var transports []protocol.AuthenticatorTransport
 		if c.Transports != "" && c.Transports != "[]" {
 			_ = json.Unmarshal([]byte(c.Transports), &transports)
 		}
 		waCreds = append(waCreds, gowebauthn.Credential{
 			ID:        c.CredentialID,
-			PublicKey: pub,
+			PublicKey: c.PublicKey,
 			Transport: transports,
 			Flags: gowebauthn.CredentialFlags{
 				BackupEligible: c.BackupEligible,
@@ -601,16 +587,6 @@ func (s *Service) loadUserIdentity(ctx context.Context, userID string) (*user, e
 		displayName: u.DisplayName,
 		source:      u,
 	}, nil
-}
-
-// DecryptPublicKey exposes keystore decrypt for tests and reencrypt tooling.
-func (s *Service) DecryptPublicKey(credentialRowID string, ciphertext []byte) ([]byte, error) {
-	return s.decryptPublicKey(credentialRowID, ciphertext)
-}
-
-// EncryptPublicKey exposes keystore encrypt for tests.
-func (s *Service) EncryptPublicKey(credentialRowID string, publicKey []byte) ([]byte, int64, error) {
-	return s.encryptPublicKey(credentialRowID, publicKey)
 }
 
 // ErrCloneDetected reports an authenticator sign count that indicates a
@@ -686,3 +662,4 @@ func (s *Service) applySignCountUpdate(ctx context.Context, credentialID []byte,
 	}
 	return fmt.Errorf("update sign count: row did not advance (stored %d, assertion %d)", fresh.SignCount, newSignCount)
 }
+

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -29,9 +30,9 @@ func printSchemaVersions(ctx context.Context, m store.Migrator) (current, latest
 
 func runDBMigrate(cmd cmdCtx, args []string) error {
 	var targetVersion *int64
-	return withRecoverStore(cmd, args, func(fs *flag.FlagSet) {
+	return withRecoverExistingStore(cmd, args, func(fs *flag.FlagSet) {
 		targetVersion = fs.Int64("version", -1, "target migration version (-1 for latest)")
-	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+	}, func(ctx context.Context, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
 		m := st.Migrator()
 
 		current, latest, err := printSchemaVersions(ctx, m)
@@ -45,9 +46,6 @@ func runDBMigrate(cmd cmdCtx, args []string) error {
 				return fmt.Errorf("migrate to version %d: %w", *targetVersion, err)
 			}
 		} else {
-			// Opening the store already applies pending migrations to the
-			// latest version. When no explicit target is given, confirm the
-			// schema is up to date.
 			if current == latest {
 				fmt.Println("Already at latest version.")
 				return nil
@@ -68,8 +66,8 @@ func runDBMigrate(cmd cmdCtx, args []string) error {
 }
 
 func runDBVersion(cmd cmdCtx, args []string) error {
-	return withRecoverStore(cmd, args, nil,
-		func(ctx context.Context, _ *config.Config, st store.Store) error {
+	return withRecoverExistingStore(cmd, args, nil,
+		func(ctx context.Context, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
 			_, _, err := printSchemaVersions(ctx, st.Migrator())
 			return err
 		})

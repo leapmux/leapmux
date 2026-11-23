@@ -76,16 +76,6 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		assert.Len(t, all, 2)
 	})
 
-	t.Run("list all with secrets", func(t *testing.T) {
-		st := s.NewStore(t)
-		seedProvider(t, st, "secret-prov", true)
-
-		all, err := st.OAuthProviders().ListAllWithSecrets(ctx)
-		require.NoError(t, err)
-		require.Len(t, all, 1)
-		assert.NotEmpty(t, all[0].ClientSecret)
-	})
-
 	t.Run("update enabled", func(t *testing.T) {
 		st := s.NewStore(t)
 		provID := seedProvider(t, st, "toggle-prov", true)
@@ -216,23 +206,6 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "enabled provider should still appear")
-	})
-
-	t.Run("list all with secrets roundtrips client secret", func(t *testing.T) {
-		st := s.NewStore(t)
-		prov := SeedOAuthProvider(t, st, "secret-roundtrip-prov")
-
-		all, err := st.OAuthProviders().ListAllWithSecrets(ctx)
-		require.NoError(t, err)
-		var found *store.OAuthProvider
-		for _, p := range all {
-			if p.ID == prov.ID {
-				found = &p
-				break
-			}
-		}
-		require.NotNil(t, found, "provider should appear in list")
-		assert.Equal(t, []byte("secret-secret-roundtrip-prov"), found.ClientSecret)
 	})
 
 	t.Run("update enabled toggle", func(t *testing.T) {

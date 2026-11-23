@@ -68,7 +68,7 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 	t.Cleanup(sc.Stop)
 	connectServer := connect.NewServer(interceptor)
 
-	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))))
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil))))
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, allowAllAuthFreshness{})
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)

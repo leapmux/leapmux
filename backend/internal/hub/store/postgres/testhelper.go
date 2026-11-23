@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 )
@@ -19,19 +20,41 @@ type testablePGStore struct {
 
 var _ store.TestableStore = (*testablePGStore)(nil)
 
-// OpenTestable connects to a PostgreSQL database and returns a TestableStore.
-// The caller retains ownership; calling Close on the returned Store will close the pool.
+// OpenTestable connects to a PostgreSQL database with a fresh random keystore
+// and returns a TestableStore. The caller retains ownership; calling Close on
+// the returned Store will close the pool.
 func OpenTestable(ctx context.Context, cfg config.PostgresConfig) (store.TestableStore, error) {
-	st, err := Open(ctx, cfg)
+	ks, err := keystore.NewRandom()
+	if err != nil {
+		return nil, err
+	}
+	return OpenTestableWithKeystore(ctx, cfg, ks)
+}
+
+// OpenTestableWithKeystore connects to a PostgreSQL database using ks and
+// returns a TestableStore.
+func OpenTestableWithKeystore(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore) (store.TestableStore, error) {
+	st, err := Open(ctx, cfg, ks)
 	if err != nil {
 		return nil, err
 	}
 	return &testablePGStore{pgStore: st.(*pgStore)}, nil
 }
 
-// NewTestableFromPool creates a TestableStore from an existing pool and sql.DB.
+// NewTestableFromPool creates a TestableStore from an existing pool and sql.DB
+// with a fresh random keystore.
 func NewTestableFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (store.TestableStore, error) {
-	st, err := newFromPool(pool, migrationDB)
+	ks, err := keystore.NewRandom()
+	if err != nil {
+		return nil, err
+	}
+	return NewTestableFromPoolWithKeystore(pool, migrationDB, ks)
+}
+
+// NewTestableFromPoolWithKeystore creates a TestableStore from an existing
+// pool, sql.DB, and explicit keystore.
+func NewTestableFromPoolWithKeystore(pool *pgxpool.Pool, migrationDB *sql.DB, ks *keystore.Keystore) (store.TestableStore, error) {
+	st, err := newFromPool(pool, migrationDB, ks)
 	if err != nil {
 		return nil, err
 	}
@@ -39,16 +62,15 @@ func NewTestableFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (store.Testabl
 }
 
 func (s *testablePGStore) TestHelper() store.TestHelper {
-	return &pgTestHelper{pool: s.conn.shared.pool, db: s.conn.shared.migrationDB}
+	return &pgTestHelper{shared: s.conn.shared}
 }
 
 type pgTestHelper struct {
-	db   *sql.DB
-	pool *pgxpool.Pool
+	shared *pgShared
 }
 
 func (h *pgTestHelper) exec(ctx context.Context, query string, args ...any) error {
-	_, err := h.pool.Exec(ctx, query, args...)
+	_, err := h.shared.pool.Exec(ctx, query, args...)
 	return err
 }
 
@@ -77,7 +99,7 @@ func (h *pgTestHelper) ClearWorkerDeregisteringAt(ctx context.Context, workerID 
 // shared with the database/sql dialects; only the driver differs, and tab_type
 // scans as int32 because pgx maps INTEGER to Go's int32.
 func (h *pgTestHelper) ListAllOwnedTabs(ctx context.Context) ([]store.WorkspaceTabRow, error) {
-	rows, err := h.pool.Query(ctx, sqlutil.ListAllOwnedTabsSQL)
+	rows, err := h.shared.pool.Query(ctx, sqlutil.ListAllOwnedTabsSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -100,16 +122,32 @@ func (h *pgTestHelper) TruncateAll(ctx context.Context) error {
 	// where TRUNCATE is a slow distributed operation. For small test
 	// datasets DELETE is fast on all PostgreSQL-compatible backends.
 	for _, t := range sqlutil.SQLTruncateTableOrder {
-		if _, err := h.pool.Exec(ctx, sqlutil.TruncateStatement(t)); err != nil {
+		if _, err := h.shared.pool.Exec(ctx, sqlutil.TruncateStatement(t)); err != nil {
 			return err
 		}
 	}
-	if _, err := h.pool.Exec(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
+	if _, err := h.shared.pool.Exec(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (h *pgTestHelper) TableHoldsText(ctx context.Context, table, text string) (bool, error) {
-	return sqlutil.TableHoldsText(ctx, h.db, table, text)
+	return sqlutil.TableHoldsText(ctx, h.shared.migrationDB, table, text)
+}
+
+func (h *pgTestHelper) WithKeystore(ks *keystore.Keystore) store.TestableStore {
+	return &testablePGStore{
+		pgStore: &pgStore{
+			conn: newPoolConn(h.shared, h.shared.pool, ks),
+		},
+	}
+}
+
+func (h *pgTestHelper) CopyWorkspaceTitleCiphertext(ctx context.Context, srcWorkspaceID, dstWorkspaceID string) error {
+	return sqlutil.CopyWorkspaceTitleCiphertext(ctx, h.shared.migrationDB, h.exec, sqlutil.ParameterStyleDollar, srcWorkspaceID, dstWorkspaceID)
+}
+
+func (h *pgTestHelper) SetSettingSecretRaw(ctx context.Context, key string, raw []byte) error {
+	return sqlutil.SetSettingSecretRaw(ctx, h.exec, sqlutil.ParameterStyleDollar, key, raw)
 }

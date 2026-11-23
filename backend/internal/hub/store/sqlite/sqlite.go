@@ -6,10 +6,12 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -41,12 +43,37 @@ type sqliteConn struct {
 	adminMembershipLocked bool
 	transactionContext    context.Context
 	shared                *sqliteShared
+	ks                    *keystore.Keystore
 	exec                  gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
 	q                     *gendb.Queries
 }
 
-// Open opens a SQLite database, runs migrations, and returns a Store.
-func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
+// Open opens a SQLite database, runs migrations, seeds built-ins, and returns a Store.
+func Open(path string, cfg sqlitedb.Config, ks *keystore.Keystore) (store.Store, error) {
+	st, err := openWithoutMigrate(path, cfg, ks)
+	if err != nil {
+		return nil, err
+	}
+	// One call is the whole boot: migrate, then seed and reconcile the
+	// built-in registrations. Migrator() wraps the raw migrator so every
+	// caller that migrates this store later completes the same sequence.
+	if err := st.Migrator().Migrate(context.Background()); err != nil {
+		_ = st.conn.shared.db.Close()
+		return nil, fmt.Errorf("migrate sqlite: %w", err)
+	}
+	return st, nil
+}
+
+// OpenWithoutMigrate opens a SQLite database and initializes its migrator
+// without running migrations or seeding built-in rows.
+func OpenWithoutMigrate(path string, cfg sqlitedb.Config, ks *keystore.Keystore) (store.Store, error) {
+	return openWithoutMigrate(path, cfg, ks)
+}
+
+func openWithoutMigrate(path string, cfg sqlitedb.Config, ks *keystore.Keystore) (*sqliteStore, error) {
+	if ks == nil {
+		return nil, errors.New("open sqlite: keystore is required")
+	}
 	sqlDB, err := OpenDB(path, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -58,24 +85,17 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 		return nil, fmt.Errorf("init sqlite migrator: %w", err)
 	}
 
-	st := &sqliteStore{
+	return &sqliteStore{
 		conn: &sqliteConn{
 			shared: &sqliteShared{
 				db:       sqlDB,
 				migrator: mig,
 			},
+			ks:   ks,
 			exec: sqlDB,
 			q:    gendb.New(sqlDB),
 		},
-	}
-	// One call is the whole boot: migrate, then seed and reconcile the
-	// built-in registrations. Migrator() wraps the raw migrator so every
-	// caller that migrates this store later completes the same sequence.
-	if err := st.Migrator().Migrate(context.Background()); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("migrate sqlite: %w", err)
-	}
-	return st, nil
+	}, nil
 }
 
 func (s *sqliteStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
@@ -137,6 +157,9 @@ func (s *sqliteStore) OAuthClients() store.OAuthClientStore {
 	return &oauthClientStore{conn: s.conn}
 }
 func (s *sqliteStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
+func (s *sqliteStore) KeyMaintenance() store.KeyMaintenanceStore {
+	return &keyMaintenanceStore{conn: s.conn}
+}
 
 // Migrator wraps the raw goose migrator so a completed migration also seeds
 // and reconciles the built-in registrations -- the boot sequence, wherever it
@@ -205,6 +228,7 @@ func (c *sqliteConn) runTransaction(ctx context.Context, adminMembershipLocked b
 		adminMembershipLocked: adminMembershipLocked,
 		transactionContext:    ctx,
 		shared:                c.shared,
+		ks:                    c.ks,
 		exec:                  tx,
 		q:                     c.q.WithTx(tx),
 	}

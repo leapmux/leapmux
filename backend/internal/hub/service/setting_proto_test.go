@@ -149,7 +149,7 @@ func TestSettingFieldConditionCarriesTheKey(t *testing.T) {
 // kind the mapper does not know fails here rather than rendering blank in
 // a client.
 func TestEveryRegisteredDescriptorMapsWithAKind(t *testing.T) {
-	m := settingsregistry.NewManager(nil, nil)
+	m := settingsregistry.NewManager(nil)
 	descriptors := append(m.Registered(), usersettings.Default.Descriptors()...)
 	require.NotEmpty(t, descriptors)
 
@@ -217,7 +217,7 @@ func TestSettingFieldKindRoundTripsBothWays(t *testing.T) {
 // added to the schema without a pair here would reach the client as
 // UNSPECIFIED, which renders no control at all.
 func TestEveryDeclaredFieldKindHasAWireValue(t *testing.T) {
-	m := settingsregistry.NewManager(nil, nil)
+	m := settingsregistry.NewManager(nil)
 	descriptors := append(m.Registered(), usersettings.Default.Descriptors()...)
 	for _, d := range descriptors {
 		for _, f := range d.UI().Fields {

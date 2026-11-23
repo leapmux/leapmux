@@ -357,7 +357,7 @@ func TestValidateSessionDurationCaps(t *testing.T) {
 // value the validator accepts converts to a positive duration no larger
 // than the declared ceiling.
 func TestSessionDurationStaysInsideTheDeclaredRange(t *testing.T) {
-	m := NewManager(nil, nil, []Descriptor{KeySessionDurationSeconds})
+	m := NewManager(nil, []Descriptor{KeySessionDurationSeconds})
 	s := m.buildSnapshotWith([]store.SettingRow{{
 		Key:   KeySessionDurationSeconds.Name(),
 		Value: ptrconv.Ptr(strconv.FormatInt(MaxSessionDurationSeconds, 10)),
@@ -410,7 +410,7 @@ func TestEnumAllowedIsTheOneAllowedSetForTLSMode(t *testing.T) {
 func TestBaseURLResolvesAWildcardBindToLoopback(t *testing.T) {
 	t.Parallel()
 
-	m := NewManager(nil, nil, []Descriptor{KeyPublicURL, KeySecureCookies})
+	m := NewManager(nil, []Descriptor{KeyPublicURL, KeySecureCookies})
 	plain := m.buildSnapshotWith(nil, nil)
 
 	for name, tc := range map[string]struct{ listen, want string }{

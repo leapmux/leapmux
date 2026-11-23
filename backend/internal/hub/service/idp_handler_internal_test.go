@@ -12,7 +12,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -211,17 +210,12 @@ func TestBuildProviderDoesNotCacheADeletedProvider(t *testing.T) {
 
 	ctx := context.Background()
 	st := hubtestutil.OpenTestStore(t)
-	set := settings.NewManager(st, nil, settings.CoreDescriptors())
+	set := settings.NewManager(st, settings.CoreDescriptors())
 	require.NoError(t, set.Load(ctx))
-
-	ks, err := keystore.New(map[uint32][32]byte{1: {}})
-	require.NoError(t, err)
-	secret, err := ks.Encrypt([]byte("client-secret"), keystore.ProviderAAD("gh"))
-	require.NoError(t, err)
 
 	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub",
-		ClientID: "cid", ClientSecret: secret, Enabled: true,
+		ClientID: "cid", ClientSecret: []byte("client-secret"), Enabled: true,
 	}))
 	h := NewIdPHandler(IdPHandlerDeps{
 		SessionHasher: hubtestutil.TestSecretHasher(),
@@ -229,7 +223,6 @@ func TestBuildProviderDoesNotCacheADeletedProvider(t *testing.T) {
 		Config:        &config.Config{},
 		Settings:      set,
 		Lifecycle:     auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		Keystore:      ks,
 	})
 
 	// A build that races nothing caches, so the assertion below fails for
@@ -273,23 +266,17 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 		Email:        "oauth@example.com",
 	}))
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 	const providerID = "duration-provider"
 	const providerSubject = "duration-subject"
-	secret, err := ks.Encrypt([]byte("client-secret"), keystore.ProviderAAD(providerID))
-	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID: providerID, ProviderType: huboauth.ProviderTypeGitHub, Name: "Duration Provider",
-		ClientID: "client-id", ClientSecret: secret, Enabled: true,
+		ClientID: "client-id", ClientSecret: []byte("client-secret"), Enabled: true,
 	}))
 	require.NoError(t, st.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
 		UserID: userid.MustNew(userID), ProviderID: providerID, ProviderSubject: providerSubject,
 	}))
 
-	set := settings.NewManager(st, nil, settings.CoreDescriptors())
+	set := settings.NewManager(st, settings.CoreDescriptors())
 	require.NoError(t, set.Load(context.Background()))
 	require.NoError(t, settings.KeySessionDurationSeconds.Set(context.Background(), set, int64(configured/time.Second)))
 
@@ -299,7 +286,6 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 		Config:        &config.Config{},
 		Settings:      set,
 		Lifecycle:     auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		Keystore:      ks,
 	})
 
 	rec := httptest.NewRecorder()

@@ -294,7 +294,7 @@ func setupAdminSettingsSoloEnv(t *testing.T) *adminSettingsEnv {
 	t.Helper()
 	ctx := context.Background()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(ctx))
@@ -302,7 +302,7 @@ func setupAdminSettingsSoloEnv(t *testing.T) *adminSettingsEnv {
 	soloUser, err := auth.LoadSoloUser(ctx, st)
 	require.NoError(t, err)
 
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 
 	mux := http.NewServeMux()

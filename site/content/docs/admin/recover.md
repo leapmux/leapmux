@@ -78,6 +78,8 @@ leapmux recover password reset --username alice
 
 On success the password is updated, **every passkey on the account is deleted**, every session for the user is revoked, and all their API and delegation tokens are revoked. The revocations are written in the same transaction, so a running hub applies them automatically. The command reports the user it reset, by username and by ID, and states that it revoked the sessions and passkeys.
 
+`password reset` requires an existing `encryption.key` file (it never creates one) and opens the database without running schema migrations.
+
 Passwords are 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)).
 
 ## `encryption-key` — encryption keys
@@ -89,7 +91,7 @@ The token pepper is a dedicated, stable secret stored in the key file but **inde
 {{< /callout >}}
 
 {{< callout type="info" >}}
-`rotate` and `rotate-pepper` use `--data-dir` only; `reencrypt` and `remove` open the store and accept both `--data-dir` and `--config`.
+`rotate` and `rotate-pepper` use `--data-dir` only; `reencrypt` and `remove` open the store without running schema migrations and accept both `--data-dir` and `--config`. All four commands require an existing `encryption.key` file.
 {{< /callout >}}
 
 ### `encryption-key rotate`
@@ -98,7 +100,7 @@ Generate a new key version and make it active. It does **not** re-encrypt existi
 
 ### `encryption-key reencrypt`
 
-Re-encrypts every secret not already under the active key version — OAuth provider client secrets, hub-settings secret halves, and passkey public keys. Run after `rotate` and a hub restart.
+Re-encrypts every row across all 14 persistent encrypted Hub tables (33 columns) whose ciphertext header is not already at the active key version. Run after `rotate` and a hub restart. The short-lived transient table (`oauth_authorization_codes`) expires automatically and is skipped.
 
 ### `encryption-key remove`
 
@@ -106,7 +108,7 @@ Re-encrypts every secret not already under the active key version — OAuth prov
 | --- | --- | --- |
 | `--version` | `0` | Key version to remove (must be `>= 1`). |
 
-Refuses the active version, an absent version, or a version that still encrypts anything (`...; run 'leapmux recover encryption-key reencrypt' first`). Always `reencrypt` after a restart, then `remove`.
+Inspects ciphertext version headers across all 14 persistent encrypted Hub tables. Refuses the active version, an absent version, or a version that still encrypts any persistent row (`...; run 'leapmux recover encryption-key reencrypt' first`). Always `reencrypt` after a restart, then `remove`. The short-lived transient table (`oauth_authorization_codes`) is outside this check.
 
 ### `encryption-key rotate-pepper`
 
@@ -119,7 +121,7 @@ Regenerates the token pepper. The encryption key ring stays unchanged. Restart t
 - Signs out every session
 - Invalidates every Worker auth token
 - Invalidates API and delegation tokens and confidential app client secrets
-- Invalidates live registration keys and pending device codes
+- Invalidates live registration keys, pending device codes, and pending OAuth authorization codes
 
 Account-recovery links do not use the pepper. Pepper rotation does not invalidate them. Their existing expiry, attempt limits, and consumption checks still apply.
 
@@ -136,14 +138,14 @@ The rotation runbook:
 
 ```bash
 leapmux recover encryption-key rotate              # adds version 2, makes it active
-# ... restart the hub so it writes new secrets under version 2 ...
-leapmux recover encryption-key reencrypt           # rewrites all old secrets to version 2
-leapmux recover encryption-key remove --version 1  # once nothing references version 1
+# ... restart the hub so it writes new rows under version 2 ...
+leapmux recover encryption-key reencrypt           # rewrites all old persistent rows to version 2
+leapmux recover encryption-key remove --version 1  # once no persistent row uses version 1
 ```
 
 ## `db` — database utilities
 
-Opening the store auto-applies pending migrations, so a normal hub start already migrates the schema. These commands confirm state, find the file, or roll to a specific version where supported.
+Normal hub startup applies pending migrations automatically. `db version` and `db migrate` both require an existing `encryption.key` file and open the database without auto-migrating first, so `db version` reports the current on-disk version before any migration runs.
 
 ### `db path`
 
@@ -162,7 +164,7 @@ Latest available version: 1
 | --- | --- | --- |
 | `--version` | `-1` | Target migration version (`-1` for latest). |
 
-Mainly useful for down-migrating (where the backend supports it) or as a confirmation — opening the store already migrates up.
+Applies pending migrations up to the latest version (or rolls to a specific `--version` where the backend supports it).
 
 ```bash
 leapmux recover db migrate --config /etc/leapmux/hub.yaml

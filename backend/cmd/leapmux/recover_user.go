@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -102,11 +103,11 @@ func runPasswordReset(cmd cmdCtx, args []string) error {
 	var userID *string
 	var username *string
 	var pw *string
-	return withRecoverStore(cmd, args, func(fs *flag.FlagSet) {
+	return withRecoverExistingStore(cmd, args, func(fs *flag.FlagSet) {
 		userID = fs.String("id", "", "user ID")
 		username = fs.String("username", "", "username")
 		pw = fs.String("password", "", "new password (prompted if omitted)")
-	}, func(ctx context.Context, _ *config.Config, st store.Store) error {
+	}, func(ctx context.Context, _ *config.Config, st store.Store, _ *keystore.Keystore) error {
 		user, err := resolveUser(ctx, st, *userID, *username)
 		if err != nil {
 			return err

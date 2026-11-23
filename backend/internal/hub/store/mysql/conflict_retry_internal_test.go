@@ -164,7 +164,7 @@ func TestPoolConnRetriesThroughItsQueries(t *testing.T) {
 	t.Parallel()
 
 	pool := &scriptedDBTX{errs: []error{abortErr(mysqlErrLockDeadlock)}}
-	conn := newPoolConn(&mysqlShared{}, pool)
+	conn := newPoolConn(&mysqlShared{}, pool, nil)
 
 	require.False(t, conn.inTx(), "a pool-backed conn is not a transaction")
 	require.NoError(t, conn.q.SetRevocationEventSequence(context.Background(), 1))
@@ -180,7 +180,7 @@ func TestPoolConnRetriesThroughItsRawExec(t *testing.T) {
 	t.Parallel()
 
 	pool := &scriptedDBTX{errs: []error{abortErr(mysqlErrLockDeadlock)}}
-	conn := newPoolConn(&mysqlShared{}, pool)
+	conn := newPoolConn(&mysqlShared{}, pool, nil)
 
 	require.False(t, conn.inTx(), "a pool-backed conn is not a transaction")
 	_, err := conn.exec.ExecContext(context.Background(), "DELETE FROM workspace_tab_owned WHERE user_id = ?", "u1")

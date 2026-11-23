@@ -367,7 +367,10 @@ func TestBeginAccountRecoveryPasskey_UndecryptableExistingPasskey(t *testing.T) 
 		Email:         "badcipher@example.com",
 		EmailVerified: true,
 	}))
-	seedPasskeyCredential(t, env.store, userID, "Lost")
+	// Seed only the passkey_credentials row under a different keystore (key A)
+	// while users remains encrypted under env.store's active key (key B).
+	otherKS := hubtestutil.TestKeystore(t)
+	seedPasskeyCredential(t, env.store.(store.TestableStore).TestHelper().WithKeystore(otherKS), userID, "Lost")
 
 	token := requestRecoveryLinkFor(t, env, sender, "badcipher")
 	begin := beginRecoveryPasskey(t, env, token)

@@ -38,7 +38,7 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (authTestClient, *keystore
 	key := [32]byte{}
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
-	set := servicetest.NewSettingsManager(t, st, ks)
+	set := servicetest.NewSettingsManager(t, st)
 	// Publish an HTTPS host, because the secure-context gate reads hub
 	// settings alone: an unpublished plain-HTTP hub stands ALTCHA down, and
 	// every ALTCHA assertion below would then pass against a manager that
@@ -101,7 +101,7 @@ func TestGetAltchaChallenge_SoloReturnsEmpty(t *testing.T) {
 
 func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	authSvc := newInitializedAuthService(t, servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 
 	// A nil captcha dependency means "subsystem absent": challenges stand
@@ -163,7 +163,7 @@ func (s failingCaptchaStub) AltchaChallengeJSON(context.Context) (string, error)
 // config (enabled, provider) still reports through GetSystemInfo.
 func TestGetAltchaChallenge_FailsClosedWhenCaptchaUnreachable(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	authDeps := servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	authDeps := servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Captcha = failingCaptchaStub{Config: captcha.DisabledConfig(), err: errors.New("settings snapshot unavailable")}
 	authSvc := newInitializedAuthService(t, authDeps)
 

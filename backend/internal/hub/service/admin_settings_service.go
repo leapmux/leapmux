@@ -301,8 +301,8 @@ func (s *AdminSettingsService) runAfterReset(ctx context.Context, descs []settin
 // settingWriteConnectError maps the manager's real error modes onto
 // Connect codes, because the admin surface shows them verbatim:
 // a validation or unknown-field refusal is the caller's to fix
-// (InvalidArgument); a secret the keystore cannot decrypt must stop the
-// write rather than destroy it (FailedPrecondition, message passed
+// (InvalidArgument); a stored setting the keystore cannot decrypt must stop
+// the write rather than destroy it (FailedPrecondition, message passed
 // through — it contains the reencrypt instructions); anything else is a
 // store fault (Internal).
 //
@@ -311,7 +311,7 @@ func (s *AdminSettingsService) runAfterReset(ctx context.Context, descs []settin
 // one silently downgraded an actionable InvalidArgument to a 500, with no
 // compiler or test signal at the edit site.
 func settingWriteConnectError(err error) error {
-	var undecryptable *settings.SecretUndecryptableError
+	var undecryptable *settings.SettingUndecryptableError
 	if errors.As(err, &undecryptable) {
 		return wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}

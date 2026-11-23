@@ -54,7 +54,7 @@ func setupAccountRecoveryAuthServiceFull(t *testing.T, sender mail.Sender, confi
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	enableSignup(t, set)
 	if configure != nil {
 		configure(t, set)
@@ -821,7 +821,7 @@ func TestSoloRefusesEveryPathThatCanClearAPassword(t *testing.T) {
 	svc := newInitializedAuthService(t, servicetest.AuthServiceDeps(
 		st,
 		&config.Config{SoloMode: true},
-		servicetest.NewSettingsManager(t, st, nil),
+		servicetest.NewSettingsManager(t, st),
 		auth.NewCredentialLifecycleEffects(nil, nil, nil),
 	))
 	ctx := context.Background()

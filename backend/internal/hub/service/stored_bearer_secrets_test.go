@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
@@ -70,4 +71,11 @@ func TestStoredBearerSecrets_DeviceAuthorizations(t *testing.T) {
 	assert.NotContains(t, string(row.DeviceCodeHash), deviceCode)
 	assert.NotContains(t, row.UserCode, deviceCode)
 	assert.NotContains(t, row.DeviceName, deviceCode)
+}
+
+func TestStoredBearerSecrets_OAuthAuthorizationCodes(t *testing.T) {
+	env := setupAPIAuth(t)
+	code, _ := issueLocalRedirectCode(t, env)
+	assertStoredText(t, env.store, "oauth_authorization_codes", oauthapp.ControlCLIClientID, true)
+	assertStoredText(t, env.store, "oauth_authorization_codes", code, false)
 }

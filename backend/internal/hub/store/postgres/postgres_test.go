@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
@@ -38,6 +39,21 @@ func startPostgresContainer(t *testing.T) string {
 	}.Start(t)
 
 	return dsn(host, port)
+}
+
+func TestOpenRejectsNilKeystore(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.PostgresConfig{DSN: "postgres://test:test@127.0.0.1:5432/leapmux_test?sslmode=disable"}
+
+	st, err := postgres.Open(ctx, cfg, nil)
+	require.Error(t, err)
+	assert.Nil(t, st)
+	assert.Contains(t, err.Error(), "keystore")
+
+	st, err = postgres.OpenWithoutMigrate(ctx, cfg, nil)
+	require.Error(t, err)
+	assert.Nil(t, st)
+	assert.Contains(t, err.Error(), "keystore")
 }
 
 func TestPostgresStore(t *testing.T) {

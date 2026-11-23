@@ -37,17 +37,18 @@ func Invalidf(format string, args ...any) error {
 	return &InvalidError{err: fmt.Errorf(format, args...)}
 }
 
-// SecretUndecryptableError marks a stored secret the active keystore
-// cannot decrypt. The write must STOP rather than destroy the only copy
-// of an operator-entered secret, and the message carries the recovery
-// instructions, so this is its own class and not an InvalidError.
-type SecretUndecryptableError struct {
+// SettingUndecryptableError marks a stored settings column (public value or
+// secret) that the active keystore cannot decrypt. A partial write must STOP
+// rather than overwrite omitted fields or destroy an operator-entered secret,
+// and the message carries the recovery instructions, so this is its own class
+// and not an InvalidError.
+type SettingUndecryptableError struct {
 	err error
 }
 
-func (e *SecretUndecryptableError) Error() string { return e.err.Error() }
-func (e *SecretUndecryptableError) Unwrap() error { return e.err }
+func (e *SettingUndecryptableError) Error() string { return e.err.Error() }
+func (e *SettingUndecryptableError) Unwrap() error { return e.err }
 
-func secretUndecryptablef(format string, args ...any) error {
-	return &SecretUndecryptableError{err: fmt.Errorf(format, args...)}
+func settingUndecryptablef(format string, args ...any) error {
+	return &SettingUndecryptableError{err: fmt.Errorf(format, args...)}
 }

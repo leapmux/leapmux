@@ -233,7 +233,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 				ClientID:      oauthapp.ControlCLIClientID,
 				GrantedScopes: authscope.NonAdminGrant().String(),
-				Code:          c.code,
+				CodeHash:      FixtureSecretHash(c.code),
 				UserID:        userid.MustNew(user.ID),
 				CodeChallenge: "challenge",
 				ExpiresAt:     c.expiresAt,

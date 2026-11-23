@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -14,36 +15,68 @@ type oauthAuthorizationCodeStore struct{ conn *mysqlConn }
 
 var _ store.OAuthAuthorizationCodeStore = (*oauthAuthorizationCodeStore)(nil)
 
-func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAuthorizationCode {
-	return store.OAuthAuthorizationCode{
-		Code:             c.Code,
-		UserID:           c.UserID,
-		AuthGeneration:   c.AuthGeneration,
-		ClientID:         c.ClientID,
-		CodeChallenge:    c.CodeChallenge,
-		RedirectURI:      c.RedirectUri,
-		GrantedScopes:    c.GrantedScopes,
-		InstallationName: c.InstallationName,
-		Minted:           store.StoredRedemption(c.RedemptionKind).MintedRef(c.MintedRefID),
-		StepUp:           store.StoredRef(c.StepUpKind, c.StepUpRefID),
-		Redemption:       store.StoredRedemption(c.RedemptionKind),
-		CreatedAt:        c.CreatedAt.Time,
-		ExpiresAt:        c.ExpiresAt.Time,
-		ConsumedAt:       c.ConsumedAt.Ptr(),
+func (c *mysqlConn) fromDBOAuthAuthorizationCode(r gendb.OauthAuthorizationCode) (store.OAuthAuthorizationCode, error) {
+	codeChallenge, err := c.ks.OpenString(r.CodeChallenge, keystore.OAuthAuthCodeChallengeAAD(r.CodeHash))
+	if err != nil {
+		return store.OAuthAuthorizationCode{}, err
 	}
+	redirectURI, err := c.ks.OpenString(r.RedirectUri, keystore.OAuthAuthCodeRedirectURIAAD(r.CodeHash))
+	if err != nil {
+		return store.OAuthAuthorizationCode{}, err
+	}
+	grantedScopes, err := c.ks.OpenString(r.GrantedScopes, keystore.OAuthAuthCodeGrantedScopesAAD(r.CodeHash))
+	if err != nil {
+		return store.OAuthAuthorizationCode{}, err
+	}
+	installationName, err := c.ks.OpenString(r.InstallationName, keystore.OAuthAuthCodeInstallationNameAAD(r.CodeHash))
+	if err != nil {
+		return store.OAuthAuthorizationCode{}, err
+	}
+	return store.OAuthAuthorizationCode{
+		CodeHash:         r.CodeHash,
+		UserID:           r.UserID,
+		AuthGeneration:   r.AuthGeneration,
+		ClientID:         r.ClientID,
+		CodeChallenge:    codeChallenge,
+		RedirectURI:      redirectURI,
+		GrantedScopes:    grantedScopes,
+		InstallationName: installationName,
+		Minted:           store.StoredRedemption(r.RedemptionKind).MintedRef(r.MintedRefID),
+		StepUp:           store.StoredRef(r.StepUpKind, r.StepUpRefID),
+		Redemption:       store.StoredRedemption(r.RedemptionKind),
+		CreatedAt:        r.CreatedAt.Time,
+		ExpiresAt:        r.ExpiresAt.Time,
+		ConsumedAt:       r.ConsumedAt.Ptr(),
+	}, nil
 }
 
 func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.CreateOAuthAuthorizationCodeParams) error {
+	codeChallenge, err := s.conn.ks.SealString(p.CodeChallenge, keystore.OAuthAuthCodeChallengeAAD(p.CodeHash))
+	if err != nil {
+		return err
+	}
+	redirectURI, err := s.conn.ks.SealString(p.RedirectURI, keystore.OAuthAuthCodeRedirectURIAAD(p.CodeHash))
+	if err != nil {
+		return err
+	}
+	grantedScopes, err := s.conn.ks.SealString(p.GrantedScopes, keystore.OAuthAuthCodeGrantedScopesAAD(p.CodeHash))
+	if err != nil {
+		return err
+	}
+	installationName, err := s.conn.ks.SealString(p.InstallationName, keystore.OAuthAuthCodeInstallationNameAAD(p.CodeHash))
+	if err != nil {
+		return err
+	}
 	stepUpKind, stepUpRefID := p.StepUp.NullableKind()
 	return s.conn.queryError(s.conn.q.CreateOAuthAuthorizationCode(ctx, gendb.CreateOAuthAuthorizationCodeParams{
-		Code:             p.Code,
+		CodeHash:         p.CodeHash,
 		UserID:           p.UserID.String(),
 		AuthGeneration:   p.AuthGeneration,
 		ClientID:         p.ClientID,
-		CodeChallenge:    p.CodeChallenge,
-		RedirectUri:      p.RedirectURI,
-		GrantedScopes:    p.GrantedScopes,
-		InstallationName: p.InstallationName,
+		CodeChallenge:    codeChallenge,
+		RedirectUri:      redirectURI,
+		GrantedScopes:    grantedScopes,
+		InstallationName: installationName,
 		ExpiresAt:        sqltime.NewMySQLTime(p.ExpiresAt),
 		StepUpKind:       stepUpKind,
 		StepUpRefID:      stepUpRefID,
@@ -51,26 +84,27 @@ func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.Create
 	}))
 }
 
-func (s *oauthAuthorizationCodeStore) GetActive(ctx context.Context, code string, now time.Time) (*store.OAuthAuthorizationCode, error) {
+func (s *oauthAuthorizationCodeStore) GetActive(ctx context.Context, codeHash []byte, now time.Time) (*store.OAuthAuthorizationCode, error) {
 	row, err := s.conn.q.GetActiveOAuthAuthorizationCode(ctx, gendb.GetActiveOAuthAuthorizationCodeParams{
-		Code: code,
-		Now:  sqltime.NewMySQLTime(now),
+		CodeHash: codeHash,
+		Now:      sqltime.NewMySQLTime(now),
 	})
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	out := fromDBOAuthAuthorizationCode(row)
+	out, err := s.conn.fromDBOAuthAuthorizationCode(row)
+	if err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
-// Consume implements MySQL's two-step "consume" pattern: first try to mark
-// the row as consumed (returning rows-affected); if anything was affected,
-// re-read the row to return its contents. RETURNING is unavailable on
-// MySQL.
-func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, now time.Time) error {
+// Consume marks an active authorization code as consumed, returning
+// store.ErrNotFound if no row matched.
+func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, codeHash []byte, now time.Time) error {
 	rows, err := s.conn.rowsAffected(s.conn.q.ConsumeOAuthAuthorizationCode(ctx, gendb.ConsumeOAuthAuthorizationCodeParams{
-		Code: code,
-		Now:  sqltime.NewMySQLTime(now),
+		CodeHash: codeHash,
+		Now:      sqltime.NewMySQLTime(now),
 	}))
 	if err != nil {
 		return err
@@ -82,14 +116,17 @@ func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, 
 }
 
 // Get returns the row whatever its state. See OAuthAuthorizationCodeStore.Get:
-// the replay path needs a CONSUMED row, because only that row names the
+// the replay path needs a CONSUMED row, because only that row identifies the
 // credential the first exchange minted.
-func (s *oauthAuthorizationCodeStore) Get(ctx context.Context, code string) (*store.OAuthAuthorizationCode, error) {
-	row, err := s.conn.q.GetOAuthAuthorizationCode(ctx, code)
+func (s *oauthAuthorizationCodeStore) Get(ctx context.Context, codeHash []byte) (*store.OAuthAuthorizationCode, error) {
+	row, err := s.conn.q.GetOAuthAuthorizationCode(ctx, codeHash)
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	out := fromDBOAuthAuthorizationCode(row)
+	out, err := s.conn.fromDBOAuthAuthorizationCode(row)
+	if err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -104,13 +141,13 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 	}))
 }
 
-func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
+func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, codeHash []byte, minted store.CredentialRef) error {
 	redemption, ok := store.RedemptionForCredentialRef(minted)
 	if !ok {
 		return store.ErrInvalidArgument
 	}
 	rows, err := s.conn.rowsAffected(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
-		Code:                   code,
+		CodeHash:               codeHash,
 		MintedRefID:            minted.ID,
 		ExpectedRedemptionKind: redemption.NullableKind(),
 	}))

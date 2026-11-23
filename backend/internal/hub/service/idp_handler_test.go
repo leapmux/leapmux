@@ -113,7 +113,12 @@ func setupOAuthTestEnvOver(
 ) *oauthTestEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -122,15 +127,10 @@ func setupOAuthTestEnvOver(
 
 	hubtestutil.CreateTestAdmin(t, st)
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-
 	cfg := &config.Config{
 		Listen: bindSetForTest(t, listen),
 	}
-	set := servicetest.NewSettingsManager(t, st, ks)
+	set := servicetest.NewSettingsManager(t, st)
 	enableSignup(t, set)
 
 	handlerStore := st
@@ -149,7 +149,6 @@ func setupOAuthTestEnvOver(
 		Config:              cfg,
 		Settings:            set,
 		Lifecycle:           auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		Keystore:            ks,
 		OAuthStates:         handlerStates,
 		PendingOAuthSignups: pendingSignups,
 	})
@@ -174,19 +173,16 @@ func createTestProvider(t *testing.T, st store.Store, ks *keystore.Keystore) str
 	return createTestProviderWithTrustEmail(t, st, ks, true)
 }
 
-func createTestProviderWithTrustEmail(t *testing.T, st store.Store, ks *keystore.Keystore, trustEmail bool) string {
+func createTestProviderWithTrustEmail(t *testing.T, st store.Store, _ *keystore.Keystore, trustEmail bool) string {
 	t.Helper()
 	providerID := id.Generate()
-	aad := keystore.ProviderAAD(providerID)
-	encSecret, err := ks.Encrypt([]byte("test-client-secret"), aad)
-	require.NoError(t, err)
 
-	err = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
+	err := st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerID,
 		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB,
 		Name:         "Test GitHub",
 		ClientID:     "test-client-id",
-		ClientSecret: encSecret,
+		ClientSecret: []byte("test-client-secret"),
 		Scopes:       "read:user user:email",
 		TrustEmail:   trustEmail,
 		Enabled:      true,
@@ -382,14 +378,12 @@ func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
 	// Create two providers, one enabled and one disabled.
 	enabledID := createTestProvider(t, st, ks)
 	disabledID := id.Generate()
-	aad := keystore.ProviderAAD(disabledID)
-	encSecret, _ := ks.Encrypt([]byte("secret"), aad)
 	_ = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           disabledID,
 		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         "Disabled OIDC",
 		ClientID:     "disabled-client",
-		ClientSecret: encSecret,
+		ClientSecret: []byte("secret"),
 		Scopes:       "openid",
 		Enabled:      false,
 	})
@@ -408,7 +402,7 @@ func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
 func setupOAuthTestEnvWithAuthService(t *testing.T) *oauthTestEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -422,15 +416,12 @@ func setupOAuthTestEnvWithAuthService(t *testing.T) *oauthTestEnv {
 
 func setupOAuthSignupEnv(t *testing.T, st store.Store) *oauthTestEnv {
 	t.Helper()
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
+	ks := hubtestutil.TestKeystore(t)
 
 	cfg := &config.Config{
 		Listen: []string{":4327"},
 	}
-	set := servicetest.NewSettingsManager(t, st, ks)
+	set := servicetest.NewSettingsManager(t, st)
 	enableSignup(t, set)
 
 	mux := http.NewServeMux()
@@ -444,7 +435,6 @@ func setupOAuthSignupEnv(t *testing.T, st store.Store) *oauthTestEnv {
 		Config:              cfg,
 		Settings:            set,
 		Lifecycle:           auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		Keystore:            ks,
 		OAuthStates:         states,
 		PendingOAuthSignups: pendingSignups,
 	})
@@ -454,7 +444,6 @@ func setupOAuthSignupEnv(t *testing.T, st store.Store) *oauthTestEnv {
 	interceptor, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(registry.Stop)
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
-	authDeps.Keystore = ks
 	authDeps.PendingOAuthSignups = pendingSignups
 	authSvc := newInitializedAuthService(t, authDeps)
 	connectServer := connect.NewServer(interceptor)
@@ -877,19 +866,15 @@ func TestCompleteOAuthSignup_TrustedProviderSetsEmailVerified(t *testing.T) {
 func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *testing.T) {
 	t.Parallel()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	ks := hubtestutil.TestKeystore(t)
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 	hubtestutil.CreateTestAdmin(t, st)
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-
 	cfg := &config.Config{Listen: []string{":4327"}}
-	set := servicetest.NewSettingsManager(t, st, ks)
+	set := servicetest.NewSettingsManager(t, st)
 	enableSignup(t, set)
 	enableEmailVerification(t, set)
 
@@ -901,14 +886,12 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 		Config:              cfg,
 		Settings:            set,
 		Lifecycle:           auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		Keystore:            ks,
 		PendingOAuthSignups: pendingSignups,
 	})
 	idpHandler.RegisterRoutes(mux)
 
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
-	authDeps.Keystore = ks
 	authDeps.Mail = &mailSenderDouble{err: errors.New("smtp down")}
 	authDeps.PendingOAuthSignups = pendingSignups
 	authSvc := newInitializedAuthService(t, authDeps)

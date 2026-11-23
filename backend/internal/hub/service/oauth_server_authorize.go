@@ -407,7 +407,7 @@ func (h *OAuthServerHandler) handleConsent(w http.ResponseWriter, r *http.Reques
 	// any other -- and the token stage reads it from this row rather than
 	// re-deriving the fork from a registration that may have changed since.
 	if err := h.store.OAuthAuthorizationCodes().Create(r.Context(), store.CreateOAuthAuthorizationCodeParams{
-		Code:             code,
+		CodeHash:         h.validator.HashSecret(code),
 		UserID:           user.ID,
 		AuthGeneration:   user.UserAuthGeneration,
 		ClientID:         req.app.ClientID,

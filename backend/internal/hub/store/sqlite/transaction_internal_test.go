@@ -4,13 +4,18 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 )
 
 func newTransactionTestStore(db *sql.DB) store.Store {
-	return &sqliteStore{conn: &sqliteConn{shared: &sqliteShared{db: db}, exec: db, q: gendb.New(db)}}
+	ks, err := keystore.NewRandom()
+	if err != nil {
+		panic(err)
+	}
+	return &sqliteStore{conn: &sqliteConn{shared: &sqliteShared{db: db}, ks: ks, exec: db, q: gendb.New(db)}}
 }
 
 func TestSQLTransactionCancellationOwnership(t *testing.T) {

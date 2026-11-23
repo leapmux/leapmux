@@ -344,7 +344,7 @@ func TestMiddleware_ProviderRangesTrustTheirPeers(t *testing.T) {
 
 func TestMiddleware_AppliesHotSettingChanges(t *testing.T) {
 	store := hubtestutil.OpenTestStore(t)
-	manager := settings.NewManager(store, nil, requestsource.SettingsDescriptors())
+	manager := settings.NewManager(store, requestsource.SettingsDescriptors())
 	require.NoError(t, manager.Load(context.Background()))
 
 	var clientIP string

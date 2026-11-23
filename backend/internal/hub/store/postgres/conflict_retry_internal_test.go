@@ -213,7 +213,7 @@ func TestPoolConnRetriesThroughItsQueries(t *testing.T) {
 	t.Parallel()
 
 	pool := &scriptedDBTX{errs: []error{abortErr(pgerrcode.DeadlockDetected)}}
-	conn := newPoolConn(&pgShared{}, pool)
+	conn := newPoolConn(&pgShared{}, pool, nil)
 
 	require.False(t, conn.inTx(), "a pool-backed conn is not a transaction")
 	// A plain :exec query, so what it proves is the retry rather than any
@@ -231,7 +231,7 @@ func TestPoolConnRetriesThroughItsRawExec(t *testing.T) {
 	t.Parallel()
 
 	pool := &scriptedDBTX{errs: []error{abortErr(pgerrcode.DeadlockDetected)}}
-	conn := newPoolConn(&pgShared{}, pool)
+	conn := newPoolConn(&pgShared{}, pool, nil)
 
 	require.False(t, conn.inTx(), "a pool-backed conn is not a transaction")
 	_, err := conn.exec.Exec(context.Background(), "DELETE FROM workspace_tab_owned WHERE user_id = $1", "u1")

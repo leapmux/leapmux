@@ -8,7 +8,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -27,21 +26,12 @@ import (
 // services that consume runtime settings, registered with every key the
 // hub registers (core, captcha, rate limits) so a test can share the
 // manager with a captcha manager or the rate-limit interceptor. It must
-// share the store (and, for secret-bearing keys, the keystore) with the
-// services under test: a second manager over the same rows would still
-// converge, but only after its TTL — writes through the shared manager
-// apply to the next request. A nil keystore mints a throwaway ring, so
-// seeds on secret-bearing keys (the SMTP password half) work anywhere;
-// tests whose services read those secrets back pass their real keystore.
-func NewSettingsManager(t *testing.T, st store.Store, ks *keystore.Keystore) *settings.Manager {
+// share the store with the services under test: a second manager over
+// the same rows would still converge, but only after its TTL — writes
+// through the shared manager apply to the next request.
+func NewSettingsManager(t *testing.T, st store.Store) *settings.Manager {
 	t.Helper()
-	if ks == nil {
-		var key [32]byte
-		minted, err := keystore.New(map[uint32][32]byte{1: key})
-		require.NoError(t, err)
-		ks = minted
-	}
-	m := settingsregistry.NewManager(st, ks)
+	m := settingsregistry.NewManager(st)
 	require.NoError(t, m.Load(context.Background()))
 	return m
 }
@@ -60,10 +50,10 @@ func AuthPolicy(set *settings.Manager) func(context.Context) auth.Policy {
 
 // AuthServiceDeps builds the service.AuthServiceDeps literal every hub
 // test constructs: the stub mail sender, the zero-value renderer, and
-// nil keystore/captcha. Store, Config, Settings, and Lifecycle stay
-// explicit at each call site (they are what the tests vary); Keystore
-// and Captcha are overridden on the returned struct where a test
-// exercises them. set must share st (see NewSettingsManager).
+// nil captcha. Store, Config, Settings, and Lifecycle stay explicit at
+// each call site (they are what the tests vary); Captcha is overridden
+// on the returned struct where a test exercises it. set must share st
+// (see NewSettingsManager).
 func AuthServiceDeps(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects) service.AuthServiceDeps {
 	return service.AuthServiceDeps{
 		SessionHasher:       testutil.TestSecretHasher(),
@@ -71,7 +61,6 @@ func AuthServiceDeps(st store.Store, cfg *config.Config, set *settings.Manager, 
 		Config:              cfg,
 		Settings:            set,
 		Lifecycle:           lifecycle,
-		Keystore:            nil,
 		Mail:                mail.NewStubSender(),
 		Renderer:            mail.Renderer{},
 		Captcha:             nil,

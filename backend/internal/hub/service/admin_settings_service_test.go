@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sort"
 	"testing"
 
@@ -20,7 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/requestsource"
@@ -141,7 +139,7 @@ func setupAdminSettingsEnv(t *testing.T, cfg *config.Config, opts ...settings.Op
 func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings.Option) *adminSettingsEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
@@ -163,9 +161,7 @@ func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
-	ks, err := keystore.LoadOrGenerate(filepath.Join(t.TempDir(), "encryption.key"))
-	require.NoError(t, err)
-	setMgr := settingsregistry.NewManager(st, ks, opts...)
+	setMgr := settingsregistry.NewManager(st, opts...)
 	require.NoError(t, setMgr.Load(context.Background()))
 
 	mux := http.NewServeMux()

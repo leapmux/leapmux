@@ -52,7 +52,7 @@ func TestWorkerManagementConstructor_RequiresSecretHasher(t *testing.T) {
 	t.Parallel()
 	st := hubtestutil.OpenTestStore(t)
 	manager := workermgr.New(workermgr.DenyAllReach())
-	settings := settingsregistry.NewManager(st, nil)
+	settings := settingsregistry.NewManager(st)
 	sender := mail.NewDisabledSender()
 	assert.PanicsWithValue(t, "service: NewWorkerManagementService requires a secret hasher", func() {
 		NewWorkerManagementService(st, auth.SecretHasher{}, manager, nil, sender, mail.Renderer{}, settings)

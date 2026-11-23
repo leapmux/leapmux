@@ -11,7 +11,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -29,7 +28,6 @@ type UserService struct {
 	lifecycle        *auth.CredentialLifecycleEffects
 	mail             mail.Sender
 	renderer         mail.Renderer
-	keystore         *keystore.Keystore
 	webauthnSessions *hubwebauthn.SessionStore
 	deviceAuths      DeviceAuthorizationStore
 	// The clock every instant on the elevation path comes from: the grant,
@@ -47,9 +45,6 @@ type UserServiceDeps struct {
 	// Renderer carries the hub's public URL used to build absolute deep-links
 	// in verification emails sent on email-change and resend.
 	Renderer mail.Renderer
-	// Keystore encrypts passkey material. Pass nil only in tests that do not
-	// exercise passkey RPCs.
-	Keystore *keystore.Keystore
 	// WebAuthnSessions holds in-flight WebAuthn ceremonies shared with
 	// AuthService. Nil defaults to a fresh in-memory store.
 	WebAuthnSessions *hubwebauthn.SessionStore
@@ -78,7 +73,6 @@ func NewUserService(deps UserServiceDeps) *UserService {
 		lifecycle:        deps.Lifecycle,
 		mail:             deps.Mail,
 		renderer:         deps.Renderer,
-		keystore:         deps.Keystore,
 		webauthnSessions: webauthnSessions,
 		deviceAuths:      deviceAuths,
 	}

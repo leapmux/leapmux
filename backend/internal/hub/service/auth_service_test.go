@@ -23,7 +23,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -48,7 +47,7 @@ type authTestSeed func(t *testing.T, set *settings.Manager)
 func setupAuthTestServerBase(t *testing.T, cfg *config.Config, st store.Store, seed authTestSeed, closers ...auth.CredentialChannelCloser) (authTestClient, store.Store, *settings.Manager) {
 	t.Helper()
 
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	if seed != nil {
 		seed(t, set)
 	}
@@ -436,7 +435,7 @@ func TestAuthService_GetCurrentUser_DoesNotDeriveTheProviderOptionFromAFailedCou
 
 	ctx := context.Background()
 	st := hubtestutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 
 	// A PASSKEY-ONLY account: no password, one passkey. Read properly it
 	// elevates with the passkey and not through a provider.
@@ -447,7 +446,7 @@ func TestAuthService_GetCurrentUser_DoesNotDeriveTheProviderOptionFromAFailedCou
 	}))
 	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
 		ID: id.Generate(), UserID: userID, CredentialID: []byte("cred"), PublicKey: []byte("pub"),
-		Transports: "[]", FriendlyName: "Laptop", KeyVersion: 1, CreatedAt: time.Now().UTC(),
+		Transports: "[]", FriendlyName: "Laptop", CreatedAt: time.Now().UTC(),
 	}))
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: hubtestutil.TestSecretHasher().Hash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
@@ -962,7 +961,7 @@ func setupEmailVerificationTestServer(t *testing.T, emailVerificationRequired bo
 ) {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -971,7 +970,7 @@ func setupEmailVerificationTestServer(t *testing.T, emailVerificationRequired bo
 
 	hubtestutil.CreateTestAdmin(t, st)
 
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	if emailVerificationRequired {
 		enableEmailVerification(t, set)
 	}
@@ -1131,7 +1130,7 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	enableSignup(t, set)
 	enableEmailVerification(t, set)
 
@@ -1302,7 +1301,7 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(wrapped, testConfig(), servicetest.NewSettingsManager(t, wrapped, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(wrapped, testConfig(), servicetest.NewSettingsManager(t, wrapped), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -1579,7 +1578,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	cfg := testConfig()
 	cfg.SoloMode = true
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -1591,7 +1590,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -2081,15 +2080,10 @@ func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	enableSignup(t, set)
 	enableEmailVerification(t, set)
 	hubtestutil.CreateTestAdmin(t, st)
-
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
@@ -2101,7 +2095,6 @@ func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
 		Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil),
 		Mail:      mail.NewStubSender(),
 		Renderer:  mail.Renderer{},
-		Keystore:  ks,
 	})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
@@ -2117,7 +2110,7 @@ func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
 	}
 	ctx, info := connect.NewClientContext(context.Background())
 	info.RequestHeader().Set("Origin", "https://localhost")
-	_, err = client.BeginPasskeySignUp(ctx, req)
+	_, err := client.BeginPasskeySignUp(ctx, req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "email is required")
@@ -2519,21 +2512,16 @@ func TestAuthService_LogoutRequiresTheVictimsSessionSecret(t *testing.T) {
 type setupStateAuthEnv struct {
 	store            store.Store
 	settings         *settings.Manager
-	keystore         *keystore.Keystore
 	webauthnSessions *hubwebauthn.SessionStore
 	client           authTestClient
 }
 
 func newSetupStateAuthEnv(t *testing.T, st store.Store, signupEnabled bool) *setupStateAuthEnv {
 	t.Helper()
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-	set := servicetest.NewSettingsManager(t, st, ks)
+	set := servicetest.NewSettingsManager(t, st)
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, passkeyTestOrigin))
 	require.NoError(t, settings.KeySignupEnabled.Set(context.Background(), set, signupEnabled))
-	env := &setupStateAuthEnv{store: st, settings: set, keystore: ks, webauthnSessions: hubwebauthn.NewSessionStore()}
+	env := &setupStateAuthEnv{store: st, settings: set, webauthnSessions: hubwebauthn.NewSessionStore()}
 	env.client = env.newClient(t)
 	return env
 }
@@ -2553,7 +2541,6 @@ func (e *setupStateAuthEnv) newClientWithInitialization(t *testing.T) (authTestC
 	t.Cleanup(contexts.Stop)
 	deps := servicetest.AuthServiceDeps(e.store, testConfig(), e.settings,
 		auth.NewCredentialLifecycleEffects(contexts, nil, nil))
-	deps.Keystore = e.keystore
 	deps.WebAuthnSessions = e.webauthnSessions
 	authSvc := service.NewAuthService(deps)
 	initializationErr := authSvc.InitializeAccountState(t.Context())

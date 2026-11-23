@@ -11,6 +11,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -40,6 +41,7 @@ type Store interface {
 	OAuthAuthorizationCodes() OAuthAuthorizationCodeStore
 	OAuthClients() OAuthClientStore
 	Cleanup() CleanupStore
+	KeyMaintenance() KeyMaintenanceStore
 
 	// Migrator returns the schema migration manager for this backend.
 	Migrator() Migrator
@@ -730,14 +732,14 @@ type OAuthAuthorizationCodeStore interface {
 	// The REPLAY path needs it: RFC 6749 section 4.1.2 requires the server to
 	// revoke the credential a replayed code already produced, and only a
 	// consumed row names that credential.
-	Get(ctx context.Context, code string) (*OAuthAuthorizationCode, error)
-	GetActive(ctx context.Context, code string, now time.Time) (*OAuthAuthorizationCode, error)
-	Consume(ctx context.Context, code string, now time.Time) error
+	Get(ctx context.Context, codeHash []byte) (*OAuthAuthorizationCode, error)
+	GetActive(ctx context.Context, codeHash []byte, now time.Time) (*OAuthAuthorizationCode, error)
+	Consume(ctx context.Context, codeHash []byte, now time.Time) error
 	// MarkMinted records which credential the exchange produced -- an app
 	// credential or a session, as the reference states -- so a later replay of
 	// the same code can revoke it. RFC 6749 section 4.1.2 requires exactly
 	// that, and without the stamp there was nothing to name.
-	MarkMinted(ctx context.Context, code string, minted CredentialRef) error
+	MarkMinted(ctx context.Context, codeHash []byte, minted CredentialRef) error
 	// ConsumeActiveForUserClient spends this account's outstanding codes for
 	// an app -- the DISCONNECT path, which must not leave a consent granted
 	// seconds before it redeemable into a fresh credential.
@@ -866,9 +868,7 @@ type OAuthProviderStore interface {
 	GetByID(ctx context.Context, id string) (*OAuthProvider, error)
 	ListEnabled(ctx context.Context) ([]OAuthProviderSummary, error)
 	ListAll(ctx context.Context) ([]OAuthProviderSummary, error)
-	ListAllWithSecrets(ctx context.Context) ([]OAuthProvider, error)
 	UpdateEnabled(ctx context.Context, p UpdateOAuthProviderEnabledParams) error
-	UpdateClientSecret(ctx context.Context, id string, clientSecret []byte) error
 	Delete(ctx context.Context, id string) error
 }
 
@@ -893,17 +893,14 @@ type PasskeyCredentialStore interface {
 	CountByUser(ctx context.Context, userID string) (int64, error)
 	UpdateSignCount(ctx context.Context, p UpdatePasskeySignCountParams) error
 	UpdateFriendlyName(ctx context.Context, id, userID, friendlyName string) error
-	UpdatePublicKey(ctx context.Context, p UpdatePasskeyPublicKeyParams) error
 	Delete(ctx context.Context, id, userID string) error
 	DeleteAllByUser(ctx context.Context, userID string) error
-	ListByKeyVersion(ctx context.Context, keyVersion int64) ([]PasskeyCredential, error)
-	CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error)
 }
 
 // SettingsStore manages the hub_settings table: one row per setting key,
-// carrying a public JSON half and, for secret-bearing keys, a
-// keystore-encrypted secret half. Absent keys mean code defaults. The
-// typed interpretation, validation, caching, and secret handling live in
+// carrying a public JSON half and, for secret-bearing keys, a secret JSON half
+// (both encrypted at rest by the store). Absent keys mean code defaults. The
+// typed interpretation, validation, caching, and policy handling live in
 // internal/hub/settings, the sole caller of this store.
 type SettingsStore interface {
 	// GetAll returns every stored row, ordered by key. Keys without rows
@@ -1021,6 +1018,17 @@ type CleanupStore interface {
 	CompactPublishedRevocationEvents(ctx context.Context, p CompactRevocationEventsParams) (int64, error)
 }
 
+// KeyMaintenanceStore performs key-version inventory and full-database
+// re-encryption across all persistent encrypted tables.
+type KeyMaintenanceStore interface {
+	// CountKeyVersionRefs returns each persistent encrypted table that still
+	// holds at least one non-NULL ciphertext encrypted with version.
+	CountKeyVersionRefs(ctx context.Context, version uint32) ([]KeyVersionRefCount, error)
+	// ReencryptAll re-encrypts every outdated encrypted column across all
+	// persistent encrypted tables under the keystore's active version.
+	ReencryptAll(ctx context.Context) (ReencryptResult, error)
+}
+
 // TestEntity identifies a table/collection for test helper operations.
 type TestEntity string
 
@@ -1097,6 +1105,19 @@ type TestHelper interface {
 	// Metadata tables (e.g. goose_db_version, schema_version, meta) are
 	// not touched so that the migrator remains functional.
 	TruncateAll(ctx context.Context) error
+
+	// WithKeystore returns a TestableStore handle sharing the same live
+	// database/pool with a swapped keystore. Callers must not close the
+	// borrowed handle separately.
+	WithKeystore(ks *keystore.Keystore) TestableStore
+
+	// CopyWorkspaceTitleCiphertext copies the raw encrypted title bytes from
+	// srcWorkspaceID onto dstWorkspaceID so tests can verify AAD rejection.
+	CopyWorkspaceTitleCiphertext(ctx context.Context, srcWorkspaceID, dstWorkspaceID string) error
+
+	// SetSettingSecretRaw overwrites hub_settings.secret with raw ciphertext
+	// bytes for one key so tests can simulate partial-column key skew.
+	SetSettingSecretRaw(ctx context.Context, key string, raw []byte) error
 }
 
 // TestableStore is a Store that also provides test helper operations.

@@ -86,20 +86,18 @@ func TestEverySqlcColumnOverrideIdentifiesALiveColumn(t *testing.T) {
 // hubDialects are the three sqlc configurations that describe the same schema.
 var hubDialects = []string{"sqlite", "postgres", "mysql"}
 
-// TestEveryDialectOverridesTheSameEnumColumns refuses an enum override added to one
-// dialect and forgotten in the others.
+// TestEveryDialectOverridesTheSameColumns refuses a shared column override
+// (enum or encrypted-column) added to one dialect and forgotten in the others.
 //
 // sqlc has no include or inherit mechanism and YAML anchors do not cross files, so
 // each dialect's overrides are hand-copied. The guard above catches an override that
 // resolves to nothing; nothing catches one that is simply MISSING, and a missing one
-// is silent in the same way -- the column keeps its raw integer type, on that dialect
-// alone, and the hand-casting the "enum columns store proto enum ordinals" rule exists
-// to remove comes back for whoever runs Postgres.
+// is silent in the same way -- the column keeps its raw type on that dialect alone.
 //
 // MySQL carries extra overrides of its own (hash and blob column types its driver
-// needs), so this compares the enum entries the three share rather than the whole set:
+// needs), so this compares the shared entries rather than the whole set:
 // an override is shared when at least one OTHER dialect declares it too.
-func TestEveryDialectOverridesTheSameEnumColumns(t *testing.T) {
+func TestEveryDialectOverridesTheSameColumns(t *testing.T) {
 	t.Parallel()
 
 	perDialect := map[string]map[string]struct{}{}
@@ -122,14 +120,14 @@ func TestEveryDialectOverridesTheSameEnumColumns(t *testing.T) {
 	}
 	for reference, dialects := range declaredBy {
 		if len(dialects) < 2 {
-			// One dialect alone: a driver-specific override, not a shared enum.
+			// One dialect alone: a driver-specific override, not a shared column override.
 			continue
 		}
 		for _, dialect := range hubDialects {
 			_, has := perDialect[dialect][reference]
 			assert.Truef(t, has,
 				"%d of the %d hub dialects override %q and %s does not; sqlc ignores the omission "+
-					"in silence, so that column keeps its raw integer type on %s alone",
+					"in silence, so that column keeps its raw type on %s alone",
 				len(dialects), len(hubDialects), reference, dialect, dialect)
 		}
 	}

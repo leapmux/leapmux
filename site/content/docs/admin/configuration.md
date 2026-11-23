@@ -471,7 +471,7 @@ A probe establishes liveness only. The Hub ignores a reply that does not match a
 
 ### Keys with no CLI flag
 
-`encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It specifies the encryption key ring file that the Hub needs before it can read the encrypted halves of its settings rows.
+`encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It specifies the encryption key ring and token pepper file that the Hub uses to open its database, encrypt and decrypt all 54 protected columns across 20 Hub tables, and verify peppered bearer digests.
 
 See [Encryption & Data](/docs/admin/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
 

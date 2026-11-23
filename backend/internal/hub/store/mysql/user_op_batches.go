@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -15,13 +16,22 @@ type userOpBatchesStore struct {
 var _ store.UserOpBatchesStore = (*userOpBatchesStore)(nil)
 
 func (s *userOpBatchesStore) Insert(ctx context.Context, p store.InsertUserOpBatchParams) error {
+	userID := p.UserID.String()
+	batchPayload, err := s.conn.ks.SealBytes(p.BatchPayload, keystore.UserOpBatchPayloadAAD(userID, p.PhysicalMs, p.Logical))
+	if err != nil {
+		return err
+	}
+	transitionsPayload, err := s.conn.ks.SealBytes(p.TransitionsPayload, keystore.UserOpBatchTransitionsAAD(userID, p.PhysicalMs, p.Logical))
+	if err != nil {
+		return err
+	}
 	return s.conn.queryError(s.conn.q.InsertUserOpBatch(ctx, gendb.InsertUserOpBatchParams{
-		UserID:             p.UserID.String(),
+		UserID:             userID,
 		PhysicalMs:         p.PhysicalMs,
 		Logical:            p.Logical,
 		BatchID:            p.BatchID,
-		BatchPayload:       p.BatchPayload,
-		TransitionsPayload: p.TransitionsPayload,
+		BatchPayload:       batchPayload,
+		TransitionsPayload: transitionsPayload,
 		OpCount:            int32(p.OpCount),
 	}))
 }
@@ -42,19 +52,27 @@ func (s *userOpBatchesStore) ListAfter(ctx context.Context, p store.ListUserOpBa
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	return store.MapSlice(rows, toUserOpBatchRow), nil
+	return store.MapSliceErr(rows, s.conn.toUserOpBatchRow)
 }
 
-func toUserOpBatchRow(r gendb.UserOpBatch) store.UserOpBatchRow {
+func (c *mysqlConn) toUserOpBatchRow(r gendb.UserOpBatch) (store.UserOpBatchRow, error) {
+	batchPayload, err := c.ks.OpenBytes(r.BatchPayload, keystore.UserOpBatchPayloadAAD(r.UserID, r.PhysicalMs, r.Logical))
+	if err != nil {
+		return store.UserOpBatchRow{}, err
+	}
+	transitionsPayload, err := c.ks.OpenBytes(r.TransitionsPayload, keystore.UserOpBatchTransitionsAAD(r.UserID, r.PhysicalMs, r.Logical))
+	if err != nil {
+		return store.UserOpBatchRow{}, err
+	}
 	return store.UserOpBatchRow{
 		UserID:             r.UserID,
 		PhysicalMs:         r.PhysicalMs,
 		Logical:            r.Logical,
 		BatchID:            r.BatchID,
-		BatchPayload:       r.BatchPayload,
-		TransitionsPayload: r.TransitionsPayload,
+		BatchPayload:       batchPayload,
+		TransitionsPayload: transitionsPayload,
 		OpCount:            int64(r.OpCount),
-	}
+	}, nil
 }
 
 func (s *userOpBatchesStore) DeleteThrough(ctx context.Context, p store.DeleteUserOpBatchesThroughParams) error {

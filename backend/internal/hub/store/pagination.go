@@ -170,6 +170,32 @@ func QueryPage[P any, R any, I PageCursorer](
 	return NewPage(MapSlice(rows, mapRow), limit), nil
 }
 
+// QueryPageErr builds one listing, executes its query, maps each row with a
+// fallible mapper (such as decryption), maps the query error, and assembles
+// the page.
+func QueryPageErr[P any, R any, I PageCursorer](
+	ctx context.Context,
+	limit int64,
+	build func() (P, error),
+	query func(context.Context, P) ([]R, error),
+	mapRow func(R) (I, error),
+	mapErr func(error) error,
+) (Page[I], error) {
+	params, err := build()
+	if err != nil {
+		return Page[I]{}, err
+	}
+	rows, err := query(ctx, params)
+	if err != nil {
+		return Page[I]{}, mapErr(err)
+	}
+	mapped, err := MapSliceErr(rows, mapRow)
+	if err != nil {
+		return Page[I]{}, err
+	}
+	return NewPage(mapped, limit), nil
+}
+
 // MapSlice converts a slice of type In to a slice of type Out using fn.
 func MapSlice[In, Out any](in []In, fn func(In) Out) []Out {
 	out := make([]Out, len(in))
@@ -177,6 +203,20 @@ func MapSlice[In, Out any](in []In, fn func(In) Out) []Out {
 		out[i] = fn(v)
 	}
 	return out
+}
+
+// MapSliceErr converts a slice of type In to a slice of type Out using a
+// fallible mapper fn, returning the first error encountered.
+func MapSliceErr[In, Out any](in []In, fn func(In) (Out, error)) ([]Out, error) {
+	out := make([]Out, len(in))
+	for i, v := range in {
+		mapped, err := fn(v)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = mapped
+	}
+	return out, nil
 }
 
 // maxListLimit is the clamp ceiling for caller-supplied page limits: one below

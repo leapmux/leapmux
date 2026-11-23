@@ -134,7 +134,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 		clock = quartz.NewReal()
 	}
 	hubtestutil.CreateTestAdmin(t, st)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	if seed != nil {
 		seed(t, set)
 	}

@@ -393,15 +393,13 @@ func createTestOIDCProviderWithStub(t *testing.T, st store.Store, ks *keystore.K
 	})
 
 	providerID := id.Generate()
-	encSecret, err := ks.Encrypt([]byte("test-client-secret"), keystore.ProviderAAD(providerID))
-	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerID,
 		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         "Test OIDC",
 		IssuerURL:    server.URL,
 		ClientID:     "test-client-id",
-		ClientSecret: encSecret,
+		ClientSecret: []byte("test-client-secret"),
 		Scopes:       "openid email profile",
 		TrustEmail:   true,
 		Enabled:      true,
@@ -646,15 +644,13 @@ func createTestOIDCProviderWithAuthTime(
 	})
 
 	providerID := id.Generate()
-	encSecret, err := ks.Encrypt([]byte("test-client-secret"), keystore.ProviderAAD(providerID))
-	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
 		ID:           providerID,
 		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		Name:         "Test OIDC",
 		IssuerURL:    server.URL,
 		ClientID:     "test-client-id",
-		ClientSecret: encSecret,
+		ClientSecret: []byte("test-client-secret"),
 		Scopes:       "openid email profile",
 		TrustEmail:   false,
 		Enabled:      true,

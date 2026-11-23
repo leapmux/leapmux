@@ -33,7 +33,7 @@ func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 	t.Parallel()
 
 	st := testutil.OpenTestStore(t)
-	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u1")})
 
 	// Missing "_" delimiter -> store.ErrInvalidCursor -> InvalidArgument.
@@ -70,7 +70,7 @@ func TestGetWorker_ReportsTimestampsAsInstants(t *testing.T) {
 	row, err := st.Workers().GetOwned(context.Background(), store.GetOwnedWorkerParams{UserID: ownerID, WorkerID: workerID})
 	require.NoError(t, err)
 
-	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 	get := func() *leapmuxv1.Worker {
 		t.Helper()
@@ -111,7 +111,7 @@ func TestGetWorker_HidesADeregisteringWorker(t *testing.T) {
 	workerIDs := seedWorkersForOwner(t, st, ownerID, 2)
 	active, deregistered := workerIDs[0], workerIDs[1]
 
-	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
 	_, err := svc.DeregisterWorker(ctx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: deregistered})
@@ -172,7 +172,7 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 	ownerID := userid.MustNew(owner.ID)
 	seeded := seedWorkersForOwner(t, st, ownerID, contracts.MaxPageLimit+1)
 
-	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{
@@ -216,7 +216,7 @@ func TestListWorkers_OmittedLimitReturnsRows(t *testing.T) {
 	ownerID := userid.MustNew(owner.ID)
 	seedWorkersForOwner(t, st, ownerID, 3)
 
-	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
@@ -242,7 +242,7 @@ func TestNewWorkerManagementServiceRefusesAMissingCollaborator(t *testing.T) {
 
 	st := testutil.OpenTestStore(t)
 	mgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	sender := mail.NewStubSender()
 
 	// want is the EXACT panic message, so each case pins WHICH collaborator

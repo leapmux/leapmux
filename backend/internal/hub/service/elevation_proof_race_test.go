@@ -88,7 +88,7 @@ func setupProofTestUser(t *testing.T) *proofTestUser {
 	require.NoError(t, err)
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
-	set := servicetest.NewSettingsManager(t, st, ks)
+	set := servicetest.NewSettingsManager(t, st)
 	require.NoError(t, settings.KeyPublicURL.Set(t.Context(), set, passkeyTestOrigin))
 	wrapped := &proofMutationStore{Store: st}
 	svc := service.NewUserService(service.UserServiceDeps{
@@ -98,7 +98,6 @@ func setupProofTestUser(t *testing.T) *proofTestUser {
 		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Mail:      mail.NewStubSender(),
 		Renderer:  mail.Renderer{},
-		Keystore:  ks,
 	})
 	return &proofTestUser{base: st, wrapped: wrapped, service: svc, ks: ks, info: info, token: token, userID: uid, sessionID: hubtestutil.SessionIDFromCookie(t, token)}
 }
@@ -149,7 +148,7 @@ func TestPasswordElevationRefusesAChangedProofForASurvivingSession(t *testing.T)
 
 func prepareProofPasskey(t *testing.T, st store.Store, ks *keystore.Keystore, userID string) (*passkeyCeremony, webauthn.FinishedSignUpCredential, *webauthn.Service) {
 	t.Helper()
-	wa, err := webauthn.NewService(webauthn.RPConfig{RPID: "localhost", RPDisplayName: "LeapMux", RPOrigins: []string{passkeyTestOrigin}}, st, ks, nil)
+	wa, err := webauthn.NewService(webauthn.RPConfig{RPID: "localhost", RPDisplayName: "LeapMux", RPOrigins: []string{passkeyTestOrigin}}, st, nil)
 	require.NoError(t, err)
 	ceremony := newPasskeyCeremony()
 	sid, options, err := wa.BeginRegistration(t.Context(), userID, passkeyTestOrigin)

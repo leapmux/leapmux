@@ -55,7 +55,9 @@ func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
 func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	ks, err := keystore.LoadOrGenerate(filepath.Join(t.TempDir(), "encryption.key"))
+	require.NoError(t, err)
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
@@ -71,14 +73,12 @@ func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 	})
 	require.NoError(t, err)
 	session, _ := hubtestutil.LoginWithoutWindow(t, st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
-	ks, err := keystore.LoadOrGenerate(filepath.Join(t.TempDir(), "encryption.key"))
-	require.NoError(t, err)
 
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	cache := &recordingProviderCache{}
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
-	leapmuxv1connect.RegisterAdminIdPServiceHandler(connectServer, service.NewAdminIdPService(st, ks, cache))
+	leapmuxv1connect.RegisterAdminIdPServiceHandler(connectServer, service.NewAdminIdPService(st, cache))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
@@ -146,9 +146,7 @@ func TestAdminIdPService_AddListRemoveGithub(t *testing.T) {
 
 	stored, err := env.st.OAuthProviders().GetByID(ctx, prov.GetId())
 	require.NoError(t, err)
-	plain, err := env.ks.Decrypt(stored.ClientSecret, keystore.ProviderAAD(prov.GetId()))
-	require.NoError(t, err)
-	assert.Equal(t, "gh-secret", string(plain))
+	assert.Equal(t, "gh-secret", string(stored.ClientSecret))
 
 	_, err = env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{}, env.token))
 	require.Error(t, err)

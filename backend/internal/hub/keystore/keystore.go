@@ -32,29 +32,6 @@ const (
 	pepperTag = "pepper"
 )
 
-// AAD helper functions for building additional authenticated data.
-// Using consistent AAD is critical — a mismatch causes decryption failure.
-
-// ProviderAAD returns the AAD for an OAuth provider's client secret.
-func ProviderAAD(providerID string) []byte {
-	return []byte("oauth_provider:" + providerID)
-}
-
-// SettingsSecretAAD returns the AAD for a hub_settings row's secret half.
-// The key name is bound into the AAD because rows are keyed by setting
-// name: pasting one key's ciphertext into another key's secret column must
-// fail decryption rather than silently apply the wrong secret.
-func SettingsSecretAAD(key string) []byte {
-	return []byte("hub_settings:" + key)
-}
-
-// PasskeyPublicKeyAAD returns the AAD for a passkey credential's encrypted
-// COSE public key. The credential row id is bound so ciphertext cannot be
-// moved across rows.
-func PasskeyPublicKeyAAD(credentialRowID string) []byte {
-	return []byte("passkey_public_key:" + credentialRowID)
-}
-
 // Keystore manages a versioned key ring for XChaCha20-Poly1305 envelope
 // encryption plus a dedicated, stable pepper for bearer-token hashing.
 type Keystore struct {
@@ -93,6 +70,26 @@ func New(keys map[uint32][keySize]byte) (*Keystore, error) {
 		}
 	}
 	return &Keystore{keys: keys, aeads: aeads, activeVersion: maxVer}, nil
+}
+
+// NewRandom creates an in-memory Keystore with a single random version-1 key
+// and a random token pepper. It is intended for tests and ephemeral stores.
+func NewRandom() (*Keystore, error) {
+	key, err := GenerateKey()
+	if err != nil {
+		return nil, err
+	}
+	pepper, err := GenerateKey()
+	if err != nil {
+		return nil, err
+	}
+	ks, err := New(map[uint32][keySize]byte{1: key})
+	if err != nil {
+		return nil, err
+	}
+	ks.pepper = pepper
+	ks.hasPepper = true
+	return ks, nil
 }
 
 // ActiveVersion returns the active (highest) key version.
@@ -412,7 +409,8 @@ func RemoveKey(path string, version uint32) error {
 // fresh random pepper, leaving the encryption key ring untouched. After the
 // Hub restarts, credentials hashed with the old pepper no longer validate.
 // These include session secrets, Worker auth tokens, registration keys, device
-// codes, API and delegation token secrets, and confidential app client secrets.
+// codes, OAuth authorization codes, API and delegation token secrets, and
+// confidential app client secrets.
 // The new pepper cannot reproduce their stored HMAC digests. Clients must replace the
 // affected credentials. The change takes effect on the next Hub start.
 func RegeneratePepper(path string) error {

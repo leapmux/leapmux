@@ -363,7 +363,7 @@ func newTestKeystore(t *testing.T) *Keystore {
 
 func TestPasskeyPublicKeyAAD(t *testing.T) {
 	aad := PasskeyPublicKeyAAD("cred-row-1")
-	assert.Equal(t, []byte("passkey_public_key:cred-row-1"), aad)
+	assert.Equal(t, ColumnAAD("passkey_credentials", "public_key", "cred-row-1"), aad)
 }
 
 func TestPasskeyAADBindingRejectsSwap(t *testing.T) {

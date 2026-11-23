@@ -438,7 +438,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 		require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: "admin:read admin:users admin:settings admin:workers",
-			DeviceCodeHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "headless-box",
+			DeviceCodeHash:  env.validator.HashSecret(id.Generate()), UserCode: userCode, DeviceName: "headless-box",
 			ExpiresAt: now.Add(service.DeviceCodeTTL),
 		}))
 
@@ -472,7 +472,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 		require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: ask,
-			DeviceCodeHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "headless",
+			DeviceCodeHash:  env.validator.HashSecret(id.Generate()), UserCode: userCode, DeviceName: "headless",
 			ExpiresAt: env.now().Add(10 * time.Minute),
 		}))
 		return userCode
@@ -593,7 +593,7 @@ func TestDeviceActivation_IdentifiesTheAppForACLISuppliedCode(t *testing.T) {
 	userCode := verifycode.Generate()
 	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "ci-runner-7",
+		DeviceCodeHash: env.validator.HashSecret(id.Generate()), UserCode: userCode, DeviceName: "ci-runner-7",
 		ExpiresAt: env.now().Add(10 * time.Minute),
 	}))
 
@@ -702,7 +702,7 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 			require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 				ClientID:      oauthapp.ControlCLIClientID,
 				GrantedScopes: authscope.NonAdminGrant().String(),
-				Code:          code, UserID: userid.MustNew(env.userID), CodeChallenge: "unused",
+				CodeHash:      env.validator.HashSecret(code), UserID: userid.MustNew(env.userID), CodeChallenge: "unused",
 				InstallationName: "alice@laptop", ExpiresAt: time.Now().Add(time.Minute),
 				RedirectURI: "http://127.0.0.1:54321/callback",
 				Redemption:  store.RedemptionKindToken,
@@ -717,7 +717,7 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 				// subject line that separates an ordinary authorization from
 				// one that administers the hub.
 				GrantedScopes: "admin:read " + authscope.NonAdminGrant().String(),
-				Code:          code + "-real", UserID: userid.MustNew(env.userID), CodeChallenge: challenge,
+				CodeHash:      env.validator.HashSecret(code + "-real"), UserID: userid.MustNew(env.userID), CodeChallenge: challenge,
 				InstallationName: "alice@laptop", ExpiresAt: time.Now().Add(time.Minute),
 				RedirectURI: "http://127.0.0.1:54321/callback",
 				Redemption:  store.RedemptionKindToken,

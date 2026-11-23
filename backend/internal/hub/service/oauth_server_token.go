@@ -198,7 +198,8 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 			"code is required and code_verifier must be 43-128 characters from the unreserved set")
 		return
 	}
-	row, err := h.store.OAuthAuthorizationCodes().GetActive(r.Context(), code, h.now().UTC())
+	codeHash := h.validator.HashSecret(code)
+	row, err := h.store.OAuthAuthorizationCodes().GetActive(r.Context(), codeHash, h.now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Keep the same response for an unknown, expired, or consumed code.
@@ -213,7 +214,7 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 			case clientErr != nil:
 				// No revocation; the invalid_grant below is the whole answer.
 			default:
-				h.revokeReplayedCode(r, code, app)
+				h.revokeReplayedCode(r, codeHash, app)
 			}
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
 		} else {
@@ -273,7 +274,7 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 		return
 	}
 	h.issueTokenResponse(w, r, consentedGrant{
-		id:               code,
+		id:               string(codeHash),
 		userID:           grantUID,
 		app:              app,
 		installationName: row.InstallationName,
@@ -284,12 +285,12 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 		internalMsg:      "authorization code token issuance failed",
 		redeem: func(_ time.Time, runTx func(consumeInTx func(store.Store) error) error) error {
 			return runTx(func(tx store.Store) error {
-				return consumeAuthorizationCode(r.Context(), tx, code, h.now().UTC())
+				return consumeAuthorizationCode(r.Context(), tx, codeHash, h.now().UTC())
 			})
 		},
 		recordMint: func(tx store.Store, tokenID string) error {
 			minted := store.CredentialRef{Kind: store.CredentialRefKindToken, ID: tokenID}
-			if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), code, minted); err != nil {
+			if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), codeHash, minted); err != nil {
 				return fmt.Errorf("record authorization code credential: %w", err)
 			}
 			return nil
@@ -334,8 +335,8 @@ func authorizationCodeProofFailure(r *http.Request, row *store.OAuthAuthorizatio
 
 // consumeAuthorizationCode consumes the authorization code in the
 // transaction, mapping store.ErrNotFound to errAuthorizationCodeUnavailable.
-func consumeAuthorizationCode(ctx context.Context, tx store.Store, code string, now time.Time) error {
-	if err := tx.OAuthAuthorizationCodes().Consume(ctx, code, now); err != nil {
+func consumeAuthorizationCode(ctx context.Context, tx store.Store, codeHash []byte, now time.Time) error {
+	if err := tx.OAuthAuthorizationCodes().Consume(ctx, codeHash, now); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errAuthorizationCodeUnavailable
 		}
@@ -391,7 +392,7 @@ func (h *OAuthServerHandler) handleStepUpCodeExchange(
 		if err := authorizationCodeGenerationMatches(r.Context(), tx, row); err != nil {
 			return err
 		}
-		if err := consumeAuthorizationCode(r.Context(), tx, row.Code, h.now().UTC()); err != nil {
+		if err := consumeAuthorizationCode(r.Context(), tx, row.CodeHash, h.now().UTC()); err != nil {
 			return err
 		}
 		switch row.StepUp.Kind {
@@ -445,7 +446,7 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 		if err := authorizationCodeGenerationMatches(r.Context(), tx, row); err != nil {
 			return err
 		}
-		if err := consumeAuthorizationCode(r.Context(), tx, row.Code, h.now().UTC()); err != nil {
+		if err := consumeAuthorizationCode(r.Context(), tx, row.CodeHash, h.now().UTC()); err != nil {
 			return err
 		}
 		// The label is what the requester called itself. With no label the
@@ -467,14 +468,14 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 		}
 		created = &sess
 		minted := store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sess.ID}
-		if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), row.Code, minted); err != nil {
+		if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), row.CodeHash, minted); err != nil {
 			return fmt.Errorf("record authorization code session: %w", err)
 		}
 		return nil
 	})
 	if txErr != nil {
 		if errors.Is(txErr, errAuthorizationCodeUnavailable) {
-			h.revokeReplayedCode(r, row.Code, app)
+			h.revokeReplayedCode(r, row.CodeHash, app)
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "code expired or already consumed")
 			return
 		}
@@ -496,9 +497,9 @@ func (h *OAuthServerHandler) handleSessionCodeExchange(
 // authenticates the app. This function binds the app, redirect URI and PKCE
 // verifier to the consumed row before revocation. The request receives the
 // same refusal regardless of the revocation outcome.
-func (h *OAuthServerHandler) revokeReplayedCode(r *http.Request, code string, app *store.OAuthClient) {
+func (h *OAuthServerHandler) revokeReplayedCode(r *http.Request, codeHash []byte, app *store.OAuthClient) {
 	ctx := r.Context()
-	row, err := h.store.OAuthAuthorizationCodes().Get(ctx, code)
+	row, err := h.store.OAuthAuthorizationCodes().Get(ctx, codeHash)
 	if err != nil || row.ConsumedAt == nil || row.Minted.IsZero() {
 		return
 	}
@@ -539,8 +540,8 @@ type consentedGrant struct {
 	// id is the grant row this mint redeems. It is what the mint reads as its
 	// AUTHORITY: /oauth/token carries no session at all, so the browser consent
 	// that produced this row is where the elevated session was required, and
-	// holding the row is the proof. A device grant uses the stored digest's
-	// bytes as a string; an authorization-code grant uses its string row id.
+	// holding the row is the proof. Both device grants and authorization-code
+	// grants store the stored digest's bytes as a string.
 	id               string
 	userID           userid.UserID
 	app              *store.OAuthClient
@@ -579,7 +580,7 @@ func (h *OAuthServerHandler) issueTokenResponse(w http.ResponseWriter, r *http.R
 		if errors.Is(err, errAuthorizationCodeUnavailable) {
 			// The failed transaction has unwound. The winner committed its token and
 			// replay link together, so every validated reuse can identify that token.
-			h.revokeReplayedCode(r, grant.id, grant.app)
+			h.revokeReplayedCode(r, []byte(grant.id), grant.app)
 		}
 		if errors.Is(err, errAuthorizationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", grant.invalidGrantMsg)

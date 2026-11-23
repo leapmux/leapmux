@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -39,12 +40,38 @@ type pgShared struct {
 type pgConn struct {
 	adminMembershipLocked bool
 	shared                *pgShared
+	ks                    *keystore.Keystore
 	exec                  gendb.DBTX // pool outside tx, pgx.Tx inside tx
 	q                     *gendb.Queries
 }
 
-// Open connects to a PostgreSQL database, runs migrations, and returns a Store.
-func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
+// Open connects to a PostgreSQL database, runs migrations, seeds built-ins, and returns a Store.
+func Open(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore) (store.Store, error) {
+	st, err := openWithoutMigrate(ctx, cfg, ks)
+	if err != nil {
+		return nil, err
+	}
+	// One call is the whole boot: migrate, then seed and reconcile the
+	// built-in registrations. Migrator() wraps the raw migrator so every
+	// caller that migrates this store later completes the same sequence.
+	if err := st.Migrator().Migrate(ctx); err != nil {
+		st.conn.shared.pool.Close()
+		_ = st.conn.shared.migrationDB.Close()
+		return nil, fmt.Errorf("migrate postgres: %w", err)
+	}
+	return st, nil
+}
+
+// OpenWithoutMigrate connects to a PostgreSQL database and initializes its
+// migrator without running migrations or seeding built-in rows.
+func OpenWithoutMigrate(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore) (store.Store, error) {
+	return openWithoutMigrate(ctx, cfg, ks)
+}
+
+func openWithoutMigrate(ctx context.Context, cfg config.PostgresConfig, ks *keystore.Keystore) (*pgStore, error) {
+	if ks == nil {
+		return nil, errors.New("open postgres: keystore is required")
+	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres config: %w", err)
@@ -76,25 +103,21 @@ func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
 	mig, err := newMigrator(sqlDB)
 	if err != nil {
 		pool.Close()
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("init postgres migrator: %w", err)
 	}
-	st := &pgStore{conn: newPoolConn(&pgShared{
+	return &pgStore{conn: newPoolConn(&pgShared{
 		pool:        pool,
 		migrationDB: sqlDB,
 		migrator:    mig,
-	}, pool)}
-	// One call is the whole boot: migrate, then seed and reconcile the
-	// built-in registrations. Migrator() wraps the raw migrator so every
-	// caller that migrates this store later completes the same sequence.
-	if err := st.Migrator().Migrate(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("migrate postgres: %w", err)
-	}
-	return st, nil
+	}, pool, ks)}, nil
 }
 
 // newFromPool wraps an existing pool (already migrated) into a Store.
-func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
+func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB, ks *keystore.Keystore) (*pgStore, error) {
+	if ks == nil {
+		return nil, errors.New("open postgres: keystore is required")
+	}
 	mig, err := newMigrator(migrationDB)
 	if err != nil {
 		return nil, fmt.Errorf("init postgres migrator: %w", err)
@@ -103,7 +126,7 @@ func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
 		pool:        pool,
 		migrationDB: migrationDB,
 		migrator:    mig,
-	}, pool)}, nil
+	}, pool, ks)}, nil
 }
 
 // newPoolConn builds the NON-transactional conn, and it is the only way to
@@ -129,10 +152,11 @@ func newFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (*pgStore, error) {
 //
 // The pool arrives as an argument rather than through shared.pool so a test
 // can supply a stand-in and prove the wiring, not merely the wrapper.
-func newPoolConn(shared *pgShared, pool gendb.DBTX) *pgConn {
+func newPoolConn(shared *pgShared, pool gendb.DBTX, ks *keystore.Keystore) *pgConn {
 	retrying := conflictRetryDBTX{inner: pool}
 	return &pgConn{
 		shared: shared,
+		ks:     ks,
 		exec:   retrying,
 		q:      gendb.New(retrying),
 	}
@@ -193,6 +217,9 @@ func (s *pgStore) OAuthClients() store.OAuthClientStore {
 	return &oauthClientStore{conn: s.conn}
 }
 func (s *pgStore) Cleanup() store.CleanupStore { return &cleanupStore{conn: s.conn} }
+func (s *pgStore) KeyMaintenance() store.KeyMaintenanceStore {
+	return &keyMaintenanceStore{conn: s.conn}
+}
 
 // Migrator wraps the raw goose migrator so a completed migration also seeds
 // and reconciles the built-in registrations -- the boot sequence, wherever it
@@ -279,6 +306,7 @@ func (c *pgConn) runTransaction(ctx context.Context, adminMembershipLocked bool,
 	txConn := &pgConn{
 		adminMembershipLocked: adminMembershipLocked,
 		shared:                c.shared,
+		ks:                    c.ks,
 		exec:                  pgxTx,
 		// WithTx rebuilds Queries over the transaction, which deliberately
 		// drops the statement-level retry: inside a transaction the whole

@@ -169,7 +169,7 @@ func (s observedAdmissionUsers) HasAny(ctx context.Context) (bool, error) {
 }
 
 func TestRuntimeAccountAdmissionDoesNotReadPresenceForOrdinarySignup(t *testing.T) {
-	base, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	base, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = base.Close() })
 	require.NoError(t, base.Migrator().Migrate(t.Context()))

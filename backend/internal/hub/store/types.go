@@ -392,7 +392,7 @@ type WorkspaceSectionItem struct {
 	Position    string
 }
 
-// OAuthProviderSummary holds all OAuth provider fields except the encrypted secret.
+// OAuthProviderSummary holds all OAuth provider fields except the client secret.
 type OAuthProviderSummary struct {
 	ID           string
 	ProviderType leapmuxv1.IdentityProviderType
@@ -405,20 +405,25 @@ type OAuthProviderSummary struct {
 	CreatedAt    time.Time
 }
 
-// OAuthProvider extends OAuthProviderSummary with the encrypted client secret.
+// OAuthProvider extends OAuthProviderSummary with the decrypted client secret.
 type OAuthProvider struct {
 	OAuthProviderSummary
 	ClientSecret []byte
 }
 
 // SettingRow is one hub_settings row: a setting key's stored halves.
-// Value is the public JSON document; Secret is the keystore-encrypted
-// JSON secret half. Either half may be nil (stored NULL), never both.
+// Both columns are encrypted at rest by the store; Value and Secret carry the
+// decrypted plaintext JSON halves. Either half may be nil (stored NULL), never
+// both. If a column fails decryption, the corresponding *DecryptErr field holds
+// the error so settings.Manager can degrade unreadable keys without aborting
+// GetAll.
 type SettingRow struct {
-	Key       string
-	Value     *string
-	Secret    []byte
-	UpdatedAt time.Time
+	Key              string
+	Value            *string
+	Secret           []byte
+	ValueDecryptErr  error
+	SecretDecryptErr error
+	UpdatedAt        time.Time
 }
 
 // UpsertSettingParams rewrites one setting key's row. A nil half clears
@@ -430,8 +435,9 @@ type UpsertSettingParams struct {
 	Secret []byte
 }
 
-// PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
-// keystore-encrypted at the service layer before persistence.
+// PasskeyCredential stores one WebAuthn credential for a user. Encrypted
+// columns (PublicKey, AAGUID, Transports, FriendlyName) are sealed and opened
+// transparently at the store boundary.
 type PasskeyCredential struct {
 	ID             string
 	UserID         string
@@ -443,7 +449,6 @@ type PasskeyCredential struct {
 	BackupState    bool
 	Transports     string
 	FriendlyName   string
-	KeyVersion     int64
 	CreatedAt      time.Time
 	LastUsedAt     *time.Time
 }
@@ -1255,7 +1260,6 @@ type CreatePasskeyCredentialParams struct {
 	BackupState    bool
 	Transports     string
 	FriendlyName   string
-	KeyVersion     int64
 	CreatedAt      time.Time
 	LastUsedAt     *time.Time
 }
@@ -1265,13 +1269,6 @@ type UpdatePasskeySignCountParams struct {
 	UserID       string
 	SignCount    int64
 	LastUsedAt   time.Time
-}
-
-type UpdatePasskeyPublicKeyParams struct {
-	ID         string
-	UserID     string
-	PublicKey  []byte
-	KeyVersion int64
 }
 
 type SetPendingRecoveryParams struct {
@@ -1847,7 +1844,7 @@ func (k RedemptionKind) NullableKind() *leapmuxv1.RedemptionKind {
 
 // OAuthAuthorizationCode is a one-shot RFC 6749 section 4.1 code.
 type OAuthAuthorizationCode struct {
-	Code           string
+	CodeHash       []byte
 	UserID         string
 	AuthGeneration int64
 	// ClientID is the app the code was issued TO. The token stage refuses a
@@ -1995,7 +1992,7 @@ type CreateDelegationTokenParams struct {
 }
 
 type CreateOAuthAuthorizationCodeParams struct {
-	Code             string
+	CodeHash         []byte
 	UserID           userid.UserID
 	AuthGeneration   int64
 	ClientID         string
@@ -2014,6 +2011,19 @@ type CreateOAuthAuthorizationCodeParams struct {
 	Redemption RedemptionKind
 }
 
+// KeyVersionRefCount reports how many rows in a persistent encrypted table
+// still contain at least one ciphertext encrypted under a specific key version.
+type KeyVersionRefCount struct {
+	Table string
+	Label string
+	Count int64
+}
+
+// ReencryptResult summarizes one KeyMaintenanceStore.ReencryptAll run.
+type ReencryptResult struct {
+	RowsUpdated   int64
+	ActiveVersion uint32
+}
 // GetWorkerOwnedTabStateParams scopes a point read to one owner's hosting Worker.
 type GetWorkerOwnedTabStateParams struct {
 	UserID          userid.UserID

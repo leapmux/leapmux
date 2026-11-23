@@ -168,7 +168,7 @@ func (c *recordingCredentialCloser) restampedSessions() []sessionRestampCall {
 func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
@@ -563,7 +563,7 @@ func TestAdminUserService_UpdateUser_EmailRules(t *testing.T) {
 func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
@@ -578,7 +578,7 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	seedSMTP(t, set)
 
 	mux := http.NewServeMux()
@@ -2163,7 +2163,7 @@ func TestAdminUserService_ResetPassword_DeletesPasskeys(t *testing.T) {
 	require.NoError(t, env.st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
 		ID: pkID, UserID: env.userID, CredentialID: []byte("cred-" + pkID),
 		PublicKey: []byte("pubkey"), SignCount: 0, Transports: "[]",
-		FriendlyName: "Phone", KeyVersion: 1, CreatedAt: time.Now().UTC(),
+		FriendlyName: "Phone", CreatedAt: time.Now().UTC(),
 	}))
 
 	_, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{

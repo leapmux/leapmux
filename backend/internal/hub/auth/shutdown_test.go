@@ -28,7 +28,7 @@ func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1co
 
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer(auth.NewShutdownInterceptor(shutdownCh))
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer)
 

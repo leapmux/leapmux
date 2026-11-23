@@ -86,7 +86,7 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 	t.Helper()
 	ctx := context.Background()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(ctx))
@@ -112,7 +112,7 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 	userSvc := service.NewUserService(service.UserServiceDeps{
 		Store:     st,
 		Config:    testConfig(),
-		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Settings:  servicetest.NewSettingsManager(t, st),
 		Lifecycle: auth.NewCredentialLifecycleEffects(contexts, recorder, nil),
 		Mail:      mail.NewStubSender(),
 		Renderer:  mail.Renderer{},

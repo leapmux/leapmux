@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
@@ -17,10 +18,15 @@ type lifecycleOutboxStore struct {
 var _ store.LifecycleOutboxStore = (*lifecycleOutboxStore)(nil)
 
 func (s *lifecycleOutboxStore) Insert(ctx context.Context, p store.InsertLifecycleOutboxParams) error {
+	userID := p.UserID.String()
+	payload, err := s.conn.ks.SealBytes(p.Payload, keystore.LifecycleOutboxPayloadAAD(userID, int32(p.OpType)))
+	if err != nil {
+		return err
+	}
 	return mapErr(s.conn.q.InsertLifecycleOutbox(ctx, gendb.InsertLifecycleOutboxParams{
-		UserID:  p.UserID.String(),
+		UserID:  userID,
 		OpType:  p.OpType,
-		Payload: p.Payload,
+		Payload: payload,
 	}))
 }
 
@@ -40,11 +46,15 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 	}
 	out := make([]store.LifecycleOutboxRow, len(rows))
 	for i, r := range rows {
+		payload, err := s.conn.ks.OpenBytes(r.Payload, keystore.LifecycleOutboxPayloadAAD(r.UserID, int32(r.OpType)))
+		if err != nil {
+			return nil, err
+		}
 		out[i] = store.LifecycleOutboxRow{
 			ID:         r.ID,
 			UserID:     r.UserID,
 			OpType:     r.OpType,
-			Payload:    r.Payload,
+			Payload:    payload,
 			ConsumedAt: r.ConsumedAt.Ptr(),
 		}
 	}

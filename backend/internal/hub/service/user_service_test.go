@@ -175,7 +175,7 @@ func serviceStoreOver(st store.Store, wrap func(store.Store) store.Store) store.
 func setupUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTestEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -190,11 +190,7 @@ func setupUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTe
 	require.NoError(t, tvErr)
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(contexts.Stop)
-	ksKey, kErr := keystore.GenerateKey()
-	require.NoError(t, kErr)
-	ks, kErr := keystore.New(map[uint32][32]byte{1: ksKey})
-	require.NoError(t, kErr)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	// Passkeys need a hub URL; ListPasskeys reports availability through
 	// the same derivation the handlers use.
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
@@ -215,7 +211,6 @@ func setupUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTe
 		Lifecycle:            lifecycle,
 		Mail:                 mail.NewStubSender(),
 		Renderer:             mail.Renderer{},
-		Keystore:             ks,
 		WebAuthnSessions:     webauthnSessions,
 		DeviceAuthorizations: deviceAuths,
 	})
@@ -279,7 +274,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 func setupOAuthUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTestEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -289,7 +284,7 @@ func setupOAuthUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *u
 	userSvc := service.NewUserService(service.UserServiceDeps{
 		Store:     serviceStoreOver(st, wrap),
 		Config:    testConfig(),
-		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Settings:  servicetest.NewSettingsManager(t, st),
 		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Mail:      mail.NewStubSender(),
 		Renderer:  mail.Renderer{},
@@ -1107,7 +1102,7 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired bool) (leapmuxv1connect.UserServiceClient, store.Store, string) {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -1116,7 +1111,7 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 
 	hubtestutil.CreateTestAdmin(t, st)
 
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	if emailVerificationRequired {
 		enableEmailVerification(t, set)
 	}
@@ -1459,14 +1454,14 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *mailSenderDouble) {
 // requirement off.
 func setupResendUserTestWith(t *testing.T, seed regKeySeed) (*userTestEnv, *mailSenderDouble) {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
 	rec := &mailSenderDouble{}
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	if seed != nil {
 		seed(t, set)
 	}
@@ -1806,7 +1801,7 @@ func newConcurrentSessionRemovalEnv(t *testing.T, remove func(ctx context.Contex
 	t.Helper()
 	ctx := context.Background()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(ctx))
@@ -1851,7 +1846,7 @@ func newConcurrentSessionRemovalEnv(t *testing.T, remove func(ctx context.Contex
 	userSvc := service.NewUserService(service.UserServiceDeps{
 		Store:     hooked,
 		Config:    testConfig(),
-		Settings:  servicetest.NewSettingsManager(t, hooked, nil),
+		Settings:  servicetest.NewSettingsManager(t, hooked),
 		Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil),
 		Mail:      mail.NewStubSender(),
 		Renderer:  mail.Renderer{},
@@ -2767,7 +2762,6 @@ func seedPasskeyCredential(t *testing.T, st store.Store, userID, friendlyName st
 		SignCount:    0,
 		Transports:   "[]",
 		FriendlyName: friendlyName,
-		KeyVersion:   1,
 		CreatedAt:    now,
 	}))
 	return pkID
@@ -3069,12 +3063,12 @@ func TestVerifyEmail_IncludesPasskeyCount(t *testing.T) {
 func TestResendVerificationEmail_SMTPEnableTransition(t *testing.T) {
 	t.Parallel()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	seedSMTP(t, set)
 
 	rec := &mailSenderDouble{}
@@ -3299,24 +3293,18 @@ func TestBeginPasskeyRegistration_FreshVerifiedSessionStartsFirstPasskeyWithoutE
 func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
 	t.Parallel()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-
 	userSvc := service.NewUserService(service.UserServiceDeps{
 		Store:     st,
 		Config:    testConfig(),
-		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Settings:  servicetest.NewSettingsManager(t, st),
 		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Mail:      mail.NewStubSender(),
 		Renderer:  mail.Renderer{},
-		Keystore:  ks,
 	})
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
@@ -3352,24 +3340,20 @@ func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
 func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.T) {
 	t.Parallel()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 	sessions := hubwebauthn.NewSessionStore()
 	wa, err := hubwebauthn.NewService(hubwebauthn.RPConfig{
 		RPID: "localhost", RPDisplayName: "LeapMux", RPOrigins: []string{"http://localhost:4327"},
-	}, st, ks, sessions)
+	}, st, sessions)
 	require.NoError(t, err)
 
 	// The service derives its RP config from public_url (testConfig has no
 	// listen address), mirroring the ceremony-test harness.
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
 	userSvc := service.NewUserService(service.UserServiceDeps{
 		Store:            st,
@@ -3378,7 +3362,6 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 		Lifecycle:        auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Mail:             mail.NewStubSender(),
 		Renderer:         mail.Renderer{},
-		Keystore:         ks,
 		WebAuthnSessions: sessions,
 	})
 	mux := http.NewServeMux()
@@ -3399,11 +3382,9 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 		DisplayName: "Reauth", FirstCredentialExempt: false, IsAdmin: true,
 	}))
 	credRow := id.Generate()
-	encPub, keyVersion, encErr := wa.EncryptPublicKey(credRow, []byte("pubkey"))
-	require.NoError(t, encErr)
 	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
-		ID: credRow, UserID: userID, CredentialID: []byte("cred-reauth"), PublicKey: encPub,
-		Transports: "[]", FriendlyName: "Phone", KeyVersion: keyVersion, CreatedAt: time.Now().UTC(),
+		ID: credRow, UserID: userID, CredentialID: []byte("cred-reauth"), PublicKey: []byte("pubkey"),
+		Transports: "[]", FriendlyName: "Phone", CreatedAt: time.Now().UTC(),
 	}))
 
 	// A LIVE elevation ceremony (BeginElevation writes the properly
@@ -3463,22 +3444,13 @@ func TestUserFinishHandlersRefuseAnEmptyCredential(t *testing.T) {
 func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 	t.Parallel()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 	sessions := hubwebauthn.NewSessionStore()
-	wa, err := hubwebauthn.NewService(hubwebauthn.RPConfig{
-		RPID: "localhost", RPDisplayName: "LeapMux", RPOrigins: []string{"http://localhost:4327"},
-	}, st, ks, sessions)
-	require.NoError(t, err)
-
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
 	userSvc := service.NewUserService(service.UserServiceDeps{
 		Store:            st,
@@ -3487,7 +3459,6 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 		Lifecycle:        auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Mail:             mail.NewStubSender(),
 		Renderer:         mail.Renderer{},
-		Keystore:         ks,
 		WebAuthnSessions: sessions,
 	})
 	mux := http.NewServeMux()
@@ -3510,11 +3481,9 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 	// A REAL credential row: BeginRegistration lists the user's passkeys to
 	// build excludeCredentials, so it decrypts every stored public key.
 	credRow := id.Generate()
-	encPub, keyVersion, encErr := wa.EncryptPublicKey(credRow, []byte("pubkey"))
-	require.NoError(t, encErr)
 	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
-		ID: credRow, UserID: userID, CredentialID: []byte("cred-begin"), PublicKey: encPub,
-		Transports: "[]", FriendlyName: "Phone", KeyVersion: keyVersion, CreatedAt: time.Now().UTC(),
+		ID: credRow, UserID: userID, CredentialID: []byte("cred-begin"), PublicKey: []byte("pubkey"),
+		Transports: "[]", FriendlyName: "Phone", CreatedAt: time.Now().UTC(),
 	}))
 
 	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.SessionCreationOptions{Lifetime: auth.DefaultSessionDuration, Proof: auth.SignInProvedNoFactor})
@@ -3593,7 +3562,7 @@ func TestListPasskeys_IncludesCredentialId(t *testing.T) {
 func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	t.Parallel()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
@@ -3603,7 +3572,7 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	userSvc := service.NewUserService(service.UserServiceDeps{
 		Store:     st,
 		Config:    cfg,
-		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Settings:  servicetest.NewSettingsManager(t, st),
 		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Mail:      mail.NewStubSender(),
 		Renderer:  mail.Renderer{},
