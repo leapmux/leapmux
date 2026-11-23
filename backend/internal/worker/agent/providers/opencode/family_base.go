@@ -59,15 +59,24 @@ type FamilyBase struct {
 	childSessions map[string]*openCodeChildSession
 	// earlyChildEvents buffers final daemon SSE statuses for non-root child
 	// sessions that arrive before ACP marks the child as an active background
-	// run. Guarded by childSessionsMu.
-	earlyChildEvents map[string]bgtask.Status
+	// run. Capped at openCodeMaxTrackedEntries in FIFO order. Guarded by childSessionsMu.
+	earlyChildEvents     map[string]bgtask.Status
+	earlyChildEventOrder []string
+	// finishedForegroundSessions records child session IDs that already closed
+	// in the foreground so trailing daemon idle events do not populate
+	// earlyChildEvents. Capped at openCodeMaxTrackedEntries in FIFO order.
+	// Guarded by childSessionsMu.
+	finishedForegroundSessions map[string]struct{}
+	finishedForegroundOrder    []string
 	// finalizedTaskCalls records toolCallIDs whose final ACP tool_call or
 	// tool_call_update has already been observed, mapped to their owning root
 	// session ID, so late non-final updates cannot recreate orphan rows.
-	// Guarded by childSessionsMu.
-	finalizedTaskCalls map[string]string
+	// Capped at openCodeMaxTrackedEntries in FIFO order. Guarded by childSessionsMu.
+	finalizedTaskCalls     map[string]string
+	finalizedTaskCallOrder []string
 	// reusedTaskCalls maps a reuse toolCallID to the existing task_id row key
-	// it revived and its owning root session ID. Guarded by childSessionsMu.
+	// it revived and its owning root session ID. Deleted when the call
+	// finalizes. Guarded by childSessionsMu.
 	reusedTaskCalls map[string]openCodeReusedTaskCall
 }
 

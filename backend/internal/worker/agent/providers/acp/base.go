@@ -1673,6 +1673,7 @@ func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, resp 
 // ToolCallEnvelope holds a parsed ACP session/notification tool_call.
 // It carries these fields that the preceding parser omitted:
 //   - Title.
+//   - Content.
 //   - RawInput.
 //   - RawOutput.
 //   - Meta.
@@ -1683,6 +1684,7 @@ type ToolCallEnvelope struct {
 	Title      string          `json:"title"`
 	Kind       string          `json:"kind"`
 	Status     string          `json:"status"`
+	Content    []ToolCallBlock `json:"content"`
 	RawInput   json.RawMessage `json:"rawInput"`
 	RawOutput  json.RawMessage `json:"rawOutput"`
 	Meta       json.RawMessage `json:"_meta"`

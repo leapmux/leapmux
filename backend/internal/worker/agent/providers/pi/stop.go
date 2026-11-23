@@ -37,14 +37,20 @@ func (a *Agent) Stop() {
 		<-abortDone
 	}
 	a.interruptOutput.waitForDrain()
+	a.finishPiProcessExit()
+}
+
+// finishPiProcessExit flushes unfinished output, closes open background tasks,
+// and resets live progress after the Pi process has exited.
+func (a *Agent) finishPiProcessExit() {
 	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	completion := a.ProcessExitCompletion()
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
 	a.closeOpenBgTasks(piSubagentStatusForCompletion(completion))
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	providerkit.ResetSpansAndProgress(a.sink)
-	a.outputMu.Unlock()
 }
 
 // requestPiShutdownAbort permits delivery until its deadline, then returns the helper's completion channel.
@@ -83,14 +89,7 @@ func (a *Agent) Wait() error {
 	a.interruptOutput.waitForDrain()
 	a.stopPiGoalRefresh()
 	a.dialogDeadlines.StopAll()
-	a.outputMu.Lock()
-	completion := a.ProcessExitCompletion()
-	a.flushPiGeneration(completion)
-	a.persistIncompletePiTools(completion)
-	a.closeOpenBgTasks(piSubagentStatusForCompletion(completion))
-	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
-	providerkit.ResetSpansAndProgress(a.sink)
-	a.outputMu.Unlock()
+	a.finishPiProcessExit()
 	return err
 }
 

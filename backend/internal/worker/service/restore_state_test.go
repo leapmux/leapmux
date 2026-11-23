@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,10 +23,11 @@ import (
 // (crash/restart). A row that was already final (completed/failed/...) must
 // be left untouched.
 //
-// RestoreState runs MarkAllActiveAgentBackgroundTasksInterrupted AFTER the
-// input queue's recovery, and the sweep is pure DB (caches do not exist yet
-// at boot), so the rows read back after the call reflect the persisted state
-// the next boot -- and the live worker -- will see.
+// RestoreState identifies queued agents held by active background work, runs
+// MarkAllActiveAgentBackgroundTasksInterrupted, and then recovers the input
+// queues so recovered snapshots reflect the post-sweep state. The sweep is pure
+// DB (caches do not exist yet at boot), so the rows read back after the call
+// reflect the persisted state the next boot -- and the live worker -- will see.
 func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	t.Parallel()
 
@@ -131,4 +134,92 @@ func TestRestoreStatePreservesNativeMessagesForEachInterruptedChild(t *testing.T
 	}
 	assert.Len(t, transcriptMessages(t, svc, doneID), doneBefore,
 		"a child that already ended is not closed a second time")
+}
+
+func TestRestoreStatePausesQueueHeldByCrashedBackgroundTaskAndSkipsAutoDrain(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	svc, _, _ := setupTestService(t)
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    workingDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	// Simulate a crash while the root agent's turn was idle, a background task
+	// was running, and a user message was queued behind that background task.
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		Role:         leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+		OwnerAgentID: "root-1",
+		RowKey:       "bg-running",
+		Seq:          1,
+		Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindShell),
+		Title:        "long shell task",
+		Status:       leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+	})
+	enqueued, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID:      "queued-after-crash",
+		AgentID: "root-1",
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		Text:    "do not auto-dispatch after crash",
+	})
+	require.NoError(t, err)
+	require.False(t, enqueued.Paused)
+	require.True(t, enqueued.ActiveBackgroundWork)
+
+	// Capture the snapshot broadcast during RestoreState to confirm it reflects
+	// the post-sweep background-task state rather than stale pre-sweep flags.
+	writer := newTestWriter()
+	registerAgentWatch(svc, "browser-1", "root-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+
+	svc.RestoreState()
+
+	// Verify the background task was marked interrupted.
+	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
+		OwnerAgentID: "root-1", Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), rows[0].Status)
+
+	// Verify the broadcast snapshot from RestoreState itself shows post-sweep state.
+	var broadcastSnapshot *leapmuxv1.AgentInputQueueSnapshot
+	for _, stream := range writer.streamsSnapshot() {
+		event := decodeWatchAgentEvent(t, stream)
+		if snap := event.GetInputQueueChanged().GetSnapshot(); snap != nil {
+			broadcastSnapshot = snap
+		}
+	}
+	require.NotNil(t, broadcastSnapshot, "RestoreState must publish the recovered queue snapshot")
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, broadcastSnapshot.GetPauseReason())
+	require.Len(t, broadcastSnapshot.GetItems(), 1)
+	assert.False(t, broadcastSnapshot.GetItems()[0].GetCanSteer(), "recovered paused snapshot must not advertise stale background-work CanSteer")
+	assert.False(t, broadcastSnapshot.GetItems()[0].GetCanPreempt(), "recovered paused snapshot must not advertise stale background-work CanPreempt")
+
+	// Verify the persisted snapshot matches.
+	recovered, err := svc.InputQueue.Snapshot(ctx, "root-1")
+	require.NoError(t, err)
+	assert.True(t, recovered.Paused)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, recovered.PauseReason)
+	assert.False(t, recovered.ActiveBackgroundWork)
+	require.Len(t, recovered.Items, 1)
+	assert.False(t, recovered.Items[0].CanSteer)
+	assert.False(t, recovered.Items[0].CanPreempt)
+
+	// Start a live agent and run DrainRecovered: the interrupted queue must NOT auto-drain.
+	rootSink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: "root-1", WorkingDir: workingDir,
+	}, rootSink, claudetest.StartEcho)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent("root-1") })
+
+	require.NoError(t, svc.InputQueue.DrainRecovered(ctx))
+	svc.InputQueue.StopAndWait()
+
+	var msgCount int
+	require.NoError(t, svc.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE agent_id = 'root-1' AND id = 'queued-after-crash'`).Scan(&msgCount))
+	assert.Zero(t, msgCount, "DrainRecovered must not auto-dispatch a message held by a crashed background task")
 }

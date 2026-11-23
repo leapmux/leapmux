@@ -315,3 +315,31 @@ func TestResumedSnapshotReconcilesChildrenWithoutSpuriousRevivalAndRevivesOnLive
 	assert.Equal(t, bgtask.StatusRunning, finishedRow.Status)
 	assert.True(t, a.ActiveChildTurnState("child-finished").Active)
 }
+
+func TestChildSnapshotReplaySkipsStaleJobRegisteredEvents(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.streams["child"] = &sessionStream{
+		address:         sessionAddress{Kind: "subagent", ParentSessionID: "native-root", ChildSessionID: "native-child", Mode: "continuable"},
+		sessionID:       "native-child",
+		parentSessionID: "native-root",
+		childAgentID:    "stored-child",
+		lastSeq:         -1,
+		pending:         map[string][]byte{},
+		ready:           make(chan struct{}),
+		resumed:         true,
+	}
+	snapshot := []byte(`{"type":"item","streamId":"child","value":{"type":"snapshot","cursor":4,"records":[{"event":{"type":"subagent/descriptor","seq":1,"time":1000,"data":{"version":0,"mode":"continuable","label":"Worker"}}},{"event":{"type":"turn/start","seq":2,"time":1001,"data":{"turn":1}}},{"event":{"type":"job/registered","seq":3,"time":1002,"data":{"jobId":"stale-job","command":"sleep 60"}}},{"event":{"type":"turn/end","seq":4,"time":1003,"data":{"turn":1,"reason":{"kind":"completed"}}}}],"hasMore":false,"projections":{"values":{"subagent":{"mode":"continuable","label":"Worker","seq":1}}}}}`)
+	require.NoError(t, a.handleFrame(snapshot))
+
+	_, staleFound := sink.Child("stored-child").BackgroundTask("deepseek-job:stale-job")
+	assert.False(t, staleFound, "replaying a child snapshot must not open stale StatusRunning shell rows")
+
+	// A live job/registered event after replay still opens its shell row.
+	liveJob := []byte(`{"type":"item","streamId":"child","value":{"type":"event","event":{"type":"job/registered","seq":5,"time":2000,"data":{"jobId":"live-job","command":"make test"}}}}`)
+	require.NoError(t, a.handleFrame(liveJob))
+	row, liveFound := sink.Child("stored-child").BackgroundTask("deepseek-job:live-job")
+	require.True(t, liveFound)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+}

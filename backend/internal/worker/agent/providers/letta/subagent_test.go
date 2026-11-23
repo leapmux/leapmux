@@ -694,3 +694,81 @@ func TestLettaClosedChildRevivesFromErrorToRunning(t *testing.T) {
 	}
 	assert.Contains(t, strings.Join(contents, "\n"), "LETTA_REVIVED_TEXT")
 }
+
+func TestLettaClosedChildRevivesWithUpdatedPromptAndToolCallID(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	currentRuntime := map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"}
+
+	job1 := func(status string) []byte {
+		return lettaMultiChildStateFrame(t, currentRuntime, []any{map[string]any{
+			"subagent_id":            lettaTestChildID,
+			"subagent_type":          "explore",
+			"description":            "Count the files",
+			"prompt":                 "Job 1 prompt",
+			"status":                 status,
+			"tool_call_id":           "call-job-1",
+			"parent_agent_id":        "agent-local-1",
+			"parent_conversation_id": "local-conv-1",
+		}})
+	}
+	job2 := func(status string) []byte {
+		return lettaMultiChildStateFrame(t, currentRuntime, []any{map[string]any{
+			"subagent_id":            lettaTestChildID,
+			"subagent_type":          "explore",
+			"description":            "Count the files",
+			"prompt":                 "Job 2 prompt",
+			"status":                 status,
+			"tool_call_id":           "call-job-2",
+			"parent_agent_id":        "agent-local-1",
+			"parent_conversation_id": "local-conv-1",
+		}})
+	}
+
+	a.HandleOutput(job1("running"))
+	row, ok := sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// A LIVE child must still reject a snapshot that changes its prompt or tool call ID.
+	a.HandleOutput(job2("running"))
+	assert.Equal(t, "Job 1 prompt", a.children[lettaTestChildID].prompt)
+	assert.Equal(t, "call-job-1", a.children[lettaTestChildID].toolCallID)
+
+	// Bind a background task receipt for job 1, then complete job 1.
+	a.HandleOutput(lettaRootDeltaFrame(t, map[string]any{
+		"message_type": "tool_return_message", "tool_call_id": "call-job-1",
+		"tool_return": "Task running in background with task ID: task_1\n",
+	}))
+	a.HandleOutput(job1("completed"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	require.True(t, a.children[lettaTestChildID].closed)
+
+	// A closed child receiving a non-finished snapshot with a new prompt and tool call ID must revive.
+	a.HandleOutput(job2("running"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "closed child must revive with updated prompt and tool call ID")
+	assert.Equal(t, []string{lettaTestChildID}, sink.RevivedTasks())
+	assert.Equal(t, "Job 2 prompt", a.children[lettaTestChildID].prompt)
+	assert.Equal(t, "call-job-2", a.children[lettaTestChildID].toolCallID)
+	assert.Empty(t, a.children[lettaTestChildID].taskID, "a new tool call ID clears the prior job's task ID")
+
+	var contents []string
+	for _, msg := range sink.Child(row.ChildAgentID).Messages() {
+		contents = append(contents, string(msg.Content))
+	}
+	assert.Contains(t, strings.Join(contents, "\n"), "Job 2 prompt")
+
+	// A new receipt and completion notification for job 2 must bind and close cleanly.
+	a.HandleOutput(lettaRootDeltaFrame(t, map[string]any{
+		"message_type": "tool_return_message", "tool_call_id": "call-job-2",
+		"tool_return": "Task running in background with task ID: task_2\n",
+	}))
+	a.HandleOutput(lettaChildTaskNotification(t, "task_2", "JOB_2_DONE"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}

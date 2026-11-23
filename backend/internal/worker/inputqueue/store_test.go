@@ -2586,7 +2586,7 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	t.Run("PrepareBypassBackgroundWork admission and explicit refusals", func(t *testing.T) {
+	t.Run("PrepareBypassSteer and PrepareBypassPreempt admission and explicit refusals", func(t *testing.T) {
 		t.Parallel()
 		clock := testutil.NewQuartzMock(t)
 		database := newQueueDatabase(t)
@@ -2601,17 +2601,19 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 		require.NoError(t, err)
 
 		// Wrong or empty input ID -> ErrNotHead.
-		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "", true)
+		_, _, err = store.PrepareBypassSteer(ctx, "agent-1", "")
 		assert.ErrorIs(t, err, ErrNotHead)
-		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "other", true)
+		_, _, err = store.PrepareBypassSteer(ctx, "agent-1", "other")
+		assert.ErrorIs(t, err, ErrNotHead)
+		_, _, err = store.PrepareBypassPreempt(ctx, "agent-1", "")
 		assert.ErrorIs(t, err, ErrNotHead)
 
-		// Active turn refuses with ErrSteeringState (allowPaused) / ErrPreemptionState (!allowPaused).
+		// Active turn refuses with ErrSteeringState (Steer) / ErrPreemptionState (Preempt).
 		_, _, err = store.TurnStarted(ctx, "agent-1", true)
 		require.NoError(t, err)
-		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", true)
+		_, _, err = store.PrepareBypassSteer(ctx, "agent-1", "in-1")
 		assert.ErrorIs(t, err, ErrSteeringState)
-		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", false)
+		_, _, err = store.PrepareBypassPreempt(ctx, "agent-1", "in-1")
 		assert.ErrorIs(t, err, ErrPreemptionState)
 		_, _, err = store.TurnEnded(ctx, "agent-1", false)
 		require.NoError(t, err)
@@ -2619,20 +2621,20 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 		// Editing item refuses explicitly.
 		_, _, _, err = store.BeginEdit(ctx, "agent-1", "in-1", "client-1", false)
 		require.NoError(t, err)
-		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", true)
+		_, _, err = store.PrepareBypassSteer(ctx, "agent-1", "in-1")
 		assert.ErrorIs(t, err, ErrSteeringState)
-		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", false)
+		_, _, err = store.PrepareBypassPreempt(ctx, "agent-1", "in-1")
 		assert.ErrorIs(t, err, ErrPreemptionState)
 		_, err = store.CancelEdit(ctx, "agent-1", "in-1", "client-1")
 		require.NoError(t, err)
 
-		// Paused queue: allowPaused=false refuses with ErrPreemptionState; allowPaused=true admits.
+		// Paused queue: PrepareBypassPreempt refuses with ErrPreemptionState; PrepareBypassSteer admits.
 		_, err = store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
 		require.NoError(t, err)
-		_, _, err = store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", false)
+		_, _, err = store.PrepareBypassPreempt(ctx, "agent-1", "in-1")
 		assert.ErrorIs(t, err, ErrPreemptionState)
 
-		prepared, snap, err := store.PrepareBypassBackgroundWork(ctx, "agent-1", "in-1", true)
+		prepared, snap, err := store.PrepareBypassSteer(ctx, "agent-1", "in-1")
 		require.NoError(t, err)
 		require.NotNil(t, prepared)
 		assert.False(t, prepared.Steering)
@@ -2641,7 +2643,7 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 		assert.True(t, snap.Paused)
 		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, snap.Items[0].State)
 
-		// Scheduled future head refuses with ErrScheduled in both allowPaused modes.
+		// Scheduled future head refuses with ErrScheduled in both bypass modes.
 		future := clock.Now().UTC().Add(time.Minute)
 		database2 := newQueueDatabase(t)
 		store2 := NewStore(database2, clock)
@@ -2653,9 +2655,9 @@ func TestStoreBackgroundWorkBypassAndSelectiveClearing(t *testing.T) {
 			ScheduledAt: &future,
 		})
 		require.NoError(t, err)
-		_, _, err = store2.PrepareBypassBackgroundWork(ctx, "agent-1", "sched-1", true)
+		_, _, err = store2.PrepareBypassSteer(ctx, "agent-1", "sched-1")
 		assert.ErrorIs(t, err, ErrScheduled)
-		_, _, err = store2.PrepareBypassBackgroundWork(ctx, "agent-1", "sched-1", false)
+		_, _, err = store2.PrepareBypassPreempt(ctx, "agent-1", "sched-1")
 		assert.ErrorIs(t, err, ErrScheduled)
 	})
 
@@ -3087,4 +3089,88 @@ func TestStoreBackgroundWorkRefreshTreeAndExemptions(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, prepared)
 	})
+}
+
+func TestStoreRequeueBusyIncrementsRevisionOnce(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	_, store := newStoreFixture(t)
+
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "in-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "first",
+	})
+	require.NoError(t, err)
+	prepared, before, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+
+	after, err := store.RequeueBusy(ctx, "agent-1", prepared.Item.ID, true)
+	require.NoError(t, err)
+	assert.Equal(t, before.Revision+1, after.Revision, "RequeueBusy must increment revision by exactly 1")
+	assert.True(t, after.ActiveTurnSteerable)
+}
+
+func TestStoreRecoveryPausesQueuedAgentHeldByActiveBackgroundWork(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	database, store := newStoreFixture(t)
+	insertBackgroundTaskRow(t, database, "agent-1", "bg-1", 1,
+		leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "in-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "wait for bg",
+	})
+	require.NoError(t, err)
+
+	snapshots, err := NewStore(database, nil).Recover(ctx)
+	require.NoError(t, err)
+	require.Len(t, snapshots, 1)
+	assert.True(t, snapshots[0].Paused)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshots[0].PauseReason)
+	assert.Equal(t, pauseOwnerRecovery, readQueuePauseState(t, database).owner)
+}
+
+func TestStoreBackgroundWorkQueriesUseCoveringIndexes(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	database, _ := newStoreFixture(t)
+
+	explain := func(query string, args ...any) string {
+		t.Helper()
+		rows, err := database.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...)
+		require.NoError(t, err)
+		defer func() { assert.NoError(t, rows.Close()) }()
+		var details []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			require.NoError(t, rows.Scan(&id, &parent, &unused, &detail))
+			details = append(details, detail)
+		}
+		require.NoError(t, rows.Err())
+		return strings.Join(details, "\n")
+	}
+
+	rootPlan := explain(`
+		SELECT EXISTS (
+			SELECT 1 FROM agent_background_tasks
+			WHERE owner_agent_id = ? AND status IN (?, ?)
+		)`, "agent-1", bgtask.StatusPending, bgtask.StatusRunning)
+	assert.Contains(t, rootPlan, "COVERING INDEX idx_agent_background_tasks_owner_status")
+
+	childPlan := explain(`
+		WITH RECURSIVE descendants(child_agent_id, status) AS (
+			SELECT child_agent_id, status
+			FROM agent_background_tasks
+			WHERE parent_agent_id = ?
+			UNION
+			SELECT b.child_agent_id, b.status
+			FROM agent_background_tasks b
+			JOIN descendants d ON d.child_agent_id <> '' AND b.parent_agent_id = d.child_agent_id
+		)
+		SELECT EXISTS (SELECT 1 FROM descendants WHERE status IN (?, ?))`,
+		"child-1", bgtask.StatusPending, bgtask.StatusRunning)
+	assert.Contains(t, childPlan, "COVERING INDEX idx_agent_background_tasks_parent_child_status")
 }

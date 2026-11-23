@@ -22,10 +22,17 @@ const (
 	qoderWorkflowChildLimit   = 16 << 20
 )
 
-var errQoderArchiveIncomplete = errors.New("the Qoder workflow archive is incomplete")
+var (
+	errQoderArchiveIncomplete = errors.New("the Qoder workflow archive is incomplete")
+	errQoderReplayUnverified  = errors.New("the Qoder workflow replay could not be verified")
+)
 
 func qoderIncompleteArchive(err error) error {
 	return fmt.Errorf("%w: %w", errQoderArchiveIncomplete, err)
+}
+
+func qoderReplayUnverified(reason string) error {
+	return fmt.Errorf("%w: %s", errQoderReplayUnverified, reason)
 }
 
 type qoderWorkflowArchive struct {
@@ -56,7 +63,7 @@ func readQoderWorkflowArchiveWithOpener(opts agent.Options, sessionID string, ev
 	opener func(string) (qoderArchiveReadRoot, error),
 ) (archive qoderWorkflowArchive, err error) {
 	if opts.WorkingDir == "" || !filepath.IsAbs(opts.WorkingDir) || !qoderSafeFileID(sessionID) || event.OutputFile == "" {
-		return qoderWorkflowArchive{}, errors.New("the Qoder workflow archive identity is incomplete")
+		return qoderWorkflowArchive{}, qoderReplayUnverified("the Qoder workflow archive identity is incomplete")
 	}
 	workflowRoot := filepath.Join(opts.WorkingDir, ".qoder", "sessions", sessionID, "workflows", "runs")
 	relative, err := filepath.Rel(workflowRoot, filepath.Clean(event.OutputFile))
@@ -65,7 +72,7 @@ func readQoderWorkflowArchiveWithOpener(opts agent.Options, sessionID string, ev
 	}
 	parts := strings.Split(relative, string(filepath.Separator))
 	if len(parts) != 2 || !qoderSafeFileID(parts[0]) || parts[1] != "output.json" || (run.runID != "" && run.runID != parts[0]) {
-		return qoderWorkflowArchive{}, errors.New("the Qoder workflow output path does not match the run")
+		return qoderWorkflowArchive{}, qoderReplayUnverified("the Qoder workflow output path does not match the run")
 	}
 	runID := parts[0]
 	workingRoot, err := opener(opts.WorkingDir)
@@ -95,11 +102,11 @@ func readQoderWorkflowArchiveWithOpener(opts agent.Options, sessionID string, ev
 		return qoderWorkflowArchive{}, qoderIncompleteArchive(fmt.Errorf("decode the Qoder workflow output: %w", err))
 	}
 	if output.RunID != runID || output.TaskID != event.TaskID || output.AgentCount < 0 {
-		return qoderWorkflowArchive{}, errors.New("the Qoder workflow output has a different run identity")
+		return qoderWorkflowArchive{}, qoderReplayUnverified("the Qoder workflow output has a different run identity")
 	}
 	if event.requireFinalStatus {
 		if _, known := qoderFinalChildStatus(output.Status); !known || output.Status != event.Status {
-			return qoderWorkflowArchive{}, errors.New("the Qoder replay notification does not match the canonical final status")
+			return qoderWorkflowArchive{}, qoderReplayUnverified("the Qoder replay notification does not match the canonical final status")
 		}
 	}
 	name := bgtask.FirstLine(output.WorkflowName)

@@ -28,6 +28,8 @@ const (
 	openCodeToolStatusRunning   = "running"
 	openCodeToolStatusCompleted = "completed"
 	openCodeToolStatusError     = "error"
+	// openCodeMaxTrackedEntries caps process-local tracking maps in FIFO order.
+	openCodeMaxTrackedEntries = 512
 )
 
 // IsHiddenPrimaryAgent reports whether a primary-agent id is an internal
@@ -41,12 +43,6 @@ func IsHiddenPrimaryAgent(id string) bool {
 	default:
 		return false
 	}
-}
-
-// OpenCode and Kilo identify the native task before its arguments arrive.
-// Other titles require the native prompt and subagent discriminator.
-func SubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
-	return openCodeSpawnObservation(tc.ToolCallID, tc.Title, tc.RawInput, tc.Title == openCodeTaskTool && tc.Kind == "think")
 }
 
 type openCodeTaskInput struct {
@@ -121,78 +117,6 @@ func openCodeTaskTitle(callTitle string, input openCodeTaskInput) string {
 		title = "Subagent"
 	}
 	return title
-}
-
-// Build the registry row from a known native task or its later arguments.
-// Both event paths use the tool-call ID, so later arguments update the same row.
-func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMessage, knownTask bool) *acp.SubagentObservation {
-	input := parseOpenCodeTaskInput(rawInput)
-	// An unidentified tool requires parsed task arguments.
-	if !knownTask && !input.argumentsReady {
-		return nil
-	}
-	title := openCodeTaskTitle(callTitle, input)
-	spawnSpanID := ""
-	if input.argumentsReady && input.taskID == "" {
-		spawnSpanID = toolCallID
-	}
-	return &acp.SubagentObservation{
-		RowKey: toolCallID, Title: title, Status: bgtask.StatusRunning,
-		ChildSpawnSpanID: spawnSpanID, Prompt: input.prompt, Spawns: true,
-	}
-}
-
-// SubagentFromToolCallUpdate closes a final row and adopts the native child key from valid task metadata.
-// RenameFrom preserves the initial registry row. ChildSpawnSpanID preserves the native invocation identity.
-// A successful background launch renames to metadata.sessionId and stays running until daemon completion.
-func SubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.SubagentObservation {
-	if !acp.StatusIsFinal(tcu.Status) {
-		// Kilo first supplies task arguments in an in-progress update.
-		// Its initial tool_call can contain rawInput: {}.
-		// Detect that request here so the final update closes an existing registry row.
-		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput, false)
-	}
-	// The final rawOutput may carry the child session id under metadata.
-	out := parseOpenCodeTaskOutput(tcu.RawOutput)
-	rowKey := tcu.ToolCallID
-	renameFrom := ""
-	childKey := ""
-	spawnSpanID := ""
-	if out.sessionID != "" {
-		rowKey = out.sessionID
-		renameFrom = tcu.ToolCallID
-		childKey = out.sessionID
-		spawnSpanID = tcu.ToolCallID
-	}
-	status := acp.FinalStatus(tcu.Status)
-	if out.background && out.sessionID != "" && status == bgtask.StatusSucceeded {
-		return &acp.SubagentObservation{
-			RowKey:           rowKey,
-			RenameFrom:       renameFrom,
-			ChildAgentKey:    childKey,
-			ChildSpawnSpanID: spawnSpanID,
-			Title:            tcu.Title,
-			Status:           bgtask.StatusRunning,
-			CloseRow:         false,
-			Mode:             acp.ModeUpsert,
-			ReportID:         tcu.ToolCallID,
-			Report:           agent.SubagentReport{},
-		}
-	}
-	return &acp.SubagentObservation{
-		RowKey:           rowKey,
-		RenameFrom:       renameFrom,
-		ChildAgentKey:    childKey,
-		ChildSpawnSpanID: spawnSpanID,
-		Title:            tcu.Title,
-		Status:           status,
-		CloseRow:         true,
-		Mode:             acp.ModeCloseOnly,
-		ReportID:         tcu.ToolCallID,
-		Report: agent.SubagentReport{
-			Text: openCodeSubagentReport(acp.ToolCallText(tcu.Content), out.background),
-		},
-	}
 }
 
 func openCodeSubagentReport(text string, background bool) string {
@@ -300,10 +224,11 @@ func (b *FamilyBase) followChildSession(rootSessionID, rowKey, childSessionID st
 	}
 	child.id = childSessionID
 	child.loading = true
+	target := child.target(rowKey)
 	b.childSessionsMu.Unlock()
 	// The daemon reader must not wait for the agent's answer.
 	go func() {
-		modelID, err := b.LoadChildSession(child.target(rowKey))
+		modelID, err := b.LoadChildSession(target)
 		if err != nil {
 			if errors.Is(err, agent.ErrChildRouteNotReady) {
 				b.childSessionsMu.Lock()
@@ -436,6 +361,24 @@ func (b *FamilyBase) InterruptChild(childKey string, _ agent.StopContext) error 
 		}
 		ctx, cancel := context.WithTimeout(b.Context(), openCodeQuestionTimeout)
 		defer cancel()
+		if target, _, running := b.childSessionTarget(childKey); running && target.SessionID != "" {
+			return b.stopChild(ctx, childKey, target.SessionID)
+		}
+		if b.hasActiveReusedTask(sessionID, childKey) {
+			return b.stopChild(ctx, childKey, childKey)
+		}
+		if sink := b.Sink(); sink != nil {
+			if identity, err := bgtask.ParseRowIdentity(childKey); err == nil {
+				if resolved, found, err := sink.LookupChildIdentity(identity); err == nil && found && resolved.ProviderChildKey != "" {
+					if _, status, ok, err := sink.LookupBackgroundTask(childKey); err == nil && ok {
+						if status.IsFinished() {
+							return nil
+						}
+						return b.stopChild(ctx, childKey, resolved.ProviderChildKey)
+					}
+				}
+			}
+		}
 		part, found, err := b.Questions.findTaskPart(ctx, sessionID, childKey)
 		if err != nil {
 			return err
@@ -501,13 +444,30 @@ func (b *FamilyBase) takeChildStop(callID string) bool {
 }
 
 // subagentFromToolCall inspects a task tool_call with FamilyBase's registry
-// lookup so rawInput.task_id revives an existing child row directly.
+// lookup so rawInput.task_id revives an existing child row directly, and handles
+// final-on-arrival task calls completely without leaking tracking state.
 func (b *FamilyBase) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
 	rootSessionID := b.CurrentSessionID()
-	if acp.StatusIsFinal(tc.Status) {
-		b.markTaskCallFinalized(tc.ToolCallID, rootSessionID)
+	knownTask := tc.Title == openCodeTaskTool && tc.Kind == "think"
+	if !acp.StatusIsFinal(tc.Status) {
+		return b.resolveSpawnObservation(tc.ToolCallID, tc.Title, tc.RawInput, knownTask, false)
 	}
-	return b.resolveSpawnObservation(tc.ToolCallID, tc.Title, tc.RawInput, tc.Title == openCodeTaskTool && tc.Kind == "think", false)
+	input := parseOpenCodeTaskInput(tc.RawInput)
+	if !knownTask && !input.argumentsReady {
+		return nil
+	}
+	reusedTaskID := b.takeReusedTaskID(tc.ToolCallID, rootSessionID)
+	if reusedTaskID == "" && input.argumentsReady && input.taskID != "" {
+		if sink := b.Sink(); sink != nil {
+			if childID, _, found, err := sink.LookupBackgroundTask(input.taskID); err == nil && found && childID != "" {
+				reusedTaskID = input.taskID
+			}
+		}
+	}
+	b.markTaskCallFinalized(tc.ToolCallID, rootSessionID)
+	title := openCodeTaskTitle(tc.Title, input)
+	freshSpawn := input.argumentsReady && input.taskID == ""
+	return b.finalizeTaskObservation(rootSessionID, tc.ToolCallID, title, tc.Status, tc.RawOutput, nil, reusedTaskID, input.prompt, freshSpawn, true)
 }
 
 func (b *FamilyBase) resolveSpawnObservation(toolCallID, callTitle string, rawInput json.RawMessage, knownTask, fromUpdate bool) *acp.SubagentObservation {
@@ -591,11 +551,25 @@ func (b *FamilyBase) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) 
 		}
 		return b.resolveSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput, false, true)
 	}
+	reusedTaskID := b.takeReusedTaskID(tcu.ToolCallID, rootSessionID)
 	b.markTaskCallFinalized(tcu.ToolCallID, rootSessionID)
-	out := parseOpenCodeTaskOutput(tcu.RawOutput)
-	reusedTaskID := b.reusedTaskID(tcu.ToolCallID, rootSessionID)
+	return b.finalizeTaskObservation(rootSessionID, tcu.ToolCallID, tcu.Title, tcu.Status, tcu.RawOutput, tcu.Content, reusedTaskID, "", false, false)
+}
 
-	rowKey := tcu.ToolCallID
+func (b *FamilyBase) finalizeTaskObservation(
+	rootSessionID, callID, title, rawStatus string,
+	rawOutput json.RawMessage,
+	content []acp.ToolCallBlock,
+	reusedTaskID, prompt string,
+	freshSpawn, upsertIfMissing bool,
+) *acp.SubagentObservation {
+	closeMode := acp.ModeCloseOnly
+	if upsertIfMissing {
+		closeMode = acp.ModeUpsert
+	}
+	out := parseOpenCodeTaskOutput(rawOutput)
+
+	rowKey := callID
 	renameFrom := ""
 	childKey := ""
 	spawnSpanID := ""
@@ -608,18 +582,20 @@ func (b *FamilyBase) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) 
 				renameFrom = reusedTaskID
 			}
 		} else {
-			renameFrom = tcu.ToolCallID
-			spawnSpanID = tcu.ToolCallID
+			renameFrom = callID
+			spawnSpanID = callID
 		}
 	case reusedTaskID != "":
 		rowKey = reusedTaskID
 		childKey = reusedTaskID
+	case freshSpawn:
+		spawnSpanID = callID
 	}
 
-	status := acp.FinalStatus(tcu.Status)
+	status := acp.FinalStatus(rawStatus)
 	if out.background && out.sessionID != "" && status == bgtask.StatusSucceeded {
-		if earlyStatus, closedEarly := b.claimBackgroundChildLaunch(rootSessionID, tcu.ToolCallID, reusedTaskID, out.sessionID); closedEarly {
-			if b.takeTaskChildStop(tcu.ToolCallID, reusedTaskID, out.sessionID) && earlyStatus != bgtask.StatusSucceeded {
+		if earlyStatus, closedEarly := b.claimBackgroundChildLaunch(rootSessionID, callID, reusedTaskID, out.sessionID); closedEarly {
+			if b.takeTaskChildStop(callID, reusedTaskID, out.sessionID) && earlyStatus != bgtask.StatusSucceeded {
 				earlyStatus = bgtask.StatusInterrupted
 			}
 			return &acp.SubagentObservation{
@@ -627,11 +603,13 @@ func (b *FamilyBase) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) 
 				RenameFrom:       renameFrom,
 				ChildAgentKey:    childKey,
 				ChildSpawnSpanID: spawnSpanID,
-				Title:            tcu.Title,
+				Title:            title,
 				Status:           earlyStatus,
 				CloseRow:         true,
-				Mode:             acp.ModeCloseOnly,
-				ReportID:         tcu.ToolCallID,
+				Mode:             closeMode,
+				Prompt:           prompt,
+				Spawns:           freshSpawn,
+				ReportID:         callID,
 				Report:           agent.SubagentReport{},
 			}
 		}
@@ -640,17 +618,19 @@ func (b *FamilyBase) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) 
 			RenameFrom:       renameFrom,
 			ChildAgentKey:    childKey,
 			ChildSpawnSpanID: spawnSpanID,
-			Title:            tcu.Title,
+			Title:            title,
 			Status:           bgtask.StatusRunning,
 			CloseRow:         false,
 			Mode:             acp.ModeUpsert,
-			ReportID:         tcu.ToolCallID,
+			Prompt:           prompt,
+			Spawns:           freshSpawn,
+			ReportID:         callID,
 			Report:           agent.SubagentReport{},
 		}
 	}
 
-	b.finishForegroundChildTracking(tcu.ToolCallID, reusedTaskID, rowKey)
-	if b.takeTaskChildStop(tcu.ToolCallID, reusedTaskID, rowKey) && status != bgtask.StatusSucceeded {
+	b.finishForegroundChildTracking(callID, reusedTaskID, rowKey)
+	if b.takeTaskChildStop(callID, reusedTaskID, rowKey) && status != bgtask.StatusSucceeded {
 		status = bgtask.StatusInterrupted
 	}
 	return &acp.SubagentObservation{
@@ -658,13 +638,15 @@ func (b *FamilyBase) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) 
 		RenameFrom:       renameFrom,
 		ChildAgentKey:    childKey,
 		ChildSpawnSpanID: spawnSpanID,
-		Title:            tcu.Title,
+		Title:            title,
 		Status:           status,
 		CloseRow:         true,
-		Mode:             acp.ModeCloseOnly,
-		ReportID:         tcu.ToolCallID,
+		Mode:             closeMode,
+		Prompt:           prompt,
+		Spawns:           freshSpawn,
+		ReportID:         callID,
 		Report: agent.SubagentReport{
-			Text: openCodeSubagentReport(acp.ToolCallText(tcu.Content), out.background),
+			Text: openCodeSubagentReport(acp.ToolCallText(content), out.background),
 		},
 	}
 }
@@ -699,11 +681,13 @@ func (b *FamilyBase) finishBackgroundChildSession(sessionID string, status bgtas
 	b.childSessionsMu.Lock()
 	child := b.childSessions[sessionID]
 	if child == nil || !child.background {
-		if b.earlyChildEvents == nil {
-			b.earlyChildEvents = make(map[string]bgtask.Status)
+		if _, finishedFG := b.finishedForegroundSessions[sessionID]; finishedFG {
+			b.childSessionsMu.Unlock()
+			return
 		}
-		if _, exists := b.earlyChildEvents[sessionID]; !exists {
-			b.earlyChildEvents[sessionID] = status
+		prev, exists := b.earlyChildEvents[sessionID]
+		if !exists || (prev == bgtask.StatusSucceeded && status != bgtask.StatusSucceeded) {
+			b.recordEarlyChildEventLocked(sessionID, status)
 		}
 		b.childSessionsMu.Unlock()
 		return
@@ -729,6 +713,7 @@ func (b *FamilyBase) finishBackgroundChildSession(sessionID string, status bgtas
 func (b *FamilyBase) claimBackgroundChildLaunch(rootSessionID, callID, reusedTaskID, sessionID string) (bgtask.Status, bool) {
 	b.childSessionsMu.Lock()
 	defer b.childSessionsMu.Unlock()
+	delete(b.finishedForegroundSessions, sessionID)
 	if earlyStatus, ok := b.earlyChildEvents[sessionID]; ok {
 		delete(b.earlyChildEvents, sessionID)
 		delete(b.childSessions, callID)
@@ -774,10 +759,12 @@ func (b *FamilyBase) finishForegroundChildTracking(callID, reusedTaskID, rowKey 
 	if reusedTaskID != "" {
 		delete(b.childSessions, reusedTaskID)
 		delete(b.earlyChildEvents, reusedTaskID)
+		b.recordFinishedForegroundSessionLocked(reusedTaskID)
 	}
 	if rowKey != "" {
 		delete(b.childSessions, rowKey)
 		delete(b.earlyChildEvents, rowKey)
+		b.recordFinishedForegroundSessionLocked(rowKey)
 	}
 }
 
@@ -787,7 +774,44 @@ func (b *FamilyBase) clearEarlyChildEvent(sessionID string) {
 	}
 	b.childSessionsMu.Lock()
 	delete(b.earlyChildEvents, sessionID)
+	delete(b.finishedForegroundSessions, sessionID)
 	b.childSessionsMu.Unlock()
+}
+
+func (b *FamilyBase) recordEarlyChildEventLocked(sessionID string, status bgtask.Status) {
+	if b.earlyChildEvents == nil {
+		b.earlyChildEvents = make(map[string]bgtask.Status)
+	}
+	_, existed := b.earlyChildEvents[sessionID]
+	b.earlyChildEvents[sessionID] = status
+	if existed {
+		return
+	}
+	b.earlyChildEventOrder = append(b.earlyChildEventOrder, sessionID)
+	for len(b.earlyChildEvents) > openCodeMaxTrackedEntries && len(b.earlyChildEventOrder) > 0 {
+		oldest := b.earlyChildEventOrder[0]
+		b.earlyChildEventOrder = b.earlyChildEventOrder[1:]
+		delete(b.earlyChildEvents, oldest)
+	}
+}
+
+func (b *FamilyBase) recordFinishedForegroundSessionLocked(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	if b.finishedForegroundSessions == nil {
+		b.finishedForegroundSessions = make(map[string]struct{})
+	}
+	if _, existed := b.finishedForegroundSessions[sessionID]; existed {
+		return
+	}
+	b.finishedForegroundSessions[sessionID] = struct{}{}
+	b.finishedForegroundOrder = append(b.finishedForegroundOrder, sessionID)
+	for len(b.finishedForegroundSessions) > openCodeMaxTrackedEntries && len(b.finishedForegroundOrder) > 0 {
+		oldest := b.finishedForegroundOrder[0]
+		b.finishedForegroundOrder = b.finishedForegroundOrder[1:]
+		delete(b.finishedForegroundSessions, oldest)
+	}
 }
 
 func (b *FamilyBase) markTaskCallFinalized(callID, rootSessionID string) {
@@ -796,10 +820,21 @@ func (b *FamilyBase) markTaskCallFinalized(callID, rootSessionID string) {
 	}
 	b.childSessionsMu.Lock()
 	defer b.childSessionsMu.Unlock()
+	delete(b.reusedTaskCalls, callID)
 	if b.finalizedTaskCalls == nil {
 		b.finalizedTaskCalls = make(map[string]string)
 	}
+	_, existed := b.finalizedTaskCalls[callID]
 	b.finalizedTaskCalls[callID] = rootSessionID
+	if existed {
+		return
+	}
+	b.finalizedTaskCallOrder = append(b.finalizedTaskCallOrder, callID)
+	for len(b.finalizedTaskCalls) > openCodeMaxTrackedEntries && len(b.finalizedTaskCallOrder) > 0 {
+		oldest := b.finalizedTaskCallOrder[0]
+		b.finalizedTaskCallOrder = b.finalizedTaskCallOrder[1:]
+		delete(b.finalizedTaskCalls, oldest)
+	}
 }
 
 func (b *FamilyBase) isTaskCallFinalized(callID, rootSessionID string) bool {
@@ -843,6 +878,34 @@ func (b *FamilyBase) reusedTaskID(callID, rootSessionID string) string {
 		return ""
 	}
 	return reused.taskID
+}
+
+func (b *FamilyBase) takeReusedTaskID(callID, rootSessionID string) string {
+	if callID == "" {
+		return ""
+	}
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	reused, ok := b.reusedTaskCalls[callID]
+	delete(b.reusedTaskCalls, callID)
+	if !ok || (reused.rootSessionID != "" && reused.rootSessionID != rootSessionID) {
+		return ""
+	}
+	return reused.taskID
+}
+
+func (b *FamilyBase) hasActiveReusedTask(rootSessionID, taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	for _, reused := range b.reusedTaskCalls {
+		if reused.taskID == taskID && (reused.rootSessionID == "" || reused.rootSessionID == rootSessionID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *FamilyBase) takeTaskChildStop(keys ...string) bool {

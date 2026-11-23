@@ -615,3 +615,69 @@ func mustJSON(t *testing.T, v any) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+func TestReasonixSubagentFromFinalToolCallParsesOutcomeBackgroundAndReport(t *testing.T) {
+	t.Parallel()
+
+	t.Run("outcome header overrides completed status and persists report", func(t *testing.T) {
+		t.Parallel()
+		base, sink := reasonixTaskObservationFixture()
+		frame, err := json.Marshal(map[string]any{
+			"sessionUpdate": "tool_call",
+			"toolCallId":    "tc-final-outcome",
+			"title":         "task",
+			"kind":          "other",
+			"status":        "completed",
+			"rawInput":      map[string]any{"description": "Inspect", "prompt": "Check logs"},
+			"content": []any{
+				map[string]any{
+					"type": "content",
+					"content": map[string]any{
+						"type": "text",
+						"text": "Subagent outcome: status=failed retryable=false\n\nFinal answer:\nFound an error.",
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		base.HandleToolCallForTest(frame)
+
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
+		require.NotEmpty(t, rows[0].ChildAgentID)
+		reports := sink.Child(rows[0].ChildAgentID).LeapMuxNotifications()
+		require.Len(t, reports, 1)
+		assert.Equal(t, "Found an error.", reports[0]["text"])
+	})
+
+	t.Run("completed background launch closes with unknown outcome and no report", func(t *testing.T) {
+		t.Parallel()
+		base, sink := reasonixTaskObservationFixture()
+		frame, err := json.Marshal(map[string]any{
+			"sessionUpdate": "tool_call",
+			"toolCallId":    "tc-final-bg",
+			"title":         "task",
+			"kind":          "other",
+			"status":        "completed",
+			"rawInput":      map[string]any{"description": "Background job", "prompt": "Run async", "run_in_background": true},
+			"content": []any{
+				map[string]any{
+					"type": "content",
+					"content": map[string]any{
+						"type": "text",
+						"text": "Started background task \"job-1\" (Background job).",
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		base.HandleToolCallForTest(frame)
+
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, rows[0].Status)
+		require.NotEmpty(t, rows[0].ChildAgentID)
+		assert.Empty(t, sink.Child(rows[0].ChildAgentID).LeapMuxNotifications())
+	})
+}

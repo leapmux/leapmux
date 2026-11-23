@@ -227,7 +227,7 @@ func (a *Agent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// They are equal on a first start.
 	// See claudeTaskIndex.runs.taskToolUse for why a restarted run needs both IDs.
 	pendingEnd, hasPending := a.tasks.startTask(ev.TaskID, startedKind, spawnSpanID, ev.ToolUseID)
-	if restart.restarted() {
+	if restart.restarted() && !pendingEnd.forRestart {
 		// A pending close belongs to the ended run, while this event starts another run.
 		// The spawn span identifies that close and survives each subagent run.
 		// An earlier result without its task_started can leave such a close, including after a restart with empty tool-use and childTask indexes.
@@ -339,19 +339,7 @@ func (a *Agent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// The upsert opens a Running row, which must close now because that end event already arrived.
 	// forgetTaskIndex performs the same removal as the ordinary result path.
 	if hasPending {
-		a.tasks.rememberFinishedShellTask(ev.TaskID)
-		if pendingEnd.outputFile != "" {
-			providerkit.LogRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-				RowKey:      ev.TaskID,
-				Kind:        startedKind,
-				Description: pendingEnd.outputFile,
-				Status:      pendingEnd.status,
-			}))
-		}
-		providerkit.LogRegistryRefusal("claude", "status", a.sink.UpdateBackgroundTaskStatus(ev.TaskID, pendingEnd.status, pendingEnd.summary))
-		providerkit.LogRegistryRefusal("claude", "close", a.sink.CloseBackgroundTask(ev.TaskID, pendingEnd.status))
-		providerkit.LogRegistryRefusal("claude", "workflow completion", a.workflows.finished(ev.TaskID, pendingEnd.status, a.sink))
-		a.tasks.forgetTaskIndex(ev.TaskID)
+		a.closeClaudeTask(ev.TaskID, startedKind, pendingEnd.status, pendingEnd.summary, pendingEnd.outputFile, false)
 	}
 }
 
@@ -600,32 +588,15 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 		if err := a.sink.UpdateBackgroundTaskStatus(ev.TaskID, closed.status, summary); err != nil {
 			slog.Warn("claude task_notification status update failed", "task_id", ev.TaskID, "error", err)
 		}
-		if ev.OutputFile != "" {
-			providerkit.LogRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-				RowKey:      ev.TaskID,
-				Kind:        closed.kind,
-				Description: ev.OutputFile,
-				Status:      closed.status,
-			}))
-		}
+		a.persistClaudeTaskOutputFile(ev.TaskID, closed.kind, closed.status, ev.OutputFile)
 		return
 	}
-	// A stopped notification after this process calls InterruptChild represents a reader-requested interruption.
-	// Use StatusInterrupted and "Subagent interrupted" instead of the ordinary StatusStopped and "Subagent stopped".
-	// takeInterrupted consumes the mark, so the first notification or result close determines that wording.
-	//
-	// Every closing notification consumes the mark regardless of its status.
-	// The CLI can finish the task before reading stop_task and still acknowledge the request with success.
-	// Its notification then reports completed or failed because the stop did not affect the task.
-	// Keeping the mark would incorrectly relabel a later restarted run's independent stop.
-	stopRequested := a.tasks.takeInterrupted(ev.TaskID)
-	if status == bgtask.StatusStopped && stopRequested {
-		status = bgtask.StatusInterrupted
-	}
-	// Buffer an out-of-order end only when absent from both process-local state
-	// and SQLite. Pre-restart tasks already present in SQLite close immediately.
+	var knownRow claudeKnownTask
 	if !a.tasks.knowsTask(ev.TaskID) {
-		knownRow := lookupClaudeKnownTask(a.sink, ev.TaskID)
+		knownRow = lookupClaudeKnownTask(a.sink, ev.TaskID)
+		// Buffer an out-of-order end when absent from SQLite, or when the row
+		// holds a finished prior run and a restart is armed whose task_started
+		// has not arrived yet.
 		if !knownRow.exists && !knownRow.unreadable {
 			a.tasks.recordPendingTaskEndByID(ev.TaskID, claudePendingTaskEnd{
 				status:     status,
@@ -634,48 +605,21 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 			})
 			return
 		}
-	}
-	// Record the completed shell before these writes because its owner's wake can arrive immediately afterwards.
-	// That wake requires proof of a shell this process actually finishes.
-	// rememberFinishedShellTask filters to shells, and forgetTaskIndex later removes the kind needed for that check.
-	a.tasks.rememberFinishedShellTask(ev.TaskID)
-	if err := a.sink.UpdateBackgroundTaskStatus(ev.TaskID, status, summary); err != nil {
-		slog.Warn("claude task_notification status update failed", "task_id", ev.TaskID, "error", err)
-	}
-	// Keep output_file in Description for later inspection.
-	//
-	// Read the kind from the task index because task_notification contains no task_type and reports both child tasks and shells.
-	// Hardcoded KindShell would convert a child row into a shell and remove its clickable transcript.
-	// Omitting the kind is also incorrect for a row recreated after eviction.
-	// A newly inserted row must carry its actual kind; the database rejects KindUnspecified.
-	if ev.OutputFile != "" {
-		providerkit.LogRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-			RowKey:      ev.TaskID,
-			Kind:        a.tasks.kindForTask(ev.TaskID),
-			Description: ev.OutputFile,
-			Status:      status,
-		}))
-	}
-	if err := a.sink.CloseBackgroundTask(ev.TaskID, status); err != nil {
-		slog.Warn("claude task_notification close failed", "task_id", ev.TaskID, "error", err)
-	}
-	if childID := a.tasks.childForTask(ev.TaskID); childID != "" {
-		if status == bgtask.StatusStopped || status == bgtask.StatusInterrupted || status == bgtask.StatusFailed {
-			completion := agent.MessageCompletionInterrupted
-			if status == bgtask.StatusFailed {
-				completion = agent.MessageCompletionError
-			}
-			a.closeClaudeChildOpenTools(childID, completion)
-		} else {
-			a.openTools.forgetChild(childID)
+		if knownRow.exists && knownRow.status.IsFinished() && a.tasks.hasPendingRestart(ev.TaskID) {
+			a.tasks.recordPendingTaskEndByID(ev.TaskID, claudePendingTaskEnd{
+				status:     status,
+				summary:    summary,
+				outputFile: ev.OutputFile,
+				forRestart: true,
+			})
+			return
 		}
 	}
-	// A Workflow run's agent rows close with it (workflow.go): a snapshot
-	// settles each agent that finished, and the run's own outcome ends the
-	// rest.
-	providerkit.LogRegistryRefusal("claude", "workflow completion", a.workflows.finished(ev.TaskID, status, a.sink))
-	// Drop the index entry.
-	a.tasks.forgetTaskIndex(ev.TaskID)
+	kind := a.tasks.kindForTask(ev.TaskID)
+	if kind == bgtask.KindUnspecified && knownRow.childID != "" {
+		kind = bgtask.KindSubagent
+	}
+	a.closeClaudeTask(ev.TaskID, kind, status, summary, ev.OutputFile, false)
 }
 
 func (a *Agent) closeClaudeChildOpenTools(childID string, completion agent.MessageCompletion) {
@@ -743,10 +687,17 @@ func (a *Agent) handleClaudeTaskUpdated(ev *claudeTaskEnvelope) {
 	if summary == "" {
 		summary = strings.TrimSpace(ev.Patch.Description)
 	}
-	inMemory := a.tasks.knowsTask(ev.TaskID)
-	if !inMemory {
-		knownRow := lookupClaudeKnownTask(a.sink, ev.TaskID)
+	var knownRow claudeKnownTask
+	if !a.tasks.knowsTask(ev.TaskID) {
+		knownRow = lookupClaudeKnownTask(a.sink, ev.TaskID)
 		if knownRow.exists && knownRow.status.IsFinished() {
+			if a.tasks.hasPendingRestart(ev.TaskID) {
+				a.tasks.recordPendingTaskEndByID(ev.TaskID, claudePendingTaskEnd{
+					status:     status,
+					summary:    summary,
+					forRestart: true,
+				})
+			}
 			return
 		}
 		if !knownRow.exists && !knownRow.unreadable {
@@ -757,19 +708,35 @@ func (a *Agent) handleClaudeTaskUpdated(ev *claudeTaskEnvelope) {
 			return
 		}
 	}
-	stopRequested := a.tasks.takeInterrupted(ev.TaskID)
+	kind := a.tasks.kindForTask(ev.TaskID)
+	if kind == bgtask.KindUnspecified && knownRow.childID != "" {
+		kind = bgtask.KindSubagent
+	}
+	a.closeClaudeTask(ev.TaskID, kind, status, summary, "", true)
+}
+
+// closeClaudeTask upgrades an interrupted stop, records completed shells for
+// subsequent wakes, updates and closes the registry row, finishes workflow
+// agents, and clears the run index.
+func (a *Agent) closeClaudeTask(taskID string, kind bgtask.Kind, status bgtask.Status, summary, outputFile string, recordClosedByUpdate bool) {
+	// A stopped outcome after this process calls InterruptChild represents a
+	// reader-requested interruption. Consume the mark unconditionally so a
+	// completed or failed close cannot relabel a later restarted run's stop.
+	stopRequested := a.tasks.takeInterrupted(taskID)
 	if status == bgtask.StatusStopped && stopRequested {
 		status = bgtask.StatusInterrupted
 	}
-	a.tasks.rememberFinishedShellTask(ev.TaskID)
-	kind := a.tasks.kindForTask(ev.TaskID)
-	if err := a.sink.UpdateBackgroundTaskStatus(ev.TaskID, status, summary); err != nil {
-		slog.Warn("claude task_updated status update failed", "task_id", ev.TaskID, "error", err)
+	// Record the completed shell before registry writes because its owner's
+	// wake can arrive immediately afterwards, and forgetTaskIndex removes kind.
+	a.tasks.rememberFinishedShellTask(taskID)
+	a.persistClaudeTaskOutputFile(taskID, kind, status, outputFile)
+	if err := a.sink.UpdateBackgroundTaskStatus(taskID, status, summary); err != nil {
+		slog.Warn("claude task status update failed", "task_id", taskID, "error", err)
 	}
-	if err := a.sink.CloseBackgroundTask(ev.TaskID, status); err != nil {
-		slog.Warn("claude task_updated close failed", "task_id", ev.TaskID, "error", err)
+	if err := a.sink.CloseBackgroundTask(taskID, status); err != nil {
+		slog.Warn("claude task close failed", "task_id", taskID, "error", err)
 	}
-	if childID := a.tasks.childForTask(ev.TaskID); childID != "" {
+	if childID := a.tasks.childForTask(taskID); childID != "" {
 		if status == bgtask.StatusStopped || status == bgtask.StatusInterrupted || status == bgtask.StatusFailed {
 			completion := agent.MessageCompletionInterrupted
 			if status == bgtask.StatusFailed {
@@ -780,9 +747,29 @@ func (a *Agent) handleClaudeTaskUpdated(ev *claudeTaskEnvelope) {
 			a.openTools.forgetChild(childID)
 		}
 	}
-	providerkit.LogRegistryRefusal("claude", "workflow completion", a.workflows.finished(ev.TaskID, status, a.sink))
-	a.tasks.recordClosedByUpdate(ev.TaskID, kind, status)
-	a.tasks.forgetTaskIndex(ev.TaskID)
+	providerkit.LogRegistryRefusal("claude", "workflow completion", a.workflows.finished(taskID, status, a.sink))
+	if recordClosedByUpdate {
+		a.tasks.recordClosedByUpdate(taskID, kind, status)
+	}
+	a.tasks.forgetTaskIndex(taskID)
+}
+
+// persistClaudeTaskOutputFile stores output_file in Description without passing
+// KindUnspecified to UpsertBackgroundTask.
+func (a *Agent) persistClaudeTaskOutputFile(taskID string, kind bgtask.Kind, status bgtask.Status, outputFile string) {
+	if outputFile == "" {
+		return
+	}
+	if kind == bgtask.KindUnspecified {
+		providerkit.LogRegistryRefusal("claude", "description", a.sink.UpdateBackgroundTaskDescription(taskID, outputFile))
+		return
+	}
+	providerkit.LogRegistryRefusal("claude", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:      taskID,
+		Kind:        kind,
+		Description: outputFile,
+		Status:      status,
+	}))
 }
 // workflowGroup derives the (group_key, group_label) for a workflow task from
 // its workflow_name. Non-workflow tasks return ("", "").
@@ -1194,6 +1181,7 @@ type claudePendingTaskEnd struct {
 	status     bgtask.Status
 	summary    string
 	outputFile string
+	forRestart bool
 }
 
 // claudeTaskRunIndex owns these run-specific values:
@@ -1663,11 +1651,6 @@ func (i *claudeTaskIndex) kindForTask(taskID string) bgtask.Kind {
 	return i.runs.taskKind[taskID]
 }
 
-// claudeSubagentSpawnInput holds the Agent/Task tool_use fields that this code reads.
-type claudeSubagentSpawnInput struct {
-	Name string `json:"name"`
-}
-
 // claudeRememberSubagentSpawnsFromBlocks records input.name for Agent/Task
 // spawns so a later SendMessage targeting the subagent's name resolves to its
 // task_id.
@@ -1676,11 +1659,7 @@ func (a *Agent) claudeRememberSubagentSpawnsFromBlocks(env *messageEnvelope) {
 		if block.Type != "tool_use" || block.ID == "" || !claudeToolSpawnsSubagent(block.Name) {
 			continue
 		}
-		var input claudeSubagentSpawnInput
-		if err := json.Unmarshal(block.Input, &input); err != nil {
-			continue
-		}
-		a.tasks.rememberSpawnAgentName(block.ID, strings.TrimSpace(input.Name))
+		a.tasks.rememberSpawnAgentName(block.ID, strings.TrimSpace(providerkit.StringField(block.Input, "name")))
 	}
 }
 
@@ -1883,6 +1862,25 @@ func (i *claudeTaskIndex) takeClaudeRestart(taskID string) (delivered, promptPer
 	return delivered, promptPersisted
 }
 
+// hasPendingRestart reports whether a SendMessage delivery intent is currently
+// armed for taskID or any recorded spawn name of that task.
+func (i *claudeTaskIndex) hasPendingRestart(taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, ok := i.restarts.pendingByTask[taskID]; ok {
+		return true
+	}
+	for name := range i.transcripts.taskAgentNames[taskID] {
+		if _, ok := i.restarts.pendingByTask[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // clearClaudeRestarts removes one transcript's delivery intents at that transcript's turn end.
 // These sends can produce no task_started:
 //   - A message to a live child.
@@ -1948,6 +1946,7 @@ func (i *claudeTaskIndex) recordPendingTaskEndByID(taskID string, end claudePend
 		if end.outputFile == "" {
 			end.outputFile = existing.outputFile
 		}
+		end.forRestart = end.forRestart || existing.forRestart
 	}
 	i.runs.pendingTaskEnd[taskID] = end
 }

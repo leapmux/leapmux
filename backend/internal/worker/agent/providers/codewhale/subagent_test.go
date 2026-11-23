@@ -1157,6 +1157,64 @@ func TestCodewhaleWorkflowJournalPollingAndExitClose(t *testing.T) {
 		assert.Equal(t, bgtask.StatusFailed, statuses["run-2"])
 	})
 
+	t.Run("workflowJournalCursor skips unchanged files reads appended lines incrementally and resets on replacement", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		relPath := filepath.Join(".codewhale", "workflow-runs.jsonl")
+		journalPath := filepath.Join(dir, relPath)
+		require.NoError(t, os.MkdirAll(filepath.Dir(journalPath), 0o755))
+		firstLine := `{"kind":"snapshot","run":{"run_id":"run-1","status":"running"}}` + "\n"
+		require.NoError(t, os.WriteFile(journalPath, []byte(firstLine), 0o600))
+
+		root, err := os.OpenRoot(dir)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = root.Close() })
+
+		var cursor workflowJournalCursor
+		statuses, reread, err := cursor.read(root, relPath)
+		require.NoError(t, err)
+		assert.True(t, reread)
+		assert.Equal(t, int64(len(firstLine)), cursor.offset)
+		assert.Equal(t, bgtask.StatusRunning, statuses["run-1"])
+
+		// Unchanged file skips open/parse and returns cached statuses.
+		statuses, reread, err = cursor.read(root, relPath)
+		require.NoError(t, err)
+		assert.False(t, reread, "an unchanged journal file must be skipped without rereading")
+		assert.Equal(t, bgtask.StatusRunning, statuses["run-1"])
+
+		// Appending a partial line does not lose it once completed.
+		partial := `{"kind":"snapshot","run":{"run_id":"run-2","sta`
+		appendTranscript(t, journalPath, partial)
+		statuses, reread, err = cursor.read(root, relPath)
+		require.NoError(t, err)
+		assert.True(t, reread)
+		assert.Equal(t, int64(len(firstLine)), cursor.offset, "offset stays before an incomplete trailing line")
+		assert.Equal(t, bgtask.StatusRunning, statuses["run-1"])
+		_, hasRun2 := statuses["run-2"]
+		assert.False(t, hasRun2)
+
+		rest := `tus":"completed"}}` + "\n"
+		appendTranscript(t, journalPath, rest)
+		statuses, reread, err = cursor.read(root, relPath)
+		require.NoError(t, err)
+		assert.True(t, reread)
+		assert.Equal(t, int64(len(firstLine)+len(partial)+len(rest)), cursor.offset)
+		assert.Equal(t, bgtask.StatusRunning, statuses["run-1"], "previously accumulated statuses stay cached across incremental reads")
+		assert.Equal(t, bgtask.StatusSucceeded, statuses["run-2"])
+
+		// Truncation/replacement resets offset to 0 and replaces cached statuses.
+		replaced := `{"kind":"snapshot","run":{"run_id":"run-3","status":"failed"}}` + "\n"
+		tmpPath := journalPath + ".tmp"
+		require.NoError(t, os.WriteFile(tmpPath, []byte(replaced), 0o600))
+		require.NoError(t, os.Rename(tmpPath, journalPath))
+		statuses, reread, err = cursor.read(root, relPath)
+		require.NoError(t, err)
+		assert.True(t, reread)
+		assert.Equal(t, int64(len(replaced)), cursor.offset)
+		assert.Equal(t, map[string]bgtask.Status{"run-3": bgtask.StatusFailed}, statuses)
+	})
+
 	t.Run("journal final line closes tracked workflow", func(t *testing.T) {
 		t.Parallel()
 		clock := testutil.NewQuartzMock(t)
@@ -1227,6 +1285,100 @@ func TestCodewhaleWorkflowJournalPollingAndExitClose(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, bgtask.StatusStopped, row.Status)
 	})
+
+	t.Run("running poller tick cannot close a workflow before its initial upsert", func(t *testing.T) {
+		t.Parallel()
+		clock := testutil.NewQuartzMock(t)
+		upsertEntered := make(chan struct{})
+		upsertRelease := make(chan struct{})
+		var releaseOnce sync.Once
+		unblock := func() { releaseOnce.Do(func() { close(upsertRelease) }) }
+		t.Cleanup(unblock)
+		a, sink := newTestAgentWith(t, nil, testAgentOptions{clock: clock, services: func(inner agent.ProviderServices) agent.ProviderServices {
+			return &workflowUpsertGateServices{
+				ProviderServices: inner,
+				targetRowKey:     "run-second",
+				onUpsert: func() {
+					close(upsertEntered)
+					<-upsertRelease
+				},
+			}
+		}})
+		poll := clock.Trap().NewTimer(workflowPollTimerTag)
+		t.Cleanup(poll.Close)
+		journalPath := filepath.Join(a.workingDir, ".codewhale", "workflow-runs.jsonl")
+		require.NoError(t, os.MkdirAll(filepath.Dir(journalPath), 0o755))
+		require.NoError(t, os.WriteFile(journalPath, []byte(`{"kind":"snapshot","run":{"run_id":"run-first","status":"running"}}`+"\n"), 0o600))
+
+		inputFirst := map[string]any{"action": "start", "name": "first"}
+		a.HandleOutput(toolStartEvent(1, "item_w1", "call_w1", contracts.CodewhaleToolWorkflow, inputFirst))
+		a.HandleOutput(toolEndEvent(2, "item.completed", "item_w1", "call_w1", contracts.CodewhaleToolWorkflow, "started", inputFirst, map[string]any{
+			"run_id":       "run-first",
+			"status":       "running",
+			"terminal":     false,
+			"journal_path": journalPath,
+		}))
+		ctx := testutil.DeadlineContext(t)
+		testutil.WaitForTimer(t, ctx, poll)
+
+		// Journal already carries the completed snapshot for run-second while its start result arrives.
+		appendTranscript(t, journalPath, `{"kind":"snapshot","run":{"run_id":"run-second","status":"completed"}}`+"\n")
+
+		inputSecond := map[string]any{"action": "start", "name": "second"}
+		a.HandleOutput(toolStartEvent(3, "item_w2", "call_w2", contracts.CodewhaleToolWorkflow, inputSecond))
+		secondDone := make(chan struct{})
+		go func() {
+			defer close(secondDone)
+			a.HandleOutput(toolEndEvent(4, "item.completed", "item_w2", "call_w2", contracts.CodewhaleToolWorkflow, "started", inputSecond, map[string]any{
+				"run_id":       "run-second",
+				"status":       "running",
+				"terminal":     false,
+				"journal_path": journalPath,
+			}))
+		}()
+		select {
+		case <-upsertEntered:
+		case <-ctx.Done():
+			t.Fatal("observeWorkflowToolResult did not reach UpsertBackgroundTask")
+		}
+
+		// Fire two poller ticks while run-second's initial upsert is in flight:
+		// the first finishes the cycle that began before run-second arrived and
+		// re-snapshots a.workflows.runs; the second reads the journal for that snapshot.
+		clock.Advance(workflowPollInterval).MustWait(ctx)
+		testutil.WaitForTimer(t, ctx, poll)
+		clock.Advance(workflowPollInterval).MustWait(ctx)
+		testutil.WaitForTimer(t, ctx, poll)
+		unblock()
+		select {
+		case <-secondDone:
+		case <-ctx.Done():
+			t.Fatal("observeWorkflowToolResult did not return")
+		}
+
+		// Finish the cycle that began before unblock so the poller re-snapshots a.workflows.runs,
+		// then fire the cycle that checks run-second against the cached journal statuses.
+		clock.Advance(workflowPollInterval).MustWait(ctx)
+		testutil.WaitForTimer(t, ctx, poll)
+		clock.Advance(workflowPollInterval).MustWait(ctx)
+		testutil.WaitForTimer(t, ctx, poll)
+		row, ok := sink.BackgroundTask("run-second")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status, "a running poller tick must not delete or close a workflow before its initial upsert")
+	})
+}
+
+type workflowUpsertGateServices struct {
+	agent.ProviderServices
+	targetRowKey string
+	onUpsert     func()
+}
+
+func (s *workflowUpsertGateServices) UpsertBackgroundTask(upsert bgtask.Upsert) error {
+	if upsert.RowKey == s.targetRowKey && s.onUpsert != nil {
+		s.onUpsert()
+	}
+	return s.ProviderServices.UpsertBackgroundTask(upsert)
 }
 
 func TestCodewhaleAgentToolActionAliases(t *testing.T) {

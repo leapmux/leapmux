@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -550,4 +551,63 @@ func (s *pauseGateServices) UpdateBackgroundTaskStatus(rowKey string, status bgt
 		s.onPaused()
 	}
 	return err
+}
+
+func TestCodewhaleFailedOrCanceledWaitDoesNotWakePausedChild(t *testing.T) {
+	t.Parallel()
+	for _, eventName := range []string{contracts.CodewhaleEventItemFailed, contracts.CodewhaleEventItemCanceled} {
+		t.Run(eventName, func(t *testing.T) {
+			t.Parallel()
+			runtime := newFakeRuntime(t)
+			clock := testutil.NewQuartzMock(t)
+			a, sink := newTestAgentWithClock(t, runtime, clock)
+			var runRequests atomic.Int32
+			runtime.handle(http.MethodGet, routeAgentRuns, func(w http.ResponseWriter, _ *http.Request) {
+				runRequests.Add(1)
+				writeFakeJSON(w, 200, map[string]any{
+					"runs": []any{map[string]any{"spec": map[string]string{"worker_id": testChildID}, "status": "interrupted"}},
+				})
+			})
+			poll := clock.Trap().NewTimer(childRunTimerTag)
+			t.Cleanup(poll.Close)
+			ctx := testutil.DeadlineContext(t)
+			startChildRun(a)
+
+			testutil.WaitForTimer(t, ctx, poll)
+			require.Eventually(t, func() bool {
+				row, ok := sink.BackgroundTask(testChildID)
+				return ok && row.Status == bgtask.StatusPaused
+			}, 30*time.Second, 5*time.Millisecond)
+
+			clock.Advance(childTailInterval).MustWait(ctx)
+			require.Eventually(t, func() bool {
+				a.children.mu.Lock()
+				defer a.children.mu.Unlock()
+				return !a.children.polling
+			}, 30*time.Second, 5*time.Millisecond)
+
+			child := a.children.lookup(testChildID)
+			require.NotNil(t, child)
+			require.Eventually(t, func() bool {
+				a.children.mu.Lock()
+				defer a.children.mu.Unlock()
+				return child.paused
+			}, 30*time.Second, 5*time.Millisecond)
+
+			requestsBefore := runRequests.Load()
+			a.HandleOutput(toolEndEvent(30, eventName, "item_wait_err", "call_wait_err", contracts.CodewhaleToolAgent,
+				"wait timed out", map[string]any{"action": "wait", "agent_id": testChildID}, nil))
+
+			a.children.mu.Lock()
+			paused := child.paused
+			polling := a.children.polling
+			a.children.mu.Unlock()
+			assert.True(t, paused, "a failed or canceled wait must not wake a parked paused child")
+			assert.False(t, polling, "a failed or canceled wait must not restart the run poller")
+			assert.Equal(t, requestsBefore, runRequests.Load())
+			row, ok := sink.BackgroundTask(testChildID)
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusPaused, row.Status)
+		})
+	}
 }

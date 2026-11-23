@@ -134,6 +134,22 @@ type spawnOutput struct {
 	FinishReason string `json:"finishReason"`
 }
 
+// ensureLeadEventTurn starts a lead turn when an output or iteration event arrives outside one.
+// It returns false when no lead turn is active and the event belongs to a teammate or an active team run.
+// The caller holds dispatchMu.
+func (a *Agent) ensureLeadEventTurn(meta eventAgent) bool {
+	a.Mu.Lock()
+	active, teamBusy := a.turn.active, a.team.busy()
+	a.Mu.Unlock()
+	if !active {
+		if teamBusy || meta.Kind == agentKindTeammate || meta.TeamAgentID != "" {
+			return false
+		}
+		a.ensureTurn()
+	}
+	return true
+}
+
 // routeContent returns the transcript for one output event.
 // Tagged events route directly by native agent metadata.
 // Untagged events fall back to the active spawn chain.
@@ -143,15 +159,12 @@ type spawnOutput struct {
 // Output outside a running lead turn belongs to an active teammate run or a lead run that Cline starts independently.
 // See team.go for teammate routing.
 func (a *Agent) routeContent(payload json.RawMessage) *transcript {
-	meta := parseEventAgent(payload)
-	a.Mu.Lock()
-	active, teamBusy := a.turn.active, a.team.busy()
-	a.Mu.Unlock()
-	if !active {
-		if teamBusy || meta.Kind == agentKindTeammate || meta.TeamAgentID != "" {
-			return nil
-		}
-		a.ensureTurn()
+	return a.routeContentMeta(parseEventAgent(payload))
+}
+
+func (a *Agent) routeContentMeta(meta eventAgent) *transcript {
+	if !a.ensureLeadEventTurn(meta) {
+		return nil
 	}
 	return a.routeWithinTurnMeta(meta)
 }
@@ -313,14 +326,8 @@ func (a *Agent) bindSpawnAgentLocked(s *spawnCall, agentID string) {
 // An untagged iteration belongs to that child when its transcript has exactly one active spawn call whose child does not yet start.
 func (a *Agent) handleIterationStarted(payload json.RawMessage) {
 	meta := parseEventAgent(payload)
-	a.Mu.Lock()
-	active, teamBusy := a.turn.active, a.team.busy()
-	a.Mu.Unlock()
-	if !active {
-		if teamBusy || meta.Kind == agentKindTeammate || meta.TeamAgentID != "" {
-			return
-		}
-		a.ensureTurn()
+	if !a.ensureLeadEventTurn(meta) {
+		return
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()

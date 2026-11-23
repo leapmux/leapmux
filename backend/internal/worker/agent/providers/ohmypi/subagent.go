@@ -1,6 +1,7 @@
 package ohmypi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -873,7 +874,13 @@ func procKillJobID(target string) (string, bool) {
 // closeCancelledShell closes a tracked SHELL row when a `write` call targets
 // `proc://<jobID>/kill`, which cancels the job and suppresses async-result.
 func (a *Agent) closeCancelledShell(args json.RawMessage) {
-	if len(args) == 0 {
+	if len(args) == 0 || !bytes.Contains(args, []byte(procURIPrefix)) {
+		return
+	}
+	a.Mu.Lock()
+	empty := len(a.shells) == 0
+	a.Mu.Unlock()
+	if empty {
 		return
 	}
 	var call struct {

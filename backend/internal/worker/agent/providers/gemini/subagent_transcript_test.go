@@ -491,3 +491,104 @@ func TestGeminiFinishNativeChildrenClearsActiveCallsAndStopsTicker(t *testing.T)
 		return !pending
 	})
 }
+
+func TestGeminiChildTranscriptAggregatesConcurrentInvokeAgentStatuses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		firstEnd   string
+		secondEnd  string
+		wantStatus bgtask.Status
+	}{
+		{
+			name:       "failed first then completed second closes unknown outcome",
+			firstEnd:   "failed",
+			secondEnd:  "completed",
+			wantStatus: bgtask.StatusEndedWithUnknownOutcome,
+		},
+		{
+			name:       "cancelled first then completed second closes unknown outcome",
+			firstEnd:   "cancelled",
+			secondEnd:  "completed",
+			wantStatus: bgtask.StatusEndedWithUnknownOutcome,
+		},
+		{
+			name:       "all failed closes failed",
+			firstEnd:   "failed",
+			secondEnd:  "failed",
+			wantStatus: bgtask.StatusFailed,
+		},
+		{
+			name:       "all completed closes succeeded",
+			firstEnd:   "completed",
+			secondEnd:  "completed",
+			wantStatus: bgtask.StatusSucceeded,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			transcript, sink, _ := geminiChildTranscriptFixture(t)
+			clock := transcript.clock.(*quartz.Mock)
+			tickerTrap := clock.Trap().NewTicker("gemini", "child-transcript")
+			defer tickerTrap.Close()
+			graceTrap := clock.Trap().NewTimer("gemini", "child-transcript-grace")
+			defer graceTrap.Close()
+
+			ctx := testutil.DeadlineContext(t)
+			transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__call-1","status":"in_progress"}`))
+			transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__call-2","status":"in_progress"}`))
+			transcript.start()
+			defer transcript.stop(agent.MessageCompletionInterrupted)
+
+			assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+			transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"invoke_agent__call-1","status":"`+tc.firstEnd+`"}`))
+			transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"invoke_agent__call-2","status":"`+tc.secondEnd+`"}`))
+
+			assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, graceTrap))
+			clock.Advance(geminiChildPollInterval).MustWait(ctx)
+			testutil.RequireEventually(t, func() bool {
+				got, ok := sink.BackgroundTask(geminiNativeChildID)
+				return ok && got.Status == tc.wantStatus
+			})
+		})
+	}
+
+	t.Run("fresh batch after grace flush resets accumulator", func(t *testing.T) {
+		t.Parallel()
+		transcript, sink, path := geminiChildTranscriptFixture(t)
+		clock := transcript.clock.(*quartz.Mock)
+		tickerTrap := clock.Trap().NewTicker("gemini", "child-transcript")
+		defer tickerTrap.Close()
+		graceTrap := clock.Trap().NewTimer("gemini", "child-transcript-grace")
+		defer graceTrap.Close()
+
+		ctx := testutil.DeadlineContext(t)
+		transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__batch-1","status":"in_progress"}`))
+		transcript.start()
+		defer transcript.stop(agent.MessageCompletionInterrupted)
+
+		assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+		transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"invoke_agent__batch-1","status":"failed"}`))
+		assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, graceTrap))
+		clock.Advance(geminiChildPollInterval).MustWait(ctx)
+		testutil.RequireEventually(t, func() bool {
+			got, ok := sink.BackgroundTask(geminiNativeChildID)
+			return ok && got.Status == bgtask.StatusFailed
+		})
+
+		secondChildID := "33333333-3333-4333-8333-333333333333"
+		secondPath := filepath.Join(filepath.Dir(path), secondChildID+".jsonl")
+		_, hash := geminiProjectIdentity(transcript.query.WorkingDir)
+		writeGeminiSession(t, secondPath, secondChildID, hash, "subagent", "second batch child")
+
+		transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"invoke_agent__batch-2","status":"in_progress"}`))
+		assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
+		transcript.observe("root", json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"invoke_agent__batch-2","status":"completed"}`))
+		assert.Equal(t, geminiChildPollInterval, testutil.WaitForTimer(t, ctx, graceTrap))
+		clock.Advance(geminiChildPollInterval).MustWait(ctx)
+		testutil.RequireEventually(t, func() bool {
+			got, ok := sink.BackgroundTask(secondChildID)
+			return ok && got.Status == bgtask.StatusSucceeded
+		})
+	})
+}

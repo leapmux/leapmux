@@ -246,25 +246,32 @@ func (a *Agent) handleBackgroundTasksChanged() {
 		slog.Warn("Read Copilot background task list", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	a.outputMu.Lock()
-	defer a.outputMu.Unlock()
-	if a.closing {
-		return
+	type promotedChild struct {
+		sink   agent.ProviderServices
+		active bool
 	}
-	for _, task := range list.Tasks {
-		if task.Type != copilotTaskTypeAgent {
-			continue
+	var promoted []promotedChild
+	a.outputMu.Lock()
+	if !a.closing {
+		for _, task := range list.Tasks {
+			if task.Type != copilotTaskTypeAgent {
+				continue
+			}
+			child := a.childForSpawnToolCall(task.ToolCallID)
+			if child == nil && task.ID != "" {
+				child = a.children[task.ID]
+			}
+			if child == nil || child.background {
+				continue
+			}
+			child.background = true
+			promoted = append(promoted, promotedChild{sink: child.sink, active: !child.idle})
 		}
-		child := a.childForSpawnToolCall(task.ToolCallID)
-		if child == nil && task.ID != "" {
-			child = a.children[task.ID]
-		}
-		if child == nil || child.background {
-			continue
-		}
-		child.background = true
-		child.sink.PersistSettingsRefresh(optionmap.Map{copilotOptionExecutionMode: copilotExecutionBackground})
-		a.publishChildTurn(child, !child.idle)
+	}
+	a.outputMu.Unlock()
+	for _, item := range promoted {
+		item.sink.PersistSettingsRefresh(optionmap.Map{copilotOptionExecutionMode: copilotExecutionBackground})
+		a.publishChildTurnState(item.sink, item.active, item.active)
 	}
 }
 
@@ -284,10 +291,14 @@ func (a *Agent) resumeNativeChild(child *copilotNativeChild) {
 // subagent waits. A running background subagent takes a steer: Copilot queues
 // the message for the turn that follows the running one.
 func (a *Agent) publishChildTurn(child *copilotNativeChild, active bool) {
+	a.publishChildTurnState(child.sink, active, active && child.background)
+}
+
+func (a *Agent) publishChildTurnState(sink agent.ProviderServices, active, steerable bool) {
 	a.stateMu.Lock()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
-	providerkit.PublishTurnStateTo(child.sink, agent.TurnState{Active: active, Steerable: active && child.background}, sequence)
+	providerkit.PublishTurnStateTo(sink, agent.TurnState{Active: active, Steerable: steerable}, sequence)
 }
 
 func (a *Agent) childForSpawnToolCall(toolCallID string) *copilotNativeChild {

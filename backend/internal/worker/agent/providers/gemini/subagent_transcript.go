@@ -139,6 +139,7 @@ func (transcript *geminiChildTranscript) waitMidTurnGraceAndClose() bool {
 			}
 			status := transcript.midTurnStatus
 			transcript.pendingMidTurnClose = false
+			transcript.midTurnStatus = bgtask.StatusUnspecified
 			transcript.activityMu.Unlock()
 			transcript.flushWithStatus(true, true, status)
 			return true
@@ -159,6 +160,18 @@ func geminiMidTurnStatus(status string) bgtask.Status {
 	}
 }
 
+// mergeGeminiMidTurnStatus combines outcomes across concurrent invoke_agent
+// calls in one batch. Mixed outcomes degrade to StatusEndedWithUnknownOutcome.
+func mergeGeminiMidTurnStatus(accumulated, next bgtask.Status) bgtask.Status {
+	if accumulated == bgtask.StatusUnspecified {
+		return next
+	}
+	if accumulated == next {
+		return accumulated
+	}
+	return bgtask.StatusEndedWithUnknownOutcome
+}
+
 // observe follows real root invocation phases. An idle root needs no poll timer.
 func (transcript *geminiChildTranscript) observe(sessionID string, update json.RawMessage) {
 	if sessionID != transcript.rootSessionID {
@@ -175,13 +188,19 @@ func (transcript *geminiChildTranscript) observe(sessionID string, update json.R
 	transcript.activityMu.Lock()
 	switch frame.Status {
 	case "completed", "failed", "cancelled":
-		wasActive := len(transcript.activeCalls) > 0
+		if !transcript.activeCalls[frame.ToolCallID] {
+			transcript.activityMu.Unlock()
+			return
+		}
 		delete(transcript.activeCalls, frame.ToolCallID)
-		if wasActive && len(transcript.activeCalls) == 0 {
+		transcript.midTurnStatus = mergeGeminiMidTurnStatus(transcript.midTurnStatus, geminiMidTurnStatus(frame.Status))
+		if len(transcript.activeCalls) == 0 {
 			transcript.pendingMidTurnClose = true
-			transcript.midTurnStatus = geminiMidTurnStatus(frame.Status)
 		}
 	default:
+		if len(transcript.activeCalls) == 0 && !transcript.pendingMidTurnClose {
+			transcript.midTurnStatus = bgtask.StatusUnspecified
+		}
 		transcript.activeCalls[frame.ToolCallID] = true
 		transcript.pendingMidTurnClose = false
 	}
@@ -295,6 +314,7 @@ func (a *Agent) finishNativeChildren(completion agent.MessageCompletion) {
 	children.activityMu.Lock()
 	clear(children.activeCalls)
 	children.pendingMidTurnClose = false
+	children.midTurnStatus = bgtask.StatusUnspecified
 	children.activityMu.Unlock()
 	select {
 	case children.wake <- struct{}{}:

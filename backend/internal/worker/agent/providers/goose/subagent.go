@@ -2,6 +2,7 @@ package goose
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -84,6 +85,31 @@ func gooseSubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation
 	}
 }
 
+// gooseReportID returns the per-run report ID for one subagent session.
+// Job 1 uses the bare session ID; resumed runs append "#<run>".
+func gooseReportID(sessionID string, run int) string {
+	if run >= 2 {
+		return fmt.Sprintf("%s#%d", sessionID, run)
+	}
+	return sessionID
+}
+
+// bumpGooseRunSeqLocked advances a session's run counter when a resumed run
+// starts. Caller must hold a.Mu.
+func (a *Agent) bumpGooseRunSeqLocked(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	if a.runSeq == nil {
+		a.runSeq = make(map[string]int)
+	}
+	if a.runSeq[sessionID] < 1 {
+		a.runSeq[sessionID] = 2
+		return
+	}
+	a.runSeq[sessionID]++
+}
+
 // observeGooseSubagentCall tracks open subagents and resume call-to-session
 // mappings when Goose opens a delegate tool_call.
 func (a *Agent) observeGooseSubagentCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
@@ -92,6 +118,7 @@ func (a *Agent) observeGooseSubagentCall(tc acp.ToolCallEnvelope) *acp.SubagentO
 		return nil
 	}
 	a.Mu.Lock()
+	defer a.Mu.Unlock()
 	if obs.RowKey != tc.ToolCallID && tc.ToolCallID != "" {
 		if a.gooseChildRenames == nil {
 			a.gooseChildRenames = make(map[string]string)
@@ -99,31 +126,66 @@ func (a *Agent) observeGooseSubagentCall(tc acp.ToolCallEnvelope) *acp.SubagentO
 		a.gooseChildRenames[tc.ToolCallID] = obs.RowKey
 	}
 	if !acp.StatusIsFinal(tc.Status) && obs.RowKey != "" {
+		if obs.ReviveRow {
+			if tc.ToolCallID != "" {
+				if a.resumedCalls == nil {
+					a.resumedCalls = make(map[string]string)
+				}
+				a.resumedCalls[tc.ToolCallID] = obs.RowKey
+			}
+			if a.pendingResumeNotices == nil {
+				a.pendingResumeNotices = make(map[string]bool)
+			}
+			a.pendingResumeNotices[obs.RowKey] = true
+			delete(a.pendingResumeAcks, obs.RowKey)
+			a.bumpGooseRunSeqLocked(obs.RowKey)
+		}
 		if a.activeDelegations == nil {
 			a.activeDelegations = make(map[string]struct{})
 		}
 		a.activeDelegations[obs.RowKey] = struct{}{}
 	}
-	a.Mu.Unlock()
 	return obs
 }
 
-// trackGooseSubagentObservation keeps activeDelegations in sync with inline
-// subagent status notices.
-func (a *Agent) trackGooseSubagentObservation(obs *acp.SubagentObservation) {
+// observeGooseSubagentNotice adapts inline subagent lifecycle notices to this
+// agent's open-subagent tracking, resume guards, and per-run report IDs.
+func (a *Agent) observeGooseSubagentNotice(text string) *acp.SubagentObservation {
+	obs := gooseSubagentNotice(text)
 	if obs == nil || obs.RowKey == "" {
-		return
+		return obs
 	}
 	a.Mu.Lock()
-	if obs.CloseRow || obs.Status.IsFinished() {
-		delete(a.activeDelegations, obs.RowKey)
-	} else {
+	defer a.Mu.Unlock()
+	if obs.ReviveRow {
+		if a.pendingResumeNotices[obs.RowKey] {
+			delete(a.pendingResumeNotices, obs.RowKey)
+			return nil
+		}
+		if _, open := a.activeDelegations[obs.RowKey]; open {
+			return nil
+		}
+		a.bumpGooseRunSeqLocked(obs.RowKey)
+		if a.pendingResumeAcks == nil {
+			a.pendingResumeAcks = make(map[string]bool)
+		}
+		a.pendingResumeAcks[obs.RowKey] = true
 		if a.activeDelegations == nil {
 			a.activeDelegations = make(map[string]struct{})
 		}
 		a.activeDelegations[obs.RowKey] = struct{}{}
+		return obs
 	}
-	a.Mu.Unlock()
+	if obs.CloseRow || obs.Status.IsFinished() {
+		delete(a.activeDelegations, obs.RowKey)
+		obs.ReportID = gooseReportID(obs.RowKey, a.runSeq[obs.RowKey])
+		return obs
+	}
+	if a.activeDelegations == nil {
+		a.activeDelegations = make(map[string]struct{})
+	}
+	a.activeDelegations[obs.RowKey] = struct{}{}
+	return obs
 }
 
 // gooseDelegateInput pulls the delegate call's instructions and optional resume
@@ -201,14 +263,14 @@ func gooseSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Subage
 		text := acp.ToolCallText(tcu.Content)
 		metaSessionID := gooseMetaSubagentSessionID(tcu.Meta)
 		if tcu.Status == "completed" {
-			if sessionID, ok := gooseResumedSessionID(text); ok {
+			if sessionID, ok := goosePrefixedSessionID(text, gooseResumedPrefix); ok {
 				return &acp.SubagentObservation{
 					RowKey:    sessionID,
 					Status:    bgtask.StatusRunning,
 					ReviveRow: true,
 				}
 			}
-			sessionID, ok := gooseDelegatedSessionID(text)
+			sessionID, ok := goosePrefixedSessionID(text, gooseDelegatedPrefix)
 			if !ok && metaSessionID != "" {
 				sessionID, ok = metaSessionID, true
 			}
@@ -286,11 +348,13 @@ func gooseSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Subage
 }
 
 // observeGooseSubagentUpdate adapts the shared detector to this agent's child
-// renames and open-subagent tracking. The delegate ack renames a row from the
-// spawn toolCallId to the native session id the ack states; a resumed delegate
-// call maps directly to the existing session id and revives it without a
-// rename; a tool request that arrives after the ack still names the spawn id,
-// so it must reach the renamed row instead of opening a second one.
+// renames and open-subagent tracking:
+//   - The delegate ack renames a row from the spawn toolCallId to the native
+//     session id that the ack states.
+//   - A resumed delegate call maps directly to the existing session id and
+//     revives it without a rename.
+//   - A tool request that arrives after the ack still identifies the spawn id,
+//     so it must reach the renamed row instead of opening a second one.
 func (a *Agent) observeGooseSubagentUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.SubagentObservation {
 	obs := gooseSubagentFromToolCallUpdate(tcu)
 	if obs == nil {
@@ -300,15 +364,19 @@ func (a *Agent) observeGooseSubagentUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 	defer a.Mu.Unlock()
 	if obs.RenameFrom != "" {
 		if a.gooseChildRenames[obs.RenameFrom] == obs.RowKey {
-			obs.RenameFrom = ""
-			obs.ChildAgentKey = ""
-			obs.ReviveRow = true
-		} else {
-			if a.gooseChildRenames == nil {
-				a.gooseChildRenames = make(map[string]string)
-			}
-			a.gooseChildRenames[obs.RenameFrom] = obs.RowKey
-			delete(a.activeDelegations, obs.RenameFrom)
+			delete(a.resumedCalls, obs.RenameFrom)
+			return nil
+		}
+		if a.gooseChildRenames == nil {
+			a.gooseChildRenames = make(map[string]string)
+		}
+		a.gooseChildRenames[obs.RenameFrom] = obs.RowKey
+		delete(a.activeDelegations, obs.RenameFrom)
+		if a.runSeq == nil {
+			a.runSeq = make(map[string]int)
+		}
+		if a.runSeq[obs.RowKey] == 0 {
+			a.runSeq[obs.RowKey] = 1
 		}
 		if a.activeDelegations == nil {
 			a.activeDelegations = make(map[string]struct{})
@@ -324,6 +392,22 @@ func (a *Agent) observeGooseSubagentUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 			a.gooseChildRenames[tcu.ToolCallID] = obs.RowKey
 			delete(a.activeDelegations, tcu.ToolCallID)
 		}
+		if _, alreadyRevived := a.resumedCalls[tcu.ToolCallID]; alreadyRevived {
+			delete(a.resumedCalls, tcu.ToolCallID)
+			return nil
+		}
+		if a.pendingResumeAcks[obs.RowKey] {
+			delete(a.pendingResumeAcks, obs.RowKey)
+			return nil
+		}
+		if _, open := a.activeDelegations[obs.RowKey]; open {
+			return nil
+		}
+		a.bumpGooseRunSeqLocked(obs.RowKey)
+		if a.pendingResumeNotices == nil {
+			a.pendingResumeNotices = make(map[string]bool)
+		}
+		a.pendingResumeNotices[obs.RowKey] = true
 		if a.activeDelegations == nil {
 			a.activeDelegations = make(map[string]struct{})
 		}
@@ -334,6 +418,10 @@ func (a *Agent) observeGooseSubagentUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 	if obs.CloseRow || obs.Status.IsFinished() {
 		if renamed != "" && obs.RowKey == tcu.ToolCallID {
 			obs.RowKey = renamed
+		}
+		if resumedSession, wasResumed := a.resumedCalls[tcu.ToolCallID]; wasResumed {
+			delete(a.resumedCalls, tcu.ToolCallID)
+			delete(a.pendingResumeNotices, resumedSession)
 		}
 		delete(a.activeDelegations, tcu.ToolCallID)
 		delete(a.activeDelegations, obs.RowKey)
@@ -359,18 +447,6 @@ func goosePrefixedSessionID(text, prefix string) (string, bool) {
 		return "", false
 	}
 	return sessionID, true
-}
-
-// gooseDelegatedSessionID reads the delegate ack text: "Delegated to subagent
-// <session id>". A session id holds no spaces.
-func gooseDelegatedSessionID(text string) (string, bool) {
-	return goosePrefixedSessionID(text, gooseDelegatedPrefix)
-}
-
-// gooseResumedSessionID reads the resume ack text: "Resumed subagent
-// <session id>". A session id holds no spaces.
-func gooseResumedSessionID(text string) (string, bool) {
-	return goosePrefixedSessionID(text, gooseResumedPrefix)
 }
 
 // gooseMetaSubagentSessionID reads _meta.goose.subagentSessionId when Goose
@@ -465,7 +541,10 @@ func gooseSubagentNotice(text string) *acp.SubagentObservation {
 // hidden delivery message that carries the output to the parent model never
 // reaches the ACP stream. The export is the one route that states the child's
 // own conversation.
-func (a *Agent) fetchGooseSubagentReport(sessionID string) {
+func (a *Agent) fetchGooseSubagentReport(sessionID, reportID string) {
+	if reportID == "" {
+		reportID = sessionID
+	}
 	params, err := json.Marshal(map[string]string{"sessionId": sessionID, "format": "json"})
 	if err != nil {
 		return
@@ -482,7 +561,7 @@ func (a *Agent) fetchGooseSubagentReport(sessionID string) {
 		a.ApplySubagentObservation(&acp.SubagentObservation{
 			RowKey:   sessionID,
 			Mode:     acp.ModeCloseOnly,
-			ReportID: sessionID,
+			ReportID: reportID,
 			Report:   agent.SubagentReport{Text: report},
 		})
 	}); err != nil {

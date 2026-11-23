@@ -961,20 +961,25 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 // runtime state (HasAgent/HasTerminal), not from the DB, so there is no
 // stale row to clear at startup.
 func (svc *Service) RestoreState() {
-	if err := svc.InputQueue.RecoverState(bgCtx()); err != nil {
-		slog.Warn("recover agent input queues failed", "error", err)
+	ctx := bgCtx()
+	// Record every open agent whose queued input was waiting on active
+	// background work before the boot sweep marks those tasks interrupted.
+	interruptedBackgroundAgents, err := svc.InputQueue.ListQueuedAgentsWithActiveBackgroundWork(ctx)
+	if err != nil {
+		slog.Warn("list queued agents with active background work failed", "error", err)
 	}
-	// Mark every still-active background-task row
-	// 'interrupted': the previous worker process was cut off (crash/restart),
-	// so a row left 'pending'/'running' is genuinely not making progress. Pure
-	// DB -- caches do not exist yet at boot. Logs the affected-row count so a
-	// surprising number surfaces.
+	// Mark every still-active background-task row 'interrupted' before queue
+	// recovery snapshots the queues: the previous worker process was cut off
+	// (crash/restart), so a row left 'pending'/'running' is genuinely not
+	// making progress, and recovered queue snapshots must reflect post-sweep
+	// ActiveBackgroundWork == false. Pure DB -- caches do not exist yet at
+	// boot. Logs the affected-row count so a surprising number surfaces.
 	// One boot-time instant for ended_at/updated_at so every swept row carries
 	// the same stamp (the in-memory caches do not exist yet at boot, so there is
 	// no cache/DB drift to guard here -- this is purely for uniform labeling).
 	bootNow := nowMillis()
 	// The sweep updates registry status without changing native transcripts.
-	endedCount, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
+	endedCount, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(ctx, db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
 		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted),
 		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 		EndedAt:        sqltime.SQLiteNullTimeOf(bootNow),
@@ -984,6 +989,9 @@ func (svc *Service) RestoreState() {
 		slog.Warn("mark active background tasks interrupted failed", "error", err)
 	} else if endedCount > 0 {
 		slog.Info("marked background tasks interrupted on boot", "count", endedCount)
+	}
+	if err := svc.InputQueue.RecoverState(ctx, interruptedBackgroundAgents...); err != nil {
+		slog.Warn("recover agent input queues failed", "error", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -710,4 +711,51 @@ func TestNativeCopilotBackgroundTasksChangedPromotesSyncChildAndReusesSubagent(t
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.True(t, row.EndedAt.IsZero())
 	assert.Contains(t, a.children, "agent-1")
+}
+
+type lockCheckChildSink struct {
+	agent.ProviderServices
+	a               *Agent
+	refreshLocked   bool
+	turnStateLocked bool
+}
+
+func (s *lockCheckChildSink) PersistSettingsRefresh(options optionmap.Map) {
+	if !s.a.outputMu.TryLock() {
+		s.refreshLocked = true
+	} else {
+		s.a.outputMu.Unlock()
+	}
+	s.ProviderServices.PersistSettingsRefresh(options)
+}
+
+func (s *lockCheckChildSink) SetTurnState(state agent.TurnState, seq uint64) {
+	if !s.a.outputMu.TryLock() {
+		s.turnStateLocked = true
+	} else {
+		s.a.outputMu.Unlock()
+	}
+	s.ProviderServices.SetTurnState(state, seq)
+}
+
+func TestNativeCopilotBackgroundTasksChangedReleasesOutputMuBeforeSinkCalls(t *testing.T) {
+	t.Parallel()
+	h := newCopilotTaskHarness(t, copilotTaskScript{
+		list: `{"tasks":[{"type":"agent","id":"worker-task","toolCallId":"task-1"}]}`,
+	})
+	a, sink := h.agent, h.sink
+	startCopilotSubagent(t, a, sink, "sync")
+
+	a.outputMu.Lock()
+	child := a.children["agent-1"]
+	require.NotNil(t, child)
+	checker := &lockCheckChildSink{ProviderServices: child.sink, a: a}
+	child.sink = checker
+	a.outputMu.Unlock()
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionBackgroundTasksChanged, map[string]any{}))
+	require.Eventually(t, a.backgroundWork.Idle, offReaderWait, time.Millisecond)
+
+	assert.False(t, checker.refreshLocked, "outputMu must not be held during PersistSettingsRefresh")
+	assert.False(t, checker.turnStateLocked, "outputMu must not be held during PublishTurnState")
 }

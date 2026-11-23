@@ -1242,6 +1242,44 @@ func TestGrokWakeOriginAndWorkflowRevival(t *testing.T) {
 		a.HandleOutput(finished(t, "sub-wake", "failed", "Job 2 failed."))
 		task, _ = sink.BackgroundTask("call-wake")
 		assert.Equal(t, bgtask.StatusFailed, task.Status)
+		assert.Equal(t, []string{"Job 1 done.", "Job 2 failed."}, reportTexts(child), "Job 2 report must persist under a distinct ReportID")
+	})
+
+	t.Run("empty spawned description matches pending spawn whose description equals subagent_type", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call", "toolCallId": "call-type-desc", "title": "spawn_subagent",
+			"rawInput": map[string]any{"prompt": "inspect", "description": "explore"},
+			"_meta":    grokToolMetaFixture("spawn_subagent"),
+		}))
+
+		a.HandleOutput(spawned(t, "sub-explore-match", "", map[string]any{"subagent_type": "explore"}))
+		assert.Equal(t, "call-type-desc", a.childRowForSession("sub-explore-match"))
+		_, extra := sink.BackgroundTask("sub-explore-match")
+		assert.False(t, extra, "spawned with empty description must link pending spawn whose description equals subagent_type")
+	})
+
+	t.Run("already-final spawn tool_call does not leak pending or spawnTools entries", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call", "toolCallId": "call-done", "title": "spawn_subagent",
+			"status":   "completed",
+			"rawInput": map[string]any{"prompt": "done", "description": "Helper"},
+			"_meta":    grokToolMetaFixture("spawn_subagent"),
+		}))
+		a.stateMu.Lock()
+		assert.Empty(t, a.children.spawnTools, "final tool_call must not insert into spawnTools")
+		assert.Empty(t, a.children.pending, "final tool_call must not insert into pending")
+		a.stateMu.Unlock()
+
+		// A later subagent_spawned with the same description must open its own row rather than linking to call-done.
+		a.HandleOutput(spawned(t, "sub-fresh", "Helper", nil))
+		assert.Equal(t, "sub-fresh", a.childRowForSession("sub-fresh"))
+		row, ok := sink.BackgroundTask("sub-fresh")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
 	})
 
 	t.Run("workflow revival transitions finished workflow back to running", func(t *testing.T) {

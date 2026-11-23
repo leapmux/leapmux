@@ -265,6 +265,10 @@ type registryChange struct {
 	rows []bgtask.Item
 	// changed reports visible state. An ownership-only claim can still write storage.
 	changed bool
+	// backgroundWorkChanged reports whether working-task presence or parent/child
+	// tree linkage changed, which is the only condition that can alter input-queue
+	// background-work holds.
+	backgroundWorkChanged bool
 }
 
 // applyBackgroundTaskUpsert is the persist-mutate-broadcast for an upsert. It
@@ -711,6 +715,7 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 			}
 		}
 		before := cache.snapshot()
+		beforeWork := captureBgTaskWorkStateLocked(cache)
 		var existing bgtask.Item
 		var found bool
 		var err error
@@ -773,7 +778,11 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 				return fmt.Errorf("store the child registry linkage: %w", err)
 			}
 		}
-		change = registryChange{rows: cache.snapshot(), changed: !bgTaskVisibleRowsEqual(before, cache.Rows)}
+		change = registryChange{
+			rows:                  cache.snapshot(),
+			changed:               !bgTaskVisibleRowsEqual(before, cache.Rows),
+			backgroundWorkChanged: !beforeWork.equal(captureBgTaskWorkStateLocked(cache)),
+		}
 		return nil
 	})
 	cache.Mu.Unlock()
@@ -783,12 +792,8 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 	if err != nil {
 		return "", err
 	}
-	if change.changed {
-		s.h.broadcastBackgroundTasks(s.rootAgentID, change.rows)
-		// Linking changes the child's activity. Refresh after the cache lock is released because refresh reads that cache.
-		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
-		s.h.notifyBackgroundWorkChanged(s.rootAgentID)
-	}
+	// Linking changes the child's activity. Publish after the cache lock is released because refresh reads that cache.
+	s.publishBackgroundTaskChange(change, settleHeld)
 	return childID, nil
 }
 
@@ -1240,6 +1245,26 @@ func (s *agentOutputSink) normalizeRowKey(rowKey, what string) string {
 	return normalized
 }
 
+// publishBackgroundTaskChange broadcasts visible registry updates, refreshes
+// activity, and notifies the input queue only when working-task or tree-linkage
+// state changed. Callers must invoke it strictly after releasing cache.Mu.
+func (s *agentOutputSink) publishBackgroundTaskChange(change registryChange, mode settleMode) {
+	if change.changed {
+		s.h.broadcastBackgroundTasks(s.rootAgentID, change.rows)
+		// A registry row moving in or out of an active status changes the root's
+		// answer AND the answer of the child that row stands for, so the whole
+		// tree is republished. Both refreshes are edge-triggered, so the common
+		// case -- a row updating while the set of ACTIVE rows is unchanged --
+		// broadcasts nothing. Safe here and not one line earlier: the appliers
+		// released the cache lock before returning, and refreshing reads that
+		// same cache.
+		s.h.refreshActivityTree(s.rootAgentID, mode)
+	}
+	if change.backgroundWorkChanged {
+		s.h.notifyBackgroundWorkChanged(s.rootAgentID)
+	}
+}
+
 // applyAndBroadcast publishes committed registry changes after the cache lock is released.
 func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentID, key string) (registryChange, error)) error {
 	// THE CHOKEPOINT for every registry mutation, which is why the key is
@@ -1251,18 +1276,7 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 	if err != nil {
 		return err
 	}
-	if change.changed {
-		s.h.broadcastBackgroundTasks(s.rootAgentID, change.rows)
-		// A registry row moving in or out of an active status changes the root's
-		// answer AND the answer of the child that row stands for, so the whole
-		// tree is republished. Both refreshes are edge-triggered, so the common
-		// case -- a row updating while the set of ACTIVE rows is unchanged --
-		// broadcasts nothing. Safe here and not one line earlier: the appliers
-		// released the cache lock before returning, and refreshing reads that
-		// same cache.
-		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
-		s.h.notifyBackgroundWorkChanged(s.rootAgentID)
-	}
+	s.publishBackgroundTaskChange(change, settleHeld)
 	return nil
 }
 
@@ -1558,11 +1572,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	if err != nil {
 		return err
 	}
-	if change.changed {
-		s.h.broadcastBackgroundTasks(s.rootAgentID, change.rows)
-		s.h.refreshActivityTree(s.rootAgentID, settleHeld)
-		s.h.notifyBackgroundWorkChanged(s.rootAgentID)
-	}
+	s.publishBackgroundTaskChange(change, settleHeld)
 	return nil
 }
 
@@ -1725,6 +1735,51 @@ func (h *OutputHandler) mutateBackgroundTaskRegistry(root string, generation int
 	return h.mutateBackgroundTaskRegistryLocked(cache, root, generation, keys, mutate)
 }
 
+type bgTaskWorkEntry struct {
+	parentAgentID string
+	childAgentID  string
+	working       bool
+}
+
+type bgTaskWorkState struct {
+	entries       map[bgTaskWorkEntry]int
+	evictedActive int
+}
+
+// captureBgTaskWorkStateLocked captures the working-task and parent/child
+// linkage multiset of cache. Caller must hold cache.Mu.
+func captureBgTaskWorkStateLocked(cache *bgTaskCache) bgTaskWorkState {
+	entries := make(map[bgTaskWorkEntry]int, len(cache.Rows))
+	for _, row := range cache.Rows {
+		working := row.Status.IsWorking()
+		if !working && row.ChildAgentID == "" {
+			continue
+		}
+		entry := bgTaskWorkEntry{
+			parentAgentID: row.ParentAgentID,
+			childAgentID:  row.ChildAgentID,
+			working:       working,
+		}
+		entries[entry]++
+	}
+	return bgTaskWorkState{
+		entries:       entries,
+		evictedActive: len(cache.evictedActive.entries),
+	}
+}
+
+func (s bgTaskWorkState) equal(other bgTaskWorkState) bool {
+	if s.evictedActive != other.evictedActive || len(s.entries) != len(other.entries) {
+		return false
+	}
+	for entry, count := range s.entries {
+		if other.entries[entry] != count {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *OutputHandler) mutateBackgroundTaskRegistryLocked(cache *bgTaskCache, root string, generation int64, keys []string, mutate func(context.Context, bgTaskView) error) (registryChange, error) {
 	if generation <= 0 {
 		return registryChange{}, errors.New("a runtime background task writer requires a positive output generation")
@@ -1747,10 +1802,15 @@ func (h *OutputHandler) mutateBackgroundTaskRegistryLocked(cache *bgTaskCache, r
 			return err
 		}
 		before := cache.snapshot()
+		beforeWork := captureBgTaskWorkStateLocked(cache)
 		if err := mutate(ctx, tx); err != nil {
 			return err
 		}
-		change = registryChange{rows: cache.snapshot(), changed: !bgTaskVisibleRowsEqual(before, cache.Rows)}
+		change = registryChange{
+			rows:                  cache.snapshot(),
+			changed:               !bgTaskVisibleRowsEqual(before, cache.Rows),
+			backgroundWorkChanged: !beforeWork.equal(captureBgTaskWorkStateLocked(cache)),
+		}
 		return nil
 	})
 	if errors.Is(err, errBackgroundTaskSuperseded) {

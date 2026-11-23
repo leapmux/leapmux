@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	fastagentArchiveRetryInterval = 250 * time.Millisecond
-	fastagentArchiveRetryMax      = 4 * time.Second
-	fastagentArchiveDeadline      = 5 * time.Second
-	fastagentArchiveTimerTag      = "fastagent-child-archive"
+	fastagentArchiveRetryInterval      = 250 * time.Millisecond
+	fastagentArchiveRetryMax           = 4 * time.Second
+	fastagentArchiveActiveTurnDeadline = 2 * time.Minute
+	fastagentArchivePostTurnDeadline   = 5 * time.Second
+	fastagentArchiveTimerTag           = "fastagent-child-archive"
 )
 
 // fastagentChildState keeps one native child and the next archive update to send.
@@ -33,18 +34,19 @@ type fastagentChildState struct {
 	title          string
 	requestedLabel string
 	// resultSeen distinguishes an empty native text result from no result.
-	resultText     string
-	resultSeen     bool
-	claimedChildID string
-	finalStatus    bgtask.Status
-	finalSeen      bool
-	retrying       bool
-	deadline       time.Time
-	done           chan struct{}
-	replayMu       sync.Mutex
-	messageIndex   int
-	updateIndex    int
-	lastError      error
+	resultText      string
+	resultSeen      bool
+	claimedChildID  string
+	finalStatus     bgtask.Status
+	finalSeen       bool
+	retrying        bool
+	deadline        time.Time
+	deadlineUpdated chan struct{}
+	done            chan struct{}
+	replayMu        sync.Mutex
+	messageIndex    int
+	updateIndex     int
+	lastError       error
 }
 
 func fastagentRawOutputText(raw json.RawMessage) (string, bool) {
@@ -168,7 +170,8 @@ func (a *Agent) observeSubagentCall(toolCallID, title string, rawInput json.RawM
 	a.childState[toolCallID] = &fastagentChildState{
 		nativeID: toolCallID, sessionID: sessionID, rowKey: rowKey,
 		prompt: input.Message, title: label, requestedLabel: input.Label,
-		done: make(chan struct{}),
+		deadlineUpdated: make(chan struct{}, 1),
+		done:            make(chan struct{}),
 	}
 	a.childMu.Unlock()
 	return &acp.SubagentObservation{
@@ -190,7 +193,7 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 		}
 		state.finalSeen = true
 		state.finalStatus = acp.FinalStatus(tcu.Status)
-		state.deadline = a.archiveClock().Now().Add(fastagentArchiveDeadline)
+		state.deadline = a.archiveClock().Now().Add(fastagentArchiveActiveTurnDeadline)
 	}
 	a.childMu.Unlock()
 	if !known {
@@ -245,14 +248,25 @@ func (a *Agent) clearChildState() {
 	a.childMu.Unlock()
 }
 
-// retryChildArchives gives completed subagents one more immediate archive read
-// and closes any subagents that never reached a final tool update before the turn ended.
+// retryChildArchives gives completed subagents one more immediate archive read,
+// clamps their remaining archive wait to the post-turn grace window, and closes
+// any subagents that never reached a final tool update before the turn ended.
 func (a *Agent) retryChildArchives(err error, stopped bool) acp.PromptEnding {
+	postTurnDeadline := a.archiveClock().Now().Add(fastagentArchivePostTurnDeadline)
 	a.childMu.Lock()
 	var pending []*fastagentChildState
 	var incomplete []*fastagentChildState
 	for _, state := range a.childState {
 		if state.finalSeen {
+			if state.deadline.IsZero() || postTurnDeadline.Before(state.deadline) {
+				state.deadline = postTurnDeadline
+				if state.deadlineUpdated != nil {
+					select {
+					case state.deadlineUpdated <- struct{}{}:
+					default:
+					}
+				}
+			}
 			pending = append(pending, state)
 		} else {
 			incomplete = append(incomplete, state)
@@ -266,8 +280,11 @@ func (a *Agent) retryChildArchives(err error, stopped bool) acp.PromptEnding {
 			a.startFastagentArchiveRetry(state)
 		}
 	}
-	incompleteStatus := bgtask.StatusStopped
-	if err != nil && !stopped {
+	incompleteStatus := bgtask.StatusEndedWithUnknownOutcome
+	switch {
+	case stopped:
+		incompleteStatus = bgtask.StatusStopped
+	case err != nil:
 		incompleteStatus = bgtask.StatusFailed
 	}
 	for _, state := range incomplete {
@@ -405,10 +422,16 @@ func (a *Agent) retryFastagentChild(state *fastagentChildState, stop <-chan stru
 	}
 	clock := a.archiveClock()
 	delay := fastagentArchiveRetryInterval
+	currentDeadline := func() time.Time {
+		a.childMu.Lock()
+		defer a.childMu.Unlock()
+		return state.deadline
+	}
 	for {
-		remaining := state.deadline.Sub(clock.Now())
+		deadline := currentDeadline()
+		remaining := deadline.Sub(clock.Now())
 		if remaining <= 0 {
-			if obs := a.failFastagentChildArchive(state, "Child transcript unavailable after 5 seconds"); obs != nil {
+			if obs := a.failFastagentChildArchive(state, "Child transcript unavailable before deadline"); obs != nil {
 				a.ApplySubagentObservation(obs)
 			}
 			return
@@ -427,14 +450,17 @@ func (a *Agent) retryFastagentChild(state *fastagentChildState, stop <-chan stru
 		case <-state.done:
 			timer.Stop(fastagentArchiveTimerTag)
 			return
+		case <-state.deadlineUpdated:
+			timer.Stop(fastagentArchiveTimerTag)
+			continue
 		case <-timer.C:
 		}
 		if obs := a.replayFastagentChild(state); obs != nil {
 			a.ApplySubagentObservation(obs)
 			return
 		}
-		if !clock.Now().Before(state.deadline) {
-			if obs := a.failFastagentChildArchive(state, "Child transcript unavailable after 5 seconds"); obs != nil {
+		if !clock.Now().Before(currentDeadline()) {
+			if obs := a.failFastagentChildArchive(state, "Child transcript unavailable before deadline"); obs != nil {
 				a.ApplySubagentObservation(obs)
 			}
 			return

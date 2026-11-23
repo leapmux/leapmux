@@ -221,10 +221,24 @@ func (b *FamilyBase) clearSessionState() {
 		}
 	}
 	b.earlyChildEvents = nil
+	b.earlyChildEventOrder = nil
+	b.finishedForegroundSessions = nil
+	b.finishedForegroundOrder = nil
 	for callID, owner := range b.finalizedTaskCalls {
 		if rootSessionID == "" || owner != rootSessionID {
 			delete(b.finalizedTaskCalls, callID)
 		}
+	}
+	if len(b.finalizedTaskCalls) == 0 {
+		b.finalizedTaskCallOrder = nil
+	} else {
+		kept := b.finalizedTaskCallOrder[:0]
+		for _, callID := range b.finalizedTaskCallOrder {
+			if _, ok := b.finalizedTaskCalls[callID]; ok {
+				kept = append(kept, callID)
+			}
+		}
+		b.finalizedTaskCallOrder = kept
 	}
 	for callID, reused := range b.reusedTaskCalls {
 		if rootSessionID == "" || reused.rootSessionID != rootSessionID {

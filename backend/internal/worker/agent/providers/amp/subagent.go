@@ -1,6 +1,7 @@
 package amp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // This file maintains registry rows for subagent calls and background shell commands.
@@ -172,6 +174,36 @@ func isAmpPluginRefusal(text string) bool {
 	return strings.HasPrefix(trimmed, "Tool rejected by plugin:") || strings.HasPrefix(trimmed, "Plugin error:")
 }
 
+// trackedShell records the registry row and process identity of one tracked
+// background shell command.
+type trackedShell struct {
+	rowKey   string
+	identity procutil.ProcessIdentity
+}
+
+// ampLinuxStatAlive reports whether a Linux /proc/<pid>/stat payload describes
+// a process that is still alive (not zombie 'Z' or dead 'X'/'x').
+// Unrecognized or truncated payloads return true conservatively.
+func ampLinuxStatAlive(data []byte) bool {
+	end := bytes.LastIndexByte(data, ')')
+	if end < 0 {
+		return true
+	}
+	rest := data[end+1:]
+	for len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n' || rest[0] == '\r') {
+		rest = rest[1:]
+	}
+	if len(rest) == 0 {
+		return true
+	}
+	switch rest[0] {
+	case 'Z', 'X', 'x':
+		return false
+	default:
+		return true
+	}
+}
+
 // isPIDAlive checks whether the local process with pid still runs.
 func (a *Agent) isPIDAlive(pid int) bool {
 	if a.pidAliveFn != nil {
@@ -180,10 +212,34 @@ func (a *Agent) isPIDAlive(pid int) bool {
 	return ampProcessAlive(pid)
 }
 
+// identifyPID reads the local process identity for pid.
+func (a *Agent) identifyPID(pid int) (procutil.ProcessIdentity, bool) {
+	if a.pidIdentityFn != nil {
+		return a.pidIdentityFn(pid)
+	}
+	return procutil.IdentifyProcess(pid)
+}
+
+// isShellAlive reports whether pid is still alive and, when identity was
+// captured at open time, still belongs to the same process.
+func (a *Agent) isShellAlive(pid int, identity procutil.ProcessIdentity) bool {
+	if !a.isPIDAlive(pid) {
+		return false
+	}
+	if identity.IsZero() {
+		return true
+	}
+	current, ok := a.identifyPID(pid)
+	if !ok {
+		return false
+	}
+	return current == identity
+}
+
 // noteShellResult processes one shell-tool result for a background command.
 // text contains that result's text.
 // A non-JSON error on shell_command_kill or shell_command_status closes a tracked
-// row only when the error is not a plugin refusal and the local PID is no longer alive.
+// row only when the error is not a plugin refusal and the tracked process is no longer alive.
 func (a *Agent) noteShellResult(tool *openTool, text string, isError bool) {
 	var record contracts.AmpShellResult
 	if err := json.Unmarshal([]byte(text), &record); err != nil {
@@ -195,7 +251,7 @@ func (a *Agent) noteShellResult(tool *openTool, text string, isError bool) {
 		case contracts.AmpShellToolShellCommandKill:
 			closeStatus = bgtask.StatusStopped
 		case contracts.AmpShellToolShellCommandStatus:
-			closeStatus = bgtask.StatusFailed
+			closeStatus = bgtask.StatusEndedWithUnknownOutcome
 		default:
 			return
 		}
@@ -204,9 +260,9 @@ func (a *Agent) noteShellResult(tool *openTool, text string, isError bool) {
 			return
 		}
 		a.mu.Lock()
-		_, tracked := a.shells[input.PID]
+		shell, tracked := a.shells[input.PID]
 		a.mu.Unlock()
-		if !tracked || a.isPIDAlive(input.PID) {
+		if !tracked || a.isShellAlive(input.PID, shell.identity) {
 			return
 		}
 		a.closeShellRow(input.PID, closeStatus)
@@ -244,6 +300,12 @@ func (a *Agent) openShellRow(tool *openTool, pid int) {
 		title = fmt.Sprintf("Process %d", pid)
 	}
 	rowKey := shellRowKey(tool.id)
+	// Capture process identity outside a.mu so OS process inspection never blocks
+	// lock holders.
+	identity, ok := a.identifyPID(pid)
+	if !ok {
+		identity = procutil.ProcessIdentity{}
+	}
 	a.mu.Lock()
 	earlier, reused := a.shells[pid]
 	if reused {
@@ -253,7 +315,7 @@ func (a *Agent) openShellRow(tool *openTool, pid int) {
 	if reused {
 		// The system gave the PID of an earlier command to this one, so the
 		// earlier command ended, and Amp never stated how.
-		providerkit.LogRegistryRefusal("amp", "close shell", a.sink.CloseBackgroundTask(earlier, bgtask.StatusStopped))
+		providerkit.LogRegistryRefusal("amp", "close shell", a.sink.CloseBackgroundTask(earlier.rowKey, bgtask.StatusStopped))
 	}
 	providerkit.LogRegistryRefusal("amp", "open shell", a.sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey:         rowKey,
@@ -267,7 +329,7 @@ func (a *Agent) openShellRow(tool *openTool, pid int) {
 	// returns, so the poller cannot delete a dead PID and run a no-op close before
 	// the registry row exists.
 	a.mu.Lock()
-	a.shells[pid] = rowKey
+	a.shells[pid] = trackedShell{rowKey: rowKey, identity: identity}
 	a.ensureShellPollerLocked()
 	a.mu.Unlock()
 }
@@ -298,8 +360,9 @@ func (a *Agent) pollShellLiveness() {
 	ticker := a.clock.NewTicker(ampShellPollInterval, "amp", "shell-liveness")
 	defer ticker.Stop()
 	type shellEntry struct {
-		pid    int
-		rowKey string
+		pid      int
+		rowKey   string
+		identity procutil.ProcessIdentity
 	}
 	for {
 		select {
@@ -315,8 +378,8 @@ func (a *Agent) pollShellLiveness() {
 			return
 		}
 		entries := make([]shellEntry, 0, len(a.shells))
-		for pid, rowKey := range a.shells {
-			entries = append(entries, shellEntry{pid: pid, rowKey: rowKey})
+		for pid, shell := range a.shells {
+			entries = append(entries, shellEntry{pid: pid, rowKey: shell.rowKey, identity: shell.identity})
 		}
 		a.mu.Unlock()
 
@@ -324,11 +387,11 @@ func (a *Agent) pollShellLiveness() {
 			if a.ctx.Err() != nil {
 				return
 			}
-			if a.isPIDAlive(entry.pid) {
+			if a.isShellAlive(entry.pid, entry.identity) {
 				continue
 			}
 			a.mu.Lock()
-			if a.stopped || a.shells[entry.pid] != entry.rowKey {
+			if a.stopped || a.shells[entry.pid].rowKey != entry.rowKey {
 				a.mu.Unlock()
 				continue
 			}
@@ -343,11 +406,11 @@ func (a *Agent) pollShellLiveness() {
 // nothing for a PID that has no open row.
 func (a *Agent) closeShellRow(pid int, status bgtask.Status) {
 	a.mu.Lock()
-	rowKey, ok := a.shells[pid]
+	shell, ok := a.shells[pid]
 	delete(a.shells, pid)
 	a.mu.Unlock()
 	if ok {
-		providerkit.LogRegistryRefusal("amp", "close shell", a.sink.CloseBackgroundTask(rowKey, status))
+		providerkit.LogRegistryRefusal("amp", "close shell", a.sink.CloseBackgroundTask(shell.rowKey, status))
 	}
 }
 
@@ -356,8 +419,8 @@ func (a *Agent) closeShellRow(pid int, status bgtask.Status) {
 func (a *Agent) closeAllShellRows(status bgtask.Status) {
 	a.mu.Lock()
 	rowKeys := make([]string, 0, len(a.shells))
-	for _, rowKey := range a.shells {
-		rowKeys = append(rowKeys, rowKey)
+	for _, shell := range a.shells {
+		rowKeys = append(rowKeys, shell.rowKey)
 	}
 	clear(a.shells)
 	a.mu.Unlock()

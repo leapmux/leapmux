@@ -410,11 +410,10 @@ func (a *Agent) handleGooseSessionUpdate(params json.RawMessage) bool {
 		// running notice while the child runs, and the completed or failed
 		// notice at its end. A completed notice without a summary states a
 		// single child, whose final output only the session export carries.
-		if obs := gooseSubagentNotice(update.Status.Message); obs != nil {
-			a.trackGooseSubagentObservation(obs)
+		if obs := a.observeGooseSubagentNotice(update.Status.Message); obs != nil {
 			a.ApplySubagentObservation(obs)
 			if obs.Status == bgtask.StatusSucceeded && obs.Report.Text == "" {
-				a.fetchGooseSubagentReport(obs.RowKey)
+				a.fetchGooseSubagentReport(obs.RowKey, obs.ReportID)
 			}
 		}
 		return true
@@ -482,6 +481,10 @@ func (a *Agent) clearGooseState() {
 	clear(a.gooseChildRenames)
 	clear(a.gooseOutput)
 	clear(a.activeDelegations)
+	clear(a.runSeq)
+	clear(a.resumedCalls)
+	clear(a.pendingResumeNotices)
+	clear(a.pendingResumeAcks)
 	a.promptOutput = goosePromptOutputState{}
 	a.Mu.Unlock()
 }

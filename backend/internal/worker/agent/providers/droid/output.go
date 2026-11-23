@@ -34,13 +34,26 @@ func (a *Agent) HandleOutput(content []byte) {
 	a.handleFrame(content)
 }
 
-// droidDispatchAction carries post-dispatch tail work that must run after
-// dispatchFrame releases dispatchMu so tail.mu -> dispatchMu lock order holds.
+// droidBgProcessOp is one deferred registry mutation produced by
+// onBackgroundProcessesChanged so sink calls run outside dispatchMu.
+type droidBgProcessOp struct {
+	upsert      *bgtask.Upsert
+	rowKey      string
+	closeStatus bgtask.Status
+}
+
+// droidDispatchAction carries post-dispatch work that must run after
+// dispatchFrame releases dispatchMu so lock order holds across tail and sink calls.
 type droidDispatchAction struct {
-	startTailChildID  string
-	resumeTailChildID string
-	settledChildID    string
-	settledStatus     bgtask.Status
+	startTailChildID    string
+	resumeTailChildID   string
+	resumeArchivePos    *droidArchivePosition
+	resumeArchiveProbed bool
+	probeResumeSpawnKey string
+	probeResumeChildID  string
+	settledChildID      string
+	settledStatus       bgtask.Status
+	bgProcessOps        []droidBgProcessOp
 }
 
 // handleFrame dispatches one stream-jsonrpc message. It runs on the process's
@@ -64,9 +77,13 @@ func (a *Agent) handleFrame(line []byte) {
 	case action.startTailChildID != "":
 		a.startChildTail(action.startTailChildID)
 	case action.resumeTailChildID != "":
-		a.resumeChildTailFromEOF(action.resumeTailChildID)
+		a.resumeChildTailFromEOF(action.resumeTailChildID, action.resumeArchivePos, action.resumeArchiveProbed)
+	case action.probeResumeChildID != "":
+		a.probeResumeSpawnArchive(action.probeResumeSpawnKey, action.probeResumeChildID)
 	case action.settledChildID != "":
 		a.settleChildSession(action.settledChildID, action.settledStatus)
+	case len(action.bgProcessOps) > 0:
+		a.applyBackgroundProcessOps(action.bgProcessOps)
 	}
 }
 
@@ -162,7 +179,12 @@ func (a *Agent) handleNotification(env *droidEnvelope) droidDispatchAction {
 	case contracts.DroidNotificationThinkingTextComplete:
 		a.onModelTextComplete(payload, agent.AssembledMessageKindReasoning, target)
 	case contracts.DroidToolNotificationToolCall:
-		a.onToolCall(payload, target)
+		if spawnKey, resumeChildID := a.onToolCall(payload, target); resumeChildID != "" {
+			return droidDispatchAction{
+				probeResumeSpawnKey: spawnKey,
+				probeResumeChildID:  resumeChildID,
+			}
+		}
 	case contracts.DroidToolNotificationToolResult:
 		a.onToolResult(payload, target)
 	case contracts.DroidNotificationAgentTurnCompleted:
@@ -184,7 +206,7 @@ func (a *Agent) handleNotification(env *droidEnvelope) droidDispatchAction {
 		}
 	case droidNotificationBackgroundProcessesChanged:
 		if target.childSessionID == "" {
-			a.onBackgroundProcessesChanged(payload)
+			return droidDispatchAction{bgProcessOps: a.onBackgroundProcessesChanged(payload)}
 		}
 	case contracts.DroidNotificationSessionTitleUpdated, contracts.DroidNotificationSessionTokenUsageChanged,
 		contracts.DroidNotificationToolExecutionHeartbeat, contracts.DroidNotificationPermissionResolved,
@@ -238,12 +260,16 @@ func (a *Agent) persistRow(payload []byte, span agent.SpanInfo, target droidOutp
 
 // onChildSessionAvailable registers a native child under its parent session.
 func (a *Agent) onChildSessionAvailable(parentSessionID string, payload []byte) droidDispatchAction {
-	childSessionID, resumed := a.registerChildSession(parentSessionID, payload)
+	childSessionID, resumed, archivePos, archiveProbed := a.registerChildSession(parentSessionID, payload)
 	if childSessionID == "" {
 		return droidDispatchAction{}
 	}
 	if resumed {
-		return droidDispatchAction{resumeTailChildID: childSessionID}
+		return droidDispatchAction{
+			resumeTailChildID:   childSessionID,
+			resumeArchivePos:    archivePos,
+			resumeArchiveProbed: archiveProbed,
+		}
 	}
 	return droidDispatchAction{startTailChildID: childSessionID}
 }
@@ -337,15 +363,16 @@ func droidBackgroundProcessStatus(proc droidBackgroundProcess) bgtask.Status {
 }
 
 // onBackgroundProcessesChanged reconciles Droid's reported active background
-// processes against shell rows in the task registry. Runs under dispatchMu.
-func (a *Agent) onBackgroundProcessesChanged(payload []byte) {
+// processes against tracked shell rows under dispatchMu and returns deferred
+// registry operations to execute after dispatchMu is released.
+func (a *Agent) onBackgroundProcessesChanged(payload []byte) []droidBgProcessOp {
 	var n struct {
 		Processes           *[]droidBackgroundProcess `json:"processes"`
 		BackgroundProcesses *[]droidBackgroundProcess `json:"backgroundProcesses"`
 	}
 	if err := json.Unmarshal(payload, &n); err != nil {
 		slog.Debug("droid: read background processes", "agent_id", a.AgentID(), "error", err)
-		return
+		return nil
 	}
 	var list []droidBackgroundProcess
 	switch {
@@ -354,12 +381,14 @@ func (a *Agent) onBackgroundProcessesChanged(payload []byte) {
 	case n.BackgroundProcesses != nil:
 		list = *n.BackgroundProcesses
 	default:
-		return
+		return nil
 	}
 	if a.backgroundProcesses == nil {
 		a.backgroundProcesses = make(map[string]struct{})
 	}
+	var ops []droidBgProcessOp
 	active := make(map[string]struct{}, len(list))
+	handled := make(map[string]struct{}, len(list))
 	for _, proc := range list {
 		id := proc.key()
 		if id == "" {
@@ -368,9 +397,11 @@ func (a *Agent) onBackgroundProcessesChanged(payload []byte) {
 		rowKey := droidBackgroundProcessRowPrefix + id
 		status := droidBackgroundProcessStatus(proc)
 		if status.IsFinished() {
+			delete(active, rowKey)
+			handled[rowKey] = struct{}{}
 			if _, tracked := a.backgroundProcesses[rowKey]; tracked {
-				providerkit.LogRegistryRefusal("droid", "close background process", a.sink.CloseBackgroundTask(rowKey, status))
 				delete(a.backgroundProcesses, rowKey)
+				ops = append(ops, droidBgProcessOp{rowKey: rowKey, closeStatus: status})
 			}
 			continue
 		}
@@ -384,26 +415,43 @@ func (a *Agent) onBackgroundProcessesChanged(payload []byte) {
 		if title == "" {
 			title = "Background process"
 		}
-		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		upsert := bgtask.Upsert{
 			RowKey:         rowKey,
 			Kind:           bgtask.KindShell,
 			ParentAgentID:  a.AgentID(),
 			Title:          title,
 			TitleIsCommand: isCommand,
 			Status:         status,
-		}); err != nil {
-			providerkit.LogRegistryRefusal("droid", "upsert background process", err)
-			continue
 		}
+		ops = append(ops, droidBgProcessOp{upsert: &upsert})
 		active[rowKey] = struct{}{}
+		handled[rowKey] = struct{}{}
 		a.backgroundProcesses[rowKey] = struct{}{}
 	}
+	var evicted []string
 	for rowKey := range a.backgroundProcesses {
-		if _, ok := active[rowKey]; ok {
+		if _, stillActive := active[rowKey]; !stillActive {
+			if _, alreadyHandled := handled[rowKey]; !alreadyHandled {
+				evicted = append(evicted, rowKey)
+			}
+		}
+	}
+	slices.Sort(evicted)
+	for _, rowKey := range evicted {
+		delete(a.backgroundProcesses, rowKey)
+		ops = append(ops, droidBgProcessOp{rowKey: rowKey, closeStatus: bgtask.StatusEndedWithUnknownOutcome})
+	}
+	return ops
+}
+
+// applyBackgroundProcessOps executes deferred shell-row updates outside dispatchMu.
+func (a *Agent) applyBackgroundProcessOps(ops []droidBgProcessOp) {
+	for _, op := range ops {
+		if op.upsert != nil {
+			providerkit.LogRegistryRefusal("droid", "upsert background process", a.sink.UpsertBackgroundTask(*op.upsert))
 			continue
 		}
-		providerkit.LogRegistryRefusal("droid", "close background process", a.sink.CloseBackgroundTask(rowKey, bgtask.StatusEndedWithUnknownOutcome))
-		delete(a.backgroundProcesses, rowKey)
+		providerkit.LogRegistryRefusal("droid", "close background process", a.sink.CloseBackgroundTask(op.rowKey, op.closeStatus))
 	}
 }
 
@@ -816,18 +864,18 @@ type droidToolUse struct {
 	Input json.RawMessage `json:"input"`
 }
 
-// onToolCall opens a tool span.
-func (a *Agent) onToolCall(payload []byte, target droidOutputTarget) {
+// onToolCall opens a tool span and returns any Task({resume}) spawn awaiting an archive probe.
+func (a *Agent) onToolCall(payload []byte, target droidOutputTarget) (string, string) {
 	var n struct {
 		Type    string       `json:"type"`
 		ToolUse droidToolUse `json:"toolUse"`
 	}
 	if err := json.Unmarshal(payload, &n); err != nil {
-		return
+		return "", ""
 	}
 	if n.ToolUse.ID == "" {
 		a.persistRow(payload, agent.SpanInfo{}, target)
-		return
+		return "", ""
 	}
 	a.resolveModelRetry(target)
 	target.state.ended = false
@@ -850,7 +898,7 @@ func (a *Agent) onToolCall(payload []byte, target droidOutputTarget) {
 	if sessionID == "" {
 		sessionID = a.mainSessionID()
 	}
-	a.rememberTaskSpawn(sessionID, n.ToolUse)
+	return a.rememberTaskSpawn(sessionID, n.ToolUse)
 }
 
 // flushPendingToolCall freezes the latest input at its first native boundary.

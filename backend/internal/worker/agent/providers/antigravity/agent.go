@@ -412,7 +412,8 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 			state.steps[index] = previous
 		}
 		a.Mu.Unlock()
-		if isNew && (state.parent == nil || update.Status != "" && update.Status != cascadeStatusIdle) {
+		step, err := decodeStep(raw)
+		if isNew && (state.parent == nil || (update.Status != "" && update.Status != cascadeStatusIdle) || (update.Status == "" && err == nil && isOpenStepStatus(step.Status))) {
 			a.beginTurn(state)
 		}
 		if !a.acceptsCascadeUpdate(state) {
@@ -421,7 +422,6 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 		a.Mu.Lock()
 		state.turnSteps[index] = struct{}{}
 		a.Mu.Unlock()
-		step, err := decodeStep(raw)
 		if err != nil {
 			slog.Warn("antigravity decode step failed; persisting raw step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
 			if err := a.persistUnknownStep(state, index, raw); err != nil {

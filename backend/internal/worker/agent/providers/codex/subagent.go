@@ -16,6 +16,7 @@ const (
 	codexPendingChildGenerationLimit = 1 << 20
 	codexPendingChildEventLimit      = 256
 	codexPendingChildEventBytesLimit = 4 << 20
+	codexSeenActivityLimit           = 256
 )
 
 type codexChildPhase uint8
@@ -98,7 +99,9 @@ type codexChildState struct {
 	phase                  codexChildPhase
 	sawActiveStatus        bool
 	seenActivities         map[codexActivityKey]struct{}
+	seenActivityOrder      []codexActivityKey
 	startedWakeItems       map[string]struct{}
+	startedAnonWakes       int
 	finalTransition        codexChildTransition
 	transcriptFinalized    bool
 	generationBuffer       providerkit.GenerationBuffer
@@ -118,6 +121,24 @@ func (s *codexChildState) displayTitle() string {
 		return codexAgentPathTitle(s.agentPath)
 	}
 	return s.promptTitle
+}
+
+func (s *codexChildState) recordSeenActivity(key codexActivityKey) {
+	if s.seenActivities == nil {
+		s.seenActivities = make(map[codexActivityKey]struct{})
+	}
+	if _, exists := s.seenActivities[key]; exists {
+		return
+	}
+	if len(s.seenActivityOrder) >= codexSeenActivityLimit {
+		evicted := s.seenActivityOrder[0]
+		delete(s.seenActivities, evicted)
+		copy(s.seenActivityOrder, s.seenActivityOrder[1:])
+		s.seenActivityOrder[len(s.seenActivityOrder)-1] = key
+	} else {
+		s.seenActivityOrder = append(s.seenActivityOrder, key)
+	}
+	s.seenActivities[key] = struct{}{}
 }
 
 type codexChildRoute struct {
@@ -234,6 +255,15 @@ func (a *Agent) upsertCodexChildRegistryRow(
 				slog.Warn("codex collab persist prompt failed", "thread", threadID, "error", err)
 			}
 		}
+		if parentAgentID == "" {
+			// A pre-restart row resolved through LookupBackgroundTask already exists
+			// with its durable parent_agent_id. Update only status/activity so a root
+			// upsert cannot replace a grandchild's stored parent with the root agent.
+			if !transition.finished() && a.activeCollabChild(threadID) {
+				a.reviveFinishedCollabChild(threadID)
+			}
+			return route, routed, a.sink.UpdateBackgroundTaskStatus(threadID, transition.status, transition.activity)
+		}
 	}
 	err := a.upsertCollabChildRow(bgtask.Upsert{
 		RowKey:        threadID,
@@ -328,11 +358,7 @@ func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID
 		}
 		key := codexActivityKey{id: act.ID, kind: act.Kind}
 		a.Mu.Lock()
-		state := a.codexChildStateLocked(act.AgentThreadID)
-		if state.seenActivities == nil {
-			state.seenActivities = make(map[codexActivityKey]struct{})
-		}
-		state.seenActivities[key] = struct{}{}
+		a.codexChildStateLocked(act.AgentThreadID).recordSeenActivity(key)
 		a.Mu.Unlock()
 	}
 	if act.Kind == "completed" {

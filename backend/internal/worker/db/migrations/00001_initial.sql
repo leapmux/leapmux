@@ -727,6 +727,11 @@ CREATE TABLE agent_background_tasks (
 -- ChildTask=2 and ChildActivity=3 own canonical activity. The enum numbering test checks these ordinals.
 CREATE UNIQUE INDEX idx_agent_background_tasks_canonical_child ON agent_background_tasks(child_agent_id)
     WHERE child_agent_id <> '' AND role IN (2, 3);
+-- Covering indexes for active background-work queries: root lookup by owner_agent_id
+-- and recursive descendant traversal by parent_agent_id. Non-partial so queries that
+-- bind proto enum ordinals as SQL parameters seek them directly.
+CREATE INDEX idx_agent_background_tasks_owner_status ON agent_background_tasks(owner_agent_id, status);
+CREATE INDEX idx_agent_background_tasks_parent_child_status ON agent_background_tasks(parent_agent_id, child_agent_id, status);
 
 -- Every OPEN tab and the directory its git questions are answered from, as one
 -- relation.

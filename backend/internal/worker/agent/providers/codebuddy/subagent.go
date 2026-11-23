@@ -62,8 +62,11 @@ func (i *codebuddyTaskIndex) anyRoute(spawnID string) (codebuddyChildRoute, bool
 	return route, ok
 }
 
-func (i *codebuddyTaskIndex) rememberChild(spawnID, rowKey, childID string) {
-	i.rememberChildRoute(spawnID, rowKey, childID, false)
+func (i *codebuddyTaskIndex) closedRoute(spawnID string) (codebuddyChildRoute, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	route, ok := i.closedRoutes[spawnID]
+	return route, ok
 }
 
 func (i *codebuddyTaskIndex) rememberChildRoute(spawnID, rowKey, childID string, background bool) {
@@ -675,8 +678,12 @@ func (a *Agent) closeForegroundChildren(status bgtask.Status) {
 	}
 }
 
-// lookupChildForFrame resolves an existing child transcript for a forwarded
-// frame without opening or reviving any registry row.
+// lookupChildForFrame resolves a child transcript for a forwarded frame without
+// opening or reviving any registry row. When the in-memory index misses (after
+// a worker restart whose row was renamed from spawnID to taskID, or when a live
+// child frame arrives before the parent tool_use), EnsureChildAgent with
+// SpawnSpanID alone resolves or creates the transcript without opening a
+// registry row.
 func (a *Agent) lookupChildForFrame(spawnID string) string {
 	lookupKey := spawnID
 	if route, ok := a.tasks.anyRoute(spawnID); ok {
@@ -687,12 +694,25 @@ func (a *Agent) lookupChildForFrame(spawnID string) string {
 			lookupKey = route.rowKey
 		}
 	}
-	childID, _, exists, err := a.sink.LookupBackgroundTask(lookupKey)
+	childID, status, exists, err := a.sink.LookupBackgroundTask(lookupKey)
 	if err != nil {
 		slog.Warn("codebuddy: look up child frame", "spawn_id", spawnID, "row_key", lookupKey, "error", err)
 		return ""
 	}
-	if !exists {
+	if exists {
+		if childID != "" || status.IsFinished() {
+			return childID
+		}
+	}
+	if _, closed := a.tasks.closedRoute(spawnID); closed {
+		return ""
+	}
+	childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  spawnID,
+	})
+	if err != nil {
+		slog.Warn("codebuddy: resolve child frame", "spawn_id", spawnID, "error", err)
 		return ""
 	}
 	return childID

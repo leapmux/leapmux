@@ -3069,3 +3069,161 @@ func TestClaude_ShellWakePromptIsNoticeAndNamedSendMessage(t *testing.T) {
 		assert.JSONEq(t, `{"content":"Please also check edge cases."}`, string(msgs[len(msgs)-1].Content))
 	})
 }
+
+func TestClaude_OutOfOrderRestartedJobEndBuffersAndClosesOnStart(t *testing.T) {
+	t.Parallel()
+
+	t.Run("task_notification for restarted job before task_started closes on start", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		spawnAndFinishSubagent(t, a, sink)
+
+		sendMessageTo(a, "tu-send-2", "task-1")
+		// Job 2's notification arrives BEFORE Job 2's task_started.
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-1", "tool_use_id": "tu-send-2", "status": "failed",
+			"summary": "Job 2 failed early", "output_file": "/tmp/job2.log"
+		}`))
+		restartTaskStarted(a, "tu-send-2", "Run job 2.")
+
+		assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusFailed, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero())
+		assert.Equal(t, "Job 2 failed early", tasks[0].ActiveForm)
+		assert.Equal(t, "/tmp/job2.log", tasks[0].Description)
+		assert.False(t, a.tasks.knowsTask("task-1"))
+	})
+
+	t.Run("final task_updated for restarted job before task_started closes on start", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		spawnAndFinishSubagent(t, a, sink)
+
+		sendMessageTo(a, "tu-send-3", "task-1")
+		// Job 2's final task_updated arrives BEFORE Job 2's task_started.
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-1", "patch": {"status": "failed", "error": "Job 2 crashed"}
+		}`))
+		restartTaskStarted(a, "tu-send-3", "Run job 2.")
+
+		assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusFailed, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero())
+		assert.Equal(t, "Job 2 crashed", tasks[0].ActiveForm)
+		assert.False(t, a.tasks.knowsTask("task-1"))
+	})
+
+	t.Run("duplicate job 1 task_updated without armed restart is still suppressed", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		spawnAndFinishSubagent(t, a, sink)
+
+		// Duplicate Job 1 final task_updated with no armed restart must not buffer a pending end.
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-1", "patch": {"status": "failed", "error": "stale duplicate"}
+		}`))
+		assert.Empty(t, a.tasks.runs.pendingTaskEnd)
+
+		// A later legitimate SendMessage restart must stay running until its own end arrives.
+		sendMessageTo(a, "tu-send-4", "task-1")
+		restartTaskStarted(a, "tu-send-4", "Run job 2 cleanly.")
+		_, status, ok, err := sink.LookupBackgroundTask("task-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, status)
+	})
+}
+
+type recordingUpsertKindSink struct {
+	*agenttest.Sink
+	upsertedKinds []bgtask.Kind
+}
+
+func (s *recordingUpsertKindSink) UpsertBackgroundTask(task bgtask.Upsert) error {
+	s.upsertedKinds = append(s.upsertedKinds, task.Kind)
+	return s.Sink.UpsertBackgroundTask(task)
+}
+
+func TestClaude_PreRestartTaskUpdatedPreservesKindForTrailingOutputFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pre-restart subagent derives KindSubagent from known child link", func(t *testing.T) {
+		t.Parallel()
+		base := &agenttest.Sink{}
+		childID, err := base.EnsureChildAgent(agentapi.ChildAgentSpec{
+			RegistryRole:     bgtask.RoleChildTask,
+			SpawnSpanID:      "spawn-pre",
+			ProviderChildKey: "task-pre-sub",
+			Title:            "Pre-restart worker",
+		})
+		require.NoError(t, err)
+		require.NoError(t, base.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:        "task-pre-sub",
+			Kind:          bgtask.KindSubagent,
+			ChildAgentID:  childID,
+			ParentAgentID: "agent-root",
+			Title:         "Pre-restart worker",
+			Status:        bgtask.StatusRunning,
+		}))
+		rec := &recordingUpsertKindSink{Sink: base}
+		a := newTestAgent(agentapi.NewProviderServices(rec))
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-pre-sub", "patch": {"status": "completed"}
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-pre-sub", "status": "completed",
+			"summary": "Done after restart", "output_file": "/tmp/pre-sub.log"
+		}`))
+
+		require.Equal(t, []bgtask.Kind{bgtask.KindSubagent}, rec.upsertedKinds)
+		row, ok := base.BackgroundTask("task-pre-sub")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.KindSubagent, row.Kind)
+		assert.Equal(t, "/tmp/pre-sub.log", row.Description)
+		assert.Equal(t, "Done after restart", row.ActiveForm)
+	})
+
+	t.Run("pre-restart shell without child link never upserts KindUnspecified", func(t *testing.T) {
+		t.Parallel()
+		base := &agenttest.Sink{}
+		require.NoError(t, base.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:        "task-pre-shell",
+			Kind:          bgtask.KindShell,
+			ParentAgentID: "agent-root",
+			Title:         "sleep 5",
+			Status:        bgtask.StatusRunning,
+		}))
+		rec := &recordingUpsertKindSink{Sink: base}
+		a := newTestAgent(agentapi.NewProviderServices(rec))
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-pre-shell", "patch": {"status": "completed"}
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-pre-shell", "status": "completed",
+			"summary": "Shell done", "output_file": "/tmp/pre-shell.log"
+		}`))
+
+		assert.NotContains(t, rec.upsertedKinds, bgtask.KindUnspecified, "must never upsert KindUnspecified")
+		row, ok := base.BackgroundTask("task-pre-shell")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.KindShell, row.Kind)
+		assert.Equal(t, "/tmp/pre-shell.log", row.Description)
+		assert.Equal(t, "Shell done", row.ActiveForm)
+	})
+}

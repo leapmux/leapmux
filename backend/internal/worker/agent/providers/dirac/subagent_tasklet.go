@@ -16,6 +16,12 @@ import (
 
 const diracOutcomeMismatchGrace = 5 * time.Second
 
+type diracTaskletPollResult struct {
+	finished         bool
+	hasMismatch      bool
+	mismatchDeadline time.Time
+}
+
 type diracOutcomeMismatchState struct {
 	firstSeen     time.Time
 	lifecycleID   string
@@ -93,11 +99,11 @@ func (a *Agent) watchDiracTasklets(watch *diracTaskletWatch) {
 		a.childMu.Lock()
 		watch.changed = false
 		a.childMu.Unlock()
-		finished, hasMismatch, mismatchDeadline, err := a.pollDiracTaskletsPass(watch, false)
+		result, err := a.pollDiracTaskletsPass(watch, false)
 		if !a.diracTaskletWatchCurrent(watch) {
 			return
 		}
-		if err == nil && finished {
+		if err == nil && result.finished {
 			a.childMu.Lock()
 			retire := a.taskletWatch == watch && !watch.changed
 			if retire {
@@ -117,11 +123,11 @@ func (a *Agent) watchDiracTasklets(watch *diracTaskletWatch) {
 		if err != nil {
 			interval = delay
 			delay = min(delay*2, diracArchiveRetryMax)
-		} else if hasMismatch {
+		} else if result.hasMismatch {
 			interval = delay
 			delay = min(delay*2, diracArchiveRetryMax)
-			if !mismatchDeadline.IsZero() {
-				remaining := mismatchDeadline.Sub(a.archiveClock().Now())
+			if !result.mismatchDeadline.IsZero() {
+				remaining := result.mismatchDeadline.Sub(a.archiveClock().Now())
 				if remaining <= 0 {
 					continue
 				}
@@ -138,7 +144,7 @@ func (a *Agent) watchDiracTasklets(watch *diracTaskletWatch) {
 			timer.Stop()
 			// The process can commit its outcome after the last poll. Native
 			// committed state must reach storage before generic exit cleanup.
-			if _, _, _, err := a.pollDiracTaskletsPass(watch, true); err != nil {
+			if _, err := a.pollDiracTaskletsPass(watch, true); err != nil {
 				slog.Warn("read the final native Dirac tasklets", "agent_id", a.AgentID(), "error", err)
 			}
 			return
@@ -150,19 +156,14 @@ func (a *Agent) watchDiracTasklets(watch *diracTaskletWatch) {
 	}
 }
 
-func (a *Agent) pollDiracTasklets(watch *diracTaskletWatch) (bool, error) {
-	finished, _, _, err := a.pollDiracTaskletsPass(watch, false)
-	return finished, err
-}
-
-func (a *Agent) pollDiracTaskletsPass(watch *diracTaskletWatch, forceSettleMismatch bool) (bool, bool, time.Time, error) {
+func (a *Agent) pollDiracTaskletsPass(watch *diracTaskletWatch, forceSettleMismatch bool) (diracTaskletPollResult, error) {
 	if !a.diracTaskletWatchCurrent(watch) {
-		return false, false, time.Time{}, nil
+		return diracTaskletPollResult{}, nil
 	}
 	profile, _ := a.archiveProfile()
 	metadata, err := readDiracTaskletMetadata(profile, watch.sessionID)
 	if err != nil {
-		return false, false, time.Time{}, err
+		return diracTaskletPollResult{}, err
 	}
 	defer a.FlushRegistryObservations()
 	a.childMu.Lock()
@@ -176,12 +177,11 @@ func (a *Agent) pollDiracTaskletsPass(watch *diracTaskletWatch, forceSettleMisma
 		watch.mismatches = make(map[string]diracOutcomeMismatchState)
 	}
 	seenKeys := make(map[string]struct{}, len(metadata.Tasklets))
-	hasMismatch := false
-	var earliestMismatchDeadline time.Time
+	var result diracTaskletPollResult
 	for _, tasklet := range metadata.Tasklets {
 		key := diracTaskletKey(watch.sessionID, tasklet.Record.ID, tasklet.Record.ConversationID)
 		seenKeys[key] = struct{}{}
-		if tasklet.Record.outcomeMismatch && tasklet.Record.unmatchedOutcome != nil {
+		if tasklet.Record.unmatchedOutcome != nil {
 			prev, tracked := watch.mismatches[key]
 			if !tracked || prev.lifecycleID != tasklet.Record.lifecycle.ID || !sameDiracNativeOutcome(prev.nativeOutcome, tasklet.Record.NativeOutcome) {
 				prev = diracOutcomeMismatchState{
@@ -194,11 +194,11 @@ func (a *Agent) pollDiracTaskletsPass(watch *diracTaskletWatch, forceSettleMisma
 			deadline := prev.firstSeen.Add(diracOutcomeMismatchGrace)
 			if forceSettleMismatch || !now.Before(deadline) {
 				tasklet.Record.Outcome = tasklet.Record.unmatchedOutcome
-				tasklet.Record.outcomeMismatch = false
+				tasklet.Record.unmatchedOutcome = nil
 			} else {
-				hasMismatch = true
-				if earliestMismatchDeadline.IsZero() || deadline.Before(earliestMismatchDeadline) {
-					earliestMismatchDeadline = deadline
+				result.hasMismatch = true
+				if result.mismatchDeadline.IsZero() || deadline.Before(result.mismatchDeadline) {
+					result.mismatchDeadline = deadline
 				}
 			}
 		} else {
@@ -206,7 +206,7 @@ func (a *Agent) pollDiracTaskletsPass(watch *diracTaskletWatch, forceSettleMisma
 		}
 		finished = finished && tasklet.Record.Outcome != nil
 		if err := a.publishDiracTasklet(watch, tasklet); err != nil {
-			return false, hasMismatch, earliestMismatchDeadline, err
+			return result, err
 		}
 	}
 	for key := range watch.mismatches {
@@ -214,7 +214,8 @@ func (a *Agent) pollDiracTaskletsPass(watch *diracTaskletWatch, forceSettleMisma
 			delete(watch.mismatches, key)
 		}
 	}
-	return finished, hasMismatch, earliestMismatchDeadline, nil
+	result.finished = finished
+	return result, nil
 }
 
 func (a *Agent) diracTaskletWatchCurrent(watch *diracTaskletWatch) bool {

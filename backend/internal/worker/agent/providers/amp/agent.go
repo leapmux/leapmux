@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // Agent is one Amp session. It SUPERVISES a sequence of `amp` processes rather
@@ -60,6 +61,9 @@ type Agent struct {
 	// pidAliveFn probes local PID liveness for background shell commands.
 	// Production defaults to ampProcessAlive; tests inject a deterministic probe.
 	pidAliveFn func(int) bool
+	// pidIdentityFn reads local process identity (PID and start time) for background shell commands.
+	// Production defaults to procutil.IdentifyProcess; tests inject a deterministic probe.
+	pidIdentityFn func(int) (procutil.ProcessIdentity, bool)
 
 	// userEnvMu guards the three fields below. The first process start that
 	// reads the user's shell settles them.
@@ -101,9 +105,9 @@ type Agent struct {
 	// tools holds the tool calls that started and did not end, by tool-use id.
 	tools       map[string]*openTool
 	closedSpans providerkit.ClosedSpanSet
-	// shells holds the registry row of each background command of the running
-	// process, by PID. See subagent.go.
-	shells             map[int]string
+	// shells holds the registry row and process identity of each background
+	// command of the running process, by PID. See subagent.go.
+	shells             map[int]trackedShell
 	shellPollerRunning bool
 	nextOrder          uint64
 	// contextUsage is the last context-usage broadcast, so an unchanged reading

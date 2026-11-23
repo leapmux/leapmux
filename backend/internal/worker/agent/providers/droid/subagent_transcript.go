@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -81,57 +82,40 @@ func newDroidChildTail(a *Agent, sessionID, dataRoot string, initial *droidArchi
 	return tail
 }
 
-// probeChildArchiveEnd verifies the child archive header through a root
-// confined to the Factory data directory and returns the current EOF offset.
-// A missing directory or file returns (nil, nil) so a brand-new archive starts
-// cleanly at offset 0.
-func (a *Agent) probeChildArchiveEnd(sessionID string) (pos *droidArchivePosition, err error) {
-	if !filepath.IsAbs(a.workingDir) || !validDroidSessionID(sessionID) {
-		return nil, errors.New("droid child archive path is not valid")
-	}
-	dataRoot := droidDataRoot(agent.StoredSessionQuery{HomeDir: a.homeDir})
-	if dataRoot == "" {
-		return nil, errors.New("droid data root is unavailable")
-	}
+// withValidatedDroidArchive opens one child archive file confined to dataRoot
+// after verifying that every path component is a regular directory or file and
+// that the opened file descriptor matches the Lstat identity.
+func withValidatedDroidArchive(dataRoot, workDir, sessionID string, fn func(file *os.File, opened os.FileInfo) error) (err error) {
 	root, err := os.OpenRoot(dataRoot)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
+		return err
 	}
 	defer func() {
 		if closeErr := root.Close(); err == nil && closeErr != nil {
 			err = closeErr
 		}
 	}()
-	project := filepath.Join(droidSessionsDirName, droidSanitizeCwd(a.workingDir))
+	project := filepath.Join(droidSessionsDirName, droidSanitizeCwd(workDir))
 	for _, dir := range []string{droidSessionsDirName, project} {
 		info, statErr := root.Lstat(dir)
 		if statErr != nil {
-			if errors.Is(statErr, os.ErrNotExist) {
-				return nil, nil
-			}
-			return nil, statErr
+			return statErr
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("droid child archive directory is not a regular directory: %s", dir)
+			return fmt.Errorf("droid child archive directory is not a regular directory: %s", dir)
 		}
 	}
 	fileName := filepath.Join(project, sessionID+droidSessionSuffix)
 	pathInfo, err := root.Lstat(fileName)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
+		return err
 	}
 	if !pathInfo.Mode().IsRegular() {
-		return nil, errors.New("droid child archive is not a regular file")
+		return errors.New("droid child archive is not a regular file")
 	}
 	file, err := root.Open(fileName)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() {
 		if closeErr := file.Close(); err == nil && closeErr != nil {
@@ -140,37 +124,63 @@ func (a *Agent) probeChildArchiveEnd(sessionID string) (pos *droidArchivePositio
 	}()
 	opened, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if !opened.Mode().IsRegular() || !os.SameFile(pathInfo, opened) {
-		return nil, errors.New("droid child archive file changed identity")
+		return errors.New("droid child archive file changed identity")
 	}
-	if opened.Size() == 0 {
-		return nil, nil
+	return fn(file, opened)
+}
+
+// probeChildArchiveEnd verifies the child archive header through a root
+// confined to the Factory data directory and returns the current EOF offset.
+// A missing directory or file returns (nil, nil) so a brand-new archive starts
+// cleanly at offset 0.
+func (a *Agent) probeChildArchiveEnd(sessionID string) (*droidArchivePosition, error) {
+	if !filepath.IsAbs(a.workingDir) || !validDroidSessionID(sessionID) {
+		return nil, errors.New("droid child archive path is not valid")
 	}
-	reader := bufio.NewReaderSize(io.LimitReader(file, droidArchiveLineLimit+1), 4096)
-	firstLine, readErr := reader.ReadBytes('\n')
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return nil, readErr
+	dataRoot := droidDataRoot(agent.StoredSessionQuery{HomeDir: a.homeDir})
+	if dataRoot == "" {
+		return nil, errors.New("droid data root is unavailable")
 	}
-	if !bytes.HasSuffix(firstLine, []byte{'\n'}) {
-		if len(firstLine) > droidArchiveLineLimit {
-			return nil, errors.New("droid child archive header exceeds limit")
+	var pos *droidArchivePosition
+	err := withValidatedDroidArchive(dataRoot, a.workingDir, sessionID, func(file *os.File, opened os.FileInfo) error {
+		if opened.Size() == 0 {
+			return nil
 		}
+		reader := bufio.NewReaderSize(io.LimitReader(file, droidArchiveLineLimit+1), 4096)
+		firstLine, readErr := reader.ReadBytes('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return readErr
+		}
+		if !bytes.HasSuffix(firstLine, []byte{'\n'}) {
+			if len(firstLine) > droidArchiveLineLimit {
+				return errors.New("droid child archive header exceeds limit")
+			}
+			return nil
+		}
+		var record droidArchiveRecord
+		if err := json.Unmarshal(bytes.TrimSpace(firstLine), &record); err != nil {
+			return fmt.Errorf("droid child archive header unreadable: %w", err)
+		}
+		if record.Type != droidSessionStartType || record.ID != sessionID || !sessionstore.SameDir(record.Cwd, a.workingDir) {
+			return errors.New("droid child archive identity mismatch")
+		}
+		pos = &droidArchivePosition{
+			offset:     opened.Size(),
+			headerSeen: true,
+			fileInfo:   opened,
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	var record droidArchiveRecord
-	if err := json.Unmarshal(bytes.TrimSpace(firstLine), &record); err != nil {
-		return nil, fmt.Errorf("droid child archive header unreadable: %w", err)
+	if err != nil {
+		return nil, err
 	}
-	if record.Type != droidSessionStartType || record.ID != sessionID || !sessionstore.SameDir(record.Cwd, a.workingDir) {
-		return nil, errors.New("droid child archive identity mismatch")
-	}
-	return &droidArchivePosition{
-		offset:     opened.Size(),
-		headerSeen: true,
-		fileInfo:   opened,
-	}, nil
+	return pos, nil
 }
 
 // startChildTail starts one reader for a native child that the registry linked.
@@ -184,20 +194,67 @@ func (a *Agent) resumeChildTail(sessionID string, initial *droidArchivePosition,
 	return a.ensureChildTail(sessionID, true, initial, ready)
 }
 
+// probeResumeSpawnArchive captures the child archive EOF outside dispatchMu
+// when Task({resume}) arrives so Job 2 output flushed before
+// child_session_available is not skipped.
+func (a *Agent) probeResumeSpawnArchive(spawnKey, sessionID string) {
+	a.tailMu.Lock()
+	hasTail := a.childTails[sessionID] != nil
+	a.tailMu.Unlock()
+	if hasTail {
+		return
+	}
+	pos, err := a.probeChildArchiveEnd(sessionID)
+	if err != nil {
+		return
+	}
+	a.dispatchMu.Lock()
+	if spawn, exists := a.childSpawns[spawnKey]; exists && spawn.resume == sessionID && !spawn.archiveProbed {
+		spawn.archivePos = pos
+		spawn.archiveProbed = true
+		a.childSpawns[spawnKey] = spawn
+	}
+	a.dispatchMu.Unlock()
+}
+
 // resumeChildTailFromEOF resumes tailing a child session after a Task({resume})
-// announcement, starting at EOF if no previous tail exists in memory.
-func (a *Agent) resumeChildTailFromEOF(sessionID string) {
+// announcement, starting at the pre-probed or current EOF if no previous tail
+// exists in memory. It revives the registry row and arms the child turn only
+// when a tail is active.
+func (a *Agent) resumeChildTailFromEOF(sessionID string, preProbed *droidArchivePosition, probed bool) bool {
 	a.tailMu.Lock()
 	hasTail := a.childTails[sessionID] != nil
 	a.tailMu.Unlock()
 	var initial *droidArchivePosition
 	if !hasTail {
-		pos, err := a.probeChildArchiveEnd(sessionID)
-		if err == nil {
-			initial = pos
+		if probed {
+			initial = preProbed
+		} else {
+			pos, err := a.probeChildArchiveEnd(sessionID)
+			if err == nil {
+				initial = pos
+			} else {
+				slog.Warn("droid: probe resumed child archive end failed; tailing from start", "session_id", sessionID, "error", err)
+			}
 		}
 	}
-	a.ensureChildTail(sessionID, true, initial, nil)
+	ready := make(chan struct{})
+	if !a.ensureChildTail(sessionID, true, initial, ready) {
+		return false
+	}
+	if err := a.sink.ReviveBackgroundTask(sessionID); err != nil {
+		providerkit.LogRegistryRefusal("droid", "revive resumed child", err)
+		close(ready)
+		return false
+	}
+	a.dispatchMu.Lock()
+	if state := a.outputStates[sessionID]; state != nil {
+		state.ended = false
+	}
+	a.dispatchMu.Unlock()
+	a.armChildTurn(sessionID)
+	close(ready)
+	return true
 }
 
 func (a *Agent) ensureChildTail(sessionID string, continuation bool, initial *droidArchivePosition, ready <-chan struct{}) bool {
@@ -382,61 +439,25 @@ func validDroidSessionID(value string) bool {
 }
 
 // read rejects symlink escapes and file replacement before it reads new bytes.
-func (t *droidChildTail) read() (data []byte, err error) {
-	root, err := os.OpenRoot(t.dataRoot)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if closeErr := root.Close(); err == nil && closeErr != nil {
-			err = closeErr
+func (t *droidChildTail) read() ([]byte, error) {
+	var data []byte
+	err := withValidatedDroidArchive(t.dataRoot, t.workDir, t.sessionID, func(file *os.File, opened os.FileInfo) error {
+		if t.fileInfo != nil && !os.SameFile(t.fileInfo, opened) {
+			return errors.New("droid child archive file changed identity")
 		}
-	}()
-	project := filepath.Join(droidSessionsDirName, droidSanitizeCwd(t.workDir))
-	for _, dir := range []string{droidSessionsDirName, project} {
-		info, statErr := root.Lstat(dir)
-		if statErr != nil {
-			return nil, statErr
+		if opened.Size() < t.offset {
+			return errors.New("droid child archive was truncated")
 		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("droid child archive directory is not a regular directory: %s", dir)
+		if t.fileInfo == nil {
+			t.fileInfo = opened
 		}
-	}
-	fileName := filepath.Join(project, t.sessionID+droidSessionSuffix)
-	pathInfo, err := root.Lstat(fileName)
-	if err != nil {
-		return nil, err
-	}
-	if !pathInfo.Mode().IsRegular() {
-		return nil, errors.New("droid child archive is not a regular file")
-	}
-	file, err := root.Open(fileName)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if closeErr := file.Close(); err == nil && closeErr != nil {
-			err = closeErr
+		if _, err := file.Seek(t.offset, io.SeekStart); err != nil {
+			return err
 		}
-	}()
-	opened, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !opened.Mode().IsRegular() || !os.SameFile(pathInfo, opened) ||
-		(t.fileInfo != nil && !os.SameFile(t.fileInfo, opened)) {
-		return nil, errors.New("droid child archive file changed identity")
-	}
-	if opened.Size() < t.offset {
-		return nil, errors.New("droid child archive was truncated")
-	}
-	if t.fileInfo == nil {
-		t.fileInfo = opened
-	}
-	if _, err := file.Seek(t.offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-	data, err = io.ReadAll(io.LimitReader(file, droidArchiveReadLimit))
+		var readErr error
+		data, readErr = io.ReadAll(io.LimitReader(file, droidArchiveReadLimit))
+		return readErr
+	})
 	return data, err
 }
 
@@ -573,7 +594,7 @@ func (t *droidChildTail) projectToolCall(target droidOutputTarget, id, name stri
 		ToolUse droidToolUse `json:"toolUse"`
 	}{Type: "tool_call", ToolUse: droidToolUse{ID: id, Name: name, Input: input}})
 	if err == nil {
-		t.agent.onToolCall(payload, target)
+		_, _ = t.agent.onToolCall(payload, target)
 		// An archive block is committed. Store it before the next block in this message.
 		t.agent.flushPendingToolCall(target, id)
 	}

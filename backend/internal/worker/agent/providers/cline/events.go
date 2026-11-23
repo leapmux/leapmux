@@ -50,21 +50,13 @@ func (a *Agent) handleEvent(event hubEvent) {
 	case eventPendingPromptSubmitted:
 		a.handlePendingPromptSubmitted(event)
 	case eventReasoningDelta:
-		if t := a.routeContent(event.Payload); t != nil {
-			a.handleReasoningDelta(t, event.Payload)
-		}
+		a.handleReasoningDelta(event.Payload)
 	case eventAssistantDelta:
-		if t := a.routeContent(event.Payload); t != nil {
-			a.handleAssistantDelta(t, event.Payload)
-		}
+		a.handleAssistantDelta(event.Payload)
 	case contracts.ClineEventAssistantFinished:
-		if t := a.routeContent(event.Payload); t != nil {
-			a.handleAssistantFinished(t, event)
-		}
+		a.handleAssistantFinished(event)
 	case contracts.ClineEventReasoningFinished:
-		if t := a.routeContent(event.Payload); t != nil {
-			a.handleReasoningFinished(t, event)
-		}
+		a.handleReasoningFinished(event)
 	case contracts.ClineEventAssistantMedia:
 		if t := a.routeContent(event.Payload); t != nil {
 			a.flushReasoning(t, event.SessionID)
@@ -201,7 +193,7 @@ func (a *Agent) dispatchToolStarted(event hubEvent) {
 	if open || dropped {
 		return
 	}
-	t := a.routeContent(event.Payload)
+	t := a.routeContentMeta(call.Agent)
 	if t == nil {
 		a.Mu.Lock()
 		a.out.dropped[call.ToolCallID] = true

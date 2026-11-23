@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { localFieldValueOf } from '../../src/components/chat/composer/scheduleSend'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
@@ -11,7 +12,7 @@ import { withExtraClients } from './helpers/multiClient'
 import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { expectSteerAccepted, QUEUED_INPUT_ROW_TESTID, queuedInputRow, steerButton } from './helpers/steer'
-import { expectRowBecomesFinal, requireRegistryRow } from './helpers/subagentRegistry'
+import { backgroundTaskRows, expectRowBecomesFinal, requireRegistryRow } from './helpers/subagentRegistry'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { agentTabs, assistantBubbles, composerEditor, fillComposer, focusComposer, inputQueue, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, userBubbles, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
@@ -52,6 +53,57 @@ async function seedTwoQueuedRows(page: Page) {
     source: rows.filter({ hasText: 'first queued' }),
     target: rows.filter({ hasText: 'second queued' }),
   }
+}
+
+async function spawnHeldBackgroundSubagent(
+  page: Page,
+  modelScript: ModelScript,
+  spec: {
+    gate: string
+    childMarker: string
+    childDone: string
+    callId: string
+    description: string
+    rootPrompt: string
+    rootDone: string
+    followUpMatch: string
+    followUpReply: string
+  },
+) {
+  await modelScript.rule(
+    {
+      name: `claude background child holds on ${spec.gate}`,
+      when: { user: spec.childMarker },
+      respond: { gate: spec.gate, text: spec.childDone },
+      once: true,
+    },
+    {
+      name: `claude answers follow-up for ${spec.callId}`,
+      when: { user: spec.followUpMatch },
+      respond: { text: spec.followUpReply },
+      once: true,
+    },
+  )
+  const start = await modelScript.queue(
+    {
+      toolCalls: [
+        spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, spec.callId, {
+          description: spec.description,
+          prompt: modelScript.prompt(`Hold at ${spec.childMarker}.`),
+          background: true,
+        }),
+      ],
+    },
+    { text: spec.rootDone },
+  )
+  await sendMessage(page, modelScript.prompt(spec.rootPrompt))
+  await modelScript.waitForSteps(start + 2)
+  await modelScript.waitForGate(spec.gate)
+  await expect(assistantBubbles(page).filter({ hasText: spec.rootDone })).toHaveCount(1)
+  await requireRegistryRow(page)
+  const bgRow = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: spec.description }).first()
+  await expect(bgRow).toHaveAttribute('data-status', 'running')
+  return bgRow
 }
 
 test.describe('agent input queue', () => {
@@ -428,38 +480,17 @@ test.describe('agent input queue', () => {
     const steerGate = 'claude-bg-queue-steer-gate'
     await withCleanup(async () => {
       // Part (a): hold queued input behind a running background subagent, then auto-drain when it finishes.
-      await modelScript.rule(
-        {
-          name: 'claude background child holds for auto-drain',
-          when: { user: 'BG_DRAIN_CHILD_MARKER' },
-          respond: { gate: drainGate, text: 'BG_DRAIN_CHILD_DONE' },
-          once: true,
-        },
-        {
-          name: 'claude answers drained message after background task finishes',
-          when: { user: 'queued behind background drain' },
-          respond: { text: 'DRAINED_AFTER_BG_REPLY' },
-          once: true,
-        },
-      )
-      const drainStart = await modelScript.queue(
-        {
-          toolCalls: [
-            spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'bg-drain-spawn', {
-              description: 'Background drain task',
-              prompt: modelScript.prompt('Hold at BG_DRAIN_CHILD_MARKER.'),
-              background: true,
-            }),
-          ],
-        },
-        { text: 'ROOT_DRAIN_TURN_DONE' },
-      )
-      await sendMessage(page, modelScript.prompt('Spawn a background task for queue hold test.'))
-      await modelScript.waitForSteps(drainStart + 2)
-      await modelScript.waitForGate(drainGate)
-      await expect(assistantBubbles(page).filter({ hasText: 'ROOT_DRAIN_TURN_DONE' })).toHaveCount(1)
-      const drainRow = await requireRegistryRow(page)
-      await expect(drainRow).toHaveAttribute('data-status', 'running')
+      const drainRow = await spawnHeldBackgroundSubagent(page, modelScript, {
+        gate: drainGate,
+        childMarker: 'BG_DRAIN_CHILD_MARKER',
+        childDone: 'BG_DRAIN_CHILD_DONE',
+        callId: 'bg-drain-spawn',
+        description: 'Background drain task',
+        rootPrompt: 'Spawn a background task for queue hold test.',
+        rootDone: 'ROOT_DRAIN_TURN_DONE',
+        followUpMatch: 'queued behind background drain',
+        followUpReply: 'DRAINED_AFTER_BG_REPLY',
+      })
 
       await sendMessage(page, modelScript.prompt('queued behind background drain'))
       const heldRow = queuedInputRow(page, 'queued behind background drain')
@@ -482,36 +513,17 @@ test.describe('agent input queue', () => {
       await waitForAgentIdle(page)
 
       // Part (b): repeat and click Steer while the background task still runs -> dispatches immediately.
-      await modelScript.rule(
-        {
-          name: 'claude background child holds for steer bypass',
-          when: { user: 'BG_STEER_CHILD_MARKER' },
-          respond: { gate: steerGate, text: 'BG_STEER_CHILD_DONE' },
-          once: true,
-        },
-        {
-          name: 'claude answers steered message while background task still runs',
-          when: { user: 'steered behind background task' },
-          respond: { text: 'STEERED_WHILE_BG_RUNNING_REPLY' },
-          once: true,
-        },
-      )
-      const steerStart = await modelScript.queue(
-        {
-          toolCalls: [
-            spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'bg-steer-spawn', {
-              description: 'Background steer task',
-              prompt: modelScript.prompt('Hold at BG_STEER_CHILD_MARKER.'),
-              background: true,
-            }),
-          ],
-        },
-        { text: 'ROOT_STEER_TURN_DONE' },
-      )
-      await sendMessage(page, modelScript.prompt('Spawn a second background task for Steer bypass test.'))
-      await modelScript.waitForSteps(steerStart + 2)
-      await modelScript.waitForGate(steerGate)
-      await expect(assistantBubbles(page).filter({ hasText: 'ROOT_STEER_TURN_DONE' })).toHaveCount(1)
+      const steerBgRow = await spawnHeldBackgroundSubagent(page, modelScript, {
+        gate: steerGate,
+        childMarker: 'BG_STEER_CHILD_MARKER',
+        childDone: 'BG_STEER_CHILD_DONE',
+        callId: 'bg-steer-spawn',
+        description: 'Background steer task',
+        rootPrompt: 'Spawn a second background task for Steer bypass test.',
+        rootDone: 'ROOT_STEER_TURN_DONE',
+        followUpMatch: 'steered behind background task',
+        followUpReply: 'STEERED_WHILE_BG_RUNNING_REPLY',
+      })
 
       await sendMessage(page, modelScript.prompt('steered behind background task'))
       const steerRow = queuedInputRow(page, 'steered behind background task')
@@ -531,6 +543,8 @@ test.describe('agent input queue', () => {
         once: true,
       })
       await modelScript.releaseGate(steerGate)
+      await expectRowBecomesFinal(page, steerBgRow)
+      await expect(assistantBubbles(page).filter({ hasText: 'ROOT_STEER_NOTICE_DONE' })).toHaveCount(1)
       await waitForAgentIdle(page)
     }, () => finishCleanup([
       modelScript.releaseGateIfHeld(drainGate),

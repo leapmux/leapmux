@@ -763,3 +763,53 @@ func TestQoderWorkflowReplayCompletionRetryAndFallback(t *testing.T) {
 		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, workflow.Status)
 	})
 }
+
+func TestQoderBackgroundTasksChangedLeavesForegroundChildrenRunning(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+
+	// Start a foreground local_agent, a foreground in_process_teammate, and a
+	// background local_agent (marked via run_in_background on Agent tool_use).
+	a.HandleOutput([]byte(qoderChildStarted))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","session_id":"session-1","task_id":"mate-1","task_type":"in_process_teammate","description":"Reviewer","prompt":"Review the patch."}`))
+	a.HandleOutput([]byte(`{"type":"assistant","session_id":"session-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"spawn-bg","name":"Agent","input":{"description":"Background child","prompt":"Work in background.","run_in_background":true}}]}}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","session_id":"session-1","task_id":"task-bg","tool_use_id":"spawn-bg","task_type":"local_agent","description":"Background child","prompt":"Work in background."}`))
+
+	// An empty background_tasks_changed list omits all three tasks.
+	// Only the background child may close as unknown outcome; foreground children stay running.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"session-1","tasks":[]}`))
+
+	fgAgent, ok := sink.BackgroundTask("spawn-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, fgAgent.Status, "foreground local_agent must stay running when omitted from background_tasks_changed")
+
+	fgMate, ok := sink.BackgroundTask("mate-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, fgMate.Status, "foreground in_process_teammate must stay running when omitted from background_tasks_changed")
+
+	bgAgent, ok := sink.BackgroundTask("spawn-bg")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, bgAgent.Status, "background local_agent must close when omitted from background_tasks_changed")
+}
+
+func TestQoderWorkflowReplayNonIncompleteArchiveErrorClosesWorkflow(t *testing.T) {
+	t.Parallel()
+	fixture := newQoderWorkflowFixture(t)
+	writeQoderWorkflowFixtureFile(t, fixture.outputFile, `{"runId":"wf_1","taskId":"wf-1","workflowName":"native-code","status":"completed","agentCount":1}`)
+	// Journal entry with an unknown child state produces a non-incomplete archive error
+	// after canonical output.json has already confirmed completion.
+	writeQoderWorkflowFixtureFile(t, fixture.journal, `{"type":"result","agentId":"child-1","result":{"state":"corrupt","outputPath":"/tmp/child-1.output","transcriptPath":"/tmp/agent-child-1.jsonl"}}`+"\n")
+
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.opts = agent.Options{HomeDir: fixture.homeDir, WorkingDir: fixture.workingDir}
+	a.HandleOutput([]byte(qoderWorkflowLaunch))
+	a.HandleOutput(qoderWorkflowUserNotification(t, "session-1", "wf-1", "run-workflow", fixture.outputFile, "completed"))
+
+	workflow, ok := sink.BackgroundTask("workflow:session-1:run-workflow")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, workflow.Status, "non-incomplete archive error on replay must close the workflow instead of stranding it running")
+	assert.Empty(t, a.workflows)
+	assert.NotEmpty(t, sink.LeapMuxNotifications())
+}

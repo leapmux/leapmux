@@ -346,11 +346,16 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	if closeTools {
 		a.closeUnfinishedTools(completion)
 	}
-	childCloseStatus := bgtask.StatusStopped
-	if completion == agent.MessageCompletionError {
+	childCloseStatus := bgtask.StatusEndedWithUnknownOutcome
+	switch completion {
+	case agent.MessageCompletionInterrupted:
+		childCloseStatus = bgtask.StatusStopped
+	case agent.MessageCompletionError:
 		childCloseStatus = bgtask.StatusFailed
+	case agent.MessageCompletionComplete, agent.MessageCompletionFinished:
+		childCloseStatus = bgtask.StatusEndedWithUnknownOutcome
 	}
-	a.closeChildren(childCloseStatus, true)
+	a.closeChildrenMatching(childCloseStatus, func(child *childState) bool { return !child.background })
 	a.endUnfinishedCompaction(compactionFailure)
 	duration := max(int64(0), a.clock.Now().Sub(started).Milliseconds())
 	metadata, err := json.Marshal(map[string]any{contracts.MessageMetadataFieldDurationMs: duration, contracts.SessionInfoKeyContextUsage: usage})
@@ -399,7 +404,7 @@ func (a *Agent) finishStream() {
 	if a.IsDiscardingOutput() {
 		a.closeUnfinishedTools(completion)
 		if a.sink != nil {
-			a.closeChildren(agent.IncompleteTaskStatus(completion), false)
+			a.closeChildrenMatching(agent.IncompleteTaskStatus(completion), nil)
 			providerkit.ResetSpansAndProgress(a.sink)
 		}
 		return
@@ -438,7 +443,7 @@ func (a *Agent) finishStream() {
 		if compacting && turnID == "" {
 			a.PublishTurnActive()
 		}
-		a.closeChildren(agent.IncompleteTaskStatus(completion), false)
+		a.closeChildrenMatching(agent.IncompleteTaskStatus(completion), nil)
 	}
 }
 

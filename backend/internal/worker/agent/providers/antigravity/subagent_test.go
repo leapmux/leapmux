@@ -389,3 +389,29 @@ func TestAntigravitySharedStepIndexBackgroundTasksSettleIndependently(t *testing
 	assert.NotContains(t, a.root.background, "")
 	assert.Contains(t, a.root.background, "task-e")
 }
+
+func TestAntigravityChildOpenStepWithEmptyStatusFlushesOnIdle(t *testing.T) {
+	a, sink, child := childLifecycleTestAgent(t)
+	openStep := plannerStep(contracts.AntigravityStepStatusRunning, "partial child answer")
+	require.NoError(t, a.applyUpdate(child, updateWithSteps("", []int{0}, []json.RawMessage{openStep}), false))
+	require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusIdle}, false))
+
+	messages := transcriptMessages(sink.Child(child.childAgentID))
+	require.Len(t, messages, 1, "open step added during empty-status update must flush when cascade turns idle")
+	assert.Contains(t, string(messages[0].Content), "partial child answer")
+	row, ok := sink.BackgroundTask(child.id)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}
+
+func TestAntigravityBackgroundForStepOrderIsDeterministic(t *testing.T) {
+	a, _ := testAgent(t)
+	a.root.background["task-c"] = backgroundTask{rowKey: "task-c", stepIndex: 2, slot: 2}
+	a.root.background["task-a"] = backgroundTask{rowKey: "task-a", stepIndex: 2, slot: 0}
+	a.root.background["task-b"] = backgroundTask{rowKey: "task-b", stepIndex: 2, slot: 1}
+	for range 20 {
+		got := a.backgroundForStep(a.root, 2)
+		require.Len(t, got, 3)
+		assert.Equal(t, []string{"task-a", "task-b", "task-c"}, []string{got[0].rowKey, got[1].rowKey, got[2].rowKey})
+	}
+}

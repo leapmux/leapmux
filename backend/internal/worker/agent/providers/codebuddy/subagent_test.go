@@ -2,6 +2,7 @@ package codebuddy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,13 +22,13 @@ func TestCodebuddyTaskIndexKeepsEachSpawnRouteTogether(t *testing.T) {
 		assert.Equal(t, child, actualChild)
 	}
 	check("unknown", "", "")
-	index.rememberChild("spawn", "old-row", "")
+	index.rememberChildRoute("spawn", "old-row", "", false)
 	check("spawn", "old-row", "")
-	index.rememberChild("spawn", "old-row", "child")
+	index.rememberChildRoute("spawn", "old-row", "child", false)
 	check("spawn", "old-row", "child")
-	index.rememberChild("spawn", "current-row", "child")
-	index.rememberChild("alias", "current-row", "child")
-	index.rememberChild("other", "other-row", "other-child")
+	index.rememberChildRoute("spawn", "current-row", "child", false)
+	index.rememberChildRoute("alias", "current-row", "child", false)
+	index.rememberChildRoute("other", "other-row", "other-child", false)
 	index.forgetRow("old-row")
 	check("spawn", "current-row", "child")
 	check("alias", "current-row", "child")
@@ -349,4 +350,58 @@ func TestCodebuddyOutOfOrderToolResultBeforeTaskStartedReusesChild(t *testing.T)
 	row, ok = sink.BackgroundTask("task-ooo")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}
+
+func TestCodebuddyRouteChildFramePostRestartAndEarlyArrival(t *testing.T) {
+	t.Parallel()
+
+	t.Run("routes forwarded child frame after restart when row was renamed from spawnID to taskID", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		beforeRestart := newOfflineAgent(t, sink)
+		beforeRestart.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-bg-restart","name":"Agent","input":{"description":"BG worker","prompt":"Work.","run_in_background":true}}]}}`))
+		beforeRestart.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-bg-restart","tool_use_id":"TU-bg-restart","task_type":"Agent","description":"BG worker"}`))
+		row, ok := sink.BackgroundTask("task-bg-restart")
+		require.True(t, ok)
+		require.NotEmpty(t, row.ChildAgentID)
+
+		// Simulate worker restart: fresh agent with empty in-memory tasks, sharing durable sink.
+		afterRestart := newOfflineAgent(t, sink)
+		afterRestart.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"TU-bg-restart","message":{"role":"assistant","content":[{"type":"text","text":"post-restart child output"}]}}`))
+
+		messages := sink.Child(row.ChildAgentID).Messages()
+		require.Len(t, messages, 2, "post-restart forwarded child frame must reach the renamed child's transcript")
+		assert.Contains(t, string(messages[1].Content), "post-restart child output")
+		_, phantomExists := sink.BackgroundTask("TU-bg-restart")
+		assert.False(t, phantomExists, "routing must not recreate the old pre-rename row key")
+	})
+
+	t.Run("routes early forwarded child frame arriving before parent tool_use without phantom row", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+
+		// Forwarded child output arrives before the parent tool_use frame.
+		a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"TU-early","message":{"role":"assistant","content":[{"type":"text","text":"early child output"}]}}`))
+		_, beforeRowExists := sink.BackgroundTask("TU-early")
+		assert.False(t, beforeRowExists, "early frame must not open a phantom registry row before spawn")
+
+		// Parent tool_use arrives next and adopts the same child transcript.
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"TU-early","name":"Agent","input":{"description":"Early child","prompt":"Start early."}}]}}`))
+		row, ok := sink.BackgroundTask("TU-early")
+		require.True(t, ok)
+		require.NotEmpty(t, row.ChildAgentID)
+		assert.Len(t, sink.ChildAgentIDs(), 1)
+
+		messages := sink.Child(row.ChildAgentID).Messages()
+		require.NotEmpty(t, messages)
+		var foundEarly bool
+		for _, m := range messages {
+			if strings.Contains(string(m.Content), "early child output") {
+				foundEarly = true
+				break
+			}
+		}
+		assert.True(t, foundEarly, "early child output must be preserved in the adopted child transcript")
+	})
 }

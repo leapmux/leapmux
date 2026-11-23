@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -64,9 +66,7 @@ func (a *Agent) observeChild(raw []byte, event nativeEvent) {
 		}
 		a.children[event.ToolCallID] = state
 		a.Mu.Unlock()
-		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, ChildAgentID: id, Title: input.Description, Status: bgtask.StatusRunning}); err != nil {
-			slog.Warn("publish a Command Code child task", "error", err)
-		}
+		providerkit.LogRegistryRefusal("commandcode", "open child", a.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, ChildAgentID: id, Title: input.Description, Status: bgtask.StatusRunning}))
 		return
 	}
 	if state == nil {
@@ -177,7 +177,7 @@ func (a *Agent) finishChildTool(event nativeEvent, opening openTool) {
 		if match := nativeAgentID.FindStringSubmatch(text); len(match) == 2 {
 			key := childRowKey(sessionID, match[1])
 			if err := a.sink.RenameBackgroundTask(rowKey, key); err != nil {
-				slog.Warn("identify a Command Code background child", "error", err)
+				providerkit.LogRegistryRefusal("commandcode", "rename child", err)
 			} else {
 				a.Mu.Lock()
 				state.rowKey = key
@@ -215,9 +215,7 @@ func (a *Agent) finishChild(callID string, state *childState, status bgtask.Stat
 	childID := state.childID
 	delete(a.children, callID)
 	a.Mu.Unlock()
-	if err := a.sink.CloseBackgroundTask(rowKey, status); err != nil {
-		slog.Warn("close a Command Code child task", "error", err)
-	}
+	providerkit.LogRegistryRefusal("commandcode", "close child", a.sink.CloseBackgroundTask(rowKey, status))
 	a.sink.CleanupChildAgent(childID)
 }
 
@@ -226,24 +224,27 @@ type closingChild struct {
 	childID string
 }
 
-func (a *Agent) closeChildren(status bgtask.Status, foregroundOnly bool) {
+// closeChildrenMatching closes every tracked child that satisfies match (or all
+// children when match is nil) in deterministic row-key order.
+func (a *Agent) closeChildrenMatching(status bgtask.Status, match func(*childState) bool) {
 	if a.sink == nil {
 		return
 	}
 	a.Mu.Lock()
 	closing := make([]closingChild, 0, len(a.children))
-	for id, child := range a.children {
-		if foregroundOnly && child.background {
+	for callID, child := range a.children {
+		if match != nil && !match(child) {
 			continue
 		}
 		closing = append(closing, closingChild{rowKey: child.rowKey, childID: child.childID})
-		delete(a.children, id)
+		delete(a.children, callID)
 	}
 	a.Mu.Unlock()
+	sort.Slice(closing, func(left, right int) bool {
+		return closing[left].rowKey < closing[right].rowKey
+	})
 	for _, child := range closing {
-		if err := a.sink.CloseBackgroundTask(child.rowKey, status); err != nil {
-			slog.Warn("close a Command Code child task", "error", err)
-		}
+		providerkit.LogRegistryRefusal("commandcode", "close child", a.sink.CloseBackgroundTask(child.rowKey, status))
 		a.sink.CleanupChildAgent(child.childID)
 	}
 }

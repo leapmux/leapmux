@@ -760,3 +760,73 @@ func TestACP_RegistryObservationReviveRowValidationAndFIFORetry(t *testing.T) {
 		assert.False(t, stillClosed)
 	})
 }
+
+func TestACP_RenameAndReviveFailureKeepsMemoryAlignedWithRegistry(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "provisional-1", ChildAgentKey: "provisional-1", Title: "Helper", Status: bgtask.StatusRunning, Spawns: true,
+	})
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: "session-1", SessionID: "child-session", RowKey: "provisional-1"})
+	sink.ReviveErr = errors.New("revive failed")
+
+	applied := b.ApplySubagentObservationForSession("session-1", &SubagentObservation{
+		RowKey: "stable-1", RenameFrom: "provisional-1", ChildAgentKey: "stable-1",
+		Title: "Helper", Status: bgtask.StatusRunning, ReviveRow: true,
+	})
+	assert.False(t, applied, "a refused revival reports false")
+
+	// The registry rename already committed under stable-1, so in-memory maps
+	// and openRows must follow stable-1 instead of staying under provisional-1.
+	_, oldFound := sink.BackgroundTask("provisional-1")
+	assert.False(t, oldFound)
+	_, newFound := sink.BackgroundTask("stable-1")
+	require.True(t, newFound)
+
+	assert.Equal(t, "stable-1", b.childSessionRow("child-session"))
+	b.children.mu.Lock()
+	_, oldAgent := b.children.agents["provisional-1"]
+	_, newAgent := b.children.agents["stable-1"]
+	b.children.mu.Unlock()
+	assert.False(t, oldAgent)
+	assert.True(t, newAgent)
+
+	openKeys := b.openRows.takeAll()
+	assert.NotContains(t, openKeys, "provisional-1")
+	assert.Contains(t, openKeys, "stable-1")
+}
+
+func TestACP_ApplySubagentObservationForSessionReportsRefusalAndNil(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+
+	assert.False(t, b.ApplySubagentObservationForSession("session-1", nil))
+	assert.False(t, b.ApplySubagentObservationForSession("session-1", &SubagentObservation{}))
+
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "child-1", ChildAgentKey: "child-1", Title: "Helper", Status: bgtask.StatusRunning, Spawns: true,
+	})
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "child-1", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
+	})
+	sink.ReviveErr = errors.New("revive refused")
+
+	assert.False(t, b.ApplySubagentObservationForSession("session-1", &SubagentObservation{
+		RowKey: "child-1", ChildAgentKey: "child-1", Status: bgtask.StatusRunning, ReviveRow: true,
+	}), "main session observation refusal returns false")
+
+	// Also test refusal through a child session route.
+	sink.ReviveErr = nil
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "parent-child", ChildAgentKey: "parent-child", Title: "Parent child", Status: bgtask.StatusRunning, Spawns: true,
+	})
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: "session-1", SessionID: "child-session", RowKey: "parent-child"})
+	assert.False(t, b.ApplySubagentObservationForSession("child-session", nil))
+	b.refuseChild("nested-refused")
+	assert.False(t, b.ApplySubagentObservationForSession("child-session", &SubagentObservation{
+		RowKey: "nested-refused", Status: bgtask.StatusRunning,
+	}), "child session observation refusal returns false")
+}

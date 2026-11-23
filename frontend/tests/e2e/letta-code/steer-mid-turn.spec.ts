@@ -79,6 +79,7 @@ lettaTest('holds queued input while a background subagent runs and dispatches im
     })
     await modelScript.releaseGate(childGate)
     await expectRowBecomesFinal(page, bgRow)
+    await expect(assistantBubbles(page).filter({ hasText: 'LETTA_BG_PREEMPT_NOTICE_DONE' })).toHaveCount(1)
     await waitForAgentIdle(page)
   }, () => finishCleanup([
     modelScript.releaseGateIfHeld(childGate),

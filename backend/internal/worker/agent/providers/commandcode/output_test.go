@@ -487,7 +487,7 @@ func TestCompleteTurnClosesForegroundChildrenOnly(t *testing.T) {
 		stopReason string
 		wantStatus bgtask.Status
 	}{
-		{name: "normal turn end stops open foreground child", stopReason: "end_turn", wantStatus: bgtask.StatusStopped},
+		{name: "normal turn end closes open foreground child with unknown outcome", stopReason: "end_turn", wantStatus: bgtask.StatusEndedWithUnknownOutcome},
 		{name: "error turn end fails open foreground child", stopReason: "run_error", wantStatus: bgtask.StatusFailed},
 		{name: "interrupted turn end stops open foreground child", stopReason: "interrupted", wantStatus: bgtask.StatusStopped},
 	} {

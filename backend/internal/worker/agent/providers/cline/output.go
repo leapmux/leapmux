@@ -197,12 +197,29 @@ func (a *Agent) resolveLeadRetry(t *transcript) {
 	}
 }
 
+type textDeltaPayload struct {
+	Text  string     `json:"text"`
+	Agent eventAgent `json:"agent"`
+}
+
+type assistantFinishedPayload struct {
+	Text  string     `json:"text"`
+	Agent eventAgent `json:"agent"`
+}
+
+type reasoningFinishedPayload struct {
+	Reasoning string     `json:"reasoning"`
+	Agent     eventAgent `json:"agent"`
+}
+
 // handleReasoningDelta counts one reasoning chunk and keeps it for the row.
-func (a *Agent) handleReasoningDelta(t *transcript, payload json.RawMessage) {
-	var delta struct {
-		Text string `json:"text"`
-	}
+func (a *Agent) handleReasoningDelta(payload json.RawMessage) {
+	var delta textDeltaPayload
 	if json.Unmarshal(payload, &delta) != nil || delta.Text == "" {
+		return
+	}
+	t := a.routeContentMeta(delta.Agent)
+	if t == nil {
 		return
 	}
 	a.resolveLeadRetry(t)
@@ -228,11 +245,13 @@ func (a *Agent) discardUnflushedReasoning(t *transcript) {
 }
 
 // handleAssistantDelta counts one text chunk.
-func (a *Agent) handleAssistantDelta(t *transcript, payload json.RawMessage) {
-	var delta struct {
-		Text string `json:"text"`
-	}
+func (a *Agent) handleAssistantDelta(payload json.RawMessage) {
+	var delta textDeltaPayload
 	if json.Unmarshal(payload, &delta) != nil || delta.Text == "" {
+		return
+	}
+	t := a.routeContentMeta(delta.Agent)
+	if t == nil {
 		return
 	}
 	a.resolveLeadRetry(t)
@@ -244,12 +263,14 @@ func (a *Agent) handleAssistantDelta(t *transcript, payload json.RawMessage) {
 
 // handleAssistantFinished persists one message's text, after the reasoning the
 // message streamed before it.
-func (a *Agent) handleAssistantFinished(t *transcript, event hubEvent) {
-	var finished *struct {
-		Text string `json:"text"`
-	}
+func (a *Agent) handleAssistantFinished(event hubEvent) {
+	var finished *assistantFinishedPayload
 	if err := json.Unmarshal(event.Payload, &finished); err != nil || finished == nil {
 		slog.Debug("cline ignored a malformed final text frame", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	t := a.routeContentMeta(finished.Agent)
+	if t == nil {
 		return
 	}
 	if strings.TrimSpace(finished.Text) != "" {
@@ -279,12 +300,14 @@ func (a *Agent) handleAssistantFinished(t *transcript, event hubEvent) {
 
 // handleReasoningFinished persists the reasoning of a message that had no text,
 // and drops the copy of reasoning that its text already put in place.
-func (a *Agent) handleReasoningFinished(t *transcript, event hubEvent) {
-	var finished *struct {
-		Reasoning string `json:"reasoning"`
-	}
+func (a *Agent) handleReasoningFinished(event hubEvent) {
+	var finished *reasoningFinishedPayload
 	if err := json.Unmarshal(event.Payload, &finished); err != nil || finished == nil {
 		slog.Debug("cline ignored a malformed final reasoning frame", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	t := a.routeContentMeta(finished.Agent)
+	if t == nil {
 		return
 	}
 	a.Mu.Lock()
@@ -336,6 +359,7 @@ type toolEvent struct {
 	Update     json.RawMessage `json:"update"`
 	Output     json.RawMessage `json:"output"`
 	Error      string          `json:"error"`
+	Agent      eventAgent      `json:"agent"`
 }
 
 // handleToolStarted opens one tool call in transcript t.

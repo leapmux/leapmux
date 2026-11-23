@@ -22,6 +22,11 @@ func installDiracTestWatch(a *Agent, sessionID string) *diracTaskletWatch {
 	return watch
 }
 
+func (a *Agent) pollDiracTasklets(watch *diracTaskletWatch) (bool, error) {
+	result, err := a.pollDiracTaskletsPass(watch, false)
+	return result.finished, err
+}
+
 func TestDiracTaskletSettlementRetainsAnUnfinishedNativeTool(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -550,4 +555,81 @@ func TestDiracTaskletOutcomeMismatchSettlesAfterGraceOrExit(t *testing.T) {
 		require.Len(t, rows, 1)
 		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status, "exit accepts tasklet.json outcome even when the journal lags")
 	})
+}
+
+func TestDiracResumedTaskletWithStalePriorOutcomeStaysRunningPastGrace(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		events string
+	}{
+		{
+			name: "matching prior outcome before resume",
+			events: `[
+				{"id":"native-created","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},
+				{"id":"outcome:Witten:completed:1","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"The parser is correct.","completedAt":1}}},
+				{"id":"native-resumed","taskletId":"Witten","createdAt":1,"communication":{"type":"lifecycle","state":"resumed","assignment":"Inspect the follow-up."}}
+			]`,
+		},
+		{
+			name: "outcome timestamp older than resume without prior outcome event",
+			events: `[
+				{"id":"native-created","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},
+				{"id":"native-resumed","taskletId":"Witten","createdAt":2,"communication":{"type":"lifecycle","state":"resumed","assignment":"Inspect the follow-up."}}
+			]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			a, sink, clock := newDiracSubagentAgentForRPC(t, root)
+			a.SetSessionIDForTest("dirac-session")
+			sink.UpdateSessionID("dirac-session")
+			writeDiracTaskletStore(t, root)
+			eventsPath := filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "tasklet_events.json")
+			require.NoError(t, os.WriteFile(eventsPath, []byte(tc.events), 0o600))
+
+			timer := clock.Trap().NewTimer(diracArchiveTimerTag)
+			t.Cleanup(func() { timer.Close(); a.CancelForTest(); a.archiveWG.Wait() })
+			a.HandleOutput(diracFrame(t, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "native-spawn-card", "name": "subagents", "status": "completed"}))
+
+			ctx := testutil.DeadlineContext(t)
+			for elapsed := time.Duration(0); elapsed < 15*time.Second; {
+				interval := testutil.WaitForTimer(t, ctx, timer)
+				clock.Advance(interval).MustWait(ctx)
+				elapsed += interval
+			}
+			pendingInterval := testutil.WaitForTimer(t, ctx, timer)
+
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, bgtask.StatusRunning, rows[0].Status, "a stale Job 1 outcome in tasklet.json must not force-close a running Job 2")
+			select {
+			case status := <-sink.closed:
+				t.Fatalf("running Job 2 was closed with stale Job 1 outcome: %v", status)
+			default:
+			}
+
+			// A real torn write for Job 2 (timestamp >= resumed.createdAt) still settles after the 5-second grace window.
+			mutateDiracTaskletRecord(t, root, func(record map[string]any) {
+				record["outcome"] = map[string]any{"kind": "completed", "response": "Job 2 result.", "completedAt": 5}
+			})
+			clock.Advance(pendingInterval).MustWait(ctx)
+			for elapsed := time.Duration(0); elapsed < diracOutcomeMismatchGrace; {
+				interval := testutil.WaitForTimer(t, ctx, timer)
+				clock.Advance(interval).MustWait(ctx)
+				elapsed += interval
+			}
+			assert.Equal(t, bgtask.StatusSucceeded, waitDiracChildClose(t, ctx, sink))
+			a.archiveWG.Wait()
+			rows = sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+			child := sink.Child(rows[0].ChildAgentID)
+			require.NotNil(t, child)
+			notifications, err := json.Marshal(child.LeapMuxNotifications())
+			require.NoError(t, err)
+			assert.Contains(t, string(notifications), "Job 2 result.")
+		})
+	}
 }

@@ -611,7 +611,6 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) string
 	}
 	rowKey := obs.RowKey
 	promptKey := obs.RowKey
-	deferredRename := false
 	// Rename an ordinary spawn before resolution so native final updates attach to one row.
 	// A known refusal requires validation first and cannot authorize a rename by itself.
 	if obs.RenameFrom != "" && obs.RenameFrom != obs.RowKey {
@@ -621,13 +620,11 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) string
 			// Keep all later work on the row that still exists. Creating a child
 			// under the new key after a failed rename would split one task in two.
 			rowKey = obs.RenameFrom
-		} else if obs.ReviveRow && !final {
-			// Defer renameChildConversation until ReviveBackgroundTask succeeds so
-			// b.children.closed[obs.RowKey] stays intact if revival fails.
-			b.openRows.closed(obs.RenameFrom)
-			deferredRename = true
 		} else {
-			b.renameChildConversation(obs.RenameFrom, obs.RowKey)
+			// Update in-memory maps immediately after the registry rename commits so a
+			// subsequent revival failure never leaves b.children or b.openRows on the old key.
+			// Preserve closed markers while revival is still pending.
+			b.renameChildConversation(obs.RenameFrom, obs.RowKey, obs.ReviveRow && !final)
 			b.openRows.renamed(obs.RenameFrom, obs.RowKey)
 		}
 	}
@@ -638,9 +635,6 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) string
 			return ""
 		}
 		revived = true
-		if deferredRename {
-			b.renameChildConversation(obs.RenameFrom, obs.RowKey)
-		}
 	}
 	if !validated && (obs.ChildAgentKey != "" || obs.ChildSpawnSpanID != "") && rowKey == obs.RowKey {
 		var err error

@@ -36,10 +36,10 @@ type diracTaskletRecord struct {
 	Prompt           *string              `json:"prompt"`
 	Role             string               `json:"role"`
 	CreatedAt        *float64             `json:"createdAt"`
+	UpdatedAt        *float64             `json:"updatedAt"`
 	NativeOutcome    json.RawMessage      `json:"outcome"`
 	Outcome          *diracTaskletOutcome `json:"-"`
 	unmatchedOutcome *diracTaskletOutcome `json:"-"`
-	outcomeMismatch  bool                 `json:"-"`
 	lifecycle        diracTaskletLifecycle
 }
 
@@ -329,13 +329,33 @@ func readDiracTaskletRecord(root sessionstore.ArchiveRoot, taskID, id string) (r
 	// Native savedSettledRecord writes tasklet.json and tasklet_events.json
 	// separately. Defer settlement while the journal catches up, and keep the
 	// validated native outcome so the watcher can settle after the grace window
-	// or on process exit.
+	// or on process exit. Ignore a stale pre-resume outcome left in tasklet.json
+	// while the resumed job runs.
 	if record.Outcome != nil && !agent.JSONCanonicalEqual(record.NativeOutcome, journal.Outcome) {
-		record.unmatchedOutcome = record.Outcome
-		record.outcomeMismatch = true
+		if !isStaleResumedOutcome(record, journal) {
+			record.unmatchedOutcome = record.Outcome
+		}
 		record.Outcome = nil
 	}
 	return record, nil
+}
+
+func isStaleResumedOutcome(record diracTaskletRecord, journal diracTaskletJournal) bool {
+	if journal.Lifecycle.State != "resumed" || len(journal.Outcome) != 0 {
+		return false
+	}
+	for _, prior := range journal.PriorOutcomes {
+		if agent.JSONCanonicalEqual(record.NativeOutcome, prior) {
+			return true
+		}
+	}
+	if ts, ok := record.Outcome.timestamp(); ok && ts < journal.Lifecycle.CreatedAt {
+		return true
+	}
+	if record.UpdatedAt != nil && *record.UpdatedAt < journal.Lifecycle.CreatedAt {
+		return true
+	}
+	return false
 }
 
 func sameDiracNativeOutcome(left, right json.RawMessage) bool {
@@ -346,7 +366,7 @@ func decodeDiracTaskletRecord(raw []byte, taskID, id string) (record diracTaskle
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return diracTaskletRecord{}, err
 	}
-	if record.ID != id || record.RootTaskID != taskID || record.ConversationID == "" || record.Title == nil || record.Prompt == nil || !validDiracNativeTime(record.CreatedAt) {
+	if record.ID != id || record.RootTaskID != taskID || record.ConversationID == "" || record.Title == nil || record.Prompt == nil || !validDiracNativeTime(record.CreatedAt) || (record.UpdatedAt != nil && !validDiracNativeTime(record.UpdatedAt)) {
 		return diracTaskletRecord{}, fmt.Errorf("the Dirac tasklet record has another owner or an incomplete assignment")
 	}
 	if len(record.NativeOutcome) != 0 {
@@ -374,6 +394,31 @@ func (outcome *diracTaskletOutcome) valid() bool {
 	default:
 		return false
 	}
+}
+
+func (outcome *diracTaskletOutcome) timestamp() (float64, bool) {
+	if outcome == nil {
+		return 0, false
+	}
+	switch outcome.Kind {
+	case "completed":
+		if outcome.CompletedAt != nil {
+			return *outcome.CompletedAt, true
+		}
+	case "failed":
+		if outcome.FailedAt != nil {
+			return *outcome.FailedAt, true
+		}
+	case "cancelled":
+		if outcome.CancelledAt != nil {
+			return *outcome.CancelledAt, true
+		}
+	case "interrupted":
+		if outcome.InterruptedAt != nil {
+			return *outcome.InterruptedAt, true
+		}
+	}
+	return 0, false
 }
 
 func (outcome *diracTaskletOutcome) status() bgtask.Status {

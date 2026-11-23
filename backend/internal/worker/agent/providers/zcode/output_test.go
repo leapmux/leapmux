@@ -3770,3 +3770,22 @@ func TestZCodeBackgroundTaskLateNonFinalForEndedRunCreatesNoOrphan(t *testing.T)
 	_, reopened := a.children.task(spanID)
 	assert.False(t, reopened, "late non-final update must not repopulate ended spawn state")
 }
+
+func TestZCodeBackgroundTaskNonFinalUpsertsRowWhenEnsureTranscriptFails(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	failing := &zcodeFailingChildSink{
+		ProviderServices: agent.NewProviderServices(sink),
+		failEnsure:       true,
+	}
+	a := newZCodeTestAgent(t, failing)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
+	require.True(t, ok, "non-final subagent task must still upsert its running row when EnsureChildAgent fails")
+	assert.Equal(t, bgtask.KindSubagent, row.Kind)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Empty(t, row.ChildAgentID)
+}

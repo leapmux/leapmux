@@ -295,13 +295,6 @@ func (s mimoActorSnapshot) isRunning() bool {
 	return s.Status == contracts.MiMoActorStatusRunning
 }
 
-func (s mimoActorSnapshot) errorText() string {
-	if s.Error != "" {
-		return s.Error
-	}
-	return s.LastError
-}
-
 // sessionActors returns the runtime execution snapshot of every actor in a session.
 func (r mimoRPC) sessionActors(ctx context.Context, sessionID string) ([]mimoActorSnapshot, error) {
 	path, err := sessionPath(sessionID, "actors")

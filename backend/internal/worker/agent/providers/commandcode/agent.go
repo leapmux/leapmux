@@ -233,7 +233,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 			return nil
 		}
 		a.closeUnfinishedTools(agent.MessageCompletionInterrupted)
-		a.closeChildren(bgtask.StatusInterrupted, true)
+		a.closeChildrenMatching(bgtask.StatusInterrupted, func(child *childState) bool { return !child.background })
 		if a.sink != nil {
 			providerkit.ResetSpansAndProgress(a.sink)
 		}

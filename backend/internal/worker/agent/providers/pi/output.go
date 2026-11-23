@@ -674,7 +674,7 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.AgentID(), "error", err)
 	}
 	if env.ToolName == contracts.PiToolAgent {
-		if resumeID := piExtractResumeID(input); resumeID != "" {
+		if resumeID := strings.TrimSpace(providerkit.StringField(input, "resume")); resumeID != "" {
 			childID, status, found, err := a.sink.LookupBackgroundTask(resumeID)
 			if err != nil {
 				slog.Warn("pi resumed subagent lookup failed", "agent_id", a.AgentID(), "resume_id", resumeID, "error", err)
@@ -688,6 +688,7 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 					}
 				}
 				a.Mu.Lock()
+				a.bumpSubagentRunSeqLocked(resumeID)
 				if tool := a.toolStates[env.ToolCallID]; tool != nil {
 					tool.rowKey = resumeID
 					tool.resumed = true
@@ -908,6 +909,7 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 		resumed = tool.resumed
 		startArgs = tool.Args
 	}
+	run := a.subagentRunSeq[rowKey]
 	a.Mu.Unlock()
 	a.ClearCumulativeOutput(env.ToolCallID)
 	a.sink.ReportProgress(agent.CompleteOutputProgress(env.ToolCallID))
@@ -925,7 +927,16 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 	prompt := a.toolCallPrompts.Take(env.ToolCallID)
 	switch env.ToolName {
 	case contracts.PiToolAgent:
-		finalKey, stillRunning := piApplySubagentEndState(a.sink, env.Result, env.ToolCallID, rowKey, title, prompt, env.IsError, resumed)
+		finalKey, stillRunning := piApplySubagentEndState(a.sink, piSubagentEndInput{
+			Result:     env.Result,
+			ToolCallID: env.ToolCallID,
+			RowKey:     rowKey,
+			Title:      title,
+			Prompt:     prompt,
+			IsError:    env.IsError,
+			Resumed:    resumed,
+			Run:        run,
+		})
 		if stillRunning {
 			a.trackOpenBgTask(finalKey)
 		} else {
@@ -951,7 +962,7 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 		if len(args) == 0 {
 			args = startArgs
 		}
-		if closedKey := piApplyGetSubagentResult(a.sink, args, env.Result); closedKey != "" {
+		if closedKey := piApplyGetSubagentResult(a.sink, args, env.Result, a.subagentReportID); closedKey != "" {
 			a.untrackOpenBgTask(closedKey)
 		}
 	}

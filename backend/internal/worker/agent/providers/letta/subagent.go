@@ -166,7 +166,7 @@ func (a *Agent) observeChild(native lettaNativeChild) {
 		}
 		child = &lettaChild{agentID: agentID, toolCallID: native.ToolCallID, prompt: native.Prompt, title: title}
 		a.children[native.ID] = child
-	} else if child.prompt != native.Prompt || child.toolCallID != native.ToolCallID {
+	} else if !child.closed && (child.prompt != native.Prompt || child.toolCallID != native.ToolCallID) {
 		slog.Warn("letta: child snapshot changed identity", "agent_id", a.AgentID(), "subagent_id", native.ID)
 		return
 	}
@@ -174,10 +174,22 @@ func (a *Agent) observeChild(native lettaNativeChild) {
 		if status.IsFinished() {
 			return
 		}
+		if child.prompt != native.Prompt && child.prompted {
+			if err := a.sink.PersistChildUserMessage(child.agentID, native.Prompt); err != nil {
+				slog.Warn("letta: persist revived child prompt failed", "agent_id", a.AgentID(), "subagent_id", native.ID, "error", err)
+				return
+			}
+		}
 		if err := a.queueRegistryRevive(native.ID); err != nil {
 			slog.Warn("letta: revive child failed", "agent_id", a.AgentID(), "subagent_id", native.ID, "error", err)
 			return
 		}
+		if child.toolCallID != native.ToolCallID {
+			child.toolCallID = native.ToolCallID
+			child.taskID = ""
+			child.outputFile = ""
+		}
+		child.prompt = native.Prompt
 		child.closed = false
 		child.reportWritten = false
 		child.lastText = ""

@@ -770,11 +770,11 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTur
 // provider's steer-row policy: a question answer that an active turn steers
 // holds its row for the echo, so prepare reserves no sequence for it.
 func (s *Store) PrepareDispatch(ctx context.Context, agentID string, steerRowAtEcho bool) (*PreparedDispatch, Snapshot, error) {
-	return s.prepare(ctx, agentID, "", dispatchAutomatic, false, steerRowAtEcho)
+	return s.prepare(ctx, agentID, "", dispatchAutomatic, steerRowAtEcho)
 }
 
 func (s *Store) PrepareRetry(ctx context.Context, agentID string) (*PreparedDispatch, Snapshot, error) {
-	return s.prepare(ctx, agentID, "", dispatchRetry, true, false)
+	return s.prepare(ctx, agentID, "", dispatchRetry, false)
 }
 
 func (s *Store) PrepareSteer(ctx context.Context, agentID, inputID string, rowAtEcho bool) (*PreparedDispatch, Snapshot, error) {
@@ -785,17 +785,26 @@ func (s *Store) PrepareSteer(ctx context.Context, agentID, inputID string, rowAt
 	if !validateIdentity(inputID) {
 		return nil, Snapshot{}, ErrNotHead
 	}
-	return s.prepare(ctx, agentID, inputID, dispatchSteering, true, rowAtEcho)
+	return s.prepare(ctx, agentID, inputID, dispatchSteering, rowAtEcho)
 }
 
-// PrepareBypassBackgroundWork reserves inputID for an ordinary dispatch that
-// bypasses active background work when no turn runs. allowPaused is true for
-// Steer and false for Preempt.
-func (s *Store) PrepareBypassBackgroundWork(ctx context.Context, agentID, inputID string, allowPaused bool) (*PreparedDispatch, Snapshot, error) {
+// PrepareBypassSteer reserves inputID for an ordinary dispatch triggered by
+// Steer when no turn runs and active background work holds automatic dispatch.
+func (s *Store) PrepareBypassSteer(ctx context.Context, agentID, inputID string) (*PreparedDispatch, Snapshot, error) {
+	return s.prepareBypass(ctx, agentID, inputID, dispatchBypassSteer)
+}
+
+// PrepareBypassPreempt reserves inputID for an ordinary dispatch triggered by
+// Preempt when no turn runs and active background work holds automatic dispatch.
+func (s *Store) PrepareBypassPreempt(ctx context.Context, agentID, inputID string) (*PreparedDispatch, Snapshot, error) {
+	return s.prepareBypass(ctx, agentID, inputID, dispatchBypassPreempt)
+}
+
+func (s *Store) prepareBypass(ctx context.Context, agentID, inputID string, mode dispatchMode) (*PreparedDispatch, Snapshot, error) {
 	if !validateIdentity(inputID) {
 		return nil, Snapshot{}, ErrNotHead
 	}
-	return s.prepare(ctx, agentID, inputID, dispatchBypassBackground, allowPaused, false)
+	return s.prepare(ctx, agentID, inputID, mode, false)
 }
 
 // RecordPreemptBypass records that Preempt interrupted an active turn for
@@ -859,32 +868,25 @@ func (s *Store) RefreshForBackgroundWork(ctx context.Context, agentID string) (S
 	if !validateIdentity(agentID) {
 		return Snapshot{}, false, fmt.Errorf("%w: agent ID is required", ErrInvalidInput)
 	}
-	var hasItems bool
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM agent_input_queue_items WHERE agent_id = ?)`, agentID).Scan(&hasItems); err != nil {
-		return Snapshot{}, false, err
-	}
-	if !hasItems {
-		snapshot, err := s.Snapshot(ctx, agentID)
-		return snapshot, false, err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	now := s.now()
-	snapshot, err := snapshotTx(ctx, tx, agentID, now)
-	if err != nil {
+	var hasItems bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM agent_input_queue_items WHERE agent_id = ?)`, agentID).Scan(&hasItems); err != nil {
 		return Snapshot{}, false, err
 	}
-	if len(snapshot.Items) == 0 {
-		return snapshot, false, nil
+	now := s.now()
+	if !hasItems {
+		snapshot, err := snapshotTx(ctx, tx, agentID, now)
+		return snapshot, false, err
 	}
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
-	snapshot, err = commitSnapshot(ctx, tx, agentID, now)
+	snapshot, err := commitSnapshot(ctx, tx, agentID, now)
 	return snapshot, err == nil, err
 }
 
@@ -967,6 +969,19 @@ const (
 	dispatchRefusedNotReady
 )
 
+// blockedByBackgroundWork reports whether active background work holds
+// automatic dispatch for head. Context replacements, control replies, and the
+// item carrying an explicit preemption bypass are exempt.
+func blockedByBackgroundWork(activeBackgroundWork bool, bypassInputID string, head OrderingMetadata) bool {
+	if !activeBackgroundWork {
+		return false
+	}
+	if bypassInputID != "" && bypassInputID == head.ID {
+		return false
+	}
+	return !head.requiresContextReplacement() && !controlReplyKind(head.Kind)
+}
+
 // admits reports whether prepare would hand this head to its caller.
 //
 // The two parameters are prepare's own dispensations, spelled the same way:
@@ -993,9 +1008,7 @@ func (g dispatchGate) admits(allowPaused, requireActive bool) dispatchRefusal {
 	if requireActive && g.ActiveTurn && (!steerableInputKind(g.Head.Kind) || !g.TurnSteerable) {
 		return dispatchRefusedSteeringState
 	}
-	bypassBackground := g.BypassBackgroundWorkInputID != "" && g.BypassBackgroundWorkInputID == g.Head.ID
-	exemptFromBackground := g.Head.requiresContextReplacement() || controlReplyKind(g.Head.Kind)
-	blockedByTurn := g.ActiveTurn || (g.ActiveBackgroundWork && !bypassBackground && !exemptFromBackground)
+	blockedByTurn := g.ActiveTurn || blockedByBackgroundWork(g.ActiveBackgroundWork, g.BypassBackgroundWorkInputID, g.Head)
 	if requireActive {
 		blockedByTurn = !g.ActiveTurn
 	}
@@ -1160,10 +1173,11 @@ const (
 	dispatchAutomatic dispatchMode = iota
 	dispatchRetry
 	dispatchSteering
-	dispatchBypassBackground
+	dispatchBypassSteer
+	dispatchBypassPreempt
 )
 
-func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mode dispatchMode, allowPaused, rowAtEcho bool) (*PreparedDispatch, Snapshot, error) {
+func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mode dispatchMode, rowAtEcho bool) (*PreparedDispatch, Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, Snapshot{}, err
@@ -1177,14 +1191,19 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 	if err != nil {
 		return nil, Snapshot{}, err
 	}
-	effectiveAllowPaused := allowPaused || mode == dispatchRetry || mode == dispatchSteering
 	// Automatic question delivery uses the current transaction's pause and turn state.
 	requireActive := mode == dispatchSteering || mode == dispatchAutomatic && gate.ActiveTurn && gate.TurnSteerable &&
 		automaticSteeringKind(item.Kind)
-	if mode == dispatchAutomatic && requireActive && gate.PauseReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY {
-		effectiveAllowPaused = true
+	var allowPaused bool
+	switch mode {
+	case dispatchAutomatic:
+		allowPaused = requireActive && gate.PauseReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY
+	case dispatchRetry, dispatchSteering, dispatchBypassSteer:
+		allowPaused = true
+	case dispatchBypassPreempt:
+		allowPaused = false
 	}
-	if mode == dispatchRetry || mode == dispatchBypassBackground {
+	if mode == dispatchRetry || mode == dispatchBypassSteer || mode == dispatchBypassPreempt {
 		gate.ActiveBackgroundWork = false
 	}
 	// ErrNotHead is about the CALLER's identity, not about the guard, so it stays here
@@ -1192,7 +1211,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 	if expectedInputID != "" && (!gate.HeadFound || item.ID != expectedInputID) {
 		return nil, Snapshot{}, ErrNotHead
 	}
-	switch refusal := gate.admits(effectiveAllowPaused, requireActive); refusal {
+	switch refusal := gate.admits(allowPaused, requireActive); refusal {
 	case dispatchRefusedPlannedRestart:
 		return nil, Snapshot{}, ErrPlannedRestart
 	case dispatchRefusedSteeringState:
@@ -1201,20 +1220,23 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 		// A drain and a retry find nothing to send and wait for the next edge.
 		// A steer or background-work bypass is the user's request, so it states
 		// why it cannot proceed.
-		if mode == dispatchSteering {
+		switch mode {
+		case dispatchSteering:
 			return nil, Snapshot{}, steeringRefusal(refusal, gate.ActiveTurn)
-		}
-		if mode == dispatchBypassBackground {
+		case dispatchBypassSteer:
 			if refusal == dispatchRefusedScheduled {
 				return nil, Snapshot{}, ErrScheduled
 			}
-			if allowPaused {
-				return nil, Snapshot{}, ErrSteeringState
+			return nil, Snapshot{}, ErrSteeringState
+		case dispatchBypassPreempt:
+			if refusal == dispatchRefusedScheduled {
+				return nil, Snapshot{}, ErrScheduled
 			}
 			return nil, Snapshot{}, ErrPreemptionState
+		case dispatchAutomatic, dispatchRetry:
+			snapshot, err := commitSnapshot(ctx, tx, agentID, now)
+			return nil, snapshot, err
 		}
-		snapshot, err := commitSnapshot(ctx, tx, agentID, now)
-		return nil, snapshot, err
 	case dispatchAdmitted:
 		// Fall through to the dispatch below.
 	}
@@ -1349,7 +1371,7 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, di
 		return Snapshot{}, ErrConflict
 	}
 	if disposition == requeueNativeTurn {
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn_steerable = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, activeTurnSteerable, nowText(), agentID, inputID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn_steerable = ?, active_input_id = '', updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, activeTurnSteerable, nowText(), agentID, inputID); err != nil {
 			return Snapshot{}, err
 		}
 		if err := bumpRevisionAndClearBypass(ctx, tx, agentID); err != nil {
@@ -2394,7 +2416,51 @@ func deleteQueuedAutoRetryPeer(ctx context.Context, tx db.DBTX, agentID, peerID 
 	return compactOrder(ctx, tx, agentID)
 }
 
-func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
+// ListQueuedAgentsWithActiveBackgroundWork returns open agent IDs that hold
+// queued input and currently have active background work. RestoreState calls it
+// before sweeping crashed background tasks so Recover pauses those queues as
+// interrupted even after the sweep marks their tasks finished.
+func (s *Store) ListQueuedAgentsWithActiveBackgroundWork(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT q.agent_id
+		FROM agent_input_queue_state q
+		JOIN agents a ON a.id = q.agent_id
+		JOIN agent_input_queue_items i ON i.agent_id = q.agent_id
+		WHERE a.closed_at IS NULL
+		ORDER BY q.agent_id`)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []string
+	for rows.Next() {
+		var agentID string
+		if err := rows.Scan(&agentID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		candidates = append(candidates, agentID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var affected []string
+	for _, agentID := range candidates {
+		active, err := readActiveBackgroundWork(ctx, s.db, agentID)
+		if err != nil {
+			return nil, err
+		}
+		if active {
+			affected = append(affected, agentID)
+		}
+	}
+	return affected, nil
+}
+
+func (s *Store) Recover(ctx context.Context, interruptedBackgroundAgents ...string) ([]Snapshot, error) {
+	interruptedSet := make(map[string]struct{}, len(interruptedBackgroundAgents))
+	for _, id := range interruptedBackgroundAgents {
+		interruptedSet[id] = struct{}{}
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT q.agent_id
 		FROM agent_input_queue_state q
@@ -2448,6 +2514,24 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 			_ = tx.Rollback()
 			return nil, err
 		}
+		now := s.now()
+		recoveredItems, err := readOrderingRows(ctx, tx, agentID)
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		activeBackgroundWork := false
+		if len(recoveredItems) > 0 {
+			if _, ok := interruptedSet[agentID]; ok {
+				activeBackgroundWork = true
+			} else {
+				activeBackgroundWork, err = readActiveBackgroundWork(ctx, tx, agentID)
+				if err != nil {
+					_ = tx.Rollback()
+					return nil, err
+				}
+			}
+		}
 		reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED
 		if unconfirmed > 0 {
 			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = 'Worker restarted before delivery was confirmed', updated_at = ? WHERE agent_id = ? AND state IN (?, ?)`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, nowText(), agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO); err != nil {
@@ -2456,7 +2540,7 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 			}
 			reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN
 		}
-		if unconfirmed > 0 || active {
+		if unconfirmed > 0 || active || activeBackgroundWork {
 			if err := replacePauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerRecovery); err != nil {
 				_ = tx.Rollback()
 				return nil, err
@@ -2467,12 +2551,6 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 		// so an older equal-revision snapshot cannot overwrite the matured
 		// order once the queue reaches its owner. The same instant decides
 		// the bump and the snapshot, so no item matures between the two.
-		now := s.now()
-		recoveredItems, err := readOrderingRows(ctx, tx, agentID)
-		if err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
 		if slices.ContainsFunc(recoveredItems, func(item OrderingMetadata) bool {
 			return item.ScheduledAt != nil && !scheduledFuture(item, now)
 		}) {
@@ -2645,6 +2723,15 @@ func loadItemAttachments(ctx context.Context, tx db.DBTX, inputID string) ([]Att
 	return attachments, rows.Err()
 }
 
+func snapshotWithActiveBackgroundWork(ctx context.Context, tx db.DBTX, snapshot Snapshot) (Snapshot, error) {
+	activeBackgroundWork, err := readActiveBackgroundWork(ctx, tx, snapshot.AgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.ActiveBackgroundWork = activeBackgroundWork
+	return snapshot, nil
+}
+
 // snapshotTx reads one agent's queue in effective order at the instant now.
 // The items carry a text preview and no source payload: no client reads the
 // payload, and a row can hold megabytes of it. The dispatch path reads the
@@ -2655,12 +2742,7 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 	var reason *leapmuxv1.AgentInputQueuePauseReason
 	err := tx.QueryRowContext(ctx, `SELECT revision, pause_reason IS NOT NULL, pause_reason, active_turn, active_turn_steerable, bypass_background_work_input_id FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&revision, &snapshot.Paused, &reason, &snapshot.ActiveTurn, &snapshot.ActiveTurnSteerable, &snapshot.BypassBackgroundWorkInputID)
 	if errors.Is(err, sql.ErrNoRows) {
-		activeBackgroundWork, bgErr := readActiveBackgroundWork(ctx, tx, agentID)
-		if bgErr != nil {
-			return Snapshot{}, bgErr
-		}
-		snapshot.ActiveBackgroundWork = activeBackgroundWork
-		return snapshot, nil
+		return snapshotWithActiveBackgroundWork(ctx, tx, snapshot)
 	}
 	if err != nil {
 		return Snapshot{}, err
@@ -2722,12 +2804,7 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 	}
 	head := snapshot.HeadIndex()
 	if head < 0 {
-		activeBackgroundWork, bgErr := readActiveBackgroundWork(ctx, tx, agentID)
-		if bgErr != nil {
-			return Snapshot{}, bgErr
-		}
-		snapshot.ActiveBackgroundWork = activeBackgroundWork
-		return snapshot, nil
+		return snapshotWithActiveBackgroundWork(ctx, tx, snapshot)
 	}
 	// Only the head can be steered or preempted, so only the head asks the
 	// gate. The snapshot already sorted it, so the gate reads no rows again.

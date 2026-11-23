@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"regexp"
 	"strings"
 
@@ -99,8 +100,12 @@ type childState struct {
 	// shells that settle before run_shell_command completes, by row key.
 	earlyShellCompletions map[string]bgtask.Status
 	// openBgAgents, openBgShells, and openBgWorkflows track open background
-	// tasks for queue-overflow reconciliation.
-	openBgAgents    map[string]bool
+	// tasks for queue-overflow reconciliation. openBgAgents maps each open
+	// background agent's tool-call id to its active run sequence so a stale
+	// reconciliation reply cannot close a newly revived job.
+	openBgAgents    map[string]uint64
+	agentRunSeq     map[string]uint64
+	closedBgAgents  map[string]bool
 	openBgShells    map[string]bool
 	openBgWorkflows map[string]bool
 }
@@ -199,27 +204,50 @@ func (a *Agent) spawnObservation(toolCallID string, rawInput json.RawMessage, sp
 // and records every call's tool name for its later frames.
 func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
 	name := qwenToolName(tc.Meta)
+	final := acp.StatusIsFinal(tc.Status)
+	var rawInput json.RawMessage
 	a.stateMu.Lock()
-	a.tools.remember(tc.ToolCallID, name, tc.RawInput)
-	if name == contracts.QwenToolAgent {
-		if a.children.spawns == nil {
-			a.children.spawns = make(map[string]bool)
+	if final {
+		known := a.tools.byCall[tc.ToolCallID]
+		if name == "" {
+			name = known.name
 		}
-		a.children.spawns[tc.ToolCallID] = true
+		rawInput = tc.RawInput
+		if len(rawInput) == 0 || string(rawInput) == "{}" || string(rawInput) == "null" {
+			rawInput = known.rawInput
+		}
+		delete(a.tools.byCall, tc.ToolCallID)
+		delete(a.children.spawns, tc.ToolCallID)
+	} else {
+		a.tools.remember(tc.ToolCallID, name, tc.RawInput)
+		rawInput = tc.RawInput
+		if name == contracts.QwenToolAgent {
+			if a.children.spawns == nil {
+				a.children.spawns = make(map[string]bool)
+			}
+			a.children.spawns[tc.ToolCallID] = true
+		}
 	}
 	a.stateMu.Unlock()
 	switch name {
 	case contracts.QwenToolAgent:
-		return a.spawnObservation(tc.ToolCallID, tc.RawInput, true)
+		if final {
+			return nil
+		}
+		return a.spawnObservation(tc.ToolCallID, rawInput, true)
 	case contracts.QwenToolWorkflow:
-		a.startWorkflowPoller(tc.ToolCallID, tc.RawInput)
-		return workflowObservation(a.CurrentSessionID(), tc.ToolCallID, tc.RawInput)
+		if final {
+			a.stopWorkflowPoller(tc.ToolCallID, acp.FinalStatus(tc.Status))
+			return nil
+		}
+		a.startWorkflowPoller(tc.ToolCallID, rawInput)
+		return workflowObservation(a.CurrentSessionID(), tc.ToolCallID, rawInput)
 	case qwenToolSendMessage:
 		// Wait for send_message to complete before reviving the child or
 		// restarting its transcript tail: permission denial or a failed resume
 		// emits a non-completed final update with no background_task_completed.
 		if tc.Status == "completed" {
-			if obs := a.sendMessageObservation(tc.RawInput); obs != nil {
+			if obs := a.sendMessageObservation(rawInput); obs != nil {
 				a.ApplySubagentObservation(obs)
 			}
 		}
@@ -325,6 +353,10 @@ func (a *Agent) spawnUpdate(tcu acp.ToolCallUpdateEnvelope, rawInput json.RawMes
 	if tcu.Status == "completed" && output.Type == qwenTaskExecution && output.ExecutionMode == qwenExecutionBackground {
 		resultText := acp.ToolCallText(tcu.Content)
 		taskID := qwenBackgroundTaskID(resultText, tcu.RawOutput)
+		rowKey := qwenAgentRowKey(a.CurrentSessionID(), tcu.ToolCallID)
+		_, currentStatus, found, lookupErr := a.Sink().LookupBackgroundTask(rowKey)
+		alreadyClosed := lookupErr == nil && found && currentStatus.IsFinished()
+
 		a.stateMu.Lock()
 		if taskID != "" {
 			if a.children.backgroundTasks == nil {
@@ -332,11 +364,16 @@ func (a *Agent) spawnUpdate(tcu acp.ToolCallUpdateEnvelope, rawInput json.RawMes
 			}
 			a.children.backgroundTasks[taskID] = tcu.ToolCallID
 		}
-		if a.children.openBgAgents == nil {
-			a.children.openBgAgents = make(map[string]bool)
+		if a.children.closedBgAgents[tcu.ToolCallID] {
+			alreadyClosed = true
 		}
-		a.children.openBgAgents[tcu.ToolCallID] = true
+		if !alreadyClosed {
+			a.openBackgroundAgentLocked(tcu.ToolCallID)
+		}
 		a.stateMu.Unlock()
+		if alreadyClosed {
+			return nil
+		}
 		a.startBackgroundTranscript(tcu.ToolCallID, resultText)
 		observation := a.spawnObservation(tcu.ToolCallID, rawInput, false)
 		observation.Activity = "Running in the background"
@@ -464,27 +501,15 @@ func (a *Agent) finishBackgroundTask(task qwenBackgroundTask) bool {
 		}
 		return false
 	}
-	switch task.Kind {
-	case qwenBackgroundAgent:
+	if task.Kind == qwenBackgroundAgent && task.ToolUseID != "" {
 		a.stateMu.Lock()
-		delete(a.children.openBgAgents, task.ToolUseID)
-		a.stateMu.Unlock()
-		// The child's transcript holds its last records by now: Qwen writes each
-		// record before it reports the child as over. Read them before the row
-		// closes, so the child's tab ends with the child's last words.
-		a.stopBackgroundTranscript(task.ToolUseID, true)
-		a.FinishChildTurn(rowKey)
-		status = a.closingStatus(task.ToolUseID, status)
-	case qwenBackgroundWorkflow:
-		a.stateMu.Lock()
-		delete(a.children.openBgWorkflows, task.ToolUseID)
-		a.stateMu.Unlock()
-		a.stopWorkflowPoller(task.ToolUseID, status)
-	case qwenBackgroundShell:
-		a.stateMu.Lock()
-		delete(a.children.openBgShells, task.TaskID)
+		if a.children.closedBgAgents == nil {
+			a.children.closedBgAgents = make(map[string]bool)
+		}
+		a.children.closedBgAgents[task.ToolUseID] = true
 		a.stateMu.Unlock()
 	}
+	status = a.cleanupBackgroundTask(task.Kind, task.TaskID, task.ToolUseID, rowKey, status)
 	a.ApplySubagentObservation(&acp.SubagentObservation{
 		RowKey:   rowKey,
 		Status:   status,
@@ -492,6 +517,49 @@ func (a *Agent) finishBackgroundTask(task qwenBackgroundTask) bool {
 		Mode:     acp.ModeCloseOnly,
 	})
 	return true
+}
+
+func (a *Agent) openBackgroundAgentLocked(toolCallID string) {
+	if a.children.agentRunSeq == nil {
+		a.children.agentRunSeq = make(map[string]uint64)
+	}
+	if a.children.openBgAgents == nil {
+		a.children.openBgAgents = make(map[string]uint64)
+	}
+	delete(a.children.closedBgAgents, toolCallID)
+	a.children.agentRunSeq[toolCallID]++
+	a.children.openBgAgents[toolCallID] = a.children.agentRunSeq[toolCallID]
+}
+
+// cleanupBackgroundTask tears down provider-side tracking for one settled
+// background agent, workflow, or shell and returns its final registry status.
+func (a *Agent) cleanupBackgroundTask(kind, taskID, toolCallID, rowKey string, status bgtask.Status) bgtask.Status {
+	switch kind {
+	case qwenBackgroundAgent:
+		a.stateMu.Lock()
+		delete(a.children.openBgAgents, toolCallID)
+		a.stateMu.Unlock()
+		if toolCallID != "" {
+			// The child's transcript holds its last records by now: Qwen writes each
+			// record before it reports the child as over. Read them before the row
+			// closes, so the child's tab ends with the child's last words.
+			a.stopBackgroundTranscript(toolCallID, true)
+			status = a.closingStatus(toolCallID, status)
+		}
+		a.FinishChildTurn(rowKey)
+	case qwenBackgroundWorkflow:
+		a.stateMu.Lock()
+		delete(a.children.openBgWorkflows, toolCallID)
+		a.stateMu.Unlock()
+		if toolCallID != "" {
+			a.stopWorkflowPoller(toolCallID, status)
+		}
+	case qwenBackgroundShell:
+		a.stateMu.Lock()
+		delete(a.children.openBgShells, taskID)
+		a.stateMu.Unlock()
+	}
+	return status
 }
 
 // closingStatus takes the stop recorded for the native tool call and returns
@@ -792,7 +860,6 @@ func qwenBackgroundTaskID(resultText string, rawOutput json.RawMessage) string {
 type qwenSendMessageInput struct {
 	TaskID  string `json:"task_id"`
 	TaskID2 string `json:"taskId"`
-	Message string `json:"message"`
 }
 
 func (i qwenSendMessageInput) taskID() string {
@@ -825,10 +892,7 @@ func (a *Agent) sendMessageObservation(rawInput json.RawMessage) *acp.SubagentOb
 	}
 	a.restartBackgroundTranscript(toolCallID, rowKey)
 	a.stateMu.Lock()
-	if a.children.openBgAgents == nil {
-		a.children.openBgAgents = make(map[string]bool)
-	}
-	a.children.openBgAgents[toolCallID] = true
+	a.openBackgroundAgentLocked(toolCallID)
 	a.stateMu.Unlock()
 	return &acp.SubagentObservation{
 		RowKey:    rowKey,
@@ -846,18 +910,9 @@ func (a *Agent) reconcileBackgroundTasks() {
 		return
 	}
 	a.stateMu.Lock()
-	trackedAgents := make([]string, 0, len(a.children.openBgAgents))
-	for toolCallID := range a.children.openBgAgents {
-		trackedAgents = append(trackedAgents, toolCallID)
-	}
-	trackedShells := make([]string, 0, len(a.children.openBgShells))
-	for shellID := range a.children.openBgShells {
-		trackedShells = append(trackedShells, shellID)
-	}
-	trackedWorkflows := make([]string, 0, len(a.children.openBgWorkflows))
-	for toolCallID := range a.children.openBgWorkflows {
-		trackedWorkflows = append(trackedWorkflows, toolCallID)
-	}
+	trackedAgents := maps.Clone(a.children.openBgAgents)
+	trackedShells := maps.Clone(a.children.openBgShells)
+	trackedWorkflows := maps.Clone(a.children.openBgWorkflows)
 	a.stateMu.Unlock()
 
 	params, err := json.Marshal(map[string]any{"sessionId": sessionID, "includeWorkflows": true})
@@ -879,78 +934,55 @@ func (a *Agent) reconcileBackgroundTasks() {
 		if list.Tasks == nil || !a.IsCurrentSession(sessionID) {
 			return
 		}
-		runningAgents := make(map[string]bool)
-		runningShells := make(map[string]bool)
-		runningWorkflows := make(map[string]bool)
-		closedRows := make(map[string]bool)
-
-		for _, task := range *list.Tasks {
-			toolUseID := task.ToolUseID
-			if task.Kind == qwenBackgroundAgent && toolUseID == "" && task.ID != "" {
-				a.stateMu.Lock()
-				toolUseID = a.children.backgroundTasks[task.ID]
-				a.stateMu.Unlock()
-			}
-			if task.runs() {
-				switch task.Kind {
-				case qwenBackgroundAgent:
-					if toolUseID != "" {
-						runningAgents[toolUseID] = true
-					}
-				case qwenBackgroundShell:
-					if task.ID != "" {
-						runningShells[task.ID] = true
-					}
-				case qwenBackgroundWorkflow:
-					if toolUseID != "" {
-						runningWorkflows[toolUseID] = true
-					}
-				}
-				continue
-			}
-			rowKey := qwenBackgroundTask{Kind: task.Kind, TaskID: task.ID, ToolUseID: toolUseID}.rowKey(sessionID)
-			if rowKey == "" {
-				continue
-			}
-			status := qwenSubagentStatus(task.Status, bgtask.StatusEndedWithUnknownOutcome)
-			a.closeReconciledTask(sessionID, task.Kind, task.ID, toolUseID, rowKey, status)
-			closedRows[rowKey] = true
-		}
-
-		for _, toolCallID := range trackedAgents {
-			if runningAgents[toolCallID] {
-				continue
-			}
-			rowKey := qwenAgentRowKey(sessionID, toolCallID)
-			if rowKey != "" && !closedRows[rowKey] {
-				a.closeReconciledTask(sessionID, qwenBackgroundAgent, "", toolCallID, rowKey, bgtask.StatusEndedWithUnknownOutcome)
-			}
-		}
-		for _, shellID := range trackedShells {
-			if runningShells[shellID] {
-				continue
-			}
-			rowKey := qwenShellRowPrefix + shellID
-			if !closedRows[rowKey] {
-				a.closeReconciledTask(sessionID, qwenBackgroundShell, shellID, "", rowKey, bgtask.StatusEndedWithUnknownOutcome)
-			}
-		}
-		for _, toolCallID := range trackedWorkflows {
-			if runningWorkflows[toolCallID] {
-				continue
-			}
-			rowKey := qwenWorkflowRowKey(sessionID, toolCallID)
-			if rowKey != "" && !closedRows[rowKey] {
-				a.closeReconciledTask(sessionID, qwenBackgroundWorkflow, "", toolCallID, rowKey, bgtask.StatusEndedWithUnknownOutcome)
-			}
-		}
+		a.reconcileTaskList(sessionID, *list.Tasks, trackedAgents, trackedShells, trackedWorkflows)
 	})
 	if err != nil {
 		slog.Warn("qwen reconcile background tasks after queue overflow", "agent_id", a.AgentID(), "session_id", sessionID, "error", err)
 	}
 }
 
-func (a *Agent) closeReconciledTask(sessionID, kind, taskID, toolCallID, rowKey string, status bgtask.Status) {
+func (a *Agent) reconcileTaskList(sessionID string, tasks []qwenTask, trackedAgents map[string]uint64, trackedShells, trackedWorkflows map[string]bool) {
+	runningRows := make(map[string]bool)
+	closedRows := make(map[string]bool)
+
+	for _, task := range tasks {
+		toolUseID := task.ToolUseID
+		if task.Kind == qwenBackgroundAgent && toolUseID == "" && task.ID != "" {
+			a.stateMu.Lock()
+			toolUseID = a.children.backgroundTasks[task.ID]
+			a.stateMu.Unlock()
+		}
+		rowKey := qwenBackgroundTask{Kind: task.Kind, TaskID: task.ID, ToolUseID: toolUseID}.rowKey(sessionID)
+		if rowKey == "" {
+			continue
+		}
+		if task.runs() {
+			runningRows[rowKey] = true
+			continue
+		}
+		status := qwenSubagentStatus(task.Status, bgtask.StatusEndedWithUnknownOutcome)
+		a.closeReconciledTask(sessionID, task.Kind, task.ID, toolUseID, rowKey, status, trackedAgents[toolUseID])
+		closedRows[rowKey] = true
+	}
+
+	reconcileMissing := func(kind, taskID, toolCallID, rowKey string, expectedRunSeq uint64) {
+		if rowKey == "" || runningRows[rowKey] || closedRows[rowKey] {
+			return
+		}
+		a.closeReconciledTask(sessionID, kind, taskID, toolCallID, rowKey, bgtask.StatusEndedWithUnknownOutcome, expectedRunSeq)
+	}
+	for toolCallID, runSeq := range trackedAgents {
+		reconcileMissing(qwenBackgroundAgent, "", toolCallID, qwenAgentRowKey(sessionID, toolCallID), runSeq)
+	}
+	for shellID := range trackedShells {
+		reconcileMissing(qwenBackgroundShell, shellID, "", qwenShellRowPrefix+shellID, 0)
+	}
+	for toolCallID := range trackedWorkflows {
+		reconcileMissing(qwenBackgroundWorkflow, "", toolCallID, qwenWorkflowRowKey(sessionID, toolCallID), 0)
+	}
+}
+
+func (a *Agent) closeReconciledTask(sessionID, kind, taskID, toolCallID, rowKey string, status bgtask.Status, expectedRunSeq uint64) {
 	if !a.IsCurrentSession(sessionID) {
 		return
 	}
@@ -958,28 +990,17 @@ func (a *Agent) closeReconciledTask(sessionID, kind, taskID, toolCallID, rowKey 
 	if err != nil || !found || currentStatus.IsFinished() {
 		return
 	}
-	switch kind {
-	case qwenBackgroundAgent:
+	if kind == qwenBackgroundAgent {
 		a.stateMu.Lock()
+		currentSeq, stillOpen := a.children.openBgAgents[toolCallID]
+		if !stillOpen || currentSeq != expectedRunSeq {
+			a.stateMu.Unlock()
+			return
+		}
 		delete(a.children.openBgAgents, toolCallID)
 		a.stateMu.Unlock()
-		if toolCallID != "" {
-			a.stopBackgroundTranscript(toolCallID, true)
-			status = a.closingStatus(toolCallID, status)
-		}
-		a.FinishChildTurn(rowKey)
-	case qwenBackgroundWorkflow:
-		a.stateMu.Lock()
-		delete(a.children.openBgWorkflows, toolCallID)
-		a.stateMu.Unlock()
-		if toolCallID != "" {
-			a.stopWorkflowPoller(toolCallID, status)
-		}
-	case qwenBackgroundShell:
-		a.stateMu.Lock()
-		delete(a.children.openBgShells, taskID)
-		a.stateMu.Unlock()
 	}
+	status = a.cleanupBackgroundTask(kind, taskID, toolCallID, rowKey, status)
 	a.ApplySubagentObservationForSessionOffReader(sessionID, &acp.SubagentObservation{
 		RowKey:   rowKey,
 		Status:   status,

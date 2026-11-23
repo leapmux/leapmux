@@ -1195,3 +1195,52 @@ func TestQwenSendMessageRevivesFinishedSubagentAndResumesTranscriptTail(t *testi
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusRunning, row.Status, "send_message arguments on tool_call_update must revive the row")
 }
+
+func TestQwenBackgroundTaskCompletedBeforeLaunchUpdateDoesNotReopenOrStartTail(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	a, sink, _ := newQwenAgent(t, clock, nil)
+	path := subagentTranscriptPath(t)
+
+	// Open the agent tool call, then deliver background_task_completed before
+	// the launch tool_call_update arrives.
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_686a7e3e21","status":"pending","title":"Agent","kind":"other","rawInput":{"description":"Fast background child"},"_meta":{"toolName":"agent"}}`))
+	a.HandleOutput(backgroundDone(t, "completed"))
+
+	rowKey := qwenAgentRowKey(qwenTestSession, "call_686a7e3e21")
+	row, ok := sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Late launch update arrives after the task already completed.
+	a.HandleOutput(backgroundLaunchResult(t, path))
+
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "late launch update must leave the completed row finished")
+
+	a.stateMu.Lock()
+	_, inOpenBgAgents := a.children.openBgAgents["call_686a7e3e21"]
+	_, hasTail := a.children.tails["call_686a7e3e21"]
+	a.stateMu.Unlock()
+	assert.False(t, inOpenBgAgents, "already-closed background agent must not enter openBgAgents")
+	assert.False(t, hasTail, "already-closed background agent must not start a transcriptTail")
+}
+
+func TestQwenFinalToolCallDoesNotStartWorkflowPollerOrTrackSpawn(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	a, _, _ := newQwenAgent(t, clock, nil)
+
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_wf_final","status":"completed","title":"Workflow","kind":"other","rawInput":{"name":"nightly","run_in_background":true},"_meta":{"toolName":"workflow"}}`))
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_agent_final","status":"failed","title":"Agent","kind":"other","rawInput":{"description":"Already failed"},"_meta":{"toolName":"agent"}}`))
+
+	a.stateMu.Lock()
+	workflowsCount := len(a.children.workflows)
+	spawnsCount := len(a.children.spawns)
+	byCallCount := len(a.tools.byCall)
+	a.stateMu.Unlock()
+	assert.Zero(t, workflowsCount, "an already-final workflow tool_call must not start a workflowPoller")
+	assert.Zero(t, spawnsCount, "an already-final agent tool_call must not register in children.spawns")
+	assert.Zero(t, byCallCount, "an already-final tool_call must not remain in tools.byCall")
+}

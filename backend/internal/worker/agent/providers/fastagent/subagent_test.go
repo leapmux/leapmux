@@ -397,10 +397,13 @@ func TestFastagentSubagentArchiveDeadlineClosesFailed(t *testing.T) {
 	assert.Equal(t, fastagentArchiveRetryInterval, call.Duration)
 	state := a.childState["call-deadline"]
 	require.NotNil(t, state)
-	assert.Equal(t, 5*time.Second, fastagentArchiveDeadline)
-	assert.Equal(t, started.Add(fastagentArchiveDeadline), state.deadline)
+	assert.Equal(t, 2*time.Minute, fastagentArchiveActiveTurnDeadline)
+	assert.Equal(t, 5*time.Second, fastagentArchivePostTurnDeadline)
+	a.childMu.Lock()
+	assert.Equal(t, started.Add(fastagentArchiveActiveTurnDeadline), state.deadline)
 	// The retry goroutine waits inside NewTimer until this test shortens the deadline.
 	state.deadline = started.Add(fastagentArchiveRetryInterval)
+	a.childMu.Unlock()
 	call.MustRelease(ctx)
 
 	clock.Advance(fastagentArchiveRetryInterval).MustWait(ctx)
@@ -411,7 +414,7 @@ func TestFastagentSubagentArchiveDeadlineClosesFailed(t *testing.T) {
 	notifications := sink.Child(row.ChildAgentID).LeapMuxNotifications()
 	encoded, err := json.Marshal(notifications)
 	require.NoError(t, err)
-	assert.Contains(t, string(encoded), "Child transcript unavailable after 5 seconds")
+	assert.Contains(t, string(encoded), "Child transcript unavailable before deadline")
 }
 
 func TestFastagentSubagentArchiveClearCancelsThePendingTimer(t *testing.T) {
@@ -538,10 +541,10 @@ func TestFastagentSubagentArchiveBacksOffAfterRepeatedReadFailures(t *testing.T)
 func TestFastagentSubagentArchiveFallbackPreservesResultTextAndNonFinalFallsBackToFailed(t *testing.T) {
 	t.Parallel()
 
-	t.Run("preserves resultText on deadline", func(t *testing.T) {
+	t.Run("preserves resultText on post-turn deadline", func(t *testing.T) {
 		t.Parallel()
 		a, sink, clock := newFastagentSubagentAgentForRPC(t, t.TempDir())
-		newTimer, _ := testutil.NewTimerTraps(t, clock, fastagentArchiveTimerTag)
+		newTimer, stopTimer := testutil.NewTimerTraps(t, clock, fastagentArchiveTimerTag)
 		ctx := testutil.DeadlineContext(t)
 		spawn := a.observeSubagentCall("call-result", "subagent", json.RawMessage(`{"message":"Count files","label":"Count files"}`))
 		require.NotNil(t, spawn)
@@ -553,19 +556,69 @@ func TestFastagentSubagentArchiveFallbackPreservesResultTextAndNonFinalFallsBack
 		require.False(t, final.CloseRow)
 		a.ApplySubagentObservation(final)
 
-		for elapsed := time.Duration(0); elapsed < 5*time.Second; {
+		// Advance past 5 seconds while the parent turn is still active: row stays Running.
+		for elapsed := time.Duration(0); elapsed < 6*time.Second; {
+			interval := testutil.WaitForTimer(t, ctx, newTimer)
+			clock.Advance(interval).MustWait(ctx)
+			elapsed += interval
+		}
+		testutil.WaitForTimer(t, ctx, newTimer)
+		row, ok := sink.BackgroundTask(spawn.RowKey)
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusRunning, row.Status, "active parent turn must not expire archive at 5s")
+
+		// PromptEnded clamps the remaining deadline to 5 seconds and resets the timer.
+		a.retryChildArchives(nil, false)
+		stopTimer.MustWait(ctx).MustRelease(ctx)
+		for elapsed := time.Duration(0); elapsed < fastagentArchivePostTurnDeadline; {
 			interval := testutil.WaitForTimer(t, ctx, newTimer)
 			clock.Advance(interval).MustWait(ctx)
 			elapsed += interval
 		}
 		assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
-		row, ok := sink.BackgroundTask(spawn.RowKey)
+		row, ok = sink.BackgroundTask(spawn.RowKey)
 		require.True(t, ok)
 		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 		encoded, err := json.Marshal(sink.Child(row.ChildAgentID).LeapMuxNotifications())
 		require.NoError(t, err)
 		assert.Contains(t, string(encoded), "DIRECT_RESULT_TEXT")
 		assert.NotContains(t, string(encoded), "Child transcript unavailable")
+	})
+
+	t.Run("long parent turn replays archive at PromptEnded after more than 5 seconds", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		a, sink, clock := newFastagentSubagentAgentForRPC(t, home)
+		newTimer, stopTimer := testutil.NewTimerTraps(t, clock, fastagentArchiveTimerTag)
+		ctx := testutil.DeadlineContext(t)
+		spawn := a.observeSubagentCall("call-long-turn", "subagent", json.RawMessage(`{"message":"Count files","label":"Count files"}`))
+		require.NotNil(t, spawn)
+		a.ApplySubagentObservation(spawn)
+		final := a.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+			ToolCallID: "call-long-turn", Status: "completed",
+		})
+		require.NotNil(t, final)
+		a.ApplySubagentObservation(final)
+
+		for elapsed := time.Duration(0); elapsed < 6*time.Second; {
+			interval := testutil.WaitForTimer(t, ctx, newTimer)
+			clock.Advance(interval).MustWait(ctx)
+			elapsed += interval
+		}
+		testutil.WaitForTimer(t, ctx, newTimer)
+		row, ok := sink.BackgroundTask(spawn.RowKey)
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusRunning, row.Status)
+
+		// Parent flushes archive right at turn end; PromptEnded replays the full child archive.
+		writeFastagentChildArchive(t, home, "session-1", "child-long", "model-long", "history_agent.json")
+		a.retryChildArchives(nil, false)
+		stopTimer.MustWait(ctx).MustRelease(ctx)
+		assert.Equal(t, bgtask.StatusSucceeded, waitFastagentChildClose(t, ctx, sink))
+		row, ok = sink.BackgroundTask(spawn.RowKey)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		assert.GreaterOrEqual(t, len(sink.Child(row.ChildAgentID).Messages()), 2, "full child archive must replay after >5s parent turn")
 	})
 
 	t.Run("non-final status falls back to failed", func(t *testing.T) {
@@ -651,7 +704,8 @@ func TestFastagentSubagentPromptEndedClosesIncompleteChildren(t *testing.T) {
 		stopped  bool
 		expected bgtask.Status
 	}{
-		{name: "idle end", err: nil, stopped: false, expected: bgtask.StatusStopped},
+		{name: "idle end", err: nil, stopped: false, expected: bgtask.StatusEndedWithUnknownOutcome},
+		{name: "stopped without error", err: nil, stopped: true, expected: bgtask.StatusStopped},
 		{name: "cancelled", err: context.Canceled, stopped: true, expected: bgtask.StatusStopped},
 		{name: "error", err: context.DeadlineExceeded, stopped: false, expected: bgtask.StatusFailed},
 	} {

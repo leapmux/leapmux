@@ -43,6 +43,7 @@ type Agent struct {
 	childStreamMu            sync.Mutex
 	childStreams             map[string]*qoderChildStream
 	childTaskIDs             map[string]string      // Native task ID of each running task child, by its spawn tool_use_id, under mu.
+	backgroundChildTaskIDs   map[string]bool        // Running task children known to run in the background, by row key, under mu.
 	bgTasks                  map[string]qoderBgTask // Non-agent background tasks (such as local_bash), by native task_id, under mu.
 	rootStreamKinds          map[int]string         // Native block kinds for live progress, under mu.
 	storedInstructionWarning bool

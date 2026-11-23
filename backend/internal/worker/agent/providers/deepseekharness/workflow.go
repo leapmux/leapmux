@@ -2,6 +2,7 @@ package deepseekharness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -11,8 +12,9 @@ import (
 )
 
 type nativeWorkflow struct {
-	Name     string
-	Children map[int]string
+	Name      string
+	Children  map[int]string
+	RowClosed bool
 }
 
 type pendingWorkflowChild struct {
@@ -98,27 +100,25 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 		}
 		return sink.CloseBackgroundTask(childID, status)
 	case contracts.DeepseekHarnessEventWorkflowEnd:
+		type remainingWorkflowChild struct {
+			seq     int
+			childID string
+		}
 		a.Mu.Lock()
 		run, exists := a.workflows[data.RunID]
-		delete(a.workflows, data.RunID)
-		var openSeqs []int
+		rowClosed := run.RowClosed
+		var remainingChildren []remainingWorkflowChild
 		if exists {
-			openSeqs = make([]int, 0, len(run.Children))
+			openSeqs := make([]int, 0, len(run.Children))
 			for seq := range run.Children {
 				openSeqs = append(openSeqs, seq)
 			}
 			slices.Sort(openSeqs)
-		}
-		remainingChildren := make([]string, 0, len(openSeqs))
-		for _, seq := range openSeqs {
-			childID := run.Children[seq]
-			if childID == "" {
-				continue
-			}
-			remainingChildren = append(remainingChildren, childID)
-			delete(a.pendingWorkflowChildren, childID)
-			if child := a.children[childID]; child != nil {
-				child.active = false
+			remainingChildren = make([]remainingWorkflowChild, 0, len(openSeqs))
+			for _, seq := range openSeqs {
+				if childID := run.Children[seq]; childID != "" {
+					remainingChildren = append(remainingChildren, remainingWorkflowChild{seq: seq, childID: childID})
+				}
 			}
 		}
 		a.Mu.Unlock()
@@ -132,12 +132,41 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 				status = bgtask.StatusInterrupted
 			}
 		}
-		for _, childID := range remainingChildren {
-			if err := sink.CloseBackgroundTask(childID, status); err != nil {
-				return err
+		var closeErr error
+		closedChildren := make([]remainingWorkflowChild, 0, len(remainingChildren))
+		for _, entry := range remainingChildren {
+			if err := sink.CloseBackgroundTask(entry.childID, status); err != nil {
+				closeErr = errors.Join(closeErr, err)
+				continue
+			}
+			closedChildren = append(closedChildren, entry)
+		}
+		workflowClosed := rowClosed
+		if !rowClosed {
+			if err := sink.CloseBackgroundTask(key, status); err != nil {
+				closeErr = errors.Join(closeErr, err)
+			} else {
+				workflowClosed = true
 			}
 		}
-		return sink.CloseBackgroundTask(key, status)
+		a.Mu.Lock()
+		if current, ok := a.workflows[data.RunID]; ok {
+			for _, entry := range closedChildren {
+				delete(current.Children, entry.seq)
+				delete(a.pendingWorkflowChildren, entry.childID)
+				if child := a.children[entry.childID]; child != nil {
+					child.active = false
+				}
+			}
+			current.RowClosed = workflowClosed
+			if closeErr == nil {
+				delete(a.workflows, data.RunID)
+			} else {
+				a.workflows[data.RunID] = current
+			}
+		}
+		a.Mu.Unlock()
+		return closeErr
 	}
 	return nil
 }

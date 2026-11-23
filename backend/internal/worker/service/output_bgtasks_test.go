@@ -1961,3 +1961,55 @@ func TestBgTask_ColdSeedWithCapFullOfActiveRowsReclaimsUnlinkedFinishedRows(t *t
 		assert.NotContains(t, remaining, fmt.Sprintf("finished-%d", i))
 	}
 }
+
+func TestBgTask_NotifyBackgroundWorkChangedFiresOnlyOnWorkOrLinkageChanges(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	notifications := 0
+	svc.Output.SetBackgroundWorkFunc(func(rootAgentID string) {
+		if rootAgentID == ownerID {
+			notifications++
+		}
+	})
+
+	// New Running row notifies.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "worker", Status: bgtask.StatusRunning,
+	}))
+	assert.Equal(t, 1, notifications, "new running row must notify")
+
+	// ActiveForm-only progress ticks must not notify.
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "reading files"))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running tests"))
+	assert.Equal(t, 1, notifications, "ActiveForm-only updates must not notify")
+
+	// Description-only update must not notify.
+	require.NoError(t, sink.UpdateBackgroundTaskDescription("task-1", "output path"))
+	assert.Equal(t, 1, notifications, "description-only update must not notify")
+
+	// Pure row-key rename must not notify.
+	require.NoError(t, sink.RenameBackgroundTask("task-1", "task-1-renamed"))
+	assert.Equal(t, 1, notifications, "pure row-key rename must not notify")
+
+	// Closing a running row (Running -> Succeeded) must notify.
+	require.NoError(t, sink.CloseBackgroundTask("task-1-renamed", bgtask.StatusSucceeded))
+	assert.Equal(t, 2, notifications, "Running -> Succeeded close must notify")
+
+	// Reviving a finished row (Succeeded -> Running) must notify.
+	require.NoError(t, sink.ReviveBackgroundTask("task-1-renamed"))
+	assert.Equal(t, 3, notifications, "Succeeded -> revived Running must notify")
+
+	// Final status transition via UpdateBackgroundTaskStatus (Running -> Succeeded) must notify.
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1-renamed", bgtask.StatusSucceeded, ""))
+	assert.Equal(t, 4, notifications, "Running -> Succeeded status update must notify")
+
+	// Linking a new running child agent must notify.
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "child-link",
+		Title:            "child worker",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 5, notifications, "EnsureChildAgent creating a linked running row must notify")
+}

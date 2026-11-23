@@ -77,24 +77,76 @@ func TestDiracSpawnBindingsRefuseDuplicateNativeReceipts(t *testing.T) {
 
 func TestDiracTaskletMetadataWaitsForTheDurableOutcomeEvent(t *testing.T) {
 	t.Parallel()
-	for name, events := range map[string]string{
-		"accepted without outcome":             `[{"id":"accepted","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}}]`,
-		"different outcome":                    `[{"id":"failed","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"failed","error":{"name":"Error","message":"Another outcome"},"failedAt":1}}}]`,
-		"different prior outcome after resume": `[{"id":"completed","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"A different prior result.","completedAt":1}}},{"id":"resumed","taskletId":"Witten","createdAt":2,"communication":{"type":"lifecycle","state":"resumed","assignment":"Continue."}}]`,
+	for name, tc := range map[string]struct {
+		events string
+		mutate func(map[string]any)
+	}{
+		"accepted without outcome": {
+			events: `[{"id":"accepted","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}}]`,
+		},
+		"different outcome": {
+			events: `[{"id":"failed","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"failed","error":{"name":"Error","message":"Another outcome"},"failedAt":1}}}]`,
+		},
+		"post-resume torn write after resume": {
+			events: `[{"id":"completed","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"A different prior result.","completedAt":1}}},{"id":"resumed","taskletId":"Witten","createdAt":2,"communication":{"type":"lifecycle","state":"resumed","assignment":"Continue."}}]`,
+			mutate: func(record map[string]any) {
+				record["outcome"] = map[string]any{"kind": "completed", "response": "The parser is correct.", "completedAt": 3}
+			},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
 			writeDiracTaskletStore(t, root)
-			require.NoError(t, os.WriteFile(filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "tasklet_events.json"), []byte(events), 0o600))
+			if tc.mutate != nil {
+				mutateDiracTaskletRecord(t, root, tc.mutate)
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "tasklet_events.json"), []byte(tc.events), 0o600))
 			metadata, err := readDiracTaskletMetadata(root, "dirac-session")
 			require.NoError(t, err)
 			require.Len(t, metadata.Tasklets, 1)
 			record := metadata.Tasklets[0].Record
 			assert.Nil(t, record.Outcome, "an immediate read defers settlement until the journal catches up or the grace window elapses")
-			assert.True(t, record.outcomeMismatch)
 			require.NotNil(t, record.unmatchedOutcome)
 			assert.Equal(t, bgtask.StatusSucceeded, record.unmatchedOutcome.status())
+		})
+	}
+}
+
+func TestDiracTaskletMetadataIgnoresStalePriorOutcomeAfterResume(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		events string
+		mutate func(map[string]any)
+	}{
+		"matches pre-resume outcome at same timestamp": {
+			events: `[{"id":"accepted","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},{"id":"outcome-1","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"The parser is correct.","completedAt":1}}},{"id":"resumed","taskletId":"Witten","createdAt":1,"communication":{"type":"lifecycle","state":"resumed","assignment":"Continue."}}]`,
+		},
+		"outcome completedAt older than resume": {
+			events: `[{"id":"accepted","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},{"id":"resumed","taskletId":"Witten","createdAt":2,"communication":{"type":"lifecycle","state":"resumed","assignment":"Continue."}}]`,
+		},
+		"record updatedAt older than resume": {
+			events: `[{"id":"accepted","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},{"id":"resumed","taskletId":"Witten","createdAt":2,"communication":{"type":"lifecycle","state":"resumed","assignment":"Continue."}}]`,
+			mutate: func(record map[string]any) {
+				record["updatedAt"] = 1
+				record["outcome"] = map[string]any{"kind": "completed", "response": "Job 1 result.", "completedAt": 2}
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeDiracTaskletStore(t, root)
+			if tc.mutate != nil {
+				mutateDiracTaskletRecord(t, root, tc.mutate)
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "tasklet_events.json"), []byte(tc.events), 0o600))
+			metadata, err := readDiracTaskletMetadata(root, "dirac-session")
+			require.NoError(t, err)
+			require.Len(t, metadata.Tasklets, 1)
+			record := metadata.Tasklets[0].Record
+			assert.Nil(t, record.Outcome, "a stale pre-resume outcome must leave the resumed job running")
+			assert.Nil(t, record.unmatchedOutcome, "a stale pre-resume outcome must not start torn-write settlement")
 		})
 	}
 }

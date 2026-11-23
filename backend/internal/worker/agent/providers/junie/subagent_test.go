@@ -274,9 +274,9 @@ func TestJuniePromptEndedClosesOpenChildrenWithoutDiskTail(t *testing.T) {
 		want     bgtask.Status
 	}{
 		{
-			name:     "normal end closes open child stopped",
+			name:     "normal end closes open child with unknown outcome",
 			response: json.RawMessage(`{"stopReason":"end_turn"}`),
-			want:     bgtask.StatusStopped,
+			want:     bgtask.StatusEndedWithUnknownOutcome,
 		},
 		{
 			name: "prompt error closes open child failed",
@@ -395,7 +395,7 @@ func TestJuniePromptEndedStoppedErrorAndDiskTailFinalPoll(t *testing.T) {
 
 		row, ok := sink.BackgroundTask(junieTestChildSessionID)
 		require.True(t, ok)
-		assert.Equal(t, bgtask.StatusStopped, row.Status)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
 		assert.Contains(t, strings.Join(junieChildMessageContents(sink, row.ChildAgentID), "\n"), "FINAL_POLL_MARKER")
 		_, pending := clock.Peek()
 		assert.False(t, pending, "PromptEnded must stop the child poller")

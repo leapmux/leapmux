@@ -1149,7 +1149,7 @@ func TestWaitAndProcKillCloseTrackedShells(t *testing.T) {
 		r.emit(
 			frameBackgroundBashStart,
 			frameBackgroundBashEnd,
-			// An errored kill write must not close the shell.
+			// A failed kill write must not close the shell.
 			`{"type":"tool_execution_start","toolCallId":"call_kill_err","toolName":"write","args":{"path":"proc://bash-1/kill","content":""}}`,
 			`{"type":"tool_execution_end","toolCallId":"call_kill_err","toolName":"write","result":{"content":[]},"isError":true}`,
 		)

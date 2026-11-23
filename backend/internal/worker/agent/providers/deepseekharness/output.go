@@ -72,9 +72,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		stream.startedAt = event.Time
 		if stream.childAgentID == "" {
 			a.setTurnState(true)
-		} else if stream.replaying {
-			stream.replaySawTurnStart = true
-			stream.replayTurnOpen = true
+		} else if stream.replay != nil {
+			stream.replay.sawTurnStart = true
+			stream.replay.turnOpen = true
 		} else {
 			if err := a.childTurnState(stream.sessionID, true, agent.MessageCompletionComplete); err != nil {
 				return err
@@ -249,9 +249,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		}
 		if stream.childAgentID == "" {
 			a.setTurnState(false)
-		} else if stream.replaying {
-			stream.replayTurnOpen = false
-			stream.replayLastCompletion = completion
+		} else if stream.replay != nil {
+			stream.replay.turnOpen = false
+			stream.replay.lastCompletion = completion
 		} else {
 			if err := a.childTurnState(stream.sessionID, false, completion); err != nil {
 				return err
@@ -313,6 +313,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 	case contracts.DeepseekHarnessEventWorkflowStart, contracts.DeepseekHarnessEventWorkflowEnd, contracts.DeepseekHarnessEventWorkflowAgentStart, contracts.DeepseekHarnessEventWorkflowAgentEnd:
 		return a.workflowEvent(stream, event.Type, event.Data)
 	case deepseekEventJobRegistered:
+		if stream.replay != nil {
+			return nil
+		}
 		return applyJobRegistered(sink, event.Data)
 	case deepseekEventJobSettled:
 		return applyJobSettled(sink, event.Data)
@@ -485,10 +488,23 @@ func (a *Agent) handleAssistantStream(stream *sessionStream, raw []byte) error {
 	return nil
 }
 
+const deepseekJobRowPrefix = "deepseek-job:"
+
+type deepseekJobIdentity struct {
+	JobID string `json:"jobId"`
+	ID    string `json:"id"`
+}
+
+func (j deepseekJobIdentity) id() string {
+	if id := strings.TrimSpace(j.JobID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(j.ID)
+}
+
 func applyJobRegistered(sink agent.ProviderServices, raw []byte) error {
 	var job struct {
-		JobID       string `json:"jobId"`
-		ID          string `json:"id"`
+		deepseekJobIdentity
 		Command     string `json:"command"`
 		Label       string `json:"label"`
 		Description string `json:"description"`
@@ -496,10 +512,7 @@ func applyJobRegistered(sink agent.ProviderServices, raw []byte) error {
 	if json.Unmarshal(raw, &job) != nil {
 		return nil
 	}
-	jobID := strings.TrimSpace(job.JobID)
-	if jobID == "" {
-		jobID = strings.TrimSpace(job.ID)
-	}
+	jobID := job.id()
 	if jobID == "" {
 		return nil
 	}
@@ -515,7 +528,7 @@ func applyJobRegistered(sink agent.ProviderServices, raw []byte) error {
 		title = jobID
 	}
 	return sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey:         "deepseek-job:" + jobID,
+		RowKey:         deepseekJobRowPrefix + jobID,
 		Kind:           bgtask.KindShell,
 		Title:          title,
 		TitleIsCommand: titleIsCommand,
@@ -525,8 +538,7 @@ func applyJobRegistered(sink agent.ProviderServices, raw []byte) error {
 
 func applyJobSettled(sink agent.ProviderServices, raw []byte) error {
 	var job struct {
-		JobID    string `json:"jobId"`
-		ID       string `json:"id"`
+		deepseekJobIdentity
 		Status   string `json:"status"`
 		Outcome  string `json:"outcome"`
 		ExitCode *int   `json:"exitCode"`
@@ -534,10 +546,7 @@ func applyJobSettled(sink agent.ProviderServices, raw []byte) error {
 	if json.Unmarshal(raw, &job) != nil {
 		return nil
 	}
-	jobID := strings.TrimSpace(job.JobID)
-	if jobID == "" {
-		jobID = strings.TrimSpace(job.ID)
-	}
+	jobID := job.id()
 	if jobID == "" {
 		return nil
 	}
@@ -562,5 +571,5 @@ func applyJobSettled(sink agent.ProviderServices, raw []byte) error {
 	default:
 		status = bgtask.StatusEndedWithUnknownOutcome
 	}
-	return sink.CloseBackgroundTask("deepseek-job:"+jobID, status)
+	return sink.CloseBackgroundTask(deepseekJobRowPrefix+jobID, status)
 }

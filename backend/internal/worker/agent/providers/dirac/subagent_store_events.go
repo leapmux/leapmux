@@ -9,13 +9,15 @@ import (
 type diracTaskletLifecycle struct {
 	ID         string
 	State      string
+	CreatedAt  float64
 	Assignment *string
 	Raw        json.RawMessage
 }
 
 type diracTaskletJournal struct {
-	Lifecycle diracTaskletLifecycle
-	Outcome   json.RawMessage
+	Lifecycle     diracTaskletLifecycle
+	Outcome       json.RawMessage
+	PriorOutcomes []json.RawMessage
 }
 
 func decodeDiracTaskletJournal(raw []byte, taskletID string) (diracTaskletJournal, error) {
@@ -62,8 +64,11 @@ func decodeDiracTaskletJournal(raw []byte, taskletID string) (diracTaskletJourna
 			if communication.State != "accepted" && communication.State != "resumed" {
 				return journal, fmt.Errorf("the Dirac tasklet lifecycle has an unknown state")
 			}
-			journal.Lifecycle = diracTaskletLifecycle{ID: event.ID, State: communication.State, Assignment: communication.Assignment, Raw: rawEvent}
+			journal.Lifecycle = diracTaskletLifecycle{ID: event.ID, State: communication.State, CreatedAt: *event.CreatedAt, Assignment: communication.Assignment, Raw: rawEvent}
 			if communication.State == "resumed" {
+				if len(journal.Outcome) != 0 {
+					journal.PriorOutcomes = append(journal.PriorOutcomes, journal.Outcome)
+				}
 				journal.Outcome = nil
 			}
 		case "outcome":

@@ -334,7 +334,9 @@ func TestDecodeZCodeSubagentLifecycleTransition(t *testing.T) {
 	assert.Equal(t, bgtask.StatusSucceeded, transition.status)
 	assert.True(t, transition.final)
 	assert.Equal(t, "Final report", transition.report.Text)
-	assert.Equal(t, zcodeFinalReportID("spawn-1"), transition.reportID)
+	assert.Equal(t, zcodeFinalReportID("spawn-1", 0), transition.reportID)
+	assert.Equal(t, "zcode-final:spawn-1", zcodeFinalReportID("spawn-1", 1))
+	assert.Equal(t, "zcode-final:spawn-1#2", zcodeFinalReportID("spawn-1", 2))
 	assert.Equal(t, "model request failed", transition.failure)
 }
 
@@ -1263,7 +1265,7 @@ func TestZCodeSendMessageDoesNotReviveBeforeSuccessfulResult(t *testing.T) {
 	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 
-	// Errored SendMessage must keep the child ended.
+	// Failed SendMessage must keep the child ended.
 	a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventToolUpdated,
 		`{"kind":"error","toolCallId":"sm-err","error":{"message":"permission denied"}}`))
 	assert.True(t, a.children.hasEnded(spanID))
@@ -1361,4 +1363,176 @@ func TestZCodeSendMessageFastJob2CompletesBeforeSendMessageResult(t *testing.T) 
 	assert.Equal(t, []string{"sess_subagent_agent_1"}, sink.RevivedTasks(), "must not revive a second time")
 	row, _ = sink.BackgroundTask("sess_subagent_agent_1")
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+}
+
+func TestZCodeSendMessageJob2ReportPersistsInChildAndParent(t *testing.T) {
+	t.Parallel()
+	a, sink, _, _ := newZCodeLifecycleChild(t)
+	childIDs := sink.ChildAgentIDs()
+	require.Len(t, childIDs, 1)
+	child := sink.Child(childIDs[0])
+
+	// Finish Job 1 with a report.
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
+	a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent_1","agentType":"Explore","childSessionId":"sess_subagent_agent_1","parentToolCallId":"spawn-1","description":"file census","status":"completed","summaryText":"Job 1 report."}`))
+
+	// Revive for Job 2 via SendMessage and complete Job 2 with a distinct report.
+	a.HandleOutput(zcodeEventLine(t, 7, contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"sm-job2","toolName":"SendMessage","input":{"to":"sess_subagent_agent_1","message":"Run job 2"}}`))
+	a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"sm-job2","result":{"success":true,"content":"Message delivered."}}`))
+	a.HandleOutput(zcodeEventLine(t, 9, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent_1","agentType":"Explore","childSessionId":"sess_subagent_agent_1","parentToolCallId":"spawn-1","description":"file census","status":"running","resumed":true}`))
+	a.HandleOutput(zcodeEventLine(t, 10, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"agent_1_job2","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","childSessionId":"sess_subagent_agent_1","description":"file census","status":"running"}`))
+	a.HandleOutput(zcodeEventLine(t, 11, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"agent_1_job2","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","childSessionId":"sess_subagent_agent_1","description":"file census","status":"completed"}`))
+	a.HandleOutput(zcodeEventLine(t, 12, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent_1","agentType":"Explore","childSessionId":"sess_subagent_agent_1","parentToolCallId":"spawn-1","description":"file census","status":"completed","summaryText":"Job 2 report."}`))
+
+	collectReports := func(s *agenttest.Sink) []string {
+		var texts []string
+		for _, n := range s.LeapMuxNotifications() {
+			if n[contracts.NotificationFieldType] == contracts.NotificationTypeSubagentReport {
+				texts = append(texts, fmt.Sprint(n[contracts.NotificationFieldText]))
+			}
+		}
+		return texts
+	}
+	assert.Equal(t, []string{"Job 1 report.", "Job 2 report."}, collectReports(child),
+		"Job 2 report must not be deduplicated against Job 1 in the child transcript")
+	assert.Equal(t, []string{"Job 1 report.", "Job 2 report."}, collectReports(&sink.Sink),
+		"Job 2 report must not be deduplicated against Job 1 in the parent transcript")
+}
+
+func TestZCodeSendMessageWakeAuthorizationIsolationAndDeterminism(t *testing.T) {
+	t.Parallel()
+
+	spawnAndFinishPair := func(t *testing.T, nameA, nameB string) (*Agent, *agenttest.ControlSink, string, string) {
+		t.Helper()
+		sink := &agenttest.ControlSink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
+			fmt.Sprintf(`{"kind":"scheduled","toolCallId":"spawn-a","toolName":"Agent","input":{"name":%q,"description":"Child A","prompt":"Work A"}}`, nameA)))
+		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+			`{"taskId":"task-a-1","toolCallId":"spawn-a","toolName":"Agent","taskKind":"subagent","childSessionId":"sess-a","description":"Child A","status":"running"}`))
+		a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+			`{"taskId":"task-a-1","toolCallId":"spawn-a","toolName":"Agent","taskKind":"subagent","childSessionId":"sess-a","description":"Child A","status":"completed"}`))
+
+		a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventToolUpdated,
+			fmt.Sprintf(`{"kind":"scheduled","toolCallId":"spawn-b","toolName":"Agent","input":{"name":%q,"description":"Child B","prompt":"Work B"}}`, nameB)))
+		a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated,
+			`{"taskId":"task-b-1","toolCallId":"spawn-b","toolName":"Agent","taskKind":"subagent","childSessionId":"sess-b","description":"Child B","status":"running"}`))
+		a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated,
+			`{"taskId":"task-b-1","toolCallId":"spawn-b","toolName":"Agent","taskKind":"subagent","childSessionId":"sess-b","description":"Child B","status":"completed"}`))
+
+		spanA := zcodeTestSpanID(t, &sink.Sink, "spawn-a")
+		spanB := zcodeTestSpanID(t, &sink.Sink, "spawn-b")
+		require.True(t, a.children.hasEnded(spanA))
+		require.True(t, a.children.hasEnded(spanB))
+		return a, sink, spanA, spanB
+	}
+
+	t.Run("SendMessage for Child A never unlocks unrelated ended Child B", func(t *testing.T) {
+		t.Parallel()
+		a, sink, spanA, spanB := spawnAndFinishPair(t, "alpha", "beta")
+
+		a.HandleOutput(zcodeEventLine(t, 7, contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"sm-a","toolName":"SendMessage","input":{"to":"sess-a","message":"Wake A"}}`))
+		a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventToolUpdated,
+			`{"kind":"result","toolCallId":"sm-a","result":{"success":true,"content":"Message delivered."}}`))
+		require.False(t, a.children.hasEnded(spanA))
+		require.True(t, a.children.hasEnded(spanB))
+
+		// An unrelated new-task event for ended Child B must NOT revive Child B.
+		a.HandleOutput(zcodeEventLine(t, 9, contracts.ZCodeEventSessionUpdated,
+			`{"taskId":"task-b-stale-2","toolCallId":"spawn-b","toolName":"Agent","taskKind":"subagent","childSessionId":"sess-b","description":"Child B","status":"running"}`))
+		assert.True(t, a.children.hasEnded(spanB), "SendMessage targeting Child A must never unlock revival of unrelated ended Child B")
+		rowB, ok := sink.BackgroundTask("sess-b")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, rowB.Status)
+		assert.Equal(t, []string{"sess-a"}, sink.RevivedTasks())
+	})
+
+	t.Run("empty-input scheduled SendMessage does not wildcard-revive unrelated Child B", func(t *testing.T) {
+		t.Parallel()
+		a, sink, spanA, spanB := spawnAndFinishPair(t, "alpha", "beta")
+
+		// Scheduled SendMessage arrives without input (e.g. inputOmitted).
+		a.HandleOutput(zcodeEventLine(t, 7, contracts.ZCodeEventToolUpdated,
+			`{"kind":"scheduled","toolCallId":"sm-empty","toolName":"SendMessage","input":{}}`))
+
+		// While sm-empty is in flight, events for unrelated Child B must NOT wildcard-revive Child B.
+		a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventSessionUpdated,
+			`{"agentId":"agent-b","agentType":"Explore","childSessionId":"sess-b","parentToolCallId":"spawn-b","description":"Child B","status":"running","resumed":true}`))
+		a.HandleOutput(zcodeEventLine(t, 9, contracts.ZCodeEventSessionUpdated,
+			`{"taskId":"task-b-2","toolCallId":"spawn-b","toolName":"Agent","taskKind":"subagent","childSessionId":"sess-b","description":"Child B","status":"running"}`))
+		assert.True(t, a.children.hasEnded(spanB), "empty-input scheduled SendMessage must not wildcard-revive unrelated Child B")
+		assert.Empty(t, sink.RevivedTasks())
+
+		// When sm-empty completes carrying Child A's identity in result, only Child A revives.
+		a.HandleOutput(zcodeEventLine(t, 10, contracts.ZCodeEventToolUpdated,
+			`{"kind":"result","toolCallId":"sm-empty","result":{"success":true,"childSessionId":"sess-a","content":"Message delivered."}}`))
+		assert.False(t, a.children.hasEnded(spanA), "completed SendMessage result must revive its resolved target Child A")
+		assert.True(t, a.children.hasEnded(spanB), "Child B must stay ended")
+		assert.Equal(t, []string{"sess-a"}, sink.RevivedTasks())
+	})
+
+	t.Run("deterministic selection when two ended children share a name", func(t *testing.T) {
+		t.Parallel()
+		for i := range 20 {
+			a, sink, spanA, spanB := spawnAndFinishPair(t, "worker", "worker")
+			a.HandleOutput(zcodeEventLine(t, 7, contracts.ZCodeEventToolUpdated,
+				`{"kind":"scheduled","toolCallId":"sm-dup","toolName":"SendMessage","input":{"to":"worker","message":"Wake"}}`))
+			a.HandleOutput(zcodeEventLine(t, 8, contracts.ZCodeEventToolUpdated,
+				`{"kind":"result","toolCallId":"sm-dup","result":{"success":true,"content":"Message delivered."}}`))
+			wantFirst := "sess-a"
+			wantRevivedSpan, wantEndedSpan := spanA, spanB
+			if spanB < spanA {
+				wantFirst = "sess-b"
+				wantRevivedSpan, wantEndedSpan = spanB, spanA
+			}
+			assert.Equal(t, []string{wantFirst}, sink.RevivedTasks(), "iteration %d must pick lexicographically smallest spanID", i)
+			assert.False(t, a.children.hasEnded(wantRevivedSpan), "iteration %d", i)
+			assert.True(t, a.children.hasEnded(wantEndedSpan), "iteration %d", i)
+		}
+	})
+
+	t.Run("secondary ended lookup maps stay in sync across end, revive, and clear", func(t *testing.T) {
+		t.Parallel()
+		var idx zcodeChildIndex
+		idx.rememberChild("spawn-1", "", "child-1")
+		idx.rememberSession("spawn-1", "sess-1")
+		idx.rememberTask("spawn-1", "task-1")
+		idx.rememberAgent("spawn-1", "agent-1")
+
+		idx.takeChild("spawn-1")
+		span, active, ended := idx.lookupExistingSpawn("sess-1", "")
+		assert.Equal(t, "spawn-1", span)
+		assert.False(t, active)
+		assert.True(t, ended)
+		span, active, ended = idx.lookupExistingSpawn("", "task-1")
+		assert.Equal(t, "spawn-1", span)
+		assert.False(t, active)
+		assert.True(t, ended)
+		span, active, ended = idx.lookupExistingSpawn("", "agent-1")
+		assert.Equal(t, "spawn-1", span)
+		assert.False(t, active)
+		assert.True(t, ended)
+
+		_, revived := idx.completeSendMessage("sm-1", true, []string{"agent-1"})
+		require.True(t, revived)
+		assert.Empty(t, idx.endedBySession)
+		assert.Empty(t, idx.endedByTask)
+		assert.Empty(t, idx.endedByAgent)
+
+		idx.takeChild("spawn-1")
+		require.NotEmpty(t, idx.endedBySession)
+		idx.clear()
+		assert.Empty(t, idx.endedBySession)
+		assert.Empty(t, idx.endedByTask)
+		assert.Empty(t, idx.endedByAgent)
+	})
 }

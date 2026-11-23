@@ -433,3 +433,57 @@ func TestBindChildResultMatchesUniqueNamedChildAndDoesNotCrashWhenUnmatched(t *t
 	missingRaw := []byte(`{"turn":1,"message":{"toolCallId":"spawn-missing","role":"tool","content":[{"type":"text","text":"started subagent nonexistent"}],"isError":false}}`)
 	require.NoError(t, a.bindChildResult(a.streams["root"], "spawn-missing", missingRaw), "unmatched child result must warn instead of crashing the stream")
 }
+
+type selectiveCloseFailSink struct {
+	*agenttest.Sink
+	failKey string
+	cause   error
+}
+
+func (s *selectiveCloseFailSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	if rowKey == s.failKey && s.cause != nil {
+		return s.cause
+	}
+	return s.Sink.CloseBackgroundTask(rowKey, status)
+}
+
+func TestWorkflowEndClosesAllChildrenAndWorkflowRowBeforeDeletingRun(t *testing.T) {
+	t.Parallel()
+	base := &agenttest.Sink{}
+	cause := errors.New("close child-a refused")
+	sink := &selectiveCloseFailSink{Sink: base, failKey: "child-a", cause: cause}
+	a := newOfflineAgent(t, base)
+	a.sink = agent.NewProviderServices(sink)
+	root := a.streams["root"]
+	a.children["child-a"] = &nativeChild{agentID: "stored-a", active: true}
+	a.children["child-b"] = &nativeChild{agentID: "stored-b", active: true}
+	require.NoError(t, base.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleChildTask, RowKey: "child-a", Kind: bgtask.KindSubagent, ChildAgentID: "stored-a", Status: bgtask.StatusRunning}))
+	require.NoError(t, base.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleChildTask, RowKey: "child-b", Kind: bgtask.KindSubagent, ChildAgentID: "stored-b", Status: bgtask.StatusRunning}))
+
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowStart, []byte(`{"runId":"wf-err","name":"Audit"}`)))
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowAgentStart, []byte(`{"runId":"wf-err","childId":"child-a","seq":1,"label":"Step 1"}`)))
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowAgentStart, []byte(`{"runId":"wf-err","childId":"child-b","seq":2,"label":"Step 2"}`)))
+
+	endPayload := []byte(`{"runId":"wf-err","stopReason":"failed"}`)
+	require.ErrorIs(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowEnd, endPayload), cause)
+
+	// One child's failed close must not strand sibling children or the workflow row.
+	rowB, ok := base.BackgroundTask("child-b")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, rowB.Status)
+	wfRow, ok := base.BackgroundTask("deepseek-workflow:wf-err")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, wfRow.Status)
+
+	// The failed workflow must stay tracked so a retry closes the remaining child cleanly.
+	sink.cause = nil
+	require.NoError(t, a.workflowEvent(root, contracts.DeepseekHarnessEventWorkflowEnd, endPayload))
+	rowA, ok := base.BackgroundTask("child-a")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, rowA.Status)
+	assert.False(t, a.ActiveChildTurnState("child-a").Active)
+	a.Mu.Lock()
+	_, stillTracked := a.workflows["wf-err"]
+	a.Mu.Unlock()
+	assert.False(t, stillTracked)
+}

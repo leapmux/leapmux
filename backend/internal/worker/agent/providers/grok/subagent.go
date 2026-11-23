@@ -117,6 +117,9 @@ type childState struct {
 	// row reports StatusInterrupted and the divider reads "Subagent
 	// interrupted"; a model-side cancel keeps the plain stop word.
 	interrupted map[string]bool
+	// runSeq counts runs per subagent ID so woken runs write distinct report IDs
+	// instead of colliding with earlier runs.
+	runSeq map[string]int
 }
 
 // linkedSubagent is the registry row and the child session of one subagent.
@@ -190,6 +193,32 @@ func (c *childState) rememberFinishedRowKeyLocked(subagentID, rowKey string) {
 	c.finishedRowKeys[subagentID] = rowKey
 }
 
+// bumpRunSeqLocked advances a subagent's run counter when a woken run revives
+// its row. Caller must hold stateMu.
+func (c *childState) bumpRunSeqLocked(subagentID string) {
+	if subagentID == "" {
+		return
+	}
+	if c.runSeq == nil {
+		c.runSeq = make(map[string]int)
+	}
+	if c.runSeq[subagentID] < 1 {
+		c.runSeq[subagentID] = 2
+		return
+	}
+	c.runSeq[subagentID]++
+}
+
+// reportIDLocked returns the per-run report ID for one subagent.
+// Job 1 uses the bare subagent ID; woken runs append "#<run>".
+// Caller must hold stateMu.
+func (c *childState) reportIDLocked(subagentID string) string {
+	if run := c.runSeq[subagentID]; run >= 2 {
+		return fmt.Sprintf("%s#%d", subagentID, run)
+	}
+	return subagentID
+}
+
 // grokToolMeta is the part of a tool call's `_meta["x.ai/tool"]` that LeapMux reads.
 type grokToolMeta struct {
 	Name string `json:"name"`
@@ -230,6 +259,24 @@ func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObser
 	_ = json.Unmarshal(tc.RawInput, &input)
 	desc := strings.TrimSpace(input.Description)
 	subagentType := strings.TrimSpace(input.SubagentType)
+	title := desc
+	if title == "" {
+		title = subagentType
+	}
+	if title == "" {
+		title = "Grok subagent"
+	}
+	if acp.StatusIsFinal(tc.Status) {
+		return &acp.SubagentObservation{
+			RowKey:        tc.ToolCallID,
+			ChildAgentKey: tc.ToolCallID,
+			Title:         title,
+			Prompt:        input.Prompt,
+			Status:        acp.FinalStatus(tc.Status),
+			CloseRow:      true,
+			Spawns:        true,
+		}
+	}
 	a.stateMu.Lock()
 	if a.children.spawnTools == nil {
 		a.children.spawnTools = make(map[string]bool)
@@ -241,13 +288,6 @@ func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObser
 		subagentType: subagentType,
 	})
 	a.stateMu.Unlock()
-	title := desc
-	if title == "" {
-		title = subagentType
-	}
-	if title == "" {
-		title = "Grok subagent"
-	}
 	return &acp.SubagentObservation{
 		RowKey:        tc.ToolCallID,
 		ChildAgentKey: tc.ToolCallID,
@@ -297,13 +337,14 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 					a.children.settledBeforeSpawn = make(map[string]bool)
 				}
 				a.children.settledBeforeSpawn[subagentID] = true
+				reportID := a.children.reportIDLocked(subagentID)
 				a.stateMu.Unlock()
 				return &acp.SubagentObservation{
 					RowKey:   tcu.ToolCallID,
 					Status:   early.status,
 					CloseRow: true,
 					Mode:     acp.ModeCloseOnly,
-					ReportID: subagentID,
+					ReportID: reportID,
 					Report:   agent.SubagentReport{Text: early.report},
 				}
 			}
@@ -317,12 +358,15 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 	}
 	a.stateMu.Lock()
 	a.dropPendingLocked(tcu.ToolCallID)
+	reportID := ""
+	if output.SubagentID != "" {
+		reportID = a.children.reportIDLocked(output.SubagentID)
+	}
 	a.stateMu.Unlock()
 	report := output.Output
 	if report == "" && tcu.Status == "completed" {
 		report = acp.ToolCallText(tcu.Content)
 	}
-	reportID := output.SubagentID
 	if reportID == "" {
 		reportID = tcu.ToolCallID
 	}
@@ -370,7 +414,7 @@ func (a *Agent) takePendingSpawnLocked(rawDesc, subagentType string) (string, bo
 	}
 	if subagentType != "" {
 		for i, spawn := range a.children.pending {
-			if spawn.description == "" && spawn.subagentType == subagentType {
+			if (spawn.description == "" && spawn.subagentType == subagentType) || spawn.description == subagentType {
 				a.children.pending = append(a.children.pending[:i], a.children.pending[i+1:]...)
 				return spawn.toolCallID, true
 			}
@@ -423,6 +467,7 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 	} else if prevRowKey, wasFinished := a.children.finishedRowKeys[spawned.SubagentID]; wasFinished {
 		delete(a.children.finishedRowKeys, spawned.SubagentID)
 		rowKey, linked, revive = prevRowKey, true, true
+		a.children.bumpRunSeqLocked(spawned.SubagentID)
 	} else if spawned.WorkflowRunID == "" {
 		rowKey, linked = a.takePendingSpawnLocked(rawDesc, subagentType)
 	}
@@ -430,29 +475,34 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 		rowKey = spawned.SubagentID
 	}
 	groupLabel := a.children.workflows[spawned.WorkflowRunID]
+	openRow := func(reviveRow bool) {
+		obs := &acp.SubagentObservation{
+			RowKey:        rowKey,
+			ChildAgentKey: rowKey,
+			Title:         title,
+			Status:        bgtask.StatusRunning,
+			ReviveRow:     reviveRow,
+		}
+		if spawned.WorkflowRunID != "" {
+			obs.GroupKey = spawned.WorkflowRunID
+			obs.GroupLabel = groupLabel
+		}
+		a.ApplySubagentObservation(obs)
+	}
 	if early, hasEarly := a.children.earlyFinished[spawned.SubagentID]; hasEarly {
 		delete(a.children.earlyFinished, spawned.SubagentID)
 		a.children.rememberFinishedRowKeyLocked(spawned.SubagentID, rowKey)
+		reportID := a.children.reportIDLocked(spawned.SubagentID)
 		a.stateMu.Unlock()
-		if !linked {
-			obs := &acp.SubagentObservation{
-				RowKey:        rowKey,
-				ChildAgentKey: rowKey,
-				Title:         title,
-				Status:        bgtask.StatusRunning,
-			}
-			if spawned.WorkflowRunID != "" {
-				obs.GroupKey = spawned.WorkflowRunID
-				obs.GroupLabel = groupLabel
-			}
-			a.ApplySubagentObservation(obs)
+		if !linked || revive {
+			openRow(revive)
 		}
 		a.ApplySubagentObservation(&acp.SubagentObservation{
 			RowKey:   rowKey,
 			Status:   early.status,
 			CloseRow: true,
 			Mode:     acp.ModeCloseOnly,
-			ReportID: spawned.SubagentID,
+			ReportID: reportID,
 			Report:   agent.SubagentReport{Text: early.report},
 		})
 		return
@@ -463,23 +513,15 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 	if !revive && !linked && a.Sink() != nil {
 		if _, existingStatus, found, err := a.Sink().LookupBackgroundTask(rowKey); err == nil && found && existingStatus.IsFinished() {
 			revive = true
+			a.stateMu.Lock()
+			a.children.bumpRunSeqLocked(spawned.SubagentID)
+			a.stateMu.Unlock()
 		}
 	}
 	if !linked || revive {
 		// A child with no spawn tool call opens its own row and transcript, and
 		// a woken child revives its finished row before streaming Job 2.
-		obs := &acp.SubagentObservation{
-			RowKey:        rowKey,
-			ChildAgentKey: rowKey,
-			Title:         title,
-			Status:        bgtask.StatusRunning,
-			ReviveRow:     revive,
-		}
-		if spawned.WorkflowRunID != "" {
-			obs.GroupKey = spawned.WorkflowRunID
-			obs.GroupLabel = groupLabel
-		}
-		a.ApplySubagentObservation(obs)
+		openRow(revive)
 	}
 	a.AttachChildSession(acp.ChildSessionTarget{RootSessionID: rootSessionID, SessionID: childSession, RowKey: rowKey})
 }
@@ -550,6 +592,7 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 	if known {
 		a.children.rememberFinishedRowKeyLocked(finished.SubagentID, rowKey)
 	}
+	reportID := a.children.reportIDLocked(finished.SubagentID)
 	a.stateMu.Unlock()
 
 	// A cancel WE asked for is a user interrupt, not a plain stop: the row
@@ -587,7 +630,7 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 		Status:   status,
 		CloseRow: true,
 		Mode:     acp.ModeCloseOnly,
-		ReportID: finished.SubagentID,
+		ReportID: reportID,
 		Report:   agent.SubagentReport{Text: report},
 	})
 }

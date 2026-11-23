@@ -37,11 +37,15 @@ type sessionStream struct {
 	contextWindow int64
 	// resumed is true for child streams opened from a root snapshot's subagentCatalog.
 	resumed bool
-	// Snapshot replay state (only the Remote reader accesses these under dispatchMu).
-	replaying            bool
-	replaySawTurnStart   bool
-	replayTurnOpen       bool
-	replayLastCompletion agent.MessageCompletion
+	// replay holds transient snapshot replay state while replayChildSnapshot runs.
+	// Non-nil only during replay; only the Remote reader accesses it under dispatchMu.
+	replay *childSnapshotReplay
+}
+
+type childSnapshotReplay struct {
+	sawTurnStart   bool
+	turnOpen       bool
+	lastCompletion agent.MessageCompletion
 }
 
 type sessionAddress struct {
@@ -483,11 +487,9 @@ func (a *Agent) replayChildSnapshot(stream *sessionStream, projections map[strin
 	if err != nil {
 		return err
 	}
-	stream.replaying = true
-	stream.replaySawTurnStart = false
-	stream.replayTurnOpen = false
-	stream.replayLastCompletion = ""
-	defer func() { stream.replaying = false }()
+	replay := &childSnapshotReplay{}
+	stream.replay = replay
+	defer func() { stream.replay = nil }()
 	for _, record := range records {
 		var event sessionEvent
 		if err := json.Unmarshal(record.Event, &event); err != nil || event.Seq == nil {
@@ -500,11 +502,11 @@ func (a *Agent) replayChildSnapshot(stream *sessionStream, projections map[strin
 			return err
 		}
 	}
-	stream.replaying = false
+	stream.replay = nil
 	switch {
-	case stream.replaySawTurnStart && !stream.replayTurnOpen:
-		return a.childTurnState(stream.sessionID, false, stream.replayLastCompletion)
-	case stream.replayTurnOpen:
+	case replay.sawTurnStart && !replay.turnOpen:
+		return a.childTurnState(stream.sessionID, false, replay.lastCompletion)
+	case replay.turnOpen:
 		if stream.resumed {
 			return a.childTurnState(stream.sessionID, false, agent.MessageCompletionFinished)
 		}

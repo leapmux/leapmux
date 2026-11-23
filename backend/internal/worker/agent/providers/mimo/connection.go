@@ -2,6 +2,7 @@ package mimo
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -231,7 +232,7 @@ func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
 						Status:      contracts.MiMoActorStatusIdle,
 						LastOutcome: snap.LastOutcome,
 						TurnCount:   snap.TurnCount,
-						Error:       snap.errorText(),
+						Error:       cmp.Or(snap.Error, snap.LastError),
 					})
 				} else {
 					a.endActorTurnWithOutcome(mimoActorStatus{

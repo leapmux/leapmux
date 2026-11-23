@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -496,4 +497,155 @@ func TestCodex_ThreadClosedUnknownTurnStatusAndThreadStatusChanged(t *testing.T)
 		row, _ = sink.BackgroundTask("child-nl")
 		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
 	})
+
+	t.Run("idle closes running child even when turnID is still set after missed turn/completed", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"t1","item":{"type":"subAgentActivity","id":"s-missed","agentThreadId":"child-missed","agentPath":"/root/missed","kind":"started"}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-missed","turn":{"id":"ct-missed"}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"child-missed","status":{"type":"active"}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"child-missed","status":{"type":"idle"}}}`)))
+
+		row, ok := sink.BackgroundTask("child-missed")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+	})
+
+	t.Run("resumed child closes on notLoaded and active-to-idle via durable registry fallback", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		services := agent.NewProviderServices(sink)
+		for _, threadID := range []string{"resumed-nl", "resumed-idle"} {
+			childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask, SpawnSpanID: "spawn-" + threadID, ProviderChildKey: threadID, Title: threadID,
+			})
+			require.NoError(t, err)
+			require.NoError(t, services.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: threadID, Kind: bgtask.KindSubagent, ChildAgentID: childID, Title: threadID, Status: bgtask.StatusRunning,
+			}))
+		}
+
+		// Fresh Agent instance simulates a worker restart with empty collabChildren.
+		a := newCodexAgentWithSink(services)
+
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"resumed-nl","status":{"type":"notLoaded"}}}`)))
+		row, ok := sink.BackgroundTask("resumed-nl")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"resumed-idle","status":{"type":"active"}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"resumed-idle","status":{"type":"idle"}}}`)))
+		row, ok = sink.BackgroundTask("resumed-idle")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+	})
+}
+
+// rootDefaultingParentSink mimics production agentOutputSink.UpsertBackgroundTask,
+// which fills an empty ParentAgentID with the root agent ID.
+type rootDefaultingParentSink struct {
+	agent.ProviderServices
+	rootAgentID string
+}
+
+func (s *rootDefaultingParentSink) UpsertBackgroundTask(task bgtask.Upsert) error {
+	if task.ParentAgentID == "" {
+		task.ParentAgentID = s.rootAgentID
+	}
+	return s.ProviderServices.UpsertBackgroundTask(task)
+}
+
+func TestCodex_ResumedGrandchildPreservesOriginalParentAgentID(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	rootServices := agent.NewProviderServices(sink)
+	childID, err := rootServices.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask, SpawnSpanID: "spawn-child", ProviderChildKey: "child-thread", Title: "Child",
+	})
+	require.NoError(t, err)
+	require.NoError(t, rootServices.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "child-thread", Kind: bgtask.KindSubagent, ChildAgentID: childID, ParentAgentID: "test-agent", Title: "Child", Status: bgtask.StatusRunning,
+	}))
+	childServices := rootServices.ChildSink(childID)
+	grandchildID, err := childServices.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask, SpawnSpanID: "spawn-grandchild", ProviderChildKey: "grandchild-thread", Title: "Grandchild",
+	})
+	require.NoError(t, err)
+	require.NoError(t, childServices.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "grandchild-thread", Kind: bgtask.KindSubagent, ChildAgentID: grandchildID, ParentAgentID: childID, Title: "Grandchild", Status: bgtask.StatusSucceeded,
+	}))
+
+	wrapped := &rootDefaultingParentSink{ProviderServices: rootServices, rootAgentID: "test-agent"}
+	a := newCodexAgentWithSink(wrapped)
+
+	// Resumed grandchild starts a new turn after restart (empty collabChildren).
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"grandchild-thread","turn":{"id":"gc-turn-2"}}}`)))
+
+	route, ok := a.lookupCodexChildRoute("grandchild-thread")
+	require.True(t, ok)
+	assert.Empty(t, route.parentAgentID, "an unknown pre-restart parent must not be stamped as root")
+
+	row, ok := sink.BackgroundTask("grandchild-thread")
+	require.True(t, ok)
+	assert.Equal(t, childID, row.ParentAgentID, "resumed grandchild must keep its original parent_agent_id")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+}
+
+func TestCodex_FailedCollabCompletedAndAnonymousWakeDoNotRevive(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"t1","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"inProgress","receiverThreadIds":["child-1"],"prompt":"work","agentsStates":{}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"ct-1"}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"ct-1","status":"completed"}}}`)))
+	row, ok := sink.BackgroundTask("child-1")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Failed/cancelled item/completed for sendInput and resumeAgent must not revive.
+	for _, status := range []string{"failed", "errored", "cancelled", "canceled"} {
+		for _, tool := range []string{"sendInput", "resumeAgent"} {
+			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"t2","item":{"type":"collabAgentToolCall","id":"fail-`+tool+`-`+status+`","tool":"`+tool+`","status":"`+status+`","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"running"}}}}}`)))
+			row, _ = sink.BackgroundTask("child-1")
+			assert.Equal(t, bgtask.StatusSucceeded, row.Status, "failed %s (%s) must not revive finished child", tool, status)
+		}
+	}
+	assert.Empty(t, sink.RevivedTasks())
+
+	// Anonymous (empty item ID) item/started followed by child completion and then
+	// anonymous item/completed must not spuriously revive the finished child.
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"t3","item":{"type":"collabAgentToolCall","tool":"sendInput","status":"inProgress","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"running"}}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"ct-2"}}}`)))
+	row, _ = sink.BackgroundTask("child-1")
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"ct-2","status":"completed"}}}`)))
+	row, _ = sink.BackgroundTask("child-1")
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	revivesBefore := len(sink.RevivedTasks())
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"t3","item":{"type":"collabAgentToolCall","tool":"sendInput","status":"completed","receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"running"}}}}}`)))
+	row, _ = sink.BackgroundTask("child-1")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "stale empty-ID item/completed must not revive finished child")
+	assert.Len(t, sink.RevivedTasks(), revivesBefore)
+}
+
+func TestCodex_SeenActivitiesIsCapped(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"t1","item":{"type":"subAgentActivity","id":"spawn-1","agentThreadId":"child-1","agentPath":"/root/a","kind":"started"}}}`)))
+	for i := range 300 {
+		line := fmt.Sprintf(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"t1","item":{"type":"subAgentActivity","id":"int-%d","agentThreadId":"child-1","agentPath":"/root/a","kind":"interacted"}}}`, i)
+		handleCodexOutput(a, providerkit.ParseLine([]byte(line)))
+	}
+
+	a.Mu.Lock()
+	state := a.collabChildren["child-1"]
+	count := len(state.seenActivities)
+	a.Mu.Unlock()
+	assert.LessOrEqual(t, count, 256, "seenActivities must cap its retained keys")
 }

@@ -179,6 +179,18 @@ func (c *codewhaleChildren) observation(child *codewhaleChild) (bgtask.Status, u
 	return status, sequence, true
 }
 
+// deliverObservationLocked records status unless a final status already exists,
+// and nudges the child's watcher without blocking. The caller holds children.mu.
+func deliverObservationLocked(child *codewhaleChild, status bgtask.Status) {
+	if !child.observedStatus.IsFinished() {
+		child.observedStatus = status
+	}
+	select {
+	case child.nudge <- struct{}{}:
+	default:
+	}
+}
+
 // observe delivers native state to the watcher that owns this exact child.
 // It reports whether it woke a paused child to a non-finished status, so the
 // caller can restart the run poller outside children.mu.
@@ -195,13 +207,7 @@ func (c *codewhaleChildren) observe(child *codewhaleChild, status bgtask.Status)
 		wokeFromPause = !status.IsFinished() && !child.observedStatus.IsFinished()
 	}
 	child.observationSequence++
-	if !child.observedStatus.IsFinished() {
-		child.observedStatus = status
-	}
-	select {
-	case child.nudge <- struct{}{}:
-	default:
-	}
+	deliverObservationLocked(child, status)
 	c.mu.Unlock()
 	return wokeFromPause
 }
@@ -336,7 +342,7 @@ func (a *Agent) observeAgentToolResult(env codewhaleEnvelope, payload itemEventP
 				settledTarget = true
 			}
 		}
-		if targetID != "" && !settledTarget {
+		if env.Event == contracts.CodewhaleEventItemCompleted && targetID != "" && !settledTarget {
 			a.wakeChild(targetID)
 		}
 	}
@@ -353,11 +359,7 @@ func (a *Agent) settleChild(agentID string, status bgtask.Status) {
 
 // wakeChild resumes a paused child and restarts the shared run poller outside children.mu.
 func (a *Agent) wakeChild(agentID string) {
-	if child := a.children.lookup(agentID); child != nil {
-		if a.children.observe(child, bgtask.StatusRunning) {
-			a.startChildRunPoller()
-		}
-	}
+	a.settleChild(agentID, bgtask.StatusRunning)
 }
 
 // subagentTitle selects the first available child label in this order:
@@ -636,22 +638,10 @@ func (a *Agent) pollChildRuns(ctx context.Context) {
 					if child.paused {
 						if status != 0 && status != bgtask.StatusPaused {
 							child.paused = false
-							if !child.observedStatus.IsFinished() {
-								child.observedStatus = status
-							}
-							select {
-							case child.nudge <- struct{}{}:
-							default:
-							}
+							deliverObservationLocked(child, status)
 						}
 					} else {
-						if !child.observedStatus.IsFinished() {
-							child.observedStatus = status
-						}
-						select {
-						case child.nudge <- struct{}{}:
-						default:
-						}
+						deliverObservationLocked(child, status)
 					}
 				}
 				children.mu.Unlock()
@@ -719,7 +709,8 @@ func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
 }
 
 // finishChild retains child output, the parent report, registry close, and cleanup in order.
-// A closed registry row therefore always has its available report persisted.
+// When report capture or admission fails, finishChild logs a warning and still closes the row
+// so the child does not remain in StatusRunning.
 func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, status bgtask.Status, summary string) {
 	closeChildTools(sink, child, providerkit.ChildCompletion(status), a.IsDiscardingOutput())
 	providerkit.ResetSpansAndProgress(sink)
@@ -1128,6 +1119,14 @@ func (a *Agent) observeWorkflowToolResult(env codewhaleEnvelope, payload itemEve
 		status = bgtask.StatusEndedWithUnknownOutcome
 	}
 	relJournal := confineWorkflowJournalPath(a.workingDir, metadata.JournalPath)
+	providerkit.LogRegistryRefusal(codewhaleProviderName, "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     metadata.RunID,
+		Kind:       bgtask.KindWorkflow,
+		GroupKey:   metadata.RunID,
+		GroupLabel: title,
+		Title:      title,
+		Status:     status,
+	}))
 	startPoller := false
 	a.Mu.Lock()
 	if status.IsFinished() {
@@ -1148,14 +1147,6 @@ func (a *Agent) observeWorkflowToolResult(env codewhaleEnvelope, payload itemEve
 		}
 	}
 	a.Mu.Unlock()
-	providerkit.LogRegistryRefusal(codewhaleProviderName, "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey:     metadata.RunID,
-		Kind:       bgtask.KindWorkflow,
-		GroupKey:   metadata.RunID,
-		GroupLabel: title,
-		Title:      title,
-		Status:     status,
-	}))
 	if startPoller && (a.children == nil || !a.children.run(a.pollWorkflowJournal)) {
 		a.Mu.Lock()
 		a.workflows.polling = false
@@ -1175,9 +1166,27 @@ func (a *Agent) finishWorkflow(runID string, status bgtask.Status) {
 	providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(runID, status))
 }
 
+// workflowJournalCursor holds incremental read state for one workspace-confined workflow journal.
+type workflowJournalCursor struct {
+	info     os.FileInfo
+	size     int64
+	modTime  time.Time
+	offset   int64
+	statuses map[string]bgtask.Status
+}
+
 // pollWorkflowJournal polls confined workspace workflow journals until no
 // tracked journaled workflow remains or ctx ends.
 func (a *Agent) pollWorkflowJournal(ctx context.Context) {
+	stopped := false
+	defer func() {
+		if !stopped {
+			a.Mu.Lock()
+			a.workflows.polling = false
+			a.Mu.Unlock()
+		}
+	}()
+	cursors := make(map[string]*workflowJournalCursor)
 	for {
 		a.Mu.Lock()
 		byJournal := make(map[string][]string)
@@ -1188,90 +1197,157 @@ func (a *Agent) pollWorkflowJournal(ctx context.Context) {
 		}
 		if len(byJournal) == 0 {
 			a.workflows.polling = false
+			stopped = true
 			a.Mu.Unlock()
 			return
 		}
 		a.Mu.Unlock()
 
+		for relJournal := range cursors {
+			if _, ok := byJournal[relJournal]; !ok {
+				delete(cursors, relJournal)
+			}
+		}
+
 		timer := a.clock.NewTimer(workflowPollInterval, workflowPollTimerTag)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			a.Mu.Lock()
-			a.workflows.polling = false
-			a.Mu.Unlock()
 			return
 		case <-timer.C:
 		}
-		for relJournal, runIDs := range byJournal {
-			if ctx.Err() != nil {
-				a.Mu.Lock()
-				a.workflows.polling = false
-				a.Mu.Unlock()
-				return
+		if ctx.Err() != nil {
+			return
+		}
+		a.pollWorkflowJournalCycle(ctx, byJournal, cursors)
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+// pollWorkflowJournalCycle opens the workspace root once and updates each tracked journal cursor.
+func (a *Agent) pollWorkflowJournalCycle(ctx context.Context, byJournal map[string][]string, cursors map[string]*workflowJournalCursor) {
+	root, err := os.OpenRoot(a.workingDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Debug("codewhale open workflow journal root", "agent_id", a.AgentID(), "error", err)
+		}
+		return
+	}
+	defer func() { _ = root.Close() }()
+
+	for relJournal, runIDs := range byJournal {
+		if ctx.Err() != nil {
+			return
+		}
+		cursor := cursors[relJournal]
+		if cursor == nil {
+			cursor = &workflowJournalCursor{}
+			cursors[relJournal] = cursor
+		}
+		statuses, _, err := cursor.read(root, relJournal)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				slog.Debug("codewhale read workflow journal", "agent_id", a.AgentID(), "path", relJournal, "error", err)
 			}
-			statuses, err := readWorkflowJournalStatuses(a.workingDir, relJournal)
-			if err != nil {
-				if !errors.Is(err, os.ErrNotExist) {
-					slog.Debug("codewhale read workflow journal", "agent_id", a.AgentID(), "path", relJournal, "error", err)
-				}
-				continue
-			}
-			for _, runID := range runIDs {
-				if status, ok := statuses[runID]; ok && status.IsFinished() {
-					a.finishWorkflow(runID, status)
-				}
+			continue
+		}
+		for _, runID := range runIDs {
+			if status, ok := statuses[runID]; ok && status.IsFinished() {
+				a.finishWorkflow(runID, status)
 			}
 		}
 	}
 }
 
-// readWorkflowJournalStatuses reads a workspace-confined JSONL workflow journal
-// via os.OpenRoot and returns the latest status observed for each run_id.
-func readWorkflowJournalStatuses(workingDir, relPath string) (map[string]bgtask.Status, error) {
-	root, err := os.OpenRoot(workingDir)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
+// read reads only newly appended lines from relPath under root, skipping unchanged files
+// and resetting to offset 0 when the file is truncated or replaced.
+// It reports whether it opened and read the file.
+func (c *workflowJournalCursor) read(root *os.Root, relPath string) (map[string]bgtask.Status, bool, error) {
 	info, err := root.Lstat(relPath)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("the Codewhale workflow journal is not a regular file")
+		return nil, false, fmt.Errorf("the Codewhale workflow journal is not a regular file")
+	}
+	if c.info != nil && os.SameFile(c.info, info) && info.Size() == c.size && info.ModTime().Equal(c.modTime) {
+		return c.statuses, false, nil
 	}
 	file, err := root.Open(relPath)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = file.Close() }()
 	opened, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !os.SameFile(info, opened) {
-		return nil, fmt.Errorf("the Codewhale workflow journal changed while opening it")
+		return nil, false, fmt.Errorf("the Codewhale workflow journal changed while opening it")
 	}
+	reset := c.info == nil || !os.SameFile(c.info, opened) || opened.Size() < c.offset || (opened.Size() == c.offset && !opened.ModTime().Equal(c.modTime))
+	if reset {
+		c.offset = 0
+		c.statuses = make(map[string]bgtask.Status)
+	} else if c.statuses == nil {
+		c.statuses = make(map[string]bgtask.Status)
+	}
+	startOffset := c.offset
 	truncatedHead := false
-	if opened.Size() > workflowJournalLimit {
-		if _, err := file.Seek(opened.Size()-workflowJournalLimit, io.SeekStart); err != nil {
-			return nil, err
-		}
+	if opened.Size()-startOffset > workflowJournalLimit {
+		startOffset = opened.Size() - workflowJournalLimit
 		truncatedHead = true
+	}
+	if startOffset > 0 {
+		if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
+			return nil, false, err
+		}
 	}
 	data, err := io.ReadAll(io.LimitReader(file, workflowJournalLimit))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	parseOffset := startOffset
 	if truncatedHead {
 		idx := bytes.IndexByte(data, '\n')
 		if idx < 0 {
-			return map[string]bgtask.Status{}, nil
+			c.info = opened
+			c.size = opened.Size()
+			c.modTime = opened.ModTime()
+			c.offset = startOffset + int64(len(data))
+			return c.statuses, true, nil
 		}
 		data = data[idx+1:]
+		parseOffset += int64(idx + 1)
 	}
-	statuses := make(map[string]bgtask.Status)
+	nextOffset := parseOffset
+	if lastNL := bytes.LastIndexByte(data, '\n'); lastNL >= 0 {
+		parseWorkflowJournalLines(data[:lastNL], c.statuses)
+		nextOffset = parseOffset + int64(lastNL+1)
+		tail := bytes.TrimSpace(data[lastNL+1:])
+		if len(tail) == 0 {
+			nextOffset = parseOffset + int64(len(data))
+		} else {
+			parseWorkflowJournalLines(tail, c.statuses)
+		}
+	} else {
+		tail := bytes.TrimSpace(data)
+		if len(tail) == 0 {
+			nextOffset = parseOffset + int64(len(data))
+		} else {
+			parseWorkflowJournalLines(tail, c.statuses)
+		}
+	}
+	c.info = opened
+	c.size = opened.Size()
+	c.modTime = opened.ModTime()
+	c.offset = nextOffset
+	return c.statuses, true, nil
+}
+
+func parseWorkflowJournalLines(data []byte, statuses map[string]bgtask.Status) {
 	for _, rawLine := range bytes.Split(data, []byte{'\n'}) {
 		line := bytes.TrimSpace(rawLine)
 		if len(line) == 0 {
@@ -1283,7 +1359,19 @@ func readWorkflowJournalStatuses(workingDir, relPath string) (map[string]bgtask.
 		}
 		statuses[entry.Run.RunID] = workflowRunStatus(entry.Run.Status)
 	}
-	return statuses, nil
+}
+
+// readWorkflowJournalStatuses reads a workspace-confined JSONL workflow journal
+// via os.OpenRoot and returns the latest status observed for each run_id.
+func readWorkflowJournalStatuses(workingDir, relPath string) (map[string]bgtask.Status, error) {
+	root, err := os.OpenRoot(workingDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	var cursor workflowJournalCursor
+	statuses, _, err := cursor.read(root, relPath)
+	return statuses, err
 }
 
 // closeOpenWorkflows closes every active workflow row at process exit.

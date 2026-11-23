@@ -104,8 +104,11 @@ func (a *Agent) finishOpenChildren(err error, stopped bool) acp.PromptEnding {
 		tail.stop()
 		tail.poll()
 	}
-	status := bgtask.StatusStopped
-	if err != nil && !stopped {
+	status := bgtask.StatusEndedWithUnknownOutcome
+	switch {
+	case stopped:
+		status = bgtask.StatusStopped
+	case err != nil:
 		status = bgtask.StatusFailed
 	}
 	childIDs := make([]string, 0, len(open)+len(tails))

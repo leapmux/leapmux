@@ -1,14 +1,14 @@
 package codex
 
 import (
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
-
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // This file routes Codex child events and replays events that arrived before a route.
@@ -93,6 +93,15 @@ func (a *Agent) registerCollabReceiver(threadID, spawnCorrelationID, parentThrea
 	return changed
 }
 
+func codexCollabCallFailed(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "errored", "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Agent) registerCollabReceivers(
 	collab *codexCollabAgentToolCall,
 	spawnCorrelationID, parentThreadID string,
@@ -101,17 +110,42 @@ func (a *Agent) registerCollabReceivers(
 	if collab == nil {
 		return
 	}
+	failed := fromCompleted && codexCollabCallFailed(collab.Status)
 	for _, receiverID := range collab.ReceiverThreadIds {
 		switch collab.Tool {
 		case codexCollabToolSpawnAgent:
+			if failed {
+				continue
+			}
 			a.recordCollabChildPromptTitle(receiverID, collab.Prompt)
 			a.rememberCollabChildPrompt(receiverID, collab.Prompt)
 			a.registerCollabReceiver(receiverID, spawnCorrelationID, parentThreadID, fromCompleted)
 		case codexCollabToolSendInput, codexCollabToolResumeAgent:
 			// Only sendInput and resumeAgent start new work on an existing child.
 			// wait and closeAgent carry snapshots only and must never revive a finished child.
+			if failed {
+				a.consumeStartedCollabWake(receiverID, spawnCorrelationID)
+				continue
+			}
 			a.activateCollabChildForWake(receiverID, spawnCorrelationID, fromCompleted)
 		}
+	}
+}
+
+func (a *Agent) consumeStartedCollabWake(threadID, itemID string) {
+	if threadID == "" {
+		return
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	state := a.collabChildren[threadID]
+	if state == nil {
+		return
+	}
+	if itemID != "" {
+		delete(state.startedWakeItems, itemID)
+	} else if state.startedAnonWakes > 0 {
+		state.startedAnonWakes--
 	}
 }
 
@@ -131,12 +165,20 @@ func (a *Agent) activateCollabChildForWake(threadID, itemID string, fromComplete
 				state.startedWakeItems = make(map[string]struct{})
 			}
 			state.startedWakeItems[itemID] = struct{}{}
+		} else {
+			state.startedAnonWakes++
 		}
 		a.activateCodexChildStateLocked(state)
 		return
 	}
-	_, seenStart := state.startedWakeItems[itemID]
-	delete(state.startedWakeItems, itemID)
+	var seenStart bool
+	if itemID != "" {
+		_, seenStart = state.startedWakeItems[itemID]
+		delete(state.startedWakeItems, itemID)
+	} else if state.startedAnonWakes > 0 {
+		state.startedAnonWakes--
+		seenStart = true
+	}
 	if seenStart && (state.phase == codexChildInactive || state.phase == codexChildPaused) {
 		return
 	}
@@ -188,16 +230,25 @@ func (a *Agent) lookupCodexChildRoute(threadID string) (codexChildRoute, bool) {
 			state.childAgentID = lookedUpID
 		}
 		childAgentID = state.childAgentID
-		if state.parentThreadID == "" {
-			state.parentThreadID = a.threadID
-		}
 		parentThreadID = state.parentThreadID
 		a.Mu.Unlock()
 	}
 
-	parentSink, parentAgentID, ok := a.codexServicesForThread(parentThreadID)
-	if !ok {
-		return codexChildRoute{}, false
+	var parentSink agent.ProviderServices
+	var parentAgentID string
+	if parentThreadID == "" {
+		if a.sink == nil {
+			return codexChildRoute{}, false
+		}
+		// Leave parentAgentID empty when the pre-restart parent thread is unknown
+		// so a resumed grandchild is not misattributed to the root agent.
+		parentSink = a.sink
+	} else {
+		var ok bool
+		parentSink, parentAgentID, ok = a.codexServicesForThread(parentThreadID)
+		if !ok {
+			return codexChildRoute{}, false
+		}
 	}
 	route := codexChildRoute{
 		agentID:       childAgentID,

@@ -19,6 +19,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallID, title, prompt string) {
+	piApplySubagentEndState(sink, piSubagentEndInput{
+		Result:     result,
+		ToolCallID: toolCallID,
+		RowKey:     toolCallID,
+		Title:      title,
+		Prompt:     prompt,
+	})
+}
+
+func piApplySubagentNotification(sink subagentServices, raw []byte) {
+	piApplySubagentNotificationTracked(sink, raw, nil, nil, nil)
+}
+
 func TestPi_ExtractDescription(t *testing.T) {
 	assert.Equal(t, "build it", piExtractDescription(json.RawMessage(`{"description":"build it","prompt":"long"}`), "tool"))
 	assert.Equal(t, "first line", piExtractDescription(json.RawMessage(`{"prompt":"first line\nsecond"}`), "tool"))
@@ -447,8 +461,8 @@ func TestPi_AgentToolEndWithoutDetailsStatusClosesRow(t *testing.T) {
 		isError bool
 		want    bgtask.Status
 	}{
-		{name: "errored tool closes as failed", isError: true, want: bgtask.StatusFailed},
-		{name: "non-error abort closes as stopped", isError: false, want: bgtask.StatusStopped},
+		{name: "failed tool closes as failed", isError: true, want: bgtask.StatusFailed},
+		{name: "non-error result without details status closes with unknown outcome", isError: false, want: bgtask.StatusEndedWithUnknownOutcome},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -654,4 +668,78 @@ func TestPi_AgentResumeRevivesExistingRowWithoutSecondChild(t *testing.T) {
 	require.Len(t, reports, 2, "Job 2 report must not be deduplicated against Job 1")
 	assert.Equal(t, "First report.", reports[0]["text"])
 	assert.Equal(t, "Second report.", reports[1]["text"])
+}
+
+func TestPi_ResumedBackgroundSubagentPersistsDistinctReportsAcrossGetResultAndNotification(t *testing.T) {
+	t.Parallel()
+
+	t.Run("get_subagent_result persists Job 2 report under a distinct ReportID", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+
+		// Job 1 runs in the background and completes via get_subagent_result.
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-1","toolName":"Agent","args":{"description":"Review","prompt":"Pass 1"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-1","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-bg"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"poll-1","toolName":"get_subagent_result","args":{"agentId":"agent-bg"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"poll-1","toolName":"get_subagent_result","result":{"content":[{"type":"text","text":"Job 1 poll report."}],"details":{"status":"completed"}},"isError":false}`)))
+
+		row, ok := sink.BackgroundTask("agent-bg")
+		require.True(t, ok)
+		childID := row.ChildAgentID
+		require.NotEmpty(t, childID)
+		require.Len(t, sink.Child(childID).LeapMuxNotifications(), 1)
+
+		// Job 2 resumes agent-bg in the background and completes via get_subagent_result.
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-2","toolName":"Agent","args":{"resume":"agent-bg","prompt":"Pass 2"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-2","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-bg"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"poll-2","toolName":"get_subagent_result","args":{"agentId":"agent-bg"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"poll-2","toolName":"get_subagent_result","result":{"content":[{"type":"text","text":"Job 2 poll report."}],"details":{"status":"completed"}},"isError":false}`)))
+
+		reports := sink.Child(childID).LeapMuxNotifications()
+		require.Len(t, reports, 2, "Job 2 get_subagent_result report must use a distinct ReportID")
+		assert.Equal(t, "Job 1 poll report.", reports[0]["text"])
+		assert.Equal(t, "Job 2 poll report.", reports[1]["text"])
+	})
+
+	t.Run("subagent-notification persists Job 2 report under a distinct ReportID", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+
+		// Job 1 runs in the background and completes via subagent-notification.
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-1","toolName":"Agent","args":{"description":"Review","prompt":"Pass 1"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-1","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-notif"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"Done 1","details":{"id":"agent-notif","description":"Review","status":"completed","resultPreview":"Job 1 notif report."}}}`)))
+
+		row, ok := sink.BackgroundTask("agent-notif")
+		require.True(t, ok)
+		childID := row.ChildAgentID
+		require.NotEmpty(t, childID)
+		require.Len(t, sink.Child(childID).LeapMuxNotifications(), 1)
+
+		// Job 2 resumes agent-notif in the background and completes via subagent-notification.
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-2","toolName":"Agent","args":{"resume":"agent-notif","prompt":"Pass 2"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-2","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-notif"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"Done 2","details":{"id":"agent-notif","description":"Review","status":"completed","resultPreview":"Job 2 notif report."}}}`)))
+
+		reports := sink.Child(childID).LeapMuxNotifications()
+		require.Len(t, reports, 2, "Job 2 subagent-notification report must use a distinct ReportID")
+		assert.Equal(t, "Job 1 notif report.", reports[0]["text"])
+		assert.Equal(t, "Job 2 notif report.", reports[1]["text"])
+	})
 }

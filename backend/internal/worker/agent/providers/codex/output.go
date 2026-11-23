@@ -1433,28 +1433,47 @@ func (a *Agent) handleThreadStatusChanged(params json.RawMessage) {
 			completion: agent.MessageCompletionError,
 		})
 	case "notLoaded":
-		a.Mu.Lock()
-		state := a.collabChildren[notif.ThreadID]
-		running := state != nil && state.phase == codexChildRunning
-		a.Mu.Unlock()
-		if running {
+		if a.codexChildRunningForStatus(notif.ThreadID, false) {
 			a.completeCodexChildRun(notif.ThreadID, codexChildTransition{
 				status:     bgtask.StatusEndedWithUnknownOutcome,
 				completion: agent.MessageCompletionComplete,
 			})
 		}
 	case "idle":
-		a.Mu.Lock()
-		state := a.collabChildren[notif.ThreadID]
-		closeIdle := state != nil && state.phase == codexChildRunning && state.turnID == "" && state.sawActiveStatus
-		a.Mu.Unlock()
-		if closeIdle {
+		if a.codexChildRunningForStatus(notif.ThreadID, true) {
 			a.completeCodexChildRun(notif.ThreadID, codexChildTransition{
 				status:     bgtask.StatusEndedWithUnknownOutcome,
 				completion: agent.MessageCompletionComplete,
 			})
 		}
 	}
+}
+
+// codexChildRunningForStatus reports whether threadID is currently running in
+// live memory or in the durable registry (for a child resumed after restart).
+// When requireActiveStatus is true, the thread must also have emitted an active
+// status transition so an initial idle on spawn does not close it early.
+func (a *Agent) codexChildRunningForStatus(threadID string, requireActiveStatus bool) bool {
+	a.Mu.Lock()
+	state := a.collabChildren[threadID]
+	phase := codexChildPending
+	sawActive := false
+	if state != nil {
+		phase = state.phase
+		sawActive = state.sawActiveStatus
+	}
+	a.Mu.Unlock()
+	if requireActiveStatus && !sawActive {
+		return false
+	}
+	if phase == codexChildRunning {
+		return true
+	}
+	if phase != codexChildPending || a.sink == nil {
+		return false
+	}
+	_, status, found, err := a.sink.LookupBackgroundTask(threadID)
+	return err == nil && found && status == bgtask.StatusRunning
 }
 
 // codexTurnRetryLearnMoreURL is the Codex help page for the extra safety

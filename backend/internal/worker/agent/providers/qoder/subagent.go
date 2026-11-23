@@ -1,12 +1,15 @@
 package qoder
 
 import (
+	"cmp"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,7 +38,8 @@ type qoderBgTask struct {
 }
 
 type qoderTaskPatch struct {
-	Status string `json:"status"`
+	Status         string `json:"status"`
+	IsBackgrounded *bool  `json:"is_backgrounded"`
 }
 
 type qoderBackgroundTaskEntry struct {
@@ -50,6 +54,36 @@ type qoderBackgroundTaskEntry struct {
 type qoderWorkflowKey struct {
 	sessionID string
 	toolUseID string
+}
+
+func compareQoderWorkflowKey(a, b qoderWorkflowKey) int {
+	return cmp.Or(cmp.Compare(a.sessionID, b.sessionID), cmp.Compare(a.toolUseID, b.toolUseID))
+}
+
+func qoderToolInputRunsInBackground(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var input struct {
+		RunInBackground bool `json:"run_in_background"`
+	}
+	return json.Unmarshal(raw, &input) == nil && input.RunInBackground
+}
+
+func (a *Agent) markChildTaskBackground(rowKey string, background bool) {
+	if rowKey == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !background {
+		delete(a.backgroundChildTaskIDs, rowKey)
+		return
+	}
+	if a.backgroundChildTaskIDs == nil {
+		a.backgroundChildTaskIDs = make(map[string]bool)
+	}
+	a.backgroundChildTaskIDs[rowKey] = true
 }
 
 type qoderWorkflowRun struct {
@@ -71,20 +105,27 @@ type qoderWorkflowChild struct {
 // Qoder reports one task on the root stream before it forwards child frames.
 // Its tool-use ID also appears on each child as parent_tool_use_id.
 type qoderTaskEvent struct {
-	SessionID    string          `json:"session_id"`
-	Subtype      string          `json:"subtype"`
-	TaskID       string          `json:"task_id"`
-	ToolUseID    string          `json:"tool_use_id"`
-	TaskType     string          `json:"task_type"`
-	SubagentType string          `json:"subagent_type"`
-	Description  string          `json:"description"`
-	Command      string          `json:"command"`
-	Prompt       string          `json:"prompt"`
-	Status       string          `json:"status"`
-	Patch        *qoderTaskPatch `json:"patch"`
-	OutputFile   string          `json:"output_file"`
+	SessionID       string          `json:"session_id"`
+	Subtype         string          `json:"subtype"`
+	TaskID          string          `json:"task_id"`
+	ToolUseID       string          `json:"tool_use_id"`
+	TaskType        string          `json:"task_type"`
+	SubagentType    string          `json:"subagent_type"`
+	Description     string          `json:"description"`
+	Command         string          `json:"command"`
+	Prompt          string          `json:"prompt"`
+	Status          string          `json:"status"`
+	Patch           *qoderTaskPatch `json:"patch"`
+	OutputFile      string          `json:"output_file"`
+	IsBackground    bool            `json:"is_background"`
+	IsBackgrounded  bool            `json:"is_backgrounded"`
+	RunInBackground bool            `json:"run_in_background"`
 	// Replay text requires the canonical archive to prove its final status.
 	requireFinalStatus bool
+}
+
+func (e *qoderTaskEvent) isBackground() bool {
+	return e.IsBackground || e.IsBackgrounded || e.RunInBackground
 }
 
 // handleWorkflowReplayCompletion reads the native queued notification when no system event accompanies it.
@@ -353,6 +394,20 @@ func (a *Agent) handleTaskEvent(raw []byte) bool {
 		}
 		return a.settleTaskEvent(&event, false)
 	case qoderSubtypeTaskUpdated:
+		if event.Patch != nil && event.Patch.IsBackgrounded != nil {
+			rowKey := event.ToolUseID
+			if rowKey == "" && event.TaskID != "" {
+				a.mu.Lock()
+				for _, key := range slices.Sorted(maps.Keys(a.childTaskIDs)) {
+					if a.childTaskIDs[key] == event.TaskID {
+						rowKey = key
+						break
+					}
+				}
+				a.mu.Unlock()
+			}
+			a.markChildTaskBackground(rowKey, *event.Patch.IsBackgrounded)
+		}
 		if event.Status == "" && event.Patch != nil {
 			event.Status = event.Patch.Status
 		}
@@ -436,7 +491,8 @@ func (a *Agent) closeTrackedBgTask(event *qoderTaskEvent) (bool, bool) {
 		bg, found = a.bgTasks[event.TaskID]
 		taskID = event.TaskID
 	} else if event.ToolUseID != "" {
-		for id, entry := range a.bgTasks {
+		for _, id := range slices.Sorted(maps.Keys(a.bgTasks)) {
+			entry := a.bgTasks[id]
 			if entry.toolUseID == event.ToolUseID {
 				bg, taskID, found = entry, id, true
 				break
@@ -461,8 +517,8 @@ func (a *Agent) closeTrackedBgTask(event *qoderTaskEvent) (bool, bool) {
 
 func (a *Agent) resolveToolUseIDByTaskID(event *qoderTaskEvent) {
 	a.mu.Lock()
-	for rowKey, taskID := range a.childTaskIDs {
-		if taskID == event.TaskID {
+	for _, rowKey := range slices.Sorted(maps.Keys(a.childTaskIDs)) {
+		if a.childTaskIDs[rowKey] == event.TaskID {
 			event.ToolUseID = rowKey
 			a.mu.Unlock()
 			return
@@ -475,7 +531,8 @@ func (a *Agent) resolveToolUseIDByTaskID(event *qoderTaskEvent) {
 	a.mu.Unlock()
 
 	var fallbackKey qoderWorkflowKey
-	for key, run := range a.workflows {
+	for _, key := range slices.SortedFunc(maps.Keys(a.workflows), compareQoderWorkflowKey) {
+		run := a.workflows[key]
 		if run.taskID != event.TaskID {
 			continue
 		}
@@ -495,7 +552,8 @@ func (a *Agent) resolveToolUseIDByTaskID(event *qoderTaskEvent) {
 	}
 
 	a.archiveMu.Lock()
-	for key, job := range a.archiveJobs {
+	for _, key := range slices.SortedFunc(maps.Keys(a.archiveJobs), compareQoderWorkflowKey) {
+		job := a.archiveJobs[key]
 		if job.run.taskID != event.TaskID {
 			continue
 		}
@@ -514,6 +572,11 @@ func (a *Agent) resolveToolUseIDByTaskID(event *qoderTaskEvent) {
 		event.ToolUseID = fallbackKey.toolUseID
 		event.SessionID = fallbackKey.sessionID
 	}
+}
+
+type qoderReportedFinal struct {
+	status bgtask.Status
+	raw    string
 }
 
 func (a *Agent) handleBackgroundTasksChanged(raw []byte) {
@@ -536,21 +599,19 @@ func (a *Agent) handleBackgroundTasksChanged(raw []byte) {
 		return
 	}
 	reportedActive := make(map[string]bool, len(entries))
-	reportedFinal := make(map[string]bgtask.Status)
-	reportedFinalRaw := make(map[string]string)
+	reportedFinal := make(map[string]qoderReportedFinal)
 	for _, entry := range entries {
 		id := entry.TaskID
 		if id == "" {
 			id = entry.ID
 		}
 		if status, final := qoderFinalChildStatus(entry.Status); final {
+			outcome := qoderReportedFinal{status: status, raw: entry.Status}
 			if id != "" {
-				reportedFinal[id] = status
-				reportedFinalRaw[id] = entry.Status
+				reportedFinal[id] = outcome
 			}
 			if entry.ToolUseID != "" {
-				reportedFinal[entry.ToolUseID] = status
-				reportedFinalRaw[entry.ToolUseID] = entry.Status
+				reportedFinal[entry.ToolUseID] = outcome
 			}
 			continue
 		}
@@ -562,6 +623,32 @@ func (a *Agent) handleBackgroundTasksChanged(raw []byte) {
 		}
 	}
 
+	resolveFinal := func(id1, id2 string) (qoderReportedFinal, bool) {
+		if id1 != "" {
+			if outcome, ok := reportedFinal[id1]; ok {
+				return outcome, true
+			}
+		}
+		if id2 != "" {
+			if outcome, ok := reportedFinal[id2]; ok {
+				return outcome, true
+			}
+		}
+		return qoderReportedFinal{}, false
+	}
+	isActive := func(id1, id2 string) bool {
+		return (id1 != "" && reportedActive[id1]) || (id2 != "" && reportedActive[id2])
+	}
+	resolveStatus := func(id1, id2 string, reconcileMissing bool) (bgtask.Status, bool) {
+		if outcome, final := resolveFinal(id1, id2); final {
+			return outcome.status, true
+		}
+		if isActive(id1, id2) || !reconcileMissing {
+			return bgtask.StatusUnspecified, false
+		}
+		return bgtask.StatusEndedWithUnknownOutcome, true
+	}
+
 	type pendingClose struct {
 		rowKey string
 		status bgtask.Status
@@ -569,33 +656,29 @@ func (a *Agent) handleBackgroundTasksChanged(raw []byte) {
 	var bgCloses []pendingClose
 	var childCloses []pendingClose
 	a.mu.Lock()
-	for taskID, bg := range a.bgTasks {
-		if status, final := reportedFinal[taskID]; final {
+	for _, taskID := range slices.Sorted(maps.Keys(a.bgTasks)) {
+		bg := a.bgTasks[taskID]
+		if status, shouldClose := resolveStatus(taskID, bg.toolUseID, true); shouldClose {
 			bgCloses = append(bgCloses, pendingClose{rowKey: bg.rowKey, status: status})
-			delete(a.bgTasks, taskID)
-		} else if bg.toolUseID != "" {
-			if status, final := reportedFinal[bg.toolUseID]; final {
-				bgCloses = append(bgCloses, pendingClose{rowKey: bg.rowKey, status: status})
-				delete(a.bgTasks, taskID)
-			} else if !reportedActive[taskID] && !reportedActive[bg.toolUseID] {
-				bgCloses = append(bgCloses, pendingClose{rowKey: bg.rowKey, status: bgtask.StatusEndedWithUnknownOutcome})
-				delete(a.bgTasks, taskID)
-			}
-		} else if !reportedActive[taskID] {
-			bgCloses = append(bgCloses, pendingClose{rowKey: bg.rowKey, status: bgtask.StatusEndedWithUnknownOutcome})
 			delete(a.bgTasks, taskID)
 		}
 	}
-	for rowKey, taskID := range a.childTaskIDs {
-		if status, final := reportedFinal[taskID]; final {
+	for _, rowKey := range slices.Sorted(maps.Keys(a.childTaskIDs)) {
+		taskID := a.childTaskIDs[rowKey]
+		if isActive(taskID, rowKey) {
+			if a.backgroundChildTaskIDs == nil {
+				a.backgroundChildTaskIDs = make(map[string]bool)
+			}
+			a.backgroundChildTaskIDs[rowKey] = true
+			continue
+		}
+		// Only reconcile omitted child tasks that are known background tasks;
+		// foreground local_agent and in_process_teammate children do not appear
+		// in background_tasks_changed while they run.
+		if status, shouldClose := resolveStatus(taskID, rowKey, a.backgroundChildTaskIDs[rowKey]); shouldClose {
 			childCloses = append(childCloses, pendingClose{rowKey: rowKey, status: status})
 			delete(a.childTaskIDs, rowKey)
-		} else if status, final := reportedFinal[rowKey]; final {
-			childCloses = append(childCloses, pendingClose{rowKey: rowKey, status: status})
-			delete(a.childTaskIDs, rowKey)
-		} else if !reportedActive[taskID] && !reportedActive[rowKey] {
-			childCloses = append(childCloses, pendingClose{rowKey: rowKey, status: bgtask.StatusEndedWithUnknownOutcome})
-			delete(a.childTaskIDs, rowKey)
+			delete(a.backgroundChildTaskIDs, rowKey)
 		}
 	}
 	a.mu.Unlock()
@@ -611,15 +694,10 @@ func (a *Agent) handleBackgroundTasksChanged(raw []byte) {
 		status string
 	}
 	var workflowCloses []workflowClose
-	for _, run := range a.workflows {
-		if run.taskID != "" {
-			if rawStatus, final := reportedFinalRaw[run.taskID]; final {
-				workflowCloses = append(workflowCloses, workflowClose{run: run, status: rawStatus})
-				continue
-			}
-		}
-		if rawStatus, final := reportedFinalRaw[run.key.toolUseID]; final {
-			workflowCloses = append(workflowCloses, workflowClose{run: run, status: rawStatus})
+	for _, key := range slices.SortedFunc(maps.Keys(a.workflows), compareQoderWorkflowKey) {
+		run := a.workflows[key]
+		if outcome, final := resolveFinal(run.taskID, run.key.toolUseID); final {
+			workflowCloses = append(workflowCloses, workflowClose{run: run, status: outcome.raw})
 		}
 	}
 	for _, item := range workflowCloses {
@@ -680,10 +758,16 @@ func (a *Agent) finishWorkflow(event *qoderTaskEvent, run *qoderWorkflowRun) boo
 	if err != nil {
 		slog.Warn("qoder workflow archive unavailable", "agent_id", a.AgentID(), "error", err)
 		if event.requireFinalStatus {
+			if errors.Is(err, errQoderReplayUnverified) {
+				return true
+			}
 			if errors.Is(err, errQoderArchiveIncomplete) {
 				delete(a.workflows, run.key)
 				a.startWorkflowArchiveRetry(*event, run, status)
+				return true
 			}
+			a.closeWorkflowWithoutArchive(run, qoderArchiveFallbackStatus(*event, status), err)
+			delete(a.workflows, run.key)
 			return true
 		}
 		if errors.Is(err, errQoderArchiveIncomplete) {
@@ -802,6 +886,12 @@ func (a *Agent) startChildTask(event *qoderTaskEvent, rowKey, fallbackTitle stri
 			a.childTaskIDs = make(map[string]string)
 		}
 		a.childTaskIDs[rowKey] = event.TaskID
+		if event.isBackground() {
+			if a.backgroundChildTaskIDs == nil {
+				a.backgroundChildTaskIDs = make(map[string]bool)
+			}
+			a.backgroundChildTaskIDs[rowKey] = true
+		}
 		a.mu.Unlock()
 	}
 	if err := a.sink.PersistChildPrompt(childID, event.Prompt); err != nil {
@@ -860,21 +950,12 @@ func qoderFinalChildStatus(status string) (bgtask.Status, bool) {
 }
 
 func (a *Agent) finishChildTask(event *qoderTaskEvent) bool {
-	childID, existingStatus, found, err := a.sink.LookupBackgroundTask(event.ToolUseID)
-	if err != nil {
-		providerkit.LogRegistryRefusal("qoder", "find finished child", err)
-		return true
-	}
-	if !found || childID == "" {
-		return false
-	}
 	status, ok := qoderFinalChildStatus(event.Status)
 	if !ok {
 		slog.Warn("qoder child status is unknown", "agent_id", a.AgentID(), "status", event.Status)
 		return true
 	}
-	a.finishResolvedChild(event.ToolUseID, childID, existingStatus, status)
-	return true
+	return a.closeChildTaskRow(event.ToolUseID, status)
 }
 
 func (a *Agent) closeChildTaskRow(rowKey string, status bgtask.Status) bool {
@@ -893,6 +974,7 @@ func (a *Agent) closeChildTaskRow(rowKey string, status bgtask.Status) bool {
 func (a *Agent) finishResolvedChild(rowKey, childID string, existingStatus, status bgtask.Status) {
 	a.mu.Lock()
 	delete(a.childTaskIDs, rowKey)
+	delete(a.backgroundChildTaskIDs, rowKey)
 	a.mu.Unlock()
 	if existingStatus.IsFinished() {
 		return

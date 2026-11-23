@@ -2712,18 +2712,8 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 	}
 
 	if trackedSpawn {
-		if a.children.hasEnded(rowKey) {
-			if !final {
-				if registryKey, revived := a.children.reviveForNewTask(rowKey, task.TaskID); revived {
-					providerkit.LogRegistryRefusal("zcode", "revive", a.sink.ReviveBackgroundTask(registryKey))
-				} else {
-					// Drop late non-final updates for ended runs so they never
-					// repopulate a.children or insert an orphan Running row.
-					return
-				}
-			} else {
-				return
-			}
+		if !a.tryReviveEndedSpawn(rowKey, !final, task.TaskID) {
+			return
 		}
 
 		priorRegistryKey := a.zcodeSubagentRegistryKey(rowKey)
@@ -2735,22 +2725,23 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 			status = a.children.cancelledStatus(rowKey)
 		}
 		childID, childTitle, ok := a.ensureZCodeSubagentTranscript(rowKey, rowKey, title)
-		if !ok {
-			if final {
-				a.closeUnensuredZCodeSubagent(rowKey, priorRegistryKey, priorChildID, status, !a.children.reportsLifecycle(rowKey))
-			}
+		if !ok && final {
+			a.closeUnensuredZCodeSubagent(rowKey, priorRegistryKey, priorChildID, status, !a.children.reportsLifecycle(rowKey))
 			return
 		}
-		a.children.rememberSession(rowKey, task.ChildSessionID)
 		upsert := bgtask.Upsert{
-			Role:           bgtask.RoleChildTask,
 			RowKey:         a.zcodeSubagentRegistryKey(rowKey),
 			Kind:           kind,
-			ChildAgentID:   childID,
-			Title:          childTitle,
+			Title:          title,
 			TitleIsCommand: titleIsCommand,
 			Description:    strings.TrimSpace(task.Description),
 			Status:         status,
+		}
+		if ok {
+			a.children.rememberSession(rowKey, task.ChildSessionID)
+			upsert.Role = bgtask.RoleChildTask
+			upsert.ChildAgentID = childID
+			upsert.Title = childTitle
 		}
 		if task.Blocked && !final {
 			upsert.ActiveForm = task.BlockedReason
@@ -2759,14 +2750,11 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 		// A subagent that reports lifecycle events ends with one, which follows
 		// this final status and carries the report, so that event ends the
 		// transcript. Ending it here would leave the report nowhere to land.
-		if final && !a.children.reportsLifecycle(rowKey) {
+		if ok && final && !a.children.reportsLifecycle(rowKey) {
 			// Publish the final row while its activity entry still exists. Cleanup
 			// removes that entry, so a later tree refresh cannot publish its idle state.
 			a.persistIncompleteZCodeToolsForChild(rowKey, zcodeIncompleteChildCompletion(upsert.Status))
-			a.children.takeChild(rowKey)
-			a.children.forgetTitle(rowKey)
-			a.sink.CleanupChildAgent(childID)
-			a.reapZCodeSettledTurns()
+			a.cleanupZCodeChild(rowKey, childID)
 		}
 		return
 	}

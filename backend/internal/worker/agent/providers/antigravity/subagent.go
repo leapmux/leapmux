@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"sort"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -347,13 +348,16 @@ func hasBackgroundForStepLocked(state *cascadeState, index int) bool {
 
 func (a *Agent) backgroundForStep(state *cascadeState, index int) []backgroundTask {
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
 	var tasks []backgroundTask
 	for _, task := range state.background {
 		if task.stepIndex == index {
 			tasks = append(tasks, task)
 		}
 	}
+	a.Mu.Unlock()
+	sort.Slice(tasks, func(left, right int) bool {
+		return tasks[left].rowKey < tasks[right].rowKey
+	})
 	return tasks
 }
 

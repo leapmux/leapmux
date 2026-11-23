@@ -1043,3 +1043,46 @@ func TestDroidBackgroundProcessesChangedOpensAndClosesShellRows(t *testing.T) {
 	assert.True(t, closed.Status.IsFinished(), "removing a process from background_processes_changed must close its shell row")
 	assert.False(t, closed.EndedAt.IsZero())
 }
+
+type droidLockOrderBgSink struct {
+	*agenttest.Sink
+	agent             *Agent
+	dispatchHeldCount int
+	closedKeys        []string
+}
+
+func (s *droidLockOrderBgSink) checkLock() {
+	if s.agent.dispatchMu.TryLock() {
+		s.agent.dispatchMu.Unlock()
+		return
+	}
+	s.dispatchHeldCount++
+}
+
+func (s *droidLockOrderBgSink) UpsertBackgroundTask(upsert bgtask.Upsert) error {
+	s.checkLock()
+	return s.Sink.UpsertBackgroundTask(upsert)
+}
+
+func (s *droidLockOrderBgSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	s.checkLock()
+	s.closedKeys = append(s.closedKeys, rowKey)
+	return s.Sink.CloseBackgroundTask(rowKey, status)
+}
+
+func TestDroidBackgroundProcessesChangedSortsEvictionsAndReleasesDispatchMu(t *testing.T) {
+	t.Parallel()
+	a, baseSink, _ := newSteerAgent(t)
+	probe := &droidLockOrderBgSink{Sink: baseSink, agent: a}
+	a.sink = agent.NewProviderServices(probe)
+
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"background_processes_changed","processes":[{"id":"proc-c","command":"cmd c","status":"running"},{"id":"proc-a","command":"cmd a","status":"running"},{"id":"proc-b","command":"cmd b","status":"running"}]}`)))
+	a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"background_processes_changed","processes":[]}`)))
+
+	assert.Zero(t, probe.dispatchHeldCount, "background_processes_changed must not hold dispatchMu across sink calls")
+	assert.Equal(t, []string{
+		droidBackgroundProcessRowPrefix + "proc-a",
+		droidBackgroundProcessRowPrefix + "proc-b",
+		droidBackgroundProcessRowPrefix + "proc-c",
+	}, probe.closedKeys, "evicted background processes must close in deterministic sorted order")
+}

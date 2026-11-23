@@ -59,6 +59,11 @@ type zcodeSpawnRecord struct {
 	// background task's final status, and which carries the report. So that
 	// event, not the task's, ends the transcript.
 	lifecycle bool
+	// runSeq increments on each revival so each job writes a distinct report ID.
+	runSeq uint64
+	// authorizedWake records a completed SendMessage targeted at this spawn
+	// while it was still active, allowing its next job to wake once it ends.
+	authorizedWake bool
 }
 
 // zcodeEndedSpawn retains durable identity of a finished spawn so stale frames
@@ -70,7 +75,13 @@ type zcodeEndedSpawn struct {
 	name           string
 	title          string
 	nativeOnly     bool
-	sendSeq        uint64
+	runSeq         uint64
+	authorizedWake bool
+}
+
+func (e zcodeEndedSpawn) matchesTarget(spanID, target string) bool {
+	return target == spanID || target == e.childSessionID || target == e.agentID ||
+		target == e.taskID || target == e.name
 }
 
 // zcodeActiveSpawn is a snapshot of an active spawn for session teardown.
@@ -110,11 +121,12 @@ type zcodeChildIndex struct {
 	// ended holds the spawns whose subagent ended. A later stale event of such a
 	// spawn creates no transcript again; SendMessage revival clears the entry.
 	ended map[string]zcodeEndedSpawn
+	// Secondary O(1) indexes over ended spawns, kept in sync with ended.
+	endedBySession map[string]string
+	endedByTask    map[string]string
+	endedByAgent   map[string]string
 	// pendingSends tracks scheduled SendMessage calls keyed by tool-call span ID.
 	pendingSends map[string]*zcodePendingSendMessage
-	// sendMessageSeq increments whenever a SendMessage revival is applied so a
-	// new taskId for an ended spawn can be distinguished from stale frames.
-	sendMessageSeq uint64
 }
 
 func (i *zcodeChildIndex) rememberSession(spawnToolCallID, childSessionID string) {
@@ -240,19 +252,27 @@ func (i *zcodeChildIndex) takeChild(spawnToolCallID string) (string, bool) {
 		i.ended = make(map[string]zcodeEndedSpawn)
 	}
 	record := i.spawns[spawnToolCallID]
-	ended := zcodeEndedSpawn{sendSeq: i.sendMessageSeq}
-	if record != nil {
-		ended.childSessionID = record.childSessionID
-		ended.agentID = record.agentID
-		ended.taskID = record.taskID
-		ended.name = record.name
-		ended.title = record.title
-		ended.nativeOnly = record.nativeOnly
-	}
-	i.ended[spawnToolCallID] = ended
 	if record == nil {
+		if _, alreadyEnded := i.ended[spawnToolCallID]; !alreadyEnded {
+			i.ended[spawnToolCallID] = zcodeEndedSpawn{}
+		}
 		return "", false
 	}
+	if prev, alreadyEnded := i.ended[spawnToolCallID]; alreadyEnded {
+		i.unindexEndedLocked(spawnToolCallID, prev)
+	}
+	ended := zcodeEndedSpawn{
+		childSessionID: record.childSessionID,
+		agentID:        record.agentID,
+		taskID:         record.taskID,
+		name:           record.name,
+		title:          record.title,
+		nativeOnly:     record.nativeOnly,
+		runSeq:         record.runSeq,
+		authorizedWake: record.authorizedWake,
+	}
+	i.ended[spawnToolCallID] = ended
+	i.indexEndedLocked(spawnToolCallID, ended)
 	delete(i.spawns, spawnToolCallID)
 	for sessionID, owner := range i.sessionSpawns {
 		if owner == spawnToolCallID {
@@ -268,6 +288,39 @@ func (i *zcodeChildIndex) takeChild(spawnToolCallID string) (string, bool) {
 		delete(i.toolSpawns, toolCallID)
 	}
 	return record.childAgentID, record.childAgentID != ""
+}
+
+func (i *zcodeChildIndex) indexEndedLocked(spanID string, ended zcodeEndedSpawn) {
+	if ended.childSessionID != "" {
+		if i.endedBySession == nil {
+			i.endedBySession = make(map[string]string)
+		}
+		i.endedBySession[ended.childSessionID] = spanID
+	}
+	if ended.taskID != "" {
+		if i.endedByTask == nil {
+			i.endedByTask = make(map[string]string)
+		}
+		i.endedByTask[ended.taskID] = spanID
+	}
+	if ended.agentID != "" {
+		if i.endedByAgent == nil {
+			i.endedByAgent = make(map[string]string)
+		}
+		i.endedByAgent[ended.agentID] = spanID
+	}
+}
+
+func (i *zcodeChildIndex) unindexEndedLocked(spanID string, prev zcodeEndedSpawn) {
+	if prev.childSessionID != "" && i.endedBySession[prev.childSessionID] == spanID {
+		delete(i.endedBySession, prev.childSessionID)
+	}
+	if prev.taskID != "" && i.endedByTask[prev.taskID] == spanID {
+		delete(i.endedByTask, prev.taskID)
+	}
+	if prev.agentID != "" && i.endedByAgent[prev.agentID] == spanID {
+		delete(i.endedByAgent, prev.agentID)
+	}
 }
 
 func (i *zcodeChildIndex) rememberTitle(spawnToolCallID, title string) {
@@ -362,7 +415,7 @@ func (i *zcodeChildIndex) rememberTask(spawnToolCallID, taskID string) {
 	i.taskSpawns[taskID] = spawnToolCallID
 }
 
-// lookupExistingSpawn resolves a tracked spawn by childSessionID or taskID.
+// lookupExistingSpawn resolves a tracked spawn by childSessionID or taskID in O(1).
 func (i *zcodeChildIndex) lookupExistingSpawn(childSessionID, taskID string) (spanID string, active bool, ended bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -376,9 +429,16 @@ func (i *zcodeChildIndex) lookupExistingSpawn(childSessionID, taskID string) (sp
 			return span, true, false
 		}
 	}
-	for span, prev := range i.ended {
-		if (childSessionID != "" && prev.childSessionID == childSessionID) ||
-			(taskID != "" && (prev.taskID == taskID || prev.agentID == taskID)) {
+	if childSessionID != "" {
+		if span := i.endedBySession[childSessionID]; span != "" {
+			return span, false, true
+		}
+	}
+	if taskID != "" {
+		if span := i.endedByTask[taskID]; span != "" {
+			return span, false, true
+		}
+		if span := i.endedByAgent[taskID]; span != "" {
 			return span, false, true
 		}
 	}
@@ -405,10 +465,16 @@ func (i *zcodeChildIndex) activeSpawns() []zcodeActiveSpawn {
 	return out
 }
 
-func (i *zcodeChildIndex) noteSendMessage() {
+func (i *zcodeChildIndex) runSeq(spawnToolCallID string) uint64 {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.sendMessageSeq++
+	if record := i.spawns[spawnToolCallID]; record != nil {
+		return record.runSeq
+	}
+	if prev, ok := i.ended[spawnToolCallID]; ok {
+		return prev.runSeq
+	}
+	return 0
 }
 
 func (i *zcodeChildIndex) beginSendMessage(sendSpanID string, targets []string) {
@@ -423,40 +489,104 @@ func (i *zcodeChildIndex) beginSendMessage(sendSpanID string, targets []string) 
 	i.pendingSends[sendSpanID] = &zcodePendingSendMessage{targets: targets}
 }
 
-func (i *zcodeChildIndex) finishSendMessage(sendSpanID string) (alreadyApplied bool) {
-	if sendSpanID == "" {
-		return false
+func (i *zcodeChildIndex) findEndedTargetLocked(target string) (string, bool) {
+	if _, exists := i.ended[target]; exists {
+		return target, true
 	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	pending, ok := i.pendingSends[sendSpanID]
-	if !ok {
-		return false
+	if span := i.endedBySession[target]; span != "" {
+		return span, true
 	}
-	delete(i.pendingSends, sendSpanID)
-	return pending.applied
+	if span := i.endedByAgent[target]; span != "" {
+		return span, true
+	}
+	if span := i.endedByTask[target]; span != "" {
+		return span, true
+	}
+	for _, span := range slices.Sorted(maps.Keys(i.ended)) {
+		if i.ended[span].name == target {
+			return span, true
+		}
+	}
+	return "", false
 }
 
-func (i *zcodeChildIndex) matchingPendingSendLocked(spanID string, prev zcodeEndedSpawn) *zcodePendingSendMessage {
-	var wildcard *zcodePendingSendMessage
-	for _, pending := range i.pendingSends {
-		if pending == nil || pending.applied {
+func (i *zcodeChildIndex) findActiveTargetLocked(target string) *zcodeSpawnRecord {
+	if record := i.spawns[target]; record != nil {
+		return record
+	}
+	if span := i.sessionSpawns[target]; span != "" {
+		if record := i.spawns[span]; record != nil {
+			return record
+		}
+	}
+	if span := i.taskSpawns[target]; span != "" {
+		if record := i.spawns[span]; record != nil {
+			return record
+		}
+	}
+	for _, span := range slices.Sorted(maps.Keys(i.spawns)) {
+		record := i.spawns[span]
+		if record.agentID == target || record.name == target {
+			return record
+		}
+	}
+	return nil
+}
+
+// completeSendMessage retires one in-flight SendMessage call and, when it
+// succeeded without having already revived its child, revives the resolved
+// ended target or authorizes a wake on the resolved active target alone.
+func (i *zcodeChildIndex) completeSendMessage(sendSpanID string, succeeded bool, targets []string) (registryKey string, revived bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	var pending *zcodePendingSendMessage
+	if sendSpanID != "" {
+		pending = i.pendingSends[sendSpanID]
+		delete(i.pendingSends, sendSpanID)
+	}
+	if !succeeded || (pending != nil && pending.applied) {
+		return "", false
+	}
+	allTargets := targets
+	if pending != nil && len(pending.targets) > 0 {
+		allTargets = append(slices.Clone(targets), pending.targets...)
+	}
+	for _, target := range allTargets {
+		target = strings.TrimSpace(target)
+		if target == "" {
 			continue
 		}
-		if len(pending.targets) == 0 {
-			if wildcard == nil {
-				wildcard = pending
-			}
+		if spanID, ok := i.findEndedTargetLocked(target); ok {
+			return i.reviveLocked(spanID)
+		}
+	}
+	for _, target := range allTargets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		if record := i.findActiveTargetLocked(target); record != nil {
+			record.authorizedWake = true
+			return "", false
+		}
+	}
+	return "", false
+}
+
+func (i *zcodeChildIndex) consumePendingSendLocked(spanID string, prev zcodeEndedSpawn) bool {
+	for _, sendSpanID := range slices.Sorted(maps.Keys(i.pendingSends)) {
+		pending := i.pendingSends[sendSpanID]
+		if pending == nil || pending.applied || len(pending.targets) == 0 {
 			continue
 		}
 		for _, target := range pending.targets {
-			if target == spanID || target == prev.childSessionID || target == prev.agentID ||
-				target == prev.taskID || target == prev.name {
-				return pending
+			if prev.matchesTarget(spanID, target) {
+				pending.applied = true
+				return true
 			}
 		}
 	}
-	return wildcard
+	return false
 }
 
 func (i *zcodeChildIndex) reviveForPendingSend(spawnToolCallID string) (registryKey string, ok bool) {
@@ -469,12 +599,9 @@ func (i *zcodeChildIndex) reviveForPendingSend(spawnToolCallID string) (registry
 	if !ended {
 		return "", false
 	}
-	pending := i.matchingPendingSendLocked(spawnToolCallID, prev)
-	if pending == nil {
+	if !prev.authorizedWake && !i.consumePendingSendLocked(spawnToolCallID, prev) {
 		return "", false
 	}
-	pending.applied = true
-	i.sendMessageSeq++
 	return i.reviveLocked(spawnToolCallID)
 }
 
@@ -484,6 +611,12 @@ func (i *zcodeChildIndex) reviveLocked(spawnToolCallID string) (registryKey stri
 		return "", false
 	}
 	delete(i.ended, spawnToolCallID)
+	i.unindexEndedLocked(spawnToolCallID, prev)
+	nextRunSeq := prev.runSeq
+	if nextRunSeq < 1 {
+		nextRunSeq = 1
+	}
+	nextRunSeq++
 	record := i.spawnLocked(spawnToolCallID)
 	record.childSessionID = prev.childSessionID
 	record.agentID = prev.agentID
@@ -494,6 +627,8 @@ func (i *zcodeChildIndex) reviveLocked(spawnToolCallID string) (registryKey stri
 	record.interrupted = false
 	record.lifecycle = false
 	record.taskID = ""
+	record.runSeq = nextRunSeq
+	record.authorizedWake = false
 	if prev.childSessionID != "" {
 		if i.sessionSpawns == nil {
 			i.sessionSpawns = make(map[string]string)
@@ -502,26 +637,6 @@ func (i *zcodeChildIndex) reviveLocked(spawnToolCallID string) (registryKey stri
 		return prev.childSessionID, true
 	}
 	return spawnToolCallID, true
-}
-
-func (i *zcodeChildIndex) reviveByTarget(target string) (spanID, registryKey string, ok bool) {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return "", "", false
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if _, exists := i.ended[target]; exists {
-		key, revived := i.reviveLocked(target)
-		return target, key, revived
-	}
-	for span, prev := range i.ended {
-		if prev.childSessionID == target || prev.agentID == target || prev.taskID == target || prev.name == target {
-			key, revived := i.reviveLocked(span)
-			return span, key, revived
-		}
-	}
-	return "", "", false
 }
 
 func (i *zcodeChildIndex) reviveForNewTask(spawnToolCallID, taskID string) (registryKey string, ok bool) {
@@ -534,13 +649,8 @@ func (i *zcodeChildIndex) reviveForNewTask(spawnToolCallID, taskID string) (regi
 	if !ended || prev.taskID == taskID {
 		return "", false
 	}
-	if i.sendMessageSeq <= prev.sendSeq {
-		pending := i.matchingPendingSendLocked(spawnToolCallID, prev)
-		if pending == nil {
-			return "", false
-		}
-		pending.applied = true
-		i.sendMessageSeq++
+	if !prev.authorizedWake && !i.consumePendingSendLocked(spawnToolCallID, prev) {
+		return "", false
 	}
 	return i.reviveLocked(spawnToolCallID)
 }
@@ -586,8 +696,10 @@ func (i *zcodeChildIndex) clear() {
 	clear(i.sessionSpawns)
 	clear(i.taskSpawns)
 	clear(i.ended)
+	clear(i.endedBySession)
+	clear(i.endedByTask)
+	clear(i.endedByAgent)
 	clear(i.pendingSends)
-	i.sendMessageSeq = 0
 }
 
 // zcodeToolNameSpawnsSubagent reports whether name is a tool that starts a subagent.
@@ -672,7 +784,7 @@ func decodeZCodeSubagentLifecycleTransition(event zcodeEventEnvelope) (zcodeSuba
 	reportID := ""
 	if report != "" {
 		if final {
-			reportID = zcodeFinalReportID(payload.ParentToolCallID)
+			reportID = zcodeFinalReportID(payload.ParentToolCallID, 0)
 		} else {
 			reportID = strings.TrimSpace(event.EventID)
 		}
@@ -705,19 +817,11 @@ func (a *Agent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 	if transition.rowKey == "" {
 		return
 	}
-	if a.children.hasEnded(transition.rowKey) {
-		if !transition.final || transition.resumed {
-			if registryKey, revived := a.children.reviveForPendingSend(transition.rowKey); revived {
-				providerkit.LogRegistryRefusal("zcode", "revive", a.sink.ReviveBackgroundTask(registryKey))
-			} else {
-				return
-			}
-		} else {
-			return
-		}
+	if !a.tryReviveEndedSpawn(transition.rowKey, !transition.final || transition.resumed, "") {
+		return
 	}
 	if transition.final && transition.report.Text != "" {
-		transition.reportID = zcodeFinalReportID(transition.rowKey)
+		transition.reportID = zcodeFinalReportID(transition.rowKey, a.children.runSeq(transition.rowKey))
 	}
 	priorRegistryKey := a.zcodeSubagentRegistryKey(transition.rowKey)
 	priorChildID, _ := a.children.child(transition.rowKey)
@@ -780,12 +884,47 @@ func (a *Agent) handleZCodeSubagentLifecycle(event zcodeEventEnvelope) {
 		if transition.status == bgtask.StatusSucceeded && a.zcodeForegroundSpawnResultPending(transition.rowKey) {
 			return
 		}
-		a.children.takeChild(transition.rowKey)
-		a.children.forgetTitle(transition.rowKey)
-		a.sink.CleanupChildAgent(childID)
-		a.reapZCodeSettledTurns()
+		a.cleanupZCodeChild(transition.rowKey, childID)
 		return
 	}
+}
+
+// tryReviveEndedSpawn reports whether rowKey is live after checking any ended
+// state. An ended spawn revives only when allowRevive is true and an explicit
+// SendMessage target authorized it.
+func (a *Agent) tryReviveEndedSpawn(rowKey string, allowRevive bool, newTaskID string) bool {
+	if !a.children.hasEnded(rowKey) {
+		return true
+	}
+	if !allowRevive {
+		return false
+	}
+	var (
+		registryKey string
+		revived     bool
+	)
+	if newTaskID != "" {
+		registryKey, revived = a.children.reviveForNewTask(rowKey, newTaskID)
+	} else {
+		registryKey, revived = a.children.reviveForPendingSend(rowKey)
+	}
+	if !revived {
+		return false
+	}
+	providerkit.LogRegistryRefusal("zcode", "revive", a.sink.ReviveBackgroundTask(registryKey))
+	return true
+}
+
+func (a *Agent) cleanupZCodeChild(spanID, fallbackChildID string) {
+	childID, _ := a.children.takeChild(spanID)
+	if childID == "" {
+		childID = fallbackChildID
+	}
+	a.children.forgetTitle(spanID)
+	if childID != "" {
+		a.sink.CleanupChildAgent(childID)
+	}
+	a.reapZCodeSettledTurns()
 }
 
 func (a *Agent) zcodeForegroundSpawnResultPending(spanID string) bool {
@@ -855,12 +994,8 @@ func (a *Agent) zcodeSubagentChild(payload zcodeToolUpdated) (string, bool) {
 	if rowKey == "" {
 		return "", false
 	}
-	if a.children.hasEnded(rowKey) {
-		if registryKey, revived := a.children.reviveForPendingSend(rowKey); revived {
-			providerkit.LogRegistryRefusal("zcode", "revive", a.sink.ReviveBackgroundTask(registryKey))
-		} else {
-			return "", false
-		}
+	if !a.tryReviveEndedSpawn(rowKey, true, "") {
+		return "", false
 	}
 	a.children.rememberSession(rowKey, payload.ChildSessionID)
 	a.children.rememberAgent(rowKey, payload.AgentID)
@@ -962,12 +1097,7 @@ func (a *Agent) closeZCodeSubagentChild(payload zcodeToolUpdated) {
 		return
 	}
 	a.persistIncompleteZCodeToolsForChild(payload.spanID(), agent.MessageCompletionError)
-	childID, ok := a.children.takeChild(payload.spanID())
-	if !ok {
-		return
-	}
-	a.sink.CleanupChildAgent(childID)
-	a.reapZCodeSettledTurns()
+	a.cleanupZCodeChild(payload.spanID(), "")
 }
 
 // openZCodeToolCallInto persists a tool call's opening row into one transcript and
@@ -1030,7 +1160,7 @@ func (a *Agent) openZCodeToolCallInto(sink providerkit.ToolSpanServices, event z
 		if prompt := zcodeSpawnPrompt(input); prompt != "" {
 			a.toolCallPrompts.Remember(payload.spanID(), prompt)
 		}
-		if name := zcodeSpawnName(input); name != "" {
+		if name := strings.TrimSpace(providerkit.StringField(input, "name")); name != "" {
 			a.children.rememberName(payload.spanID(), name)
 		}
 		title := zcodeSpawnTitle(input, payload)
@@ -1144,10 +1274,13 @@ func (a *Agent) closeZCodeToolCallInto(sink providerkit.ToolLifecycleServices, e
 	sink.CloseSpan(payload.spanID())
 
 	if toolName == contracts.ZCodeToolNameSendMessage {
-		alreadyApplied := a.children.finishSendMessage(payload.spanID())
-		if !alreadyApplied && payload.Kind == contracts.ZCodeToolKindResult && recovered == nil && zcodeSendMessageSucceeded(payload.Result) {
-			a.children.noteSendMessage()
-			a.reviveZCodeSubagentTargets(zcodeSendMessageTargets(savedInput, payload.Result)...)
+		succeeded := payload.Kind == contracts.ZCodeToolKindResult && recovered == nil && zcodeSendMessageSucceeded(payload.Result)
+		var targets []string
+		if succeeded {
+			targets = zcodeSendMessageTargets(savedInput, payload.Result)
+		}
+		if registryKey, revived := a.children.completeSendMessage(payload.spanID(), succeeded, targets); revived {
+			providerkit.LogRegistryRefusal("zcode", "revive", a.sink.ReviveBackgroundTask(registryKey))
 		}
 	}
 
@@ -1307,19 +1440,6 @@ func zcodeExtractLabeledField(content, label string) string {
 	return ""
 }
 
-func zcodeSpawnName(input json.RawMessage) string {
-	if len(input) == 0 {
-		return ""
-	}
-	var in struct {
-		Name string `json:"name"`
-	}
-	if json.Unmarshal(input, &in) != nil {
-		return ""
-	}
-	return strings.TrimSpace(in.Name)
-}
-
 func zcodeSendMessageTargets(input, result json.RawMessage) []string {
 	var targets []string
 	appendUnique := func(candidate string) {
@@ -1385,15 +1505,6 @@ func zcodeSendMessageSucceeded(result json.RawMessage) bool {
 	return true
 }
 
-func (a *Agent) reviveZCodeSubagentTargets(targets ...string) {
-	for _, target := range targets {
-		if _, registryKey, ok := a.children.reviveByTarget(target); ok {
-			providerkit.LogRegistryRefusal("zcode", "revive", a.sink.ReviveBackgroundTask(registryKey))
-			return
-		}
-	}
-}
-
 // closeUnensuredZCodeSubagent closes and cleans up a subagent when a final
 // update could not ensure or rename its child transcript.
 func (a *Agent) closeUnensuredZCodeSubagent(spanID, priorRegistryKey, priorChildID string, status bgtask.Status, cleanup bool) {
@@ -1409,15 +1520,7 @@ func (a *Agent) closeUnensuredZCodeSubagent(spanID, priorRegistryKey, priorChild
 	if !cleanup {
 		return
 	}
-	cleanedChildID, _ := a.children.takeChild(spanID)
-	if cleanedChildID == "" {
-		cleanedChildID = priorChildID
-	}
-	a.children.forgetTitle(spanID)
-	if cleanedChildID != "" {
-		a.sink.CleanupChildAgent(cleanedChildID)
-	}
-	a.reapZCodeSettledTurns()
+	a.cleanupZCodeChild(spanID, priorChildID)
 }
 
 func (a *Agent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
@@ -1436,14 +1539,18 @@ func (a *Agent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
 	providerkit.PersistChildSubagentReport(a.sink, agent.ChildSubagentReportWrite{
 		RowKey: a.zcodeSubagentRegistryKey(payload.spanID()),
 		Write: agent.SubagentReportWrite{
-			ReportID: zcodeFinalReportID(payload.spanID()),
+			ReportID: zcodeFinalReportID(payload.spanID(), a.children.runSeq(payload.spanID())),
 			Report:   agent.SubagentReport{Text: result.Content},
 		},
 	})
 }
 
-func zcodeFinalReportID(spawnToolCallID string) string {
-	return "zcode-final:" + strings.TrimSpace(spawnToolCallID)
+func zcodeFinalReportID(spawnToolCallID string, runSeq uint64) string {
+	base := "zcode-final:" + strings.TrimSpace(spawnToolCallID)
+	if runSeq >= 2 {
+		return fmt.Sprintf("%s#%d", base, runSeq)
+	}
+	return base
 }
 
 // zcodeSpawnTitle labels the subagent an `Agent` call starts: the description the

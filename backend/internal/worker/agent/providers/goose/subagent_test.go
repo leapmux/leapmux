@@ -702,4 +702,116 @@ func TestACP_GooseDelegateResumeRevivesExistingSubagent(t *testing.T) {
 		a.Mu.Unlock()
 		assert.False(t, stillOpen, "a failed resume must remove the row from activeDelegations")
 	})
+
+	t.Run("resumed job persists distinct report IDs for notice and export", func(t *testing.T) {
+		t.Parallel()
+		exportText := func(summary string) string {
+			return `{"id":"20261019_9","session_type":"sub_agent","parent_session_id":"parent-1","conversation":[` +
+				`{"role":"assistant","content":[{"type":"toolRequest","id":"call_1","toolCall":{"status":"success","value":{"name":"recipe__final_output","arguments":{"summary":"` + summary + `"}}}}]}]}`
+		}
+		exportIdx := 0
+		exports := []string{exportText("Job 1 export."), exportText("Job 2 export.")}
+		sink := &agenttest.Sink{}
+		a, _ := acptest.NewAgentForRPCWithResponder(t,
+			func() *Agent {
+				a := &Agent{}
+				a.HooksForTest().ExtraMethod = a.handleGooseExtraMethod
+				a.HooksForTest().SubagentFromToolCall = a.observeGooseSubagentCall
+				a.HooksForTest().SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+				return a
+			},
+			func(a *Agent) *acp.Base { return &a.Base },
+			func(method string) agenttest.RPCReply {
+				if method == gooseSessionExportMethod {
+					idx := exportIdx
+					if idx >= len(exports) {
+						idx = len(exports) - 1
+					}
+					exportIdx++
+					encoded, err := json.Marshal(exports[idx])
+					require.NoError(t, err)
+					return agenttest.RPCReply{Result: json.RawMessage(`{"data":` + string(encoded) + `}`)}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+		a.SetSinkForTest(agent.NewProviderServices(sink))
+		a.SetSessionIDForTest("parent-1")
+
+		// Job 1 bare completion fetches export with ReportID "20261019_9".
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-1","title":"delegate","status":"pending","rawInput":{"instructions":"Job 1"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent 20261019_9"}}]}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"parent-1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_9 completed"}}}}`))
+
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		child := sink.Child(rows[0].ChildAgentID)
+		require.Eventually(t, func() bool {
+			return len(child.LeapMuxNotifications()) == 1
+		}, time.Second, 5*time.Millisecond)
+		assert.Equal(t, "Job 1 export.", child.LeapMuxNotifications()[0]["text"])
+
+		// Job 2 resumes and completes with a bare notice; export must persist under a distinct ReportID.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-2","title":"delegate","status":"pending","rawInput":{"resume":"20261019_9","instructions":"Job 2"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-2","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Resumed subagent 20261019_9"}}]}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"parent-1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_9 completed"}}}}`))
+
+		require.Eventually(t, func() bool {
+			return len(child.LeapMuxNotifications()) == 2
+		}, time.Second, 5*time.Millisecond, "Job 2 exported report must use a distinct ReportID")
+		assert.Equal(t, "Job 2 export.", child.LeapMuxNotifications()[1]["text"])
+
+		// Job 3 resumes and completes with an inline summary notice.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-3","title":"delegate","status":"pending","rawInput":{"resume":"20261019_9","instructions":"Job 3"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"parent-1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_9 completed\n\nJob 3 summary."}}}}`))
+
+		require.Len(t, child.LeapMuxNotifications(), 3, "Job 3 notice report must use a distinct ReportID")
+		assert.Equal(t, "Job 3 summary.", child.LeapMuxNotifications()[2]["text"])
+	})
+
+	t.Run("late resume ACK and resuming notice do not re-revive a completed resumed job", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newGooseOutputAgent(agent.NewProviderServices(sink))
+		hooks := a.HooksForTest()
+		hooks.SubagentFromToolCall = a.observeGooseSubagentCall
+		hooks.SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+
+		// Job 1 spawns, acknowledges, and completes.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-1","title":"delegate","status":"pending","rawInput":{"instructions":"Job 1"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent 20261019_5"}}]}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_5 completed\n\nJob 1 done."}}}}`))
+
+		// Job 2 starts via tool_call with resume and completes BEFORE its ACK and Resuming notice arrive.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-2","title":"delegate","status":"pending","rawInput":{"resume":"20261019_5","instructions":"Job 2"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_5 completed\n\nJob 2 done."}}}}`))
+
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		require.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+		revivesBeforeLate := len(sink.RevivedTasks())
+
+		// Late Resumed ACK for delegate-2 must not re-revive the finished row.
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-2","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Resumed subagent 20261019_5"}}]}`))
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status, "late Resumed ACK must not re-revive a finished resumed job")
+		assert.Len(t, sink.RevivedTasks(), revivesBeforeLate)
+
+		// Late Resuming notice for Job 2 must not re-revive the finished row.
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Resuming subagent 20261019_5 (Job 2)"}}}}`))
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status, "late Resuming notice must not re-revive a finished resumed job")
+		assert.Len(t, sink.RevivedTasks(), revivesBeforeLate)
+
+		// Job 3 via _meta.goose.subagentSessionId completing before its late meta ACK must also stay finished.
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-3","title":"delegate","status":"pending","rawInput":{"resume":"20261019_5","instructions":"Job 3"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_5 completed\n\nJob 3 done."}}}}`))
+		revivesBeforeMetaLate := len(sink.RevivedTasks())
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-3","status":"completed","_meta":{"goose":{"subagentSessionId":"20261019_5"}}}`))
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status, "late meta ACK must not re-revive a finished resumed job")
+		assert.Len(t, sink.RevivedTasks(), revivesBeforeMetaLate)
+	})
 }
