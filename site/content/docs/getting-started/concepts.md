@@ -63,8 +63,8 @@ flowchart LR
   W2["Worker N (Agents + Terminals + SQLite)"]
 
   FE <-->|"ConnectRPC + WebSocket"| Hub
-  W1 -->|"Outbound WebSocket"| Hub
-  W2 -->|"Outbound WebSocket"| Hub
+  Hub <-->|"Outbound WebSocket (Worker initiates)"| W1
+  Hub <-->|"Outbound WebSocket (Worker initiates)"| W2
 ```
 
 Each Worker runs on the machine that holds your repositories (a laptop, a Linux devbox, or a build server). When you open a tab, you pick which Worker hosts it so filesystem and git operations stay local to that machine.

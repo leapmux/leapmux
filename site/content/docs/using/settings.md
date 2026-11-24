@@ -24,6 +24,8 @@ The dialog is a tall modal with a titled header. Press `Escape` to close, or cli
 
 ## The dialog
 
+{{< screenshot src="preferences-dialog" alt="LeapMux Preferences dialog showing category navigation, search box, Appearance theme and diff controls, and Account default scope chips" caption="The Preferences dialog groups Account, Appearance, Chat, Terminal, Keyboard Shortcuts, and Administration settings in one searchable modal." width="1280" height="856" >}}
+
 The dialog's left side is a category navigation; the right side shows the selected category's rows. Press `/` to move focus to the **Search settings** box — the navigation is replaced by flat results across every category while you type, each result labeled with its `Category › Setting` breadcrumb. `Escape` clears the search before it closes the dialog.
 
 Every row shows a label, a one-line description, and a control. Rows that exist at two tiers additionally show a **scope chip** that identifies the tier which currently wins:
@@ -63,6 +65,8 @@ The Account category carries your account settings, as one row per concern. It l
 Four of those five rows need a **verified session**: email, password, passkeys, and linked accounts. Your profile name does not. While the session is verified, a panel at the top of the section says so and offers **End now**. Every **ADMINISTRATION** section takes the same rule and shows the same panel. See [Session elevation](/docs/admin/security/#session-elevation).
 
 ## Apps
+
+{{< screenshot src="preferences-apps" alt="LeapMux Preferences Apps panel showing Connected apps and App registrations with verified badges, permission scope chips, and management actions" caption="Manage authorized Connected apps and App registrations with live permission ceilings in Preferences → Apps." width="1280" height="856" >}}
 
 The category holds the whole apps feature in two rows, authorization first.
 
@@ -219,6 +223,8 @@ Per-device toggles for files and external applications. As with the chat toggles
 
 ## Keyboard Shortcuts
 
+{{< screenshot src="preferences-keyboard-shortcuts" alt="LeapMux Preferences Keyboard Shortcuts table showing commands, bindings, and Default or Custom source badges" caption="Every workspace command shows its active chord and Default or Custom source in Preferences → Keyboard Shortcuts." width="1280" height="856" >}}
+
 The **Keyboard Shortcuts** category is a table of every command with its default binding and source (**Default** or **Custom**). Click a binding to capture a new chord; the panel refuses a chord already bound in the same context and gives the name of the conflicting command; **Reset** on a customized row returns it to its default. Overrides are stored account-level (up to 200 of them) and follow you to every device. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the command catalogue.
 
 ## Advanced
@@ -228,6 +234,8 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 - **Reset all browser overrides** — the **Reset overrides** button removes every **This device** override at once. Dual-tier settings return to their account default, and browser-only settings return to their built-in default. Trusted worker keys are kept.
 
 ## Administration
+
+{{< screenshot src="preferences-admin" alt="LeapMux Preferences Administration Network access panel showing verified session banner and Trusted reverse proxies settings" caption="Administrators manage live Hub settings under the ADMINISTRATION group once their session is verified." width="1280" height="856" >}}
 
 Administrators see **ADMINISTRATION** below the user categories. Before step-up, it shows **Hub-wide Apps** and **Unlock administration...**. The other rows appear after step-up opens a window. In desktop solo mode or with a current window, the full list appears without an unlock entry.
 

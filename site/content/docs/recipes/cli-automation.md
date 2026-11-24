@@ -70,9 +70,9 @@ Passing `--checkpoint` stores the stream cursor on disk after each printed event
 
 ## Prompt an agent to build a script for you
 
-```text
+{{< copy-prompt label="Ask your coding agent to write a CLI automation script" >}}
 Write a bash script using the leapmux CLI (verify flags with `leapmux commands --json`) that opens a terminal on worker name:build-box, runs `task test`, waits for completion with `terminal run --wait`, and sends any failing output to agent `name:debugger` using `agent send --wait --request-id`.
-```
+{{< /copy-prompt >}}
 
 ## Next steps
 

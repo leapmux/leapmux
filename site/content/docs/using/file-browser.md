@@ -93,6 +93,8 @@ The tree's expanded/collapsed state and cached listings are remembered per worki
 
 ### File and folder context menu
 
+{{< screenshot src="file-context-menu" alt="LeapMux file context menu in the Files sidebar showing file size, modification time, Mention in chat, Copy path, Copy relative path, and Download" caption="Each file or folder row exposes metadata, @-mention in chat, path copy actions, and download." width="297" height="363" >}}
+
 Each tree row has a three-dot menu (and the file viewer exposes the same menu). The items shown depend on whether the row is a file or a directory, and whether you are on the web or the desktop app:
 
 | Item | When shown | What it does |
@@ -185,6 +187,8 @@ The file viewer auto-detects the content type and renders it accordingly.
 | Binary or oversize | A fallback card with download/save actions and an optional hex view. |
 
 ### Markdown and SVG view toggle
+
+{{< screenshot src="file-viewer-markdown" alt="LeapMux file viewer displaying README.md in side-by-side mode with rendered Markdown beside syntax-highlighted source and the Rendered, Side-by-side, and Source toggle" caption="Markdown and SVG files offer a top-right toggle between Rendered, Side-by-side, and raw Source views." width="736" height="491" >}}
 
 Markdown files and SVG images show a segmented toggle in the top-right corner:
 

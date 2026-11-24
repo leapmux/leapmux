@@ -37,6 +37,8 @@ The keyboard shortcut for a new agent tab is `Cmd/Ctrl + N`. If there is no acti
 
 The **More options** menu groups its actions:
 
+{{< screenshot src="tab-bar-more-menu" alt="LeapMux tab bar More options menu showing agent provider icons, New agent, New terminal, detected shells with default marker, and Advanced toggles" caption="The tab bar's + menu launches detected coding agents and shells directly or opens the full New agent and New terminal dialogs." width="480" height="712" >}}
+
 - **Agents** — one button per available provider, plus **New agent...** (`Cmd/Ctrl + Shift + N`).
 - **Terminals** — **New terminal...** (`Cmd/Ctrl + Shift + T`), then one entry per available shell. The configured default shell is marked **(default)**. See [Terminals](/docs/using/terminals/) for shell selection.
 - **Advanced** — toggles for **Expand agent thoughts** and **Show hidden messages** (a checkmark indicates the toggle is on).
@@ -84,6 +86,8 @@ Closing certain tabs triggers a confirmation:
 If the tab's Worker cannot be reached — it is offline, asleep, or deregistered — LeapMux cannot check git state, so it skips the dialog and closes the tab immediately. The Worker stops the agent or terminal process the next time it connects, and releases the worktree once it confirms that no tab still points at it.
 
 #### The "Close last tab" dialog
+
+{{< screenshot src="close-last-tab-dialog" alt="LeapMux Close last tab confirmation dialog showing dirty worktree branch status, uncommitted diff stats, and Cancel, Commit and Push, Delete worktree, and Close anyway buttons" caption="Closing the last tab on a dirty worktree opens the Close last tab dialog so you can push, delete the worktree, or close without losing track of changes." width="608" height="514" >}}
 
 This dialog (titled **Close last tab**) protects you from accidentally abandoning a worktree or losing local git state. Its body explains the situation — either "This closes the last tab for this worktree." or "This closes the last non-worktree tab for this branch." — then names the checkout and its directory in a [status block](/docs/using/worktrees-and-branches/#branch-status-indicators), and states the affected tab: an agent or terminal "will be stopped", a file "will be closed".
 
@@ -150,6 +154,7 @@ A **vertical** split inserts a vertical divider, leaving two side-by-side panes:
 ```mermaid
 flowchart LR
   subgraph split["Vertical split (50 / 50)"]
+    direction LR
     left["Left pane: Agent tab (existing tabs)"]
     right["Right pane: Terminal tab (starts empty)"]
     left <-->|"Drag vertical divider to resize"| right
@@ -160,6 +165,8 @@ A **horizontal** split inserts a horizontal divider instead, stacking the two pa
 
 ### Making a grid
 
+{{< screenshot src="tile-grid-popover" alt="LeapMux Make grid popover showing an interactive 3 by 4 cell hover picker and manual row and column inputs" caption="Pick a grid size visually with the hover picker or enter custom dimensions up to 20 × 20." width="382" height="322" >}}
+
 Click **Make grid** to open the grid-size popover. You pick a size two ways:
 
 - **Hover picker** — A grid of cells (up to 6 rows × 9 columns). Hover to highlight the top-left rectangle; the label reads, for example, "3 × 4" (or "Pick a size" before you hover). Click to apply. Arrow keys move the highlight; `Enter` applies; `Escape` dismisses.
@@ -168,20 +175,12 @@ Click **Make grid** to open the grid-size popover. You pick a size two ways:
 The grid can be up to **20 × 20**. When you make a grid, the tile's existing tabs move into the **top-left cell** (cell 0,0); every other cell starts empty.
 
 ```mermaid
-flowchart TD
-  subgraph grid["2×2 grid"]
-    subgraph row0["Top row"]
-      direction LR
-      c00["Cell 0,0 (existing tabs)"]
-      c01["Cell 0,1 (anchor cell — X closes whole grid)"]
-    end
-    subgraph row1["Bottom row"]
-      direction LR
-      c10["Cell 1,0 (empty)"]
-      c11["Cell 1,1 (empty)"]
-    end
-    row0 ~~~ row1
-  end
+block-beta
+  columns 2
+  c00["Cell 0,0 (existing tabs)"]
+  c01["Cell 0,1 (anchor cell — X closes whole grid)"]
+  c10["Cell 1,0 (empty)"]
+  c11["Cell 1,1 (empty)"]
 ```
 
 {{< callout type="info" >}}
@@ -212,6 +211,8 @@ A workspace always keeps at least one tile. The last remaining tile in the main 
 
 ## Floating windows
 
+{{< screenshot src="floating-window" alt="LeapMux workspace with a semi-transparent floating terminal window hovering over tiled agent, diff viewer, and terminal panes" caption="A popped-out floating window hovers above the tiling canvas with adjustable opacity when you scroll on its title bar." width="1216" height="900" >}}
+
 A floating window is a tab (or a full layout) lifted out of the tiling grid and rendered as a draggable, resizable overlay on top of the workspace. It is useful for keeping a terminal or an agent visible while you rearrange everything underneath it.
 
 ```mermaid
@@ -220,11 +221,11 @@ flowchart TD
     win["Floating Terminal (title bar + own layout)"]
   end
   subgraph canvas["Tiled canvas underneath"]
-    direction LR
     t1["Left tile: Agent"]
     t2["Right tile: Terminal"]
   end
-  floatLayer -.->|"Floats above"| canvas
+  win -.->|"Floats above"| t1
+  win -.->|"Floats above"| t2
 ```
 
 ### Popping out and docking back
@@ -269,6 +270,8 @@ Three panes: a left sidebar (workspaces), the center tiling canvas (with the flo
 - On a shrinking window LeapMux auto-collapses a sidebar when the visible sidebars would take more than half the viewport, and re-expands one it auto-collapsed when the viewport is wide enough again. (Sidebars you collapsed yourself are not auto-expanded.)
 
 ### Mobile layout
+
+{{< screenshot src="mobile-layout" alt="LeapMux mobile single-column layout showing an agent chat with inline diff, tool output, composer, and top-bar drawer buttons" caption="On narrow viewports, LeapMux switches to a focused single-column shell with slide-out Workspaces and Files drawers." width="390" height="844" >}}
 
 On a narrow viewport the shell becomes a single column: one focused tile's tab bar and content, with no tiling chrome. Both sidebars become off-canvas overlays:
 

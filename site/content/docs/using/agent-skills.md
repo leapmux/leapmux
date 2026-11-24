@@ -64,6 +64,8 @@ leapmux skill uninstall leapmux-council
 
 {{< tab name="Preferences (Auto-Sync)" >}}
 
+{{< screenshot src="preferences-agent-skills" alt="LeapMux Preferences Chat and Composer Agent skills panel showing Worker selector, auto-sync switch, target directories, and curated LeapMux skills" caption="Manage curated Agent Skills per connected Worker and target directory from Preferences → Chat & Composer → Agent skills." width="1280" height="856" >}}
+
 Open **Preferences → Chat & Composer → Agent skills**:
 
 1. Pick a connected Worker (auto-selected when one Worker is online).

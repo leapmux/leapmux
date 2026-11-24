@@ -46,6 +46,8 @@ A working directory with no current branch carries a state label instead. **`(no
 
 ### The branch context menu
 
+{{< screenshot src="branch-context-menu" alt="LeapMux branch context menu in the left sidebar showing Switch to branch, Create new branch, Create new worktree, Delete worktree, quick-launch Agents and Terminals, and repository copy actions" caption="Each branch group's context menu manages branch and worktree actions and launches new agents or terminals directly in that checkout." width="575" height="823" >}}
+
 Each branch row has a **`...`** context menu. Right-click the row, or press and hold it on a touch screen, to open the same menu.
 
 | Item | What it does |
@@ -81,6 +83,8 @@ A detached-HEAD row keeps its menu, because its short-SHA label is a real label.
 The composer's status bar carries the same menu behind a branch-name chip, so you can act on the branch without opening the sidebar. The chip carries the same kind icon as the sidebar row, and hovering it gives the same **Worktree branch** / **Branch** and **Directory** rows. The chip appears when the focused agent reports a branch. Hiding the status bar (**[+]** ▸ **Show status bar**) hides the chip; the **[+]** menu's own branch row keeps the icon, the hover rows and every item.
 
 ## Choosing a branch or worktree when you open a tab
+
+{{< screenshot src="new-agent-dialog" alt="LeapMux New agent dialog with Create new worktree selected under Git options, showing Branch Name and Base Branch fields" caption="Select Create new worktree in the Git options panel to start an agent or terminal in an isolated linked worktree." width="996" height="792" >}}
 
 When you open a new agent, a new terminal, or a new workspace against a git repository, the dialog shows a **`Git options`** panel with five modes (select one with the radio buttons):
 
@@ -144,6 +148,8 @@ Create new worktree is the right choice for "start a fresh task in isolation." U
 {{< /callout >}}
 
 ## Changing the branch on a tab
+
+{{< screenshot src="change-branch-dialog" alt="LeapMux Change branch dialog with Create new worktree selected, showing uncommitted changes warning, Branch Name, Base Branch, Worktree path preview, and Open as Agent or Terminal toggle" caption="The Change branch dialog switches branches in place or opens a new agent or terminal tab in a fresh worktree while warning about uncommitted changes." width="608" height="837" >}}
 
 Open the branch row's **`...`** menu and choose **Switch to branch...**, **Create new branch...** or **Create new worktree...** to open the **Change branch** dialog on that mode. It works on one repository working directory. It offers three of the five modes: **Switch to branch**, **Create new branch**, and **Create new worktree**.
 
@@ -224,6 +230,8 @@ The delete and Close last tab dialogs share a status block that summarizes the b
 The sidebar branch-group header also carries a diff-stats badge (`+N -M *U`) so you can see at a glance which branches have changes. For the full meaning of those badges and the per-file git status colors, see [File Browser](/docs/using/file-browser/).
 
 ## Dirty-worktree protection when closing tabs
+
+{{< screenshot src="close-last-tab-dialog" alt="LeapMux Close last tab dialog showing dirty worktree branch status, diff stats, and Cancel, Commit and Push, Delete worktree, and Close anyway buttons" caption="Closing the last tab tied to a worktree or dirty branch prompts you to commit and push, remove the worktree, or close while leaving files on disk." width="608" height="514" >}}
 
 Closing tabs is where you are most likely to lose work, so LeapMux guards the last tab of a worktree or branch. When you close the **last** tab of a worktree, or the last non-worktree tab on a branch that has uncommitted changes, unpushed commits, or a missing remote, the **Close last tab** dialog appears.
 

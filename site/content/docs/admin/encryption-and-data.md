@@ -289,16 +289,20 @@ The Hub database and the `encryption.key` file are a **matched pair**. Back them
 {{< /callout >}}
 
 ```mermaid
-flowchart LR
-    subgraph HubHost["Hub host (~/.config/leapmux/hub/)"]
+flowchart TD
+    subgraph HubHost["Hub host"]
+        direction TB
         HubDB["hub.db (encrypted columns)"]
         KeyFile["encryption.key (mode 0600)"]
         HubDB <-->|"Matched pair — back up and restore together"| KeyFile
     end
-    subgraph WorkerHost["Each Worker host (~/.config/leapmux/worker/)"]
-        StateJSON["state.json (mode 0600 — identity and E2EE private keys)"]
-        WorkerDB["worker.db (agent transcripts and terminal state)"]
+    subgraph WorkerHost["Each Worker host"]
+        direction TB
+        StateJSON["state.json (mode 0600 — identity & E2EE keys)"]
+        WorkerDB["worker.db (agent transcripts & terminal state)"]
+        StateJSON ~~~ WorkerDB
     end
+    HubHost ~~~ WorkerHost
 ```
 
 ### What to back up

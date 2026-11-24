@@ -45,6 +45,8 @@ The button is context-aware:
 
 ### Shell picker: the overflow menu
 
+{{< screenshot src="tab-bar-more-menu" alt="LeapMux tab bar overflow menu listing detected shells with the Worker's default shell marked" caption="Open the tab bar + menu to launch a specific shell immediately or open the full New terminal dialog." width="480" height="712" >}}
+
 The tab bar's overflow ("More options") menu has a **"Terminals"** section. It contains:
 
 - **"New terminal..."** — opens the full dialog.
@@ -53,6 +55,8 @@ The tab bar's overflow ("More options") menu has a **"Terminals"** section. It c
 Clicking a specific shell opens a terminal with exactly that shell, skipping the dialog.
 
 ### The full New terminal dialog
+
+{{< screenshot src="new-terminal-dialog" alt="LeapMux New terminal dialog showing Worker, Shell with default marker, Title, Working Directory tree, and Git options" caption="The New terminal dialog picks a Worker, shell binary, working directory, title, and optional git branch or worktree." width="996" height="792" >}}
 
 Open the dialog with **`Cmd/Ctrl+Shift+T`** (command `app.newTerminalDialog`, active only when no dialog is open), via the overflow menu's **"New terminal..."** item, or with the quick-action button when it shows **"New terminal..."**. Its title is **"New terminal"**.
 
@@ -178,6 +182,8 @@ Each palette supplies the sixteen ANSI colors. The background, foreground, curso
 See [Settings & Preferences](/docs/using/settings/) for fonts, themes, and other appearance options.
 
 ## Quake-mode terminal
+
+{{< screenshot src="quake-terminal" alt="LeapMux translucent Quake-mode terminal sliding down from the top over tiled agent and diff panes running git diff --stat" caption="Press Ctrl+` from any tab to slide down a translucent Quake-mode terminal bound to that tab's working directory." width="992" height="900" >}}
 
 A Quake-mode terminal is a shell that slides over the centre of the app for one
 **working directory**. It belongs to that directory rather than to a tab or a

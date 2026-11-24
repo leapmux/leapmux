@@ -14,8 +14,8 @@ flowchart LR
   Devbox["Remote Linux / GPU Devbox (Worker, 0 inbound ports)"]
 
   Laptop <-->|"HTTPS / WebSocket"| Hub
-  Devbox -->|"Outbound WebSocket (auto-reconnects)"| Hub
-  Laptop -. "End-to-end encrypted channel (agents, PTY, files, TCP tunnels)" .-> Devbox
+  Hub <-->|"Outbound WebSocket (Worker initiates)"| Devbox
+  Laptop -. "End-to-end encrypted (agents, PTY, files, TCP tunnels)" .-> Devbox
 ```
 
 ## Prerequisites
@@ -24,6 +24,8 @@ flowchart LR
 - The `leapmux` standalone binary installed on the remote devbox (see [Standalone binary](/docs/getting-started/installation/#standalone-binary)), plus at least one coding-agent CLI (such as `claude` or `codex`) on that box's `PATH`.
 
 ## 1. Mint a registration key on the Hub
+
+{{< screenshot src="register-worker-dialog" alt="LeapMux Register worker dialog showing POSIX and PowerShell commands to register and start a remote Worker" caption="Click + in the Workers sidebar section to mint a single-use registration key and copy the register and start commands." width="656" height="748" >}}
 
 Registration keys are single-use and valid for five minutes. Mint one in either of two ways:
 

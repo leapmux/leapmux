@@ -39,11 +39,15 @@ The Worker saves the URL with its credentials and connects to that URL from then
 Before a Worker can connect, you must register it with the Hub. LeapMux has no separate pending approval queue where an administrator confirms a Worker after it dials in. Instead, presenting a valid single-use registration key authorizes and creates the active Worker in one atomic step.
 
 ```mermaid
-flowchart LR
-    User["User or Admin (Register worker dialog)"] -->|"1. Mint single-use key"| Hub["Hub (reachable address)"]
-    User -->|"2. Copy --registration-key"| Worker["Worker (behind NAT or firewall)"]
-    Worker -->|"3. Dial out with key and static public keys"| Hub
-    Hub -->|"4. Validate and consume key atomically -> active Worker"| Worker
+sequenceDiagram
+    participant U as User / Admin (Hub UI)
+    participant H as Hub (reachable address)
+    participant W as Worker (behind NAT / firewall)
+
+    U->>H: 1. Mint single-use registration key
+    U->>W: 2. Copy --registration-key
+    W->>H: 3. Dial out with key and static public keys
+    H-->>W: 4. Validate and consume key atomically (active Worker)
 ```
 
 ## Register a Worker
@@ -51,6 +55,8 @@ flowchart LR
 Registration takes three steps, one for each section below.
 
 ### 1. Get a registration key
+
+{{< screenshot src="register-worker-dialog" alt="LeapMux Register worker dialog showing POSIX and PowerShell shell switcher, registration and start commands, and copy buttons" caption="The Register worker dialog mints a single-use registration key and provides copy-ready POSIX or PowerShell commands." width="656" height="748" >}}
 
 1. In the sidebar, find the **Workers** section header and click the **+** button (titled *Register worker*).
 2. The **Register worker** dialog opens, generates a key at once, and shows two commands:
@@ -161,6 +167,8 @@ The Hub probes each Worker's stream every 10 seconds. Each probe has a ten-secon
 {{< /callout >}}
 
 ### In the sidebar
+
+{{< screenshot src="worker-context-menu" alt="LeapMux Worker row context menu in the left sidebar showing Worker name, version, build time, OS architecture metadata, and Deregister action" caption="Open a Worker's context menu in the left sidebar to copy its metadata as JSON or deregister it." width="508" height="250" >}}
 
 Each Worker appears as a row in the sidebar **Workers** section showing its name (or an em-dash `—` if the name hasn't been fetched yet) and a status dot. The dot reflects whether your browser currently has a live end-to-end-encrypted channel open to that Worker — *connected* or *disconnected*. When you have no Workers, the section reads **No workers**.
 
@@ -286,15 +294,21 @@ LeapMux end-to-end encrypts Frontend↔Worker traffic. A Hub that only relays it
 [Security & Threat Model](/docs/admin/security/) covers that protection's scope, the composite keypair, and the fingerprint scheme. This section explains the three pin stores and how to reset a pin in each.
 
 ```mermaid
-flowchart TD
-    subgraph First["First connection (trust on first use)"]
-        F1["Frontend (browser)"] <-->|"Sees key K1 via Hub relay"| W1["Worker (static key K1)"]
-        F1 -->|"Pins K1"| S1["Account pin store: K1"]
-    end
-    subgraph Later["Later connection (key changed)"]
-        F2["Frontend (browser)"] -.->|"Hub presents key K2 (K1 != K2)"| H2["Hub relay"]
-        F2 -->|"Rejected — opens dialog"| D2["Worker public key changed (Expected K1 vs Actual K2)"]
-    end
+sequenceDiagram
+    participant F as Frontend (browser)
+    participant H as Hub (relay)
+    participant W as Worker
+
+    Note over F,W: First connection (trust on first use)
+    F->>H: Open channel to Worker
+    H-->>F: Advertise static public key K1
+    F<<->>W: Noise_NK handshake verifies K1
+    Note over F: Pins K1 in account store
+
+    Note over F,W: Later connection (key changed)
+    F->>H: Open channel to Worker
+    H-->>F: Advertise key K2 (K2 != K1)
+    Note over F: Handshake halted — opens "Worker public key changed" dialog (Expected K1 vs Actual K2)
 ```
 
 There are three independent pin stores, depending on *who* is connecting. The desktop app's tunnels keep none of their own: they admit the browser's pin (see [Tunnel key trust](#tunnel-key-trust)). The browser store is per account, so two users in the same browser pin Workers independently; see [What stays on the browser](/docs/admin/encryption-and-data/#what-stays-on-the-browser) for browser storage details.

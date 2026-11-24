@@ -56,7 +56,7 @@ sequenceDiagram
   participant Worker as Host Worker
   participant Agent as Coding Agent
 
-  Script->>Worker: agent send --wait --request-id <id>
+  Script->>Worker: agent send --wait --request-id #60;id#62;
   Worker-->>Script: Enqueue acknowledged (timeout clock starts)
   Worker->>Agent: Dispatch input
   Agent-->>Worker: Streamed tool calls and reply

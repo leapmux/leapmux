@@ -21,6 +21,8 @@ All {{< agent-provider-count >}} providers support chat and streamed tool calls.
 
 ## Opening a new agent
 
+{{< screenshot src="new-agent-dialog" alt="LeapMux New agent dialog showing Worker, Agent Provider, Title, Working Directory, Resume session, and Create new worktree git options" caption="The New agent dialog lets you pick a Worker, provider, directory, optional existing session to resume, and git branch or worktree mode." width="996" height="792" >}}
+
 Open the **New agent** dialog from the workspace, then fill in the fields below and click **Create**.
 
 ### Dialog fields
@@ -117,6 +119,8 @@ The **Interrupt** button is hidden whenever the agent is waiting on you with a p
 
 ## The input queue
 
+{{< screenshot src="input-queue" alt="LeapMux agent input queue stacked above the composer while a turn runs, showing immediate queued rows with reorder, edit, delete, and Steer buttons, a scheduled row with local timestamp, and Pause Queue" caption="Queued messages stack above the composer while a turn runs, with Steer on the first waiting item, reorder and edit controls, scheduled timestamps, and Pause Queue." width="992" height="363" >}}
+
 Everything you send an agent goes into its input queue first: a message, an
 attachment, a `/clear`, a plan execution, an answer to a permission prompt. The
 queue lives on the Worker, so it survives a page refresh, a reconnect, and a
@@ -153,6 +157,8 @@ An agent can send another agent a message with `leapmux agent send`. The message
 LeapMux takes the sender from the credentials of the sending agent's tab, so an agent cannot claim to be another agent or pass its words off as yours. This holds for an agent on another Worker too.
 
 ### Scheduling a send
+
+{{< screenshot src="schedule-send-popover" alt="LeapMux schedule send popover showing a local date and time picker with Clear schedule, Cancel, and Schedule buttons" caption="Click the calendar button beside Send to hold a message in the queue until a chosen local date and time." width="448" height="240" >}}
 
 The calendar button beside **Send** schedules the composer's next message:
 pick a local date and time, and the message waits in the queue until then
@@ -288,6 +294,8 @@ The banner shows a **Permissions** choice when the provider supplies permission 
 
 ### Questions
 
+{{< screenshot src="question-prompt-banner" alt="LeapMux agent question control banner displaying radio-button choices above a custom answer composer input" caption="When an agent asks a structured question, LeapMux renders selectable options above the composer with a custom-answer box." width="992" height="494" >}}
+
 A question uses radio buttons for a single answer or checkboxes for several; you can also type a custom answer. For a question with radio buttons, the typed answer replaces the chosen one. For a question with checkboxes, the typed answer joins the checked options: checking **A** and typing **X** answers **A** and **X**. A prompt with several questions shows **Question N of M**, and one submission answers all of them. Requested MCP input is collected through a form or the provider's native questions (see the [feature matrix](#feature-matrix)).
 
 ### Plan approvals
@@ -313,6 +321,8 @@ The exact buttons and their names come from the provider's own protocol.
 A script answers the same requests with `leapmux agent requests`, `approve`, `deny` and `answer`; see [Driving agents from a script](#driving-agents-from-a-script).
 
 ## Changing settings mid-session
+
+{{< screenshot src="composer-plus-menu" alt="LeapMux composer plus menu open above the status bar chips, showing Attach file, Model, Effort, Permission Mode, git branch, Agent info, Smart and Bypass permissions, and Enter-key send toggles" caption="Use the status bar chips or the composer [+] menu to change model, effort, permission mode, branch, or Enter-key behavior mid-session." width="1004" height="646" >}}
 
 Beneath the editor box is a status bar with one chip per setting axis — the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
 

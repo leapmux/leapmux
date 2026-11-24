@@ -88,6 +88,8 @@ The username `solo` is rejected in all signup paths, and `admin` is additionally
 
 ## Signing in
 
+{{< screenshot src="login-page" alt="LeapMux sign-in screen showing Username input, Password and Passkey method selector, Password field, and Sign in button" caption="The LeapMux sign-in screen lets you sign in with a password or passkey (and configured OAuth/OIDC providers)." width="622" height="478" >}}
+
 Visit `/login`. The page is headed **"LeapMux"** and starts with a **Username** field.
 
 A **Sign-in method** chooser offers **Password** and **Passkey** (the **Passkey** option is disabled or absent where ceremonies cannot run — see [Passkeys](#passkeys)):
@@ -291,6 +293,8 @@ When you sign in, LeapMux issues a session and stores it in a secure, `HttpOnly`
 **Changing your password signs out your other sessions.** When you change your password, LeapMux invalidates every *other* active session (the current one stays signed in) and revokes your API and delegation tokens. This is a security feature: if someone else had a session, changing your password locks them out. See [Control CLI](/docs/using/control-cli/) for administrator-side session management.
 
 ## Managing your profile
+
+{{< screenshot src="preferences-account" alt="LeapMux Preferences Account panel showing verified session banner, Profile username and display name fields, and Email settings" caption="Update your username, display name, email, password, passkeys, and linked providers in Preferences → Account." width="1280" height="856" >}}
 
 Manage your account from the **Preferences** dialog (the user menu's **Preferences...**, or `⌘,`), in its **Account** section — the section the dialog opens on. Each heading below is one row of it, except **Connected apps**, which sits one category over in **Apps**; the details of each field and persistence behavior live in [Settings & Preferences](/docs/using/settings/), so this is a summary.
 

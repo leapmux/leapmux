@@ -17,6 +17,8 @@ For the bigger picture of how workspaces fit alongside Hubs, Workers, tiles, and
 
 ## Creating a workspace
 
+{{< screenshot src="new-workspace-dialog" alt="LeapMux New workspace dialog showing Worker, Agent Provider, Title, Working Directory tree, Resume session, and Git options" caption="The New workspace dialog selects the Worker, coding-agent provider, directory, optional session to resume, and git checkout mode." width="996" height="792" >}}
+
 Open the **New workspace** dialog from the left sidebar:
 
 1. Hover over a workspace section header (for example **In progress**) and click the **+** button. The button creates a workspace in that section. It appears on every workspace section except **Archived**, and its tooltip shows the section name and the shortcut (for example `New workspace in In progress (⌥⌘N)`).
@@ -90,6 +92,8 @@ Each tab leaf shows the tab's type icon and label. For closable tabs, a close **
 Clicking a tab leaf in a workspace that is not currently active switches to that workspace and activates the chosen tab. Repo and branch collapse state is remembered per workspace across reloads.
 
 ## Renaming a workspace
+
+{{< screenshot src="workspace-context-menu" alt="LeapMux workspace context menu in the left sidebar showing repository paths and Rename, Archive, and Delete actions" caption="Each workspace row's context menu lists its repositories alongside Rename, Archive, and Delete actions." width="996" height="503" >}}
 
 To rename a workspace, either:
 

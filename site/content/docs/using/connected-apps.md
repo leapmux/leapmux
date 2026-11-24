@@ -1,76 +1,84 @@
 ---
 title: "Connected Apps"
-description: "See which apps hold access to your LeapMux account, exactly what each one can do, and disconnect any of them without a password prompt."
+description: "Authorize CLI tools and integrations, inspect their permissions and devices, revoke access immediately, or register your own OAuth app in LeapMux."
 type: docs
 weight: 14
 ---
 
-An app you authorize holds a credential on your account until you disconnect it. **Preferences → Apps → Connected apps** lists them — grouped by app, one row per machine — and each row says what that one can actually do. `leapmux auth credentials` prints the same list from a terminal.
+External tools — including the `leapmux` control CLI, LeapMux Desktop, CI scripts, and custom integrations — connect to your account through scoped OAuth credentials. You can inspect every authorized tool, see which machines it runs on, and revoke access at any time from **Preferences → Apps** (or from a terminal with `leapmux auth credentials`).
 
 ## Authorizing an app
 
-When a program needs access, it sends you to a consent screen the Hub renders. The heading states the verdict, not the app's claim: **"Authorize {name}?"** for an app an administrator vouched for. Nobody vouched for the other kind, so its heading is **"Authorize an unverified app?"** and the name never enters it. An unverified app also shows a monogram of its name instead of an icon. The warning is plain:
+When you run `leapmux auth login` or sign in from an external tool, LeapMux sends you to a consent screen hosted by your Hub before issuing any credential.
 
-> **Nobody verified this app on this hub.** It says its name is "{name}". Continue only if you started this yourself.
+Check four things before clicking **Allow**:
 
-An app you did not go looking for is one to deny.
+1. **App verification.** If an administrator vouched for the app, the heading reads **"Authorize {name}?"**. Otherwise, the heading reads **"Authorize an unverified app?"** and shows a warning banner stating that nobody verified the app on this Hub. Deny any request you did not start yourself.
+2. **Account and destination.** Confirm that the screen lists your account and the destination you expect to return to.
+3. **Requested permissions.** Every permission family the app touches appears in full: requested scopes are checked, unrequested ones are dimmed, and each scope includes a plain-English description beside its token (for example, `terminal:write` explains that the app can type into your terminals and run any command on your machine).
+4. **Hub administration scopes.** Administrative permissions are never included by default and can only be granted by an administrator. On the headless [device-code flow](/docs/using/control-cli/#leapmux-auth-login), approving a hub-administration scope requires a second confirmation click.
 
-The screen says whose account it asks to use, and where it will return you — the redirect shown as a label, never a bare address.
+Authorizing an app requires a recently verified session (password, passkey, or linked sign-in provider), which stays verified for {{< duration elevation-window >}} so consecutive approvals do not re-prompt. Click **Allow** to grant access, or **Deny** to return an immediate refusal to the app.
 
-The permission list shows every family the app reaches into, and each family in full: the permissions this app asks for are ticked, the rest are dimmed, and each carries its wire token beside a sentence in plain words — *Type into your terminals, which runs any command on your machine*, not `terminal:write`. An app that asks for nothing at all is one that could do nothing with your account, and the screen says that too.
+## Viewing your connected apps
 
-Two rules guard the widest permissions. An app must **name** a hub-administration permission to ask for one — a request that omits its permission list never includes any — and only an administrator can grant it; anybody else's consent is refused outright. On the headless [device-code flow](/docs/using/control-cli/#leapmux-auth-login) a request that includes a hub-administration permission stops twice: the first **Authorize** returns the page with the caution stated beside it, and only the second one binds.
+Open **Preferences → Apps** to review every app that holds access to your account, grouped by app with one row per machine.
 
-Authorizing needs a verified session, so the screen may ask you to prove a factor first — a password, a passkey, or a linked provider. That proof lasts {{< duration elevation-window >}}, so a second authorization in the same sitting does not ask again.
+{{< screenshot src="preferences-apps" alt="LeapMux Preferences Apps panel showing Connected apps and App registrations with verified badges, permission scope chips, and management actions" caption="Preferences → Apps lists your Connected apps alongside your App registrations and their permission ceilings." width="1280" height="856" >}}
 
-**Allow** returns you to the app. **Deny** returns you to it too, with a refusal, so it stops waiting rather than hanging until the request expires.
+Each connected app block shows:
 
-## Reading the list
+| Field | What it tells you |
+|---|---|
+| **App name & badge** | The app's label, plus an **unverified** badge if no administrator vouched for it. |
+| **Installation** | The machine label (for example, *alex's MacBook*), distinguishing separate logins of the same app on different machines. |
+| **hub administration** | Appears only on credentials allowed to change Hub-wide administration settings. |
+| **Permissions** | One chip per granted scope (`workspace:read`, `agent:write`, `terminal:write`, `tunnel:open`, …). Note that `terminal:write` can run shell commands and `tunnel:open` can reach services on your Worker's network. |
+| **Activity & expiry** | When the credential was **last used** (or **added**), plus when it must **sign in again** or **expires**. |
 
-The list is **grouped by app**. Each block identifies one app, and under it is one row per machine that app runs on.
+You can view the exact same list from the command line:
 
-- **The app name** heads the block, with an **unverified** badge beside it when no administrator vouched for it — the same verdict the consent screen states.
-- **The installation** names each row — *trustin's MacBook* — because one app holds one credential per machine, and the app name alone cannot tell two rows apart.
-- **hub administration** marks a credential that can administer the whole Hub.
-- **The permissions** are the ones you granted, one chip each (`terminal:write`, `git:read`, …). Some are wider than they look: `terminal:write` runs commands, and `tunnel:open` reaches anything your machine can reach.
+```bash
+leapmux auth credentials
+```
 
-Each row also says when it was **last used** — or **added**, if it never was. A renewing credential says when its machine must **sign in again**. A fixed-lifetime one (minted by an administrator with a TTL) says when it **expires**. A row with neither never expires.
-
-An empty list says how to start one: run `leapmux auth login` to connect the command-line tool, or authorize an app from its own sign-in screen.
+If no apps are connected yet, run `leapmux auth login` on your machine to authorize the control CLI.
 
 ## Ending an app's access
 
-Two endings, because they answer different questions.
+Choose **Revoke** or **Disconnect** depending on whether you are removing one machine or cutting off the whole app:
 
-**Disconnect**, on the app's own line, ends your whole authorization of it. Every machine it runs on loses access at once, any channel it opened closes, and the app must be authorized again to come back. The confirmation says how many machines it covers, so the number is never something you have to count yourself.
+| Action | Where to click | What it does | When to use it |
+|---|---|---|---|
+| **Revoke** | On a single installation row | Ends access for that one machine while leaving other machines connected. | You lost, wiped, or retired one laptop or devbox. |
+| **Disconnect** | On the app header | Ends every installation of the app at once and closes its active channels. | You no longer use or trust the app. |
 
-**Revoke**, on one installation's row, ends that machine only. The app keeps working everywhere else. This is how you sign one laptop out; the confirmation says so and points at **Disconnect** for the all-of-them ending.
-
-Choose **Disconnect** whenever the decision is about the app rather than about a machine. Ending one installation of an app you no longer trust leaves it working on every other one.
-
-Neither asks for a password. Both only ever reduce access. Somebody who just found an app is malicious should not have to find a password first; the delay helps the attacker.
+Neither **Revoke** nor **Disconnect** asks for a password or identity verification, so you can cut off a compromised or unwanted app immediately.
 
 ## Registering your own app
 
-**Preferences → Apps → App registrations** registers an app of your own. Yours is private: nobody else sees it, and nobody else can authorize it. An app registered under **Administration** is hub-wide: everybody on the Hub sees it and can authorize it.
+To connect a custom script, internal dashboard, or third-party integration, open **Preferences → Apps → App registrations** and click **Register an app**.
 
-You choose a name, the addresses the authorization may return to, and the permissions the app may **ask** for. That last set is a ceiling, not a grant — the consent screen still asks, and you can grant less.
+- **Private vs. hub-wide:** Registrations you create under **Preferences → Apps** are private to your account. Administrators can create hub-wide registrations visible to all users under **Administration → Hub-wide Apps**.
+- **Client type:** Choose **Public** for local CLIs and desktop binaries that cannot keep a secret, or **Confidential** for a backend server (which receives a client secret shown once).
+- **Redirect URLs:** List the exact callback addresses allowed after consent.
+- **Permission ceiling:** Choose the maximum scopes the app may ask for. Consent can always grant fewer permissions than the ceiling, never more.
 
-The ceiling is live. **Take a permission off a registration and every credential the app already holds loses it**, at that app's next request — you do not have to disconnect it and start again. Putting one back never grants it: the account still has to consent, so a credential reaches the overlap of what its owner agreed to and what the registration allows.
+Changes to a registration's permission ceiling take effect immediately:
 
-A **confidential** client is a server you run, and it gets a client secret shown once. A **public** client is a binary a user holds, and it has no secret at all — handing one to a program that cannot keep it would only look like protection.
+- **Removing a scope** strips that permission from every credential the app already holds on its next request.
+- **Adding a scope back** does not grant it automatically — users must approve it on a new consent screen.
+- **Retiring an app** revokes every credential it holds across all accounts (an app that has never issued credentials can be deleted directly).
 
-Retiring an app revokes every credential it holds, for every account. An app that never held one can be deleted outright.
+Because changing redirect URLs or permission ceilings affects OAuth security, creating or editing a registration requires a verified session.
 
-## Solo mode
+## Scoped credentials in solo mode
 
-A solo LeapMux authorizes apps like any other. Reaching it is your authentication, so ordinary use asks for nothing — but a program that presents a credential is bound by that credential's permissions.
-
-That is worth using on one machine: give a local agent a credential with `file:read` and it reads files and does nothing else, however it is prompted.
+Even in single-user **solo mode**, LeapMux enforces OAuth scopes on any caller that presents an app credential. For example, you can give a local script or helper agent a credential limited to `file:read` so it can inspect files without being able to run terminal commands or modify workspaces.
 
 ## See also
 
-- [Accounts & Authentication](/docs/using/accounts/) — passwords, passkeys, and proving a factor
-- [Settings & Preferences](/docs/using/settings/) — the Preferences dialog's **Apps** category
-- [Control CLI](/docs/using/control-cli/) — the app that ships with LeapMux
-- [App Authorization](/docs/admin/app-authorization/) — registering and verifying apps, for administrators
+- [Accounts & Authentication](/docs/using/accounts/) — sign-in, passwords, passkeys, and session verification.
+- [Settings & Preferences](/docs/using/settings/#apps) — the **Apps** and **Hub-wide Apps** Preferences panels.
+- [Control CLI](/docs/using/control-cli/) — signing in with `leapmux auth login` and inspecting credentials.
+- [App Authorization](/docs/admin/app-authorization/) — administrator guide for vouching, hub-wide apps, and dynamic registration.

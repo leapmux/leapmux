@@ -1,344 +1,155 @@
 ---
 title: "Keyboard Shortcuts"
-description: "How the VS Code-style shortcut system works in LeapMux, every default key binding by context, and the override format for customizing them."
+description: "Default keyboard shortcuts for workspaces, tabs, splits, terminals, and coding agents in LeapMux, plus how to customize them in Preferences."
 type: docs
 weight: 11
 ---
 
-LeapMux ships with a VS Code-style keyboard shortcut system: every shortcut is a *command* bound to a *key*, and each binding is active only inside a *context* (for example, only when a dialog is open or a terminal is focused). This chapter explains how the system works, lists every default binding, and documents the override format the engine uses for customization.
+You can open agents and terminals, switch tabs, split panes, toggle the Quake terminal, and steer the agent input queue without leaving the keyboard. Every workspace shortcut can be remapped in **Preferences → Keyboard Shortcuts**, and your custom bindings sync automatically across your devices.
 
-## How shortcuts work
-
-A keyboard shortcut in LeapMux is the combination of three independent pieces:
-
-- **Command** — a named action with a human title, such as `app.newAgent` ("New Agent") or `app.closeActiveTab` ("Close Active Tab"). The command holds the logic; it does not know which key triggers it.
-- **Keybinding** — a key string mapped to a command, optionally restricted by a `when`-clause. For example, `$mod+n` runs `app.newAgent` when `!dialogOpen` (no dialog is open).
-- **Context** — a set of named boolean/string values evaluated the moment you press a key (for example `dialogOpen`, `terminalFocused`, or `platform == "mac"`). A binding fires only if its `when`-clause evaluates to true against the current context.
-
-Because these are decoupled, the same command can be bound to several keys, and the same key can run different commands depending on what is focused.
-
-### The `$mod` key
-
-Key strings use the `tinykeys` vocabulary. The most important token is `$mod`:
-
-- On **macOS**, `$mod` means **Cmd** (⌘).
-- On **Windows and Linux**, `$mod` means **Ctrl**.
-
-So a single binding such as `$mod+n` is shown as `⌘N` on a Mac and `Ctrl+N` everywhere else. The tables below give both forms.
-
-Other modifiers are `Shift`, `Alt` (also written `Option`), `Control`/`Ctrl`, and `Meta`. Named keys used in the defaults include `F5`, `F12`, the arrow keys, `PageUp`/`PageDown`, the bracket and backslash keys, and the digits `0`–`9`.
-
-### Chords
-
-The engine supports **chords** — space-separated key sequences such as `$mod+k $mod+s` (press the first combination, then the second). Chords render correctly in tooltips and menus, but no default binding uses one. The override format supports chords (see [Customizing keybindings](#customizing-keybindings)), with one caveat on the desktop app (see [Desktop (Tauri) accelerator differences](#desktop-tauri-accelerator-differences)).
-
-### When shortcuts are suppressed
-
-LeapMux binds shortcuts at the window level so they work no matter where focus sits, but it suppresses some of them to avoid hijacking your typing:
-
-- **Input focus.** When the cursor is in a text input, textarea, select, or any `contenteditable` element, a shortcut with **no modifier that is not a function key** is suppressed — unless its `when`-clause explicitly refers to `inputFocused`. The suppression does not apply to shortcuts that use a modifier (`$mod`, `Ctrl`, `Alt`, `Meta`, `Shift`) or a plain function key (`F1`–`F12`): those always fire, regardless of focus.
-- **IME composition.** While you are composing text with an Input Method Editor (for example, typing Chinese, Japanese, or Korean), shortcuts are held back so they cannot interfere with your text entry.
-
-## Contexts (the `when` clause)
-
-A binding's `when`-clause is a small boolean expression evaluated against the active context. The available context values are:
-
-| Context | Type | Meaning |
-|---|---|---|
-| `isDesktop` | boolean | Running inside the Tauri desktop app. |
-| `platform` | string | `"mac"`, `"windows"`, or `"linux"`. |
-| `dialogOpen` | boolean | A modal dialog is currently open. |
-| `sidebarVisible` | boolean | The left sidebar is expanded. |
-| `activeTabType` | string | `"agent"`, `"terminal"`, `"file"`, `"image"`, or empty when no tab is active. |
-| `inputFocused` | boolean | Focus is in an input, textarea, select, or `contenteditable` element. |
-| `editorFocused` | boolean | Focus is inside a rich-text editor surface. |
-| `chatInputFocused` | boolean | Focus is inside a chat message input. |
-| `chatInputEmpty` | boolean | The current agent tab's composer has nothing to submit: no text, no attachment, and no permission prompt an empty submit would answer. |
-| `terminalFocused` | boolean | Focus is inside a terminal. |
-
-The `when` expression grammar supports `||` (or), `&&` (and), `!` (not), parentheses, `==`/`!=` comparisons, identifiers, quoted strings, and the literals `true`/`false`. An empty or absent `when` means "always active." Examples drawn from the defaults: `!dialogOpen`, `isDesktop`, `!dialogOpen && isDesktop`, `activeTabType == "agent" && !dialogOpen`, and `terminalFocused && platform == "mac"`.
+{{< callout >}}
+You do not need to memorize every binding. LeapMux shows your active shortcut inside tooltips and dropdown menus automatically (for example, `New Agent (⌘N)` on macOS or `New Agent (Ctrl+N)` on Windows and Linux).
+{{< /callout >}}
 
 ## Default keyboard shortcuts
 
-The tables below list every default binding. The **macOS** column uses Apple's symbol glyphs in HIG order (⌃⌥⇧⌘, run together with no separators); the **Windows / Linux** column uses `Ctrl`/`Alt`/`Shift` joined with `+`. Where a command has more than one binding, both are shown separated by `/` — exactly as LeapMux renders them in tooltips and menus.
+On macOS, tooltips and menus use standard Apple modifier symbols: `⌘` (Command), `⌃` (Control), `⌥` (Option), `⇧` (Shift), `⏎` (Enter), and `Esc` (Escape). On Windows and Linux, modifiers appear as `Ctrl`, `Alt`, and `Shift` joined with `+`.
 
-### App
+### App & workspaces
 
-| Command | macOS | Windows / Linux | Active when |
+| Action | macOS | Windows / Linux | Notes |
 |---|---|---|---|
-| Open Preferences | `⌘,` | `Ctrl+,` | always |
-
-Open Preferences opens the Preferences dialog. It is a workspace binding (it works everywhere inside a workspace), not desktop-only. On the macOS desktop app it is also mirrored onto the native menu bar — see [Desktop (Tauri) accelerator differences](#desktop-tauri-accelerator-differences). For the dialog's contents, see [Settings & Preferences](/docs/using/settings/).
+| Open Preferences | `⌘,` | `Ctrl+,` | Works anywhere in a workspace; also appears in the macOS desktop menu bar. |
+| New Workspace Dialog | `⌥⌘N` | `Ctrl+Alt+N` | Active when no dialog is open. |
+| Close menu or dialog | `Esc` | `Esc` | Closes one layer at a time: clears search or closes an open menu first, then closes the dialog underneath. |
 
 ### Tabs
 
-| Command | macOS | Windows / Linux | Active when |
+| Action | macOS | Windows / Linux | Notes |
 |---|---|---|---|
-| New Agent | `⌘N` | `Ctrl+N` | no dialog open |
-| New Terminal | `⌘T` | `Ctrl+T` | no dialog open |
-| Close Active Tab | `⌘W` | `Ctrl+W` | no dialog open |
-| New Agent Dialog | `⇧⌘N` | `Ctrl+Shift+N` | no dialog open |
-| New Terminal Dialog | `⇧⌘T` | `Ctrl+Shift+T` | no dialog open |
-| Toggle Floating Tab | `⇧⌘O` | `Ctrl+Shift+O` | no dialog open |
-| Switch to Tab 1–9 | `⌘1`–`⌘9` / `⌥1`–`⌥9` | `Ctrl+1`–`Ctrl+9` / `Alt+1`–`Alt+9` | always |
-| Previous Tab | `⌘[` / `⌘PageUp` | `Ctrl+[` / `Ctrl+PageUp` | always |
-| Next Tab | `⌘]` / `⌘PageDown` | `Ctrl+]` / `Ctrl+PageDown` | always |
+| New Agent | `⌘N` | `Ctrl+N` | Opens an agent in the active tab's directory (or opens the dialog if none is active). |
+| New Terminal | `⌘T` | `Ctrl+T` | Opens a terminal in the active tab's directory (or opens the dialog if none is active). |
+| Close Active Tab | `⌘W` | `Ctrl+W` | Active when no dialog is open. |
+| New Agent Dialog | `⇧⌘N` | `Ctrl+Shift+N` | Always opens the full New Agent dialog. |
+| New Terminal Dialog | `⇧⌘T` | `Ctrl+Shift+T` | Always opens the full New Terminal dialog. |
+| Toggle Floating Tab | `⇧⌘O` | `Ctrl+Shift+O` | Pops the active tab out into a floating window, or docks a focused floating tab back into the main layout. |
+| Switch to Tab 1–9 | `⌘1`–`⌘9` or `⌥1`–`⌥9` | `Ctrl+1`–`Ctrl+9` or `Alt+1`–`Alt+9` | Selects the Nth visible tab in the focused tile. |
+| Previous Tab | `⌘[` or `⌘PageUp` | `Ctrl+[` or `Ctrl+PageUp` | Wraps around tabs in the focused tile. |
+| Next Tab | `⌘]` or `⌘PageDown` | `Ctrl+]` or `Ctrl+PageDown` | Wraps around tabs in the focused tile. |
 
-Tab switching and navigation operate on the **visible** tabs of the focused tile (or on all tabs when no tile is focused). Previous/Next wrap around and do nothing if a tile has fewer than two tabs. See [Tabs & Layout](/docs/using/tabs-and-layout/).
+### Layout & view
 
-### Layout
-
-| Command | macOS | Windows / Linux | Active when |
+| Action | macOS | Windows / Linux | Notes |
 |---|---|---|---|
-| Split Tile Horizontally | `⌘\` | `Ctrl+\` | always |
-| Split Tile Vertically | `⇧⌘\` | `Ctrl+Shift+\` | always |
-| Toggle Left Sidebar | `⇧⌘[` | `Ctrl+Shift+[` | always |
-| Toggle Right Sidebar | `⇧⌘]` | `Ctrl+Shift+]` | always |
-
-Splitting acts on the focused tile. For more on tiling and sidebars, see [Tabs & Layout](/docs/using/tabs-and-layout/).
-
-### View
-
-| Command | macOS | Windows / Linux | Active when |
-|---|---|---|---|
-| Scroll Active Tab Up One Page | `⌥PageUp` | `Alt+PageUp` | no dialog open |
-| Scroll Active Tab Down One Page | `⌥PageDown` | `Alt+PageDown` | no dialog open |
-
-Page scrolling only acts when the active tab is an agent or a terminal.
+| Split Tile Horizontally | `⌘\` | `Ctrl+\` | Inserts a horizontal divider (stacked panes) in the focused tile. |
+| Split Tile Vertically | `⇧⌘\` | `Ctrl+Shift+\` | Inserts a vertical divider (side-by-side panes) in the focused tile. |
+| Toggle Left Sidebar | `⇧⌘[` | `Ctrl+Shift+[` | Collapses or expands the Workspaces and Workers sidebar. |
+| Toggle Right Sidebar | `⇧⌘]` | `Ctrl+Shift+]` | Collapses or expands the Files sidebar. |
+| Scroll Active Tab Up One Page | `⌥PageUp` | `Alt+PageUp` | Pages up in the active agent chat or terminal. |
+| Scroll Active Tab Down One Page | `⌥PageDown` | `Alt+PageDown` | Pages down in the active agent chat or terminal. |
 
 ### Files
 
-| Command | macOS | Windows / Linux | Active when |
+| Action | macOS | Windows / Linux | Notes |
 |---|---|---|---|
-| Refresh Directory Tree | `⌘R` / `F5` | `Ctrl+R` / `F5` | always |
-| Toggle Hidden Files | `⇧⌘H` | `Ctrl+Shift+H` | always |
+| Refresh Directory Tree | `⌘R` or `F5` | `Ctrl+R` or `F5` | Reloads git status and directory listings in the Files sidebar. |
+| Toggle Hidden Files | `⇧⌘H` | `Ctrl+Shift+H` | Shows or hides dotfiles in the Files sidebar. |
 
-These act on the file browser. See [File Browser](/docs/using/file-browser/).
+### Chat & input queue
 
-### Chat
-
-| Command | macOS | Windows / Linux | Active when |
+| Action | macOS | Windows / Linux | Notes |
 |---|---|---|---|
-| Resume Queue and Steer or Preempt | `⌘⏎` | `Ctrl+⏎` | agent tab, composer empty, no terminal focused, no dialog open |
+| Resume Queue and Steer or Preempt | `⌘⏎` | `Ctrl+⏎` | Active in an agent tab when the composer is empty and no dialog or terminal is focused. |
 
-`Resume Queue and Steer or Preempt` acts on the input queue in one press:
+When a turn is running and the composer is empty, pressing `⌘⏎` / `Ctrl+⏎` handles the input queue in one step:
 
-- When the provider accepts a steer, it hands the queue's first item to the turn the agent already runs. When the provider can only interrupt, it preempts instead: it cancels the turn, and the first item goes out next.
-- When the queue is paused, the same press also resumes it. When the queue waits for login recovery, the press opens the recovery dialog instead.
+- If the queue is paused, it resumes delivery (or opens the login-recovery dialog if the queue waits for sign-in).
+- If a waiting item sits at the head of the queue, it steers that item into the running turn — or cancels the running turn and sends the item next when the provider supports preemption instead of steering.
+- If the composer holds text, an attachment, or a pending permission prompt, `⌘⏎` / `Ctrl+⏎` sends the composer instead. Scheduled items stay waiting until their scheduled time arrives.
 
-It acts only on an empty composer, because `Cmd/Ctrl+Enter` sends whatever the composer holds in the default **Cmd/Ctrl+Enter sends** mode — so text, an attachment, or a permission prompt awaiting approval never triggers a queue action. The press does not steer or preempt when the provider supports neither, when the queue is empty, when no turn is running, or when the first item is scheduled for a later time (it stays waiting until its scheduled instant arrives). Steering also requires an ordinary turn and a steerable first item, while preemption can cancel a non-steerable turn or dispatch a `/clear` or `/compact` item next. See [The input queue](/docs/using/coding-agents/#the-input-queue).
+See [The input queue](/docs/using/coding-agents/#the-input-queue) for the full queueing and steering workflow.
 
 {{< callout type="info" >}}
-`Send Message` (command `chat.sendMessage`) submits the focused chat input from anywhere inside the chat panel. It has no default chord, because the chat editor's own Enter and Cmd/Ctrl+Enter already send — see [Chat editor keys](#chat-editor-keys-not-part-of-the-global-system) below. Bind it in Preferences if you want a second way in.
+An additional **Send Message** command starts unbound because the chat editor already sends with `Enter` or `Cmd/Ctrl+Enter`. You can assign it a shortcut in **Preferences → Keyboard Shortcuts** if you want a global chord that submits from anywhere in the chat pane.
 {{< /callout >}}
 
 ### Terminal
 
-| Command | macOS | Windows / Linux | Active when |
+| Action | macOS | Windows / Linux | Notes |
 |---|---|---|---|
-| Toggle Quake Terminal | ``⌃` `` | ``Ctrl+` `` | no dialog open |
+| Toggle Quake Terminal | ``⌃` `` | ``Ctrl+` `` | Slides the per-directory Quake terminal open or shut from any tab. |
 
-The Quake terminal is a shell that slides over the centre of the app for one working directory, and the chord works in every tab kind because every tab has one; see [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal). It uses `Ctrl` on macOS too, because macOS reserves `Cmd` and that key for its own window cycler. The binding follows the key's POSITION, so it is the key under `Esc` whatever character your layout prints on it. `Open Quake Terminal` (`terminal.openQuake`) and `Close Quake Terminal` (`terminal.closeQuake`) have no default chord and are there to bind if you would rather not toggle.
+The Quake shortcut uses `Ctrl` on macOS too, because macOS reserves ``⌘` `` for switching between app windows. Two extra commands — **Open Quake Terminal** and **Close Quake Terminal** — start unbound so you can bind separate open and close keys in Preferences if you prefer not to toggle. See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal).
 
-### Terminal (macOS only)
+When a terminal is focused on **macOS**, four extra bindings send standard shell line and word navigation sequences:
 
-These give Mac users emacs-style line and word motion under Cmd/Option + arrow keys. They are active only when a terminal is focused **and** the platform is macOS.
-
-| Command | macOS | Active when |
-|---|---|---|
-| Go to Line Start | `⌘←` | terminal focused, macOS |
-| Go to Line End | `⌘→` | terminal focused, macOS |
-| Go to Previous Word | `⌥←` | terminal focused, macOS |
-| Go to Next Word | `⌥→` | terminal focused, macOS |
-
-Under the hood these send terminal control sequences (Ctrl-A, Ctrl-E, Esc-b, Esc-f) to the focused terminal. See [Terminals](/docs/using/terminals/).
-
-### Dialogs
-
-`Esc` closes the most recently opened dialog — unless that dialog is busy (for example, mid-operation), in which case it resists closing until the operation finishes.
-
-`Esc` is not a keybinding, and no command performs this action. The browser delivers the key to the innermost open layer, so one press dismisses one layer: with a dropdown menu open inside a dialog, the first `Esc` closes the menu and the second closes the dialog. A control that answers `Esc` itself comes first in the same way — the Preferences search box clears the query, and an inline rename cancels the edit.
-
-`Esc` is **reserved**: an override that binds it is ignored, and the log records the entry that was dropped. Every keybinding fires from a single listener that runs ahead of the layers, so a binding for `Esc` would close a dialog underneath an open menu — which is the behaviour the reservation exists to prevent.
-
-### New Workspace
-
-| Command | macOS | Windows / Linux | Active when |
-|---|---|---|---|
-| New Workspace Dialog | `⌥⌘N` | `Ctrl+Alt+N` | no dialog open |
-
-See [Workspaces](/docs/using/workspaces/).
+| Action | macOS |
+|---|---|
+| Go to Line Start | `⌘←` |
+| Go to Line End | `⌘→` |
+| Go to Previous Word | `⌥←` |
+| Go to Next Word | `⌥→` |
 
 ### Desktop app only
 
-The `isDesktop` clause restricts these to the desktop app. They have no effect in the browser.
+These shortcuts work only inside **LeapMux Desktop** (they have no effect in a web browser):
 
-| Command | macOS | Windows / Linux | Active when |
+| Action | macOS | Windows / Linux | Notes |
 |---|---|---|---|
-| [Open in External App](#open-in-external-app-desktop-solo-mode) | `⇧⌘E` | `Ctrl+Shift+E` | no dialog open, desktop |
-| Open Web Inspector | `⌥⌘I` / `F12` | `Ctrl+Alt+I` / `F12` | desktop |
-| Zoom In | `⌘=` / `⌘Num+` | `Ctrl+=` / `Ctrl+Num+` | desktop |
-| Zoom Out | `⌘-` / `⌘Num-` | `Ctrl+-` / `Ctrl+Num-` | desktop |
-| Actual Size | `⌘0` / `⌘Num0` | `Ctrl+0` / `Ctrl+Num0` | desktop |
-| Quit Application | `⌘Q` | `Ctrl+Q` | desktop |
+| [Open in External App](#open-in-external-app-desktop-solo-mode) | `⇧⌘E` | `Ctrl+Shift+E` | Opens the active tab's directory in your chosen editor or file manager (solo mode only). |
+| Open Web Inspector | `⌥⌘I` or `F12` | `Ctrl+Alt+I` or `F12` | Works on every desktop screen. |
+| Zoom In | `⌘=` or `⌘Num+` | `Ctrl+=` or `Ctrl+Num+` | Works on every desktop screen. |
+| Zoom Out | `⌘-` or `⌘Num-` | `Ctrl+-` or `Ctrl+Num-` | Works on every desktop screen. |
+| Actual Size | `⌘0` or `⌘Num0` | `Ctrl+0` or `Ctrl+Num0` | Resets desktop zoom to 100%. |
+| Quit Application | `⌘Q` | `Ctrl+Q` | Works on every desktop screen. |
 
-{{< callout type="info" >}}
-"Open in External App" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local application to launch and the command does nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for run modes, and [Open in external app (desktop, solo mode)](#open-in-external-app-desktop-solo-mode) below for the full feature.
-{{< /callout >}}
+#### Open in external app (desktop, solo mode)
 
-The zoom, web-inspector, and quit shortcuts ("core" bindings) are mounted at the application root, so they work on every screen — including the launcher and the sign-in/setup pages — not just inside a workspace.
+Press `⇧⌘E` (macOS) or `Ctrl+Shift+E` (Windows / Linux), or click the **Open in …** split button in the desktop title bar, to open the active tab's working directory in your local editor or file manager.
 
-### Open in external app (desktop, solo mode)
+- **Availability:** Shown only in **LeapMux Desktop** running in **solo mode** when the active tab has a local working directory. It is hidden in the browser and in distributed mode because remote Workers run on another machine.
+- **Remembered editor:** Clicking the main face or pressing the shortcut launches your preferred application (or the first detected editor such as VS Code, Cursor, Zed, JetBrains IDEs, or Sublime Text if you have not chosen one yet).
+- **Switching applications:** Click the chevron beside the button to pick any detected editor or your OS file manager (Finder, File Explorer, or Linux file manager), or click **Refresh app list** after installing a new editor.
+- **Sidebar menus:** Workspace, repository, and branch menus in the left sidebar include the same **Reveal in file manager**, **Open in {AppName}**, and **Open in…** actions for each checkout.
 
-The `⇧⌘E` / `Ctrl+Shift+E` shortcut opens the active tab's working directory in an external application. It is one face of a feature that also lives in the desktop workspace title bar as a **split button**, and in the sidebar's workspace, repository and branch row menus.
+## Chat editor keys
 
-**Where it appears.** The split button shows in the title bar only when all three conditions hold. You are on the **desktop app in solo mode**. The active tab has a working directory. The machine reports at least one application. It is hidden in the browser and in distributed mode.
+Inside the chat message box, key handling depends on your **Enter key behavior** preference (switch it from the composer's **[+]** menu or **Preferences → Chat & Composer**):
 
-**The two faces of the split button.**
-
-- The **main face** reads "Open in {AppName}" (with the application's icon) when you have a preferred application. It reads "Open in …" with a generic icon when you have not picked one. With a preferred application, clicking the main face — or pressing `⇧⌘E` / `Ctrl+Shift+E` — launches it. Without one, clicking the main face opens the dropdown; pressing the shortcut launches the first detected EDITOR and remembers it. It skips the file manager, which leads the list, because a machine with three editors installed should not open Finder.
-- The **chevron** opens a dropdown that lists your file manager first, then every detected editor alphabetically, with a checkmark on the current preferred one. A separator and **"Refresh app list"** close the list.
-
-Picking a row from the dropdown opens the working directory in that application and remembers it. The main face and the keyboard shortcut then follow your last pick. "Refresh app list" re-probes your machine, which is what you want after you install or remove an application.
-
-**The file manager is one of the choices.** Pick **Finder**, **File Explorer** or your Linux file manager and the split button opens the directory there. The row menus that offer the same list already carry **Reveal in file manager** of their own, so they drop their "Open in …" row while the file manager is your preferred application.
-
-**The same list in the sidebar.** A workspace row, a repository row and a branch row each carry a **Repository** section with **Copy repository URL**, **Copy repository path**, **Reveal in file manager**, an **Open in {AppName}** row for your preferred application, and an **Open in…** submenu holding the whole list. A workspace or a repository that spans more than one checkout gives each checkout its own submenu, so one checkout's actions stay together.
-
-**What gets opened.** LeapMux opens the **active tab's working directory**, or the checkout a row menu names. The directory must be absolute and must exist. LeapMux rejects relative paths, missing paths, and plain files, so nothing launches when the active tab has no real directory.
-
-**Detected applications.** LeapMux auto-detects popular editors including VS Code, the JetBrains IDEs, Cursor, Zed, Sublime Text, and others. It probes known install locations, your `PATH`, and the JetBrains Toolbox directory. On macOS it prefers the installed `.app` bundle, because that is the route that brings the application's window to the front. Your operating system's file manager is always in the list. The chevron dropdown shows exactly what was found on your machine.
-
-## Reading the macOS glyphs
-
-| Glyph | Modifier |
-|---|---|
-| ⌘ | Cmd (`$mod` on macOS) |
-| ⌃ | Control |
-| ⌥ | Option / Alt |
-| ⇧ | Shift |
-
-A few key names also render specially: `Escape` shows as `Esc`, `Enter` as `⏎`, arrows as `← → ↑ ↓`, `NumpadAdd` as `Num+`, `NumpadSubtract` as `Num-`, and `Numpad0` as `Num0`. On macOS, modifiers always appear in the order ⌃⌥⇧⌘ with no separators, so Cmd renders last (for example, `⇧⌘N`). On Windows and Linux they are joined with `+` (for example, `Ctrl+Shift+N`).
-
-{{< callout >}}
-You do not have to memorize these. LeapMux appends the active shortcut to tooltips and dropdown menu items automatically — for example, "New Agent (⌘N)" — formatted for your platform.
-{{< /callout >}}
-
-## Customizing keybindings
-
-Customize bindings in the **Preferences → Keyboard Shortcuts** category: a table of every command with its binding and source (Default or Custom). Click a binding to capture a new chord; a chord already bound in the same context is refused with the conflicting command's name; **Reset** restores the default.
-
-Overrides are stored account-level (the `keybindings` user setting, capped at 200 entries), so they follow you to every device — see [Settings & Preferences](/docs/using/settings/#keyboard-shortcuts). The override format below is what the editor writes.
-
-LeapMux's shortcut engine is built to rebind, add, or remove shortcuts through **account-level overrides** stored as JSON. The rest of this section describes that format and how the engine merges it with the defaults.
-
-### Where overrides live
-
-Overrides live in your account settings on the Hub (the `keybindings` key), not in browser storage, so they follow you across browsers and devices when you sign in to the same account. The value is a JSON-encoded array of override objects:
-
-```json
-[
-  { "command": "app.newAgent", "key": "$mod+Shift+a" },
-  { "command": "app.closeActiveTab", "key": "" },
-  { "command": "app.toggleHiddenFiles", "key": "$mod+k $mod+h" }
-]
-```
-
-Each override has the shape:
-
-| Field | Required | Meaning |
+| Mode | Send message | Insert newline |
 |---|---|---|
-| `command` | yes | The command id to bind (for example `app.newAgent`). |
-| `key` | yes | A `tinykeys` key string, or `""` (empty) to unbind. |
-| `when` | no | A `when`-clause; inherits the default's clause if omitted. |
+| **Cmd/Ctrl+Enter sends** (default) | `⌘⏎` / `Ctrl+⏎` | `Enter` |
+| **Enter sends** | `Enter` | `Shift+Enter` |
 
-{{< callout type="warning" >}}
-Overrides are applied to **workspace** keybindings. The core desktop bindings (quit, zoom, web inspector) are not part of the override-merged set.
-{{< /callout >}}
+The chat editor also includes built-in Markdown keys that stay fixed: `Tab` and `Shift+Tab` indent or outdent lists and headings, `Backspace` lifts blockquotes and code blocks, `Cmd/Ctrl+E` toggles inline code, and `Shift+Tab` toggles plan mode on providers that support it.
 
-### How overrides merge with the defaults
+## Customizing shortcuts
 
-For each overridden command, LeapMux merges the overrides with the defaults using these rules:
+{{< screenshot src="preferences-keyboard-shortcuts" alt="LeapMux Preferences Keyboard Shortcuts panel listing commands, active key bindings, and Default or Custom sources" caption="Remap any workspace command in Preferences → Keyboard Shortcuts with live conflict checking and account-level sync." width="1280" height="856" >}}
 
-- The default binding(s) for that command are **replaced** by all non-empty-key overrides for it.
-- Each override **inherits the default's `when`-clause** unless it specifies its own `when`.
-- A command may have **multiple overrides** — it gets bound to every non-empty key listed.
-- An override with `"key": ""` (empty) **unbinds** the command. If every override for a command has an empty key, the command is fully unbound.
-- An override for a command **not** in the defaults is appended as a brand-new binding (with no inherited `when`-clause).
-- An override whose key is `Escape` is **dropped**, and the command keeps whatever the defaults give it. `Esc` is reserved for the innermost open layer — see [Dialogs](#dialogs). A chord that merely contains it, such as `Shift+Escape`, binds normally.
+Open **Preferences → Keyboard Shortcuts** (`⌘,` on macOS, `Ctrl+,` on Windows and Linux) to view and remap any workspace shortcut.
 
-Changes take effect immediately: when the overrides change, LeapMux re-merges and re-binds the workspace shortcuts without a reload.
+- **Record a new binding:** Click a command's shortcut, then press the key combination you want. You can also record a two-step **chord** (press one combination, then a second).
+- **Conflict checks:** If another command in the same context already uses that shortcut, LeapMux refuses it and tells you which command conflicts.
+- **Unbind or reset:** Clear a binding to unbind the command, or click **Reset** on any row marked **Custom** to restore its default.
+- **Automatic sync:** Customizations take effect immediately with no reload and sync to your account across every browser and desktop device where you sign in (up to 200 custom bindings).
 
-Each override targets a command by its id. Each id corresponds to one of the actions in the [default tables above](#default-keyboard-shortcuts); the bindable workspace command ids are:
+A few rules always apply:
 
-| Command id | Action |
-|---|---|
-| `app.newAgent` | New Agent |
-| `app.newTerminal` | New Terminal |
-| `app.closeActiveTab` | Close Active Tab |
-| `app.newAgentDialog` | New Agent Dialog |
-| `app.newTerminalDialog` | New Terminal Dialog |
-| `app.newWorkspaceDialog` | New Workspace Dialog |
-| `app.toggleFloatingTab` | Toggle Floating Tab |
-| `app.refreshDirectoryTree` | Refresh Directory Tree |
-| `app.toggleHiddenFiles` | Toggle Hidden Files |
-| `app.switchToTab1` … `app.switchToTab9` | Switch to Tab 1–9 |
-| `app.previousTab` / `app.nextTab` | Previous / Next Tab |
-| `app.scrollActiveTabPageUp` / `app.scrollActiveTabPageDown` | Scroll Active Tab Up / Down One Page |
-| `app.splitTileHorizontal` / `app.splitTileVertical` | Split Tile Horizontally / Vertically |
-| `app.toggleLeftSidebar` / `app.toggleRightSidebar` | Toggle Left / Right Sidebar |
-| `app.openPreferences` | Open Preferences |
-| `app.openInExternalApp` | Open in External App |
-| `chat.sendMessage` | Send Message |
-| `chat.advanceInputQueue` | Resume Queue and Steer or Preempt |
-| `terminal.toggleQuake` | Toggle Quake Terminal |
-| `terminal.openQuake` / `terminal.closeQuake` | Open / Close Quake Terminal |
-| `terminal.lineStart` / `terminal.lineEnd` | Go to Line Start / End |
-| `terminal.wordLeft` / `terminal.wordRight` | Go to Previous / Next Word |
+- **`Esc` stays reserved.** You cannot rebind `Esc` to another command, so it always closes the topmost menu, search box, or dialog reliably.
+- **Core desktop shortcuts stay fixed.** Zoom, Web Inspector, and Quit keep their platform defaults.
+- **macOS menu bar accelerators.** On macOS Desktop, remapping **Open Preferences** updates the native menu bar automatically as long as the new binding is a single keystroke (two-step chords still work inside the app, but cannot appear as native macOS menu accelerators).
 
-{{< callout type="info" >}}
-If the `keybindings` setting ever holds a value the client cannot read, the engine treats it as "no overrides" and silently ignores it, falling back to the defaults — so a malformed value never breaks the default shortcuts.
-{{< /callout >}}
+## Keyboard layouts and typing
 
-## Desktop (Tauri) accelerator differences
-
-On the desktop app, a small number of shortcuts are mirrored onto the **native menu bar** as accelerators, but only on **macOS**. Windows and Linux render their own controls through the app's custom title bar instead.
-
-Two commands get their accelerators synced onto the macOS menu:
-
-- **Open Preferences** (`⌘,`) appears as **Preferences...** in the **LeapMux Desktop** application menu (the leftmost app menu on macOS).
-- **Open Web Inspector** appears as **Open Web Inspector** in the Help submenu.
-
-If the **Open Preferences** binding is overridden, the macOS menu accelerator updates to match.
-
-{{< callout type="warning" >}}
-**Chords cannot become macOS menu accelerators.** A binding that uses a space-separated chord (such as `$mod+k $mod+s`) still works as a regular shortcut, but it will not appear as an accelerator on the native menu item.
-{{< /callout >}}
-
-The macOS menu also carries the usual system items in each submenu (About, Services, Hide, Quit, the standard Edit and Window commands, and so on). These come from macOS, not from the LeapMux shortcut registry, so their accelerators are the OS defaults you already know and are not affected by keybinding overrides.
-
-## Chat editor keys (not part of the global system)
-
-The chat message editor has its own in-editor key handling that is **separate** from the global shortcut registry described above. The most important of these is how Enter behaves, governed by the **Enter key mode** preference (a per-browser setting; the default is Cmd/Ctrl+Enter sends):
-
-- **Cmd/Ctrl+Enter sends (default):** `⌘Enter` / `Ctrl+Enter` sends the message; a plain `Enter` inserts a newline.
-- **Enter sends:** a plain `Enter` sends the message; `Shift+Enter` inserts a newline.
-
-You can flip between the two from the composer's **[+]** menu. Other editor keys handle Markdown structure inside the message box — for example, `Tab`/`Shift+Tab` adjust list and heading levels, `Backspace` lifts blockquotes and code blocks, and `Cmd/Ctrl+E` toggles inline code. These editor keys are not bindable through keybinding overrides.
-
-For more on writing and sending messages to agents, see [Coding Agents](/docs/using/coding-agents/).
-
-## How matching works under the hood
-
-You do not need any of this to use the shortcuts, but it explains a few edge cases:
-
-- **Keys are matched by physical position.** Single-letter keys are matched by the key's physical position on the keyboard (the browser's `event.code`), not by the character it produces. This is deliberate: on macOS WebKit, holding Option transforms the character (for example, `Cmd+Alt+N` would otherwise produce `˜`). Position-based matching keeps shortcuts working across keyboard layouts and modifier combinations.
-- **First match wins.** When a key matches more than one binding, the first binding in registration order whose `when`-clause is true runs; LeapMux then prevents the browser default and runs the command.
+- **Consistent across keyboard layouts:** Shortcuts follow physical key positions rather than typed characters, so bindings like ``Ctrl+` `` and `⌥⌘N` keep working on non-US keyboard layouts and macOS Option-key combinations.
+- **Safe while typing:** Typing inside a text box, editor, or search field never accidentally fires plain unmodified letter shortcuts. Shortcuts with modifiers (`⌘`, `Ctrl`, `Alt`, `Shift`) and function keys (`F1`–`F12`) still work everywhere.
+- **IME friendly:** While you compose text with an Input Method Editor (for example Chinese, Japanese, or Korean), LeapMux holds shortcuts back until composition finishes.
 
 ## See also
 
-- [Tabs & Layout](/docs/using/tabs-and-layout/) — the tabs, tiles, and sidebars these shortcuts drive.
-- [Terminals](/docs/using/terminals/) — terminal behavior and the macOS cursor-motion shortcuts.
-- [File Browser](/docs/using/file-browser/) — the directory tree refreshed and filtered by the Files shortcuts.
-- [Settings & Preferences](/docs/using/settings/) — the Preferences dialog and where account vs. browser settings live.
-- [Running LeapMux](/docs/admin/running-leapmux/) — solo vs. distributed mode, which affects the "Open in External App" shortcut.
+- [Tabs & Layout](/docs/using/tabs-and-layout/) — tabs, splits, grids, floating windows, and sidebars.
+- [Coding Agents](/docs/using/coding-agents/) — composer keys, plan mode, and the input queue.
+- [Terminals](/docs/using/terminals/) — terminal tabs, scrollback paging, and the Quake-mode terminal.
+- [File Browser](/docs/using/file-browser/) — directory refresh and hidden-file toggles.
+- [Settings & Preferences](/docs/using/settings/) — the full Preferences dialog and account-vs-device sync.

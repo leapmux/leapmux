@@ -5,15 +5,16 @@
  * (`./leapmux`), registers a second online Worker (`gpu-devbox`), builds a
  * deterministic fixture Git repository with linked worktrees, scripts realistic
  * Claude Code / Codex / Antigravity sessions against the local mock model
- * server (zero network calls, zero API keys), drives a real xterm.js terminal
- * and Git diff viewer, and captures 12 Retina (2x) PNGs (6 views x light/dark)
- * into `site/static/images/docs/`.
+ * server (zero network calls, zero API keys), drives a real xterm.js terminal,
+ * floating windows, Quake-mode terminal, input queue, Markdown/diff viewers,
+ * dialogs, context menus, Preferences panels, mobile layout, and login screen,
+ * and captures Retina (2x) light & dark PNGs into `site/static/images/docs/`.
  *
  * Run explicitly by developers when the UI or fixtures change:
  *   task generate-site-screenshots
  */
 
-import type { Locator, Page } from '@playwright/test'
+import type { Browser, BrowserContext, Locator, Page } from '@playwright/test'
 import type { ChildProcess } from 'node:child_process'
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -43,7 +44,12 @@ import { extendMockModelScenario } from '../tests/e2e/helpers/mockModelScenario'
 import { AMBIENT_SCENARIO_ID } from '../tests/e2e/helpers/mockModelScript'
 import { stopProcess } from '../tests/e2e/helpers/process'
 import { trackProcess } from '../tests/e2e/helpers/processRegistry'
-import { bashToolCall, editToolCall, readToolCall } from '../tests/e2e/helpers/providerToolCalls'
+import {
+  askUserQuestionToolCall,
+  bashToolCall,
+  editToolCall,
+  readToolCall,
+} from '../tests/e2e/helpers/providerToolCalls'
 import { deliberateWorkingDir } from '../tests/e2e/helpers/providerWorkingDir'
 import { hubSpawnEnv } from '../tests/e2e/helpers/server'
 import { startSuiteServer } from '../tests/e2e/helpers/suiteServer'
@@ -62,6 +68,9 @@ const BINARY_PATH = resolve(ROOT, process.platform === 'win32'
 const OUT_DIR = resolve(ROOT, 'site/static/images/docs')
 
 const VIEWPORT = { width: 1440, height: 900 }
+const MOD_KEY = process.platform === 'darwin'
+  ? 'Meta'
+  : 'Control'
 
 interface ClipRect {
   x: number
@@ -77,7 +86,28 @@ interface FixtureRepos {
   wtTokenRace: string
   telemetryRepo: string
   backoffPath: string
+  readmePath: string
 }
+
+const README_CONTENT = `# payments-api
+
+Checkout retry backoff and signed webhook delivery service.
+
+## Retry policy
+
+Outgoing webhook deliveries use **full-jitter exponential backoff** capped at \`30s\` so retrying clients never synchronize after a downstream outage:
+
+\`\`\`go
+ceiling := min(baseBackoff<<min(attempt, 10), maxBackoff)
+delay := rand.N(ceiling + 1)
+\`\`\`
+
+## Packages
+
+- \`internal/retry\` — jittered backoff calculator and cap enforcement
+- \`internal/handler\` — webhook receiver and HMAC-SHA256 verification
+- \`internal/auth\` — thread-safe token cache with \`sync.RWMutex\`
+`
 
 const BACKOFF_BEFORE = `package retry
 
@@ -277,12 +307,18 @@ function createFixtureRepos(runDir: string): FixtureRepos {
   git(paymentsMain, 'remote', 'add', 'origin', 'https://github.com/acme/payments-api.git')
 
   writeFile(join(paymentsMain, 'go.mod'), 'module acme.dev/payments\n\ngo 1.24\n')
-  writeFile(join(paymentsMain, 'README.md'), '# payments-api\n\nCheckout retry and webhook delivery service.\n')
+  writeFile(join(paymentsMain, 'README.md'), README_CONTENT)
+  git(paymentsMain, 'add', '.')
+  git(paymentsMain, 'commit', '-m', 'chore: scaffold payments-api module and docs')
+
   writeFile(join(paymentsMain, 'internal/retry/backoff.go'), BACKOFF_BEFORE)
+  git(paymentsMain, 'add', '.')
+  git(paymentsMain, 'commit', '-m', 'feat(retry): add exponential backoff helper')
+
   writeFile(join(paymentsMain, 'internal/handler/webhook.go'), WEBHOOK_INITIAL)
   writeFile(join(paymentsMain, 'internal/auth/token.go'), TOKEN_INITIAL)
   git(paymentsMain, 'add', '.')
-  git(paymentsMain, 'commit', '-m', 'feat: initial checkout retry and webhook service')
+  git(paymentsMain, 'commit', '-m', 'feat(webhook): add handler and token cache')
 
   // Create linked worktrees whose leaf directory basename is `payments-api` so
   // the File Browser root node displays `payments-api` cleanly.
@@ -326,6 +362,7 @@ function createFixtureRepos(runDir: string): FixtureRepos {
     wtTokenRace,
     telemetryRepo,
     backoffPath: join(wtRetryJitter, 'internal/retry/backoff.go'),
+    readmePath: join(wtRetryJitter, 'README.md'),
   }
 }
 
@@ -394,11 +431,11 @@ async function startSecondWorker(
   return { proc, workerId }
 }
 
-function clampClip(rect: ClipRect): ClipRect {
+function clampClip(rect: ClipRect, viewport = VIEWPORT): ClipRect {
   const x = Math.max(0, Math.round(rect.x))
   const y = Math.max(0, Math.round(rect.y))
-  const right = Math.min(VIEWPORT.width, Math.round(rect.x + rect.width))
-  const bottom = Math.min(VIEWPORT.height, Math.round(rect.y + rect.height))
+  const right = Math.min(viewport.width, Math.round(rect.x + rect.width))
+  const bottom = Math.min(viewport.height, Math.round(rect.y + rect.height))
   return {
     x,
     y,
@@ -414,15 +451,57 @@ async function requireBox(locator: Locator, label: string): Promise<ClipRect> {
   return box
 }
 
+function unionRects(a: ClipRect, b: ClipRect): ClipRect {
+  const x = Math.min(a.x, b.x)
+  const y = Math.min(a.y, b.y)
+  const right = Math.max(a.x + a.width, b.x + b.width)
+  const bottom = Math.max(a.y + a.height, b.y + b.height)
+  return {
+    x,
+    y,
+    width: right - x,
+    height: bottom - y,
+  }
+}
+
+function padClip(rect: ClipRect, padX: number, padY = padX): ClipRect {
+  return clampClip({
+    x: rect.x - padX,
+    y: rect.y - padY,
+    width: rect.width + padX * 2,
+    height: rect.height + padY * 2,
+  })
+}
+
+async function waitForTheme(page: Page, theme: 'light' | 'dark'): Promise<void> {
+  await page.emulateMedia({ colorScheme: theme })
+  await waitFor(`html[data-theme="${theme}"]`, async () => {
+    return (await page.locator('html').getAttribute('data-theme')) === theme
+  }, 10_000)
+  await page.waitForTimeout(450)
+  await page.evaluate(() => document.fonts.ready)
+}
+
+async function snap(
+  page: Page,
+  name: string,
+  theme: 'light' | 'dark',
+  clip: ClipRect,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  const outPath = join(OUT_DIR, `${name}-${theme}.png`)
+  await page.screenshot({ path: outPath, clip, animations: 'disabled' })
+  if (theme === 'light')
+    recorded[name] = clip
+  console.log(`  wrote ${name}-${theme}.png (${clip.width}x${clip.height} @2x)`)
+}
+
 async function typeComposerAndSend(page: Page, text: string): Promise<void> {
   const editor = page.locator('[data-testid="composer-editor"]:visible .ProseMirror[contenteditable="true"]').first()
   await editor.waitFor({ state: 'visible', timeout: 20_000 })
   await editor.locator(':scope > :first-child').click()
   await page.keyboard.insertText(text)
-  const mod = process.platform === 'darwin'
-    ? 'Meta'
-    : 'Control'
-  await page.keyboard.press(`${mod}+Enter`)
+  await page.keyboard.press(`${MOD_KEY}+Enter`)
   await waitFor('composer cleared after send', async () => {
     const remaining = await editor.textContent().catch(() => '')
     return (remaining ?? '').trim() === ''
@@ -446,101 +525,885 @@ async function getActiveTerminalText(page: Page): Promise<string> {
   })
 }
 
-async function sendTerminalLine(page: Page, tile: Locator, command: string): Promise<void> {
-  await tile.click({
-    position: { x: 40, y: 80 },
+async function sendTerminalLine(page: Page, container: Locator, command: string): Promise<void> {
+  const activePane = container.locator('[data-terminal-id][data-active="true"]').first()
+  const target = (await activePane.count()) > 0
+    ? activePane
+    : container
+  const xterm = target.locator('.xterm').first()
+  await xterm.click({
+    position: { x: 40, y: 40 },
   })
-  const textarea = tile.locator('.xterm-helper-textarea').first()
+  const textarea = target.locator('.xterm-helper-textarea').first()
   await textarea.focus()
   await page.keyboard.type(command, { delay: 10 })
   await page.keyboard.press('Enter')
 }
 
-async function captureCodingAgentChat(page: Page, theme: 'light' | 'dark'): Promise<ClipRect> {
-  await page.emulateMedia({ colorScheme: theme })
-  await waitFor(`html[data-theme="${theme}"]`, async () => {
-    return (await page.locator('html').getAttribute('data-theme')) === theme
-  }, 10_000)
-  await page.waitForTimeout(500)
-  await page.evaluate(() => document.fonts.ready)
+async function waitForLayoutSaved(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((resolveSaved) => {
+    const timer = setTimeout(() => {
+      window.removeEventListener('leapmux:layout-saved', onSaved)
+      resolveSaved()
+    }, 3000)
+    function onSaved() {
+      clearTimeout(timer)
+      window.removeEventListener('leapmux:layout-saved', onSaved)
+      resolveSaved()
+    }
+    window.addEventListener('leapmux:layout-saved', onSaved)
+  }))
+}
 
+async function centerCanvasClip(page: Page): Promise<ClipRect> {
   const resizeHandles = page.locator('[data-testid="resize-handle"]')
   const leftHandle = await requireBox(resizeHandles.nth(0), 'left resize handle')
   const rightHandle = await requireBox(resizeHandles.nth(1), 'right resize handle')
-  const clip = clampClip({
+  return clampClip({
     x: leftHandle.x - 24,
     y: 0,
     width: (rightHandle.x + rightHandle.width + 24) - (leftHandle.x - 24),
     height: VIEWPORT.height,
   })
-  const outPath = join(OUT_DIR, `coding-agent-chat-${theme}.png`)
-  await page.screenshot({ path: outPath, clip, animations: 'disabled' })
-  console.log(`  wrote coding-agent-chat-${theme}.png (${clip.width}x${clip.height} @2x)`)
-  return clip
 }
 
-async function captureWorkspaceViews(page: Page, theme: 'light' | 'dark'): Promise<Record<string, ClipRect>> {
-  await page.emulateMedia({ colorScheme: theme })
-  await waitFor(`html[data-theme="${theme}"]`, async () => {
-    const current = await page.locator('html').getAttribute('data-theme')
-    return current === theme
-  }, 10_000)
+async function dragPointer(
+  page: Page,
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): Promise<void> {
+  await page.mouse.move(fromX, fromY)
+  await page.mouse.down()
+  await page.mouse.move(toX, toY, { steps: 10 })
+  await page.mouse.up()
+}
 
-  // Allow CSS custom properties, Shiki code highlights, and xterm.js DOM
-  // palettes to repaint cleanly after the theme transition.
-  await page.waitForTimeout(600)
-  await page.evaluate(() => document.fonts.ready)
+function futureLocalDateTime(): string {
+  const target = new Date(Date.now() + 24 * 60 * 60 * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}T09:00`
+}
+
+async function captureCleanWorkspaceViews(
+  page: Page,
+  theme: 'light' | 'dark',
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  await waitForTheme(page, theme)
+  await page.waitForTimeout(200)
 
   const tiles = page.locator('[data-testid="tile"]')
   const tile1 = await requireBox(tiles.nth(1), 'tile 1 (diff viewer)')
   const tile2 = await requireBox(tiles.nth(2), 'tile 2 (terminal)')
   const resizeHandles = page.locator('[data-testid="resize-handle"]')
   const leftHandle = await requireBox(resizeHandles.nth(0), 'left resize handle')
-  const rightHandle = await requireBox(resizeHandles.nth(1), 'right resize handle')
+  const centerClip = await centerCanvasClip(page)
 
-  const clips: Record<string, ClipRect> = {
-    'hero-workspace': {
-      x: 0,
-      y: 0,
-      width: VIEWPORT.width,
-      height: VIEWPORT.height,
+  await snap(page, 'sidebar-workspaces', theme, clampClip({
+    x: 0,
+    y: 0,
+    width: leftHandle.x + leftHandle.width + 150,
+    height: VIEWPORT.height,
+  }), recorded)
+
+  await snap(page, 'terminal-pane', theme, clampClip({
+    x: tile2.x - 24,
+    y: tile2.y - 28,
+    width: tile2.width + 48,
+    height: tile2.height + 52,
+  }), recorded)
+
+  await snap(page, 'tabs-tiling-layout', theme, centerClip, recorded)
+
+  await snap(page, 'file-browser-diff', theme, clampClip({
+    x: tile1.x - 24,
+    y: 0,
+    width: VIEWPORT.width - (tile1.x - 24),
+    height: tile1.y + tile1.height + 72,
+  }), recorded)
+}
+
+async function openFloatingLogWindow(
+  page: Page,
+  channel: Awaited<ReturnType<typeof getTestChannel>>,
+  workerId: string,
+  wsMain: string,
+  tile2Id: string,
+  wtRetryJitter: string,
+): Promise<void> {
+  const tile2 = page.locator('[data-testid="tile"]').nth(2)
+  await waitFor('floating candidate terminal opened in Tile 2', async () => {
+    await channel.callWorker(
+      workerId,
+      WorkerTerminalService.method.openTerminal,
+      {
+        workingDir: wtRetryJitter,
+        title: 'git log',
+        target: {
+          case: 'creation',
+          value: {
+            tabId: randomUUID(),
+            placement: {
+              workspaceId: wsMain,
+              destination: { case: 'tileId', value: tile2Id },
+              insertion: TabInsertion.LAST,
+            },
+          },
+        },
+      },
+    )
+    return true
+  }, 10_000, 200)
+
+  const gitLogTab = tile2.locator('[data-testid="tab"]').filter({ hasText: 'git log' }).first()
+  await gitLogTab.waitFor({ state: 'visible', timeout: 15_000 })
+  await gitLogTab.click()
+  await waitFor('floating terminal startup overlay gone', async () => {
+    return (await tile2.locator('[data-testid="terminal-startup-overlay"]:visible').count()) === 0
+  }, 20_000)
+
+  await waitFor('git log shell ready', async () => {
+    await sendTerminalLine(page, tile2, 'echo LM_FLOAT_READY')
+    const txt = await getActiveTerminalText(page)
+    return txt.includes('LM_FLOAT_READY')
+  }, 20_000, 400)
+
+  const logScript = [
+    `export PS1=$'\\e[36mpayments-api\\e[0m \\e[32m❯\\e[0m '`,
+    'clear',
+    `printf '\\e[36mpayments-api\\e[0m \\e[32m❯\\e[0m git log --oneline -n 3\\n'`,
+    `git log --format='%C(yellow)%h%C(reset) %s' -n 3`,
+  ].join(' && ')
+  await sendTerminalLine(page, tile2, logScript)
+  await waitFor('git log rendered in floating terminal', async () => {
+    const txt = await getActiveTerminalText(page)
+    return txt.includes('feat(webhook)') && txt.includes('feat(retry)')
+  }, 20_000, 300)
+
+  // Pop out the `git log` tab into a real floating window.
+  const popSaved = waitForLayoutSaved(page)
+  await tile2.locator('[data-testid="pop-out-button"]').click()
+  const floatWin = page.locator('[data-testid="floating-window"]').first()
+  await floatWin.waitFor({ state: 'visible', timeout: 10_000 })
+  await popSaved
+
+  // Resize compactly using the SE resize handle (second-to-last child div in
+  // FloatingWindowContainer's RESIZE_HANDLES) and position cleanly in the
+  // bottom-right corner of the page so the underlying tiled panes and File
+  // Browser remain legible around and faintly behind it.
+  const layer = page.locator('[data-testid="floating-window-layer"]').first()
+  const layerBox = await requireBox(layer, 'floating window layer')
+  const desiredWidth = 460
+  const desiredHeight = 250
+
+  const seHandle = floatWin.locator(':scope > div').nth(-2)
+  const seBox = await requireBox(seHandle, 'floating window SE resize handle')
+  const beforeResize = await requireBox(floatWin, 'floating window before resize')
+  const resizeSaved = waitForLayoutSaved(page)
+  await dragPointer(
+    page,
+    seBox.x + seBox.width / 2,
+    seBox.y + seBox.height / 2,
+    beforeResize.x + desiredWidth,
+    beforeResize.y + desiredHeight,
+  )
+  await resizeSaved
+  await page.waitForTimeout(200)
+
+  const afterResize = await requireBox(floatWin, 'floating window after resize')
+  const titleBar = floatWin.locator('[data-testid="floating-window-titlebar"]').first()
+  const titleBox = await requireBox(titleBar, 'floating window titlebar')
+  const targetX = layerBox.x + layerBox.width - afterResize.width - 24
+  const targetY = layerBox.y + layerBox.height - afterResize.height - 24
+  const moveSaved = waitForLayoutSaved(page)
+  await dragPointer(
+    page,
+    titleBox.x + titleBox.width / 2,
+    titleBox.y + titleBox.height / 2,
+    titleBox.x + titleBox.width / 2 + (targetX - afterResize.x),
+    titleBox.y + titleBox.height / 2 + (targetY - afterResize.y),
+  )
+  await moveSaved
+  await page.waitForTimeout(200)
+
+  // Lower opacity to 85% via 3 wheel-down ticks on the floating titlebar so
+  // the semi-transparent overlay effect is clearly visible in hero-workspace
+  // and floating-window screenshots.
+  const updatedTitleBox = await requireBox(titleBar, 'floating titlebar for opacity wheel')
+  await page.mouse.move(updatedTitleBox.x + updatedTitleBox.width / 2, updatedTitleBox.y + updatedTitleBox.height / 2)
+  const opacitySaved = waitForLayoutSaved(page)
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.wheel(0, 120)
+    await page.waitForTimeout(80)
+  }
+  await waitFor('floating window opacity lowered', async () => {
+    const opacity = await floatWin.evaluate(el => Number.parseFloat(getComputedStyle(el).opacity || '1'))
+    return opacity <= 0.87 && opacity >= 0.78
+  }, 10_000)
+  await opacitySaved
+  await page.waitForTimeout(300)
+}
+
+async function closeFloatingLogWindow(page: Page): Promise<void> {
+  const floatWin = page.locator('[data-testid="floating-window"]').first()
+  if (!await floatWin.isVisible().catch(() => false))
+    return
+  await floatWin.locator('[data-testid="tab-close"]').first().click()
+  await floatWin.waitFor({ state: 'hidden', timeout: 10_000 })
+  await page.waitForTimeout(250)
+}
+
+async function captureFloatingViews(
+  page: Page,
+  theme: 'light' | 'dark',
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  await waitForTheme(page, theme)
+  await page.waitForTimeout(200)
+  await snap(page, 'hero-workspace', theme, {
+    x: 0,
+    y: 0,
+    width: VIEWPORT.width,
+    height: VIEWPORT.height,
+  }, recorded)
+  const resizeHandles = page.locator('[data-testid="resize-handle"]')
+  const leftHandle = await requireBox(resizeHandles.nth(0), 'left resize handle')
+  const floatClip = clampClip({
+    x: leftHandle.x - 24,
+    y: 0,
+    width: VIEWPORT.width - (leftHandle.x - 24),
+    height: VIEWPORT.height,
+  })
+  await snap(page, 'floating-window', theme, floatClip, recorded)
+}
+
+async function captureQuakeTerminalViews(
+  page: Page,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  await waitForTheme(page, 'light')
+  // Focus Tile 0 so the Quake terminal binds to wtRetryJitter.
+  await page.locator('[data-testid="tile"]').nth(0).click({
+    position: { x: 24, y: 12 },
+  })
+  await page.keyboard.press('Control+Backquote')
+  const quakePanel = page.locator('[data-testid="quake-panel"][data-quake-open="true"]').first()
+  await quakePanel.waitFor({ state: 'visible', timeout: 15_000 })
+  await quakePanel.locator('.xterm').waitFor({ state: 'visible', timeout: 20_000 })
+  await waitFor('quake terminal startup overlay gone', async () => {
+    return (await quakePanel.locator('[data-testid="terminal-startup-overlay"]').count()) === 0
+  }, 20_000)
+
+  await waitFor('quake shell ready', async () => {
+    await sendTerminalLine(page, quakePanel, 'echo LM_QUAKE_READY')
+    const txt = await quakePanel.locator('.xterm-rows').textContent().catch(() => '')
+    return Boolean(txt && txt.includes('LM_QUAKE_READY'))
+  }, 20_000, 400)
+
+  const quakeScript = [
+    `export PS1=$'\\e[36mpayments-api\\e[0m \\e[35m(quake)\\e[0m \\e[32m❯\\e[0m '`,
+    'clear',
+    `printf '\\e[36mpayments-api\\e[0m \\e[35m(quake)\\e[0m \\e[32m❯\\e[0m git diff --stat\\n'`,
+    'git diff --stat',
+  ].join(' && ')
+  await sendTerminalLine(page, quakePanel, quakeScript)
+  await waitFor('git diff --stat rendered in quake panel', async () => {
+    const txt = await quakePanel.locator('.xterm-rows').textContent().catch(() => '')
+    return Boolean(txt && txt.includes('backoff.go') && txt.includes('webhook.go'))
+  }, 20_000, 300)
+
+  const centerClip = await centerCanvasClip(page)
+  await page.waitForTimeout(300)
+  await snap(page, 'quake-terminal', 'light', centerClip, recorded)
+  await waitForTheme(page, 'dark')
+  await snap(page, 'quake-terminal', 'dark', centerClip, recorded)
+  await waitForTheme(page, 'light')
+
+  await page.keyboard.press('Control+Backquote')
+  await waitFor('quake panel closed', async () => {
+    const open = await page.locator('[data-testid="quake-panel"]').first().getAttribute('data-quake-open').catch(() => 'false')
+    return open !== 'true'
+  }, 10_000)
+  await page.waitForTimeout(300)
+}
+
+async function captureMarkdownViewerViews(
+  page: Page,
+  channel: Awaited<ReturnType<typeof getTestChannel>>,
+  workerId: string,
+  wsMain: string,
+  wtRetryJitter: string,
+  readmePath: string,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  const tile1 = page.locator('[data-testid="tile"]').nth(1)
+  const currentTile1Id = await tile1.getAttribute('data-tile-id')
+  if (!currentTile1Id)
+    throw new Error('Tile 1 has no data-tile-id attribute for Markdown viewer')
+
+  await waitFor('README.md tab registered in Tile 1', async () => {
+    await channel.callWorker(
+      workerId,
+      WorkerPrivateService.method.registerTabPayload,
+      {
+        payload: {
+          workingDir: wtRetryJitter,
+          kind: {
+            case: 'file',
+            value: { filePath: readmePath },
+          },
+        },
+        creation: {
+          tabId: randomUUID(),
+          placement: {
+            workspaceId: wsMain,
+            destination: { case: 'tileId', value: currentTile1Id },
+            insertion: TabInsertion.LAST,
+          },
+          presentation: {
+            fileViewMode: TabFileViewMode.WORKING,
+          },
+        },
+      },
+    )
+    return true
+  }, 10_000, 200)
+
+  const readmeTab = tile1.locator('[data-testid="tab"]').filter({ hasText: 'README.md' }).first()
+  await readmeTab.waitFor({ state: 'visible', timeout: 15_000 })
+  await readmeTab.click()
+  const sideBySideBtn = tile1.getByRole('button', { name: 'Side-by-side view' }).first()
+  await sideBySideBtn.waitFor({ state: 'visible', timeout: 15_000 })
+  await sideBySideBtn.click()
+  await waitFor('Markdown side-by-side rendered', async () => {
+    const text = await tile1.textContent()
+    return Boolean(text && text.includes('Retry policy') && text.includes('## Retry policy'))
+  }, 15_000)
+
+  const tile1Box = await requireBox(tile1, 'tile 1 markdown side-by-side')
+  const mdClip = clampClip({
+    x: tile1Box.x - 16,
+    y: 0,
+    width: VIEWPORT.width - (tile1Box.x - 16),
+    height: tile1Box.y + tile1Box.height + 24,
+  })
+  await waitForTheme(page, 'light')
+  await snap(page, 'file-viewer-markdown', 'light', mdClip, recorded)
+  await waitForTheme(page, 'dark')
+  await snap(page, 'file-viewer-markdown', 'dark', mdClip, recorded)
+  await waitForTheme(page, 'light')
+
+  // Close README.md tab so Tile 1 returns to backoff.go diff.
+  await readmeTab.locator('[data-testid="tab-close"]').click()
+  await readmeTab.waitFor({ state: 'hidden', timeout: 10_000 })
+  await page.waitForTimeout(250)
+}
+
+async function captureDialogsAndMenus(
+  page: Page,
+  theme: 'light' | 'dark',
+  wsMain: string,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  await waitForTheme(page, theme)
+
+  // 1. Workspace row context menu (left sidebar).
+  const wsRow = page.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
+  await wsRow.hover()
+  await wsRow.getByTestId('workspace-row-menu-trigger').click()
+  await wsRow.getByRole('menuitem', { name: 'Rename', exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(150)
+  const wsMenu = wsRow.locator('menu[popover]:visible').first()
+  const wsRowBox = await requireBox(wsRow, 'workspace row')
+  const wsMenuBox = await requireBox(wsMenu, 'workspace context menu')
+  await snap(page, 'workspace-context-menu', theme, clampClip({
+    x: 0,
+    y: wsRowBox.y - 44,
+    width: Math.max(wsRowBox.x + wsRowBox.width + 80, wsMenuBox.x + wsMenuBox.width + 48),
+    height: (wsMenuBox.y + wsMenuBox.height + 48) - (wsRowBox.y - 44),
+  }), recorded)
+  await page.keyboard.press('Escape')
+  await wsMenu.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 2. Branch group context menu (left sidebar tab tree).
+  const wsChildren = page.locator(`[data-testid="workspace-children-${wsMain}"]:visible`).first()
+  const branchRow = wsChildren.locator('[data-testid="tab-tree-branch-group"]:visible').first()
+  await branchRow.hover()
+  await branchRow.locator('[aria-expanded]').first().click()
+  await page.getByRole('menuitem', { name: 'Switch to branch...' }).first().waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(150)
+  const branchMenu = page.locator('menu[popover]:visible').first()
+  const branchRowBox = await requireBox(branchRow, 'branch row')
+  const branchMenuBox = await requireBox(branchMenu, 'branch context menu')
+  const branchTop = Math.max(0, Math.min(branchRowBox.y - 36, branchMenuBox.y - 24))
+  await snap(page, 'branch-context-menu', theme, clampClip({
+    x: 0,
+    y: branchTop,
+    width: Math.max(branchRowBox.x + branchRowBox.width + 80, branchMenuBox.x + branchMenuBox.width + 48),
+    height: Math.min(VIEWPORT.height - branchTop, (branchMenuBox.y + branchMenuBox.height + 36) - branchTop),
+  }), recorded)
+  await page.keyboard.press('Escape')
+  await branchMenu.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 3. File browser context menu (right sidebar Files panel).
+  const fileRow = page.locator('[data-testid="tree-row"]:visible').filter({ hasText: 'backoff.go' }).first()
+  await fileRow.hover()
+  await fileRow.locator('[data-testid="tree-context-button"]').click()
+  await fileRow.locator('[data-testid="tree-copy-path-button"]:visible').first().waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(150)
+  const fileMenu = fileRow.locator('menu[popover]:visible').first()
+  const fileRowBox = await requireBox(fileRow, 'file row')
+  const fileMenuBox = await requireBox(fileMenu, 'file context menu')
+  const fileUnion = unionRects(fileRowBox, fileMenuBox)
+  await snap(page, 'file-context-menu', theme, clampClip({
+    x: fileUnion.x - 48,
+    y: fileUnion.y - 60,
+    width: VIEWPORT.width - (fileUnion.x - 48),
+    height: fileUnion.height + 108,
+  }), recorded)
+  await page.keyboard.press('Escape')
+  await fileMenu.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 4. Worker row context menu (left sidebar Workers section).
+  const gpuRow = page.locator('[data-testid="worker-row"]:visible').filter({ hasText: 'gpu-devbox' }).first()
+  await gpuRow.hover()
+  await gpuRow.locator('[aria-expanded]').first().click()
+  await page.getByRole('menuitem', { name: 'Deregister...', exact: true }).first().waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(150)
+  const workerMenu = page.locator('menu[popover]:visible').first()
+  const gpuRowBox = await requireBox(gpuRow, 'gpu-devbox worker row')
+  const workerMenuBox = await requireBox(workerMenu, 'worker context menu')
+  const workerUnion = unionRects(gpuRowBox, workerMenuBox)
+  await snap(page, 'worker-context-menu', theme, clampClip({
+    x: 0,
+    y: workerUnion.y - 44,
+    width: workerUnion.x + workerUnion.width + 48,
+    height: workerUnion.height + 88,
+  }), recorded)
+  await page.keyboard.press('Escape')
+  await workerMenu.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 5. Make grid popover (tile action strip — right-anchored around the popover).
+  const tile0 = page.locator('[data-testid="tile"]').nth(0)
+  const makeGridBtn = tile0.locator('[data-testid="make-grid"]').first()
+  const makeGridBox = await requireBox(makeGridBtn, 'make-grid button')
+  await makeGridBtn.click()
+  const gridPopover = page.locator('[data-testid="grid-size-popover"]:visible').first()
+  await gridPopover.waitFor({ state: 'visible', timeout: 10_000 })
+  // Hover 3x4 cell so the grid preview highlights crisply.
+  await gridPopover.locator('[data-testid="grid-size-cell-2-3"]').hover()
+  await page.waitForTimeout(150)
+  const gridPopoverBox = await requireBox(gridPopover, 'grid size popover')
+  const gridUnion = unionRects(makeGridBox, gridPopoverBox)
+  await snap(page, 'tile-grid-popover', theme, clampClip({
+    x: gridUnion.x - 96,
+    y: Math.max(0, gridUnion.y - 28),
+    width: gridUnion.width + 156,
+    height: gridUnion.height + 68,
+  }), recorded)
+  await page.keyboard.press('Escape')
+  await gridPopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 6. Tab bar "+" (More options) menu.
+  const tabMoreBtn = tile0.locator('[data-testid="tab-more-menu"]:visible, [data-testid="collapsed-new-tab-button"]:visible').first()
+  const tabMoreBox = await requireBox(tabMoreBtn, 'tab-more-menu button')
+  await tabMoreBtn.click()
+  const tabMoreMenu = page.locator('menu[popover]:visible').first()
+  await tabMoreMenu.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(150)
+  const tabMoreMenuBox = await requireBox(tabMoreMenu, 'tab bar more menu')
+  const tabMoreUnion = unionRects(tabMoreBox, tabMoreMenuBox)
+  await snap(page, 'tab-bar-more-menu', theme, clampClip({
+    x: tabMoreUnion.x - 110,
+    y: Math.max(0, tabMoreUnion.y - 24),
+    width: tabMoreUnion.width + 170,
+    height: tabMoreUnion.height + 56,
+  }), recorded)
+  await page.keyboard.press('Escape')
+  await tabMoreMenu.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 7. Composer "[+]" menu + status bar chips (ensure Tile 0 agent tab is focused
+  // so the shared bottom agent composer is mounted).
+  await tile0.click({
+    position: { x: 24, y: 12 },
+  })
+  const plusTrigger = page.locator('[data-testid="composer-plus-trigger"]:visible').first()
+  await plusTrigger.waitFor({ state: 'visible', timeout: 10_000 })
+  await plusTrigger.click()
+  const plusPopover = page.locator('[data-testid="composer-plus-popover"]:visible').first()
+  await plusPopover.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(150)
+  const plusPopoverBox = await requireBox(plusPopover, 'composer plus popover')
+  const statusBar = page.locator('[data-testid="composer-status-bar"]:visible').first()
+  const statusBarBox = await requireBox(statusBar, 'composer status bar')
+  const composerUnion = unionRects(plusPopoverBox, statusBarBox)
+  await snap(page, 'composer-plus-menu', theme, clampClip({
+    x: composerUnion.x - 32,
+    y: composerUnion.y - 36,
+    width: composerUnion.width + 64,
+    height: VIEWPORT.height - (composerUnion.y - 36),
+  }), recorded)
+  await page.keyboard.press('Escape')
+  await plusPopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 8. New workspace dialog (pre-filled with payments-api so Git options show).
+  const inProgressMenuBtn = page.locator('[data-testid="sidebar-section-menu-workspaces_in_progress"]:visible').first()
+  await inProgressMenuBtn.click()
+  const repoItem = page.locator('[data-testid="sidebar-new-workspace-repo"]:visible').filter({ hasText: 'payments-api' }).first()
+  if (await repoItem.waitFor({ state: 'visible', timeout: 4_000 }).then(() => true, () => false))
+    await repoItem.click()
+  else
+    await page.locator('[data-testid="sidebar-new-workspace"]:visible').first().click()
+  const newWsDialog = page.locator('dialog[open]').first()
+  await newWsDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  const titleInput = newWsDialog.getByTestId('title-input')
+  if (await titleInput.isVisible().catch(() => false))
+    await titleInput.fill('Rate limit middleware')
+  await page.waitForTimeout(450)
+  await snap(page, 'new-workspace-dialog', theme, padClip(await requireBox(newWsDialog, 'new workspace dialog'), 48, 36), recorded)
+  await page.keyboard.press('Escape')
+  await newWsDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 9. New agent dialog (showing Create new worktree + Worktree path preview).
+  await tabMoreBtn.click()
+  await page.getByRole('menuitem', { name: /New agent\.\.\./ }).first().click()
+  const newAgentDialog = page.locator('dialog[open]').first()
+  await newAgentDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  const createWtRadio = newAgentDialog.getByLabel('Create new worktree')
+  await createWtRadio.waitFor({ state: 'visible', timeout: 10_000 })
+  await createWtRadio.click()
+  const branchNameInput = newAgentDialog.getByPlaceholder('feature-branch')
+  await branchNameInput.waitFor({ state: 'visible', timeout: 5_000 })
+  await branchNameInput.fill('feat/rate-limit')
+  await page.waitForTimeout(350)
+  await newAgentDialog.evaluate((dialog) => {
+    for (const el of dialog.querySelectorAll('*')) {
+      if (el.scrollHeight > el.clientHeight)
+        el.scrollTop = 0
+    }
+  })
+  await snap(page, 'new-agent-dialog', theme, padClip(await requireBox(newAgentDialog, 'new agent dialog'), 48, 36), recorded)
+  await page.keyboard.press('Escape')
+  await newAgentDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 10. New terminal dialog.
+  await tabMoreBtn.click()
+  await page.getByRole('menuitem', { name: /New terminal\.\.\./ }).first().click()
+  const newTermDialog = page.locator('dialog[open]').first()
+  await newTermDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(450)
+  await newTermDialog.evaluate((dialog) => {
+    for (const el of dialog.querySelectorAll('*')) {
+      if (el.scrollHeight > el.clientHeight)
+        el.scrollTop = 0
+    }
+  })
+  await snap(page, 'new-terminal-dialog', theme, padClip(await requireBox(newTermDialog, 'new terminal dialog'), 48, 36), recorded)
+  await page.keyboard.press('Escape')
+  await newTermDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 11. Change branch dialog (opened on Create new worktree from branch menu).
+  await branchRow.hover()
+  await branchRow.locator('[aria-expanded]').first().click()
+  await page.getByRole('menuitem', { name: 'Create new worktree...' }).first().click()
+  const changeBranchDialog = page.locator('dialog[open]').first()
+  await changeBranchDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  const cbInput = changeBranchDialog.getByPlaceholder('feature-branch')
+  if (await cbInput.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false))
+    await cbInput.fill('feat/retry-metrics')
+  await page.waitForTimeout(350)
+  await snap(page, 'change-branch-dialog', theme, padClip(await requireBox(changeBranchDialog, 'change branch dialog'), 48, 36), recorded)
+  await page.keyboard.press('Escape')
+  await changeBranchDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 12. Close last tab dialog (triggered on dirty linked worktree feat/webhook-signatures).
+  const webhookLeaf = wsChildren.locator('[data-testid="tab-tree-leaf"]:visible').filter({ hasText: 'Webhook HMAC' }).first()
+  await webhookLeaf.hover()
+  await webhookLeaf.locator('[data-testid="workspace-tab-close"]').click()
+  const closeLastDialog = page.getByRole('dialog', { name: 'Close last tab' })
+  await closeLastDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(250)
+  await snap(page, 'close-last-tab-dialog', theme, padClip(await requireBox(closeLastDialog, 'close last tab dialog'), 48, 36), recorded)
+  await closeLastDialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await closeLastDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 13. Register worker dialog (deterministic hub URL + registration key).
+  await page.locator('[data-testid="sidebar-register-worker"]:visible').first().click()
+  const regDialog = page.getByRole('dialog', { name: 'Register worker' })
+  await regDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  await regDialog.getByTestId('registration-command').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(200)
+  await snap(page, 'register-worker-dialog', theme, padClip(await requireBox(regDialog, 'register worker dialog'), 48, 36), recorded)
+  await regDialog.getByRole('button', { name: 'Close', exact: true }).click()
+  await regDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 14. Preferences dialog (Appearance, Account, Apps, Agent Skills, Keyboard Shortcuts, Administration).
+  await page.getByTestId('app-menu-trigger').first().click()
+  await page.getByRole('menuitem', { name: 'Preferences' }).click()
+  const prefsDialog = page.getByRole('dialog', { name: 'Preferences' })
+  await prefsDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  const prefsClip = padClip(await requireBox(prefsDialog, 'preferences dialog'), 40, 32)
+
+  // 14a. Appearance (default overview of Preferences dialog).
+  await prefsDialog.getByTestId('preferences-nav-appearance').click()
+  await prefsDialog.locator('[data-setting-id="appearance.theme"]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(200)
+  await snap(page, 'preferences-dialog', theme, prefsClip, recorded)
+
+  // 14b. Account.
+  await prefsDialog.getByTestId('preferences-nav-account').click()
+  await prefsDialog.locator('[data-setting-id="account.profile"]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(200)
+  await snap(page, 'preferences-account', theme, prefsClip, recorded)
+
+  // 14c. Apps.
+  await prefsDialog.getByTestId('preferences-nav-apps').click()
+  await prefsDialog.locator('[data-setting-id="account.connectedApps"]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(200)
+  await snap(page, 'preferences-apps', theme, prefsClip, recorded)
+
+  // 14d. Chat & Composer -> Agent skills.
+  await prefsDialog.getByTestId('preferences-nav-chat').click()
+  const skillsControl = prefsDialog.getByTestId('agent-skills-control')
+  await skillsControl.waitFor({ state: 'visible', timeout: 15_000 })
+  await skillsControl.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(350)
+  await snap(page, 'preferences-agent-skills', theme, prefsClip, recorded)
+
+  // 14e. Keyboard Shortcuts.
+  await prefsDialog.getByTestId('preferences-nav-shortcuts').click()
+  await prefsDialog.locator('[data-setting-id="shortcuts.keybindings"]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(200)
+  await snap(page, 'preferences-keyboard-shortcuts', theme, prefsClip, recorded)
+
+  // 14f. Administration -> Network access (trusted reverse proxies).
+  await prefsDialog.getByTestId('preferences-nav-admin-network').click()
+  await page.waitForTimeout(250)
+  await snap(page, 'preferences-admin', theme, prefsClip, recorded)
+
+  await page.keyboard.press('Escape')
+  await prefsDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+}
+
+async function captureInputQueueAndQuestionViews(
+  page: Page,
+  server: { hubUrl: string, adminToken: string, workerId: string },
+  wsMain: string,
+  wtRetryJitter: string,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  await waitForTheme(page, 'light')
+
+  // Close Tile 2 (zsh) and Tile 1 (backoff.go) so the agent pane returns to
+  // full 992px center width for clean, unwrapped input-queue and question cards.
+  while ((await page.locator('[data-testid="tile"]').count()) > 1) {
+    const lastTile = page.locator('[data-testid="tile"]').last()
+    const tabClose = lastTile.locator('[data-testid="tab-close"]').first()
+    if (await tabClose.isVisible().catch(() => false)) {
+      await tabClose.click()
+      await page.waitForTimeout(250)
+    }
+    const tileClose = lastTile.locator('[data-testid="close-tile"]').first()
+    if (await tileClose.isVisible().catch(() => false)) {
+      await tileClose.click()
+      const closeAll = page.getByRole('button', { name: 'Close all tabs', exact: true })
+      if (await closeAll.waitFor({ state: 'visible', timeout: 1_500 }).then(() => true, () => false))
+        await closeAll.click()
+    }
+    await page.waitForTimeout(250)
+  }
+
+  // Ensure the primary Claude Code tab is focused after collapsing split tiles.
+  const claudeTabAfterCollapse = page.locator('[data-testid="tab"]').filter({ hasText: 'Retry jitter' }).first()
+  await claudeTabAfterCollapse.click()
+
+  // Trigger a held active turn (delayMs: 45_000) so the agent stays genuinely
+  // working while we stack immediate + scheduled items in the input queue.
+  await typeComposerAndSend(
+    page,
+    'Run the retry stress benchmark across 16 goroutines and report any allocations.',
+  )
+  await waitFor('agent working indicator visible', async () => {
+    const pauseBtn = page.locator('[data-testid="queue-pause-button"]:visible').first()
+    return pauseBtn.isVisible().catch(() => false)
+  }, 15_000)
+
+  // Queue two immediate follow-up messages while the turn is running.
+  await typeComposerAndSend(
+    page,
+    'Use a deterministic PRNG seed in the unit tests so CI never flakes.',
+  )
+  await typeComposerAndSend(
+    page,
+    'Document the full-jitter backoff formula and maxBackoff cap in README.md.',
+  )
+
+  const queueRoot = page.locator('[data-testid="agent-input-queue"]:visible').first()
+  await queueRoot.waitFor({ state: 'visible', timeout: 15_000 })
+  await waitFor('two immediate items queued with Steer action', async () => {
+    const text = await queueRoot.textContent()
+    return Boolean(text && text.includes('PRNG seed') && text.includes('README.md') && text.includes('Steer'))
+  }, 15_000)
+
+  // Open the Schedule send popover, enter tomorrow 09:00, capture it in both
+  // themes, then apply and queue a scheduled message.
+  const scheduleTrigger = page.locator('[data-testid="schedule-send-trigger"]:visible').first()
+  await scheduleTrigger.click()
+  const schedulePopover = page.locator('[data-testid="schedule-send-popover"]:visible').first()
+  await schedulePopover.waitFor({ state: 'visible', timeout: 10_000 })
+  const scheduleField = schedulePopover.locator('[data-testid="schedule-send-field"]')
+  await scheduleField.fill(futureLocalDateTime())
+  await page.waitForTimeout(150)
+
+  const schedulePopoverBox = await requireBox(schedulePopover, 'schedule send popover')
+  const scheduleTriggerBox = await requireBox(scheduleTrigger, 'schedule send trigger')
+  const scheduleUnion = unionRects(schedulePopoverBox, scheduleTriggerBox)
+  const scheduleClip = clampClip({
+    x: scheduleUnion.x - 64,
+    y: scheduleUnion.y - 40,
+    width: scheduleUnion.width + 128,
+    height: Math.min(VIEWPORT.height - (scheduleUnion.y - 40), scheduleUnion.height + 96),
+  })
+  await snap(page, 'schedule-send-popover', 'light', scheduleClip, recorded)
+  await waitForTheme(page, 'dark')
+  await snap(page, 'schedule-send-popover', 'dark', scheduleClip, recorded)
+  await waitForTheme(page, 'light')
+
+  await schedulePopover.locator('[data-testid="schedule-send-apply"]').click()
+  await schedulePopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+  await typeComposerAndSend(
+    page,
+    'Run the full integration test suite before opening the pull request.',
+  )
+  await waitFor('scheduled item visible in input queue', async () => {
+    const text = await queueRoot.textContent()
+    return Boolean(text && text.includes('Scheduled for'))
+  }, 15_000)
+
+  // Capture input-queue (lower portion of the center agent pane showing the
+  // working indicator, immediate + scheduled queue rows with Steer/Move/Edit/
+  // Delete controls, Pause Queue button, and composer).
+  const centerClip = await centerCanvasClip(page)
+  const queueBox = await requireBox(queueRoot, 'agent input queue')
+  const queueClipTop = Math.max(0, queueBox.y - 120)
+  const inputQueueClip = clampClip({
+    x: centerClip.x,
+    y: queueClipTop,
+    width: centerClip.width,
+    height: VIEWPORT.height - queueClipTop,
+  })
+  await snap(page, 'input-queue', 'light', inputQueueClip, recorded)
+  await waitForTheme(page, 'dark')
+  await snap(page, 'input-queue', 'dark', inputQueueClip, recorded)
+  await waitForTheme(page, 'light')
+
+  // Open a fresh Claude Code tab to capture a clean AskUserQuestion control
+  // banner without interrupting or mixing with the held benchmark turn.
+  const questionAgentId = await openAgentViaAPI(
+    server,
+    wsMain,
+    deliberateWorkingDir(wtRetryJitter, 'documentation screenshot question banner'),
+    {
+      ...agentOpenOptions(AgentProvider.CLAUDE_CODE, {
+        optionValues: { permissionMode: 'default' },
+      }),
+      title: 'Jitter policy',
     },
-    'sidebar-workspaces': clampClip({
-      x: 0,
-      y: 0,
-      width: leftHandle.x + leftHandle.width + 150,
-      height: VIEWPORT.height,
-    }),
-    'terminal-pane': clampClip({
-      x: tile2.x - 24,
-      y: tile2.y - 28,
-      width: tile2.width + 48,
-      height: tile2.height + 52,
-    }),
-    'tabs-tiling-layout': clampClip({
-      x: leftHandle.x - 24,
-      y: 0,
-      width: (rightHandle.x + rightHandle.width + 24) - (leftHandle.x - 24),
-      height: VIEWPORT.height,
-    }),
-    'file-browser-diff': clampClip({
-      x: tile1.x - 24,
-      y: 0,
-      width: VIEWPORT.width - (tile1.x - 24),
-      height: tile1.y + tile1.height + 72,
-    }),
+  )
+  const questionTab = page.locator(`[data-testid="tab"][data-tab-id="${questionAgentId}"]:visible`).first()
+  await questionTab.waitFor({ state: 'visible', timeout: 20_000 })
+  await questionTab.click()
+  await waitFor('question agent composer ready', async () => {
+    return page.locator('[data-testid="composer-editor"]:visible .ProseMirror[contenteditable="true"]').first().isVisible().catch(() => false)
+  }, 20_000)
+
+  await typeComposerAndSend(
+    page,
+    'Help standardize our retry jitter policy across all internal HTTP clients.',
+  )
+  await waitFor('question control banner visible', async () => {
+    const banner = page.locator('[data-testid="control-banner"]:visible').first()
+    if (!await banner.isVisible().catch(() => false))
+      return false
+    const text = await banner.textContent()
+    return Boolean(text && text.includes('Full jitter (Recommended)'))
+  }, 30_000)
+  await page.waitForTimeout(250)
+
+  const bannerBox = await requireBox(page.locator('[data-testid="control-banner"]:visible').first(), 'question control banner')
+  const questionTop = Math.max(0, bannerBox.y - 120)
+  const questionClip = clampClip({
+    x: centerClip.x,
+    y: questionTop,
+    width: centerClip.width,
+    height: VIEWPORT.height - questionTop,
+  })
+  await snap(page, 'question-prompt-banner', 'light', questionClip, recorded)
+  await waitForTheme(page, 'dark')
+  await snap(page, 'question-prompt-banner', 'dark', questionClip, recorded)
+  await waitForTheme(page, 'light')
+}
+
+async function captureMobileAndLoginViews(
+  browser: Browser,
+  authContext: BrowserContext,
+  hubUrl: string,
+  wsMain: string,
+  claudeId: string,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  // 1. Mobile layout (390x844 single-column shell).
+  const mobileViewport = { width: 390, height: 844 }
+  const mobilePage = await authContext.newPage()
+  try {
+    await mobilePage.setViewportSize(mobileViewport)
+    await mobilePage.goto('/', { waitUntil: 'domcontentloaded' })
+    await mobilePage.locator('[data-testid="composer-editor"]:visible').first().waitFor({ state: 'visible', timeout: 25_000 })
+    // Ensure Retry jitter tab is shown if multiple tabs exist.
+    const mobileTab = mobilePage.locator(`[data-testid="tab"][data-tab-id="${claudeId}"]:visible`).first()
+    if (await mobileTab.isVisible().catch(() => false))
+      await mobileTab.click()
+    await waitForTheme(mobilePage, 'light')
+    await snap(mobilePage, 'mobile-layout', 'light', { x: 0, y: 0, ...mobileViewport }, recorded)
+    await waitForTheme(mobilePage, 'dark')
+    await snap(mobilePage, 'mobile-layout', 'dark', { x: 0, y: 0, ...mobileViewport }, recorded)
+  }
+  finally {
+    await mobilePage.close()
   }
 
-  for (const [name, clip] of Object.entries(clips)) {
-    const outPath = join(OUT_DIR, `${name}-${theme}.png`)
-    await page.screenshot({
-      path: outPath,
-      clip,
-      animations: 'disabled',
-    })
-    console.log(`  wrote ${name}-${theme}.png (${clip.width}x${clip.height} @2x)`)
+  // 2. Login page (/login in a clean unauthenticated context).
+  const loginViewport = { width: 960, height: 680 }
+  const anonContext = await browser.newContext({
+    baseURL: hubUrl,
+    viewport: loginViewport,
+    deviceScaleFactor: 2,
+    colorScheme: 'light',
+  })
+  try {
+    const loginPage = await anonContext.newPage()
+    await loginPage.goto('/login', { waitUntil: 'domcontentloaded' })
+    await loginPage.getByRole('button', { name: /Sign in/i }).first().waitFor({ state: 'visible', timeout: 20_000 })
+    await waitForTheme(loginPage, 'light')
+    const headingBox = await requireBox(loginPage.locator('h1').first(), 'login heading')
+    const formBox = await requireBox(loginPage.locator('form').first(), 'login form')
+    const loginUnion = unionRects(headingBox, formBox)
+    const loginClip = clampClip({
+      x: Math.max(0, loginUnion.x - 96),
+      y: Math.max(0, loginUnion.y - 72),
+      width: loginUnion.width + 192,
+      height: loginUnion.height + 156,
+    }, loginViewport)
+    await snap(loginPage, 'login-page', 'light', loginClip, recorded)
+    await waitForTheme(loginPage, 'dark')
+    await snap(loginPage, 'login-page', 'dark', loginClip, recorded)
   }
-  return clips
+  finally {
+    await anonContext.close()
+  }
+  void wsMain
 }
 
 async function main(): Promise<void> {
@@ -553,6 +1416,7 @@ async function main(): Promise<void> {
   let secondWorker: ChildProcess | undefined
   let suiteStop: (() => Promise<void>) | undefined
   let hubUrlForCleanup: string | undefined
+  const recordedClips: Record<string, ClipRect> = {}
 
   try {
     console.log(`Creating deterministic fixture repos in ${runDir} ...`)
@@ -581,6 +1445,47 @@ async function main(): Promise<void> {
           priority: 'high',
           when: { system: 'conversation title generator' },
           respond: { text: 'Audit token refresh' },
+        },
+        {
+          name: 'input-queue-hold',
+          priority: 'high',
+          once: true,
+          when: { user: 'Run the retry stress benchmark' },
+          respond: {
+            text: 'Completed the 16-goroutine retry stress benchmark with zero heap allocations.',
+            delayMs: 45_000,
+          },
+        },
+        {
+          name: 'question-prompt-demo',
+          priority: 'high',
+          once: true,
+          when: { user: 'Help standardize our retry jitter policy' },
+          respond: {
+            text: 'Before updating the shared HTTP client defaults, confirm which jitter strategy the services should adopt.',
+            toolCalls: [
+              askUserQuestionToolCall(AgentProvider.CLAUDE_CODE, 'call_ask_jitter', [
+                {
+                  header: 'Jitter',
+                  question: 'Which retry jitter strategy should we standardize on across services?',
+                  options: [
+                    {
+                      label: 'Full jitter (Recommended)',
+                      description: 'Uniform random delay in [0, min(cap, base * 2^attempt)] for maximum spread.',
+                    },
+                    {
+                      label: 'Equal jitter',
+                      description: 'Keep half of the exponential delay deterministic and randomize the other half.',
+                    },
+                    {
+                      label: 'Decorrelated jitter',
+                      description: 'Compute each sleep from the previous sleep duration up to maxBackoff.',
+                    },
+                  ],
+                },
+              ]),
+            ],
+          },
         },
       ],
       steps: [
@@ -714,6 +1619,29 @@ async function main(): Promise<void> {
       ])
 
       const page = await context.newPage()
+      // Advertise a clean example Hub URL for RegisterWorkerDialog (the only
+      // consumer of workerHubUrl) and supply a deterministic registration key
+      // when that dialog opens during screenshot capture.
+      await page.route('**/leapmux.v1.SystemService/GetSystemInfo', async (route) => {
+        const response = await route.fetch()
+        const body = await response.json() as Record<string, unknown>
+        body.workerHubUrl = 'https://hub.example.com'
+        await route.fulfill({ response, json: body })
+      })
+      await page.route('**/leapmux.v1.WorkerManagementService/CreateRegistrationKey', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            registrationKey: 'lmx_reg_example_7f8a2c9e4b1d',
+            expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          }),
+        })
+      })
+      await page.route('**/leapmux.v1.WorkerManagementService/RevokeRegistrationKey', async (route) => {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+      })
+
       await page.goto('/', { waitUntil: 'domcontentloaded' })
       const mainRow = page.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
       await mainRow.waitFor({ state: 'visible', timeout: 30_000 })
@@ -753,7 +1681,7 @@ async function main(): Promise<void> {
       const claudeTab = page.locator(`[data-testid="tab"][data-tab-id="${claudeId}"]:visible`).first()
       await claudeTab.click()
 
-      console.log('Driving live Claude Code turn (Read -> Edit diff -> Bash permission prompt + queued steer) ...')
+      console.log('Driving live Claude Code turn (Read -> Edit diff -> Bash permission prompt) ...')
       await typeComposerAndSend(
         page,
         'Add full jitter to CalculateBackoff in internal/retry/backoff.go so retrying clients do not synchronize retries, then run the retry package tests.',
@@ -764,8 +1692,7 @@ async function main(): Promise<void> {
       await editAllowBtn.click()
 
       // Wait for the next permission prompt (the Bash `go test` call) and capture
-      // coding-agent-chat while the agent tile spans the full center width so the
-      // Edit diff card, Permission Required banner, and all 3 tabs fit without clipping.
+      // coding-agent-chat while the agent tile spans the full center width.
       await waitFor('Bash permission prompt visible', async () => {
         const banner = page.locator('[data-testid="control-banner"]:visible').first()
         if (!await banner.isVisible().catch(() => false))
@@ -775,12 +1702,14 @@ async function main(): Promise<void> {
       }, 45_000)
 
       console.log('Capturing coding-agent-chat screenshots (light & dark) ...')
-      const chatClip = await captureCodingAgentChat(page, 'light')
-      await captureCodingAgentChat(page, 'dark')
-      await page.emulateMedia({ colorScheme: 'light' })
+      const chatClip = await centerCanvasClip(page)
+      await waitForTheme(page, 'light')
+      await snap(page, 'coding-agent-chat', 'light', chatClip, recordedClips)
+      await waitForTheme(page, 'dark')
+      await snap(page, 'coding-agent-chat', 'dark', chatClip, recordedClips)
+      await waitForTheme(page, 'light')
 
-      // Approve the Bash command so the turn completes cleanly and the shared
-      // composer collapses back to its compact height for the 3-pane layout views.
+      // Approve the Bash command so Turn 1 completes cleanly.
       const bashAllowBtn = await waitForControlAllowButton(page, 15_000)
       await bashAllowBtn.click()
       await waitFor('Claude turn completed after Bash tests', async () => {
@@ -788,23 +1717,8 @@ async function main(): Promise<void> {
         return Boolean(text && text.includes('All retry package tests passed'))
       }, 45_000)
 
-      const waitForLayoutSaved = () => page.evaluate(() => new Promise<void>((resolveSaved) => {
-        const timer = setTimeout(() => {
-          window.removeEventListener('leapmux:layout-saved', onSaved)
-          resolveSaved()
-        }, 3000)
-        function onSaved() {
-          clearTimeout(timer)
-          window.removeEventListener('leapmux:layout-saved', onSaved)
-          resolveSaved()
-        }
-        window.addEventListener('leapmux:layout-saved', onSaved)
-      }))
-
       console.log('Building 3-pane tiling layout (Agent | File Diff / Terminal) ...')
-      // 1. Split vertically (left / right) -> creates Tile 1 on the right while
-      // keeping the agent chat tile full height on the left.
-      const split1Saved = waitForLayoutSaved()
+      const split1Saved = waitForLayoutSaved(page)
       await page.locator('[data-testid="split-vertical"]').first().click()
       await waitFor('2 tiles visible', async () => (await page.locator('[data-testid="tile"]').count()) === 2, 10_000)
       await split1Saved
@@ -814,7 +1728,6 @@ async function main(): Promise<void> {
       if (!tile1Id)
         throw new Error('Tile 1 has no data-tile-id attribute')
 
-      // Open backoff.go directly into Tile 1 in unified diff mode via WorkerPrivateService.
       const channel = await getTestChannel(state.hubUrl, state.adminToken)
       await waitFor('backoff.go tab registered in Tile 1', async () => {
         await channel.callWorker(
@@ -846,15 +1759,13 @@ async function main(): Promise<void> {
       }, 10_000, 200)
       const diffToolbar = tile1.locator('[data-testid="diff-mode-toolbar"]:visible').first()
       await diffToolbar.waitFor({ state: 'visible', timeout: 20_000 })
-      // Switch explicitly to Unified diff so both removed and added lines show.
       await diffToolbar.getByText('Unified', { exact: true }).click()
       await waitFor('Unified diff lines rendered', async () => {
         const text = await tile1.textContent()
         return Boolean(text && text.includes('delay := baseBackoff') && text.includes('rand.N(ceiling + 1)'))
       }, 15_000)
 
-      // 2. Split Tile 1 horizontally (top / bottom) -> creates Tile 2 at bottom-right.
-      const split2Saved = waitForLayoutSaved()
+      const split2Saved = waitForLayoutSaved(page)
       await page.locator('[data-testid="tile"]').nth(1).locator('[data-testid="split-horizontal"]').click()
       await waitFor('3 tiles visible', async () => (await page.locator('[data-testid="tile"]').count()) === 3, 10_000)
       await split2Saved
@@ -864,7 +1775,6 @@ async function main(): Promise<void> {
       if (!tile2Id)
         throw new Error('Tile 2 has no data-tile-id attribute')
 
-      // 3. Open a real PTY terminal in Tile 2 via WorkerTerminalService.
       await waitFor('PTY terminal opened in Tile 2', async () => {
         await channel.callWorker(
           state.workerId,
@@ -893,8 +1803,6 @@ async function main(): Promise<void> {
         return (await tile2.locator('[data-testid="terminal-startup-overlay"]').count()) === 0
       }, 20_000)
 
-      // Wait until the real shell accepts input, then print clean colored output
-      // from real git + go test runs without leaking temporary paths or wrapping.
       await waitFor('shell ready', async () => {
         await sendTerminalLine(page, tile2, 'echo LM_SHELL_READY')
         const txt = await getActiveTerminalText(page)
@@ -915,8 +1823,7 @@ async function main(): Promise<void> {
         return txt.includes('PASS') && txt.includes('acme.dev/payments/internal/retry')
       }, 30_000, 300)
 
-      // Ensure Tile 1 (backoff.go) is in Unified diff mode after split-horizontal
-      // remounted it so both hero-workspace and file-browser-diff show the live diff.
+      // Ensure Tile 1 (backoff.go) stays in Unified diff mode after split-horizontal.
       const tile1AfterSplit = page.locator('[data-testid="tile"]').nth(1)
       const diffToolbarAfterSplit = tile1AfterSplit.locator('[data-testid="diff-mode-toolbar"]:visible').first()
       await diffToolbarAfterSplit.waitFor({ state: 'visible', timeout: 15_000 })
@@ -926,8 +1833,7 @@ async function main(): Promise<void> {
         return Boolean(text && text.includes('delay := baseBackoff') && text.includes('rand.N(ceiling + 1)'))
       }, 15_000)
 
-      // Focus Tile 0 (Claude Code) and select the Changed git filter in the
-      // right File Browser so modified & untracked files show beside the diff.
+      // Focus Tile 0 and select the Changed git filter in the right File Browser.
       await page.locator('[data-testid="tile"]').nth(0).click({
         position: { x: 20, y: 12 },
       })
@@ -963,14 +1869,45 @@ async function main(): Promise<void> {
       }, 15_000)
       await page.waitForTimeout(400)
 
-      console.log('Capturing light mode workspace screenshots ...')
-      const lightClips = await captureWorkspaceViews(page, 'light')
-      console.log('Capturing dark mode workspace screenshots ...')
-      await captureWorkspaceViews(page, 'dark')
+      console.log('Capturing clean 3-pane workspace views (light & dark) ...')
+      await captureCleanWorkspaceViews(page, 'light', recordedClips)
+      await captureCleanWorkspaceViews(page, 'dark', recordedClips)
+      await waitForTheme(page, 'light')
+
+      console.log('Popping out semi-transparent floating window for hero-workspace & floating-window ...')
+      await openFloatingLogWindow(page, channel, state.workerId, wsMain, tile2Id, repos.wtRetryJitter)
+      await captureFloatingViews(page, 'light', recordedClips)
+      await captureFloatingViews(page, 'dark', recordedClips)
+      await waitForTheme(page, 'light')
+      await closeFloatingLogWindow(page)
+
+      console.log('Capturing Quake-mode terminal screenshots (light & dark) ...')
+      await captureQuakeTerminalViews(page, recordedClips)
+
+      console.log('Capturing Markdown side-by-side file viewer screenshots (light & dark) ...')
+      await captureMarkdownViewerViews(
+        page,
+        channel,
+        state.workerId,
+        wsMain,
+        repos.wtRetryJitter,
+        repos.readmePath,
+        recordedClips,
+      )
+
+      console.log('Capturing light mode dialogs, menus, popovers & Preferences ...')
+      await captureDialogsAndMenus(page, 'light', wsMain, recordedClips)
+      console.log('Capturing dark mode dialogs, menus, popovers & Preferences ...')
+      await captureDialogsAndMenus(page, 'dark', wsMain, recordedClips)
+
+      console.log('Capturing mobile layout & login page (light & dark) ...')
+      await captureMobileAndLoginViews(browser, context, state.hubUrl, wsMain, claudeId, recordedClips)
+
+      console.log('Capturing input queue, schedule popover & question banner (light & dark) ...')
+      await captureInputQueueAndQuestionViews(page, server, wsMain, repos.wtRetryJitter, recordedClips)
 
       console.log('Summary of captured dimensions:')
-      console.log(`  coding-agent-chat: ${chatClip.width}x${chatClip.height}`)
-      for (const [name, clip] of Object.entries(lightClips))
+      for (const [name, clip] of Object.entries(recordedClips))
         console.log(`  ${name}: ${clip.width}x${clip.height}`)
 
       await context.close()
