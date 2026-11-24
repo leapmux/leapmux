@@ -379,6 +379,7 @@
     0 1px 3px rgb(0 0 0 / 0.25);
 }
 
+.doc-screenshot img,
 .content .doc-screenshot img {
   margin: 0;
   border-radius: 0;
@@ -418,6 +419,7 @@
   Copyable coding-agent prompt card (copy-prompt shortcode).
 */
 .copy-prompt {
+  max-width: 100%;
   margin-block: 1.25rem;
   border: 1px solid var(--hx-color-gray-300);
   border-radius: var(--hx-radius-md);
@@ -498,28 +500,37 @@
   color: #1a1917;
 }
 
-.content .copy-prompt-body {
+.copy-prompt .copy-prompt-body,
+.content .copy-prompt .copy-prompt-body {
   margin: 0;
   padding: 0.875rem 1rem;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   font-family: var(--hx-font-mono);
-  font-size: 0.875rem;
-  line-height: 1.55;
+  font-size: 0.8125rem;
+  line-height: 1.6;
   color: var(--hx-color-gray-900);
   white-space: pre-wrap;
-  word-break: break-word;
-  overflow-x: auto;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
 }
 
-.dark .content .copy-prompt-body {
+.dark .copy-prompt .copy-prompt-body,
+.dark .content .copy-prompt .copy-prompt-body {
   background: transparent;
   color: var(--hx-color-gray-100);
 }
 
-.content .copy-prompt-body code {
+.copy-prompt .copy-prompt-body code,
+.content .copy-prompt .copy-prompt-body code {
+  display: block;
   padding: 0;
+  border: 0;
   background: transparent;
   font-family: inherit;
   font-size: inherit;
+  line-height: inherit;
   color: inherit;
+  white-space: inherit;
 }
