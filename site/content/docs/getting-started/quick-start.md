@@ -51,7 +51,7 @@ If you override `--listen` to a non-loopback address before setup, the first TCP
 
 {{% steps %}}
 
-### 1. Orient to the workspace
+### Orient to the workspace
 
 When LeapMux opens, the window has four areas:
 
@@ -62,7 +62,7 @@ When LeapMux opens, the window has four areas:
 
 {{< screenshot src="hero-workspace" alt="LeapMux workspace showing the left sidebar, tiled coding agents, file diff viewer, and terminal in the center, and the file browser on the right" caption="The LeapMux workspace: sidebar on the left, tiled agents, diff viewer, and terminal in the center, and git-aware file browser on the right." width="1440" height="900" >}}
 
-### 2. Open two agents in isolated git worktrees
+### Open two agents in isolated git worktrees
 
 1. Hover over **In progress** in the left sidebar and click **+** to open the **New workspace** dialog.
 2. Confirm the **Worker** (your local Worker is preselected), pick an **Agent Provider**, and choose a git repository as the **Directory**.
@@ -73,7 +73,7 @@ When LeapMux opens, the window has four areas:
 
 Because each agent runs in its own linked worktree and branch, their edits never collide. See [Worktrees & Branches](/docs/using/worktrees-and-branches/) for all git modes.
 
-### 3. Send prompts, tune settings, and run a terminal check
+### Send prompts, tune settings, and run a terminal check
 
 1. Type a focused prompt into each agent's composer and press **Send** — for example, ask the first agent to refactor a module and the second agent to add unit tests for another area.
 2. Adjust settings mid-session from the status-bar chips below the composer (branch, **Model**, **Effort**, **Permission Mode**) or the composer's **[+]** menu. New agents start on the provider's defaults.
