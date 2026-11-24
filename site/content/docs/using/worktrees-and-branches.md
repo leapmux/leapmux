@@ -27,7 +27,7 @@ Worktrees are optional. You can also keep working in your repository's main chec
 
 ## The Repo → Branch sidebar tree
 
-{{< screenshot src="sidebar-workspaces" alt="LeapMux sidebar grouping parallel branches and linked git worktrees under one workspace" caption="Each feature branch and linked git worktree gets its own group of agent and terminal tabs inside the same workspace." width="420" height="860" >}}
+{{< screenshot src="sidebar-workspaces" alt="LeapMux sidebar grouping parallel branches and linked git worktrees under one workspace" caption="Each feature branch and linked git worktree gets its own group of agent and terminal tabs inside the same workspace." width="402" height="900" >}}
 
 Open tabs are grouped in the workspace sidebar into a two-level tree:
 

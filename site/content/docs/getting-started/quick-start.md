@@ -60,7 +60,7 @@ When LeapMux opens, the window has four areas:
 - **Center tiling area** — your agent, terminal, and file tabs arranged in splits, grids, or floating windows.
 - **Right sidebar** — the git-aware **Files** browser and inline diff viewer for the active tab.
 
-{{< screenshot src="hero-workspace" alt="LeapMux workspace showing the left sidebar, tiled coding agents and terminal in the center, and the file browser on the right" caption="The LeapMux workspace: sidebar on the left, tiled agents and terminal in the center, and git-aware file browser on the right." width="1440" height="860" >}}
+{{< screenshot src="hero-workspace" alt="LeapMux workspace showing the left sidebar, tiled coding agents, file diff viewer, and terminal in the center, and the file browser on the right" caption="The LeapMux workspace: sidebar on the left, tiled agents, diff viewer, and terminal in the center, and git-aware file browser on the right." width="1440" height="900" >}}
 
 ### 2. Open two agents in isolated git worktrees
 

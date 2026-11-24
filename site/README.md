@@ -36,9 +36,11 @@ task generate-site-screenshots # regenerates light/dark docs screenshots into si
 compiles Hugo from source (cached afterwards) and downloads the Hextra module,
 so it needs network access.
 
-`task generate-site-screenshots` runs `scripts/generate-site-screenshots.mjs` with
-Playwright Chromium and commits updated deterministic light and dark PNGs under
-`site/static/images/docs/`. Run it explicitly whenever the UI or screenshot fixtures change.
+`task generate-site-screenshots` builds the embedded frontend binary, boots an
+isolated LeapMux Hub and Worker with deterministic Git worktrees and the local
+mock model server via `frontend/scripts/generate-site-screenshots.ts`, and
+writes updated light and dark Retina PNGs under `site/static/images/docs/`. Run
+it explicitly whenever the UI or screenshot fixtures change.
 
 ## Local preview
 

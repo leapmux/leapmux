@@ -11,7 +11,7 @@ The layout you build is part of the workspace, not just your local view: the til
 
 For the concept-level model of workspaces, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For the content that lives *inside* tabs, see [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/).
 
-{{< screenshot src="tabs-tiling-layout" alt="LeapMux tiled workspace showing an agent chat pane, inline file diff viewer, and integrated terminal side by side" caption="Tiled split panes keep an agent chat, a live diff viewer, and a shell terminal visible together." width="1024" height="860" >}}
+{{< screenshot src="tabs-tiling-layout" alt="LeapMux tiled workspace showing a coding agent chat pane, inline file diff viewer, and integrated terminal side by side" caption="Tiled split panes keep a coding agent chat, a live diff viewer, and a shell terminal visible together." width="992" height="900" >}}
 
 ## Tabs
 

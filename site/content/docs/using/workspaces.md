@@ -45,7 +45,7 @@ If anything fails after the workspace row is created — for example the agent c
 
 ## The sidebar workspace tree
 
-{{< screenshot src="sidebar-workspaces" alt="LeapMux left sidebar showing workspaces, git worktree branch groups, agent status dots, and connected Workers" caption="The left sidebar groups coding agents and terminals by workspace and git worktree branch, with connected Workers below." width="420" height="860" >}}
+{{< screenshot src="sidebar-workspaces" alt="LeapMux left sidebar showing workspaces, git worktree branch groups, Claude Code, Codex, and Antigravity tabs, Archived section, and connected Workers" caption="The left sidebar groups coding agents, file diffs, and terminals by workspace and git worktree branch, with archived workspaces and connected Workers below." width="402" height="900" >}}
 
 The left sidebar lists workspaces in two collapsible default **sections**:
 

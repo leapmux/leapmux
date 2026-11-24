@@ -15,7 +15,7 @@ The file viewer is strictly read-only. LeapMux has no file-editing or file-writi
 
 ## The Files section
 
-{{< screenshot src="file-browser-diff" alt="LeapMux file browser with Changed git filter and inline syntax-highlighted diff viewer" caption="The right-hand file browser filters modified and added files and opens inline diffs beside your agents." width="820" height="620" >}}
+{{< screenshot src="file-browser-diff" alt="LeapMux file browser with Changed git filter and inline syntax-highlighted unified diff viewer" caption="The right-hand file browser filters modified and added files and opens unified diffs beside your agents." width="744" height="504" >}}
 
 The **Files** section is a collapsible panel in the workspace sidebar, marked with a folder-tree icon. It is open by default and can be reordered or collapsed like any other sidebar section.
 

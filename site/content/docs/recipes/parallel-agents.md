@@ -28,7 +28,7 @@ If you installed `leapmux-delegate`, open one coordinator agent in your reposito
 Wait without polling, inspect each diff, verify tests pass, and summarize what is ready to merge.
 ```
 
-{{< screenshot src="coding-agent-chat" alt="LeapMux coding agent chat streaming tool calls, inline diffs, and composer status bar chips" caption="Each parallel agent streams tool calls, diffs, and permission prompts in its own tab and worktree." width="623" height="860" >}}
+{{< screenshot src="coding-agent-chat" alt="LeapMux coding agent chat streaming inline Edit diffs and permission prompts across Claude Code, Antigravity, and Codex tabs" caption="Each parallel agent streams tool calls, inline diffs, and permission prompts in its own tab and worktree." width="992" height="900" >}}
 
 ## Run the same workflow from the CLI
 

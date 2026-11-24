@@ -23,6 +23,8 @@ Sessions stay attached across restarts.
 LeapMux encrypts Frontend↔Worker traffic from end to end.
 Use LeapMux in a browser or as a native desktop app.
 
+![LeapMux workspace showing Claude Code, Antigravity, Codex, a unified file diff viewer, and an integrated terminal across isolated git worktrees](site/static/images/docs/hero-workspace-light.png)
+
 ## Supported Agents
 
 <p>

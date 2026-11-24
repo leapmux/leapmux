@@ -1905,12 +1905,12 @@ tasks:
       - *record_artifacts
 
   generate-site-screenshots:
-    desc: Regenerate deterministic light and dark documentation screenshots (deliberate; committed under site/static/images/docs/)
-    deps: [install-frontend-deps]
+    desc: Regenerate deterministic light and dark documentation screenshots from the real frontend (deliberate; committed under site/static/images/docs/)
+    deps: [build-backend, install-frontend-deps]
     cmds:
       # Run explicitly when the UI or screenshot fixtures change. Do not attach
       # to `task site`, so CI and Cloudflare deploys stay fast and Chromium-free.
-      - bun scripts/generate-site-screenshots.mjs
+      - bun frontend/scripts/generate-site-screenshots.ts
 
   # --- Clean ---
 

@@ -22,7 +22,7 @@ layout: hextra-home
 </div>
 
 <div class="hx:mb-10">
-{{< screenshot src="hero-workspace" alt="LeapMux workspace running Claude Code, Codex, and an integrated terminal side by side across isolated git worktrees" caption="Three coding agents and a live PTY terminal running side by side in isolated git worktrees, with end-to-end encrypted traffic." width="1440" height="860" eager="true" >}}
+{{< screenshot src="hero-workspace" alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees" caption="Claude Code, Antigravity, Codex, a syntax-highlighted diff viewer, and a live PTY terminal running side by side in isolated git worktrees." width="1440" height="900" eager="true" >}}
 </div>
 
 <div class="hx:mb-10">

@@ -72,7 +72,7 @@ Most resumption happens automatically: the tab and its Worker transcript survive
 
 ## Chatting with an agent
 
-{{< screenshot src="coding-agent-chat" alt="LeapMux coding agent pane showing an inline diff edit card, permission prompt, queued follow-up with Steer, and composer chips" caption="An active coding agent pane with a structured Edit diff card, shell permission prompt, queued follow-up ready to steer, and composer model/effort chips." width="623" height="860" >}}
+{{< screenshot src="coding-agent-chat" alt="LeapMux coding agent pane with Claude Code, Antigravity, and Codex tabs, an inline diff edit card, a permission prompt banner, and composer chips" caption="An active coding agent pane with Claude Code, Antigravity, and Codex tabs, an inline Edit diff card, a Bash permission prompt, and composer model and effort chips." width="992" height="900" >}}
 
 The chat tab has the conversation transcript above and a Markdown editor at the bottom.
 

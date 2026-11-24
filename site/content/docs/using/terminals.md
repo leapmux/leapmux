@@ -13,7 +13,7 @@ For the bigger picture of tabs, tiling, and layout, see [Tabs & Layout](/docs/us
 
 ## What a LeapMux terminal is
 
-{{< screenshot src="terminal-pane" alt="LeapMux integrated PTY terminal running leapmux tree and go test with colored output" caption="Integrated PTY terminals run full shells alongside your agents and stay alive across reconnects." width="529" height="434" >}}
+{{< screenshot src="terminal-pane" alt="LeapMux integrated PTY terminal running git status and go test with colored output" caption="Integrated PTY terminals run full shells alongside your agents and stay alive across reconnects." width="518" height="450" >}}
 
 When you open a terminal, the Worker spawns your chosen shell as an interactive login shell (for example `bash -i -l` or `zsh -i -l`), connects it to a real pseudo-terminal (PTY), and streams its output to an [xterm.js](https://xtermjs.org/) view in your tab. The shell and all of its child processes run on the Worker machine — the same machine where your code and git repositories live — not in your browser.
 
