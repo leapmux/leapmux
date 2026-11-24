@@ -2,14 +2,41 @@
 title: "Troubleshooting"
 description: "A symptom-to-fix reference for LeapMux: common problems with their likely cause and the exact fix, grouped by area, with the real flags and settings."
 type: docs
-weight: 2
+weight: 3
 ---
 
-This chapter is a problem-to-fix reference. Each entry gives the **symptom** you see, the **likely cause**, and the **fix** with the real flags and settings. Entries are grouped by area. Use your browser's find (Ctrl/Cmd+F) to jump to a symptom.
+This chapter is a symptom-to-fix reference. Each entry gives the **symptom**, the **cause**, and the **fix** with the real flags and settings.
 
 {{< callout >}}
-Most "nothing works" problems trace back to one of three things: the Worker isn't online, you're bound to the wrong listen address, or nobody completed first-run setup. Start there.
+Most "nothing works" problems trace back to one of three things: the Worker is offline, the Hub binds the wrong listen address, or nobody completed first-run setup. Start with the checklist below.
 {{< /callout >}}
+
+## Quick diagnostic checklist
+
+Run these three checks first to pinpoint which layer failed:
+
+1. **`leapmux doctor`** — checks local daemons, Hub connectivity, CLI authentication, Worker key pins, and online Workers.
+2. **`leapmux daemon <mode> status`** — reports process state, readiness, browser URL, Worker registration, Hub connection state, and the last failure with its log path (replace `<mode>` with `solo`, `hub`, `worker`, or `dev`, and pass the same `--data-dir` or `--config`).
+3. **`leapmux agent providers`** — lists the coding agent providers detected on the selected Worker (pass `--worker name:<name>` to inspect a specific Worker).
+
+## Symptom quick-jump
+
+| Area | Symptom | Jump to |
+|---|---|---|
+| **Installation & Desktop** | `start` or `stop` times out, headless Linux login startup fails, noninteractive script fails, Windows password changed, service definition differs, or data directory belongs to another instance | [Background service](#background-service) |
+| | Container exits immediately, Worker container is unregistered, or `LEAPMUX_*_STORAGE_*` env vars are ignored | [Docker](#docker) |
+| | Port `4327` is already in use, or the UI is blank in local source development | [Port 4327 already in use](#port-4327-already-in-use) · [Blank page in dev](#blank-page-or-the-ui-wont-load-in-development) |
+| **Coding Agents & Providers** | Provider is missing from the picker / `"No agents available"`, or ZCode is missing or unconfigured | [Provider missing](#the-agent-provider-isnt-in-the-picker--no-agents-available) · [ZCode missing](#zcode-isnt-in-the-picker) · [ZCode not configured](#a-zcode-agent-reports-that-zcode-is-not-configured) |
+| | Agent fails to start, Cline `providers.json` is rejected, or a setting change restarts the agent | [Agent fails to start](#the-agent-fails-to-start) · [Cline](#the-cline-agent-does-not-start) · [Setting restarts agent](#a-setting-change-seems-to-reset-the-agent) |
+| **Workers & Network** | Worker is unregistered, registration key is invalid or pending, or Worker stays offline / shows disconnected in the sidebar | [Workers won't connect](#workers-wont-connect-or-stay-offline) · [Never appears online](#worker-process-runs-but-never-appears-online) · [Sidebar disconnected](#worker-is-online-to-the-hub-but-the-sidebar-shows-it-disconnected) |
+| | Worker fails behind a reverse proxy, loops on `HTTP 401`/`403`, or stops with refused or missing keys | [Reverse proxy](#a-worker-cannot-register-or-stay-connected-through-a-reverse-proxy) · [HTTP 401/403](#a-worker-keeps-retrying-and-each-attempt-receives-http-401-or-403) · [Refused keys](#a-worker-stops-because-the-hub-refused-its-public-keys) |
+| | **"Worker public key changed"** dialog appears, or CLI / cross-Worker connection aborts on key mismatch | [TOFU pin mismatch](#worker-public-key-changed--handshake-rejected-tofu-pin-mismatch) |
+| | Connection refused from another machine, sessions show the proxy IP, or login cookies do not stick behind TLS | [Connection refused](#cant-reach-the-ui--connection-refused-from-another-machine) · [Proxy IP](#sessions-or-rate-limits-show-the-reverse-proxy-address) · [Cookies behind proxy](#cookieslogin-dont-stick-behind-a-reverse-proxy) |
+| **Authentication & Control CLI** | Redirected to `/setup`, sign-up disabled, invalid credentials, passkeys, email verification, or OAuth sign-in errors | [Can't log in or sign up](#cant-log-in-or-sign-up) · [Passkeys](#passkey-sign-in-fails-or-the-authenticator-never-appears) · [OAuth sign-in](#oauth-sign-in-fails-or-the-provider-isnt-shown) |
+| | Consent screen hangs, app lacks a permission, step-up is refused, `invalid_grant`, or dynamic registration returns `403` | [An app can't get in](#an-app-cant-get-in) |
+| | `leapmux` inside a tab cannot find the Hub, terminal offers a restart, or expected shell is missing | [CLI can't find Hub](#leapmux-inside-a-terminalagent-says-it-cant-find-the-hub) · [Terminal exited](#a-terminal-stops-accepting-input-and-offers-a-restart) · [Missing shell](#the-expected-shell-isnt-offered-in-new-terminal) |
+| **Database & Encryption** | Workspaces, accounts, agents, or terminals vanish after a restart | [Data disappears between restarts](#data-disappears-between-restarts) |
+| | Hub fails to start or decrypt after restoring a database backup | [Encryption-key errors after restore](#encryption-key-errors-after-restoring-a-backup) |
 
 ## Background service
 
@@ -68,12 +95,14 @@ Run `leapmux daemon <mode> enable`, and type the new password when it asks.
 ### `status` reports that the service definition is missing or differs
 
 **Symptom**
-`status` reports one of these:
+`status` reports that the native service definition is missing or differs from the saved configuration.
 
+{{< details title="Exact status diagnostic messages" closed="true" >}}
 ```text
 The native definition is missing. Run enable to repair the saved configuration.
 The native definition differs from the saved configuration. Run enable to repair it.
 ```
+{{< /details >}}
 
 **Cause**
 Something outside LeapMux removed or changed the service entry, such as a cleanup tool or a manual edit.
@@ -225,11 +254,13 @@ The Worker never comes online, and each reconnection attempt logs `HTTP 401`, or
 
 The Worker keeps its `state.json` for these errors, because a proxy or a Hub restored from an old backup must not destroy its identity.
 
-After five `HTTP 401` refusals in a row, the Worker logs one error that states the remedy, and it keeps retrying:
+After five `HTTP 401` refusals in a row, the Worker logs one error that states the remedy and keeps retrying.
 
+{{< details title="Exact Worker log message after five 401 refusals" closed="true" >}}
 ```text
 the hub does not know this worker's token. Check the saved Hub endpoint and any proxy in front of the Hub. If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.
 ```
+{{< /details >}}
 
 **Fix**
 `leapmux daemon worker status` shows the Hub URL that the Worker uses. Check that URL and the proxy. If neither is wrong, the Hub no longer knows this Worker, so `daemon worker deregister` cannot complete. Stop the Worker, delete its `state.json`, and register it again.
@@ -243,7 +274,8 @@ The Worker logs that the Hub refused its public keys and stops. A standalone Wor
 Its saved keys differ from the keys it registered with. The Hub pins the keys a Worker registers with and refuses a hello that presents others, so this cannot be fixed by reconnecting.
 
 **Fix**
-Run `leapmux daemon worker stop`, then `leapmux daemon worker deregister`, then [register the Worker again](/docs/admin/managing-workers/#register-a-worker-again) with a new key. `stop` matters when the Worker runs as a service, and it does nothing when the Worker already exited. For an auto-registered Worker (solo mode, dev mode, or the desktop app), restart the app instead: at launch, the launcher finds that the saved keys differ from the pinned keys, retires the old Worker, and registers a fresh one. The fresh Worker has a new Worker ID, and the old Worker's tabs do not move to it.
+- **Standalone Worker:** run `leapmux daemon worker stop`, then `leapmux daemon worker deregister`, then [register the Worker again](/docs/admin/managing-workers/#register-a-worker-again) with a new key. `stop` matters when the Worker runs as a service and does nothing if the Worker already exited.
+- **Auto-registered Worker (solo mode, dev mode, or the desktop app):** restart the app instead. At launch, the launcher detects that the saved keys differ from the pinned keys, retires the old Worker, and registers a fresh one. The fresh Worker gets a new Worker ID, and the old Worker's tabs do not move to it.
 
 ### A registered Worker exits at start because its keys are missing or unusable
 
@@ -593,11 +625,15 @@ The **Agent Provider** selector shows **"No agents available"**, or the provider
 The selected Worker's shell must be able to find the provider's command. It can find an executable on PATH, a profile alias, or a profile function. Discovery starts in a neutral directory, so the picker covers the whole Worker. A relative PATH entry can make a command available only in the checkout where the agent launches.
 
 **Fix**
-Install the CLI on the Worker or define a forwarding alias or function in a profile the Worker's shell loads. Click **"Refresh available providers"** to scan again. A wrapper must run the provider in the foreground, forward the arguments and standard streams, and preserve the provider's exit status. Leave the agent's standard input for the provider when the profile runs.
+- Install the provider CLI on the Worker, or define a forwarding alias or function in a profile that the Worker's shell loads.
+- Click **"Refresh available providers"** to scan again.
+- Ensure any wrapper runs the provider in the foreground, forwards arguments and standard streams, preserves the provider's exit status, and leaves standard input untouched for the provider.
 
-The Worker requests login mode by default for provider discovery and launch when the configured shell supports it. To omit the login flags, set `use_login_shell: false` in the Worker or Solo configuration file, or pass `--use-login-shell=false` to `leapmux daemon worker` or `leapmux daemon solo` when starting or restarting the service. The shell may still read profiles in its default mode. Windows PowerShell 5.1 loads profiles without a login flag.
-
-Agent launches support Bash (including Git Bash), Zsh, POSIX sh, Ash, Dash, Ksh, Fish, Csh, Tcsh, Nushell, Elvish, Xonsh, Windows PowerShell 5.1 (`powershell.exe`), and PowerShell 7 (`pwsh`). Use a current Nushell release for agent commands. LeapMux uses deferred parsing to invoke Nushell profile wrappers. Elvish loads its profile without the interactive editor for agent launches. If the Worker uses Windows Command Prompt, set its default agent shell to PowerShell or Bash.
+{{< details title="Supported shells and login-shell behavior" closed="true" >}}
+- **Login shell default:** The Worker requests login mode by default for provider discovery and launch when the configured shell supports it. To omit login flags, set `use_login_shell: false` in the Worker or Solo configuration file, or pass `--use-login-shell=false` to `leapmux daemon worker` or `leapmux daemon solo` when starting or restarting the service. The shell may still read profiles in its default mode. Windows PowerShell 5.1 loads profiles without a login flag.
+- **Supported shells:** Bash (including Git Bash), Zsh, POSIX sh, Ash, Dash, Ksh, Fish, Csh, Tcsh, Nushell, Elvish, Xonsh, Windows PowerShell 5.1 (`powershell.exe`), and PowerShell 7 (`pwsh`).
+- **Shell-specific notes:** Use a current Nushell release for agent commands; LeapMux uses deferred parsing to invoke Nushell profile wrappers. Elvish loads its profile without the interactive editor for agent launches. If the Worker uses Windows Command Prompt, set its default agent shell to PowerShell or Bash.
+{{< /details >}}
 
 ### ZCode isn't in the picker
 
@@ -739,12 +775,13 @@ After restoring the database, Hub startup fails with an undecryptable `captcha.a
 You restored `hub.db` (or your SQL dump) without the matching `encryption.key`, or restored a key file from a different point in time. The database and key file must match because 37 columns across 15 Hub tables are encrypted with `encryption.key`.
 
 **Fix**
-Restore the `encryption.key` from the same backup as the database. Without the matching key file, encrypted Hub columns (including password hashes, workspace titles, CRDT state, settings, OAuth data, and passkeys) cannot be recovered, and an undecryptable `captcha.altcha` row prevents the Hub from starting. If you re-initialize the Hub with a new key file, every session and Worker token is also invalidated; solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
+- Restore the `encryption.key` from the same backup as the database. Without the matching key file, encrypted Hub columns (including password hashes, workspace titles, CRDT state, settings, OAuth data, and passkeys) cannot be recovered, and an undecryptable `captcha.altcha` row prevents the Hub from starting.
+- If you re-initialize the Hub with a new key file, every session and Worker token becomes invalid. Solo mode and the desktop app reissue their own Worker's token automatically. For each standalone Worker:
 
-1. Remove it in the Hub's Worker list.
-2. Stop it.
-3. Delete its `state.json`.
-4. Register it with a new key. It receives a new Worker ID.
+  1. Remove it in the Hub's Worker list.
+  2. Stop it.
+  3. Delete its `state.json`.
+  4. Register it with a new key. It receives a new Worker ID.
 
 For planned key rotation, use `leapmux recover encryption-key rotate` then `reencrypt` — and follow the on-screen instruction to restart the Hub between the two. See [Encryption & Data](/docs/admin/encryption-and-data/).
 
@@ -758,17 +795,27 @@ For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see
 Running `leapmux ...` from inside a LeapMux terminal or agent fails with `error: not_logged_in: no hub selected`.
 
 **Cause**
-`leapmux` reaches the Hub through `LEAPMUX_CONTROL_SOCK` (+ `LEAPMUX_CONTROL_TOKEN`) when it runs inside a LeapMux terminal or agent, and through `--hub`, `LEAPMUX_HUB` or the default Hub of the saved login credentials otherwise. Those `LEAPMUX_CONTROL_*` env vars are injected automatically for every terminal and agent spawn — but if they're missing, the command can't locate the Hub. The Worker may have failed to start the control endpoint. On Unix, the socket lives in `<data-dir>/run/control` when its full path fits the platform limit. A deeper data directory uses a private namespace under the canonical system `/tmp` directory. The namespace derives from the account and the canonical Worker data directory. The Worker refuses an insecure directory, a conflicting namespace identity, a namespace held by another process, or a fallback path that still exceeds the platform limit. It never changes an insecure directory's permissions or switches locations to hide an ownership refusal. On Windows, the endpoint is a named pipe whose name does not depend on the Worker data directory. The Worker log states the actual error.
+- Inside a LeapMux terminal or agent, `leapmux` reaches the Hub through `LEAPMUX_CONTROL_SOCK` and `LEAPMUX_CONTROL_TOKEN`. Outside a tab, it uses `--hub`, `LEAPMUX_HUB`, or the default Hub from saved login credentials.
+- The Worker injects the `LEAPMUX_CONTROL_*` environment variables automatically into every spawned terminal and agent. If those variables are missing, the command cannot locate the Hub — either a sub-shell stripped the environment, or the Worker failed to start its control endpoint.
+- The Worker log states the exact control-endpoint startup error.
+
+{{< details title="Control-endpoint socket path and namespace rules" closed="true" >}}
+- **Unix:** The socket lives in `<data-dir>/run/control` when its full path fits the platform limit. A deeper data directory falls back to a private namespace under the canonical system `/tmp` directory, derived from the operating-system account and the canonical Worker data directory.
+- **Unix refusals:** The Worker refuses an insecure directory, a conflicting namespace identity, a namespace held by another process, or a fallback path that still exceeds the platform limit. It never alters an insecure directory's permissions or switches locations to hide an ownership refusal.
+- **Windows:** The endpoint is a named pipe whose name does not depend on the Worker data directory.
+{{< /details >}}
 
 **Fix**
-- **Inside a LeapMux terminal/agent:** read the Worker log for a control-endpoint error. On Unix, correct the directory ownership and permissions, or choose a shorter Worker data directory. On Windows, inspect the named-pipe startup error in the Worker log. The `LEAPMUX_CONTROL_*` vars should already be present. Confirm with `env | grep LEAPMUX_CONTROL`. If they're absent, you likely spawned a sub-shell that stripped the environment, or the remote-IPC server wasn't available at spawn — open a fresh terminal tab. (There is **no** "remote-enabled" checkbox to toggle; it's wired up automatically.)
+- **Inside a LeapMux terminal or agent:**
+  - Confirm that the control variables exist with `env | grep LEAPMUX_CONTROL`. If they are absent, a sub-shell stripped the environment or the control endpoint was unavailable at spawn — open a fresh terminal tab. (There is **no** "remote-enabled" checkbox to toggle; it is wired up automatically.)
+  - Check the Worker log for a control-endpoint error. On Unix, fix the directory ownership and permissions, or choose a shorter Worker data directory. On Windows, inspect the named-pipe startup error in the Worker log.
 - **From your own shell (not inside LeapMux):** authenticate first:
 
   ```bash
   leapmux auth login --hub https://hub.example.com
   ```
 
-  For headless/SSH/container shells where a browser can't open, add `--device-code` to use the device-code flow. Check your identity with `leapmux whoami` and `leapmux auth status`.
+  For headless, SSH, or container shells where a browser cannot open, add `--device-code` to use the device-code flow. Check your identity with `leapmux whoami` and `leapmux auth status`.
 
 ### A terminal stops accepting input and offers a restart
 

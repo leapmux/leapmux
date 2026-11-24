@@ -1,0 +1,89 @@
+{{- /*
+  Compact LLM index (/llms-small.txt) covering the core LeapMux documentation
+  pages, the onboarding /agent-guide.md, and the six curated Agent Skills.
+  Uses site.GetPage so page titles, descriptions, and Markdown URLs stay synced
+  with the documentation tree and broken paths fail the Hugo build.
+*/ -}}
+# {{ .Site.Title }} (Core Index)
+
+> {{ .Site.Params.description | default "" }}
+
+This is the compact index. For the full documentation tree, see [`/llms.txt`]({{ "llms.txt" | absURL }}).
+
+## Onboarding Guide for AI Agents
+
+- [LeapMux Agent Guide]({{ "agent-guide.md" | absURL }}): Step-by-step guide for an AI coding agent helping a human understand LeapMux, choose a deployment mode, install it, run their first parallel agent session, and run read-only diagnostics.
+
+## Getting Started
+{{- range slice
+  "/docs/getting-started/introduction"
+  "/docs/getting-started/installation"
+  "/docs/getting-started/quick-start"
+  "/docs/getting-started/ways-to-run"
+  "/docs/getting-started/concepts"
+}}
+{{- template "llms-small-entry" . }}
+{{- end }}
+
+## Workflow Recipes
+{{- range slice
+  "/docs/recipes/parallel-agents"
+  "/docs/recipes/second-opinion-review"
+  "/docs/recipes/cli-automation"
+}}
+{{- template "llms-small-entry" . }}
+{{- end }}
+
+## Using LeapMux
+{{- range slice
+  "/docs/using/coding-agents"
+  "/docs/using/worktrees-and-branches"
+  "/docs/using/tabs-and-layout"
+  "/docs/using/terminals"
+  "/docs/using/control-cli"
+  "/docs/using/cli-automation"
+  "/docs/using/agent-skills"
+}}
+{{- template "llms-small-entry" . }}
+{{- end }}
+
+## Administration & Deployment
+{{- range slice
+  "/docs/admin/running-leapmux"
+  "/docs/admin/configuration"
+  "/docs/admin/managing-workers"
+  "/docs/admin/security"
+}}
+{{- template "llms-small-entry" . }}
+{{- end }}
+
+## Reference
+{{- range slice
+  "/docs/reference/cli-reference"
+  "/docs/reference/troubleshooting"
+}}
+{{- template "llms-small-entry" . }}
+{{- end }}
+
+## Agent Skills (SKILL.md)
+
+Install all curated LeapMux skills with `leapmux skill install --all` (matches the installed binary offline) or `npx skills add leapmux/leapmux` (tracks `main`), or fetch each raw `SKILL.md` directly:
+- [leapmux]({{ "skills/leapmux/SKILL.md" | absURL }}): Foundational reference for driving LeapMux tabs, workspaces, coding agents, terminals, worktrees, and Workers via the `leapmux` CLI.
+- [leapmux-delegate]({{ "skills/leapmux-delegate/SKILL.md" | absURL }}): Split an engineering task across parallel LeapMux agents in isolated git worktrees, wait without polling, inspect their diffs, and integrate or clean up their results ([worker-brief-template]({{ "skills/leapmux-delegate/references/worker-brief-template.md" | absURL }})).
+- [leapmux-review]({{ "skills/leapmux-review/SKILL.md" | absURL }}): Spawn an independent read-only LeapMux reviewer agent from a contrasting provider family with optional forwarded skills and `--output-schema` JSON validation ([review-schemas]({{ "skills/leapmux-review/references/review-schemas.md" | absURL }})).
+- [leapmux-council]({{ "skills/leapmux-council/SKILL.md" | absURL }}): Convene two or more contrasting read-only LeapMux agents in parallel for deep root-cause analysis or architecture planning, with optional anonymous cross-examination ([cross-examination]({{ "skills/leapmux-council/references/cross-examination.md" | absURL }})).
+- [leapmux-handoff]({{ "skills/leapmux-handoff/SKILL.md" | absURL }}): Transfer an in-progress task cleanly to another LeapMux agent via conversation fork, fresh worktree agent, or another Worker ([handoff-template]({{ "skills/leapmux-handoff/references/handoff-template.md" | absURL }})).
+- [leapmux-help]({{ "skills/leapmux-help/SKILL.md" | absURL }}): Answer questions about installing, configuring, using, or troubleshooting LeapMux by consulting live `/llms.txt` Markdown docs and running read-only diagnostics ([diagnostics-checklist]({{ "skills/leapmux-help/references/diagnostics-checklist.md" | absURL }})).
+
+---
+Site: {{ .Site.BaseURL }}
+{{- "\n" -}}
+
+{{- define "llms-small-entry" -}}
+{{- $page := site.GetPage . -}}
+{{- if not $page -}}
+  {{- errorf "llms-small.txt: page %q not found" . -}}
+{{- end -}}
+{{- $url := $page.Permalink -}}{{- with $page.OutputFormats.Get "markdown" -}}{{- $url = .Permalink -}}{{- end }}
+- [{{ $page.Title }}]({{ $url }}): {{ with $page.Description }}{{ . }}{{ else }}{{ $page.Summary | plainify | truncate 200 | strings.TrimSpace }}{{ end }}
+{{- end -}}

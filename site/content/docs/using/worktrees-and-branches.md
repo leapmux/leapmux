@@ -27,13 +27,15 @@ Worktrees are optional. You can also keep working in your repository's main chec
 
 ## The Repo → Branch sidebar tree
 
+{{< screenshot src="sidebar-workspaces" alt="LeapMux sidebar grouping parallel branches and linked git worktrees under one workspace" caption="Each feature branch and linked git worktree gets its own group of agent and terminal tabs inside the same workspace." width="420" height="860" >}}
+
 Open tabs are grouped in the workspace sidebar into a two-level tree:
 
-```text
-Repo group   (Repo label)
-└─ Branch group   (Branch name + diff-stats badge)
-   ├─ tab
-   └─ tab
+```mermaid
+flowchart TD
+  Repo["Repository group (origin URL or folder)"] --> Branch["Branch group (branch name + diff-stats badge)"]
+  Branch --> Tab1["Agent tab"]
+  Branch --> Tab2["Terminal tab"]
 ```
 
 - The **repo group** header shows the repository, with the origin URL (or the toplevel path for a local repo with no origin) in its tooltip.
@@ -121,17 +123,12 @@ For example, a repository at `~/code/leapmux` with a branch `fix-login` produces
 
 The worktrees live in a sibling directory of the main checkout, one subdirectory per branch:
 
-**On-disk worktree layout:**
-
-```text
-~/code/                            ◄── repo parent
-├── leapmux/                       ◄── main checkout (current branch)
-│   └── .git/
-└── leapmux-worktrees/             ◄── sibling worktrees directory
-    ├── fix-login/      ◄── agent / terminal tab opens here
-    │   └── (working copy on branch fix-login)
-    └── add-search/     ◄── agent / terminal tab opens here
-        └── (working copy on branch add-search)
+```mermaid
+flowchart TD
+  Parent["~/code/ (repo parent)"] --> Main["leapmux/ (main checkout + .git/)"]
+  Parent --> Sibling["leapmux-worktrees/ (sibling worktrees directory)"]
+  Sibling --> Fix["fix-login/ (working copy on fix-login)"]
+  Sibling --> Search["add-search/ (working copy on add-search)"]
 ```
 
 Each worktree tab opens in one of these branch directories.

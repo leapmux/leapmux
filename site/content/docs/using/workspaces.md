@@ -27,11 +27,11 @@ The dialog is titled **New workspace** and contains these fields:
 | Field | What it does |
 | --- | --- |
 | **Worker** | Pick which Worker (machine) hosts the workspace's first agent. See [Managing Workers](/docs/admin/managing-workers/). |
-| Agent provider | Choose the agent backend (for example Claude Code or Codex). A refresh control re-queries the Worker for available providers. See [Coding Agents](/docs/using/coding-agents/). |
+| **Agent provider** | Choose the agent backend (for example Claude Code or Codex). A refresh control re-queries the Worker for available providers. See [Coding Agents](/docs/using/coding-agents/). |
 | **Title** | The workspace name. Pre-filled with a random three-word title-cased name. The refresh button beside the label (tooltip **Generate random name**) regenerates the suggestion. Type your own to replace it. It cannot be empty. |
-| Directory | The working directory to open on the Worker. The same picker the other dialogs use: browse the tree, or type a path in the box above it. |
-| Resume an existing session | Optional. A menu of recent sessions for the chosen directory and provider, so the workspace's first agent continues an earlier conversation. See [Resuming a session](/docs/using/coding-agents/#resuming-an-existing-session). |
-| Git options | Once a Worker is chosen, choose the git mode for the working directory — for example opening directly or in a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
+| **Directory** | The working directory to open on the Worker. The same picker the other dialogs use: browse the tree, or type a path in the box above it. |
+| **Resume an existing session** | Optional. A menu of recent sessions for the chosen directory and provider, so the workspace's first agent continues an earlier conversation. See [Resuming a session](/docs/using/coding-agents/#resuming-an-existing-session). |
+| **Git options** | Once a Worker is chosen, choose the git mode for the working directory — for example opening directly or in a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
 Click **Create** to confirm. Creating a workspace starts its first agent automatically, then opens the new workspace.
 
@@ -45,22 +45,16 @@ If anything fails after the workspace row is created — for example the agent c
 
 ## The sidebar workspace tree
 
-The left sidebar lists workspaces grouped into collapsible **sections**. Every user starts with these default workspace sections:
+{{< screenshot src="sidebar-workspaces" alt="LeapMux left sidebar showing workspaces, git worktree branch groups, agent status dots, and connected Workers" caption="The left sidebar groups coding agents and terminals by workspace and git worktree branch, with connected Workers below." width="420" height="860" >}}
+
+The left sidebar lists workspaces in two collapsible default **sections**:
 
 | Section | Contains |
 | --- | --- |
-| **In progress** | Your workspaces that are not assigned to another section. New workspaces land here by default. |
+| **In progress** | Your active workspaces. New workspaces land here by default. |
 | **Archived** | Workspaces you have archived. Collapsed by default. |
 
-All workspace sections except **Archived** are expanded by default; click a section header to collapse or expand it.
-
-### Custom sections
-
-In addition to the default sections, your sidebar can hold **custom sections** that you use to group workspaces. A custom section behaves like **In progress**: it is expanded by default, it carries a **+** button to create a workspace directly in it, and it is a valid drag target and a **Move to** target (see [Moving and archiving](#moving-and-archiving) below). Each section is per-user, so creating, renaming, or deleting a section changes only *your* sidebar.
-
-{{< callout type="info" >}}
-The current UI provides no way to **create**, **rename**, or **delete** custom sections, so the only sections you will see are the two defaults.
-{{< /callout >}}
+**In progress** is expanded by default and **Archived** starts collapsed; click a section header to collapse or expand it.
 
 ### Workspace rows
 
@@ -104,28 +98,19 @@ To rename a workspace, either:
 
 The title becomes an inline input pre-filled with the current name. Press **Enter** or click away to commit; press **Escape** to cancel. An empty value cancels the rename. If the rename fails, the workspace keeps its previous name.
 
-## Moving and archiving
+## Archiving a workspace
 
-The workspace context menu includes:
+Open a workspace's context menu (**⋯**) and choose **Archive** to move it into the **Archived** section, or **Unarchive** to return it to **In progress**. You can also drag a workspace row into **Archived**.
 
-- **Move to** — a submenu listing your other sections (excluding the current one and **Archived**), including any [custom sections](#custom-sections). Pick one to move the workspace there. The submenu appears only when at least one such target exists, so with just the default sections the submenu is always hidden.
-- **Archive** / **Unarchive** — moves the workspace into your **Archived** section, or back to **In progress**.
+Archiving is a sidebar organization step that makes the workspace read-only without deleting it. While archived, you cannot open new tabs or edit the layout; unarchive the workspace at any time to resume editing.
 
-Archiving asks for confirmation:
-
-> **Archive workspace**
-> Are you sure you want to archive this workspace? All active agents and terminals will be stopped.
-
-Archiving is a purely per-user organization of your sidebar: it moves the workspace into your **Archived** section. The workspace itself is not deleted, and you can unarchive it at any time. (While a workspace is archived its context menu shows **Unarchive** in place of **Move to**.)
-
-Despite the dialog's wording, archiving does not stop the workspace's agents or terminals; they keep running on their Workers. To stop an agent or terminal, close its tab — an archived workspace is read-only, so unarchive it first. To stop everything a workspace holds, delete the workspace.
+{{< callout type="info" >}}
+The confirmation dialog warns that active agents and terminals will be stopped, but archiving leaves existing agent and terminal processes running on their Workers. To stop an individual agent or terminal, unarchive the workspace and close its tab. To stop every process in a workspace at once, delete the workspace.
+{{< /callout >}}
 
 ## Deleting a workspace
 
-To delete a workspace, open the workspace context menu and choose **Delete** (shown in red). You are asked to confirm:
-
-> **Delete workspace**
-> Are you sure you want to delete this workspace? This cannot be undone.
+To delete a workspace, open the workspace context menu and choose **Delete** (shown in red), then confirm in the dialog.
 
 On confirm, the workspace is deleted and everything it held is cleaned up. Its agents and terminals are stopped. A worktree that no other workspace points at is reclaimed shortly afterwards by the Worker's housekeeping pass. A worktree with uncommitted changes or unpushed commits is left on disk for you.
 

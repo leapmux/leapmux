@@ -2,12 +2,12 @@
 title: "Admin CLI"
 description: "leapmux admin administers a running Hub over RPC: settings, users, sessions, Workers, sign-in providers, captcha, rate limits, and tokens."
 type: docs
-weight: 10
+weight: 13
 ---
 
-This chapter is the `leapmux admin ...` command tree: the online, authenticated face of hub administration. It selects the Hub, signs in, prints its output and reports its errors as the rest of `leapmux` does — see [Control CLI](/docs/using/control-cli/) for those mechanics. The [Control Command Reference](/docs/reference/control-commands/#leapmux-admin) lists every admin command with its arguments, flags and examples. For the offline break-glass tree (`create-admin`, `reset-password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/).
+This chapter is the `leapmux admin ...` command tree: the online, authenticated face of hub administration. It selects the Hub, signs in, prints its output and reports its errors as the rest of `leapmux` does — see [Control CLI](/docs/using/control-cli/) for those mechanics. The [Admin Command Reference](/docs/reference/commands/admin/) lists every admin command with its arguments, flags, and examples. For the offline break-glass tree (`create-admin`, `reset-password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/).
 
-The CLI uses your normal control credential. The Hub requires administrator privileges and a current step-up window for every procedure on an `Admin*` service, including reads. The `admin app` commands call `AppService`. This service checks ownership and requires the `admin:apps` permission from bearer credentials. Registering, updating, vouching for an app, and changing its elevation setting require a current window. Listing apps, retiring an app, and deleting an empty registration work without one. See [Session elevation](/docs/admin/security/#session-elevation).
+The CLI uses your normal control credential. The Hub requires administrator privileges and a current step-up window for every procedure on an `Admin*` service, including reads. The `admin app` commands call `AppService`. This service checks ownership and requires the `admin:apps` permission from bearer credentials. Registering, updating, vouching for an app, and changing its elevation setting require a current window. Listing apps, retiring an app, and deleting an empty registration work without one. See [Authentication & Session Security](/docs/admin/authentication-security/#session-elevation).
 
 ```text
 leapmux admin settings          list | get <key> | set <key> <value> | set-secret <key> <json> | reset <key>
@@ -30,7 +30,9 @@ leapmux admin network           status
 
 These commands are RPC calls, so there is no `--data-dir` and no `--config`; neither flag exists on any admin command. `--hub` selects the Hub as it does for every other control command. The output is text; `--json` prints the JSON envelope (`{"data": ...}`) for `jq`.
 
-> **Offline break-glass is `leapmux recover`.** First-admin bootstrap, password reset with the hub stopped, `db`, and `encryption-key` surgery stay offline — see [Recovery](/docs/admin/recover/). Everything else is here.
+{{< callout type="info" >}}
+**Offline break-glass is `leapmux recover`.** First-admin bootstrap, password reset with the hub stopped, `db`, and `encryption-key` surgery stay offline — see [Recovery](/docs/admin/recover/). Everything else is here.
+{{< /callout >}}
 
 ## Admin commands stay out of a LeapMux tab
 
@@ -50,7 +52,7 @@ leapmux admin settings reset smtp
 
 **Every command here needs an admin-scoped credential that holds a current window.** Several of these keys are the hub's own security controls, and the rule covers the reads too: `list` and `get` ask for a proof exactly as `set` does, from a command-line credential as from a browser session. A read needs the window and does not slide it.
 
-You do not run a separate command. The default ceremony opens a browser on the CLI's own machine, and the refused command runs once you prove the factor there. A credential from `leapmux auth login --device-code`, or one an administrator issued, instead prints an address and a short code to approve in a browser. The window lasts {{< duration elevation-window >}}, and every write slides it forward. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
+You do not run a separate command. The default ceremony opens a browser on the CLI's own machine, and the refused command runs once you prove the factor there. A credential from `leapmux auth login --device-code`, or one an administrator issued, instead prints an address and a short code to approve in a browser. The window lasts {{< duration elevation-window >}}, and every write slides it forward. See [Verifying a command-line credential](/docs/admin/authentication-security/#verifying-a-command-line-credential).
 
 **When a write takes effect** depends on the key's propagation class. A `hot` key reaches the serving Hub at once, because it replaces its cached settings snapshot after the commit. The runtime lease permits one serving Hub per database. A new Hub loads stored settings when it starts. A `restart` key applies only after a Hub restart.
 
@@ -201,16 +203,16 @@ Today the rule covers four things:
 - `user grant-admin` **and** `user revoke-admin` — one hub procedure carries both directions, so the refusal covers the demotion as well as the promotion. Plan an emergency demotion from a browser; a CI credential cannot run it.
 - `user update --email` and `user update --email-verified` — the address receives the recovery link, so writing one hands over a way in.
 
-The remaining `Admin*` procedures accept a **command-line credential that holds a current window**. These include `api-token issue`, `user delete`, and the `--display-name` and `--clear-pending-email` options of `user update`. The window also covers `settings set`, `set-secret`, and `reset`, including the `captcha` and `rate-limit` commands that use them. It covers `idp add`, `remove`, `enable`, and `disable` as well. Reads such as `settings list` also need the window. A job can run these commands unattended while its credential holds a current window. A person must approve a new window after it expires. Scope the credential to what the job needs. See [Session elevation](/docs/admin/security/#session-elevation).
+The remaining `Admin*` procedures accept a **command-line credential that holds a current window**. These include `api-token issue`, `user delete`, and the `--display-name` and `--clear-pending-email` options of `user update`. The window also covers `settings set`, `set-secret`, and `reset`, including the `captcha` and `rate-limit` commands that use them. It covers `idp add`, `remove`, `enable`, and `disable` as well. Reads such as `settings list` also need the window. A job can run these commands unattended while its credential holds a current window. A person must approve a new window after it expires. Scope the credential to what the job needs. See [Session elevation](/docs/admin/authentication-security/#session-elevation).
 
 `api-token issue` is on that second list because a headless service account has to be able to renew. What limits it instead is the credential it mints: **a credential issued by another credential does not renew, and it expires no later than the one that issued it.** So a chain of self-issued credentials gets shorter each time and ends at the browser consent that started it. To issue one that renews, run the verb from a browser-backed session.
 
 ## See also
 
 - [Control CLI](/docs/using/control-cli/) — authentication, the output, the errors, targets, and the user-facing command groups.
-- [Control Command Reference](/docs/reference/control-commands/) — every command with its arguments, flags and examples.
-- [Configuration](/docs/admin/configuration/) — what each hub instance setting does.
+- [Command Reference](/docs/reference/commands/) — every command with its arguments, flags, and examples (see [Admin Commands](/docs/reference/commands/admin/) for `leapmux admin`).
+- [Configuration Guide](/docs/admin/configuration/) and [Configuration Reference](/docs/admin/configuration-reference/) — what each hub instance setting does.
 - [Recovery](/docs/admin/recover/) — the offline break-glass tree, for when the hub cannot serve.
 - [Sign-in Providers](/docs/admin/sign-in-providers/) — the `idp` verbs in their administrator context.
 - [App Authorization](/docs/admin/app-authorization/) — the `app` verbs and the permission vocabulary.
-- [Security & Threat Model](/docs/admin/security/) — why every write here needs a recently proven factor.
+- [Authentication & Session Security](/docs/admin/authentication-security/) — why every write here needs a recently proven factor.

@@ -2,7 +2,7 @@
 title: "Settings & Preferences"
 description: "Every Preferences dialog category in order: Account, Apps, Appearance, Notifications, Chat & Composer, Terminal, Desktop, Files & Applications, Keyboard Shortcuts, Advanced — and the Administration group hub administrators see."
 type: docs
-weight: 10
+weight: 12
 ---
 
 LeapMux keeps your settings in one **Preferences** dialog reached from the user (avatar) menu. It is a large, searchable, categorized dialog covering every user, browser, and (for hub administrators) instance setting in one place. This chapter covers every category in the dialog's own order, the additional in-context toggles, and how each preference is stored and resolved.

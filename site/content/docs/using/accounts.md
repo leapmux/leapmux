@@ -2,7 +2,7 @@
 title: "Accounts & Authentication"
 description: "Getting into LeapMux as a user: when you need an account, creating the first one, signing up and signing in, email verification, OAuth, account recovery, and your profile."
 type: docs
-weight: 11
+weight: 13
 ---
 
 This chapter covers everything you need to get into LeapMux as a user: when you need an account at all, how to create the very first one, how to sign up and sign in, how email verification and OAuth sign-in work, how to recover an account you are locked out of, and how to manage your profile and password once you are in.

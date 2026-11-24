@@ -28,12 +28,17 @@ theme. The LeapMux user manual is served from `/docs/`.
 From the repository root:
 
 ```bash
-task site            # builds the site into site/public/
+task site                      # builds the site into site/public/
+task generate-site-screenshots # regenerates light/dark docs screenshots into site/static/images/docs/
 ```
 
-That validates the matrix and runs `cd site && GOWORK=off go tool hugo --gc --minify`. The first run
+`task site` validates the matrix and runs `cd site && GOWORK=off go tool hugo --gc --minify --cleanDestinationDir`. The first run
 compiles Hugo from source (cached afterwards) and downloads the Hextra module,
 so it needs network access.
+
+`task generate-site-screenshots` runs `scripts/generate-site-screenshots.mjs` with
+Playwright Chromium and commits updated deterministic light and dark PNGs under
+`site/static/images/docs/`. Run it explicitly whenever the UI or screenshot fixtures change.
 
 ## Local preview
 
@@ -57,10 +62,10 @@ site/
 │   ├── _index.md       # Home page (https://leapmux.dev/)
 │   └── docs/           # User manual (https://leapmux.dev/docs/)
 │       ├── _index.md   # Manual landing page
-│       └── <section>/  # getting-started / using / admin / reference,
+│       └── <section>/  # getting-started / recipes / using / admin / reference
 │           ├── _index.md   # section index (cards)
 │           └── *.md        # chapters, ordered by `weight`
-└── static/             # Logo and favicon
+└── static/             # Logo, favicon, agent-guide.md, and docs screenshots
 ```
 
 To add or edit a chapter, drop a Markdown file in the right `content/docs/<section>/`

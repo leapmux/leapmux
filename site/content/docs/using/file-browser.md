@@ -15,27 +15,23 @@ The file viewer is strictly read-only. LeapMux has no file-editing or file-writi
 
 ## The Files section
 
+{{< screenshot src="file-browser-diff" alt="LeapMux file browser with Changed git filter and inline syntax-highlighted diff viewer" caption="The right-hand file browser filters modified and added files and opens inline diffs beside your agents." width="820" height="620" >}}
+
 The **Files** section is a collapsible panel in the workspace sidebar, marked with a folder-tree icon. It is open by default and can be reordered or collapsed like any other sidebar section.
 
 The section always tracks the **active tab**. It renders the directory tree rooted at that tab's working directory and reflects that tab's Worker, working directory, home directory, and git status. Switching tabs re-roots the tree. If no tab is selected, the section shows `No tab selected`.
 
 When the active tab is still starting up — for example, an agent that is creating a new worktree on disk — the tree shows a `Starting…` spinner and suppresses listing until the working directory exists.
 
-
-**The Files panel in the sidebar:**
-
-```text
-┌──────────────────────────────────────────────────┐
-│ Files        collapse · hidden · sort · refresh  │
-│                                                  │
-│ project/                                         │
-│ ├── src/                                         │
-│ │   ├── app.ts                                   │
-│ │   └── utils.ts                                 │
-│ ├── docs/                                        │
-│ ├── notes.txt                                    │
-│ └── README.md                                    │
-└──────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+  Header["Files header (collapse · hidden · sort · refresh)"] --> Root["project/"]
+  Root --> Src["src/"]
+  Src --> App["app.ts"]
+  Src --> Utils["utils.ts"]
+  Root --> Docs["docs/"]
+  Root --> Notes["notes.txt"]
+  Root --> Readme["README.md"]
 ```
 
 ### Section header buttons
@@ -137,15 +133,13 @@ A directory's badge aggregates the stats of everything changed beneath it, and t
 
 The example below shows a small repo with one staged file, one unstaged file, and one untracked file. Status is shown in parentheses; in the UI the icon tint conveys it.
 
-**A git-aware file tree with status badges:**
-
-```text
-myproject                 +12 -4 *1   (root summary)
-├── src                   +12 -4      (changed directory)
-│   ├── app.ts            +8 -3       (modified / unstaged)
-│   └── utils.ts          +4 -1       (staged only)
-├── notes.txt             *1          (untracked)
-└── README.md                         (unchanged, no badge)
+```mermaid
+flowchart TD
+  Root["myproject (+12 -4 *1 — root summary)"] --> Src["src/ (+12 -4 — changed directory)"]
+  Src --> App["app.ts (+8 -3 — modified / unstaged)"]
+  Src --> Utils["utils.ts (+4 -1 — staged only)"]
+  Root --> Notes["notes.txt (*1 — untracked)"]
+  Root --> Readme["README.md (unchanged, no badge)"]
 ```
 
 ### Filter tabs
@@ -260,7 +254,7 @@ The file browser works identically whether the Worker is local or remote, becaus
 - **Git status** (file states and diff stats) for the colors, badges, and filters.
 - **Committed and staged file contents** for the inline diffs.
 
-When the Worker is on another machine, every one of these requests and responses travels over the end-to-end-encrypted Worker channel. While the Hub only relays that traffic, it cannot read your paths or file contents. This is the same channel your agents and terminals use. For how remote Workers are registered, approved, and selected, see [Managing Workers](/docs/admin/managing-workers/); for the encryption details, see [Security & Threat Model](/docs/admin/security/).
+When the Worker is on another machine, every one of these requests and responses travels over the end-to-end-encrypted Worker channel. While the Hub only relays that traffic, it cannot read your paths or file contents. This is the same channel your agents and terminals use. For how remote Workers are registered and selected, see [Managing Workers](/docs/admin/managing-workers/); for the encryption details, see [Security & Threat Model](/docs/admin/security/).
 
 {{< callout type="info" >}}
 Git error messages surfaced in the browser (for example, a dubious-ownership warning) appear in English.

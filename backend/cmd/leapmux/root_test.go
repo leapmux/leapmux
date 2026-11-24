@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -561,32 +563,149 @@ func TestRootCommandTree_Snapshot(t *testing.T) {
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite the reference pages of the docs site that the command tree generates")
 
-// controlReferencePath is the reference page of `leapmux control` that the
-// command tree generates. The path is relative to this package's directory.
-const controlReferencePath = "../../../site/content/docs/reference/control-commands.md"
+const (
+	// controlReferenceDir holds the generated per-group control command
+	// reference pages. The path is relative to this package's directory.
+	controlReferenceDir = "../../../site/content/docs/reference/commands"
+	// legacyControlReferencePath is the superseded single-page reference file.
+	legacyControlReferencePath = "../../../site/content/docs/reference/control-commands.md"
+)
 
-// controlReferenceHeader opens the generated page: its front matter, and the
-// sentence that sends a reader to the chapter that explains the concepts.
-const controlReferenceHeader = `---
-title: "Control Command Reference"
-description: "Every leapmux command with its arguments, flags and examples, generated from the command tree of the binary."
-type: docs
-weight: 2
----
-
-<!-- The command tree generates this page. Do not edit it by hand: change the command, then run
+const controlReferenceBanner = `<!-- The command tree generates this page. Do not edit it by hand: change the command, then run
      go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden
      in backend/. -->
-
-This page lists every control command of ` + "`leapmux`" + ` with its arguments, its flags and its examples. The binary prints the same text with ` + "`--help`" + `, and ` + "`leapmux commands --json`" + ` prints it for a program. [Control CLI](/docs/using/control-cli/) explains the concepts: how a command selects its target, what it prints, how it fails, and how it signs in.
-
 `
 
-// TestControlReference_IsCurrent keeps the generated page equal to the
-// command tree. The page is also the reviewed record of the grammar: a change
-// to a command shows in its diff.
-func TestControlReference_IsCurrent(t *testing.T) {
+type controlReferenceGroup struct {
+	slug        string
+	title       string
+	description string
+	icon        string
+	subtitle    string
+	weight      int
+	commands    []string
+}
+
+var controlReferenceGroups = []controlReferenceGroup{
+	{
+		slug:        "agents",
+		title:       "Agents",
+		description: "Reference for leapmux agent commands: start, message, queue, watch, and configure coding agents.",
+		icon:        "cube",
+		subtitle:    "Start, message, queue, watch, and configure coding agents.",
+		weight:      1,
+		commands:    []string{"agent"},
+	},
+	{
+		slug:        "terminals",
+		title:       "Terminals",
+		description: "Reference for leapmux terminal commands: open, type into, read, resize, and manage terminals.",
+		icon:        "terminal",
+		subtitle:    "Open, type into, read, resize, and manage shell terminals.",
+		weight:      2,
+		commands:    []string{"terminal"},
+	},
+	{
+		slug:        "workspaces-and-tabs",
+		title:       "Workspaces & Tabs",
+		description: "Reference for leapmux workspace, section, tab, and tree commands.",
+		icon:        "collection",
+		subtitle:    "Manage workspaces, sidebar sections, tabs, and the tree overview.",
+		weight:      3,
+		commands:    []string{"workspace", "section", "tab", "tree"},
+	},
+	{
+		slug:        "layout-and-windows",
+		title:       "Layout & Windows",
+		description: "Reference for leapmux tile, window, and layout commands.",
+		icon:        "view-grid",
+		subtitle:    "Split tiles, arrange layouts, and manage floating windows.",
+		weight:      4,
+		commands:    []string{"tile", "window", "layout"},
+	},
+	{
+		slug:        "git-and-files",
+		title:       "Git & Files",
+		description: "Reference for leapmux git, worktree, and file commands.",
+		icon:        "code",
+		subtitle:    "Inspect git state, manage worktrees, and browse or search files on a Worker.",
+		weight:      5,
+		commands:    []string{"git", "worktree", "file"},
+	},
+	{
+		slug:        "workers-and-events",
+		title:       "Workers & Events",
+		description: "Reference for leapmux worker, tunnel, events, notify, and notification commands.",
+		icon:        "chip",
+		subtitle:    "Manage Workers, TCP/stdio tunnels, live event streams, and notifications.",
+		weight:      6,
+		commands:    []string{"worker", "tunnel", "events", "notify", "notification"},
+	},
+	{
+		slug:        "auth-and-session",
+		title:       "Auth & Session",
+		description: "Reference for leapmux auth, context, settings, whoami, doctor, skill, guide, version, and rpc commands.",
+		icon:        "key",
+		subtitle:    "Sign in, set CLI context and preferences, run diagnostics, inspect skills, and call RPCs.",
+		weight:      7,
+		commands:    []string{"auth", "context", "settings", "whoami", "doctor", "skill", "guide", "version", "rpc"},
+	},
+	{
+		slug:        "admin",
+		title:       "Admin",
+		description: "Reference for leapmux admin commands: administer Hub users, sessions, settings, and tokens.",
+		icon:        "shield-check",
+		subtitle:    "Administer Hub users, sessions, settings, OAuth apps, and Workers.",
+		weight:      8,
+		commands:    []string{"admin"},
+	},
+}
+
+func renderControlReferenceIndex(globalFlags []cli.FlagInfo, hasPartialGlobal bool) (string, error) {
+	var out bytes.Buffer
+	out.WriteString(`---
+title: "Control Command Reference"
+description: "Every leapmux control command with its arguments, flags, and examples, generated from the command tree of the binary."
+type: docs
+weight: 2
+sidebar:
+  open: false
+---
+
+`)
+	out.WriteString(controlReferenceBanner)
+	out.WriteString("\nThis section lists every control command of `leapmux` with its arguments, its flags, and its examples, grouped by topic. The binary prints the same text with `--help`, and `leapmux commands --json` prints it for a program. [Control CLI](/docs/using/control-cli/) explains how a command selects its target, what it prints, how it fails, and how it signs in.\n\n")
+	if err := cli.WriteSharedFlags(&out, globalFlags, hasPartialGlobal); err != nil {
+		return "", err
+	}
+	out.WriteString("## Command groups\n\n{{< cards >}}\n")
+	for _, g := range controlReferenceGroups {
+		fmt.Fprintf(&out, "  {{< card link=\"/docs/reference/commands/%s/\" title=%q icon=%q subtitle=%q >}}\n",
+			g.slug, g.title, g.icon, g.subtitle)
+	}
+	out.WriteString("{{< /cards >}}\n")
+	return out.String(), nil
+}
+
+func renderControlReferenceGroup(tree cli.CommandTree, g controlReferenceGroup, globalFlags []cli.FlagInfo) (string, error) {
 	var body bytes.Buffer
+	if err := cli.WriteReferenceForGroups(&body, tree, g.commands, globalFlags); err != nil {
+		return "", err
+	}
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "---\ntitle: %q\ndescription: %q\ntype: docs\nweight: %d\n---\n\n",
+		g.title, g.description, g.weight)
+	out.WriteString(controlReferenceBanner)
+	out.WriteString("\nEvery command on this page also takes the [flags of every command](/docs/reference/commands/#flags-of-every-command). See [Control CLI](/docs/using/control-cli/) for target selection, output formatting, and authentication.\n\n")
+	out.WriteString(strings.TrimRight(body.String(), "\n"))
+	out.WriteString("\n")
+	return out.String(), nil
+}
+
+// TestControlReference_IsCurrent keeps the generated per-group command
+// reference pages equal to the command tree. The pages are also the reviewed
+// record of the grammar: a change to a command shows in their diff.
+func TestControlReference_IsCurrent(t *testing.T) {
 	exclude := map[string]bool{
 		"daemon":     true,
 		"up":         true,
@@ -596,23 +715,102 @@ func TestControlReference_IsCurrent(t *testing.T) {
 		"completion": true,
 		"help":       true,
 	}
-	require.NoError(t, cli.WriteReferenceExcluding(&body, cli.Describe(newRootCommand(testCLIRunners(t))), exclude))
-	got := controlReferenceHeader + strings.TrimRight(body.String(), "\n") + "\n"
-	// The page is published, so a value that a flag reads from this machine
-	// must never reach it.
-	for _, local := range []string{os.Getenv("USER"), os.Getenv("USERNAME"), hostname(t)} {
-		if len(local) >= 3 {
-			require.NotContains(t, got, local, "the generated page holds a value of this machine")
+	tree := cli.Describe(newRootCommand(testCLIRunners(t)))
+
+	// Verify every non-excluded top-level command in the binary belongs to
+	// exactly one group in controlReferenceGroups.
+	nonExcluded := map[string]bool{}
+	for _, c := range tree.Commands {
+		top, _, _ := strings.Cut(c.Path, " ")
+		if !exclude[top] {
+			nonExcluded[top] = true
 		}
 	}
+	assigned := map[string]string{}
+	seenSlugs := map[string]bool{}
+	for _, g := range controlReferenceGroups {
+		require.NotEmpty(t, g.slug)
+		require.False(t, seenSlugs[g.slug], "duplicate controlReferenceGroups slug %q", g.slug)
+		seenSlugs[g.slug] = true
+		for _, cmd := range g.commands {
+			require.False(t, exclude[cmd], "group %q lists excluded top-level command %q", g.slug, cmd)
+			require.True(t, nonExcluded[cmd], "group %q lists unknown top-level command %q", g.slug, cmd)
+			prev, dup := assigned[cmd]
+			require.False(t, dup, "top-level command %q is assigned to both %q and %q", cmd, prev, g.slug)
+			assigned[cmd] = g.slug
+		}
+	}
+	for top := range nonExcluded {
+		require.Contains(t, assigned, top, "top-level command %q is not assigned to any group in controlReferenceGroups", top)
+	}
+
+	globalFlags, hasPartialGlobal := cli.SharedGlobalFlags(tree, exclude)
+
+	type generatedFile struct {
+		name    string
+		content string
+	}
+	indexContent, err := renderControlReferenceIndex(globalFlags, hasPartialGlobal)
+	require.NoError(t, err)
+	files := []generatedFile{{name: "_index.md", content: indexContent}}
+	expectedNames := map[string]bool{"_index.md": true}
+	for _, g := range controlReferenceGroups {
+		content, err := renderControlReferenceGroup(tree, g, globalFlags)
+		require.NoError(t, err)
+		name := g.slug + ".md"
+		files = append(files, generatedFile{name: name, content: content})
+		expectedNames[name] = true
+	}
+
+	// The pages are published, so a value that a flag reads from this machine
+	// must never reach any of them.
+	localValues := []string{os.Getenv("USER"), os.Getenv("USERNAME"), hostname(t)}
+	for _, f := range files {
+		for _, local := range localValues {
+			if len(local) >= 3 {
+				require.NotContains(t, f.content, local, "generated page %s holds a value of this machine", f.name)
+			}
+		}
+	}
+
 	if *updateGolden {
-		require.NoError(t, os.WriteFile(controlReferencePath, []byte(got), 0o644))
+		require.NoError(t, os.MkdirAll(controlReferenceDir, 0o755))
+		entries, err := os.ReadDir(controlReferenceDir)
+		require.NoError(t, err)
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") && !expectedNames[entry.Name()] {
+				require.NoError(t, os.Remove(filepath.Join(controlReferenceDir, entry.Name())))
+			}
+		}
+		for _, f := range files {
+			require.NoError(t, os.WriteFile(filepath.Join(controlReferenceDir, f.name), []byte(f.content), 0o644))
+		}
+		if err := os.Remove(legacyControlReferencePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			require.NoError(t, err)
+		}
 		return
 	}
-	want, err := os.ReadFile(controlReferencePath)
+
+	_, err = os.Stat(legacyControlReferencePath)
+	assert.ErrorIs(t, err, os.ErrNotExist,
+		"legacy single-page reference %s still exists; run: go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden",
+		legacyControlReferencePath)
+
+	entries, err := os.ReadDir(controlReferenceDir)
 	require.NoError(t, err, "run: go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden")
-	assert.Equal(t, string(want), got,
-		"the page differs from the command tree; run: go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden")
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
+			assert.True(t, expectedNames[entry.Name()],
+				"stale reference file %q in %s; run: go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden",
+				entry.Name(), controlReferenceDir)
+		}
+	}
+	for _, f := range files {
+		want, err := os.ReadFile(filepath.Join(controlReferenceDir, f.name))
+		require.NoError(t, err, "missing %s; run: go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden", f.name)
+		assert.Equal(t, string(want), f.content,
+			"%s differs from the command tree; run: go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden", f.name)
+	}
 }
 
 // hostname returns the host name of this machine, or "" when it is unknown.

@@ -5,6 +5,12 @@
 /llms.txt
   Content-Type: text/plain; charset=utf-8
 
+/llms-small.txt
+  Content-Type: text/plain; charset=utf-8
+
+/agent-guide.md
+  Content-Type: text/markdown; charset=utf-8
+
 /*.md
   Content-Type: text/markdown; charset=utf-8
 

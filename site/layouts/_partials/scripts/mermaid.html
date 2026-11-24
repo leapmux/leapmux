@@ -1,0 +1,149 @@
+{{- /*
+  LeapMux override of Hextra's scripts/mermaid.html.
+
+  Hextra's default partial calls resources.GetRemote on mermaid@latest at Hugo
+  build time, which breaks offline builds and makes builds non-deterministic.
+  Load a pinned Mermaid release in the browser instead (matching how
+  head-end.html loads hack-font@3.3.0) and style diagrams with LeapMux's warm
+  sand/charcoal/teal palette in both light and dark modes.
+*/ -}}
+<script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.min.js"></script>
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    if (typeof mermaid === "undefined") return;
+
+    const diagrams = () => Array.from(document.querySelectorAll(".mermaid"));
+    diagrams().forEach((el) => {
+      el.dataset.original = el.innerHTML;
+    });
+
+    const getThemeConfig = (isDark) => {
+      const fontFamily = getComputedStyle(document.body).fontFamily || "ui-sans-serif, system-ui, sans-serif";
+      if (isDark) {
+        return {
+          startOnLoad: false,
+          theme: "base",
+          themeVariables: {
+            darkMode: true,
+            background: "#1a1917",
+            fontFamily,
+            primaryColor: "#2a2826",
+            primaryTextColor: "#f1efea",
+            primaryBorderColor: "#14b8a6",
+            secondaryColor: "#221f1d",
+            secondaryTextColor: "#f1efea",
+            secondaryBorderColor: "#47433e",
+            tertiaryColor: "#1a1917",
+            tertiaryTextColor: "#f1efea",
+            tertiaryBorderColor: "#47433e",
+            lineColor: "#aaa69e",
+            textColor: "#f1efea",
+            mainBkg: "#2a2826",
+            nodeBorder: "#14b8a6",
+            clusterBkg: "#221f1d",
+            clusterBorder: "#47433e",
+            defaultLinkColor: "#aaa69e",
+            titleColor: "#f1efea",
+            edgeLabelBackground: "#1a1917",
+            actorBkg: "#2a2826",
+            actorBorder: "#14b8a6",
+            actorTextColor: "#f1efea",
+            actorLineColor: "#5f5b55",
+            signalColor: "#aaa69e",
+            signalTextColor: "#f1efea",
+            labelBoxBkgColor: "#312e2a",
+            labelBoxBorderColor: "#47433e",
+            labelTextColor: "#f1efea",
+            noteBkgColor: "#173330",
+            noteBorderColor: "#14b8a6",
+            noteTextColor: "#f1efea",
+          },
+        };
+      }
+      return {
+        startOnLoad: false,
+        theme: "base",
+        themeVariables: {
+          darkMode: false,
+          background: "#fffefc",
+          fontFamily,
+          primaryColor: "#f1efea",
+          primaryTextColor: "#221f1d",
+          primaryBorderColor: "#0d9488",
+          secondaryColor: "#f7f5f2",
+          secondaryTextColor: "#221f1d",
+          secondaryBorderColor: "#d7d2cb",
+          tertiaryColor: "#fffefc",
+          tertiaryTextColor: "#221f1d",
+          tertiaryBorderColor: "#d7d2cb",
+          lineColor: "#5f5b55",
+          textColor: "#221f1d",
+          mainBkg: "#f7f5f2",
+          nodeBorder: "#0d9488",
+          clusterBkg: "#f7f5f2",
+          clusterBorder: "#d7d2cb",
+          defaultLinkColor: "#5f5b55",
+          titleColor: "#221f1d",
+          edgeLabelBackground: "#fffefc",
+          actorBkg: "#f7f5f2",
+          actorBorder: "#0d9488",
+          actorTextColor: "#221f1d",
+          actorLineColor: "#aaa69e",
+          signalColor: "#5f5b55",
+          signalTextColor: "#221f1d",
+          labelBoxBkgColor: "#f1efea",
+          labelBoxBorderColor: "#d7d2cb",
+          labelTextColor: "#221f1d",
+          noteBkgColor: "#e6f7f5",
+          noteBorderColor: "#0d9488",
+          noteTextColor: "#221f1d",
+        },
+      };
+    };
+
+    let currentIsDark = document.documentElement.classList.contains("dark");
+    mermaid.initialize(getThemeConfig(currentIsDark));
+
+    // Render only visible diagrams; hidden ones (tabs, collapsed details) render truncated.
+    let queue = Promise.resolve();
+    const renderVisible = () => {
+      queue = queue.then(() => {
+        const isDark = document.documentElement.classList.contains("dark");
+        mermaid.initialize(getThemeConfig(isDark));
+        const nodes = Array.from(document.querySelectorAll(".mermaid:not([data-processed])")).filter(
+          (el) => el.offsetParent !== null
+        );
+        if (nodes.length) return mermaid.run({ nodes }).catch(console.error);
+      });
+    };
+
+    renderVisible();
+
+    // Render diagrams when revealed (for example on tab switch or details toggle).
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting && !e.target.dataset.processed)) {
+        renderVisible();
+      }
+    });
+    diagrams().forEach((el) => observer.observe(el));
+
+    // Re-render diagrams when the site toggles between light and dark mode.
+    let timeout;
+    new MutationObserver(() => {
+      const nextIsDark = document.documentElement.classList.contains("dark");
+      if (nextIsDark === currentIsDark) return;
+      currentIsDark = nextIsDark;
+      clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        document.querySelectorAll(".mermaid[data-processed]").forEach((el) => {
+          el.innerHTML = el.dataset.original;
+          el.removeAttribute("data-processed");
+        });
+        renderVisible();
+      }, 150);
+    }).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+  });
+</script>

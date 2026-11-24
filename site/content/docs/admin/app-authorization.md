@@ -2,11 +2,12 @@
 title: "App Authorization"
 description: "Register apps on a LeapMux Hub, control what each may ask for, and vouch for the ones you trust. The OAuth 2.1 authorization server, from the administrator's side."
 type: docs
-weight: 7
+weight: 8
 ---
 
-> **Not this chapter:** signing users *in* with GitHub, Google, or your own OIDC issuer is [Sign-in Providers](/docs/admin/sign-in-providers/).
-> This chapter is the other direction — apps that ask **your Hub** for access to an account on it.
+{{< callout type="info" >}}
+**Not this chapter:** signing users *in* with GitHub, Google, or your own OIDC issuer is [Sign-in Providers](/docs/admin/sign-in-providers/). This chapter is the other direction — apps that ask **your Hub** for access to an account on it.
+{{< /callout >}}
 
 A LeapMux Hub is an OAuth 2.1 authorization server. Any program can ask an account holder for permission, and the account holder decides on a consent screen the Hub renders. The control CLI uses the same flow as everything else; it is registered like any other app.
 
@@ -38,7 +39,7 @@ The response carries the `client_id` and, for a confidential client, the `client
 
 **Registering an app, editing its registration, changing its elevation setting, and vouching for it require a recently proven factor.** Changing the redirect list can divert an authorization code already in flight to an address the editor chose.
 
-In the browser the first such write opens a **Verify your identity** dialog. On the CLI the default ceremony opens a browser on the CLI's own machine; a credential from `leapmux auth login --device-code`, or one an administrator issued, instead prints an address and a short code to approve in a browser (see [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
+In the browser the first such write opens a **Verify your identity** dialog. On the CLI the default ceremony opens a browser on the CLI's own machine; a credential from `leapmux auth login --device-code`, or one an administrator issued, instead prints an address and a short code to approve in a browser (see [Verifying a command-line credential](/docs/admin/authentication-security/#verifying-a-command-line-credential)). **Retiring** an app and **deleting** an empty registration need none: both only reduce what the app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
 
 ## Permissions
 
@@ -94,7 +95,7 @@ The warning disappears, and the app's row under **Preferences → Apps** names t
 
 A **sensitive** change — a password, a passkey, the recovery address — needs a recently proven factor. That proof is a *step-up*, and it happens in a browser.
 
-A credential from a browser login verifies through a browser on its own machine. A credential from the device-code login or from an administrator uses the device-code ceremony at `/oauth/step-up`. For a browser-issued app credential, `/oauth/step-up` returns `browser_step_up_required` only if the app may elevate. When the registration disallows elevation, the Hub returns `unauthorized_client`. See [OAuth API — Step-up](/docs/reference/oauth-api/#step-up) and [Session elevation](/docs/admin/security/#session-elevation).
+A credential from a browser login verifies through a browser on its own machine. A credential from the device-code login or from an administrator uses the device-code ceremony at `/oauth/step-up`. For a browser-issued app credential, `/oauth/step-up` returns `browser_step_up_required` only if the app may elevate. When the registration disallows elevation, the Hub returns `unauthorized_client`. See [OAuth API — Step-up](/docs/reference/oauth-api/#step-up) and [Session elevation](/docs/admin/authentication-security/#session-elevation).
 
 Both the loopback and device-code step-up ceremonies require the app registration to allow elevation. New registrations have this setting disabled by default. The Hub enables it when it creates the built-in registrations. To allow elevation for an app, run the following command.
 

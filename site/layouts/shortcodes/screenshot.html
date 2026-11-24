@@ -1,0 +1,43 @@
+{{- /*
+  screenshot renders a light/dark documentation screenshot pair swapped via
+  pure CSS (.dark), with a framed presentation and optional caption.
+
+      {{< screenshot src="hero-workspace" alt="LeapMux workspace" caption="Tiled agents and terminals" width="1440" height="900" eager="true" >}}
+*/ -}}
+{{- $src := .Get "src" -}}
+{{- if not $src -}}
+  {{- errorf "screenshot: missing required 'src' parameter (%s)" .Position -}}
+{{- end -}}
+{{- $caption := .Get "caption" -}}
+{{- $alt := .Get "alt" | default $caption -}}
+{{- $width := .Get "width" -}}
+{{- $height := .Get "height" -}}
+{{- $eager := eq (printf "%v" (.Get "eager")) "true" -}}
+{{- $loading := cond $eager "eager" "lazy" -}}
+<figure class="doc-screenshot">
+  <div class="doc-screenshot-frame">
+    <img
+      class="doc-screenshot-light"
+      src="{{ printf "/images/docs/%s-light.png" $src | relURL }}"
+      alt="{{ $alt }}"
+      {{- with $width }} width="{{ . }}"{{ end -}}
+      {{- with $height }} height="{{ . }}"{{ end }}
+      loading="{{ $loading }}"
+      {{- if $eager }} fetchpriority="high"{{ end }}
+      decoding="async"
+    >
+    <img
+      class="doc-screenshot-dark"
+      src="{{ printf "/images/docs/%s-dark.png" $src | relURL }}"
+      alt="{{ $alt }}"
+      {{- with $width }} width="{{ . }}"{{ end -}}
+      {{- with $height }} height="{{ . }}"{{ end }}
+      loading="{{ $loading }}"
+      {{- if $eager }} fetchpriority="high"{{ end }}
+      decoding="async"
+    >
+  </div>
+  {{- with $caption }}
+  <figcaption class="doc-screenshot-caption">{{ . | $.Page.RenderString }}</figcaption>
+  {{- end }}
+</figure>

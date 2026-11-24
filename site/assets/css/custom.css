@@ -352,3 +352,174 @@
 .feature-matrix-notes div[id^="note-"] {
   margin-block: 0.75rem;
 }
+
+/*
+  Documentation screenshots (screenshot shortcode).
+  Light and dark variants swap via the root .dark class with zero JavaScript.
+*/
+.doc-screenshot {
+  margin-block: 1.5rem;
+}
+
+.doc-screenshot-frame {
+  overflow: hidden;
+  border: 1px solid var(--hx-color-gray-200);
+  border-radius: var(--hx-radius-md);
+  background: var(--hx-color-gray-50);
+  box-shadow:
+    0 2px 10px rgb(34 31 29 / 0.06),
+    0 1px 2px rgb(34 31 29 / 0.04);
+}
+
+.dark .doc-screenshot-frame {
+  border-color: var(--hx-color-gray-800);
+  background: var(--hx-color-gray-900);
+  box-shadow:
+    0 4px 16px rgb(0 0 0 / 0.35),
+    0 1px 3px rgb(0 0 0 / 0.25);
+}
+
+.content .doc-screenshot img {
+  margin: 0;
+  border-radius: 0;
+  width: 100%;
+  height: auto;
+}
+
+.doc-screenshot-light {
+  display: block;
+}
+
+.doc-screenshot-dark {
+  display: none;
+}
+
+.dark .doc-screenshot-light {
+  display: none;
+}
+
+.dark .doc-screenshot-dark {
+  display: block;
+}
+
+.doc-screenshot-caption {
+  margin-top: 0.625rem;
+  text-align: center;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--hx-color-gray-500);
+}
+
+.dark .doc-screenshot-caption {
+  color: var(--hx-color-gray-400);
+}
+
+/*
+  Copyable coding-agent prompt card (copy-prompt shortcode).
+*/
+.copy-prompt {
+  margin-block: 1.25rem;
+  border: 1px solid var(--hx-color-gray-300);
+  border-radius: var(--hx-radius-md);
+  background: var(--hx-color-gray-50);
+  overflow: hidden;
+}
+
+.dark .copy-prompt {
+  border-color: var(--hx-color-gray-700);
+  background: var(--hx-color-gray-900);
+}
+
+.copy-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.875rem;
+  border-bottom: 1px solid var(--hx-color-gray-200);
+  background: var(--hx-color-gray-100);
+}
+
+.dark .copy-prompt-header {
+  border-bottom-color: var(--hx-color-gray-800);
+  background: var(--hx-color-gray-800);
+}
+
+.copy-prompt-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--hx-color-gray-700);
+}
+
+.dark .copy-prompt-label {
+  color: var(--hx-color-gray-200);
+}
+
+.copy-prompt-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--hx-color-primary-600);
+  border-radius: var(--hx-radius-sm);
+  background: transparent;
+  color: var(--hx-color-primary-700);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.copy-prompt-btn:hover {
+  background: var(--hx-color-primary-600);
+  color: #fffefc;
+}
+
+.copy-prompt-btn:focus-visible {
+  outline: 2px solid var(--hx-color-primary-600);
+  outline-offset: 2px;
+}
+
+.copy-prompt-btn.is-copied {
+  background: var(--hx-color-primary-600);
+  border-color: var(--hx-color-primary-600);
+  color: #fffefc;
+}
+
+.dark .copy-prompt-btn {
+  border-color: var(--hx-color-primary-500);
+  color: var(--hx-color-primary-400);
+}
+
+.dark .copy-prompt-btn:hover,
+.dark .copy-prompt-btn.is-copied {
+  background: var(--hx-color-primary-500);
+  border-color: var(--hx-color-primary-500);
+  color: #1a1917;
+}
+
+.content .copy-prompt-body {
+  margin: 0;
+  padding: 0.875rem 1rem;
+  background: transparent;
+  font-family: var(--hx-font-mono);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--hx-color-gray-900);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.dark .content .copy-prompt-body {
+  background: transparent;
+  color: var(--hx-color-gray-100);
+}
+
+.content .copy-prompt-body code {
+  padding: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}

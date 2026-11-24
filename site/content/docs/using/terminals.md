@@ -13,6 +13,8 @@ For the bigger picture of tabs, tiling, and layout, see [Tabs & Layout](/docs/us
 
 ## What a LeapMux terminal is
 
+{{< screenshot src="terminal-pane" alt="LeapMux integrated PTY terminal running leapmux tree and go test with colored output" caption="Integrated PTY terminals run full shells alongside your agents and stay alive across reconnects." width="529" height="434" >}}
+
 When you open a terminal, the Worker spawns your chosen shell as an interactive login shell (for example `bash -i -l` or `zsh -i -l`), connects it to a real pseudo-terminal (PTY), and streams its output to an [xterm.js](https://xtermjs.org/) view in your tab. The shell and all of its child processes run on the Worker machine — the same machine where your code and git repositories live — not in your browser.
 
 Every spawned shell gets:
@@ -79,9 +81,9 @@ leapmux terminal open \
   --shell /bin/zsh
 ```
 
-`--shell` is optional — leaving it empty uses the Worker's default shell. `--start-dir` defaults to the working directory. See [`terminal open`](/docs/reference/control-commands/#leapmux-terminal-open) for the full flag set, including the placement flags.
+`--shell` is optional — leaving it empty uses the Worker's default shell. `--start-dir` defaults to the working directory. See [`terminal open`](/docs/reference/commands/terminals/#leapmux-terminal-open) for the full flag set, including the placement flags.
 
-The original interactive shell evaluates `--command` after its startup files run. For example, use `leapmux terminal open --dir /home/me/project --command 'make test'`. The Worker releases the command when the shell reaches its startup hook. The shell retains variables and definitions from the command, and a restart does not run it again. See [Control CLI terminal commands](/docs/using/control-cli/#terminals) for the supported shells and startup errors.
+The original interactive shell evaluates `--command` after its startup files run. For example, use `leapmux terminal open --dir /home/me/project --command 'make test'`. The Worker releases the command when the shell reaches its startup hook. The shell retains variables and definitions from the command, and a restart does not run it again. See [CLI Automation](/docs/using/cli-automation/#terminal-input-startup-commands-and-reading) for the supported shells and startup errors.
 
 {{< callout type="info" >}}
 Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
@@ -414,7 +416,7 @@ leapmux terminal read <tab> --raw | less -R
 leapmux terminal shells --worker <worker>
 ```
 
-See [Control CLI](/docs/using/control-cli/) for authentication and the output, and the [Control Command Reference](/docs/reference/control-commands/#leapmux-terminal) for every terminal command.
+See [Control CLI](/docs/using/control-cli/) for authentication and output formatting, [CLI Automation](/docs/using/cli-automation/#zero-polling-terminal-waits-and-shell-control) for zero-polling waits, and the [Control Command Reference](/docs/reference/commands/terminals/) for every terminal command.
 
 ## Renaming a terminal
 

@@ -125,7 +125,7 @@ These flags customize a running Worker:
 | `--log-level` | `info` | Log level |
 | `--config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 
-For approving Workers, verifying their identities, and choosing a Worker for a tab, see [Managing Workers](/docs/admin/managing-workers/).
+For registering Workers, verifying their identities, and choosing a Worker for a tab, see [Managing Workers](/docs/admin/managing-workers/).
 
 ## Dev mode
 
@@ -262,8 +262,8 @@ leapmux --version
 ## See also
 
 - [Starting and Stopping](/docs/admin/starting-and-stopping/) — keep an instance running in the background at login or at boot.
-- [Configuration](/docs/admin/configuration/) — full flag and config-key reference, storage backends, listen addresses, env-var precedence.
-- [Managing Workers](/docs/admin/managing-workers/) — registration keys, Worker approval, TOFU pinning, Worker selection.
+- [Configuration Guide](/docs/admin/configuration/) and [Configuration Reference](/docs/admin/configuration-reference/) — deployment profiles, listen addresses, storage backends, and every flag and config key.
+- [Managing Workers](/docs/admin/managing-workers/) — registration keys, TOFU pinning, and Worker selection.
 - [Recovery](/docs/admin/recover/) — the offline break-glass tree: first-admin bootstrap, password reset, schema migrations, and encryption-key surgery.
 - [Control CLI](/docs/using/control-cli/) and [Admin CLI](/docs/admin/admin-cli/) — users, sessions, workers, OAuth providers, instance settings, and tokens on a running Hub.
 - [Installation](/docs/getting-started/installation/) — desktop app, Docker images, and building from source.

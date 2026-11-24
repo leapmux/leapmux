@@ -1,5 +1,5 @@
 {{- /*
-  LeapMux override of Hextra's llms.txt (vendored from hextra@v0.12.3).
+  LeapMux override of Hextra's llms.txt.
   Links every documentation page to its clean Markdown endpoint (/index.md)
   when emitted, exposes the curated LeapMux Agent Skills (SKILL.md) and their
   companion references, and omits the non-deterministic build timestamp so
@@ -8,6 +8,13 @@
 # {{ .Site.Title }}
 
 > {{ .Site.Params.description | default "" }}
+
+## How to use this index
+
+- Open only the specific Markdown pages (`/docs/.../index.md`) relevant to your task instead of loading the full manual.
+- For CLI flags and subcommands, open the specific group page under `/docs/reference/commands/` (or run `leapmux <cmd> --help` locally) instead of loading every command group.
+- Use [`/agent-guide.md`]({{ "agent-guide.md" | absURL }}) when helping a human choose a deployment mode, install LeapMux, run their first parallel agent session, or diagnose issues.
+- Use [`/llms-small.txt`]({{ "llms-small.txt" | absURL }}) for a compact index of the core documentation pages and Agent Skills.
 {{- range where site.Sections "Params.llms" "ne" false }}
 {{- template "llms-section-tree" dict "context" . "level" 2 }}
 {{- end }}

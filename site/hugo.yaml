@@ -24,9 +24,9 @@ disableKinds: ["taxonomy", "term"]
 # CI must check out full history (fetch-depth: 0) for accurate per-file dates.
 enableGitInfo: true
 
-# Emit /llms.txt on the home page (Hextra's `llms` output format) and a clean
-# Markdown companion (`/docs/.../index.md`) for every documentation page so
-# coding agents and LLM clients can read plain Markdown instead of HTML chrome.
+# Emit /llms.txt and /llms-small.txt on the home page and a clean Markdown
+# companion (`/docs/.../index.md`) for every documentation page so coding agents
+# and LLM clients can read plain Markdown instead of HTML chrome.
 mediaTypes:
   text/markdown:
     suffixes:
@@ -38,9 +38,14 @@ outputFormats:
     baseName: index
     isPlainText: true
     notAlternative: false
+  llms-small:
+    mediaType: text/plain
+    baseName: llms-small
+    isPlainText: true
+    notAlternative: true
 
 outputs:
-  home: [HTML, RSS, llms]
+  home: [HTML, RSS, llms, llms-small]
   section: [HTML, RSS, markdown]
   page: [HTML, markdown]
 
@@ -125,6 +130,15 @@ params:
     displayPoweredBy: false
   page:
     width: normal
+    contextMenu:
+      enable: true
+      links:
+        - name: Open in Claude
+          url: "https://claude.ai/new?q=Read+{markdown_url}+so+I+can+ask+questions+about+it."
+          icon: external-link
+        - name: Open in ChatGPT
+          url: "https://chatgpt.com/?hints=search&q=Read+{markdown_url}+so+I+can+ask+questions+about+it."
+          icon: external-link
   theme:
     default: system
     displayToggle: true

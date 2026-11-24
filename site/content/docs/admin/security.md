@@ -1,554 +1,236 @@
 ---
 title: "Security & Threat Model"
-description: "LeapMux trust model and end-to-end encryption: how browser-to-agent traffic is protected, how Worker identity is pinned, and the steps to operate it safely."
+description: "LeapMux trust model, end-to-end encryption overview, Worker identity pinning, solo-mode boundaries, session elevation summary, and operational recommendations."
 type: docs
-weight: 9
+weight: 10
 ---
 
-This chapter is the security reference for administrators and for security-conscious users. It describes the trust model, the end-to-end encryption (E2EE) of Frontend↔Worker traffic, and Worker identity pinning. It also covers what changes in solo mode. The last section lists the steps to operate LeapMux safely.
+This page is the security overview for administrators and security-conscious users. It defines the trust boundaries, summarizes end-to-end encryption (E2EE) and Worker trust-on-first-use (TOFU) pinning, explains what changes in solo mode, and lists concrete steps to operate LeapMux safely.
+
+Two companion deep dives cover the mechanics in full:
+
+- [Authentication & Session Security](/docs/admin/authentication-security/) — session elevation rules, passkeys and WebAuthn, OAuth flow binding, app credentials and scopes, delegation tokens, rate limits, ALTCHA, and credential revocation.
+- [Cryptography & Key Architecture](/docs/admin/cryptography/) — hybrid post-quantum `Noise_NK` handshake (ML-KEM-1024 + X25519 + SLH-DSA), transport hardening, in-band rekey, Worker key storage, and pinning verification.
 
 **The Hub is trusted for identity.** End-to-end encryption protects content from a Hub that only observes its database, logs, and relayed traffic. A browser runs the Frontend that the Hub serves, so it trusts the Hub for code as well. The desktop app runs its bundled Frontend in both modes, so no Hub can serve it code.
 
-It does not protect against a Hub that acts, or against anyone who can sign in at the Hub as you. The Worker accepts the caller identity that the Hub states.
+End-to-end encryption does not protect against a compromised or malicious Hub, or against anyone who can sign in at the Hub as you. The Worker accepts the caller identity that the Hub states.
 
-**Frontend↔Worker content is opaque to a Hub that only relays traffic:**
+```mermaid
+flowchart LR
+    Frontend["Frontend (Browser / Desktop)"]
+    Hub["Hub (Relay only — sees ciphertext and metadata: channel ID, sizes, timing)"]
+    Worker["Worker (Daemon — holds static private keys)"]
 
-```text
-       Noise_NK end-to-end encrypted tunnel (opaque to the Hub)
-       encrypted: chat, tools, terminal I/O, files
-       ┌───────────────────────────────────────────────┐
-       ▼                                               ▼
-┌─────────────┐        ┌─────────────┐        ┌──────────────────┐
-│  Frontend   │ cipher │     Hub     │ cipher │      Worker      │
-│  (Browser / │◄──────►│  (relay     │◄──────►│    (daemon,      │
-│  Desktop)   │  text  │   only)     │  text  │   holds keys)    │
-└─────────────┘        └──────┬──────┘        └──────────────────┘
-                              │
-                              ▼
-              sees: ciphertext + metadata
-              (channel id, sizes, timing)
+    Frontend <-->|"Ciphertext"| Hub
+    Hub <-->|"Ciphertext"| Worker
+    Frontend -.->|"Noise_NK E2EE tunnel: chat, tools, terminal I/O, files (opaque to Hub)"| Worker
 ```
 
 ## The trust model
 
-LeapMux is built around a single, deliberate trust boundary. In distributed mode the Hub may be operated by a teammate, a platform team, or a hosting provider — someone other than you. The design withstands a curious Hub. A compromised Hub can open its own channel to any of your Workers as you, and it can serve a modified Frontend to a browser. The desktop app runs its bundled Frontend in both modes, so a Hub cannot serve it code. The Hub stays trusted for identity in every client.
+LeapMux is built around one deliberate trust boundary. In distributed mode, someone else — a teammate, a platform team, or a hosting provider — may operate the Hub. The design withstands an honest-but-curious Hub. A compromised or malicious Hub can still open its own channel to any of your Workers as you, and it can serve modified Frontend code to a browser. The desktop app runs its bundled Frontend in both modes, so a Hub cannot serve it code. The Hub remains trusted for identity in every client.
 
-There are three protocol paths, each with a different security posture:
+Three protocol paths carry traffic, each with a different security posture:
 
 | Path | Protocol | Encryption |
-|------|----------|------------|
-| Frontend → Hub | ConnectRPC (gRPC-compatible) — login, workspace management, Worker registration | TLS in front of the Hub (your responsibility as administrator) |
-| Frontend → Worker | Hybrid post-quantum Noise_NK. The handshake rides Hub-relayed RPCs; the encrypted traffic that follows is multiplexed over a single relayed WebSocket | End-to-end encrypted; the Hub cannot decrypt |
-| Worker → Hub | ConnectRPC (Connect protocol) for registration and other calls, plus one WebSocket (`/ws/worker`) for the stream. The Worker always dials out and needs no inbound ports | TLS in front of the Hub; channel payloads ride inside the E2EE tunnel |
+| --- | --- | --- |
+| Frontend → Hub | ConnectRPC (gRPC-compatible) — login, workspace management, Worker registration | TLS in front of the Hub (administrator's responsibility) |
+| Frontend → Worker | Hybrid post-quantum `Noise_NK`. Handshake rides Hub-relayed unary RPCs; encrypted traffic is multiplexed over one relayed WebSocket | End-to-end encrypted; an observing Hub cannot decrypt |
+| Worker → Hub | ConnectRPC for registration and control calls, plus one outbound WebSocket (`/ws/worker`). Workers need no inbound ports | TLS in front of the Hub; channel payloads ride inside the E2EE tunnel |
 
-The key consequence: control-plane data (accounts, workspace records, layout, Worker registration) reaches the Hub in a form it can read, while everything you actually do inside an agent or terminal travels inside an encrypted channel the Hub merely forwards.
+Control-plane data (accounts, workspace records, layout, Worker registration) reaches the Hub in readable form, while everything you do inside an agent or terminal travels inside an encrypted channel that the Hub only forwards.
 
 {{< callout type="info" >}}
-"End-to-end" here means the two ends are the Frontend (a browser or the desktop app) and the Worker daemon. The Hub is the middle. See [Concepts & Architecture](/docs/getting-started/concepts/) for how these components fit together and [Running LeapMux](/docs/admin/running-leapmux/) for how to launch each one.
+"End-to-end" means the two ends are the Frontend (browser or desktop app) and the Worker daemon, with the Hub in the middle. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 {{< /callout >}}
 
 ## What the Hub can and cannot see
 
-The table describes a Hub that only observes. Treat what the Hub **can** see as data that you entrust to whoever runs it. Content in the **cannot see** column stays encrypted while the Hub only relays it.
+This table describes a Hub that only observes. Treat everything in the **can see** column as data entrusted to the Hub operator.
 
 | The Hub **can** see | The Hub **cannot** see |
-|---------------------|------------------------|
-| Account metadata: user names, emails, password hashes, public session IDs and session-secret digests, passkey credential metadata (friendly names, credential IDs, encrypted public keys) | Agent chat transcripts, tool-call arguments, or tool outputs |
+| --- | --- |
+| Account metadata: usernames, emails, password hashes, public session IDs and session-secret digests, passkey credential metadata (friendly names, credential IDs, encrypted public keys) | Agent chat transcripts, tool-call arguments, or tool outputs |
 | Account and workspace records | Terminal I/O, shell history, or PTY state |
 | Workspace **titles**, tab positions, and tiling layout geometry | File contents or diffs |
-| Worker registration data (Worker ID, online status, last-seen time) and the composite public keys each Worker registered with | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
+| Worker registration data (Worker ID, online status, last-seen time) and each Worker's pinned composite public keys | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
 | Per-message transport metadata: channel ID, correlation ID, ciphertext size, timing | Any plaintext of Frontend↔Worker traffic |
-| Each tab's type and the Worker that hosts it | — |
+| Each tab's type and hosting Worker | — |
 | A file tab's display mode, view mode, and diff base | — |
-| Custom sidebar section names, workspace placement in sections, and floating-window geometry | — |
+| Custom sidebar section names, workspace placement, and floating-window geometry | — |
 | Account preferences | — |
-| Presence: which workspace you use, from which client, and when | — |
+| Presence: active workspace, client, and timing | — |
 | Each session's IP address and user agent | — |
 | Each Worker's encryption mode | — |
 | Timestamps of tab and layout changes | — |
 
-A file tab's diff base tells the Hub that the file had staged or unstaged changes.
+A file tab's diff base reveals to the Hub that the file had staged or unstaged changes.
 
 {{< callout type="warning" >}}
-**Traffic analysis is in scope.** The Hub observes message timing, sizes, and which channel correlates to which Worker. It cannot read content, but it can infer activity patterns — when you work, how much you type, which Worker is busy. If that metadata is itself sensitive in your environment, treat the Hub host accordingly.
+**Traffic analysis is in scope.** The Hub observes message timing, sizes, and which channel maps to which Worker. It cannot read content, but it can infer activity patterns — when you work, how much you type, and which Worker is busy. Protect the Hub host accordingly when that metadata is sensitive.
 {{< /callout >}}
 
 Four specifics matter:
 
-- **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync](/docs/using/device-sync/)).
-- **Worker public keys are visible; private keys never leave the Worker.** The Worker registers its public composite keys with the Hub once, and the Hub refuses a connection that presents other ones. Its private halves stay in the Worker's local state.
-- **Agent and terminal state live in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. That cache is not keyed to the account, and signing out does not clear it. See [Encryption & Data](/docs/admin/encryption-and-data/) for where that data lives and how to back it up.
-- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or sends on its stream. A different component does send one: `leapmux` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself. Step-up verification always registers the default `user@host` label, regardless of the label you chose at login.
+- **Workspace titles are visible; agent content is not.** Name workspaces accordingly. Tab positions and tiling geometry sync through the Hub so layout stays consistent across devices (see [Device Sync](/docs/using/device-sync/)).
+- **Worker public keys are visible; private keys never leave the Worker.** A Worker registers its composite public keys once, and the Hub refuses connections presenting different keys. Private keys remain in `<data_dir>/state.json`.
+- **Agent and terminal state live in the Worker's local SQLite database** (`worker.db`) and are never uploaded to the Hub. The browser caches rendered message text and code locally in IndexedDB; see [What stays on the browser](/docs/admin/encryption-and-data/#what-stays-on-the-browser).
+- **The Worker reveals no machine identity to the Hub** — no hostname, OS, or path appears in registration or stream metadata. Separately, `leapmux auth login` labels an API token with `user@host` by default; pass `--device-name` at login to choose another label. Step-up verification always records the default `user@host` label.
 
-## The E2EE protocol
+## End-to-end encryption overview
 
-Frontend↔Worker traffic is protected by a **hybrid post-quantum Noise_NK handshake**. "Hybrid" means it combines a classical algorithm with a post-quantum one for each security property, so that — in the protocol's own words — *security is maintained even if either the classical or PQ algorithm is broken*.
+Frontend↔Worker traffic uses a **hybrid post-quantum `Noise_NK` handshake** combining classical X25519 with post-quantum Module-Lattice-Based Key-Encapsulation Mechanism (`ML-KEM-1024`) and Stateless Hash-Based Digital Signature Algorithm (`SLH-DSA-SHAKE-256f`), plus `ChaCha20-Poly1305` transport encryption and `BLAKE2b` hashing.
 
-The channel is established in two stages, over two different transports. The Frontend first fetches the Worker's keys and encryption mode, then completes the Noise handshake through Hub-relayed unary RPCs — the Hub forwards each opaque handshake message to the Worker and the reply back. Only once a session exists does the Frontend attach it to the **shared WebSocket**, over which every channel's encrypted traffic is multiplexed. The WebSocket is therefore not the transport the handshake runs on.
+- **`post-quantum` (default):** hybrid X25519 + ML-KEM-1024 + SLH-DSA signature with post-quantum forward secrecy.
+- **`classic`:** static ML-KEM-1024 authentication without the SLH-DSA signature or post-quantum forward secrecy.
 
-### Primitives
-
-| Role | Classical | Post-quantum |
-|------|-----------|--------------|
-| Key exchange | X25519 ECDH | ML-KEM-1024 (FIPS 203) |
-| Forward secrecy | Ephemeral X25519 exchange | Ephemeral ML-KEM-1024 exchange in post-quantum mode |
-| Worker static-key authentication | Noise NK pre-message and static ML-KEM-1024 encapsulation | Static ML-KEM-1024 encapsulation plus a Stateless Hash-Based Digital Signature Algorithm (SLH-DSA-SHAKE-256f, FIPS 205) signature over the handshake hash |
-| Transport encryption | ChaCha20-Poly1305 AEAD | — |
-| Hashing / key derivation | BLAKE2b | — |
-
-The Noise protocol label is `Noise_NK+skem_25519+MLKEM1024_ChaChaPoly_BLAKE2b` in classic mode and `Noise_NKhfs+skem+sig_25519+MLKEM1024+SLHDSASHAKE256f_ChaChaPoly_BLAKE2b` in post-quantum mode. The `NK` pattern means the responder (the **Worker**) has a known static key that the initiator (your **Frontend**) verifies, while the initiator stays anonymous. The Frontend learns the Worker's static key out-of-band from the Hub and checks it against its pin.
-
-That anonymity is permanent: the initiator is never authenticated at the Noise layer, before or after the handshake. Who the caller is comes from the Hub, not from the channel — see "User identity binding" below.
-
-### Why this design defeats a curious Hub
-
-- The handshake hash covers the protocol label, the Worker id, and all three of the Worker's static public keys. A different Worker or pinned key set cannot answer the handshake.
-- Every key-exchange value is authenticated. In post-quantum mode, the Worker also signs the handshake hash with its SLH-DSA private key; a verification failure aborts the handshake and zeroes its state.
-- Post-quantum mode mixes four secrets into the session keys: two from X25519 and two from ML-KEM. Classic mode mixes three: two from X25519 and one from the Worker's static ML-KEM key.
-- In post-quantum mode, a later copy of the Worker's static keys does not open a recorded session, even for an attacker that can break X25519.
-- Every data frame authenticates its channel id, correlation id, and flags. A Hub that changes one closes the channel and learns nothing else.
-
-### Transport hardening
-
-The encrypted channel has built-in limits that cap the damage from desync, replay, and resource-exhaustion attempts:
-
-| Property | Value | Effect |
-|----------|-------|--------|
-| Max plaintext per message | 65,519 bytes | Larger payloads are chunked |
-| Nonce exhaustion | — | Past a soft threshold (2³¹ − 1) the initiator requests an in-band Noise rekey; past the hard ceiling (2³² − 1), both encryption and decryption refuse outright |
-| Session key max age | 1 hour | Initiators request an in-band rekey; the same channel id and multiplexed connections stay up |
-| Session key hard ceiling | 70 minutes | Past this per-epoch key age (reset on each successful rekey), initiators close and re-handshake rather than serve under the old key; the margin over max age covers one refused rekey |
-| Min rekey interval | 50 minutes | Age-only rekeys inside this window are rejected (10 minutes of headroom under max age); soft-nonce still bypasses |
-| Decrypt failure | — | Treated as unrecoverable: both sides close the channel |
-
-The Hub enforces resource limits **without decrypting**: it caps the reassembled message size at the negotiated payload budget plus 64 KiB of envelope headroom (default ~16.06 MiB; administrators may raise the payload budget up to 64 MiB via the Hub's `max_message_size_bytes` setting) and allows only one in-flight chunked message per channel and direction, so a peer cannot exhaust Hub memory through the opaque relay. The Worker also fast-rejects a duplicate channel ID *before* running the (expensive) post-quantum handshake, so a peer cannot amplify Worker CPU by replaying open requests.
-
-**In-band rekey** rotates the channel's transport keys on the existing connection. Both modes mix a fresh X25519 secret into the next key epoch. In post-quantum mode, the initiator also encapsulates to the Worker's static ML-KEM key and supplies a fresh ML-KEM public key. The Worker encapsulates to that fresh key, and both sides mix the two ML-KEM secrets into the next epoch. The initiator keeps sending under the current key until the Worker acknowledges the rekey.
-
-The exchange travels inside the already-encrypted channel, so the current cipher authenticates it and no extra signature is needed; the Hub relays it without decrypting, as it does everything else. A refused rekey leaves both sides on their existing keys. A short key-overlap window (~10 s) lets frames a peer encrypted just before the swap still decrypt afterwards, so traffic keeps flowing across the round trip — the Frontend, `leapmux`, cross-worker links, and the desktop app's tunnels all share this, which is why port-forwards and SOCKS sessions survive hourly rotation without a stall.
-
-Hub credential expiry still limits bearer-token channels from the outside: CLI access tokens and delegation tokens live one hour. Desktop tunnels authorized by a sliding session cookie can stay open for days, and rekey is what limits their *key epoch* without resetting multiplexed TCP connections. Hard nonce exhaustion remains fail-closed. The Frontend re-checks key age the next time it uses a channel, on a one-minute idle timer, and again when the page wakes from suspend — so a frozen clock cannot hide an over-age key. A rekey refused for being too early tells the initiator how long to wait rather than leaving it to guess.
-
-A desktop tunnel admits one Worker identity: the user that owns the tunnel, and the exact Worker key set the Hub must announce. That key set is the pin the browser already holds for the Worker, so a tunnel and a browser channel share one trust decision. See [Tunnel key trust](#tunnel-key-trust).
-
-Identity drift — the page's expected user no longer matching the Hub-authenticated channel user — still closes the channel and re-handshakes; that needs a new open, not a rekey. Rekey does **not** re-run the Hub's channel authorization: revoked credentials are torn down by the Hub's revocation watcher, not by the rekey path.
-
-### Encryption modes
-
-A Worker can run in one of two modes via `--encryption-mode`:
-
-| Mode | Handshake |
-|------|-----------|
-| `post-quantum` (default) | Hybrid X25519 + ML-KEM-1024 + SLH-DSA |
-| `classic` | Only the Worker can complete the handshake, using its static ML-KEM key. Recorded sessions remain secret while the Worker's static keys remain secret. It lacks the SLH-DSA signature and post-quantum forward secrecy. |
-
-The default is `post-quantum`. The Hub reports the Worker's live mode to the Frontend so the browser uses the matching handshake. A false report can only make the open fail; it cannot weaken the session. Choose `classic` only if you have a specific compatibility or performance constraint and understand that it lacks the SLH-DSA signature and post-quantum forward secrecy. For the flag's accepted values, aliases, and fail-safe resolution, see [Configuration](/docs/admin/configuration/).
-
-### User identity binding
-
-Noise_NK does not authenticate the initiator, so the channel's encryption layer says nothing about who the caller is. The **Hub** establishes that instead: it authenticates the `OpenChannel` request and then tells both ends the same answer — the Frontend reads it from the `OpenChannel` response, and the Worker from the `ChannelOpened` notification. Every request the Worker dispatches carries that Hub-supplied identity.
-
-The identity therefore never travels inside the channel, and the client never asserts one. That is deliberate: an in-channel claim would be an unauthenticated string the Worker could only check against the value the Hub already gave it — it would restate the Hub's answer rather than prove anything. Binding to the Hub's answer directly leaves no window in which a channel is open but unattributed, and no claim for a stale local session to get wrong.
-
-The Hub is trusted for *identity*: it authenticates the user and identifies them to the Worker. These parties can therefore reach your Workers with your authority:
+Because `Noise_NK` leaves the initiator anonymous, the Hub authenticates `OpenChannel` and states the caller identity to both ends. Therefore, these parties can reach your Workers with your authority:
 
 - The Hub operator or a compromised Hub
 - An administrator who resets your password
 - Your identity provider
 - Anyone holding a stolen session cookie
 
-The browser and the desktop app check Worker identity through trust on first use (TOFU) pinning, described below.
-
-What the channel does verify for itself is that it *works*. Before `OpenChannel` returns, the client round-trips a no-op `Ping` through the encrypted session. The handshake alone only proves the client can encrypt to the Worker's static key; the Ping proves the Worker's session decrypts and that its replies decrypt back.
-
-Channels are pooled and reused, so without that round trip a session broken in either direction — a key mismatch, a corrupted handshake, a relay that mangled a frame — would open "successfully" and be handed to every later caller until something evicted it. The Ping keeps that failure at the open, where it is attributable.
-
-### Channels don't outlive their credential
-
-An open Noise session cannot outlive the credential that authorized it. The Hub force-closes the affected channels on logout, password change, account deletion, admin force-logout, and revocation of an API or delegation token. Presenting the previous refresh token after its retry window of 60 seconds revokes the credential automatically. A refresh token two or more rotations old is refused as invalid and revokes nothing.
-
-Two details are worth knowing, because both are easy to assume wrong:
-
-- **A password change spares the session that you change it from.** The Hub restamps that session's channels to the new authentication generation first, so the user-wide revocation that follows tears down every *other* session's channels but not the one in your hands.
-- **Rotation that keeps or widens the grant does not close channels.** The token row stays valid, so the Hub re-arms its channels at the new expiry. A rotation that narrows the grant closes them, so the reduced scope takes effect. A profile change (an admin-role update, say) only invalidates cached user data.
-
-Teardown is immediate when the Hub handling the request is also the one holding the channel — logout, password change, and in-process token revocation land at once. Online admin operations (account deletion, force-logout) reach the Hub through the same authenticated RPC path and close channels in the same process.
-
-Revocations that originate outside the live Hub — offline `leapmux recover` tools, or a predecessor that stopped mid-flight — land through a durable revocation ledger that the Hub replays on its next sweep, at the cost of a brief propagation delay.
-
-Revoke a credential with `leapmux admin`: `api-token revoke`, `delegation-token revoke`, `session revoke`, or `session revoke-user`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/) for the flags, and [Control CLI](/docs/using/control-cli/) for how delegation tokens are used.
-
-### What a delegation token can reach
-
-A Worker mints a delegation token for the agent running in one of its tabs. The token carries the identity of that Worker's **owner** — the single user the Worker is registered to — and is limited to the machines it may reach: the Worker that minted it, plus that owner's other Workers. It can never be aimed at someone else's machine. The Hub re-checks that limit every time the token opens a channel, not only at the mint.
-
-On those machines the token can do whatever its owner could do from a browser. That includes the Worker RPCs that act on the machine rather than on a single tab — filesystem, git, tunnels, system info. Their scope is the whole host: paths are normalized and traversal is blocked, but nothing confines them to one project directory. This is how `leapmux` normally works. It is also the exposure to weigh before you point a prompt-injectable agent at a Worker.
-
-Every Worker RPC that touches data is **owner-only**: a Worker serves nobody but the user it is registered to. Because that is exactly one user, "the caller owns this Worker" and "the caller owns every tab this Worker holds" are the same statement. The one exception is the liveness ping, which does no work and discloses nothing.
-
-That equivalence is also the shape of the exposure, so it is worth stating plainly: a delegation token is limited by **owner and machine, not by workspace or tab**. An agent running in one workspace can reach every tab its owner holds on the machines it may reach — read another agent's messages, write to another terminal, close another workspace's tab — and can submit layout changes across all of that owner's workspaces.
-
-The machine limit does not narrow what the token sees at the **Hub**, either. It authenticates as its owner there, so it can list that owner's workspaces and tabs and resolve any of them by id — the whole inventory, not the workspace it was minted in. Treat a leaked delegation token as disclosing what the account contains, not just what one project does.
-
-All of one user's own work is a single trust domain from an agent's point of view. If you need a stronger boundary than that, use a separate user rather than a separate workspace.
-
-{{< callout type="info" >}}
-The Worker's check catches a Hub bug. The Hub authorizes channels for the Worker's owner, and the Worker checks that identity again. It also learns its owner from the Hub, so this check does not protect against a malicious Hub.
-{{< /callout >}}
-
-### Worker credentials and tab publication
-
-A registered Worker uses its bearer credential for registration state and its outbound Hub connection. That credential also permits publication of tabs hosted on that Worker in its owner's writable workspaces. The Hub derives both identities from the credential and checks the destination workspace and tile.
-
-For ordinary Agent, Terminal, File, and Image tabs, the Worker persists the resource and a durable creation operation. It then asks the Hub to commit the tab's public identity and placement. The Hub records the publication result in the same transaction as the layout change. Repeating the same creation returns that recorded result. A cancellation records its outcome durably so delayed publication cannot recreate a canceled tab.
-
-The public creation descriptor carries the tab ID, destination, relative ordering, and initial viewer preferences. File paths, image references, agent settings, and startup recovery inputs stay on the Worker. Private responses and events reach clients through their encrypted channels.
-
-The Worker credential also permits resolution and cancellation of its recorded creations. Treat control of a Worker credential as control of the public tab records hosted by that Worker. A Worker credential grants no authority to publish a tab hosted by another Worker.
+For the full cryptographic primitives, handshake sequence, transport hardening, and hourly in-band rekey design, see [Cryptography & Key Architecture](/docs/admin/cryptography/).
 
 ## Worker identity and TOFU pinning
 
-Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated when the Worker registers and stored in the Worker's local state. The Hub receives only the public halves, at registration, and stores them: it pins them to the Worker and refuses a connection that presents other keys.
+Each Worker generates a persistent **composite static keypair** (`X25519` + `ML-KEM-1024` + `SLH-DSA-SHAKE-256f`) at registration. The Hub pins the public halves and refuses a Worker connection that presents other keys.
 
-The Frontend uses **TOFU** ("trust on first use") to pin Worker identity in both the browser and the desktop app. It compares the key the Hub supplies with the pin each time it opens a channel.
+The Frontend checks Worker identity with **TOFU (trust on first use)** pinning in both the browser and the desktop app:
 
-- **First use** — the Frontend records the Worker's composite public key once the channel opens successfully. This is TOFU's weak point: everything afterwards is measured against whatever was pinned here, so verify the fingerprint out-of-band on first connect if you can.
-- **Match** — the connection proceeds silently.
-- **Mismatch** — the Frontend stops and asks you to decide. If you reject the key, the Frontend refuses that Worker for the rest of the session without prompting again. Reload the page or restart the desktop app to see the prompt again.
+- **First use:** records the composite public key after the channel opens and answers its initial `Ping`. Verify the 4-word fingerprint out of band on first connect when possible.
+- **Match:** connects silently.
+- **Mismatch:** stops and shows **"Worker public key changed"** with **Expected** and **Actual** 4-word fingerprints. Reject by default; accept only after confirming out of band that the Actual fingerprint matches `key_fingerprint` in the Worker's startup log.
 
-If the Hub substitutes a pinned Worker's key in a channel the Frontend opens, the key mismatch prompts you to decide. The Hub can still open its own channel as you because the Worker accepts the caller identity that the Hub supplies for both the browser and the desktop app.
+Because the Hub pins keys too, a stolen Worker auth token alone cannot attach different keys — though a token holder can still take the Worker offline, read tab IDs, mint or revoke delegation tokens for the owner, or tombstone tabs. Treat `state.json` as a secret.
 
-A browser also runs Frontend code from the Hub, so a compromised Hub can serve code that reads the browser's pins. The desktop app runs its bundled Frontend and keeps its pins in its own storage, with one store per Hub.
-
-The Hub pins the keys too, so a stolen Worker auth token alone cannot attach other keys to that Worker — not even for a client that has no pin yet. The Worker's public keys are public, though, so a holder of the token can still do these things:
-
-- Present the real keys and replace the live connection. That takes the Worker offline, because the clients' handshakes then fail.
-- Read the Worker's tab IDs.
-- Mint delegation tokens for the Worker's owner, up to the delegation ceiling.
-- Revoke the delegation tokens of the Worker's agents.
-- Send an empty tab inventory, which makes the Hub tombstone every tab of the owner that the Worker hosts.
-
-Treat `state.json` as a secret for that reason.
-
-A successful registration recovery replaces the Worker token and closes the replaced token's established stream. The Hub also refuses a delayed hello authenticated with that replaced token. Recovery requires proof of the pinned private keys. Deregistering the Worker instead stops its token only when the Worker acknowledges the stop, or 7 days later. New keys need a new registration, which creates a new Worker ID, so a re-registered Worker is a different Worker to every client's pin.
-
-### The "Worker public key changed" dialog
-
-When a mismatch occurs, the Frontend shows a dialog titled **"Worker public key changed"**. The dialog identifies the Worker, and it states that the key differs from the key pinned for it at an earlier connection. It also states that a Worker keeps its keys for as long as it stays registered, so one of the two keys did not come from this Worker.
-
-It displays an **Expected:** fingerprint and an **Actual:** fingerprint, and it tells you to reject the connection and to accept only after you confirm that the Actual fingerprint matches the one the Worker logs when it starts. Two buttons are offered — **Reject** and **Accept** (the Accept button is styled as a danger action). Dismissing the dialog counts as Reject. If the confirmation UI is not available for any reason, the transport defaults to reject (fail-closed).
-
-{{< callout >}}
-The fingerprints are **4 dash-joined English words** derived from a hash of the Worker's composite public key (for example, `deep-idea-obey-tack`). Every word is drawn from a fixed 256-word list and is exactly four letters, so a fingerprint is always the same shape and easy to read aloud. The wordlist is identical across the browser and the Worker, so you can read the fingerprint over a trusted out-of-band channel (a phone call, an in-person check) and confirm it matches before accepting a changed key.
-{{< /callout >}}
-
-### When to accept and when to reject
-
-- **Reject by default.** No ordinary action causes a harmless key change on the same Worker ID: a Worker keeps its keys for as long as it stays registered, and a re-registered Worker arrives as a new Worker with no dialog.
-- **Accept** only after you confirm, out of band, that the Actual fingerprint matches the one the Worker logs when it starts. The Worker runtime logs it as `key_fingerprint` in its "worker initialized" line for every entry point: a standalone Worker, solo mode, dev mode, and the desktop app.
-
-The desktop app writes its Worker's line to standard error, prefixed with `desktop-sidecar: `. To see it, start the app from a terminal: on macOS, run `"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"`; on Linux, run the AppImage, or `leapmux-desktop`, the program the `.deb` package installs. A Windows release build has no console. In solo mode, the desktop app's own local Worker runs in the same process as its Hub. A key change for that local Worker cannot come from the network: it means the app's stored pins or data changed.
-
-In the browser and in the desktop app, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. The desktop app keeps its pins in its own storage, one store per Hub. Its tunnels share that record; see [Tunnel key trust](#tunnel-key-trust). Two non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/).
-
-- Worker-to-Worker (cross-worker) pins, cleared with `leapmux daemon worker cross-worker-pins remove <worker-id>`.
-- `leapmux` CLI pins, cleared with `leapmux worker pins remove <worker>`.
-
-Both follow the same rule: first contact auto-pins, any later mismatch aborts the connection until you explicitly clear the pin.
+For pin stores, fingerprint verification, desktop sidecar logs, and cross-worker / CLI pin commands, see [Managing Workers](/docs/admin/managing-workers/#tofu-key-pinning) and [Cryptography & Key Architecture](/docs/admin/cryptography/#pinning-verification-and-audit).
 
 ### Tunnel key trust
 
-A tunnel takes its expected Worker key from the account’s browser pin when it starts. **Preferences → Advanced → Trusted worker keys** lists and removes the same pin that browser channels use. Each tunnel create request specifies the account that owns the expectation. The webview refuses a form whose account session has ended.
+Desktop tunnels reuse the account's stored browser pin for the target Worker — listed under **Preferences → Advanced → Trusted worker keys** — rather than maintaining a separate trust list:
 
-Four stages describe what a tunnel does with that trust.
+- **First contact:** if no pin exists, **Create** opens a browser channel to prove the peer holds the matching private keys before recording the pin.
+- **Shared trust:** browser channels and new tunnels share the same pin; a running tunnel keeps the key expectation it started with.
+- **Mismatch on reconnect:** if the Hub reports a different key, the tunnel stops before dialing and retains the row with both fingerprints.
+- **Exact-key confirmation:** **Verify Worker key** opens a fresh browser channel to review the changed key before you submit **Create** again.
 
-- **First contact.** If the account has no pin, **Create** opens a browser channel using the key the Hub presents. The browser verifies that the peer holds the corresponding private keys and that the session responds. It then records that key and reads the stored pin for the tunnel request. First use therefore trusts the initial announcement once the peer proves possession. A trusted copy of the Worker fingerprint lets you verify the announcement independently.
-- **Shared trust.** Browser channels and new tunnels use the same stored pin. Removing the pin makes the next standard creation verify a new browser session before it can dispatch. A running tunnel keeps its original key expectation.
-- **Mismatch on reconnect.** When the Hub reports a key that differs from the tunnel’s original expectation, the tunnel stops before dialing a target. The native list retains the stopped row with both fingerprints.
-- **Exact-key confirmation before recreation.** **Verify Worker key** opens a fresh browser channel and asks you to approve a changed key. A successful review applies to that exact key, Worker, and account session. Select **Create** to submit the prefilled form. The webview checks the stored pin again immediately before native creation. If the pin disappears, the form preserves its fields and offers deliberate first-contact trust. If another tab records a pin first, the form returns to stored-key review. Native creation still requires a separate **Create** submission after either proof.
-
-Once a tunnel has an expected key, it rejects a substituted key on reconnect. A Hub can still open its own channel as you or serve modified Frontend code.
+Once a tunnel has an expected key, it rejects a substituted key on reconnect. See [Cryptography & Key Architecture — Tunnel key trust](/docs/admin/cryptography/#tunnel-key-trust) for the complete flow.
 
 ## Solo mode: a reduced threat model
 
-Solo mode collapses the local IPC trust boundary on purpose. It runs the Hub and the Worker in one process. Its account, `solo`, starts with no password. Local IPC receives the synthetic administrator only after the listener admits the operating-system account.
+Solo mode collapses the local IPC trust boundary on purpose. It runs the Hub and Worker in one process, and its single account (`solo`) starts with no password. Local IPC grants the synthetic administrator only after the listener verifies the operating-system account:
 
-On Linux and macOS, each Unix listener checks the accepted peer's user ID against the effective user ID of the process that runs LeapMux. It disconnects a different account before HTTP receives the connection. This check also covers connections queued before the socket changes to mode `0600`. Other Unix platforms refuse these listeners unless native peer verification is available. Windows creates each named pipe with an access-control list for the current account's security identifier (SID).
+- On Linux and macOS, Unix socket listeners check the peer user ID against the process effective user ID before HTTP handles the connection, including connections queued before `chmod 0600`.
+- On Windows, named pipes carry an access-control list admitting only the current account's security identifier (SID).
 
-A TCP caller does not receive that administrator. Before a password exists, it can call only `SetInitialSoloPassword`. The first successful caller stores the password and an elevated session in one transaction. All concurrent losers and later calls fail. This setup flow prevents passwordless administration, but it does not identify the first caller.
+TCP callers never receive that automatic administrator access. Before a password exists, TCP callers can call only `SetInitialSoloPassword`. The first successful caller sets the password and receives an elevated session atomically; concurrent callers fail.
 
 ### What a password changes
 
-Give the `solo` account a password and the rule changes for every TCP address at once:
-
 | Transport | `solo` password | Result |
-|---|---|---|
-| Local socket (the desktop app) | either | No sign-in. The listener admits only your operating-system account. |
-| TCP, any address | not set | Only first-password setup. The first successful caller claims the account. |
-| TCP, any address | set | Sign in as `solo`. This covers `127.0.0.1` and every address you added. |
+| --- | --- | --- |
+| Local socket (desktop app) | either | No sign-in. Listener admits only your OS account. |
+| TCP, any address | not set | Only first-password setup. First successful caller claims the account. |
+| TCP, any address | set | Sign in as `solo` on `127.0.0.1` and every added address. |
 
-Loopback buys no exemption once a password exists, and that is deliberate: an address like `*:4327` serves the loopback interface and the LAN from **one socket**, so no rule could admit the first and refuse the second. Reading a loopback port also does not make a process the owner of the account.
-
-Setting the password is what [Network access](/docs/admin/configuration/#network-access) asks for before it will publish an address.
-
-A solo hub runs no captcha, so a rate limit guards the sign-in form instead: ten failed passwords from one client address pause sign-in from that address for fifteen minutes. `rate_limit.login_anonymous` sets it — see [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-limits).
+Loopback gets no exemption once a password is set because wildcard binds like `*:4327` serve loopback and LAN from one socket. Setting the password is required before [Network access](/docs/admin/configuration/#network-access) publishes additional addresses. Solo runs no captcha, so `rate_limit.login_anonymous` (10 failed passwords per 15 minutes per client IP) guards the sign-in form; see [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-limits).
 
 {{< callout type="warning" >}}
-Point solo mode at a non-loopback address with `--listen` and LeapMux warns you at startup. Until the `solo` account has a password, another machine can win the first-password setup race.
-
-The app shows only the password-setup screen on every passwordless TCP connection, including loopback. Set the password from a trusted connection. Firewall or tunnel a non-loopback address.
+Binding solo mode to a non-loopback address before setting a password logs a startup warning because another machine can win the first-password setup race. Set the password from a trusted connection and firewall or tunnel non-loopback access.
 {{< /callout >}}
 
-The bundled Worker that solo and dev modes auto-register is created in-process and flagged as auto-registered; it deliberately bypasses the registration-key flow, since presenting a bearer token to a local in-process RPC would give no real security.
-
-The **desktop app** avoids the exposure differently: it always starts its in-process Hub with the TCP listener disabled, reaching it over a local Unix socket (named pipe on Windows) instead. There is no `--no-tcp` flag or setting — it is how the desktop app is built, and solo mode on the command line does not do it. So the desktop app opens no loopback port for its Hub, and the non-loopback warning above cannot apply to it. Tunnels you create yourself still bind a loopback TCP port, by design.
+The desktop app disables its in-process Hub's TCP listener entirely and uses only the local IPC socket, so it opens no loopback Hub port. User-created tunnels still bind loopback TCP ports by design.
 
 ## Git in folders you browse
 
-The Worker disables `core.fsmonitor` for its Git commands. With Git 2.38 or later, it also refuses a bare repository found by discovery. It reads file blobs with `cat-file`, and its `diff` probes disable external diff and textconv programs.
+The Worker disables `core.fsmonitor` for its Git commands, refuses bare repositories found by discovery on Git 2.38+, reads blobs with `cat-file`, and disables external diff and textconv programs on `diff` probes.
 
-While you browse in the new-tab dialog, the Worker reads only refs and config. `git status` can run a repository's clean filters. The Worker runs it in these cases:
+While browsing in the new-tab dialog, the Worker reads only refs and config. `git status` (which can run repository clean filters) runs only when:
 
-- When you choose **Switch branch**, **Create branch**, or **Create worktree**, to check for uncommitted changes
-- For every open tab's status and diff
-- When you check out, commit, push, or create a worktree; the repository's hooks also run for these operations
+- Checking uncommitted changes for **Switch branch**, **Create branch**, or **Create worktree**
+- Reading status and diff for open tabs
+- Checking out, committing, pushing, or creating a worktree (which also runs repository hooks)
 
-Agents in a tab run Git as they choose.
+Agents running inside a tab invoke Git as they choose.
 
 ## Trusted reverse proxies
 
-Every Hub mode reads this setting, so it is not part of the solo section above.
+Every Hub mode reads `trusted_proxy_ranges` (default `[]`, trusting no proxy). The Hub verifies the physical TCP peer before reading `Forwarded` (preferred) or `X-Forwarded-For` / `X-Forwarded-Proto`. Provider presets (`cloudflare`, `cloudfront`) trust shared provider infrastructure from a bundled snapshot; restrict your origin to your distribution or use authenticated origin requests.
 
-LeapMux trusts no forwarding header by default. The `trusted_proxy_ranges` setting identifies the transport peers that may supply one. The Hub first verifies the unchanged physical peer. It then walks `Forwarded`, or X-Forwarded headers when `Forwarded` is absent, from the trusted side. A malformed preferred header produces an unknown client and no fallback.
-
-Provider presets such as `cloudflare` and `cloudfront` are broad trust decisions. They identify shared provider infrastructure, not your account. Another customer can target your origin unless you restrict it to your distribution or require authenticated origin requests. Each proxy must remove client-supplied forwarding headers or append only verified values. LeapMux bundles provider snapshots and does not refresh them automatically.
-
-The verified client IP controls address-keyed rate limits and new session records. The verified protocol turns `secure_cookies` on for that request, so a Hub behind a TLS-terminating proxy writes `__Host-` cookies without a second setting. Only a trusted peer's protocol is read, and the rule is one-way: it never turns the policy off. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
+The verified client IP governs address-keyed rate limits and session records, and a verified `https` protocol turns `secure_cookies` on for that request (one-way; it never disables `secure_cookies`). See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
 
 ## Session elevation
 
-A sensitive account change needs a **recently proven factor**, not just a live session cookie. Proving one **elevates** the session for {{< duration elevation-window >}}. Every sensitive action then succeeds without another prompt, and each one slides that window forward. An elevation is capped at **{{< duration elevation-cap >}}** from the instant the factor was proven, whatever happens in between, so an all-day session ends the day un-elevated and a stolen cookie cannot keep sliding the window forward.
-
-A sign-in with a password or a passkey proves a factor on its own and starts a window of {{< duration fresh-authentication-window >}}. Every rule on this page then applies to that window as to any other: nothing asks for a second proof inside it, each sensitive action slides it forward, and the cap still counts from the sign-in. A cookie stolen inside those minutes holds a window, and it can slide that window for up to {{< duration elevation-cap >}}.
-
-In the browser, a refused action opens the **Verify your identity** prompt above whatever dialog raised it — the form keeps its input, and the action continues on its own once a factor is proven. [Accounts & Authentication](/docs/using/accounts/#managing-your-profile) shows what this looks like from the Preferences dialog; this section is the rule it implements.
-
-In the desktop app’s remote-Hub mode, choose **Verify in your browser** in the step-up dialog. You prove the factor on the Hub’s page in the system browser. Both desktop sign-in and step-up require a current window on the browser session to approve consent. If that session lacks a window, `/elevate` gives it the full {{< duration elevation-window >}} once you prove a factor. The desktop session starts without a window. Its first action that requires elevation needs its own step-up. Approval sends a code to the desktop app's loopback listener. The Hub opens the window on the desktop session when the app successfully redeems the code.
-
-These actions require elevation:
-
-- Changing or setting your password.
-- Any passkey change: registering, renaming, removing, or disabling passkey sign-in.
-- Changing your account email.
-- Removing a linked OAuth provider.
-- Authorizing an app.
-- Registering an app, editing its registration, allowing it the step-up ceremony, or vouching for it.
-- Changing any **Hub setting**, from the Preferences dialog or from `leapmux admin settings`.
-
-Your account email and a linked provider are on that list because both are recovery identities: the address receives the recovery link, and a provider is a login method. Whoever can move either one can come back later without the session they started from.
-
-An app **registration** is on it for a similar reason, one layer out. Editing one rewrites where a consent redirects, so it diverts an authorization code already in flight to an address the editor chose — the most dangerous single write in the feature. **Disconnecting** an app is deliberately not on the list, and neither is retiring a registration: both only reduce what an app can reach, and demanding a fresh factor from somebody who just realized an app is malicious is the wrong failure mode.
-
-Every procedure on an `Admin*` service needs a current window, including reads and actions that reduce access, such as `session revoke` and `api-token revoke`. A read needs the window and does not slide it. `AppService` applies its own rules to app registrations. Listing registrations, retiring an app, and deleting an empty registration work without a window. See [App Authorization](/docs/admin/app-authorization/).
-
-Within that, one property decides how strictly: **does the verb create a new way into an account?** Creating a user, resetting somebody's password, changing an account's administration, and writing somebody's email address or its verified flag all do.
-
-Each of those refuses a command-line credential outright, however recently that credential verified — it hands out authority the credential itself did not have, and the browser session that would have to verify it is the granting one. The administration change refuses in **both** directions, because one Hub procedure carries the grant and the revoke, so an emergency demotion needs a browser too.
-
-Issuing a command-line credential also creates a new way in, and it is the single exception: an **elevated** command-line credential is admitted, so a headless service account can still renew — with a person present to approve the window. What limits it instead is the credential it mints — that one does not renew and expires no later than its issuer. Every other elevated admin verb accepts an elevated command-line credential: deleting a user, editing a display name, writing a Hub setting, and writing an identity provider. See [App credentials](#app-credentials).
-
-Hub settings are on the list for a reason of scale rather than of ownership: several of those keys *are* the controls this document describes — `signup_enabled`, the captcha configuration, the rate limits, SMTP, and the `public_url` that passkey sign-in derives its relying party from. A stolen administrator cookie that could turn those off would buy more than any single account change the window already guards.
-
-You elevate with whatever your account holds:
+Sensitive account changes, app authorizations, and Hub administration require a **recently proven factor** rather than only a live session cookie. Proving a factor elevates the session for {{< duration elevation-window >}}, extended by each sensitive write up to a hard cap of {{< duration elevation-cap >}} from the original proof. A password or passkey sign-in starts a {{< duration fresh-authentication-window >}} window under the same rules.
 
 | Your account today | How you elevate |
 | --- | --- |
 | Password set | Enter your password. |
 | Passkey registered | Authenticate with an existing passkey. |
-| A linked provider only — no password, no passkey | Sign in again at that provider. |
-| No password, no passkey, no linked provider | You cannot elevate. Set a password first; see [The account with nothing to prove](#the-account-with-nothing-to-prove). |
+| Linked OAuth provider only (no password, no passkey) | Sign in again at that provider. |
+| No password, no passkey, no linked provider | Cannot elevate; set a password first. |
 
-The provider row applies **only** to an account with no password and no passkey, where the provider *is* the sign-in credential. An account that holds either factor must present it, because "this browser can still reach the provider's session" is a weaker claim than the factor the account already has. The verification screen therefore does not offer a provider it would refuse.
-
-{{< callout type="info" >}}
-A provider elevation proves that the browser still holds a live provider session for the linked account. It does not prove that anybody re-entered a credential just now. LeapMux asks the provider for a fresh authentication, but no provider reports back reliably enough for the Hub to insist, and GitHub cannot be asked at all. For an account whose only credential is that provider this costs nothing, because whoever holds the provider session can sign in from scratch anyway. If you want a real second factor, give the account a password or a passkey.
-{{< /callout >}}
-
-In the browser, an elevated session announces itself at the top of every Preferences section it covers — **Account** and every **Administration** section — with the deadline and an **End now** button. The deadline it shows follows the slide: the Hub reports the window it holds on the response to each action that slides it, so the tab that performed that action shows the extended deadline in the same round trip.
-
-Another tab keeps the deadline it last read, because a slide sends no event; it corrects itself once that deadline passes and it reads the account again.
-
-A **command-line credential** carries a window of its own, on exactly the terms above. What it cannot do is verify itself from the terminal: the factor is proven in a browser, deliberately somewhere the credential file cannot reach, or a stolen file would hold everything the window exists to withhold. See [Verifying a command-line credential](#verifying-a-command-line-credential) below.
-
-Inside a LeapMux agent or terminal tab the question does not arise: a tab holds a delegation credential, which carries no elevation at all, and the Hub does not let one reach any of these procedures. To change a password, an email, a passkey, or a linked provider, use a browser.
+For the complete elevation rules, list of protected actions, `Admin*` vs `AppService` boundaries, and desktop remote-Hub step-up flow, see [Authentication & Session Security — Session elevation](/docs/admin/authentication-security/#session-elevation).
 
 ### Verifying a command-line credential
 
-How the proof runs depends on how the credential was issued. `leapmux` picks the ceremony for you, and a refused command starts it.
-
-A credential from the default `leapmux auth login` verifies through the **loopback ceremony**. A refused command opens a browser on the CLI's own machine. Verify your identity if prompted, then approve the request on the Hub's page. Approval sends a code to the CLI's loopback listener. The command retries after the CLI redeems the code successfully.
-
-A credential from `leapmux auth login --device-code`, or one an administrator issued with `leapmux admin api-token issue`, verifies through the **device-code ceremony**: the CLI prints an address and a short code, a person approves it in a browser, and the refused command runs.
-
-```
-$ leapmux admin settings set public_url https://hub.example.com
-This command needs you to verify your identity.
-  1. Visit https://hub.example.com/oauth/device
-  2. Enter the code: 7XC-8DZ
-Or open: https://hub.example.com/oauth/device?user_code=7XC-8DZ
-```
-
-Three properties are worth stating:
-
-- **The credential cannot approve its own request.** Both ceremonies accept a browser session only, and that session must itself be elevated. A stolen credential file can start a ceremony and can never finish one.
-- **Step-up opens a window on the existing credential.** In the loopback ceremony, the Hub opens the window when the app successfully redeems the code. In the device-code ceremony, the Hub opens it when the account holder approves the request. Step-up issues no new credential and sends no app authorization email. During a loopback step-up, the CLI may refresh the bearer before redemption and save the updated tokens to its credential file. The window lasts {{< duration elevation-window >}} and has the same cap as a browser session. A write slides the window only when its handler explicitly does so. Reads do not slide it.
-- **The default login requires a browser that can reach the CLI's loopback listener.** An SSH session can use the loopback ceremony when a browser on that machine can open the printed address. Sign in again with `--device-code` when the available browser runs on another machine. This is the flow for headless hosts and containers.
-
-An unattended job can use a narrowly scoped, short-lived credential while its elevation window is current. A person must approve a new window after it expires.
+CLI credentials cannot prove a factor from the terminal. Default `leapmux auth login` credentials use a **loopback browser ceremony**, while `--device-code` and administrator-issued credentials use the **device-code ceremony** approved in an elevated browser session. See [Authentication & Session Security — Verifying a command-line credential](/docs/admin/authentication-security/#verifying-a-command-line-credential).
 
 ### The account with nothing to prove
 
-An account with **neither a password nor a passkey** holds no factor of its own. A linked provider still elevates such an account — that is the third row of the table above. An account that holds no linked provider either, the last row, cannot elevate at all, so a rule that demanded elevation before it could attach its first credential would lock it out permanently.
+An account with no password, no passkey, and no linked provider can attach its first password or passkey within {{< duration fresh-authentication-window >}} of signing in when it holds a verified email or linked OAuth provider. See [Authentication & Session Security — The account with nothing to prove](/docs/admin/authentication-security/#the-account-with-nothing-to-prove).
 
-Two rules therefore admit the **first** password or passkey, and they are siblings. The Hub tries the elevated rule first, for every account shape: a session that already proved a factor is admitted at once, and a provider re-authentication counts as that proof. Only when the session is not elevated does the Hub apply the first-credential rule — an authentication from the last **{{< duration fresh-authentication-window >}}**, plus a durable identity (a verified email or a linked OAuth provider).
+### App credentials
 
-A cookie captured earlier in the day therefore cannot attach a credential that outlives it, and the remedy is self-service: signing in again produces a new session.
+`leapmux auth login` issues a scoped access token ({{< duration access-token >}}) backed by a refresh token ({{< duration refresh-token >}}, capped at {{< duration absolute-cap >}}). Grants only subtract from owner permissions, Hub administration is opt-in, and account authenticators remain outside every grant. See [Authentication & Session Security — App credentials](/docs/admin/authentication-security/#app-credentials).
 
-### What still needs more than elevation
+### What a delegation token can reach
 
-- **Registering a passkey needs a browser.** Not because the Hub asks for one, but because WebAuthn does: creating a passkey is a ceremony between the browser and an authenticator, and a command line cannot answer it. Changing your own password and the passkey **management** verbs — rename, delete, and turning passkey sign-in off — carry no such limit, and an elevated command-line credential performs each of them.
-- **A password change revokes other sessions, API tokens, and delegation tokens.** The credential that requested the change survives it. A change made from the command line ends your browser sessions, and a change made in the browser revokes your command-line credentials. Registered Workers keep their credentials and their ability to mint delegation tokens.
-- **Removing your last passkey from an account that has no password** also needs a new password, in the same request: you must retain *some* sign-in method. With a password already set, removing the last passkey asks for nothing extra.
-- **Disabling passkey sign-in** on a passkey-only account also needs a new password, for the same reason.
-
-Self-service **account recovery** and admin **reset-password** both **delete every passkey** on the account. That is deliberate: recovery is break-glass, and leaving old passkeys registered would let someone who still holds a device sign back in without knowing the new factor. When recovery is completed with a passkey instead of a password, the password is cleared too, so the enrolled passkey is the only passkey left. Linked providers stay linked.
-
-Account recovery and admin reset-password also leave Workers registered. After a suspected compromise, review the Worker list and deregister each unknown Worker.
-
-## App credentials
-
-`leapmux auth login` mints an app credential: an access token that lives for {{< duration access-token >}} and renews itself, backed by a refresh token that lives {{< duration refresh-token >}}. The credential is written to one file per Hub at mode `0600` — see [Credential file location](/docs/using/control-cli/#credential-file-location) for where.
-
-These rules limit what that credential can do:
-
-- **Authorizing one needs an elevated session.** The consent page sends you through a verification prompt first, and consenting slides the window forward like every other sensitive action. This holds for the device-code flow too, where the verification happens in a browser on a *different* machine from the one being authorized — which is the point.
-- **Every credential carries a set of named permissions.** A grant only ever subtracts from what its owner can do; it never adds. The consent page states each permission as a sentence, and the credential is refused anything outside its grant — at the Hub, and again inside the encrypted channel at the Worker, which is where a file read or a terminal write actually happens.
-- **Hub administration is opt-in per credential.** An ordinary credential can do everything you can do *except* administer the Hub, even when your account is an administrator. `leapmux auth login --scope "admin:read admin:users"` asks for it, the browser consent page states plainly what it grants, and only an administrator may grant it. So a stolen credential file from a routine login cannot manage users, workers, or settings.
-- **The account's own authenticators are outside every grant.** Adding a passkey, changing the recovery address, unlinking a sign-in provider, and managing another app's credential are refused to any credential, whatever the consent screen offered. Each of those creates authority that outlives the app's connection, so disconnecting the app would no longer withdraw what it was given.
-- **The lifetime is capped.** Each refresh moves the refresh window forward, but never past **{{< duration absolute-cap >}}** from the day you authorized the credential. After that the device signs in again.
-- **Logging in again retires the old credential.** The previous token is revoked, so a re-login does not leave a live secret behind in your shell history or on the Hub.
-- **A credential issued by another credential does not renew, expires no later than its issuer, and is never wider than it.** So a chain of self-issued credentials gets shorter and narrower each time, and ends at the browser consent that started it instead of restarting the ceiling at each step.
-- **A credential either renews or has a fixed lifetime, never both.** `leapmux auth login` and the default `admin api-token issue` mint the renewing kind. `admin api-token issue --ttl <seconds>` mints a service credential that lives exactly that long and carries no refresh token; see [API tokens](/docs/admin/admin-cli/#api-tokens).
-
-If SMTP is configured and your address is verified, LeapMux emails you whenever a credential is issued for your account. The message lists the app, the installation, and **every** permission granted — listed in full rather than counted, so an ordinary authorization is distinguishable from one that also administers the Hub. A credential an administrator issued for you says so, and does not read as a receipt for something you did.
-
-Review and end access under **Preferences → Apps → Connected apps**, which groups the list by app. **Disconnect** ends the app's access on every machine it runs on at once; **Revoke** ends one machine and leaves the app connected elsewhere. Choose **Disconnect** whenever the decision is about the app, because ending one installation of an app you no longer trust leaves it working on the others. Neither requires elevation: both only reduce access, and somebody who believes an app is malicious should not have to find their password first. See [Connected Apps](/docs/using/connected-apps/).
-
-Which apps may be authorized at all, and what each may ask for, is an administrator decision — see [App Authorization](/docs/admin/app-authorization/).
-
-## OAuth flow binding
-
-Starting an OAuth login binds the flow to the browser that began it. The Hub sets a short-lived `HttpOnly` cookie holding a random nonce, and the callback completes only when that same browser presents it. Each flow gets its own cookie, so two sign-ins started in the same browser do not evict each other. The binding continues across the sign-up hand-off: when the callback finds no existing account, it sends the browser to a username page, and a second cookie ties that page to the same browser.
-
-Without the binding, the `state` parameter identifies a flow but not a browser. An attacker could start a login under their own identity, withhold the callback, and deliver the live URL to somebody else — signing that person into the **attacker's** account, where the victim's later work would land. The same trick against the sign-up hand-off would link a freshly created account to the attacker's identity.
-
-A callback the Hub refuses leaves the flow open, so the browser that started the login can still finish it. Otherwise anyone who learned a live `state` could end somebody else's sign-in with one request.
+A Worker mints a short-lived delegation token for each tab's agent or terminal carrying the Worker owner's identity. Its scope is limited by **owner and machine, not by workspace or tab** — an agent in one workspace can reach all of its owner's tabs and Hub workspace inventory. Use separate user accounts when you need a hard boundary between projects. See [Authentication & Session Security — What a delegation token can reach](/docs/admin/authentication-security/#what-a-delegation-token-can-reach).
 
 ## At-rest encryption (separate from E2EE)
 
-Distinct from the channel E2EE above, the Hub encrypts all 37 eligible columns across 15 database tables (14 persistent tables and 1 short-lived transient table) **at rest** using a versioned XChaCha20-Poly1305 key ring kept in an `encryption.key` file (mode `0600`, default `<DataDir>/encryption.key`, auto-generated on first run). Each ciphertext binds its table name, column name, and row key as additional authenticated data (AAD), so ciphertext cannot be swapped between rows or columns.
+Separately from channel E2EE, the Hub encrypts 37 columns across 15 database tables (14 persistent tables and 1 short-lived transient table) at rest with a versioned `XChaCha20-Poly1305` key ring in `encryption.key` (mode `0600`), binding table, column, and row key as additional authenticated data (AAD). Passwords use `Argon2id` hashes (also encrypted at rest), and bearer secrets (sessions, Worker auth tokens, registration keys, OAuth codes, API/delegation tokens, confidential app secrets) use peppered `HMAC-SHA256` digests.
 
-The encrypted columns cover:
-
-- Account credentials and profile data: `users` (`password_hash`, `prefs`, `pending_email_token`) and `user_sessions` (`user_agent`, `ip_address`)
-- Workspaces and layout state: `workspaces` (`title`), `workspace_sections` (`name`), `user_state` (`state_payload`), `user_op_batches` (`batch_payload`, `transitions_payload`), `lifecycle_outbox` (`payload`), and `worker_tab_publications` (`response_payload`)
-- OAuth apps, providers, and token scopes: `oauth_clients`, `api_tokens`, `delegation_tokens`, and `oauth_providers`
-- Passkeys and Hub settings: `passkey_credentials` (`public_key`, `aaguid`, `transports`, `friendly_name`) and `hub_settings` (`value`, `secret`)
-- Short-lived authorization payloads: `oauth_authorization_codes` (`code_challenge`, `redirect_uri`, `granted_scopes`, `installation_name`)
-
-If the Hub's database is exfiltrated without the key file, all 37 encrypted columns stay unreadable. Columns required for SQL lookups, joins, sorting, or uniqueness constraints — such as primary keys, `users.username`, `users.email`, `users.display_name`, timestamps, status ordinals, and Worker public keys — stay unencrypted.
-
-Be clear on what this does **not** cover, since "encrypted at rest" invites over-reading. It does not cover Frontend↔Worker channel keys or agent and terminal content, which the Hub relays as ciphertext. Passwords use Argon2id hashes (and the stored hash is also encrypted at rest). These bearer secrets use HMAC-SHA256 digests, a hash-based message authentication code keyed by the token pepper:
-
-- Session secrets
-- Worker auth tokens
-- Registration keys
-- OAuth authorization codes
-- API and delegation token secrets
-- Confidential app client secrets
-
-A copy of the database therefore holds none of those bearer secrets in plaintext. Pending OAuth sign-ups, OAuth flow states, WebAuthn ceremony sessions, and device authorizations (stored as peppered HMAC-SHA256 digests) live only in Hub memory and are never written to the database.
-
-The key ring is managed with `leapmux recover encryption-key rotate | remove | reencrypt | rotate-pepper`. The full 15-table column list, key-rotation runbook, database backends, and backup/restore guidance live in [Encryption & Data](/docs/admin/encryption-and-data/).
-
-{{< callout type="warning" >}}
-The `encryption.key` file holds both the encryption key ring and the **token pepper**. Back up the file and database together: without the key file, all encrypted Hub columns are permanently undecryptable, and an undecryptable `captcha.altcha` row aborts Hub startup until you restore `encryption.key`.
-
-`rotate-pepper` takes effect on the next Hub restart, because a running Hub keeps its startup pepper in memory. Rotating the pepper, or losing the key file, has these effects:
-
-- Signs out every session
-- Invalidates every Worker auth token
-- Invalidates API and delegation tokens and confidential app client secrets
-- Invalidates live registration keys, pending device codes, and pending OAuth authorization codes
-
-Account-recovery links do not use the pepper. Pepper rotation does not invalidate them. Their existing expiry, attempt limits, and consumption checks still apply.
-
-Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
-
-1. Remove the Worker in the Hub's Worker list.
-2. Stop the Worker.
-3. Delete its `state.json`.
-4. Register it with a new registration key. It receives a new Worker ID.
-{{< /callout >}}
+See [Encryption & Data](/docs/admin/encryption-and-data/) for the complete 15-table list, key rotation runbook, pepper rotation impact, and backup/restore steps.
 
 ## Local control and service accounts
 
-`leapmux daemon <mode> stop`, `restart`, and `status` talk to a running instance through a private local endpoint: a Unix socket, or a named pipe on Windows. Only the operating-system account that runs the instance can open it. On Windows, the pipe admits only that account's security identifier (SID). Each request must also carry the identity of the running process, and a token from the instance's data directory that only that account can read. This endpoint controls the process only; it does not replace the sign-in that the Hub requires over the network.
-
-A service runs LeapMux as your own account, for boot startup too, never as `root` or `SYSTEM`. The administrator rights that LeapMux asks for create the service and, on Windows, grant your account the right to run it. They do not make LeapMux run as an administrator.
+`leapmux daemon <mode> stop`, `restart`, and `status` communicate with a running instance over a private local socket or Windows named pipe accessible only to the running OS account, authenticated with the process identity and a control token inside the data directory. Background services always run as your own user account — never as `root` or `SYSTEM`.
 
 Protect these files as credentials:
 
-- The data directory of each instance, which holds the control token
-- A Worker's `state.json`, and its `pending-registration.json` while a registration is unfinished
-- A service's environment file, when it holds a secret
+- Each instance's data directory (holds the control token and, for Hubs, `encryption.key`)
+- Each Worker's `state.json` and `pending-registration.json`
+- Any service environment file containing secrets
 
 See [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
 ## Recommendations for administrators
 
-If you run a Hub for a team, the security of the deployment rests largely on the host and a few files. Concrete steps:
-
-1. **Protect the Hub host.** It can read all control-plane data — accounts, workspace records, layout, Worker registration metadata — and it sees transport metadata for every channel (traffic analysis is in scope). Treat it as a sensitive service: minimal access, patched OS, monitored.
-2. **Terminate TLS in front of the Hub.** The Frontend↔Hub and Worker↔Hub legs are not E2EE; they rely on transport TLS. Put the Hub behind a reverse proxy with valid certificates. See [Reverse Proxy](/docs/admin/reverse-proxy/).
-3. **Protect the `encryption.key` file as a credential.** It contains base64 key material in a plain text file at mode `0600`. No master password, key management service, or hardware security module wraps that material. Filesystem permissions provide its only protection. It holds the encryption key ring for all 15 encrypted Hub tables and the token pepper for bearer digests. Anyone who reads it can decrypt every protected Hub column and compute digests for bearer secrets. Back it up with the database. Encrypt both backups. Restrict access.
-
-   Losing the key file makes all encrypted Hub columns unrecoverable and aborts Hub startup if `captcha.altcha` cannot decrypt. Pepper rotation or a lost key file also signs out every session and invalidates Worker tokens, API and delegation tokens, confidential app client secrets, live registration keys, and pending OAuth authorization codes. Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
-
-   1. Remove it in the Hub's Worker list.
-   2. Stop it.
-   3. Delete its `state.json`.
-   4. Register it with a new key. It receives a new Worker ID.
-
-4. **Rotate encryption keys deliberately.** Use `rotate` → restart → `reencrypt`, and never `remove` an old version before the re-encryption migrated every row. The exact runbook is in [Encryption & Data](/docs/admin/encryption-and-data/).
-5. **Give the `solo` account a password before you expose solo mode beyond loopback.** Without one, the first TCP caller can claim the account. Use hub mode (`leapmux daemon hub`) for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/admin/configuration/#network-access) for listen addresses.
-6. **Mint registration keys carefully.** A valid registration key immediately produces an active Worker — there is no separate approval queue, so possession of a live key *is* the gate. Keys are single-use, expire 5 minutes after issue, and the UI dialog destroys the key when closed. Note the 5 minutes is per issuance, not a hard lifetime: an open registration dialog auto-extends its key as expiry approaches, so a key stays live as long as the dialog is open. Treat them as one-time secrets, deliver them over a trusted channel, and close the dialog when you are done. See [Managing Workers](/docs/admin/managing-workers/).
-7. **Teach users to take the key-change dialog seriously.** The "Worker public key changed" prompt detects a Hub substituting a Worker key in a channel your browser opens. Users should reject a changed key, and accept only after the 4-word fingerprint matches the one the Worker logs when it starts.
-8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Run these operations with `leapmux admin`: `session revoke-user`, `api-token revoke`, and `delegation-token revoke`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/).
+1. **Protect the Hub host.** It reads all control-plane metadata and observes channel traffic patterns. Minimize access, keep the OS patched, and monitor it.
+2. **Terminate TLS in front of the Hub.** The Frontend↔Hub and Worker↔Hub connections rely on transport TLS. Place the Hub behind a reverse proxy with valid certificates; see [Reverse Proxy](/docs/admin/reverse-proxy/).
+3. **Protect `encryption.key` as a top-grade secret.** It holds raw base64 key material and the token pepper in mode `0600` with no external KMS wrapper. Back it up together with the database, encrypt backups, and restrict access. See [Encryption & Data](/docs/admin/encryption-and-data/#disaster-recovery-notes) for loss recovery steps.
+4. **Rotate encryption keys deliberately.** Follow `rotate` → restart → `reencrypt` → `remove`; see [Rotation runbook](/docs/admin/encryption-and-data/#rotation-runbook).
+5. **Set a `solo` password before exposing solo mode beyond loopback.** Use `hub` mode for multi-user deployments and firewall or tunnel any non-loopback solo listener; see [Network access](/docs/admin/configuration/#network-access).
+6. **Handle registration keys as one-time secrets.** Presenting a valid key creates an active Worker immediately with no secondary approval step. Keys are single-use with a 5-minute lifetime (auto-extended while the UI dialog stays open); close the dialog when finished. See [Managing Workers](/docs/admin/managing-workers/).
+7. **Train users to reject unexpected key changes.** Users must reject **"Worker public key changed"** prompts unless the 4-word Actual fingerprint matches the Worker's startup log out of band.
+8. **Revoke credentials promptly when compromised.** Revocation tears down open Noise channels immediately on the live Hub; see [Credential and device revocation](/docs/admin/authentication-security/#credential-and-device-revocation) and [Admin CLI](/docs/admin/admin-cli/).
 
 ## Quick reference
 
-The facts an administrator looks up most often. The full crypto primitives are in the [Primitives](#primitives) table above; identity pinning and encryption modes are covered in their own sections.
-
 | Property | Value |
-|----------|-------|
+| --- | --- |
 | Noise protocol label | Classic: `Noise_NK+skem_25519+MLKEM1024_ChaChaPoly_BLAKE2b`; post-quantum: `Noise_NKhfs+skem+sig_25519+MLKEM1024+SLHDSASHAKE256f_ChaChaPoly_BLAKE2b` |
 | Worker encryption mode flag | `--encryption-mode classic` \| `post-quantum` (default `post-quantum`) |
-| Solo mode default bind | `127.0.0.1:4327` plus the local socket. The socket needs no sign-in. TCP callers sign in as `solo` once a password exists; before that, they can only set the first password. |
+| Solo mode default bind | `127.0.0.1:4327` plus the local socket. Local socket needs no sign-in; TCP requires first-password setup and then sign-in as `solo`. |
 | At-rest secret key file | `encryption.key` (mode `0600`, default `<DataDir>/encryption.key`) |
-| Session elevation window | {{< duration elevation-window digits >}}, extended by each sensitive action; {{< duration elevation-cap digits >}} maximum from the proven factor |
-| Fresh sign-in window | {{< duration fresh-authentication-window digits >}}, the window a sign-in with a password or a passkey starts |
-| App credential lifetime | Access token {{< duration access-token digits >}} (renewed for you) · refresh {{< duration refresh-token digits >}} · {{< duration absolute-cap digits >}} absolute |
+| Session elevation window | {{< duration elevation-window digits >}}, extended by each sensitive write; {{< duration elevation-cap digits >}} maximum from the proven factor |
+| Fresh sign-in window | {{< duration fresh-authentication-window digits >}}, the window a password or passkey sign-in starts |
+| App credential lifetime | Access token {{< duration access-token digits >}} (auto-renewed) · refresh {{< duration refresh-token digits >}} · {{< duration absolute-cap digits >}} absolute |
 | OAuth code lifetimes | {{< duration authorization-code-ttl digits >}} (authorization code) · {{< duration device-code-ttl digits >}} (device code) |
 
-See also: [Managing Workers](/docs/admin/managing-workers/) · [Encryption & Data](/docs/admin/encryption-and-data/) · [Sign-in Providers](/docs/admin/sign-in-providers/) · [Accounts & Authentication](/docs/using/accounts/) · [Running LeapMux](/docs/admin/running-leapmux/).
+See also: [Authentication & Session Security](/docs/admin/authentication-security/) · [Cryptography & Key Architecture](/docs/admin/cryptography/) · [Managing Workers](/docs/admin/managing-workers/) · [Encryption & Data](/docs/admin/encryption-and-data/) · [Sign-in Providers](/docs/admin/sign-in-providers/) · [Accounts & Authentication](/docs/using/accounts/).

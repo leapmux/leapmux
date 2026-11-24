@@ -115,7 +115,9 @@ Notes on dispatch:
 Every command of the binary parses its flags the same way. A long flag takes two hyphens (`--listen`), and a single hyphen goes only before a one-letter flag (`-q`, `-v`). A single hyphen before a long name, as in `-listen`, fails, and the error states the two-hyphen form.
 {{< /callout >}}
 
-> **Durations.** Daemon and config flags whose default is shown as a duration (`1h`, `5m`, …) take a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combine parts; a bare number is a count of **seconds** (see [Duration values](/docs/admin/configuration/#duration-values)). Control-command duration flags (`--timeout`, `--heartbeat`, `--since`) use Go duration units (`ms`, `s`, `m`, `h`).
+{{< callout type="info" >}}
+**Durations.** Daemon and config flags whose default is shown as a duration (`1h`, `5m`, …) take a unit suffix (`ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w`) and combine parts; a bare number is a count of **seconds** (see [Duration values](/docs/admin/configuration/#duration-values)). Control-command duration flags (`--timeout`, `--heartbeat`, `--since`) use Go duration units (`ms`, `s`, `m`, `h`).
+{{< /callout >}}
 
 ## Mode commands
 
@@ -415,7 +417,7 @@ Commands that take `--password` prompt interactively when you omit the flag. Eve
 
 ## Control commands (outline)
 
-Top-level `leapmux <group> <command>` drives a **running** Hub over RPC — it does not touch the database. It is used interactively, by external scripts (which authorize with `leapmux auth login`, or auto-discover a local solo/dev Hub), and by agents and terminals that LeapMux starts (which inherit `LEAPMUX_CONTROL_*` env vars). It prints text by default and supports `--format text|json|ndjson|tsv`, `--json`, `-q`, `--fields`, `--no-header`, `-w`, and `--color`; its exit status states the class of a failure. [Control CLI](/docs/using/control-cli/) explains targets, output and errors; the [Control Command Reference](/docs/reference/control-commands/) lists every command with its arguments, flags and examples.
+Top-level `leapmux <group> <command>` drives a **running** Hub over RPC — it does not touch the database. It is used interactively, by external scripts (which authorize with `leapmux auth login`, or auto-discover a local solo/dev Hub), and by agents and terminals that LeapMux starts (which inherit `LEAPMUX_CONTROL_*` env vars). It prints text by default and supports `--format text|json|ndjson|tsv`, `--json`, `-q`, `--fields`, `--no-header`, `-w`, and `--color`; its exit status states the class of a failure. [Control CLI](/docs/using/control-cli/) explains targets, output and errors; the [Control Command Reference](/docs/reference/commands/) lists every command with its arguments, flags and examples.
 
 ```bash
 leapmux <group> <command> [target] [flags]

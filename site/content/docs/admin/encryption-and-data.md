@@ -2,7 +2,7 @@
 title: "Encryption & Data"
 description: "What LeapMux stores and encrypts at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore a Hub safely."
 type: docs
-weight: 8
+weight: 9
 ---
 
 This chapter is for administrators who run a LeapMux **Hub** (or a solo-mode instance). It explains what data is stored and what is encrypted at rest. It also covers key rotation, database migrations, and backup and restore.
@@ -32,9 +32,16 @@ LeapMux keeps three kinds of persistent state:
 | Agent transcripts, terminal I/O, worktree/session state | Worker's local SQLite (`worker.db`) | No |
 | Worker E2EE private keys + Hub auth token | Worker's `state.json` | No — plain JSON, file mode `0600` |
 
-{{< callout type="info" >}}
-A Hub that only observes cannot read agent transcripts, tool calls, terminal output, file contents, or diffs. The Worker stores that data, and channels encrypt it in transit. The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. The cache is not keyed to the account, and signing out does not clear it. See [Security & Threat Model](/docs/admin/security/).
-{{< /callout >}}
+### What stays on the browser
+
+A Hub that only observes cannot read agent transcripts, tool calls, terminal output, file contents, or diffs. The Worker stores that data, and channels encrypt it in transit.
+
+The browser caches rendered message text and code locally in IndexedDB to speed up display. Keep these retention properties in mind on shared devices:
+
+- After startup, the browser attempts to remove cached entries whose recorded last-use time is at least seven days old.
+- Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline.
+- The rendered-message cache is not keyed to the account, and signing out does not clear it. Clear site data in the browser when you need immediate removal.
+- Separately, the browser stores per-account Worker trust pins in its own IndexedDB store (`leapmux-trust`, key `leapmux:u:<your-user-id>:key-pins`), kept for one year and refreshed on use. See [Managing Workers](/docs/admin/managing-workers/#tofu-key-pinning) and [Security & Threat Model](/docs/admin/security/).
 
 ### Encryption at rest details
 
@@ -281,22 +288,17 @@ Like `encryption-key reencrypt`, both `recover db version` and `recover db migra
 The Hub database and the `encryption.key` file are a **matched pair**. Back them up together and restore them together. With the database but no key file, all 37 encrypted Hub columns across 15 tables are permanently unreadable. With the key file but no database, you have nothing to decrypt.
 {{< /callout >}}
 
-**On-disk data to back up (Hub host vs. each Worker host):**
-
-```text
-┌──────────────────────────────┐    ┌────────────────────────────┐
-│  ~/.config/leapmux/hub/      │    │  ~/.config/leapmux/worker/ │
-│                              │    │                            │
-│  ┌────────────────────────┐  │    │  ┌──────────────────────┐  │
-│  │ hub.db   (ciphertext)  │  │    │  │ state.json  (0600)   │  │
-│  └────────────────────────┘  │    │  │ identity + E2EE keys │  │
-│    matched pair: back up     │    │  └──────────────────────┘  │
-│    & restore together        │    │  ┌──────────────────────┐  │
-│  ┌────────────────────────┐  │    │  │ worker.db            │  │
-│  │ encryption.key (0600)  │  │    │  │ (transient state)    │  │
-│  └────────────────────────┘  │    │  └──────────────────────┘  │
-│                              │    │                            │
-└──────────────────────────────┘    └────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph HubHost["Hub host (~/.config/leapmux/hub/)"]
+        HubDB["hub.db (encrypted columns)"]
+        KeyFile["encryption.key (mode 0600)"]
+        HubDB <-->|"Matched pair — back up and restore together"| KeyFile
+    end
+    subgraph WorkerHost["Each Worker host (~/.config/leapmux/worker/)"]
+        StateJSON["state.json (mode 0600 — identity and E2EE private keys)"]
+        WorkerDB["worker.db (agent transcripts and terminal state)"]
+    end
 ```
 
 ### What to back up
@@ -351,8 +353,8 @@ The handshake primitives, Worker identity pinning (TOFU), and the key-change dia
 
 ## See also
 
-- [Configuration](/docs/admin/configuration/) — config precedence, the full storage-key reference, data directories, and listen addresses.
-- [Security & Threat Model](/docs/admin/security/) — the E2EE protocol, the Hub-as-relay trust boundary, Worker TOFU pinning, and the solo-mode caveat.
+- [Configuration Guide](/docs/admin/configuration/) and [Configuration Reference](/docs/admin/configuration-reference/) — config precedence, the full storage-key reference, data directories, and listen addresses.
+- [Security & Threat Model](/docs/admin/security/) and [Cryptography & Key Architecture](/docs/admin/cryptography/) — the E2EE protocol, the Hub-as-relay trust boundary, Worker TOFU pinning, and the solo-mode caveat.
 - [Recovery](/docs/admin/recover/) — the offline break-glass commands (`create-admin`, `reset-password`, `encryption-key`, `db`).
 - [Admin CLI](/docs/admin/admin-cli/) — the online `leapmux admin` reference, including token commands.
-- [Managing Workers](/docs/admin/managing-workers/) — registering and approving Workers, registration keys, and key-pin handling.
+- [Managing Workers](/docs/admin/managing-workers/) — registering Workers, registration keys, and key-pin handling.

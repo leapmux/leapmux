@@ -2,7 +2,7 @@
 title: "OAuth API"
 description: "The wire contract for LeapMux's OAuth 2.1 authorization server: endpoints, grant types, PKCE, scopes, refresh rotation, and revocation."
 type: docs
-weight: 5
+weight: 6
 ---
 
 This is the implementable specification for a program that wants access to an account on a LeapMux Hub. For the administrator's side — registering apps, verifying them, controlling what they may ask for — see [App Authorization](/docs/admin/app-authorization/).

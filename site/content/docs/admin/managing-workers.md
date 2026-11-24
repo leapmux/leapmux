@@ -1,8 +1,8 @@
 ---
 title: "Managing Workers"
-description: "How a Worker connects out to a Hub, how to register and approve one, how Worker status shows in the UI, and how TOFU key pinning detects a Worker key that changed."
+description: "How a Worker connects out to a Hub, how to register one, how Worker status shows in the UI, and how TOFU key pinning detects a Worker key that changed."
 type: docs
-weight: 5
+weight: 6
 ---
 
 A **Worker** is the long-running daemon that hosts your coding agents, terminals, and file access. It runs on whatever machine holds the code you want to work on — your laptop, a powerful desktop, a remote build box — and connects *out* to a Hub. This chapter covers how a Worker reaches a Hub, how you register one, and how the UI shows Worker status. It also covers TOFU key pinning and how you pick which Worker hosts a new tab.
@@ -34,27 +34,16 @@ The two local-IPC forms exist for co-located setups (notably the desktop app's l
 
 The Worker saves the URL with its credentials and connects to that URL from then on. Only the `--hub` flag of `daemon worker register` sets it: the configuration file and the environment cannot, and the other Worker commands refuse the flag. To move a Worker to another Hub, [register it again](#register-a-worker-again).
 
-## Registration: the "approval" model
+## How registration works
 
-Before a Worker can connect, it must be **registered** with the Hub. LeapMux has no separate "pending approval" queue where an admin clicks *Approve* after a Worker dials in. Instead, **the approval *is* the registration key**: anyone who hands a Worker a valid registration key has already approved it. Presenting a valid key in the registration handshake atomically consumes the key and creates a live, active Worker in a single step.
+Before a Worker can connect, you must register it with the Hub. LeapMux has no separate pending approval queue where an administrator confirms a Worker after it dials in. Instead, presenting a valid single-use registration key authorizes and creates the active Worker in one atomic step.
 
-**Registration is one outbound step — there is no separate approve action:**
-
-```text
-   ┌──────────────────┐   1. mint key   ┌──────────────────┐
-   │  Admin / User    │────────────────►│       Hub        │
-   │  (Register       │                 │  (reachable      │
-   │   worker dialog) │                 │   address)       │
-   └──────────────────┘                 └──────────────────┘
-          │                                    ▲
-          │ 2. hand off                        │ 3. dial OUT with key
-          │    --registration-key              │    (outbound,
-          ▼                                    │     NAT-friendly)
-   ┌──────────────────┐                        │
-   │     Worker       │────────────────────────┘
-   │  (behind NAT /   │
-   │   firewall)      │   4. Hub validates + consumes the key atomically
-   └──────────────────┘      → Worker is registered + active (then connects to come online)
+```mermaid
+flowchart LR
+    User["User or Admin (Register worker dialog)"] -->|"1. Mint single-use key"| Hub["Hub (reachable address)"]
+    User -->|"2. Copy --registration-key"| Worker["Worker (behind NAT or firewall)"]
+    Worker -->|"3. Dial out with key and static public keys"| Hub
+    Hub -->|"4. Validate and consume key atomically -> active Worker"| Worker
 ```
 
 ## Register a Worker
@@ -296,42 +285,23 @@ LeapMux end-to-end encrypts Frontend↔Worker traffic. A Hub that only relays it
 
 [Security & Threat Model](/docs/admin/security/) covers that protection's scope, the composite keypair, and the fingerprint scheme. This section explains the three pin stores and how to reset a pin in each.
 
-**TOFU pinning in the browser — first contact pins the key, a later mismatch is rejected:**
-
-```text
-First connection (trust on first use):
-
-   ┌────────────┐   sees key K1    ┌──────────────────┐
-   │  Frontend  │◄────────────────►│      Worker      │
-   │  (browser) │   via Hub relay  │  static key = K1 │
-   └────────────┘                  └──────────────────┘
-         │ pins K1
-         ▼
-   ┌───────────────────────────────────────┐
-   │ leapmux:u:<user-id>:key-pins = { K1 } │
-   └───────────────────────────────────────┘
-
-Later connection (key changed):
-
-   ┌────────────┐   sees key K2    ┌──────────────────────────┐
-   │  Frontend  │   ✗  REJECTED    │  Hub hands over key = K2 │
-   │  (browser) │◄─ ─ ─ ─ ─ ─ ─ ─ ─│  (not the Worker's K1)   │
-   └────────────┘                  └──────────────────────────┘
-         │ pinned K1 ≠ K2
-         ▼
-   ┌─────────────────────────────────────┐
-   │ "Worker public key changed" dialog  │
-   │ Expected: <K1 fp>   Actual: <K2 fp> │
-   └─────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph First["First connection (trust on first use)"]
+        F1["Frontend (browser)"] <-->|"Sees key K1 via Hub relay"| W1["Worker (static key K1)"]
+        F1 -->|"Pins K1"| S1["Account pin store: K1"]
+    end
+    subgraph Later["Later connection (key changed)"]
+        F2["Frontend (browser)"] -.->|"Hub presents key K2 (K1 != K2)"| H2["Hub relay"]
+        F2 -->|"Rejected — opens dialog"| D2["Worker public key changed (Expected K1 vs Actual K2)"]
+    end
 ```
 
-There are three independent pin stores, depending on *who* is connecting. The desktop app's tunnels keep none of their own: they admit the browser's pin (see [Tunnel key trust](#tunnel-key-trust)). The
-browser store is per account: two people who sign in to LeapMux from the same
-browser pin workers independently, and neither sees the other's pins.
+There are three independent pin stores, depending on *who* is connecting. The desktop app's tunnels keep none of their own: they admit the browser's pin (see [Tunnel key trust](#tunnel-key-trust)). The browser store is per account, so two users in the same browser pin Workers independently; see [What stays on the browser](/docs/admin/encryption-and-data/#what-stays-on-the-browser) for browser storage details.
 
 | Client | Pin store | How to reset a pin |
 | --- | --- | --- |
-| **Your browser** (Frontend) | IndexedDB (strict database `leapmux-trust`, key `leapmux:u:<your-user-id>:key-pins`, kept about one year and refreshed on use) | Accept the in-app *Worker public key changed* dialog, or remove the pin under **Preferences → Advanced → Trusted worker keys**. |
+| **Your browser** (Frontend) | Per-account browser pin store in IndexedDB (`leapmux-trust`, refreshed on use for one year) | Accept the in-app *Worker public key changed* dialog, or remove the pin under **Preferences → Advanced → Trusted worker keys**. |
 | **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux daemon worker cross-worker-pins remove <worker-id>` |
 | **The `leapmux` CLI** | `<config-dir>/<scheme>_<hub-host>/pins.json` | `leapmux worker pins remove <worker>` |
 
@@ -397,6 +367,6 @@ Leave this at the default unless you have a specific reason to change it; both e
 
 - [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data directories, the bundled Worker.
 - [Starting and Stopping](/docs/admin/starting-and-stopping/) — keep a Worker running in the background at login or at boot.
-- [Configuration](/docs/admin/configuration/) — Worker flags, env vars, and config-file precedence.
-- [Security & Threat Model](/docs/admin/security/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
+- [Configuration Guide](/docs/admin/configuration/) and [Configuration Reference](/docs/admin/configuration-reference/) — Worker flags, env vars, and config-file precedence.
+- [Security & Threat Model](/docs/admin/security/) and [Cryptography & Key Architecture](/docs/admin/cryptography/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
 - [Control CLI](/docs/using/control-cli/) — `leapmux worker` and `leapmux worker pins` for scripting and pin management, plus the full [`leapmux admin worker`](/docs/admin/admin-cli/) and registration-key reference.

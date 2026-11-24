@@ -1,188 +1,96 @@
 ---
 title: "Quick Start"
-description: "Go from zero to a working coding agent in minutes: launch LeapMux in solo mode, open an agent, send your first message, and open a terminal beside it."
+description: "Go from zero to your first parallel coding-agent session in under five minutes: launch LeapMux in solo mode, open two agents in isolated git worktrees, and inspect their changes alongside a terminal."
 type: docs
-weight: 4
+weight: 3
 ---
 
-This chapter gets you from zero to a working coding agent in a few minutes. Pick one of two launch paths, then follow the walkthrough to open your first agent, send a message, and open a terminal beside it.
-
-{{< callout type="info" >}}
-Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process. The desktop app uses credential-free local IPC. A browser over TCP sets the first solo password before it opens the app. Your data stays on your machine. For multi-user or remote setups, see [Running LeapMux](/docs/admin/running-leapmux/) and [Managing Workers](/docs/admin/managing-workers/).
-{{< /callout >}}
+Run your first parallel coding-agent session in under five minutes. You will launch LeapMux in **solo mode**, open two agents in isolated git worktrees on the same repository, and verify their output in an integrated terminal.
 
 ## Before you begin
 
-LeapMux launches agents with the provider's command-line tool on the Worker. For this quick start, install a supported agent CLI and make it available to the Worker's shell. For example, install Claude Code and make `claude` available on PATH. A shell profile can also supply the command through an alias or function. See the list of provider commands in [Coding Agents](/docs/using/coding-agents/).
+Install at least one supported coding-agent command-line interface (CLI) on your machine (for example `claude` or `codex`) and confirm that your shell can resolve it from `PATH`, an alias, or a shell function. See [Coding Agents](/docs/using/coding-agents/) for the full list of supported providers.
 
-## Path A — Desktop app
+## Launch LeapMux in solo mode
 
-This is the simplest path on macOS, Linux, or Windows.
+Solo mode runs a Hub and a Worker together in one local process. Pick the launch method that matches your install:
 
-1. Install **LeapMux Desktop** for your platform (see [Installation](/docs/getting-started/installation/) for download details).
-2. Launch the app. On first launch it shows a launcher titled **"LeapMux"** with the subtitle **"Choose how you'd like to connect"** and two cards:
-   - **Solo** — run everything on this machine, as described above.
-   - **Distributed** — connect to a remote Hub; you sign in through the system browser (covered in [Running LeapMux](/docs/admin/running-leapmux/)).
-3. Select **Solo** and click **Connect**.
+{{< tabs >}}
+{{< tab name="Desktop App" selected=true >}}
+1. Install and open **LeapMux Desktop** (see [Installation](/docs/getting-started/installation/#desktop-app) for download steps and macOS Full Disk Access setup).
+2. In the **LeapMux** launcher, choose **Solo** and click **Connect**.
 
-{{< callout type="info" >}}
-**macOS:** Solo mode needs **Full Disk Access** so the Worker can traverse your home directory. If it isn't granted, the launcher shows a **"Full Disk Access Required"** card with an **"Open System Settings"** button. Grant access there; the app detects it and restarts automatically.
-{{< /callout >}}
+The desktop app talks to its local service over inter-process communication (IPC) with no login required, and remembers your choice on the next launch. To switch to a remote Hub later, open the app menu and choose **Switch mode...**.
+{{< /tab >}}
 
-The app remembers your choice and reconnects to Solo on the next launch. To return to the launcher later, open the user menu and choose **"Switch mode..."**.
-
-## Path B — CLI solo
-
-If you installed the `leapmux` binary (see [Installation](/docs/getting-started/installation/)), start solo mode from a terminal:
+{{< tab name="CLI / Browser" >}}
+If you installed the standalone `leapmux` binary, start solo mode as a background service:
 
 ```bash
 leapmux daemon solo start
 ```
 
-LeapMux runs in the background as a service, so it keeps running after you close the terminal. The first `start` asks whether LeapMux should start when you log in or when the computer starts. Later, `leapmux daemon solo status` reports its state, and `leapmux daemon solo stop` stops it. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
+The first `start` asks whether LeapMux should start automatically at login or boot. Solo mode listens on loopback at **`http://localhost:4327`**. Open that URL in your browser and set the password for the single `solo` account; subsequent browser visits require that password.
 
-Solo mode runs a Hub and a Worker in one process, listening on loopback only at **`127.0.0.1:4327`**. When it is ready, `start` prints the URL to open in your browser:
-
-```
-http://localhost:4327
-```
-
-The browser first asks you to set the password for the single `solo` account. The Hub stores that password and an elevated session together. Until this succeeds, the TCP caller can only complete this setup. The desktop app uses a local socket and needs no credential.
-
-A few useful flags (full reference in [Configuration](/docs/admin/configuration/) and [CLI Reference](/docs/reference/cli-reference/)):
+Useful flags (full reference in [CLI Reference](/docs/reference/cli-reference/)):
 
 | Flag | Purpose | Default |
 | --- | --- | --- |
-| `--listen` | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) | `127.0.0.1:4327` plus the platform's local IPC socket |
+| `--listen` | Listen address, repeatable: TCP or local IPC (`unix:`, `npipe:`) | `127.0.0.1:4327` plus local IPC |
 | `--data-dir` | Data directory | `.` (resolves to `~/.config/leapmux/solo`) |
 | `--log-level` | `debug`, `info`, `warn`, `error` | `info` |
 | `--config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
 
 {{< callout type="warning" >}}
-If you change `--listen` to a non-loopback address before setup, the first TCP caller can claim the `solo` account by setting its password. Other protected RPCs stay closed. Set the password from a trusted connection and restrict the address with a firewall or tunnel. See [Security & Threat Model](/docs/admin/security/).
+If you override `--listen` to a non-loopback address before setup, the first TCP caller can claim the `solo` account by setting its password. Set the password from a trusted connection and restrict network access with a firewall or tunnel. See [Security & Threat Model](/docs/admin/security/).
 {{< /callout >}}
+{{< /tab >}}
+{{< /tabs >}}
+
+## Your first parallel agent session
+
+{{% steps %}}
+
+### 1. Orient to the workspace
+
+When LeapMux opens, the window has four areas:
+
+- **Titlebar** — app menu on the left; **Open in …** (solo desktop mode only) and sidebar toggles on the right.
+- **Left sidebar** — your workspaces under **In progress** and **Archived**, plus the **Workers** section. Expanding a workspace groups its open tabs by repository and branch.
+- **Center tiling area** — your agent, terminal, and file tabs arranged in splits, grids, or floating windows.
+- **Right sidebar** — the git-aware **Files** browser and inline diff viewer for the active tab.
+
+{{< screenshot src="hero-workspace" alt="LeapMux workspace showing the left sidebar, tiled coding agents and terminal in the center, and the file browser on the right" caption="The LeapMux workspace: sidebar on the left, tiled agents and terminal in the center, and git-aware file browser on the right." width="1440" height="860" >}}
+
+### 2. Open two agents in isolated git worktrees
+
+1. Hover over **In progress** in the left sidebar and click **+** to open the **New workspace** dialog.
+2. Confirm the **Worker** (your local Worker is preselected), pick an **Agent Provider**, and choose a git repository as the **Directory**.
+3. Under **Git options**, select **Create new worktree** and give it a branch name (for example `feat/refactor-parser`).
+4. Click **Create**. LeapMux creates the workspace, creates the linked git worktree, and starts the first agent inside it.
+5. Open a second agent on the same repository: click **+** on the tab bar, choose **New agent...**, pick the same repository directory, select **Create new worktree** with a second branch name (for example `feat/add-tests`), and click **Create**.
+6. Drag the second tab to the right edge of the center pane (or use the tile split menu) so both agents sit side by side.
+
+Because each agent runs in its own linked worktree and branch, their edits never collide. See [Worktrees & Branches](/docs/using/worktrees-and-branches/) for all git modes.
+
+### 3. Send prompts, tune settings, and run a terminal check
+
+1. Type a focused prompt into each agent's composer and press **Send** — for example, ask the first agent to refactor a module and the second agent to add unit tests for another area.
+2. Adjust settings mid-session from the status-bar chips below the composer (branch, **Model**, **Effort**, **Permission Mode**) or the composer's **[+]** menu. New agents start on the provider's defaults.
+3. Answer permission prompts or questions inline in the control banner above the composer. Click **Interrupt** if you need to stop a turn early.
+4. Watch modified files appear in the right-hand **Files** sidebar and click any file to view its inline diff.
+5. Open a shell beside your agents: click **+** on the tab bar, choose **New terminal...**, select the agent's worktree directory, and click **Create**. Split it below your agents to run tests or inspect `git status`.
+
+{{% /steps %}}
 
 {{< callout >}}
-Solo mode writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
-{{< /callout >}}
-
-## The walkthrough
-
-Once the app or browser tab is open, you'll see the LeapMux UI. The rest of this chapter walks through your first agent.
-
-### 1. Orient to the UI
-
-The window has a **titlebar** across the top, a **sidebar** down each side, and the **tiling area** in the middle:
-
-- **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in …"** (open the working directory in an external editor or your file manager) and the **left/right sidebar toggles** are on the right.
-- **Left sidebar** — your **workspaces**, grouped into **In progress**, any custom sections, and **Archived**, plus a **Workers** section. Each workspace expands into a tree of its open tabs, grouped by **Repo** then **Branch**.
-- **Tiling area** — the center, where tabs (agents, terminals, file viewers) are laid out under a **tab bar**; tiles can be split, gridded, and resized (see [Tabs & Layout](/docs/using/tabs-and-layout/)). For an agent, the **input area** (message composer) sits at the bottom.
-- **Right sidebar** — the **Files** browser for the active tab (see [File Browser](/docs/using/file-browser/)).
-
-**The main areas of the window:**
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│ App menu                   Titlebar       Open in … · sidebars │
-├──────────────┬───────────────────────────────┬──────────────────┤
-│              │            Tab bar            │                  │
-│              ├───────────────────────────────┤                  │
-│ Left sidebar │                               │ Right sidebar    │
-│ (workspaces) │          Tiling area          │ (Files)          │
-│              │                               │                  │
-│              ├───────────────────────────────┤                  │
-│              │           Input area          │                  │
-└──────────────┴───────────────────────────────┴──────────────────┘
-```
-
-{{< callout type="info" >}}
-The **"Open in …"** button is only available in the desktop app running in solo mode. It launches an editor on your local machine, which only applies when the files are local. Everything else is identical in the browser: the web app renders the same titlebar, sidebars, and tiling area inside the browser tab.
-{{< /callout >}}
-
-### 2. Create or open a workspace
-
-A **workspace** is the top-level container that holds your tiling layout. To create one, click the **"+"** button in the **In progress** section header. This opens the **"New workspace"** dialog:
-
-- **Title** — defaults to a random three-word name; click **"Generate random name"** to regenerate, or type your own.
-- **Worker** — which machine hosts the agent. In solo mode there is one local Worker, already selected.
-- **Agent Provider** — choose a provider from the selected Worker’s list. If the button reads **"No agents available"**, make a provider command available to that Worker and click **"Refresh available providers"**.
-- **Directory** — the working directory on the Worker.
-- **Resume an existing session** *(optional)* — pick an earlier session for that directory, or leave it on **"Start a new session"**.
-- **Git options** — appears once a Worker is chosen (see step 5).
-
-Click **"Create"**. LeapMux creates the workspace, spawns its first agent, and navigates to it. To work in an existing workspace instead, click its row in the sidebar. Full workspace management — rename, move, archive, delete — is covered in [Workspaces](/docs/using/workspaces/).
-
-### 3. Open a New Agent
-
-If you already have a workspace open and want another agent in it, open the tab bar's add menu and choose **"New agent..."** (or double-click an empty area of the tab bar). This opens the **"New agent"** dialog:
-
-- **Worker** — the host machine (the local Worker in solo mode).
-- **Agent Provider** — choose a provider from the selected Worker’s list, sorted alphabetically. The Worker checks for provider commands through its configured shell, including aliases and functions from its profile. If the button reads **"No agents available"**, make a provider command available to that Worker and click **"Refresh available providers"**.
-- **Directory** — the working directory (use the directory tree to pick it, or type a path in the box above the tree).
-- **Resume an existing session** *(optional)* — a menu of earlier sessions for the chosen directory and provider, including ones you started by running that CLI in a terminal. Pick one to continue it (see [Resuming a session](/docs/using/coding-agents/#resuming-an-existing-session)).
-- **Title** — the tab name. Defaults to a random `Agent <Name>`; click **"Generate random name"** to pick another, or type your own. It cannot be empty.
-- **Git options** — your branch/worktree choice (step 5).
-
-Click **"Create"**.
-
-{{< callout type="info" >}}
-The New agent dialog does **not** include model, effort, or permission-mode fields. A new agent starts with the provider's default model, effort, and permission mode. You change all of these mid-session from the composer's status-bar chips or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/) for the full settings reference.
-{{< /callout >}}
-
-### 4. (Optional) Choose model and effort after the agent starts
-
-Once the agent is running, the status bar under the composer shows one chip per axis: branch, model, effort, and mode. Click a chip to pick a different **Model**, an **Effort** tier, or a **Permission Mode**. The composer's **[+]** menu holds every axis, including the per-provider options that have no chip. It stays available when you hide the status bar. Most changes apply live; a change that the provider can't apply to the running process (typically switching effort back to **Auto**) restarts the agent. Details and the per-provider option matrix are in [Coding Agents](/docs/using/coding-agents/).
-
-### 5. (Optional) Work in a branch or worktree
-
-The **Git options** panel lets you decide where the agent runs relative to git. For your first session, two modes cover the common cases:
-
-- **Use current state** — run against the working directory as-is. This is the default.
-- **Create new worktree** — create a fresh linked git worktree on its own branch so this agent works in isolation.
-
-Worktrees keep each agent's changes on their own branch and directory, so several agents can work on the same repo at once without affecting each other's changes. The full set of modes, the worktree path layout, and branch operations — switching, pushing (**"Push"** / **"Commit and Push"**), and deletion — are covered in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
-
-### 6. Send your first message
-
-The agent's chat panel has a markdown editor at the bottom. Type a message — for example:
-
-```
-Summarize what this repository does and list the main entry points.
-```
-
-Send it with the **Send** button (or the editor's send key). While the agent is starting up, messages are queued and delivered once it's ready.
-
-### 7. Watch the turn run
-
-As the agent works, the conversation streams in:
-
-- **Assistant text** and (where supported) **thinking** appear as they arrive.
-- **Tool calls** render as rows — for example file reads, edits, and shell commands. Edit/Write results can show a diff with a split/unified toggle and a copy button.
-- When the agent needs your decision, a **control request** banner appears above the editor — a permission prompt (for example **"Permission Required: <toolName>"** with **Allow** / **Reject** buttons) or a question. Answer it inline to let the turn continue.
-- At the end of a turn, a divider shows the result (for example "Turn ended" with timing).
-
-To stop a running turn, click **"Interrupt"** (it appears while the agent is working and there's no pending control request).
-
-### 8. Open a terminal alongside it
-
-To get a shell next to your agent, open the tab bar's add menu and choose **"New terminal..."**. The **"New terminal"** dialog lets you pick the **Worker**, a **Shell** (the Worker's default shell is marked **(default)**), and the working **Directory**, with the same **Git options** panel. Click **"Create"** to open it.
-
-You can split the tile so the agent and terminal sit side by side, or float the terminal as a separate window. Tiling, splitting, and floating are covered in [Tabs & Layout](/docs/using/tabs-and-layout/); terminal behavior and persistence in [Terminals](/docs/using/terminals/).
-
-{{< callout >}}
-Your workspace, tabs, and agent sessions persist across restarts — close the browser tab or quit the desktop app, relaunch, and they come back. Terminals come back too, showing their last screen; if the Worker was restarted, press **Enter** in a terminal to start its shell again.
+Your workspace, layout, and agent sessions persist across restarts. Close the browser tab or quit the desktop app, relaunch, and everything returns. Terminals restore their last screen; after a Worker restart, press **Enter** in a terminal to start its shell again.
 {{< /callout >}}
 
 ## Where to go next
 
-You now have a working agent and a terminal. From here:
-
-- [Concepts & Architecture](/docs/getting-started/concepts/) — how the Hub, Worker, and Frontend fit together, and what solo vs. distributed means.
-- [Workspaces](/docs/using/workspaces/) — create, rename, move, archive, and delete workspaces.
-- [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, splits, grids, floating windows, and drag-and-drop.
-- [Coding Agents](/docs/using/coding-agents/) — providers, models, effort, control prompts, tool rendering, and resuming sessions.
-- [Worktrees & Branches](/docs/using/worktrees-and-branches/) — branch and worktree workflows in depth.
-- [Terminals](/docs/using/terminals/) — shell selection, persistence, and remote terminals.
-- [File Browser](/docs/using/file-browser/) — the file tree, git status, and diffs.
-- [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — speed up everything above.
-- [Running LeapMux](/docs/admin/running-leapmux/) — move beyond solo mode to a shared Hub and remote Workers.
+- [Ways to Run LeapMux](/docs/getting-started/ways-to-run/) — decide when to move from Solo to remote Workers or a distributed Hub.
+- [Concepts & Architecture](/docs/getting-started/concepts/) — understand the Hub, Worker, Frontend, and end-to-end encryption model.
+- [Run Parallel Coding Agents](/docs/recipes/parallel-agents/) — scale up to three agents with the `/leapmux-delegate` skill.
+- [Worktrees & Branches](/docs/using/worktrees-and-branches/) — worktree lifecycle, pushing, and dirty-worktree protection on close.
+- [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — navigate splits, tabs, and workspaces without leaving the keyboard.

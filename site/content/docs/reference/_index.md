@@ -1,18 +1,19 @@
 ---
 title: "Reference"
-description: "Reference material for LeapMux: the command-line cheat-sheet, troubleshooting fixes, an FAQ, a glossary of terms, the OAuth API for app authors, and legal notices."
+description: "Reference material for LeapMux: the command-line cheat-sheet, per-group control command pages, troubleshooting fixes, an FAQ, a glossary of terms, the OAuth API for app authors, and legal notices."
 type: docs
-weight: 4
+weight: 5
 sidebar:
   open: true
 ---
 
-Reference material: the full command-line cheat-sheet, fixes for common problems,
-quick answers, term definitions, the OAuth wire contract for app authors, and
-legal notices.
+Reference material: the full command-line cheat-sheet, per-group control command
+pages, fixes for common problems, quick answers, term definitions, the OAuth wire
+contract for app authors, and legal notices.
 
 {{< cards >}}
   {{< card link="/docs/reference/cli-reference/" title="CLI Reference" icon="terminal" subtitle="A consolidated command-line cheat-sheet." >}}
+  {{< card link="/docs/reference/commands/" title="Control Command Reference" icon="terminal" subtitle="Per-group command pages with arguments, flags, and examples." >}}
   {{< card link="/docs/reference/troubleshooting/" title="Troubleshooting" icon="puzzle" subtitle="Symptoms, causes, and fixes for common problems." >}}
   {{< card link="/docs/reference/faq/" title="FAQ" icon="question-mark-circle" subtitle="Quick answers to common questions." >}}
   {{< card link="/docs/reference/glossary/" title="Glossary" icon="book-open" subtitle="Definitions of LeapMux terms." >}}

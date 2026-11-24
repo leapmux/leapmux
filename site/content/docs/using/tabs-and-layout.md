@@ -11,6 +11,8 @@ The layout you build is part of the workspace, not just your local view: the til
 
 For the concept-level model of workspaces, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For the content that lives *inside* tabs, see [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/).
 
+{{< screenshot src="tabs-tiling-layout" alt="LeapMux tiled workspace showing an agent chat pane, inline file diff viewer, and integrated terminal side by side" caption="Tiled split panes keep an agent chat, a live diff viewer, and a shell terminal visible together." width="1024" height="860" >}}
+
 ## Tabs
 
 A tab holds one piece of content. There are three kinds:
@@ -54,7 +56,7 @@ When the tab bar is too narrow, it collapses. A minimal-width bar shows a single
 
 A small dot on a tab (a **notification indicator**) means the tab has unseen activity; activating the tab clears it.
 
-A tab can also show a short **status** beside its title, such as "Running the tests", with a ring for its progress and a color for its tone. A process in the tab sets it with [`leapmux tab status set`](/docs/using/control-cli/#telling-the-user). It goes away when the process clears it or the tab closes. Hover over it to read the whole text.
+A tab can also show a short **status** beside its title, such as "Running the tests", with a ring for its progress and a color for its tone. A process in the tab sets it with [`leapmux tab status set`](/docs/using/cli-automation/#telling-the-user). It goes away when the process clears it or the tab closes. Hover over it to read the whole text.
 
 ### Renaming a tab
 
@@ -145,20 +147,13 @@ The shortcuts act on the **focused** tile. When you split, the tile becomes a tw
 
 A **vertical** split inserts a vertical divider, leaving two side-by-side panes:
 
-**Split vertically (side-by-side panes):**
-
-```text
-┌────────────────────────┬────────────────────────┐
-│ Agent ×                │ Terminal ×             │
-├────────────────────────┼────────────────────────┤
-│                        │                        │
-│                        │                        │
-│         Agent          │        Terminal        │
-│                        │                        │
-│                        │                        │
-└────────────────────────┴────────────────────────┘
-                         ▲
-               vertical divider (drag to resize)
+```mermaid
+flowchart LR
+  subgraph split["Vertical split (50 / 50)"]
+    left["Left pane: Agent tab (existing tabs)"]
+    right["Right pane: Terminal tab (starts empty)"]
+    left <-->|"Drag vertical divider to resize"| right
+  end
 ```
 
 A **horizontal** split inserts a horizontal divider instead, stacking the two panes top-and-bottom.
@@ -172,19 +167,21 @@ Click **Make grid** to open the grid-size popover. You pick a size two ways:
 
 The grid can be up to **20 × 20**. When you make a grid, the tile's existing tabs move into the **top-left cell** (cell 0,0); every other cell starts empty.
 
-**A 2×2 grid (existing tabs land in cell 0,0):**
-
-```text
-┌────────────────────────┬────────────────────────┐
-│ Agent ×                │ anchor cell (X closes  │
-│                        │ the whole grid)        │
-│      cell 0,0          │      cell 0,1          │
-│   (existing tabs)      │      (empty)           │
-├────────────────────────┼────────────────────────┤
-│                        │                        │
-│      cell 1,0          │      cell 1,1          │
-│      (empty)           │      (empty)           │
-└────────────────────────┴────────────────────────┘
+```mermaid
+flowchart TD
+  subgraph grid["2×2 grid"]
+    subgraph row0["Top row"]
+      direction LR
+      c00["Cell 0,0 (existing tabs)"]
+      c01["Cell 0,1 (anchor cell — X closes whole grid)"]
+    end
+    subgraph row1["Bottom row"]
+      direction LR
+      c10["Cell 1,0 (empty)"]
+      c11["Cell 1,1 (empty)"]
+    end
+    row0 ~~~ row1
+  end
 ```
 
 {{< callout type="info" >}}
@@ -217,25 +214,17 @@ A workspace always keeps at least one tile. The last remaining tile in the main 
 
 A floating window is a tab (or a full layout) lifted out of the tiling grid and rendered as a draggable, resizable overlay on top of the workspace. It is useful for keeping a terminal or an agent visible while you rearrange everything underneath it.
 
-**A floating window overlapping the tiled canvas:**
-
-```text
-┌────────────────────────────────────────────────────────────┐
-│ Agent ×                     │ Terminal ×                   │
-├─────────────────────────────┼──────────────────────────────┤
-│                             │                              │
-│            ┌────────────────────────┐                      │
-│            │ Terminal ×  (title bar)│                      │
-│            ├────────────────────────┤                      │
-│            │                        │                      │
-│            │    floating            │                      │
-│   tiled    │     window             │      tiled           │
-│   canvas   │                        │      canvas          │
-│            └────────────────────────┘                      │
-│                             │                              │
-│                             │                              │
-│                             │                              │
-└────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+  subgraph floatLayer["Floating window overlay"]
+    win["Floating Terminal (title bar + own layout)"]
+  end
+  subgraph canvas["Tiled canvas underneath"]
+    direction LR
+    t1["Left tile: Agent"]
+    t2["Right tile: Terminal"]
+  end
+  floatLayer -.->|"Floats above"| canvas
 ```
 
 ### Popping out and docking back

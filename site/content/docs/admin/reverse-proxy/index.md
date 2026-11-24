@@ -54,22 +54,22 @@ The repository's `task test-reverse-proxies` harness verifies registration, conn
 
 Replace the host name, the certificate paths, and the Hub's address with your own. The title of each file states where the file goes.
 
-### nginx
-
+{{< tabs >}}
+{{< tab name="nginx" >}}
 The configuration requires nginx 1.25.1 or later, for the `http2` directive.
 
 `client_max_body_size 0` lets the Hub enforce its own limit on unary requests. nginx's default limit of 1 MiB would reject bulk requests that the Hub accepts. The Worker's stream uses a WebSocket upgrade.
 
 {{< config-file file="nginx.conf" lang="nginx" >}}
+{{< /tab >}}
 
-### Caddy
-
+{{< tab name="Caddy" >}}
 Caddy obtains and renews the certificate itself. One `reverse_proxy` forwards API calls and WebSocket upgrades to the Hub and sets the forwarding headers.
 
 {{< config-file file="Caddyfile" lang="caddyfile" >}}
+{{< /tab >}}
 
-### Traefik
-
+{{< tab name="Traefik" >}}
 The static configuration defines the entry points. Traefik's default request-read timeout permits the WebSocket stream; no timeout override is needed.
 
 {{< config-file file="traefik.yml" lang="yaml" >}}
@@ -79,15 +79,15 @@ The dynamic configuration uses one router and one HTTP upstream for the web app,
 {{< config-file file="traefik-dynamic.yml" lang="yaml" >}}
 
 To obtain the certificate from Let's Encrypt, define a certificate resolver in the static configuration, set it as `tls.certResolver` on the router, and remove the `tls.certificates` section. The Traefik documentation describes certificate resolvers.
+{{< /tab >}}
 
-### HAProxy
-
+{{< tab name="HAProxy" >}}
 `alpn h2,http/1.1` on the `bind` line offers HTTP/2 to browsers. The HTTP/1.1 upstream carries API calls and WebSocket upgrades. The certificate file holds the certificate chain followed by the private key.
 
 {{< config-file file="haproxy.cfg" lang="haproxy" >}}
+{{< /tab >}}
 
-### Apache httpd
-
+{{< tab name="Apache" >}}
 The configuration requires Apache httpd 2.4.47 or later, for `upgrade=websocket`. One HTTP upstream carries all traffic, including the Worker's WebSocket. Enable the modules and the site on Debian or Ubuntu:
 
 ```bash
@@ -97,6 +97,8 @@ sudo systemctl reload apache2
 ```
 
 {{< config-file file="apache.conf" lang="apache" >}}
+{{< /tab >}}
+{{< /tabs >}}
 
 ## Check the setup
 

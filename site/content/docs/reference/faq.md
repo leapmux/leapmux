@@ -2,7 +2,7 @@
 title: "FAQ"
 description: "Short answers to the questions asked most often about LeapMux, each linking to the chapter that covers the topic in full."
 type: docs
-weight: 3
+weight: 4
 ---
 
 Short answers to the questions people ask most often about LeapMux. Each one links to the chapter where the topic is covered in full.
@@ -29,7 +29,7 @@ For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/
 
 The Worker stores agent transcripts, terminal output, and file/git state in its local SQLite database. The Hub stores accounts and workspace metadata (titles, tab positions, tiling geometry). It also stores each tab's type and hosting Worker, plus a file tab's display mode, view mode, and diff base. The public keys each Worker registered with are stored on the Hub too. They are public material, and the Hub pins them so a later connection cannot present other keys.
 
-The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. That cache is not keyed to the account, and signing out does not clear it.
+The browser also caches rendered message text and code locally in IndexedDB; see [What stays on the browser](/docs/admin/encryption-and-data/#what-stays-on-the-browser) for retention and sign-out behavior.
 
 Default locations:
 
@@ -45,7 +45,7 @@ See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/ad
 
 ## Can the Hub read my code, chats, or terminal output?
 
-A Hub that only observes cannot read that content: Frontend-to-Worker traffic is end-to-end encrypted. The Hub is trusted for identity; a browser also trusts it for code. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser — the desktop app runs its bundled Frontend, so no Hub can serve it code.
+A Hub that only observes cannot read that content: Frontend-to-Worker traffic is end-to-end encrypted. The Hub is trusted for identity; a browser also trusts it for code. A compromised or malicious Hub can open its own channel as you, or serve modified Frontend code to a browser — the desktop app runs its bundled Frontend, so no Hub can serve it code.
 
 The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay.
 

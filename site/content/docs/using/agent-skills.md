@@ -2,7 +2,7 @@
 title: "Agent Skills"
 description: "Install and auto-sync curated LeapMux Agent Skills (SKILL.md) with companion references for parallel worktree delegation, cross-provider reviews, multi-agent councils, clean task handoffs, and live troubleshooting."
 type: docs
-weight: 9
+weight: 10
 ---
 
 LeapMux ships six curated **Agent Skills** (`SKILL.md`), each with Codex `agents/openai.yaml` metadata and optional progressive-disclosure `references/*.md` templates, teaching coding agents — Claude Code, Codex, OpenCode, Gemini CLI, Antigravity, Cursor, and others — how to orchestrate multi-agent workflows and troubleshoot LeapMux natively.
@@ -24,23 +24,9 @@ While `leapmux guide` documents command mechanics and flags, Agent Skills provid
 
 You can install LeapMux skills in three ways — all three manage the same `SKILL.md`, `agents/openai.yaml`, and `references/*.md` files:
 
-### 1. From Preferences (per Worker, with startup auto-sync)
+{{< tabs >}}
 
-Open **Preferences → Chat & Composer → Agent skills**:
-
-1. Pick a connected Worker (auto-selected when one Worker is online).
-2. Choose one or more install targets:
-   - `~/.agents/skills` (universal default — discovered automatically by Codex, OpenCode, Gemini CLI, Antigravity, and Cursor)
-   - `~/.claude/skills` (Claude Code)
-   - `~/.codex/skills` (legacy Codex path)
-   - `~/.cursor/skills` (Cursor-specific path)
-   - `~/.gemini/skills` (Gemini CLI-specific path)
-3. Toggle the skills you want installed on that Worker.
-4. Optionally enable **Refresh enabled skills automatically on Worker startup** so upgrading LeapMux refreshes unmodified skills automatically on the next Worker start.
-
-All reads and writes travel over the end-to-end-encrypted Worker channel. Locally edited, unmanaged, or symlinked skill directories are never overwritten automatically.
-
-### 2. From the `leapmux` CLI (offline, version-matched, or remote Worker)
+{{< tab name="LeapMux CLI" selected=true >}}
 
 The `leapmux` binary embeds all six skills and their companion references offline, so installed playbooks always match your CLI version with no Node.js runtime or network access required:
 
@@ -74,7 +60,27 @@ leapmux skill status
 leapmux skill uninstall leapmux-council
 ```
 
-### 3. With `npx skills` (cross-agent Skills CLI)
+{{< /tab >}}
+
+{{< tab name="Preferences (Auto-Sync)" >}}
+
+Open **Preferences → Chat & Composer → Agent skills**:
+
+1. Pick a connected Worker (auto-selected when one Worker is online).
+2. Choose one or more install targets:
+   - `~/.agents/skills` (universal default — discovered automatically by Codex, OpenCode, Gemini CLI, Antigravity, and Cursor)
+   - `~/.claude/skills` (Claude Code)
+   - `~/.codex/skills` (legacy Codex path)
+   - `~/.cursor/skills` (Cursor-specific path)
+   - `~/.gemini/skills` (Gemini CLI-specific path)
+3. Toggle the skills you want installed on that Worker.
+4. Optionally enable **Refresh enabled skills automatically on Worker startup** so upgrading LeapMux refreshes unmodified skills automatically on the next Worker start.
+
+All reads and writes travel over the end-to-end-encrypted Worker channel. Locally edited, unmanaged, or symlinked skill directories are never overwritten automatically.
+
+{{< /tab >}}
+
+{{< tab name="npx skills" >}}
 
 The repository root exposes the standard `skills/<name>/SKILL.md` layout, so you can also install directly from GitHub (`main` branch):
 
@@ -82,7 +88,13 @@ The repository root exposes the standard `skills/<name>/SKILL.md` layout, so you
 npx skills add leapmux/leapmux
 ```
 
-> **Note:** `npx skills add leapmux/leapmux` installs from the repository's `main` branch. Use `leapmux skill install --all` or Preferences auto-sync when you want skills guaranteed to match your installed LeapMux binary version.
+{{< callout type="info" >}}
+`npx skills add leapmux/leapmux` installs from the repository's `main` branch. Use `leapmux skill install --all` or Preferences auto-sync when you want skills guaranteed to match your installed LeapMux binary version.
+{{< /callout >}}
+
+{{< /tab >}}
+
+{{< /tabs >}}
 
 ## Safe upgrades, symlink protection, and local edit preservation
 

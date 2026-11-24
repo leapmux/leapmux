@@ -1,69 +1,54 @@
 ---
-title: "Configuration"
-description: "The complete configuration reference for the LeapMux Hub and Worker: how settings resolve, every config key and default, storage backends, and encryption mode."
+title: "Configuration Guide"
+description: "How LeapMux Hub and Worker settings resolve, common deployment profiles, listen addresses, storage backends overview, and operational defaults."
 type: docs
 weight: 4
 ---
 
-This chapter is the complete configuration reference for the LeapMux **Hub** and **Worker** services. It covers how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
+This guide explains how the LeapMux **Hub** and **Worker** daemons load configuration, where files live, how to structure common deployments, and how listen addresses and operational defaults behave.
 
-For *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/admin/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/admin/encryption-and-data/).
+For the complete key-by-key reference of every YAML key, environment variable, CLI flag, storage backend option, and Prometheus metric, see [Configuration Reference](/docs/admin/configuration-reference/). For how to launch each run mode (`solo`, `hub`, `worker`, `dev`), see [Running LeapMux](/docs/admin/running-leapmux/). For encryption keys and database backups, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 {{< callout type="info" >}}
-Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/admin/running-leapmux/), [Control CLI](/docs/using/control-cli/), and [Recovery](/docs/admin/recover/).
+Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a smaller flag set; differences are noted where they apply. The desktop app, the `leapmux` CLI, and `leapmux recover` are configured separately — see [Running LeapMux](/docs/admin/running-leapmux/), [Control CLI](/docs/using/control-cli/), and [Recovery](/docs/admin/recover/).
 {{< /callout >}}
 
 ## Configuration precedence
 
-Both the Hub and the Worker load configuration through the same pipeline. Layers are applied in order, and **later layers win**:
+Both the Hub and the Worker load configuration through the same pipeline. LeapMux applies four layers in order, and **later layers win**:
 
 1. **Built-in defaults** — compiled into the binary.
-2. **YAML config file** — loaded only if the file exists. A missing config file is silently skipped, not an error.
+2. **YAML config file** — loaded only when the file exists. A missing file is skipped without error.
 3. **Environment variables** — prefixed `LEAPMUX_HUB_` (Hub, solo, dev) or `LEAPMUX_WORKER_` (Worker).
-4. **Explicitly-set CLI flags** — only flags you actually pass on the command line override. A flag left at its default value does *not* count as "set" and will not override an env var or config-file value.
+4. **Explicitly-set CLI flags** — only flags you pass on the command line override lower layers. A flag left at its default does not count as set and does not override an environment variable or config file value.
 
-```
-built-in defaults  <  YAML config file  <  environment variables  <  CLI flags you set
-       (lowest)                                                          (highest)
-```
-
-**Each layer overrides the ones below it (top wins):**
-
-```text
-            ┌───────────────────────────────────────────┐  ▲
-  highest   │  Explicitly-set CLI flags                 │  │
-  priority  │  (--listen, --log-level, ...)             │  │
-            └───────────────────────────────────────────┘  │
-            ┌───────────────────────────────────────────┐  │
-            │  Environment variables                    │  │
-            │  (LEAPMUX_HUB_* / LEAPMUX_WORKER_*)       │  │  each
-            └───────────────────────────────────────────┘  │  layer
-            ┌───────────────────────────────────────────┐  │  overrides
-            │  YAML config file                         │  │  the ones
-            │  (hub.yaml / worker.yaml, if present)     │  │  below
-            └───────────────────────────────────────────┘  │
-            ┌───────────────────────────────────────────┐  │
-  lowest    │  Built-in defaults                        │  │
-  priority  │  (compiled into the binary)               │  │
-            └───────────────────────────────────────────┘  │
+```mermaid
+flowchart BT
+    Defaults["1. Built-in defaults (lowest priority — compiled into binary)"]
+    YAML["2. YAML config file (hub.yaml / worker.yaml, if present)"]
+    Env["3. Environment variables (LEAPMUX_HUB_* / LEAPMUX_WORKER_*)"]
+    Flags["4. Explicitly-set CLI flags (highest priority — --listen, --log-level, ...)"]
+    Defaults -->|"overridden by"| YAML
+    YAML -->|"overridden by"| Env
+    Env -->|"overridden by"| Flags
 ```
 
 {{< callout >}}
-Because only *explicitly passed* flags override lower layers, you can set a baseline in `hub.yaml`, override per-environment values with `LEAPMUX_HUB_*` env vars in your deployment, and still drop in a one-off `--log-level debug` on the command line for a single run.
+Because only *explicitly passed* flags override lower layers, you can set a baseline in `hub.yaml`, override per-environment values with `LEAPMUX_HUB_*` environment variables, and still pass a one-off `--log-level debug` for a single run.
 {{< /callout >}}
 
 ## Config file locations
 
-Each mode looks for a YAML config file in its own directory under `~/.config/leapmux/`. The `~` is expanded to your home directory.
+Each mode looks for a YAML config file in its own directory under `~/.config/leapmux/`. LeapMux expands `~` to your home directory.
 
-| Mode     | Default config directory          | Default config file                      |
-| -------- | --------------------------------- | ---------------------------------------- |
-| `hub`    | `~/.config/leapmux/hub`           | `~/.config/leapmux/hub/hub.yaml`         |
-| `worker` | `~/.config/leapmux/worker`        | `~/.config/leapmux/worker/worker.yaml`   |
-| `solo`   | `~/.config/leapmux/solo`          | `~/.config/leapmux/solo/solo.yaml`       |
-| `dev`    | `~/.config/leapmux/dev`           | `~/.config/leapmux/dev/dev.yaml`         |
+| Mode | Default config directory | Default config file |
+| --- | --- | --- |
+| `hub` | `~/.config/leapmux/hub` | `~/.config/leapmux/hub/hub.yaml` |
+| `worker` | `~/.config/leapmux/worker` | `~/.config/leapmux/worker/worker.yaml` |
+| `solo` | `~/.config/leapmux/solo` | `~/.config/leapmux/solo/solo.yaml` |
+| `dev` | `~/.config/leapmux/dev` | `~/.config/leapmux/dev/dev.yaml` |
 
-Override the path with the `--config` flag, which accepts `--config=PATH` or `--config PATH`. It is scanned out of the arguments before normal flag parsing, so it works regardless of position.
+Override the path with `--config` (`--config=PATH` or `--config PATH`). LeapMux scans `--config` before normal flag parsing, so it works in any argument position:
 
 ```bash
 # Pass the same path to every command of the instance.
@@ -73,40 +58,40 @@ leapmux daemon hub status --config /etc/leapmux/hub.yaml
 
 ### Data directory resolution
 
-The `data_dir` setting (`--data-dir`, default `.`) is where the SQLite database, the encryption key file, and the local IPC socket live. It resolves like this:
+The `data_dir` setting (`--data-dir`, default `.`) holds the SQLite database, the encryption key file, and the local interprocess communication (IPC) socket. LeapMux resolves it with three rules:
 
-- `~` is expanded to your home directory.
+- `~` expands to your home directory.
 - An **absolute** path is used as-is.
-- A **relative** path (including the default `.`) resolves against the **directory containing the config file** if that file exists; otherwise against the default config directory (e.g. `~/.config/leapmux/hub`).
+- A **relative** path (including `.`) resolves against the directory containing the config file if that file exists; otherwise it resolves against the default config directory (such as `~/.config/leapmux/hub`).
 
-So with no config file and no `--data-dir`, the Hub's data dir is `~/.config/leapmux/hub`. The data directory is created with mode `0750` at startup.
+With no config file and no `--data-dir`, the Hub data directory is `~/.config/leapmux/hub`. LeapMux creates the directory with mode `0750` at startup.
 
 {{< callout type="info" >}}
-In `solo` and `dev` modes a single `data_dir` is split in two: the in-process Hub uses `<data_dir>/hub` and the in-process Worker uses `<data_dir>/worker`.
+In `solo` and `dev` modes, LeapMux splits one `data_dir` in two: the in-process Hub uses `<data_dir>/hub`, and the in-process Worker uses `<data_dir>/worker`.
 {{< /callout >}}
 
 ## Environment variable mapping
 
-Env vars are prefixed `LEAPMUX_HUB_` for the Hub (and solo/dev) or `LEAPMUX_WORKER_` for the Worker. The mapping rule is simple but has an important limitation:
+Environment variables use the prefix `LEAPMUX_HUB_` for Hub, solo, and dev modes, and `LEAPMUX_WORKER_` for Worker mode.
 
-- The prefix is **stripped** and the remainder is **lowercased**. That gives you the flat config key directly.
-- The mapping does **not** translate underscores into dots.
+- LeapMux strips the prefix and lowercases the remainder to produce a flat config key.
+- LeapMux does **not** convert underscores into dots.
 
-This means flat, top-level keys map cleanly:
+Flat top-level keys map directly:
 
-| Env var                               | Config key             |
-| ------------------------------------- | ---------------------- |
-| `LEAPMUX_HUB_LISTEN`                  | `listen` (comma-delimited) |
-| `LEAPMUX_HUB_LOG_LEVEL`              | `log_level`            |
-| `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`   | `encryption_key_path`  |
-| `LEAPMUX_WORKER_NAME`               | `name`                 |
-| `LEAPMUX_WORKER_ENCRYPTION_MODE`   | `encryption_mode`      |
+| Environment variable | Config key |
+| --- | --- |
+| `LEAPMUX_HUB_LISTEN` | `listen` (comma-delimited) |
+| `LEAPMUX_HUB_LOG_LEVEL` | `log_level` |
+| `LEAPMUX_HUB_ENCRYPTION_KEY_PATH` | `encryption_key_path` |
+| `LEAPMUX_WORKER_NAME` | `name` |
+| `LEAPMUX_WORKER_ENCRYPTION_MODE` | `encryption_mode` |
 
 {{< callout type="warning" >}}
-Nested **storage** keys live under dotted paths (`storage.type`, `storage.postgres.dsn`, `storage.sqlite.path`, …). Because the env mapping does not convert underscores to dots, you **cannot** reliably set storage settings via simple env vars. Configure storage through the **YAML config file** or the dedicated **CLI flags** instead (for example `--storage-type postgres --storage-postgres-dsn ...`).
+Nested **storage** keys live under dotted paths (`storage.type`, `storage.postgres.dsn`, `storage.sqlite.path`, …). Because environment variable mapping does not turn underscores into dots, configure storage through the **YAML config file** or dedicated **CLI flags** (such as `--storage-type postgres --storage-postgres-dsn ...`) instead.
 {{< /callout >}}
 
-A service that `start` creates does not inherit the variables of your shell. Give it the variables in an environment file:
+A background service created by `start` does not inherit variables from your shell. Give a service its variables in an environment file:
 
 ```yaml
 # /etc/leapmux/hub-environment.yaml
@@ -118,564 +103,20 @@ LEAPMUX_HUB_LOG_LEVEL: "debug"
 leapmux daemon hub start --environment-file /etc/leapmux/hub-environment.yaml
 ```
 
-A container reads the variables from its own environment:
+Keep secrets such as SMTP passwords and external captcha secrets out of YAML config files. Store them in the Hub database with `leapmux admin settings set-secret`, which encrypts the secret half at rest with `encryption.key` and never returns it in `list` or `get` output. Protect any environment file that holds a database password or proxy credential with owner-only permissions.
+
+A container reads variables from its own environment:
 
 ```bash
 docker run -d -p 4327:4327 -e LEAPMUX_MODE=hub -e LEAPMUX_HUB_LOG_LEVEL=debug \
   -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
 ```
 
-## Duration values
-
-Every config-file key that holds a duration — each database pool setting and the Worker's timeouts — takes the same spellings. (The Hub's own timeouts and its session lifetime live in the database instead, as plain seconds: the `timeouts` and `session_duration_seconds` settings.)
-
-| Unit | Meaning | Example |
-| --- | --- | --- |
-| `ns`, `us`, `ms` | Nanoseconds, microseconds, milliseconds | `500ms` |
-| `s`, `m`, `h` | Seconds, minutes, hours | `90s`, `30m`, `2h` |
-| `d` | Days (24 hours) | `7d` |
-| `w` | Weeks (7 days) | `2w` |
-
-Parts combine, in any order: `1h30m`, `1w2d`, `2d12h`.
-
-**A bare number is a count of seconds**: `api_timeout: 10` means ten seconds. A number only means seconds when it is the whole value — `1d30` is rejected rather than read as a day and thirty seconds.
-
-The same spellings work everywhere a key can be set: the config file, the environment variable, and the CLI flag. `0` means "use the default" for the Worker timeouts, and "leave the database driver's own default alone" for the pool settings.
-
-A value that cannot be read, or one past roughly 292 years (the largest duration LeapMux can represent), fails at startup with a message that specifies the key, rather than silently becoming a duration nobody meant.
-
-```yaml
-# worker.yaml — the Worker's timeouts (Hub pool settings take the
-# same spellings):
-api_timeout: 10s
-agent_startup_timeout: 5m
-```
-
-## Listen addresses
-
-LeapMux uses TCP addresses for browsers and remote callers, and local interprocess communication (IPC) endpoints for clients on the same machine. The CLI can use a Unix socket or a Windows named pipe. In the Network access panel, **TCP listeners** reports the live TCP bind results and **Local access** lists the local endpoints the Hub opened at startup. Both lists are read-only and appear above the **Additional addresses** editor.
-
-### TCP listen (`listen`)
-
-The TCP addresses the Hub's HTTP server binds. The flag repeats (`--listen 127.0.0.1:4327 --listen 127.0.0.1:9000`) and every entry keeps the port its own listener is assigned. Formats:
-
-- `:4327` — all interfaces, port 4327.
-- `127.0.0.1:4327` — loopback only.
-
-Defaults differ by mode:
-
-| Mode   | Default `listen`     | Notes                                                    |
-| ------ | -------------------- | ------------------------------------------------------- |
-| `hub`  | `:4327`              | All interfaces; real authentication required.           |
-| `dev`  | `:4327`              | All interfaces.                                         |
-| `solo` | `127.0.0.1:4327`     | Loopback only; TCP starts with first-password setup. |
-
-`listen` is a command-line option and nothing else — no setting changes it. Solo mode adds **more** addresses beside it through [Network access](#network-access) below.
-
-{{< callout type="warning" >}}
-Before the `solo` account has a password, a TCP caller can only set the first password. The first successful caller claims the account and receives an elevated session. If you bind solo mode to a non-loopback address in that state, another machine can win this setup race. The Hub logs a warning. Set the password from a trusted connection and restrict access with a firewall or tunnel. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
-{{< /callout >}}
-
-### Network access
-
-Solo mode serves additional addresses beside the addresses `--listen` gives it. Open **Preferences → Administration → Network access**. Under **Additional addresses**, pick an interface and a port for each TCP address you want, then select **Apply**. The Hub binds the addresses immediately and on every later start. The Hub stores them as the `extra_listen_addresses` setting, which you can also edit with `leapmux admin settings`.
-
-Two things follow from adding one:
-
-- **Every network address then asks for a sign-in as `solo`**, `127.0.0.1` included. The panel asks you to set that password before it will publish an address. The desktop app's local socket is the only transport that never asks. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the rule in full.
-- **Overlapping addresses merge.** Ask for every interface on the port `--listen` already uses and the Hub serves one socket rather than two: `--listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. Every `--listen` address takes part, so a secondary one folds too. The panel says so before you apply, and **TCP listeners** lists what is serving with the reason for each entry.
-
-An address that cannot be bound — a VPN that is down, a port another program holds — does not stop the Hub. It stays configured, the rest are served, and the panel reports the operating system's own reason beside it.
-
-The additional listen-address row is solo-only. The **Trusted reverse proxies** row below it appears in solo, hub, and dev modes.
-
-### Trusted reverse proxies
-
-The `trusted_proxy_ranges` setting is a JSON list. It defaults to `[]`, so LeapMux trusts no proxy, including loopback. The setting is hot and accepts these selectors:
-
-- An IPv4 or IPv6 address: `192.0.2.10`, `2001:db8::10`.
-- A CIDR: `192.168.0.0/24`, `2001:db8::/64`.
-- A full inclusive range: `192.168.0.1-192.168.0.100`, `2001:db8::1-2001:db8::ffff`.
-- A short IPv4 range: `192.168.0.1-100`.
-- A provider preset: `cloudflare`, `cloudfront`.
-
-The Hub canonicalizes manual selectors and stores provider presets as symbolic tokens. Provider names ignore letter case. LeapMux expands the provider tokens from its bundled `realclientip-go` snapshot. It does not fetch new ranges or refresh them automatically. Add a manual range when the bundled snapshot does not include a proxy that you use.
-
-LeapMux rejects ports, IPv6 zones, unknown provider names, mixed address families, reversed ranges, duplicates, overlaps, malformed selectors, and lists above the configured cap.
-
-{{< callout type="warning" >}}
-Provider ranges identify shared infrastructure, not your provider account. Restrict the origin to your own distribution or use authenticated origin requests. Each proxy must remove client-supplied forwarding headers or append only verified values. Otherwise, another provider customer can supply a false client address.
-{{< /callout >}}
-
-LeapMux reads forwarding headers only when the unchanged TCP peer matches the expanded trusted set. It prefers `Forwarded` when that header exists. Otherwise, it uses `X-Forwarded-For` and `X-Forwarded-Proto`. It walks the address chain from right to left and selects the first address outside the trusted set. A malformed preferred header or a chain with no client address produces an unknown client. LeapMux does not fall back to another header.
-
-For `Forwarded`, LeapMux uses the `proto` value on the selected element. For X-Forwarded headers, one protocol value applies globally. Equal-length protocol and address lists align by position. LeapMux accepts only `http` and `https`; absent, empty, invalid, or misaligned protocol data becomes `http`.
-
-The verified client IP controls address-keyed rate limits and new session records. LeapMux keeps `RemoteAddr` as the physical peer and does not change the TLS state.
-
-The verified protocol turns `secure_cookies` on for that request. A trusted proxy that reports `https` gets `__Host-` prefixed cookies, and base URLs the Hub builds use `https`, without a second setting. The rule is one-way: the verified protocol only ever turns the policy on, and the `secure_cookies` setting turns it on for every request whatever a proxy reports. An untrusted peer's protocol header is ignored, so no caller can give itself a secure cookie.
-
-### Listen addresses (`listen`)
-
-`listen` is every address the Hub accepts connections on. An entry is either a TCP address (`:4327`, `127.0.0.1:4327`) or a **local IPC** URL for same-machine clients (including the auto-registered Worker in solo/dev):
-
-- `unix:<path>` — a Unix domain socket (Unix/macOS).
-- `npipe:<name>` — a Windows named pipe.
-
-The flag is repeatable (`--listen :8080 --listen unix:/run/leapmux/hub.sock`), the environment variable `LEAPMUX_HUB_LISTEN` is comma-delimited, and the config file takes a YAML list. A value that contains a comma belongs in the flag or the config file, where it is taken verbatim; the environment form splits on commas.
-
-The list is the bind set: what you give is what binds. Exactly one entry is added beside it — the platform's local IPC URL when the list names no local entry:
-
-| You give | Bound |
-| --- | --- |
-| (nothing) | `<default TCP>` + `<default local>` |
-| `--listen :8080` | `:8080` + `<default local>` |
-| `--listen unix:/tmp/x.sock` | `unix:/tmp/x.sock` alone, no TCP address |
-| `--listen :8080 --listen :9090` | `:8080` + `:9090` + `<default local>` |
-| `--listen :8080 --listen unix:/tmp/x` | `:8080` + `unix:/tmp/x` |
-
-**At least one local IPC address is always bound.** `leapmux` on the Hub's host reaches it without a login over that socket (no other caller gets that), so a TCP-only list is impossible and nothing turns the socket off. Naming a local entry moves it: the default socket is then not bound, and `leapmux` needs `--hub` pointed at the URL you named.
-
-The platform default local IPC URL:
-
-| Platform | Default local IPC URL                         |
-| -------- | --------------------------------------------- |
-| Unix/macOS | `unix:<data_dir>/hub.sock`                  |
-| Windows  | `npipe:leapmux-hub-<SID>` (current user's SID) |
-
-The same two schemes are also valid values for the Worker's `--hub` URL, so a local Worker can connect over the socket instead of TCP. An entry that is neither kind fails at startup with its index in the list.
-
-### State file (`state.json`)
-
-A data directory holds a `state.json` beside the database. It is written atomically (temp file, then rename), with `pid` first so a reader can tell which process wrote it, and it names the **resolved** bind set — a `--listen 127.0.0.1:0` request appears as the port the operating system chose. That is how a client discovers an ephemeral port. The Hub deletes its copy on clean shutdown; a crash leaves it behind with a pid that answers nothing, and the next start overwrites it. The Worker's copy is its registration credentials and survives restarts.
-
-## Hub configuration reference
-
-Env prefix: `LEAPMUX_HUB_`. Defaults shown are the built-in values. Each key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `log_level` → `--log-level`); the only key without a flag is listed under [Keys with no CLI flag](#keys-with-no-cli-flag).
-
-### Server options
-
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `listen` | *(empty = platform default)* | The bind set: a YAML list of TCP addresses (`:4327`, `127.0.0.1:4327`) and local IPC URLs (`unix:<path>`, `npipe:<name>`). The platform's local IPC URL is added when the list names none; see [Listen addresses](#listen-addresses). |
-| `data_dir` | `.` | Data directory; relative paths resolve against the config dir. |
-| `dev_frontend` | *(empty)* | Frontend dev-server URL for the local reverse proxy (local development). |
-| `log_level` | `info` | Log level: `debug`, `info`, `warn`, `error` (case-insensitive). |
-
-These four keys (plus the storage block below and `encryption_key_path`) are the **entire** config-file surface: they are what the process needs before the database exists — sockets to bind, where the database and key ring live, how loudly to log. Everything that describes how the running Hub *behaves* is an instance setting in the database instead (next section), because a setting in the database can change under a running Hub while a file can only change under a restarted one.
-
-### Instance settings (database)
-
-All behavioral configuration — auth policy, SMTP, timeouts, limits, queue budgets, bot protection — lives in the Hub's database, in one `hub_settings` table managed by `leapmux admin settings`:
-
-```bash
-leapmux admin settings list
-leapmux admin settings set signup_enabled true
-leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"hub@example.com"}'
-leapmux admin settings set-secret smtp '{"password":"..."}'
-leapmux admin settings get smtp
-leapmux admin settings reset signup_enabled
-```
-
-A value is a JSON document; fields it omits keep their current (or default) values, so `{"port":465}` retunes one SMTP field without restating the host. Both the value and secret halves of each row are encrypted at rest with the Hub keystore. Secret-bearing fields (the SMTP password, captcha signing keys) live in the separate `secret` half written through `set-secret` and never appear in `list` or `get` output. A key with no stored row sits at its built-in default — `reset` returns a key to exactly that.
-
-Changes fall into two classes, shown by `settings list`:
-
-- **hot** — a running Hub applies the new value within ~30 seconds (this is also the convergence limit between Hub instances that share one database).
-- **restart** — the value feeds startup-time arithmetic (queue pool floors, frame ceilings), so it is read once at boot; a change reports that it applies after a hub restart.
-
-| Setting key | Shape | Default | Class |
-| --- | --- | --- | --- |
-| `signup_enabled` | boolean | `false` | hot |
-| `session_duration_seconds` | integer | `604800` (7d) | hot (minimum 300) |
-| `secure_cookies` | boolean | `false` | hot (changes the cookie name, so it signs everyone out) |
-| `public_url` | string | *(empty)* | hot (scheme+host only, no path) |
-| `trusted_proxy_ranges` | JSON list of IP selectors or provider tokens | `[]` | hot |
-| `smtp` | `{host, port, username, from_address, tls_mode}` + secret `{password}` | disabled | hot |
-| `timeouts` | `{api_seconds, agent_startup_seconds}` | 10 / 300 | hot |
-| `limits` | `{max_connections_per_user, max_workers_per_user}` | 32 / 64 | hot (`0` = unlimited) |
-| `mail_limits` | `{failure_cooldown_seconds, recipient_max, recipient_window_seconds}` | 10 / 10 / 3600 | hot (`recipient_max` `0` = unlimited) |
-| `max_message_size_bytes` | integer | `16777216` (16 MiB) | restart (64 KiB–64 MiB) |
-| `queue_budget` | `{relay_bytes, worker_bytes, userevents_bytes}` | `0` = auto-size | restart |
-| `open_app_registration` | boolean | `false` | hot |
-| `captcha.*`, `rate_limit.*` | see below | see below | hot |
-
-Solo mode omits the settings a single-user Hub has no use for, from `settings list` and from the preferences dialog alike:
-
-| Omitted in solo | Because |
-| --- | --- |
-| `signup_enabled` | Solo has no sign-up. |
-| `smtp` | Solo has no sign-up and no outbound mail. |
-| `captcha.*` | Solo runs no captcha. Its sign-in form is guarded by `rate_limit.login_anonymous`, which stays. |
-| `rate_limit.elevation`, `rate_limit.email_change` | Keyed by USER, and solo has one; solo also refuses email changes outright. |
-| `mail_limits` | Solo sends no mail: no relay, no recipient to cap. |
-
-`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/admin/app-authorization/).
-
-The rest stay because a solo Hub whose account holds a password serves a real sign-in. `session_duration_seconds` and `secure_cookies` govern the session and the cookie that sign-in issues. A Hub published behind a trusted TLS proxy already gets secure cookies from the verified protocol; the setting is for a Hub that serves HTTPS through infrastructure it does not trust as a proxy. `rate_limit.login_anonymous` and `rate_limit.oauth_anonymous` are keyed by client ADDRESS on surfaces a solo Hub also serves, and because solo runs no captcha, `login_anonymous` is the only thing that limits guesses at the sign-in form.
-
-See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and account-recovery flows, and [Sign-in Providers](/docs/admin/sign-in-providers/) for OAuth/OIDC.
-
-{{< callout type="info" >}}
-Email verification is not a separate setting. Once the `smtp` block is fully configured (`host` **and** `from_address`), the hub requires verification for new non-admin sign-ups and exposes account recovery / worker registration email features. Removing or disabling SMTP turns verification off at runtime.
-
-**SMTP-enable transition:** users who signed up while SMTP was off keep `email_verified=false` in the database. When an administrator later configures SMTP, the Hub requires those accounts to verify on the next request until they do so via `/verify-email`. You need no data migration. Administrators stay exempt at the sign-in gate, but their address is stored unverified like anybody else's — the flag records only what somebody confirmed, and an unverified address still cannot receive a recovery link.
-{{< /callout >}}
-
-### Bot protection (captcha & rate limits)
-
-Captcha and rate-limit settings are instance settings (the `captcha.*` and `rate_limit.*` keys above), changed at runtime with `leapmux admin`:
-
-```bash
-leapmux admin captcha get
-leapmux admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
-leapmux admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
-leapmux admin rate-limit list
-```
-
-With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/admin/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. Two more caps guard the relay: `email_change` limits the requests to change an account email that reach the mail machinery (6 per 15 minutes per user — each one drove a mint and an SMTP attempt, a loop otherwise pays no captcha and guesses no secret, while the elevation prompt and validation refusals that precede the work cost nothing), and `mail_limits` caps how often the Hub mails one recipient address (10 per hour by default) plus how long a **failed** send blocks the next verification or recovery mail (10 seconds by default, and never more than the 60-second resend cooldown — one failed send must not block longer than a successful one). The per-recipient budget counts delivered mail: a send the relay refuses spends nothing. It folds plus-tagged addresses (`victim+1@`, `victim+2@`) onto the one inbox they share on every provider that honors tags, so a provider that treats `+` as a literal local-part character shares one budget between mailboxes that differ only in the tag.
-
-Two more limits use the verified client address instead of the user. `login_anonymous` caps failed passwords at the sign-in form (10 per 15 minutes), and a success clears the window. `oauth_anonymous` caps the authorization server's anonymous endpoints at 600 per 10 minutes; see [App Authorization](/docs/admin/app-authorization/). Solo mode enforces both limits. A Hub with no trusted proxy setting sees the direct TCP peer. A configured trusted proxy can supply the verified client address as described under [Trusted reverse proxies](#trusted-reverse-proxies). ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub.
-
-Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an administrator fills a provider in, then switches to it.
-
-A few caveats before you change defaults:
-
-- **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans. The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side). Issuance therefore stays cheap even at high costs.
-- **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the administrator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
-
-**When ALTCHA runs.** The Hub requires the built-in provider only where it can both work and matter. Two conditions, and both must hold:
-
-1. **A browser can run the widget.** ALTCHA's solver uses WebCrypto (`SubtleCrypto`), which browsers supply only in a secure context: HTTPS, or plain HTTP on localhost / `127.0.0.1` / `*.localhost`.
-2. **Somebody other than you can reach the Hub.** ALTCHA counters automated sign-up and sign-in abuse. A Hub published at a loopback address, or published nowhere at all, has no such audience, so the proof of work costs your own sign-in and buys nothing.
-
-The Hub checks both conditions against its own configuration, reading two settings in order:
-
-1. `public_url`, when set. This is the browser-facing URL you published, and the setting to use behind a TLS-terminating reverse proxy. ALTCHA runs when that URL is a secure context and its host is not loopback.
-2. `secure_cookies`, when `public_url` is unset. It means the Hub itself is served over HTTPS, and a Hub with a certificate is a Hub somebody reaches.
-
-With neither setting the Hub serves plain HTTP, so an **unpublished Hub runs no ALTCHA** — including the first-run setup form. When ALTCHA is off, the Hub issues no challenge, and every protected form — sign-in, sign-up, account recovery, and email verification — skips the captcha check, but the Hub does not write `captcha.enabled`: the stored setting keeps its value, so publishing the Hub restores protection with no admin re-enable. The honeypot check still runs. The gate never restricts reCAPTCHA v3 or Turnstile, which both work on plain HTTP pages.
-
-**Set `public_url` on a Hub that browsers really reach by a LAN address or a hostname.** It is a recommendation, not a requirement, and rung 2 above says why: a Hub with `secure_cookies` set and no `public_url` already runs ALTCHA. What `public_url` adds is the deployment where the Hub itself speaks plain HTTP behind a TLS-terminating reverse proxy — there `secure_cookies` describes the Hub's own listener rather than the browser's page, and the published URL is the only setting that states what the browser sees.
-
-Set it to the URL your users type, and serve that URL over HTTPS. `public_url` is already what mail links, the CLI login endpoints, and passkey sign-in need on such a deployment. Publish a plain-HTTP LAN URL and the Hub keeps ALTCHA down by itself, because no browser there could solve a challenge.
-
-**How you find out that the Hub disabled ALTCHA.** The Hub disables it silently to the browser — a message there would tell a bot which control is off — so it reports the change to its own log instead. When the stored `captcha.enabled` is `true` and the gate disables the widget, the Hub logs once at `WARN`:
-
-```text
-WARN captcha is enabled in the settings but verifies nothing reason="the selected provider needs a secure browser context, and this hub publishes no secure address" remedy="set public_url to the https address that your users type"
-```
-
-It logs on the transition, not per request, so a busy Hub prints one line rather than one per sign-in. Set `public_url` (or `secure_cookies`) and the Hub logs `captcha enforcement restored: this hub publishes a secure browser address` at `INFO`. So a Hub whose settings read `captcha.enabled = true` while the browser shows no widget has one place to look for the reason.
-
-See [Captcha](/docs/admin/admin-cli/#captcha) and [Rate limits](/docs/admin/admin-cli/#rate-limits) in the Admin CLI chapter for the full flag reference.
-
-### Passkeys
-
-Passkeys have no switch to enable. A ceremony runs on a page only when two parties agree, and each can refuse:
-
-1. **The browser** exposes WebAuthn only in a secure context — HTTPS, or plain HTTP on a loopback address — and a browser without WebAuthn support refuses the same way. This half belongs to the browser; no Hub setting changes it, so serve the Hub over HTTPS wherever users reach it by a hostname.
-2. **The Hub** runs ceremonies only at the origins it publishes: `public_url` when set (scheme and host, no path), otherwise the TCP `listen` address — plus the loopback spellings (`localhost`, `127.0.0.1`, `[::1]`) when the bind serves loopback. The match is on the full origin: scheme, host, and port.
-
-A user who reaches the same Hub by an address outside that list — the LAN IP behind the reverse proxy, a tunnel host, a port that `public_url` does not name — can never run a ceremony. The sign-in and sign-up forms therefore **remove the Passkey option** outright: that refusal is identical for every visitor, so an option that can never work would only mislead. A browser-side refusal instead leaves the option in place, **disabled with the reason on it**, because it describes the reader's own machine and they can move. In **Preferences → Account**, either refusal disables **Add passkey** with the reason written on it.
-
-`public_url` is hot: setting it — or an administrator changing **Public base URL** under **Preferences → Administration → General** — flips passkey availability at once, with no restart and no page reload.
-
-For the sign-in and sign-up flows, see [Accounts & Authentication](/docs/using/accounts/#passkeys); for diagnosis, [Passkey sign-in fails or the authenticator never appears](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears).
-
-### Outbound queue memory
-
-Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the others. The three fields of the `queue_budget` setting limit how much memory those buffers may hold, as one budget per connection kind: **channel relays**, **Worker streams**, and **user-event subscribers**.
-
-The split is deliberate, because the cheapest recovery differs by kind — a dropped relay or Worker connection simply reconnects, while a user-event subscriber can resynchronize from its cursor instead of being disconnected at all — so a backlog on one kind never costs the others.
-
-Left at `0` (the default), each budget is a share of the memory the process may use — four thirty-seconds for channel relays, two for Workers, two for user events, together a quarter, and never above 8 GiB. Channel relays get the largest share because they carry the bulk of the traffic. The Hub derives that memory figure from `GOMEMLIMIT` when set, otherwise the cgroup memory limit on Linux (which is what makes the default correct inside a container), otherwise total physical memory, and 512 MiB when none of these can be read. The basis and all three resolved figures are logged at startup, so a wrong basis is visible; a Linux host whose cgroup limit could not be read also logs a one-time warning.
-
-Set the fields explicitly whenever your fleet's shape differs from that assumption — many Workers and few tabs, or the reverse:
-
-```bash
-leapmux admin settings set queue_budget '{"relay_bytes":1073741824}'
-```
-
-Three facts matter when you pick numbers:
-
-- **Each budget has a floor.** It must be able to hold one largest frame of its kind plus a small guaranteed working set per connection, and a configured value below it is rejected when you write it, rather than failing at runtime. `max_message_size_bytes` does **not** move this floor: the Hub is a relay on that path and its queues only ever carry individual encrypted chunks, never a reassembled message.
-- **A frame does not cost its wire size.** A user-event frame is charged at twice its encoded size, so size a budget against `leapmux_sendq_pool_used_bytes` — what the process really holds — not against observed network traffic.
-- **What the budgets do not cover.** They limit *queued* frames, not the moment the Hub builds a frame, so a reconnect storm on large accounts peaks above the budget for as long as those snapshots take to build.
-
-**When a budget runs out**, the Hub disconnects that budget's largest holder and the peer reconnects, reported as `pool_pressure`. User-event subscribers instead drop the frame they cannot fit and resynchronize; those drops are counted by `leapmux_userevents_frames_dropped_total`.
-
-The one *permanent* failure is an account whose opening user-events frame — the snapshot of its whole visible state — is larger than the entire `userevents_bytes` budget: such a connect is refused as final, the browser reports that the workspace exceeds the server's limit, and the fix is to raise that field. On the dropped-frames metric, `bound="capacity"` marks exactly this case, while a merely full budget is the transient `bound="bytes"` one that resolves itself as connections drain.
-
-`leapmux_sendq_pool_overcommits_total` increments whenever the Hub granted a per-connection working set the budget had no room for. Sustained growth means the deployment has more connections of that kind than its budget can honour — raise the budget (or run more Hubs). What keeps the connection count from growing without limit in the first place is [`max_connections_per_user`](#connections-per-user).
-
-**Metrics.** `/metrics` exposes, labelled `pool="relay"`, `pool="worker"` and `pool="userevents"`:
-
-| Metric | Meaning |
-| --- | --- |
-| `leapmux_sendq_pool_capacity_bytes` | The resolved budget. |
-| `leapmux_sendq_pool_used_bytes` | Currently queued. Sustained occupancy near capacity means the Hub sheds connections to stay inside it. |
-| `leapmux_sendq_pool_members` | Connections drawing from the budget. |
-| `leapmux_sendq_pool_evictions_total` | Connections disconnected to reclaim memory. |
-| `leapmux_sendq_pool_overcommits_total` | Times a guaranteed working set was granted without room for it. Sustained growth means the budget is too small for its connection count — raise it. |
-| `leapmux_sendq_giveups_total{reason}` | Disconnects by cause: `over_budget` (that peer's own backlog), `pool_pressure` (the budget was full), `stall`, `write_timeout`, `write_error`. |
-
-And, unlabelled by pool:
-
-| Metric | Meaning |
-| --- | --- |
-| `leapmux_connections_refused_total{reason="too_many_connections"}` | Connections refused because a user was at [`max_connections_per_user`](#connections-per-user). Steady growth is either a client leaking sockets or a cap below the way your users actually work. |
-| `leapmux_connections_refused_total{reason="credential"}` | Connections refused because the credential expired or was revoked between authenticating and being served. |
-| `leapmux_userevents_frames_dropped_total{phase,bound}` | User-event frames a subscriber could not take. `bound="frames"` means the client was too far behind; `bound="bytes"` means the shared budget was full at that moment, which is the deployment's to fix; `bound="capacity"` means the frame was larger than the whole budget, which no occupancy would have admitted — only raising the budget clears it. |
-
-On that last metric, the `phase` label says what the drop cost: `phase="park"` a snapshot instead of a delta, `phase="live"` a reconnect, and `phase="bootstrap"` a refused connect — with `bound="bytes"` the client retries, with `bound="capacity"` the Hub tells it to stop.
-
-### Solo and dev extras (worker-scoped)
-
-`solo` and `dev` embed a Worker, but `solo.yaml` / `dev.yaml` is the only config file they read. These keys therefore live in the Hub-family config file yet configure the **bundled Worker**, not the Hub. Hub mode rejects them, because it has no Worker to configure.
-
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `encryption_mode` | `post-quantum` | E2EE mode for the bundled Worker: `classic` or `post-quantum`. See [Encryption mode](#encryption-mode). |
-| `use_login_shell` | `true` | Wrap the bundled Worker's agent invocation in the user's login shell. |
-| `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel for the bundled Worker (`0` = 4 default). |
-| `agent_startup_concurrency` | `0` | How many agents the bundled Worker brings back at once after a restart (`0` = 4, or the CPU count when that is lower). |
-
-{{< callout type="info" >}}
-`max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless in hub mode. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
-{{< /callout >}}
-
-### Connections per user
-
-`max_connections_per_user` (default `32`) caps how many long-lived connections one account may hold at once — a guard against a client that leaks sockets, or one account crowding out the rest. It is not a quota anyone should meet in normal use; it exists because the queue budgets above guarantee every connection a small working set, so an unlimited connection count would add up to unlimited memory.
-
-**It counts sockets, not tabs, and an active browser tab holds two** — one for live updates, and one more once it opens its first terminal or agent. Everything authenticated as the same account draws on the one allowance: browser tabs, the desktop app, and any `leapmux` CLI session. At the default of `32` that is roughly sixteen active tabs alongside a CLI session or two. Tunnels are cheaper than they look — all of a machine's tunnels to one Worker share a single connection, so what counts is how many *distinct Workers* you hold tunnels to.
-
-When a user is at the limit the Hub refuses the **newest** connection and everything already open keeps working; the refused tab says so and stops retrying, so the remedy is to close another tab and reload. Set the key to `0` to turn the cap off entirely. Refusals are counted in `leapmux_connections_refused_total{reason="too_many_connections"}` and logged with the user id and the limit — steady growth is either a client leaking sockets or a cap set below the way your users actually work.
-
-{{< callout type="info" >}}
-In solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does.
-{{< /callout >}}
-
-### Workers per user
-
-`max_workers_per_user` (default `64`) limits live membership in the Worker queue pool. Each Worker's stream uses that pool's byte budget and receives the same guaranteed working set as other members. It holds no browser lease, so `max_connections_per_user` does not count it. The limit applies at **registration** and at **connection**. Registered Workers and live pool members are different counts: counting only registrations would let an account repeatedly register and deregister Workers to accumulate live pool members.
-
-A registration refusal returns a `resource_exhausted` error that identifies `max_workers_per_user`. A connection refusal is a WebSocket close with status `1013` and reason `max_workers_per_user`, which the Worker logs and retries. The Hub counts both in `leapmux_worker_admissions_refused_total`, with `stage="register"` or `stage="connect"`, and logs the owner and the limit. Dropping a Worker disconnects every user's channels on that machine, so this limit controls how much of the Worker pool one account can hold. The default is much higher than one account is likely to need.
-
-### Idle connections
-
-The Hub probes each browser WebSocket and each Worker's stream every 10 seconds. Each probe has a ten-second timeout, and two consecutive failures drop the connection. A peer that stops receiving without sending a close frame would otherwise hold its connection until the operating system's keepalive ended it. That can take about ten minutes, or longer behind some proxies. Browser connections keep counting against `max_connections_per_user` during that wait; Worker streams keep occupying Worker pool slots.
-
-A probe establishes liveness only. The Hub ignores a reply that does not match an outstanding probe. It also rate-limits inbound WebSocket control frames per connection, so a client cannot overload it with a ping flood. Ordinary clients stay well below that limit.
-
-### Keys with no CLI flag
-
-`encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It specifies the encryption key ring and token pepper file that the Hub uses to open its database, encrypt and decrypt all 37 protected columns across 15 Hub tables, and verify peppered bearer digests.
-
-See [Encryption & Data](/docs/admin/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
-
-### Derived paths and behaviors
-
-- **SQLite DB path:** `storage.sqlite.path` if set, otherwise `{data_dir}/hub.db`.
-- **Encryption key file:** `encryption_key_path` if set, otherwise `{data_dir}/encryption.key`.
-- **Base URL:** the `public_url` setting if set; otherwise derived from `listen` (scheme is `https` only when the `secure_cookies` setting is true, and a bare `:port` listen resolves the host to `localhost`).
-- **Metrics:** the Hub always mounts a Prometheus endpoint at `/metrics`. There is no config flag to enable, disable, or relocate it.
-
-## Worker configuration reference
-
-Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does not serve HTTP itself. See [Managing Workers](/docs/admin/managing-workers/) for registration and approval. Each key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `db_max_conns` → `--db-max-conns`).
-
-### Worker options
-
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `name` | *(empty → hostname)* | Worker display name; defaults to the OS hostname when empty. |
-| `data_dir` | `.` | Data directory; relative paths resolve against the config dir. |
-| `log_level` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
-| `encryption_mode` | `post-quantum` | E2EE mode: `classic` or `post-quantum`. |
-| `use_login_shell` | `true` | Wrap the agent invocation in the user's login shell. |
-
-{{< callout type="info" >}}
-The Hub URL and the registration key are not configuration keys. Both are flags of `leapmux daemon worker register` only, and the Worker saves the Hub URL with its credentials. See [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
-{{< /callout >}}
-
-### Timeout and limit options
-
-Every timeout below takes a unit suffix; see [Duration values](#duration-values).
-
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel (`0` = 4 default). |
-| `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Negotiated per channel as `min(hub, worker)` — the Hub's side is the `max_message_size_bytes` setting; the reassembled ceiling is this plus 64 KiB of envelope headroom. |
-| `agent_startup_timeout` | `5m` | Agent startup timeout. `0` means the default. |
-| `api_timeout` | `10s` | JSON-RPC request timeout. `0` means the default. |
-| `agent_startup_concurrency` | `0` | How many agents the Worker brings back at once after a restart. `0` means 4, or the number of CPUs available to the Worker when that is lower. See [Agents after a Worker restart](#agents-after-a-worker-restart). |
-
-### Agents after a Worker restart
-
-A Worker restart ends every agent process it hosts. The Worker starts them again by itself, so an agent that lists or messages the other agents on the machine finds them without your help.
-
-Each agent continues the conversation it was in. You do not have to send it a message first.
-
-An agent comes back when its tab is open and the agent ran at least once before. A tab that you opened but never used has nothing to restore, so it stays idle until your first message. The Worker also skips a closed tab, and an agent whose last start failed.
-
-The Worker waits for its Hub connection first, so the agents return a few seconds after startup rather than at once. A Worker that never reaches its Hub starts no agents, and it tries again on each later connection.
-
-`agent_startup_concurrency` caps how many agents start at the same time. It does not cap how many run, and it never delays an agent that you start yourself. Raise it on a machine with spare CPU capacity. Lower it to 1 to bring the agents back one at a time.
-
-The Worker brings back every open agent that qualifies, and not a recent few. A machine with many open tabs therefore ends each restart with one agent process per tab. Close the tabs that you no longer need.
-
-### SQLite database options
-
-The Worker keeps its own SQLite database (`<data_dir>/worker.db`) for transient agent/session state. These tune that connection.
-
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `db_max_conns` | `4` | Maximum open database connections. |
-| `db_cache_size` | `0` | SQLite page cache size (positive = pages, negative = KiB, e.g. `-65536` = 64 MiB; `0` = default). |
-| `db_mmap_size` | `0` | SQLite memory-mapped I/O size in bytes (`0` = disabled). |
-
-### Worker state file
-
-`leapmux daemon worker register` saves the Worker's identity to `<data_dir>/state.json` (mode `0600`): its Hub URL, Worker ID, Hub auth token, and its private E2EE keypairs, which the command generates. For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
-
-{{< callout type="warning" >}}
-`state.json` holds the Worker's private E2EE keys and Hub auth token, and it is **not encrypted**. Treat it as a secret and back it up. Losing it forces re-registration with a new registration key and a new key identity.
-{{< /callout >}}
-
-### Encryption mode
-
-The `encryption_mode` key (flag `--encryption-mode`, env `LEAPMUX_WORKER_ENCRYPTION_MODE`) selects the E2EE mode for the Frontend-to-Worker channel. Accepted values:
-
-| Value          | Notes                                                                          |
-| -------------- | ------------------------------------------------------------------------------ |
-| `post-quantum` | Default. Aliases `pq`, `post_quantum`, and an empty value all map here.         |
-| `classic`      | Static Module-Lattice-Based Key-Encapsulation Mechanism (ML-KEM) authentication without the Stateless Hash-Based Digital Signature Algorithm (SLH-DSA) signature or post-quantum forward secrecy. |
-
-Any unrecognized value falls back to `post-quantum` (fail-safe). For what each mode protects and the underlying primitives, see [Security & Threat Model](/docs/admin/security/).
-
-## Storage backends
-
-The Hub stores all relational data (users, workers, sessions, workspaces, tokens, …) in a single SQL store. Select the backend with `storage.type` (flag `--storage-type`). Every storage setting's CLI flag is `--` plus the dotted key with dots and underscores replaced by hyphens — for example `storage.sqlite.path` → `--storage-sqlite-path`, `storage.postgres.max_conns` → `--storage-postgres-max-conns`. Schema migrations run automatically on Hub startup (and during first-run bootstrap), so there is no manual migration step on a fresh database; offline `leapmux recover` commands targeting an existing database open the store without auto-migrating.
-
-| `storage.type` | Driver family | Notes                                              |
-| -------------- | ------------- | ------------------------------------------------- |
-| *(empty)*      | SQLite        | Empty is treated as `sqlite`.                      |
-| `sqlite`       | SQLite        | Default; embedded file database.                   |
-| `postgres`     | PostgreSQL    | Requires `storage.postgres.dsn`.                   |
-| `mysql`        | MySQL         | Requires `storage.mysql.dsn`.                      |
-| `cockroachdb`  | PostgreSQL    | Reuses the Postgres driver; requires `storage.cockroachdb.dsn`. |
-| `yugabytedb`   | PostgreSQL    | Reuses the Postgres driver; requires `storage.yugabytedb.dsn`.  |
-| `tidb`         | MySQL         | Reuses the MySQL driver; requires `storage.tidb.dsn`. |
-
-An unknown type is rejected at startup with `unsupported storage.type: "<type>" (valid: sqlite, postgres, mysql, cockroachdb, yugabytedb, tidb)`.
-
-{{< callout type="info" >}}
-Configure storage via the YAML file or the dedicated CLI flags, not env vars (see the warning under [Environment variable mapping](#environment-variable-mapping)). For backups, key/DB interplay, and the `leapmux recover db` / `leapmux recover encryption-key` commands, see [Encryption & Data](/docs/admin/encryption-and-data/).
-{{< /callout >}}
-
-### SQLite (default)
-
-SQLite is the zero-configuration default; it needs nothing beyond an optional path and tuning. LeapMux opens connections with WAL journaling, a 60-second busy timeout, and foreign keys enabled, and sets the DB file to mode `0600`. Expect `hub.db-wal` and `hub.db-shm` sidecar files while the Hub runs.
-
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `storage.sqlite.path` | `{data_dir}/hub.db` | SQLite database file path. |
-| `storage.sqlite.max_conns` | `4` | Maximum open connections. |
-| `storage.sqlite.cache_size` | `0` | Page cache size (positive = pages, negative = KiB, e.g. `-65536` = 64 MiB; `0` = SQLite default ≈ 2 MiB). |
-| `storage.sqlite.mmap_size` | `0` | Memory-mapped I/O size in bytes (`0` = disabled). |
-
-```yaml
-# hub.yaml — SQLite with a custom path and 64 MiB page cache
-data_dir: /var/lib/leapmux/hub
-storage:
-  type: sqlite
-  sqlite:
-    path: /var/lib/leapmux/hub/hub.db
-    max_conns: 4
-    cache_size: -65536   # 64 MiB
-    mmap_size: 268435456 # 256 MiB
-```
-
-### PostgreSQL, CockroachDB, YugabyteDB
-
-These three share the same driver, config block layout, and pool defaults. Only the config-block name and the flag prefix differ: `storage.postgres.*` / `--storage-postgres-*`, `storage.cockroachdb.*` / `--storage-cockroachdb-*`, `storage.yugabytedb.*` / `--storage-yugabytedb-*`.
-
-Every duration below takes a unit suffix; see [Duration values](#duration-values).
-
-| Config key (under `storage.<name>`) | Default | Meaning |
-| --- | --- | --- |
-| `dsn` | *(empty, required)* | Connection string (URL form). |
-| `max_conns` | `25` | Maximum open connections. |
-| `min_conns` | `5` | Minimum pool connections kept alive. |
-| `conn_max_lifetime` | `1h` | Connection max lifetime. |
-| `max_conn_idle_time` | `5m` | Max idle time per connection. |
-| `health_check_period` | `30s` | Pool health-check period. |
-
-DSN formats (the `dsn` is parsed as a connection URL):
-
-- PostgreSQL: `postgres://user:password@host:5432/dbname?sslmode=disable`
-- CockroachDB: `postgresql://root@host:26257/defaultdb?sslmode=disable`
-- YugabyteDB: `postgresql://yugabyte@host:5433/yugabyte?sslmode=disable`
-
-```yaml
-# hub.yaml — PostgreSQL backend
-storage:
-  type: postgres
-  postgres:
-    dsn: "postgres://leapmux:secret@db.internal:5432/leapmux?sslmode=require"
-    max_conns: 25
-    min_conns: 5
-    conn_max_lifetime: 1h
-    max_conn_idle_time: 5m
-    health_check_period: 30s
-```
-
-{{< callout >}}
-`sslmode=disable` is fine for local testing but you should use `sslmode=require` (or stronger) for any networked database. CockroachDB and YugabyteDB use the same config block shape — just set `type: cockroachdb` / `type: yugabytedb` and fill in `storage.cockroachdb` / `storage.yugabytedb`.
-{{< /callout >}}
-
-### MySQL and TiDB
-
-MySQL and TiDB share the MySQL driver, config layout, and pool defaults. Prefixes are `storage.mysql.*` / `--storage-mysql-*` and `storage.tidb.*` / `--storage-tidb-*`.
-
-Every duration below takes a unit suffix; see [Duration values](#duration-values).
-
-| Config key (under `storage.<name>`) | Default | Meaning |
-| --- | --- | --- |
-| `dsn` | *(empty, required)* | Connection string (go-sql-driver DSN). |
-| `max_conns` | `25` | Maximum open connections. |
-| `max_idle_conns` | `5` | Maximum idle connections. |
-| `conn_max_lifetime` | `1h` | Connection max lifetime. |
-| `conn_max_idle_time` | `5m` | Max idle time per connection. |
-
-DSN formats:
-
-- MySQL: `user:password@tcp(host:3306)/dbname?parseTime=true`
-- TiDB: `root@tcp(host:4000)/leapmux?parseTime=true`
-
-```yaml
-# hub.yaml — MySQL backend
-storage:
-  type: mysql
-  mysql:
-    dsn: "leapmux:secret@tcp(db.internal:3306)/leapmux?parseTime=true"
-    max_conns: 25
-    max_idle_conns: 5
-    conn_max_lifetime: 1h
-    conn_max_idle_time: 5m
-```
-
-{{< callout type="warning" >}}
-MySQL and TiDB DSNs **must** include `parseTime=true`, or time columns will fail to decode. For TiDB, the store best-effort enables foreign-key support on connect (a no-op on real MySQL, which already enforces them).
-{{< /callout >}}
-
-## Example configurations
+## Common deployment profiles
 
 ### Minimal solo
 
-In solo mode you need no config file at all — it defaults to loopback TCP and a local SQLite database. To pin the data directory and turn on debug logging:
+Solo mode needs no config file — it defaults to loopback TCP and a local SQLite database. To pin the data directory and turn on debug logging:
 
 ```yaml
 # ~/.config/leapmux/solo/solo.yaml
@@ -685,7 +126,7 @@ log_level: debug
 
 ### Production Hub behind a reverse proxy
 
-For the configuration of the proxy itself, see [Reverse Proxy](/docs/admin/reverse-proxy/).
+For the reverse proxy configuration itself, see [Reverse Proxy](/docs/admin/reverse-proxy/).
 
 ```yaml
 # /etc/leapmux/hub.yaml
@@ -704,15 +145,14 @@ storage:
 # Start the Hub as a background service.
 leapmux daemon hub start --config /etc/leapmux/hub.yaml
 
-# Behavioral settings live in the database now — set once, then they
-# survive and can change under the running Hub:
+# Behavioral settings live in the database and can change while the Hub runs:
 leapmux admin settings set public_url "https://hub.example.com"
 leapmux admin settings set secure_cookies true
 leapmux admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'
 leapmux admin settings set signup_enabled true
 leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"username":"leapmux@example.com","from_address":"no-reply@example.com","tls_mode":"starttls"}'
-leapmux admin settings set-secret smtp '{"password":"..."}'   # or read from your secret manager
-leapmux admin settings set session_duration_seconds 86400     # sign an idle user out after a day
+leapmux admin settings set-secret smtp '{"password":"..."}'
+leapmux admin settings set session_duration_seconds 86400
 ```
 
 ### Worker connecting to a remote Hub
@@ -729,30 +169,300 @@ agent_startup_concurrency: 0   # 0 = 4, or the CPU count when that is lower
 ```bash
 # Once: register with the Hub, using a key from its Register worker dialog.
 leapmux daemon worker register --hub https://hub.example.com --registration-key "<key-from-hub-ui>"
-# Then: start the Worker as a background service. It reads worker.yaml, and
-# it connects to the Hub URL that the registration saved.
+# Then: start the Worker as a background service. It reads worker.yaml and
+# connects to the Hub URL saved during registration.
 leapmux daemon worker start
 ```
 
+### Docker deployment
+
+In Docker, mount a persistent volume at `/data` and place your mode config file at `/data/<mode>/<mode>.yaml` (for example `/data/hub/hub.yaml`). Select the mode with `LEAPMUX_MODE` (`hub`, `worker`, `dev`, or `solo`) and publish loopback port `127.0.0.1:4327:4327` when running behind a reverse proxy. See [Running under Docker](/docs/admin/running-leapmux/#running-under-docker) for full commands and Worker container registration.
+
+## Listen addresses
+
+LeapMux uses TCP addresses for browsers and remote callers, and local IPC endpoints for clients on the same machine. In **Preferences → Administration → Network access**, **TCP listeners** shows the live TCP bind results and **Local access** lists the local endpoints the Hub opened at startup. Both lists are read-only and appear above the **Additional addresses** editor.
+
+### Bind addresses (`listen`)
+
+`listen` sets every address the Hub binds at startup. Each entry is either a TCP address or a local IPC URL:
+
+- **TCP:** `:4327` (all interfaces, port 4327) or `127.0.0.1:4327` (loopback only).
+- **Local IPC (Unix/macOS):** `unix:<path>` (a Unix domain socket).
+- **Local IPC (Windows):** `npipe:<name>` (a Windows named pipe).
+
+Defaults differ by mode:
+
+| Mode | Default TCP `listen` | Notes |
+| --- | --- | --- |
+| `hub` | `:4327` | All interfaces; real authentication required. |
+| `dev` | `:4327` | All interfaces. |
+| `solo` | `127.0.0.1:4327` | Loopback only; TCP starts with first-password setup. |
+
+The CLI flag is repeatable (`--listen :8080 --listen unix:/run/leapmux/hub.sock`), `LEAPMUX_HUB_LISTEN` is comma-delimited, and the YAML file takes a list. Put any address containing a comma in a flag or the YAML file so it is read verbatim.
+
+The list is the bind set: LeapMux binds what you give, and adds the platform's default local IPC URL whenever the list specifies no local entry:
+
+| You give | Bound |
+| --- | --- |
+| *(nothing)* | `<default TCP>` + `<default local>` |
+| `--listen :8080` | `:8080` + `<default local>` |
+| `--listen unix:/tmp/x.sock` | `unix:/tmp/x.sock` alone, no TCP address |
+| `--listen :8080 --listen :9090` | `:8080` + `:9090` + `<default local>` |
+| `--listen :8080 --listen unix:/tmp/x` | `:8080` + `unix:/tmp/x` |
+
+**At least one local IPC address is always bound.** `leapmux` on the Hub's host reaches it without a login over that socket, so a TCP-only bind set is impossible. Specifying your own local entry moves the socket: the default socket is not bound, and `leapmux` needs `--hub` pointed at the URL you specified.
+
+Default local IPC URL by platform:
+
+| Platform | Default local IPC URL |
+| --- | --- |
+| Unix/macOS | `unix:<data_dir>/hub.sock` |
+| Windows | `npipe:leapmux-hub-<SID>` (current user's security identifier) |
+
+A Worker's `--hub` flag accepts the same `unix:` and `npipe:` schemes for co-located setups. An invalid entry fails at startup and reports its index in the list. No database setting changes `--listen`; solo mode adds extra addresses beside it through [Network access](#network-access).
+
+{{< callout type="warning" >}}
+Before the `solo` account has a password, a TCP caller can only set the first password. The first successful caller claims the account and receives an elevated session. If you bind solo mode to a non-loopback address in that state, another machine can win this setup race. The Hub logs a warning. Set the password from a trusted connection and restrict access with a firewall or tunnel. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
+{{< /callout >}}
+
+### Network access
+
+Solo mode serves additional addresses beside `--listen`. Open **Preferences → Administration → Network access**, pick an interface and port under **Additional addresses**, and select **Apply**. The Hub binds those addresses immediately and on every later start. The Hub stores them in the `extra_listen_addresses` setting, which you can also edit with `leapmux admin settings`.
+
+Two rules apply when you add an address:
+
+- **Every network address requires a sign-in as `solo`**, including `127.0.0.1`. The panel requires you to set that password before it publishes an address. Only the desktop app's local socket skips sign-in. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
+- **Overlapping addresses merge.** Asking for every interface on a port `--listen` already uses causes the Hub to serve one socket (`*:4327`) rather than two, which still answers on `127.0.0.1`. The panel previews the merge before you apply, and **TCP listeners** reports each active listener and its reason.
+
+An address that cannot be bound — such as a down VPN interface or a busy port — does not stop the Hub. It stays configured, the remaining addresses serve normally, and the panel displays the operating system error beside it.
+
+The additional listen-address editor is solo-only. The **Trusted reverse proxies** row below it appears in solo, hub, and dev modes.
+
+### Trusted reverse proxies
+
+The `trusted_proxy_ranges` setting is a JSON list. It defaults to `[]`, so LeapMux trusts no proxy, including loopback. The setting is hot and accepts five selector forms:
+
+- An IPv4 or IPv6 address: `192.0.2.10`, `2001:db8::10`
+- A CIDR block: `192.168.0.0/24`, `2001:db8::/64`
+- A full inclusive range: `192.168.0.1-192.168.0.100`, `2001:db8::1-2001:db8::ffff`
+- A short IPv4 range: `192.168.0.1-100`
+- A provider preset (case-insensitive): `cloudflare`, `cloudfront`
+
+The Hub canonicalizes manual selectors and stores provider presets as symbolic tokens. LeapMux expands provider tokens from its bundled `realclientip-go` snapshot and does not download updates automatically. Add a manual range when the bundled snapshot omits a proxy you use.
+
+LeapMux rejects ports, IPv6 zones, unknown provider names, mixed address families, reversed ranges, duplicates, overlaps, malformed selectors, and lists above the configured limit.
+
+{{< callout type="warning" >}}
+Provider ranges identify shared infrastructure, not your provider account. Restrict your origin to your own distribution or require authenticated origin requests. Configure every proxy to strip client-supplied forwarding headers or append only verified values; otherwise another customer on that provider can spoof client addresses.
+{{< /callout >}}
+
+How LeapMux parses forwarding headers:
+
+- LeapMux reads forwarding headers only when the physical TCP peer matches the expanded trusted set.
+- It prefers `Forwarded` when present; otherwise it reads `X-Forwarded-For` and `X-Forwarded-Proto`.
+- It walks the address chain from right to left and picks the first address outside the trusted set. A malformed preferred header or a chain with no untrusted address produces an unknown client without falling back to another header.
+- For `Forwarded`, LeapMux reads `proto` on the selected element. For `X-Forwarded-Proto`, one value applies globally, or an equal-length list aligns by position. Only `http` and `https` are valid; absent, empty, invalid, or misaligned protocol values become `http`.
+- The verified client IP controls address-keyed rate limits and new session records. `RemoteAddr` stays the physical peer.
+- A verified `https` protocol turns `secure_cookies` on for that request (issuing `__Host-` cookies and `https` base URLs) without a separate setting. This rule is one-way: it never turns `secure_cookies` off, and headers from untrusted peers are ignored.
+
+### State file (`state.json`)
+
+Each data directory holds a `state.json` file beside the database. LeapMux writes it atomically (temp file, then rename) with `pid` first and lists the **resolved** bind set — so `--listen 127.0.0.1:0` records the ephemeral port chosen by the operating system. The Hub deletes its copy on clean shutdown and overwrites a stale copy on the next start. A Worker's `state.json` stores its registration credentials and survives restarts.
+
+## Storage backends overview
+
+The Hub stores all relational data in one SQL backend selected by `storage.type` (`--storage-type`). Schema migrations run automatically on Hub startup and during first-run bootstrap; offline `leapmux recover` commands open existing databases without auto-migrating.
+
+| `storage.type` | Driver family | Notes |
+| --- | --- | --- |
+| *(empty)* or `sqlite` | SQLite | Default; embedded file database at `{data_dir}/hub.db` in write-ahead log (WAL) mode. |
+| `postgres` | PostgreSQL | Requires `storage.postgres.dsn`. |
+| `mysql` | MySQL | Requires `storage.mysql.dsn` (must include `parseTime=true`). |
+| `cockroachdb` | PostgreSQL | Reuses the PostgreSQL driver; requires `storage.cockroachdb.dsn`. |
+| `yugabytedb` | PostgreSQL | Reuses the PostgreSQL driver; requires `storage.yugabytedb.dsn`. |
+| `tidb` | MySQL | Reuses the MySQL driver; requires `storage.tidb.dsn` (must include `parseTime=true`). |
+
+See [Configuration Reference — Storage backends](/docs/admin/configuration-reference/#storage-backends) for every connection-pool key, DSN example, and SQLite tuning option. See [Encryption & Data](/docs/admin/encryption-and-data/) for backups and `leapmux recover db`.
+
+## Operational defaults
+
+The Hub splits configuration into two surfaces:
+
+- **Config file and CLI flags** hold only what the process needs before the database opens: listen addresses, `data_dir`, `storage.*`, `encryption_key_path`, `dev_frontend`, and `log_level`.
+- **Database instance settings** (`hub_settings`, managed with `leapmux admin settings`) hold all behavioral policy: sign-up, sessions, SMTP, timeouts, per-user limits, queue budgets, app registration, captcha, and rate limits. Hot keys apply within ~30 seconds without restart; restart keys apply on the next Hub start.
+
+See [Configuration Reference — Instance settings](/docs/admin/configuration-reference/#instance-settings-database) for the full table of keys, shapes, defaults, solo-mode omissions, and SMTP email-verification transition rules.
+
+### Duration values
+
+Every config-file key that holds a duration — database pool settings and Worker timeouts — uses the same syntax. (Hub timeouts and session lifetime live in the database as plain integer seconds: `timeouts` and `session_duration_seconds`.)
+
+| Unit | Meaning | Example |
+| --- | --- | --- |
+| `ns`, `us`, `ms` | Nanoseconds, microseconds, milliseconds | `500ms` |
+| `s`, `m`, `h` | Seconds, minutes, hours | `90s`, `30m`, `2h` |
+| `d` | Days (24 hours) | `7d` |
+| `w` | Weeks (7 days) | `2w` |
+
+Parts combine in any order: `1h30m`, `1w2d`, `2d12h`.
+
+**A bare number is a count of seconds:** `api_timeout: 10` means ten seconds. A bare number works only as the entire value — `1d30` is rejected.
+
+The same syntax works in the YAML file, environment variables, and CLI flags. `0` means "use the default" for Worker timeouts and "use the database driver default" for pool settings. An unparseable value or a duration past ~292 years fails at startup with an error identifying the key.
+
+```yaml
+# worker.yaml — Worker timeouts (Hub pool settings use the same syntax):
+api_timeout: 10s
+agent_startup_timeout: 5m
+```
+
+### Bot protection (captcha & rate limits)
+
+Captcha and rate-limit settings are database instance settings (`captcha.*` and `rate_limit.*`), updated at runtime with `leapmux admin`:
+
+```bash
+leapmux admin captcha get
+leapmux admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
+leapmux admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
+leapmux admin rate-limit list
+```
+
+Default protection with no configuration:
+
+| Control | Scope / key | Default | Notes |
+| --- | --- | --- | --- |
+| `captcha.*` | Built-in ALTCHA | Enabled, `PBKDF2/SHA-256`, cost `10000`, 20-minute challenge expiry | Runs only when a browser can solve it and the Hub is externally reachable (see below). |
+| `rate_limit.elevation` | Per user | 5 failed attempts / 15 minutes | Limits failed identity checks for sensitive changes ([Session elevation](/docs/admin/authentication-security/#session-elevation)). |
+| `rate_limit.email_change` | Per user | 6 requests / 15 minutes | Caps email-change requests reaching the mail relay; elevation prompts and validation refusals spend nothing. |
+| `mail_limits` | Per recipient address | 10 delivered emails / hour; 10-second failure cooldown | Counts delivered mail only; folds plus-tagged addresses (`user+tag@`) onto one inbox budget. Failure cooldown never exceeds the 60-second resend cooldown. |
+| `rate_limit.login_anonymous` | Verified client IP | 10 failed passwords / 15 minutes | Enforced in solo mode too; a successful sign-in clears the window. |
+| `rate_limit.oauth_anonymous` | Verified client IP | 600 requests / 10 minutes | Caps anonymous OAuth endpoints ([App Authorization](/docs/admin/app-authorization/)). Enforced in solo mode too. |
+
+The two address-keyed limits use the direct TCP peer unless `trusted_proxy_ranges` trusts a proxy (see [Trusted reverse proxies](#trusted-reverse-proxies)).
+
+Operational caveats:
+
+- **External providers require both keys.** Selecting Google reCAPTCHA v3 or Cloudflare Turnstile requires both a site key and a secret. Pass both in one `captcha set` command, or save them before switching providers.
+- **Captcha cost scales linearly with wait time.** The browser runs ~256 derivations per solve (~256 × cost total). Issuance costs the Hub only one HMAC per challenge, so raising cost penalizes humans and bots equally.
+- **External providers verify online without a per-client cap.** Every request with a non-empty token makes an outbound siteverify call to Google or Cloudflare, so scripted garbage tokens can consume your quota. Built-in ALTCHA has no outbound egress and self-throttles via client-side proof-of-work. Disabling captcha still keeps Argon2 password cost and the honeypot active.
+
+#### When ALTCHA runs
+
+The Hub requires built-in ALTCHA only when both conditions hold:
+
+1. **The browser can run WebCrypto (`SubtleCrypto`).** Browsers expose WebCrypto only in a secure context: HTTPS, or plain HTTP on loopback (`localhost`, `127.0.0.1`, `*.localhost`).
+2. **External users can reach the Hub.** A loopback-only or unpublished Hub has no external audience, so proof-of-work adds friction without value.
+
+The Hub checks two settings in order:
+
+1. `public_url` (when set): ALTCHA runs if the URL is a secure context and its host is not loopback.
+2. `secure_cookies` (when `public_url` is unset): ALTCHA runs if `secure_cookies` is `true`, indicating the Hub is served over HTTPS.
+
+With neither setting, an unpublished Hub skips ALTCHA on sign-in, sign-up, account recovery, and email verification without modifying the stored `captcha.enabled` setting. The honeypot still runs. Publishing `public_url` over HTTPS (recommended behind a TLS-terminating reverse proxy) restores ALTCHA automatically. ReCAPTCHA v3 and Turnstile are never restricted by this check because they work over plain HTTP.
+
+Because showing a browser notice would tell bots that captcha is off, the Hub reports the state change in its server log once per transition:
+
+```text
+WARN captcha is enabled in the settings but verifies nothing reason="the selected provider needs a secure browser context, and this hub publishes no secure address" remedy="set public_url to the https address that your users type"
+```
+
+Setting `public_url` or `secure_cookies` logs `captcha enforcement restored: this hub publishes a secure browser address` at `INFO`.
+
+See [Captcha](/docs/admin/admin-cli/#captcha) and [Rate limits](/docs/admin/admin-cli/#rate-limits) for the full flag reference.
+
+### Passkeys
+
+Passkeys have no separate on/off switch. A WebAuthn ceremony runs only when both parties allow it:
+
+1. **The browser** requires a secure context (HTTPS, or plain HTTP on loopback) and WebAuthn support. Serve the Hub over HTTPS wherever users reach it by hostname.
+2. **The Hub** permits ceremonies only at its published origins: `public_url` when set (scheme and host, no path), or otherwise the TCP `listen` address plus loopback spellings (`localhost`, `127.0.0.1`, `[::1]`) when listening on loopback. The match checks scheme, host, and port.
+
+When the Hub rejects the origin (for example, a user visits a LAN IP behind a reverse proxy), the sign-in and sign-up forms hide the **Passkey** option. When the browser refuses the context, the option remains visible but disabled with the reason shown. In **Preferences → Account**, either refusal disables **Add passkey** with the reason.
+
+Changing `public_url` (via CLI or **Preferences → Administration → General**) takes effect immediately without a restart or page reload. See [Accounts & Authentication](/docs/using/accounts/#passkeys) and [Troubleshooting](/docs/reference/troubleshooting/#passkey-sign-in-fails-or-the-authenticator-never-appears).
+
+### Outbound queue memory
+
+Every long-lived stream the Hub writes to — browser tabs on `/ws/channel`, connected Workers on `/ws/worker`, and browser tabs on `/ws/userevents` — buffers outbound frames so one slow reader cannot stall others. The `queue_budget` setting (`restart` class) sets three separate byte budgets so backlog in one pool never starves the others.
+
+When left at `0` (default), the Hub allocates a quarter of its detected memory limit across the three pools (capped at 8 GiB total):
+
+| Pool (`queue_budget` field) | Default share | Recovery on pressure |
+| --- | --- | --- |
+| Channel relays (`relay_bytes`) | 4/32 (12.5%) | Disconnects largest holder (`pool_pressure`); peer reconnects. |
+| Worker streams (`worker_bytes`) | 2/32 (6.25%) | Disconnects largest holder (`pool_pressure`); Worker reconnects. |
+| User events (`userevents_bytes`) | 2/32 (6.25%) | Drops frame and resynchronizes from cursor (`leapmux_userevents_frames_dropped_total`). |
+
+The Hub determines its memory limit from the first available source in order:
+
+1. `GOMEMLIMIT` (if set)
+2. Linux cgroup memory limit (ensuring accurate container defaults; logs a one-time warning if unreadable)
+3. Total physical memory
+4. `512 MiB` fallback
+
+The Hub logs the resolved basis and all three pool budgets at startup. Override any field explicitly when your fleet skews toward many Workers or many tabs:
+
+```bash
+leapmux admin settings set queue_budget '{"relay_bytes":1073741824}'
+```
+
+Key sizing rules:
+
+- **Each budget has a floor.** Every pool must fit one largest frame of its kind plus a small per-connection working set; values below the floor are rejected on write. `max_message_size_bytes` does not raise the floor because the Hub relays individual encrypted chunks rather than reassembled messages.
+- **Account for memory overhead.** A user-event frame is charged at twice its encoded wire size. Size budgets against `leapmux_sendq_pool_used_bytes`, not raw network bytes.
+- **Transient assembly spikes are outside the budget.** Budgets limit *queued* frames, not snapshot construction during a reconnect storm.
+- **Oversized initial snapshots fail permanently.** If an account's opening user-events snapshot exceeds the entire `userevents_bytes` budget, the Hub refuses the connection (`bound="capacity"` on `leapmux_userevents_frames_dropped_total`, versus transient `bound="bytes"`). Raise `userevents_bytes` to fix it.
+- **Watch overcommits.** Sustained growth in `leapmux_sendq_pool_overcommits_total` means more connections exist than the budget can guarantee working sets for. Raise the budget or scale out.
+
+See [Configuration Reference — Prometheus metrics](/docs/admin/configuration-reference/#prometheus-metrics) for the complete `/metrics` reference.
+
+### Connections per user
+
+`max_connections_per_user` (default `32`, `0` = unlimited) caps concurrent long-lived sockets per account so a leaking client cannot exhaust queue-pool working sets.
+
+- **It counts sockets, not tabs.** An active browser tab holds two sockets (one for live updates and one for encrypted channels). Browser tabs, the desktop app, and `leapmux` CLI sessions share the same account allowance — roughly 16 active tabs alongside CLI sessions at the default of `32`.
+- **Tunnels share one connection per Worker.** Multiple tunnels to the same Worker count as one connection.
+- **Refusal keeps existing tabs alive.** At the limit, the Hub refuses the newest connection and increments `leapmux_connections_refused_total{reason="too_many_connections"}`. Close an unused tab and reload, or raise the setting.
+
+{{< callout type="info" >}}
+In solo and desktop mode, every client authenticates as the single local account and shares one allowance. Raise `max_connections_per_user` first if you regularly keep more than 16 active tabs open.
+{{< /callout >}}
+
+### Workers per user
+
+`max_workers_per_user` (default `64`, `0` = unlimited) caps live Worker pool membership per account at both **registration** and **connection**. Counting live pool members prevents an account from bypassing the pool limit by repeatedly registering and deregistering Workers. Worker streams do not count against `max_connections_per_user`.
+
+A registration refusal returns `resource_exhausted`. A connection refusal closes the WebSocket with status `1013` and reason `max_workers_per_user`, which the Worker logs and retries. The Hub counts both in `leapmux_worker_admissions_refused_total` (`stage="register"` or `stage="connect"`).
+
+### Idle connections
+
+The Hub probes every browser WebSocket and every Worker stream every 10 seconds with a 10-second timeout. Two consecutive failed probes close the connection so dead peers release `max_connections_per_user` and Worker pool slots promptly instead of waiting for OS TCP keepalives. The Hub ignores unmatched probe replies and rate-limits inbound WebSocket control frames per connection.
+
+### Agents after a Worker restart
+
+A Worker restart stops every agent process it hosts, then brings qualifying agents back automatically once the Worker reconnects to its Hub:
+
+- An agent resumes its prior conversation automatically if its tab is open and the agent ran at least once before.
+- Idle tabs (never sent a message), closed tabs, and agents whose last start failed are skipped.
+- A Worker that cannot reach its Hub starts no agents and retries on each later reconnect.
+- `agent_startup_concurrency` (`0` = 4, or the CPU count when lower) limits how many agents start simultaneously on recovery. It does not cap total running agents or delay manually started agents. Set it to `1` on constrained hosts, and close unneeded tabs so restarts do not respawn unused processes.
+
 ## Configuration of a service
 
-A service reads the configuration file at the path that it saved, each time it starts. It does not inherit the environment of the shell that started it, so a `LEAPMUX_*` variable in that shell does not reach it. The service saves the runtime flags that you give to `start`, `restart`, or `enable`, and the path of the configuration file. [Change the configuration of a service](/docs/admin/starting-and-stopping/#change-the-configuration-of-a-service) explains how to change each of them, and how to give the service environment variables.
+A service reads the config file at its saved path on every start and does not inherit variables from the shell that started it. The service saves the runtime flags given to `start`, `restart`, or `enable`, plus the config file path. See [Change the configuration of a service](/docs/admin/starting-and-stopping/#change-the-configuration-of-a-service) to update flags, config files, or environment files.
 
 ## Help and version
 
-Every command prints its help, and the binary prints its version:
-
-- `-h` or `--help` prints help to stdout. After a mode (`leapmux daemon hub --help`), it lists the commands of the mode. After a command (`leapmux daemon hub <command> --help`), it prints the flags of that command, grouped by category. `leapmux help <command>` prints the same help.
-- `leapmux --version`, `leapmux -v` and `leapmux version` print the build version. A command takes no `--version` of its own, so `leapmux daemon hub run --version` fails as an unknown flag.
-
-`version` is a top-level command, not a mode command: `leapmux daemon hub version` fails with `unknown command "version" for "leapmux daemon hub"`. A command rejects an unexpected positional argument, identifies it, and points you at `--help`.
+- `-h`, `--help`, and `leapmux help <command>` print grouped help for any mode or subcommand.
+- `leapmux --version`, `leapmux -v`, and `leapmux version` print the build version. Subcommands take no `--version` flag, and `version` is a top-level command only (`leapmux daemon hub version` fails). Unexpected positional arguments are rejected with a pointer to `--help`.
 
 ## Related chapters
 
-- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data dirs, Docker.
-- [Reverse Proxy](/docs/admin/reverse-proxy/) — what the proxy must carry, and a tested configuration for nginx, Caddy, Traefik, HAProxy, and Apache httpd.
-- [Encryption & Data](/docs/admin/encryption-and-data/) — encryption key ring, rotation, DB migrations, backup/restore.
-- [Managing Workers](/docs/admin/managing-workers/) — registration keys, approval, Worker selection.
+- [Configuration Reference](/docs/admin/configuration-reference/) — complete key-by-key reference for Hub, Worker, storage backends, and Prometheus metrics.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data directories, and Docker.
+- [Reverse Proxy](/docs/admin/reverse-proxy/) — requirements and tested configs for nginx, Caddy, Traefik, HAProxy, and Apache httpd.
+- [Encryption & Data](/docs/admin/encryption-and-data/) — encryption key ring, rotation, DB migrations, and backup/restore.
+- [Managing Workers](/docs/admin/managing-workers/) — registration keys, TOFU pinning, and Worker selection.
 - [Sign-in Providers](/docs/admin/sign-in-providers/) — configuring OAuth/OIDC as an administrator.
-- [Security & Threat Model](/docs/admin/security/) — E2EE protocol, encryption modes, trust boundaries.
+- [Security & Threat Model](/docs/admin/security/) — trust boundaries, E2EE overview, and solo-mode rules.
 - [CLI Reference](/docs/reference/cli-reference/) — consolidated command and flag cheat-sheet.

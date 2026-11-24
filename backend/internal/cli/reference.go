@@ -40,17 +40,58 @@ func WriteReference(w io.Writer, tree CommandTree, path string) error {
 		rw.printf("Every command under `%s` takes these flags.\n\n", commandOf(*top))
 		rw.flagTable(global)
 	}
-	globalNames := map[string]bool{}
-	for _, f := range global {
-		globalNames[f.Name] = true
+	rw.commands(under, flagNameSet(global))
+	return rw.err
+}
+
+// SharedGlobalFlags returns the persistent flags carried by more than half of
+// the commands in tree whose top-level command name is not in excludeTopLevel,
+// in first-seen order. The boolean reports whether any returned flag is absent
+// from at least one included command (for example, --hub on offline commands).
+func SharedGlobalFlags(tree CommandTree, excludeTopLevel map[string]bool) ([]FlagInfo, bool) {
+	return sharedGlobalFlags(filterExcluding(tree, excludeTopLevel))
+}
+
+// WriteSharedFlags writes the "## Flags of every command" section and its
+// Markdown table for flags. When flags is empty, it writes nothing.
+func WriteSharedFlags(w io.Writer, flags []FlagInfo, hasPartialGlobal bool) error {
+	if len(flags) == 0 {
+		return nil
 	}
-	for _, c := range under {
-		if c.Group {
-			rw.group(c)
-			continue
+	rw := &referenceWriter{w: w}
+	rw.sharedFlags(flags, hasPartialGlobal)
+	return rw.err
+}
+
+// WriteReferenceForGroups writes the Markdown reference for the top-level
+// commands listed in topLevelNames, in that order, preserving each top-level
+// command's subtree order from tree. Flags present in globalFlags are omitted
+// from each leaf's flag table so callers can document them once on a shared
+// overview page.
+func WriteReferenceForGroups(w io.Writer, tree CommandTree, topLevelNames []string, globalFlags []FlagInfo) error {
+	if len(topLevelNames) == 0 {
+		return fmt.Errorf("topLevelNames must not be empty")
+	}
+	byTop := map[string][]CommandInfo{}
+	for _, c := range tree.Commands {
+		top, _, _ := strings.Cut(c.Path, " ")
+		byTop[top] = append(byTop[top], c)
+	}
+	seen := make(map[string]bool, len(topLevelNames))
+	var selected []CommandInfo
+	for _, name := range topLevelNames {
+		if seen[name] {
+			return fmt.Errorf("duplicate top-level command %q", name)
 		}
-		rw.leaf(c, globalNames)
+		seen[name] = true
+		cmds := byTop[name]
+		if len(cmds) == 0 {
+			return fmt.Errorf("the tree holds no top-level command %q", name)
+		}
+		selected = append(selected, cmds...)
 	}
+	rw := &referenceWriter{w: w}
+	rw.commands(selected, flagNameSet(globalFlags))
 	return rw.err
 }
 
@@ -60,6 +101,20 @@ func WriteReference(w io.Writer, tree CommandTree, path string) error {
 // the top (including flags such as --hub that offline commands disallow or
 // shadow locally).
 func WriteReferenceExcluding(w io.Writer, tree CommandTree, excludeTopLevel map[string]bool) error {
+	included := filterExcluding(tree, excludeTopLevel)
+	if len(included) == 0 {
+		return fmt.Errorf("the tree holds no matching commands")
+	}
+	global, hasPartialGlobal := sharedGlobalFlags(included)
+	rw := &referenceWriter{w: w}
+	if len(global) > 0 {
+		rw.sharedFlags(global, hasPartialGlobal)
+	}
+	rw.commands(included, flagNameSet(global))
+	return rw.err
+}
+
+func filterExcluding(tree CommandTree, excludeTopLevel map[string]bool) []CommandInfo {
 	var included []CommandInfo
 	for _, c := range tree.Commands {
 		top, _, _ := strings.Cut(c.Path, " ")
@@ -68,11 +123,13 @@ func WriteReferenceExcluding(w io.Writer, tree CommandTree, excludeTopLevel map[
 		}
 		included = append(included, c)
 	}
+	return included
+}
+
+func sharedGlobalFlags(included []CommandInfo) ([]FlagInfo, bool) {
 	if len(included) == 0 {
-		return fmt.Errorf("the tree holds no matching commands")
+		return nil, false
 	}
-	rw := &referenceWriter{w: w}
-	var global []FlagInfo
 	counts := map[string]int{}
 	firstSeen := map[string]FlagInfo{}
 	var order []string
@@ -88,6 +145,7 @@ func WriteReferenceExcluding(w io.Writer, tree CommandTree, excludeTopLevel map[
 			counts[f.Name]++
 		}
 	}
+	var global []FlagInfo
 	hasPartialGlobal := false
 	for _, name := range order {
 		if counts[name]*2 > len(included) {
@@ -97,27 +155,15 @@ func WriteReferenceExcluding(w io.Writer, tree CommandTree, excludeTopLevel map[
 			}
 		}
 	}
-	if len(global) > 0 {
-		rw.printf("## Flags of every command\n\n")
-		if hasPartialGlobal {
-			rw.printf("Every control command takes these output flags, and every online command takes `--hub` (offline commands such as `guide`, `context show`, and `context clear` do not contact a Hub). Commands marked below as not supporting `-q` / `--quiet` reject `--quiet` with exit code 2.\n\n")
-		} else {
-			rw.printf("Every control command takes these flags.\n\n")
-		}
-		rw.flagTable(global)
+	return global, hasPartialGlobal
+}
+
+func flagNameSet(flags []FlagInfo) map[string]bool {
+	names := make(map[string]bool, len(flags))
+	for _, f := range flags {
+		names[f.Name] = true
 	}
-	globalNames := map[string]bool{}
-	for _, f := range global {
-		globalNames[f.Name] = true
-	}
-	for _, c := range included {
-		if c.Group {
-			rw.group(c)
-			continue
-		}
-		rw.leaf(c, globalNames)
-	}
-	return rw.err
+	return names
 }
 
 // isPersistentOf reports whether every command in under carries f as a
@@ -253,6 +299,26 @@ func (rw *referenceWriter) leaf(c CommandInfo, globalNames map[string]bool) {
 			rw.printf("%s\n", ex.Command)
 		}
 		rw.printf("```\n\n")
+	}
+}
+
+func (rw *referenceWriter) sharedFlags(flags []FlagInfo, hasPartialGlobal bool) {
+	rw.printf("## Flags of every command\n\n")
+	if hasPartialGlobal {
+		rw.printf("Every control command takes these output flags, and every online command takes `--hub` (offline commands such as `guide`, `context show`, and `context clear` do not contact a Hub). Commands marked as not supporting `-q` / `--quiet` reject `--quiet` with exit code 2.\n\n")
+	} else {
+		rw.printf("Every control command takes these flags.\n\n")
+	}
+	rw.flagTable(flags)
+}
+
+func (rw *referenceWriter) commands(cmds []CommandInfo, globalNames map[string]bool) {
+	for _, c := range cmds {
+		if c.Group {
+			rw.group(c)
+			continue
+		}
+		rw.leaf(c, globalNames)
 	}
 }
 

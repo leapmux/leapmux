@@ -62,15 +62,17 @@ Leave the field on **Start a new session** to begin fresh. It is a real entry in
 
 The last entry, **Enter a session ID…**, swaps the menu for a text box. Use it for a session from another machine, or one older than the newest fifty. The field also falls back to that box on its own when the Worker finds no sessions at all — a directory with no history, a provider whose store this machine doesn't have, or a Worker that can't answer. The box checks what you type and reports a session ID it cannot use.
 
-Once you submit, the Worker asks the provider to reopen the native session. The new tab shows the chat rows an earlier LeapMux tab saved on this Worker; an external native session can resume without them, because its provider replays its own history. Whether the provider restores prior model context states the [matrix](#feature-matrix).
+Once you submit, the Worker asks the provider to reopen the native session. The new tab shows the chat rows an earlier LeapMux tab saved on this Worker; an external native session can resume without them, because its provider replays its own history. The [feature matrix](#feature-matrix) lists which providers restore prior model context.
 
 If native resume fails, the agent doesn't start and the tab reports why. Send `/clear` in the chat to start a fresh session instead.
 
 ### Automatic resume
 
-Most resumption happens automatically: the tab and its Worker transcript survive a Hub restart, a Worker restart, and a client reconnect. When LeapMux has to respawn an agent's process, it reconnects it to the prior session through the provider's own resume mechanism — whether that restores the provider's prior model context states the [matrix](#feature-matrix). If native resume fails, LeapMux reports the failure and keeps the transcript, so an empty session never replaces the conversation.
+Most resumption happens automatically: the tab and its Worker transcript survive a Hub restart, a Worker restart, and a client reconnect. When LeapMux has to respawn an agent's process, it reconnects it to the prior session through the provider's own resume mechanism — see the [feature matrix](#feature-matrix) for which providers restore prior model context. If native resume fails, LeapMux reports the failure and keeps the transcript, so an empty session never replaces the conversation.
 
 ## Chatting with an agent
+
+{{< screenshot src="coding-agent-chat" alt="LeapMux coding agent pane showing an inline diff edit card, permission prompt, queued follow-up with Steer, and composer chips" caption="An active coding agent pane with a structured Edit diff card, shell permission prompt, queued follow-up ready to steer, and composer model/effort chips." width="623" height="860" >}}
 
 The chat tab has the conversation transcript above and a Markdown editor at the bottom.
 
@@ -250,13 +252,7 @@ Not every image renders inline:
 - **Images above about 5 MB** show a placeholder instead of the picture.
 - **An image the agent gives by URL** shows an **open ↗** link instead of the picture. Rendering it would fetch from that host, which the transcript never does on its own.
 
-What a tool result can carry depends on the provider — see the [feature matrix](#feature-matrix). A few providers are worth calling out:
-
-- ZCode's app server turns an image part into a placeholder string before it reaches LeapMux, so LeapMux instead recovers the image from ZCode's stored attachment records.
-- Codewhale publishes immutable native image records; LeapMux stores verified image bytes beside the native tool event.
-- Cline supplies text-only tool results.
-- Amp can display an image from a file that `Read` opens; its MCP results supply text only.
-- Muse Code hands an image's bytes to the next model request, but its tool result states the file and media type as text alone.
+Whether a tool result includes inline images depends on the provider — some return images from both file reads and MCP tools, some support file reads only, and others return text-only tool results. Check the [feature matrix](#feature-matrix) for each provider's support and notes.
 
 ### The Goals & To-dos sidebar
 
@@ -264,7 +260,7 @@ This section holds two things an agent works toward: its session goal, and its t
 
 The **session goal** is a standing objective. The agent re-tests it at the end of every turn and keeps working while the condition does not hold. The card shows the objective, its status, and the counters the CLI reports; the [feature matrix](#feature-matrix) states which providers report one and which controls each offers.
 
-Set a goal from the card, and use the card's menu to change, pause, resume, or clear it where the provider supports that. A few providers differ in how a change travels: Claude Code, Goose, Kilo, and Grok Build take it as a message, which enters the agent's input queue and costs a turn (Grok Build runs a whole goal inside one turn, so its goal messages are sent to the agent at once rather than through the queue). Qwen Code receives goal changes through its goal control — a change takes effect at once, even while a goal round runs. Oh My Pi uses native goal commands. Clear an existing goal before setting another.
+Set a goal from the card, and use the card's menu to change, pause, resume, or clear it where the provider supports that. Some providers apply goal updates immediately through a native control, while others send the change as a chat message that takes a turn. Check the [feature matrix](#feature-matrix) for each provider's goal controls. Clear an existing goal before setting another.
 
 The **to-do list** shows each item's status (pending, in progress, completed). Whatever to-do or plan tracking the provider's own tools report feeds it. The list is server-authoritative, so it stays correct across reconnects.
 
@@ -338,17 +334,7 @@ Providers can add two adjacent permission shortcuts. **Smart permissions** selec
 
 Each safety-assisted mode approves the calls that it judges safe. The provider's mode decides what happens to the other calls: it asks you, or it denies the call.
 
-For Codex, **Smart permissions** selects **Approve for me**, Codex's auto-review mode.
-A reviewer agent decides each approval request.
-The transcript shows its decision and reason.
-
-A denied action has an **Approve** button.
-This records your authorization for the specified action in its original context.
-It does not run the action or enforce a one-use execution limit.
-
-After approval, the row shows **Approved**, including after a reload.
-Codex accepts this approval only in the main agent.
-A subagent's denied row has no approval button.
+When a provider uses an automated reviewer for safety-assisted mode, the transcript logs each decision and its reason. On a denied action in the main agent, you can click **Approve** to record authorization for that action in its original context (this does not run the action automatically); subagent rows do not offer this override. See the [feature matrix](#feature-matrix) for each provider's permission modes.
 
 **Bypass** is a deliberate choice that stays set: it stops the agent from asking for approval. Use it only when you trust the working directory and the task. For Codex, Bypass also approves the requests of work that started before the switch. A turn that is running keeps the approval policy that it started with, so Codex still sends those requests. The transcript states how many waiting requests Bypass approved.
 
@@ -358,7 +344,7 @@ For the providers whose effort LeapMux manages, effort defaults to **Auto**, mea
 
 ### Plan mode shortcut
 
-For providers that support a plan mode, **Shift+Tab** in the editor toggles between plan mode and the previous mode. Which providers those are states the [feature matrix](#feature-matrix).
+For providers that support a plan mode, **Shift+Tab** in the editor toggles between plan mode and the previous mode. The [feature matrix](#feature-matrix) lists which providers support plan mode.
 
 ## Driving agents from a script
 
@@ -398,7 +384,7 @@ leapmux agent open --worker <worker> --provider claude \
   --dir /repo --message "Start on the bug fix"
 ```
 
-`<agent>` is an id, a unique id prefix, `title:<title>`, `name:<name>`, a bare case-insensitive title/slug, or `self` for the agent that runs the command. See [Control CLI](/docs/using/control-cli/) for targets, output and errors, and the [Control Command Reference](/docs/reference/control-commands/#leapmux-agent) for every agent command.
+`<agent>` is an id, a unique id prefix, `title:<title>`, `name:<name>`, a bare case-insensitive title/slug, or `self` for the agent that runs the command. See [Control CLI](/docs/using/control-cli/) for targets, output, and errors, [CLI Automation](/docs/using/cli-automation/) for event-driven waits and JSON Schema replies, and the [Control Command Reference](/docs/reference/commands/agents/) for every agent command.
 
 ## Feature matrix
 

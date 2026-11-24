@@ -1904,6 +1904,14 @@ tasks:
       - bun scripts/verify-coding-agent-site.mjs
       - *record_artifacts
 
+  generate-site-screenshots:
+    desc: Regenerate deterministic light and dark documentation screenshots (deliberate; committed under site/static/images/docs/)
+    deps: [install-frontend-deps]
+    cmds:
+      # Run explicitly when the UI or screenshot fixtures change. Do not attach
+      # to `task site`, so CI and Cloudflare deploys stay fast and Chromium-free.
+      - bun scripts/generate-site-screenshots.mjs
+
   # --- Clean ---
 
   clean:

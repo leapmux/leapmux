@@ -1,19 +1,19 @@
 ---
 title: "Installation"
-description: "Ways to install LeapMux: the desktop app for macOS, Linux, and Windows, the leapmux binary, and Docker images for a self-hosted server and agent machines."
+description: "Ways to install LeapMux: the desktop app for macOS, Linux, and Windows, the standalone leapmux binary, Docker images, and building from source."
 type: docs
-weight: 3
+weight: 2
 ---
 
-Pick the way to get LeapMux that matches how you want to run it:
+Pick the installation method that matches how you plan to run LeapMux:
 
-- **Desktop app** — the fastest way to try LeapMux on your own machine. Download a single installer, run it, and you have a Hub and Worker running together locally with no network setup.
-- **Docker** — the recommended way to run a Hub (or a Hub plus Worker) as a long-lived service for a team or on a server.
-- **Standalone binary** — the pre-built `leapmux` command-line binary, for running any mode on a host without Docker and without compiling.
-- **From source** — for contributors and administrators who want to build the binary, images, or desktop app themselves.
+- **Desktop app** — the fastest way to run LeapMux on your own machine. Download one installer, run it, and start a local Hub and Worker with no network setup.
+- **Standalone binary** — the pre-built `leapmux` command-line interface (CLI) binary, for running any mode on a host without Docker and without compiling.
+- **Docker** — pre-built multi-architecture images for running a Hub or Worker as a long-lived service on a server.
+- **From source** — for administrators and developers who want to compile the binary, Docker images, or desktop app themselves.
 
 {{< callout >}}
-If you just want to run LeapMux, the pre-built Docker images, desktop app installers, and standalone binaries are all you need.
+If you just want to run LeapMux, the pre-built desktop app installers, standalone binaries, and Docker images are all you need.
 {{< /callout >}}
 
 ## Which install should I choose?
@@ -26,7 +26,7 @@ If you just want to run LeapMux, the pre-built Docker images, desktop app instal
 | Run a Hub or Worker on a host without Docker | **Standalone binary** | A single self-contained `leapmux` executable you run directly. |
 | Modify LeapMux, or build your own images/artifacts | **From source** | Full control over the build via `task` targets. |
 
-For more on what each run mode does (solo vs. hub vs. worker vs. dev) and how to operate them, see [Running LeapMux](/docs/admin/running-leapmux/). For your very first session once LeapMux is installed, see [Quick Start](/docs/getting-started/quick-start/).
+For a side-by-side comparison of deployment shapes, see [Ways to Run LeapMux](/docs/getting-started/ways-to-run/). For operational details on each run mode, see [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Supported platforms
 
@@ -46,23 +46,24 @@ The standalone server binary for macOS is distributed as `darwin_arm64` only.
 
 ## Desktop app
 
-The desktop app is a self-contained application that bundles the LeapMux Frontend and a local service. On first launch it presents a **LeapMux** launcher asking how you want to connect — **Solo** (a Hub and Worker run together on this machine; no network setup, your data stays local) or **Distributed** (connect to a remote Hub by URL; you sign in through the system browser). See [Quick Start](/docs/getting-started/quick-start/) for what to do after the app opens.
+The desktop app bundles the LeapMux Frontend and an embedded local service. On first launch it opens a **LeapMux** launcher asking how you want to connect:
 
-### Download
+- **Solo** — run a Hub and Worker together on this machine over local inter-process communication (IPC), with no network setup.
+- **Distributed** — connect to a remote Hub by URL and sign in through your system browser.
 
 Download the installer for your platform from the [Releases page](https://github.com/leapmux/leapmux/releases). Artifact names follow these patterns (where `<version>` is the release version):
 
 | Platform | Artifact |
 |----------|----------|
-| macOS (arm64)        | `LeapMuxDesktop_<version>_arm64.dmg` |
-| Windows (amd64)      | `LeapMuxDesktop_<version>_x64.msi` |
-| Linux (amd64)        | `leapmux-desktop_<version>_x86_64.AppImage`, `leapmux-desktop_<version>_amd64.deb` |
-| Linux (arm64)        | `leapmux-desktop_<version>_aarch64.AppImage`, `leapmux-desktop_<version>_arm64.deb` |
+| macOS (arm64)   | `LeapMuxDesktop_<version>_arm64.dmg` |
+| Windows (amd64) | `LeapMuxDesktop_<version>_x64.msi` |
+| Linux (amd64)   | `leapmux-desktop_<version>_x86_64.AppImage`, `leapmux-desktop_<version>_amd64.deb` |
+| Linux (arm64)   | `leapmux-desktop_<version>_aarch64.AppImage`, `leapmux-desktop_<version>_arm64.deb` |
 
-### macOS
-
-1. Download the `.dmg`.
-2. Open it and drag **LeapMux Desktop** into your Applications folder.
+{{< tabs >}}
+{{< tab name="macOS" selected=true >}}
+1. Download `LeapMuxDesktop_<version>_arm64.dmg`.
+2. Open the `.dmg` and drag **LeapMux Desktop** into your Applications folder.
 3. Launch **LeapMux Desktop**.
 
 The macOS build is signed with a Developer ID and notarized, so it opens without Gatekeeper warnings.
@@ -72,20 +73,20 @@ Solo mode on macOS requires **Full Disk Access** so LeapMux can traverse directo
 {{< /callout >}}
 
 {{< callout >}}
-On macOS the desktop app can install a `leapmux` command-line symlink at `/usr/local/bin/leapmux` so you can use the [Remote control CLI](/docs/using/control-cli/) from a terminal. When you enter a Solo workspace and the CLI isn't on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
+On macOS, the desktop app can install a `leapmux` symlink at `/usr/local/bin/leapmux` so you can use the [Control CLI](/docs/using/control-cli/) from a terminal. When you enter a Solo workspace and `leapmux` is not on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
 {{< /callout >}}
+{{< /tab >}}
 
-### Linux
+{{< tab name="Linux" >}}
+Two formats are provided; pick the one that fits your distribution:
 
-Two formats are provided; pick the one that suits your distribution:
-
-- **`.deb`** — for Debian/Ubuntu-based systems. Install with your package manager, for example:
+- **`.deb`** — for Debian and Ubuntu systems. The package also installs the `leapmux` CLI binary at `/usr/bin/leapmux`.
 
   ```bash
   sudo apt install ./leapmux-desktop_<version>_amd64.deb
   ```
 
-  The `.deb` also places the `leapmux` command-line binary at `/usr/bin/leapmux`.
+  After installation, launch **LeapMux Desktop** from your application menu.
 
 - **`.AppImage`** — a portable, single-file executable that needs no installation:
 
@@ -93,75 +94,35 @@ Two formats are provided; pick the one that suits your distribution:
   chmod +x leapmux-desktop_<version>_x86_64.AppImage
   ./leapmux-desktop_<version>_x86_64.AppImage
   ```
+{{< /tab >}}
 
-After installing the `.deb`, launch **LeapMux Desktop** from your application menu.
+{{< tab name="Windows" >}}
+1. Download `LeapMuxDesktop_<version>_x64.msi`.
+2. Run the installer. It is **per-user** — it requires no administrator elevation and installs under `%LOCALAPPDATA%\Programs\LeapMux Desktop`.
+3. Launch **LeapMux Desktop** from the Start menu or desktop shortcut.
 
-### Windows
-
-1. Download the `.msi`.
-2. Run it. The installer is **per-user** — it requires no administrator elevation and installs under `%LOCALAPPDATA%\Programs\LeapMux Desktop`.
-3. Launch **LeapMux Desktop** from the Start menu or the desktop shortcut.
-
-The installer also ships the `leapmux.exe` command-line tool in a `cli\` subdirectory and adds that directory to your user `PATH`. WebView2 is installed automatically if it isn't already present.
+The installer also ships `leapmux.exe` in a `cli\` subdirectory and adds that directory to your user `PATH`. WebView2 installs automatically if it is missing.
+{{< /tab >}}
+{{< /tabs >}}
 
 {{< callout type="info" >}}
 The desktop app has no built-in auto-updater. To upgrade, download the newer installer from the Releases page and install it over the existing version.
 {{< /callout >}}
 
-## Docker
-
-Pre-built multi-arch images (`linux/amd64` + `linux/arm64`) are published to [GHCR](https://github.com/leapmux/leapmux/pkgs/container/leapmux) at `ghcr.io/leapmux/leapmux`. The image is configured as follows:
-
-- **`LEAPMUX_MODE`** — **required.** Selects the subcommand and must be one of `hub`, `worker`, `dev`, or `solo`.
-- **`LEAPMUX_DATA_DIR`** — data directory inside the container. Default `/data`.
-- The image **exposes port `4327`**, the single TCP listen port for `hub`, `dev`, and `solo`. (A `worker` makes only outbound connections to a Hub, so it needs no inbound port.)
-- State and configuration live under `/data/<mode>/` — e.g. `/data/hub/` for the Hub database, encryption key ring, and config file. Mount a volume at `/data` so this survives container recreation.
-
-### Run examples
-
-```bash
-# Run as a hub (central service only) — login required
-docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
-
-# Run as hub + worker together (dev mode) — listens on all interfaces, login required
-docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
-```
-
-For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the `:dev` tag), container configuration, restart policies, and the `/data` volume layout, see [Running LeapMux](/docs/admin/running-leapmux/), which is canonical for Docker operations. Anything beyond `LEAPMUX_MODE` and `LEAPMUX_DATA_DIR` is configured through the per-mode YAML file or through `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables — see [Configuration](/docs/admin/configuration/).
-
-{{< callout type="info" >}}
-Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary defaults to binding loopback only (`127.0.0.1:4327`), so the port is not reachable from outside the container unless you override the listen address in `/data/solo/solo.yaml`. `dev` mode binds all interfaces (`:4327`) and is the container-friendly all-in-one variant.
-{{< /callout >}}
-
-{{< callout type="warning" >}}
-The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container. Set `public_url`, `secure_cookies`, and `trusted_proxy_ranges` with `leapmux admin settings set`. See [Reverse Proxy](/docs/admin/reverse-proxy/) for a tested configuration of each common proxy.
-{{< /callout >}}
-
-### Running a Worker container
-
-A `worker` container connects out to a Hub. Register it once with a key from the Hub's **Register worker** dialog, in a temporary container that mounts the same volume, then run the Worker container. [Running a Worker container](/docs/admin/running-leapmux/#running-a-worker-container) gives both commands.
-
-### Upgrading
-
-Pull a newer tag and recreate the container against the **same `/data` volume**. Database migrations run automatically on startup, so no separate migration command is needed:
-
-```bash
-docker pull ghcr.io/leapmux/leapmux:latest
-# stop and remove the old container, then re-run with the same -v leapmux-data:/data
-```
-
 ## Standalone binary
 
-Each release also publishes a **LeapMux Server** package on the [Releases page](https://github.com/leapmux/leapmux/releases): the pre-built `leapmux` command-line binary, bundled with `LICENSE.md` and `NOTICE.md`. This is the simplest way to run a Hub, Worker, dev, or solo instance on a host where you don't want Docker and don't want to compile from source. The same binary serves every run mode via its subcommands — see the [CLI reference](/docs/reference/cli-reference/).
+Each release publishes a **LeapMux Server** archive on the [Releases page](https://github.com/leapmux/leapmux/releases) containing the pre-built `leapmux` binary alongside `LICENSE.md` and `NOTICE.md`. One binary serves every run mode (`solo`, `hub`, `worker`, `dev`) and every control command.
 
 | Platform | Artifact |
 |----------|----------|
-| macOS (arm64)        | `leapmux_<version>_darwin_arm64.tar.gz` |
-| Linux (amd64)        | `leapmux_<version>_linux_amd64.tar.gz` |
-| Linux (arm64)        | `leapmux_<version>_linux_arm64.tar.gz` |
-| Windows (amd64)      | `leapmux_<version>_windows_amd64.zip` |
+| macOS (arm64)   | `leapmux_<version>_darwin_arm64.tar.gz` |
+| Linux (amd64)   | `leapmux_<version>_linux_amd64.tar.gz` |
+| Linux (arm64)   | `leapmux_<version>_linux_arm64.tar.gz` |
+| Windows (amd64) | `leapmux_<version>_windows_amd64.zip` |
 
-Download the archive for your platform, extract it, and run the `leapmux` executable. For example, on Linux:
+{{< tabs >}}
+{{< tab name="macOS & Linux" selected=true >}}
+Download the `.tar.gz` archive for your OS and architecture, extract it, and place `leapmux` on your `PATH` (for example `/usr/local/bin`):
 
 ```bash
 tar -xzf leapmux_<version>_linux_amd64.tar.gz
@@ -170,19 +131,84 @@ cd leapmux_<version>_linux_amd64
 ./leapmux daemon hub stop         # Stop it.
 ```
 
-The same commands work for `solo` and `dev`. A service keeps running after you log out, and starts again after a restart of the computer; see [Starting and Stopping](/docs/admin/starting-and-stopping/). Register a standalone Worker before you start it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
-
 The macOS package is signed with a Developer ID and notarized.
+{{< /tab >}}
+
+{{< tab name="Windows" >}}
+Download `leapmux_<version>_windows_amd64.zip`, extract it, and add the folder containing `leapmux.exe` to your `PATH`:
+
+```powershell
+Expand-Archive .\leapmux_<version>_windows_amd64.zip -DestinationPath .\leapmux
+cd .\leapmux
+.\leapmux.exe daemon hub start    # Start a Hub in the background as a service.
+.\leapmux.exe daemon hub stop     # Stop it.
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+The same `start` and `stop` commands work for `solo` and `dev`. A service keeps running after you log out and restarts after a reboot; see [Starting and Stopping](/docs/admin/starting-and-stopping/). Register a standalone Worker before starting it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 
 {{< callout >}}
-Put `leapmux` somewhere on your `PATH` (e.g. `/usr/local/bin`) so you can invoke it from any directory and use the [Remote control CLI](/docs/using/control-cli/). To upgrade, replace the binary with the one from a newer release archive; Hub and Worker database migrations run automatically the next time you start.
+Put `leapmux` on your `PATH` so you can invoke it from any directory and use the [Control CLI](/docs/using/control-cli/). To upgrade, replace the binary with the newer release; Hub and Worker database migrations run automatically on startup.
 {{< /callout >}}
 
-For run modes, ports, and data directories, see [Running LeapMux](/docs/admin/running-leapmux/); for the full subcommand and flag reference, see [CLI Reference](/docs/reference/cli-reference/).
+## Docker
+
+Pre-built multi-architecture images (`linux/amd64` and `linux/arm64`) are published to [GitHub Container Registry (GHCR)](https://github.com/leapmux/leapmux/pkgs/container/leapmux) at `ghcr.io/leapmux/leapmux`.
+
+- **`LEAPMUX_MODE`** — **required.** Selects the subcommand: `hub`, `worker`, `dev`, or `solo`.
+- **`LEAPMUX_DATA_DIR`** — data directory inside the container. Defaults to `/data`.
+- The image **exposes port `4327`**, the single TCP listen port for `hub`, `dev`, and `solo`. A `worker` makes only outbound connections and needs no inbound port.
+- State and configuration live under `/data/<mode>/` (for example `/data/hub/` for the Hub database, encryption key ring, and config file). Mount a persistent volume at `/data`.
+
+{{< tabs >}}
+{{< tab name="Hub (central service)" selected=true >}}
+```bash
+# Run as a central Hub — login required
+docker run -p 4327:4327 \
+  -e LEAPMUX_MODE=hub \
+  -v leapmux-data:/data \
+  ghcr.io/leapmux/leapmux:latest
+```
+{{< /tab >}}
+
+{{< tab name="All-in-one (dev)" >}}
+```bash
+# Run Hub + Worker together — listens on all interfaces, login required
+docker run -p 4327:4327 \
+  -e LEAPMUX_MODE=dev \
+  -v leapmux-data:/data \
+  ghcr.io/leapmux/leapmux:latest
+```
+{{< /tab >}}
+
+{{< tab name="Upgrade" >}}
+Pull a newer tag and recreate the container against the **same `/data` volume**. Database migrations run automatically on startup:
+
+```bash
+docker pull ghcr.io/leapmux/leapmux:latest
+# Stop and remove the old container, then re-run with the same -v leapmux-data:/data
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, `:dev`), container restart policies, and the `/data` layout, see [Running LeapMux](/docs/admin/running-leapmux/). Configure options beyond `LEAPMUX_MODE` and `LEAPMUX_DATA_DIR` through the per-mode YAML file or `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables; see [Configuration](/docs/admin/configuration/).
+
+{{< callout type="info" >}}
+Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary defaults to binding loopback only (`127.0.0.1:4327`), so the port is unreachable from outside the container unless you override the listen address in `/data/solo/solo.yaml`. `dev` binds all interfaces (`:4327`).
+{{< /callout >}}
+
+{{< callout type="warning" >}}
+The Hub does not terminate Transport Layer Security (TLS) itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and configure `public_url`, `secure_cookies`, and `trusted_proxy_ranges` with `leapmux admin settings set`. See [Reverse Proxy](/docs/admin/reverse-proxy/) for tested configurations.
+{{< /callout >}}
+
+### Running a Worker container
+
+A `worker` container dials out to a Hub. Register it once with a key from the Hub's **Register worker** dialog in a temporary container that mounts the same volume, then start the Worker container. [Running a Worker container](/docs/admin/running-leapmux/#running-a-worker-container) gives both commands.
 
 ## From source
 
-Building from source is for contributors and administrators who want to compile the binary, Docker images, or desktop app themselves. The full developer guide lives in the project [`README.md`](https://github.com/leapmux/leapmux); this section is a high-level pointer.
+Building from source lets you compile the binary, Docker images, or desktop app yourself. The full developer guide lives in the project [`README.md`](https://github.com/leapmux/leapmux).
 
 ### Prerequisites
 
@@ -197,9 +223,7 @@ Building from source is for contributors and administrators who want to compile 
 - **Rust toolchain** and your platform's Tauri WebView/system packages — only for the desktop app
 - **Docker** — only for building Docker images
 
-The Go-based tools `sqlc`, `golangci-lint`, and `gotestsum` each have a separate module under `tools/`.
-Task builds each tool with its own dependency graph and runs it in the application directory.
-You do not need to install these tools separately.
+The Go tools `sqlc`, `golangci-lint`, and `gotestsum` each live in a separate module under `tools/`. Task builds and runs them automatically, so you do not need to install them separately.
 
 ### Build and run
 
@@ -221,11 +245,11 @@ Common build targets:
 | `task build-desktop` | The Tauri desktop app |
 | `task docker-build` | Both Alpine and Ubuntu Docker images |
 
-For the platform-specific dependency install commands (Homebrew, pacman, winget) and the full set of dev workflows, follow the project [`README.md`](https://github.com/leapmux/leapmux). For what each run mode does once built, see [Running LeapMux](/docs/admin/running-leapmux/).
+For platform-specific dependency install commands (Homebrew, pacman, winget), see the project [`README.md`](https://github.com/leapmux/leapmux).
 
 ## Next steps
 
-- [Quick Start](/docs/getting-started/quick-start/) — launch LeapMux and open your first agent.
-- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data directories, Docker, and reverse proxies in depth.
-- [Configuration](/docs/admin/configuration/) — the full configuration key reference and storage backends.
-- [Managing Workers](/docs/admin/managing-workers/) — register and approve Workers connecting to a Hub.
+- [Quick Start](/docs/getting-started/quick-start/) — launch LeapMux and run your first parallel agent session.
+- [Ways to Run LeapMux](/docs/getting-started/ways-to-run/) — compare Solo, remote Workers behind NAT, and multi-user Hubs.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data directories, Docker, and reverse proxies.
+- [Managing Workers](/docs/admin/managing-workers/) — register, pin, and manage Workers connected to a Hub.

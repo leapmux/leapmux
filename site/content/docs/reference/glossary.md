@@ -2,7 +2,7 @@
 title: "Glossary"
 description: "Short, alphabetical definitions of the terms used throughout the LeapMux manual, each linking to the chapter that covers it in depth."
 type: docs
-weight: 4
+weight: 5
 ---
 
 Short definitions of the terms you will meet throughout the LeapMux manual. Each entry links to the chapter that covers the term in depth. Terms are listed alphabetically.
@@ -71,7 +71,7 @@ A tab popped out of the tiled layout into a movable, resizable, opacity-adjustab
 
 ### Frontend
 
-The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read. The **Worker** holds agent state, and the browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. The cache is not keyed to the account, and signing out does not clear it. One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
+The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read. The **Worker** holds agent state, while the browser caches rendered message text and code locally in IndexedDB (see [What stays on the browser](/docs/admin/encryption-and-data/#what-stays-on-the-browser)). One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
 
 ## G
 
@@ -83,7 +83,7 @@ A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with
 
 ### Hub
 
-The central service (`leapmux daemon hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity**, and a browser trusts it for code. It cannot read content while it only relays ciphertext. A Hub that acts can open its own channel as you, or serve modified Frontend code to a browser. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
+The central service (`leapmux daemon hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity**, and a browser trusts it for code. It cannot read content while it only relays ciphertext. A compromised or malicious Hub can open its own channel as you, or serve modified Frontend code to a browser. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## I
 
@@ -129,17 +129,17 @@ See **Active client (presence)**.
 
 A pseudo-terminal — the operating-system primitive behind a terminal tab. Each LeapMux terminal is a PTY running a real shell on the Worker, and its I/O and shell state live only on the Worker (the Hub never sees them). A PTY session stays attached across reconnects; across a Worker restart the shell cannot survive, but its last screen is preserved so the terminal can be restarted where it left off. See [Terminals](/docs/using/terminals/).
 
-## R
-
-### Registration key
-
-A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog, then pass it to `leapmux daemon worker register --registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
-
 ## Q
 
 ### Quake-mode terminal
 
 A shell that slides over the centre of the app for one working DIRECTORY, toggled with `Ctrl` and the key under `Esc` from any tab. It belongs to the directory rather than to a tab or a tile, so it costs the tab underneath no space. One shell per (Worker, working directory), shared by every tab in that directory and by every device; whether the panel is visible is per-device. It ends when the last tab working in its directory closes, or when you exit the shell. See [Quake-mode terminal](/docs/using/terminals/#quake-mode-terminal).
+
+## R
+
+### Registration key
+
+A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog, then pass it to `leapmux daemon worker register --registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
 
 ## S
 
@@ -182,7 +182,13 @@ A rectangular pane in the workspace's recursive tiling layout. A **leaf** tile i
 
 ### TOFU (trust on first use)
 
-The pinning scheme that protects Worker identity. On the first connection to a Worker the Frontend records the Worker's composite static public key, and rejects any later handshake whose key differs — so a Hub that substitutes a Worker key in a channel your browser opens causes a mismatch. This does not stop a Hub opening its own channel or serving modified Frontend code. A mismatch raises the **"Worker public key changed"** dialog showing 4-word fingerprints, where you must explicitly Accept or Reject. CLI and cross-Worker connections pin the same way. A desktop tunnel uses the account’s browser pin. On first contact, tunnel creation opens a browser channel and waits for it to verify and record the key. If the Hub reports a different key on reconnect, the tunnel stops and shows both fingerprints. Recreation requires a fresh key review and an explicit Create. The stored pin must still match the reviewed key when creation starts. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
+The pinning scheme that protects Worker identity. On the first connection to a Worker, the Frontend records the Worker's composite static public key and rejects any later handshake whose key differs. A Hub that substitutes a Worker key in a browser channel triggers a mismatch, though pinning does not stop a compromised Hub from opening its own channel or serving modified Frontend code.
+
+- **Browser:** A mismatch opens the **"Worker public key changed"** dialog with 4-word fingerprints, where you must explicitly **Accept** or **Reject**.
+- **CLI and cross-Worker:** Both pin Worker keys the same way.
+- **Desktop tunnels:** A tunnel uses the account's browser pin. On first contact, tunnel creation opens a browser channel and waits for it to verify and record the key. If the Hub reports a different key on reconnect, the tunnel stops and shows both fingerprints. Recreating the tunnel requires a fresh key review and an explicit **Create**, and the stored pin must still match the reviewed key when creation starts.
+
+See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
 
 ## W
 
