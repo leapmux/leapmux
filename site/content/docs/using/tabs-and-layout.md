@@ -1,285 +1,133 @@
 ---
 title: "Tabs & Layout"
-description: "Build a workspace layout in LeapMux: divide the canvas into tiles, fill them with agent, terminal, file, and image tabs, arrange splits and grids, and float panes."
+description: "Arrange your workspace canvas in LeapMux: manage agent, terminal, file, and image tabs, build splits and grids, pop out floating windows, and switch between desktop and mobile layouts."
 type: docs
-weight: 2
+weight: 4
 ---
 
-The center of every workspace is a tiling canvas. You divide it into **tiles** (rectangular panes) and fill each tile with **tabs** (agents, terminals, files, or images). You arrange tiles as splits or grids. When a pane must float above everything else, pop a tab out into a movable, resizable **floating window**. This chapter explains every part of that workflow.
+The center of every workspace is a tiling canvas. Divide it into **tiles** (rectangular panes), fill each tile with **tabs**, arrange tiles into splits or grids, or pop any tab out into a draggable **floating window**. Your tiling tree, tabs, and floating window geometry sync live across all of your devices (while active focus and window stacking order stay local). See [Workspaces](/docs/using/workspaces/#live-sync-across-devices) for sync details.
 
-The layout you build is part of the workspace, not just your local view: the tile tree is synced across reloads and across all of your devices. (Focus and floating-window stacking order stay local to your client.) See [Device Sync](/docs/using/device-sync/) for what does and does not sync.
-
-For the concept-level model of workspaces, tiles, and tabs, see [Concepts & Architecture](/docs/getting-started/concepts/). For the content that lives *inside* tabs, see [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/).
-
-{{< screenshot src="tabs-tiling-layout" alt="LeapMux tiled workspace showing a coding agent chat pane, inline file diff viewer, and integrated terminal side by side" caption="Tiled split panes keep a coding agent chat, a live diff viewer, and a shell terminal visible together." width="948" height="900" >}}
+{{< screenshot src="tabs-tiling-layout" alt="LeapMux tiled workspace showing a coding agent chat pane, inline file diff viewer, and integrated terminal side by side" caption="Tiled split panes keep a coding agent chat, an inline diff viewer, and a shell terminal visible together." width="948" height="900" >}}
 
 ## Tabs
 
-A tab holds one piece of content. There are three kinds:
+LeapMux supports four tab kinds:
 
-| Tab kind | What it is | Chapter |
-|---|---|---|
-| **Agent** | A coding-agent chat (Claude Code, Codex, and others) | [Coding Agents](/docs/using/coding-agents/) |
-| **Terminal** | A live shell / PTY session | [Terminals](/docs/using/terminals/) |
-| **File** | A file viewer or diff | [File Browser](/docs/using/file-browser/) |
+| Tab kind | What it holds | Learn more |
+| --- | --- | --- |
+| **Agent** | A coding-agent conversation and composer | [Coding Agents](/docs/using/coding-agents/) |
+| **Terminal** | A live shell pseudo-terminal (PTY) session | [Terminals](/docs/using/terminals/) |
+| **File** | A read-only file viewer or inline git diff | [File Browser](/docs/using/file-browser/) |
+| **Image** | A zoomable viewer for inline images opened from agent tool results | [Coding Agents](/docs/using/coding-agents/#images-in-tool-results) |
 
-Each tile shows a **tab bar** along its top and the active tab's content below. Exactly one tab is active per tile.
+Each tile displays a **tab bar** along the top and shows one active tab at a time.
 
 ### Opening tabs
 
-Open new tabs from the tab bar's new-tab controls (shown only in a workspace you can edit):
+In any active (non-archived) workspace, open tabs from the tile's tab bar or keyboard:
 
-- **New agent** — Up to two buttons for your most-recently-used agent providers appear directly in the tab bar (tooltip "New *Provider* agent"). If no agent providers are configured, a disabled robot button shows the tooltip "No agents available".
-- **New terminal** — A terminal button (tooltip "New terminal at the current working directory" when the tile already has a tab to inherit a working directory from, otherwise "New terminal..."). The keyboard shortcut is `Cmd/Ctrl + T`.
-- **More options** (the **+** button) — Opens a menu with everything else.
-
-The keyboard shortcut for a new agent tab is `Cmd/Ctrl + N`. If there is no active workspace when you press it, LeapMux opens the New Workspace dialog instead.
-
-The **More options** menu groups its actions:
+- **Recent agent buttons** — up to two buttons for your most recently used providers appear directly in the tab bar. Press `⌘N` / `Ctrl+N` to open an agent in the active tab's directory (or open **New workspace** when no workspace is active).
+- **New terminal button** — opens a terminal at the active tab's working directory (or opens the dialog when none is in scope). Shortcut: `⌘T` / `Ctrl+T`.
+- **More options (`+`)** — opens a menu listing all available providers (**New agent...**, `⇧⌘N` / `Ctrl+Shift+N`), all detected shells (**New terminal...**, `⇧⌘T` / `Ctrl+Shift+T`, with the Worker's default marked **(default)**), and **Advanced** toggles (**Expand agent thoughts** and **Show hidden messages**).
+- **Empty tab-bar space** — double-click empty space in the tab bar to open the **New agent** dialog.
 
 {{< screenshot src="tab-bar-more-menu" alt="LeapMux tab bar More options menu showing agent provider icons, New agent, New terminal, detected shells with default marker, and Advanced toggles" caption="The tab bar's + menu launches detected coding agents and shells directly or opens the full New agent and New terminal dialogs." width="480" height="712" >}}
 
-- **Agents** — one button per available provider, plus **New agent...** (`Cmd/Ctrl + Shift + N`).
-- **Terminals** — **New terminal...** (`Cmd/Ctrl + Shift + T`), then one entry per available shell. The configured default shell is marked **(default)**. See [Terminals](/docs/using/terminals/) for shell selection.
-- **Advanced** — toggles for **Expand agent thoughts** and **Show hidden messages** (a checkmark indicates the toggle is on).
+On narrow tiles, the tab bar collapses its controls into a single **`+`** button or a **`…`** overflow menu that also holds the tile's split, grid, and close actions.
 
-{{< callout >}}
-Double-click empty space in the tab list to open the New Agent dialog.
-{{< /callout >}}
+### Switching, status, and renaming
 
-When the tab bar is too narrow, it collapses. A minimal-width bar shows a single **+** button. A very narrow bar shows a **…** overflow button. The **…** menu also includes the tile actions — see [Splitting a tile](#splitting-a-tile).
-
-### Selecting, scrolling, and switching tabs
-
-- **Select** a tab by clicking it, or with `Enter`/`Space` when it is focused.
-- **Switch by number:** `Cmd/Ctrl + 1` through `Cmd/Ctrl + 9` (also `Alt + 1`–`Alt + 9`) select the Nth visible tab in the focused tile.
-- **Previous / next tab:** `Cmd/Ctrl + [` / `Cmd/Ctrl + ]` (also `Cmd/Ctrl + PageUp` / `Cmd/Ctrl + PageDown`). These wrap around and do nothing if the tile has fewer than two tabs.
-- When the tab list overflows, scroll the mouse wheel over it to scroll the tabs horizontally.
-
-A small dot on a tab (a **notification indicator**) means the tab has unseen activity; activating the tab clears it.
-
-A tab can also show a short **status** beside its title, such as "Running the tests", with a ring for its progress and a color for its tone. A process in the tab sets it with [`leapmux tab status set`](/docs/using/cli-automation/#telling-the-user). It goes away when the process clears it or the tab closes. Hover over it to read the whole text.
-
-### Renaming a tab
-
-Double-click an **agent** or **terminal** tab to rename it inline. Press `Enter` to commit, `Escape` to cancel; clicking away also commits. Empty or unchanged names are ignored.
-
-{{< callout type="info" >}}
-File and image tabs cannot be renamed — their titles come from what they show — and tabs in a read-only (archived) workspace cannot be renamed. Renaming an agent also updates the agent's name on the Worker; if that update fails, the new name is kept locally and may not match the agent on the Worker.
-{{< /callout >}}
-
-The New agent dialog pre-fills the Title field with a suggestion: `Agent <Name>`, from a shared pool. Accept the suggestion, or type your own name.
-
-An agent in [plan mode](/docs/using/coding-agents/#plan-mode-shortcut) renames a tab that still carries the suggestion. It uses the plan's own title, so the tab describes the work instead of a random name.
-
-To keep a name, type it in the dialog or rename the tab later. Plan mode then leaves that tab alone. LeapMux records where a name came from, so plan mode keeps a name you typed, even one that looks like a suggestion.
+- **Switch by number:** `⌘1`–`⌘9` / `Ctrl+1`–`Ctrl+9` (or `⌥1`–`⌥9` / `Alt+1`–`Alt+9`) jumps to the Nth tab in the focused tile.
+- **Cycle tabs:** `⌘[` / `Ctrl+[` (or `⌘PageUp` / `Ctrl+PageUp`) and `⌘]` / `Ctrl+]` (or `⌘PageDown` / `Ctrl+PageDown`) wrap through tabs in the focused tile.
+- **Scroll overflow:** Scroll the mouse wheel over a crowded tab bar to scroll horizontally.
+- **Activity and custom status:** A small dot marks unseen activity and clears when you activate the tab. Scripts or agents can also attach a short status badge with a progress ring and tone using `leapmux tab status set` (see [CLI Guide](/docs/using/cli-guide/)). Hover a truncated status to read it in full.
+- **Renaming:** Double-click an **agent** or **terminal** tab to rename it inline (`Enter` commits, `Esc` cancels). File tabs, image tabs, and tabs inside an archived workspace cannot be renamed. An agent tab still using its auto-generated `Agent <Name>` title is renamed automatically from the plan title when the agent enters plan mode; any name you type manually is preserved.
 
 ### Closing tabs
 
-Close a tab with the **X** on the tab, by **middle-clicking** it, or with `Cmd/Ctrl + W` for the active tab. In a read-only workspace, only file and image tabs can be closed.
+Close a tab by clicking its **×** button, middle-clicking it, or pressing `⌘W` / `Ctrl+W` for the active tab.
 
-Closing certain tabs triggers a confirmation:
+{{< callout type="info" >}}
+In an **archived** workspace, no tab of any kind — agent, terminal, file, or image — can be closed. Unarchive the workspace first to close or rearrange tabs.
+{{< /callout >}}
 
-- Closing the **last tab tied to a git worktree**, or the last non-worktree tab for a **branch with uncommitted or unpushed work**, raises the **Close last tab** dialog (see below).
-- Closing a tab is also what happens when you choose "Close all tabs" in a close-tile / close-grid / close-window dialog. Each tab is closed one at a time, so you may see a last-tab prompt for one of them.
+Closing a tab can prompt for confirmation in two situations (only one dialog ever opens per close):
 
-If the tab's Worker cannot be reached — it is offline, asleep, or deregistered — LeapMux cannot check git state, so it skips the dialog and closes the tab immediately. The Worker stops the agent or terminal process the next time it connects, and releases the worktree once it confirms that no tab still points at it.
+- **Worktree or dirty branch (`Close last tab`):** Closing the last tab tied to a linked worktree, or the last non-worktree tab on a branch with uncommitted or unpushed work, opens the **Close last tab** dialog so you can push, delete the worktree, or close while leaving files on disk. See [Worktrees & Branches](/docs/using/worktrees-and-branches/#dirty-worktree-protection-when-closing-tabs).
+- **Busy agent or terminal (`Close tab`):** Closing a running agent turn or a terminal with an active foreground process — when not already covered by the **Close last tab** dialog — opens the **Close tab** confirmation dialog. Click **`Close anyway`** twice to confirm and stop the running process; pressing `Enter` alone does not bypass the two-click guard.
 
-#### The "Close last tab" dialog
+{{< screenshot src="busy-tab-close-dialog" alt="LeapMux Close tab confirmation dialog warning that the Retry jitter agent is still working and offering Cancel and Close anyway buttons" caption="Closing a tab with a running agent turn or foreground terminal command prompts for confirmation before stopping it." width="608" height="294" >}}
 
-{{< screenshot src="close-last-tab-dialog" alt="LeapMux Close last tab confirmation dialog showing dirty worktree branch status, uncommitted diff stats, and Cancel, Commit and Push, Delete worktree, and Close anyway buttons" caption="Closing the last tab on a dirty worktree opens the Close last tab dialog so you can push, delete the worktree, or close without losing track of changes." width="608" height="514" >}}
-
-This dialog (titled **Close last tab**) protects you from accidentally abandoning a worktree or losing local git state. Its body explains the situation — either "This closes the last tab for this worktree." or "This closes the last non-worktree tab for this branch." — then names the checkout and its directory in a [status block](/docs/using/worktrees-and-branches/#branch-status-indicators), and states the affected tab: an agent or terminal "will be stopped", a file "will be closed".
-
-Footer buttons:
-
-| Button | Shown when | Effect |
-|---|---|---|
-| **Cancel** | always | Keeps the tab open. |
-| **Push** / **Commit and Push** | there is unpushed work | Pushes the branch (committing first if needed) before continuing. |
-| **Delete** | the tab is on a worktree | Schedules the worktree for deletion (confirmation required). |
-| **Close anyway** | always | Closes the tab and leaves git state untouched (confirmation required). |
-
-For everything about worktrees, branches, dirty-state protection, and pushing, see [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+If the tab's Worker is offline, LeapMux skips confirmation dialogs and closes the tab immediately; the Worker stops the underlying process the next time it connects.
 
 ### Moving and reordering tabs
 
-Drag a tab to rearrange it:
+Drag any tab to reorganize it:
 
-- **Reorder within a tile** — drop it onto a sibling tab.
-- **Move to another tile** — drop it onto that tile's tab bar. The target tab bar highlights as a drop target while you drag a tab from another tile over it.
-- **Move to another workspace** — drop it onto a workspace in the sidebar.
+- Drop onto a sibling tab to reorder within a tile.
+- Drop onto another tile's tab bar to move it into that pane.
+- Drop onto a workspace row in the left sidebar to move it into another workspace.
 
-Moving the active tab out of a tile automatically promotes another tab in that tile to active. Dragging the **last** tab out of a single-tile floating window removes the now-empty window.
+Moving the active tab promotes another tab in the source tile. Dragging the last tab out of a single-tile floating window closes that empty window automatically.
 
 ## Tiling: splits and grids
 
-A single tile can be divided into more panes. Each division is either a **split** (two panes) or a **grid** (rows × columns). Splits and grids can nest, building up a layout tree.
+Divide any tile into a two-pane **split** or an **R × C grid**. Splits and grids can nest up to a depth of **3** in the main layout (split and grid buttons disappear once a pane reaches depth 3; floating windows have no depth limit).
 
-{{< callout type="info" >}}
-In the main layout, splitting and gridding are allowed up to a nesting depth of **3**. Once a region is that deeply nested, its split/grid buttons stop appearing — flatten or use a grid instead. Floating windows have no depth limit.
-{{< /callout >}}
+### Tile action controls
 
-### The tile actions
+The right edge of each tile's tab bar shows available layout actions (collapsing into a **`…`** tile menu on narrow panes):
 
-Each tile's tab bar has a strip of action buttons on the right (it appears only when at least one action is available):
+| Button | Shortcut | What it does |
+| --- | --- | --- |
+| **Pop out** / **Pop in** | `⇧⌘O` / `Ctrl+Shift+O` | Lifts the active tab into a floating window, or docks a focused floating tab back into the main canvas. |
+| **Split horizontally** | `⌘\` / `Ctrl+\` | Inserts a horizontal divider (top and bottom stacked panes, 50/50). |
+| **Split vertically** | `⇧⌘\` / `Ctrl+Shift+\` | Inserts a vertical divider (left and right side-by-side panes, 50/50). |
+| **Make grid** | — | Opens the grid-size picker to divide the tile into rows and columns. |
+| **Close tile** / **Close grid** | — | Closes the tile (or closes the whole grid from its top-right anchor cell). |
 
-| Button | Icon | Label | What it does |
-|---|---|---|---|
-| Pop out / Pop in | Picture-in-picture | "Pop out to floating window" / "Pop in to main window" | Floats the active tab out, or docks it back. |
-| Split vertically | Columns | "Split vertically" | Inserts a **vertical divider** → two **side-by-side** panes. |
-| Split horizontally | Rows | "Split horizontally" | Inserts a **horizontal divider** → two **stacked** panes. |
-| Make grid | Grid | "Make grid" | Opens the grid-size popover. |
-| Close | X | "Close tile" / "Close grid" | Closes this tile. On a grid, only the anchor cell (top-right) shows an X, and it closes the whole grid. |
-
-{{< callout >}}
-"Split **vertically**" means a vertical divider that puts panes left-and-right. "Split **horizontally**" means a horizontal divider that stacks panes top-and-bottom. Match the word to the divider line, not to the arrangement of panes.
-{{< /callout >}}
-
-On a very short tile, the whole strip collapses into a single **…** ("Tile menu") button that opens the same actions in a dropdown. In that menu, **Make grid** appears as "Make a grid…".
-
-### Splitting a tile
-
-Split via the action buttons, the tile menu, or the keyboard:
-
-| Action | Shortcut |
-|---|---|
-| Split tile horizontally | `Cmd/Ctrl + \` |
-| Split tile vertically | `Cmd/Ctrl + Shift + \` |
-
-The shortcuts act on the **focused** tile. When you split, the tile becomes a two-pane split at a 50/50 ratio: your existing tabs move into the first pane, and the second pane starts empty (see [Filling an empty tile](#filling-an-empty-tile)).
-
-A **vertical** split inserts a vertical divider, leaving two side-by-side panes:
-
-```mermaid
-flowchart LR
-  subgraph split["Vertical split (50 / 50)"]
-    direction LR
-    left["Left pane: Agent tab (existing tabs)"]
-    right["Right pane: Terminal tab (starts empty)"]
-    left <-->|"Drag vertical divider to resize"| right
-  end
-```
-
-A **horizontal** split inserts a horizontal divider instead, stacking the two panes top-and-bottom.
+The direction matches the divider line: **Split vertically** draws a vertical divider for side-by-side panes; **Split horizontally** draws a horizontal divider for stacked panes. Your existing tabs stay in the first pane, and the new pane starts empty.
 
 ### Making a grid
 
-{{< screenshot src="tile-grid-popover" alt="LeapMux Make grid popover showing an interactive 3 by 4 cell hover picker and manual row and column inputs" caption="Pick a grid size visually with the hover picker or enter custom dimensions up to 20 × 20." width="382" height="322" >}}
+{{< screenshot src="tile-grid-popover" alt="LeapMux Make grid popover showing an interactive 3 by 4 cell hover picker and manual row and column inputs" caption="Choose grid dimensions with the hover picker or enter custom row and column counts up to 20 × 20." width="382" height="322" >}}
 
-Click **Make grid** to open the grid-size popover. You pick a size two ways:
+Click **Make grid** to pick dimensions up to **20 × 20** using either the interactive 6 × 9 hover picker (also navigable with arrow keys and `Enter`) or the manual **Rows** and **Columns** inputs. Existing tabs move into the top-left cell while the remaining cells start empty. From the narrowest overflow menu, the grid action creates a fixed **2 × 2** grid directly.
 
-- **Hover picker** — A grid of cells (up to 6 rows × 9 columns). Hover to highlight the top-left rectangle; the label reads, for example, "3 × 4" (or "Pick a size" before you hover). Click to apply. Arrow keys move the highlight; `Enter` applies; `Escape` dismisses.
-- **Manual entry** — Type into the **Rows** and **Columns** number fields (each 1–20) and click **Create**. **Create** stays disabled until both fields hold whole numbers in range; pressing `Enter` in either field also submits.
+### Resizing and closing panes
 
-The grid can be up to **20 × 20**. When you make a grid, the tile's existing tabs move into the **top-left cell** (cell 0,0); every other cell starts empty.
+Drag any divider between panes to resize them; panes cannot shrink below **5%** of their container.
 
-```mermaid
-block-beta
-  columns 2
-  c00["Cell 0,0 (existing tabs)"]
-  c01["Cell 0,1 (anchor cell — X closes whole grid)"]
-  c10["Cell 1,0 (empty)"]
-  c11["Cell 1,1 (empty)"]
-```
-
-{{< callout type="info" >}}
-From the narrowest tab-bar overflow menu, the make-grid action is a fixed **Make a 2×2 grid** rather than the size popover.
-{{< /callout >}}
-
-### Adjusting split and grid ratios
-
-Drag the divider between any two panes to resize them. The drag shows a live preview and commits when you release. No pane can be dragged below **5%** of its container, so a pane can never disappear by dragging. (Resizing by keyboard is not supported.)
-
-### Closing a tile or grid
-
-The **X** on a normal tile closes that tile; the **X** on a grid's **anchor cell** (its top-right cell) closes the entire grid.
-
-- A tile or grid with **no tabs** closes immediately.
-- A tile or grid that still **has tabs** raises a confirmation dialog: "This *tile/grid* contains *N* tab(s). What would you like to do?" with a preserve option, a danger **Close all tabs** option, and **Cancel**.
-
-| Dialog | Preserve action | What "preserve" does |
-|---|---|---|
-| **Close tile** | **Move tabs to neighbor** | Merges this tile's tabs into a neighboring tile, then removes the tile. |
-| **Close grid** | **Convert to tile** | Replaces the grid with a single tile and moves all the grid's tabs into it. |
-
-**Close all tabs** closes each tab in turn (you may see the Close last tab dialog for one of them), then removes the structure.
-
-{{< callout type="info" >}}
-A workspace always keeps at least one tile. The last remaining tile in the main layout has no close button and cannot be removed.
-{{< /callout >}}
+- Closing an empty tile or grid removes it immediately.
+- Closing a tile or grid that contains tabs prompts you to either preserve the tabs (**Move tabs to neighbor** for a tile, **Convert to tile** for a grid) or **Close all tabs** (each tab goes through its normal close checks).
+- A workspace always keeps at least one tile; the last remaining tile in the main layout cannot be closed.
 
 ## Floating windows
 
-{{< screenshot src="floating-window" alt="LeapMux workspace with a semi-transparent floating terminal window hovering over tiled agent, diff viewer, and terminal panes" caption="A popped-out floating window hovers above the tiling canvas with adjustable opacity when you scroll on its title bar." width="1172" height="900" >}}
+{{< screenshot src="floating-window" alt="LeapMux workspace with a semi-transparent floating terminal window hovering over tiled agent, diff viewer, and terminal panes" caption="Floating windows hover above the tiling canvas with adjustable transparency when you scroll on the title bar." width="1172" height="900" >}}
 
-A floating window is a tab (or a full layout) lifted out of the tiling grid and rendered as a draggable, resizable overlay on top of the workspace. It is useful for keeping a terminal or an agent visible while you rearrange everything underneath it.
+Press `⇧⌘O` / `Ctrl+Shift+O` or click the pop-out button to lift the active tab out of the main layout into a movable, resizable overlay (and press `⇧⌘O` / `Ctrl+Shift+O` again while focused inside it to dock it back).
 
-```mermaid
-flowchart TD
-  subgraph floatLayer["Floating window overlay"]
-    win["Floating Terminal (title bar + own layout)"]
-  end
-  subgraph canvas["Tiled canvas underneath"]
-    t1["Left tile: Agent"]
-    t2["Right tile: Terminal"]
-  end
-  win -.->|"Floats above"| t1
-  win -.->|"Floats above"| t2
-```
+- **Cascade placement:** New floating windows open at 40% × 50% of the canvas and cascade down-and-right when you open several in a row.
+- **Move and snap:** Drag the title bar; edges snap automatically within 15 px of the canvas borders.
+- **Resize:** Drag any edge or corner handle (minimum 5% of canvas width and height).
+- **Opacity:** Scroll the mouse wheel over the title bar to adjust transparency between 20% and 100% so you can read panes underneath.
+- **Nested layouts:** Floating windows support splits and grids inside them with no nesting limit.
+- **Close:** Clicking **×** on a non-empty floating window lets you **Move tabs to main** or **Close all tabs**.
 
-### Popping out and docking back
+## Empty tiles, sidebars, and mobile layout
 
-- **Pop out** — Click the pop-out button, use the tile menu, or press `Cmd/Ctrl + Shift + O`. This lifts the **active tab of the focused tile** into a new floating window and focuses it. If that empties the source tile (and other tiles remain), the source tile is removed.
-- **Pop in (dock back)** — Click the pop-in button, use the tile menu, or press `Cmd/Ctrl + Shift + O` again while focused inside a floating window. The tab returns to the main layout and the empty window is removed.
+An empty focused tile shows quick buttons for **Open a new agent tab...** (`⌘N` / `Ctrl+N`) and **Open a new terminal tab...** (`⌘T` / `Ctrl+T`); you can also drag tabs directly into it. When no workspace is open, the canvas shows **Create a new workspace...** (`⌥⌘N` / `Ctrl+Alt+N`).
 
-`Cmd/Ctrl + Shift + O` (Toggle Floating Tab) toggles based on where focus currently is: out if you're in the main layout, in if you're in a floating window.
+On **desktop**, LeapMux renders three columns: the left Workspaces sidebar (`⇧⌘[` / `Ctrl+Shift+[`), the center tiling canvas, and the right Files sidebar (`⇧⌘]` / `Ctrl+Shift+]`). Drag either sidebar border to resize it. When you shrink the browser window, LeapMux auto-collapses open sidebars if they would occupy more than half the viewport and restores auto-collapsed sidebars when space returns.
 
-A new window opens at 20% from the left, 15% from the top, sized to 40% × 50% of the canvas, fully opaque. Open several in a row and each cascades down-and-right from the last.
+{{< screenshot src="mobile-layout" alt="LeapMux mobile single-column layout showing an agent chat with inline diff, tool output, composer, and top-bar drawer buttons" caption="On narrow viewports, LeapMux switches to a single-column layout with slide-out Workspaces and Files drawers." width="390" height="844" >}}
 
-### Working with a floating window
+On **mobile** and narrow viewports, LeapMux switches to a single-column shell displaying one tile at a time. Splits, grids, and floating windows are desktop-only; top-bar buttons and edge swipes open the Workspaces and Files sidebars as off-canvas drawers.
 
-- **Move** — Drag the title bar. While dragging, the window comes to the front and **snaps** to a canvas edge when it gets within 15 pixels of it (each axis snaps independently). The title bar shows the active tab's title (or "Window" when empty).
-- **Resize** — Drag any of the 8 edge or corner handles. The minimum size is 5% of the canvas in each dimension.
-- **Opacity** — Scroll the mouse wheel over the **title bar** to fade the window in or out, in steps, between 20% and fully opaque. Use this to read content behind a floating window.
-- **Bring to front** — Click anywhere in the window to raise it and make it active.
-- **Close** — Click the **X** ("Close window") in the title bar. As with tiles, closing a window that still has tabs raises a **Close floating window** dialog whose preserve action is **Move tabs to main** (it merges the window's tabs into the first main-layout tile).
+## Related chapters
 
-A floating window is a full layout: you can split it, grid it, and resize panes inside it, with no nesting-depth cap. Its position, size, and opacity sync across your devices and persist across reloads; its stacking order and focus stay local to your client.
-
-## Filling an empty tile
-
-A tile with no tabs shows a placeholder. What you see depends on context:
-
-- **Focused (or single) tile** — Two buttons: **Open a new agent tab...** (`Cmd/Ctrl + N`) and **Open a new terminal tab...** (`Cmd/Ctrl + T`). You can also drag an existing tab in from another tile or the sidebar.
-- **Unfocused empty tile** in a multi-tile layout — A quiet hint: "No tabs in this tile." Focus it (or drag a tab onto it) to act on it.
-- **Archived workspace** — "This workspace is archived. Unarchive it to create new agents or terminals." See [Workspaces](/docs/using/workspaces/) for archiving and unarchiving.
-
-When there is no active workspace at all, the center panel shows a **Create a new workspace...** button (`Cmd/Ctrl + Alt + N`) instead. See [Workspaces](/docs/using/workspaces/).
-
-## Desktop vs. mobile layout
-
-LeapMux switches between two shells based on viewport width.
-
-### Desktop layout
-
-Three panes: a left sidebar (workspaces), the center tiling canvas (with the floating-window layer on top), and a right sidebar (files). Drag the handle between a sidebar and the center to resize it.
-
-- Sidebars default to 250 px wide and collapse to a thin 45 px strip.
-- Toggle sidebars with `Cmd/Ctrl + Shift + [` (left) and `Cmd/Ctrl + Shift + ]` (right).
-- On a shrinking window LeapMux auto-collapses a sidebar when the visible sidebars would take more than half the viewport, and re-expands one it auto-collapsed when the viewport is wide enough again. (Sidebars you collapsed yourself are not auto-expanded.)
-
-### Mobile layout
-
-{{< screenshot src="mobile-layout" alt="LeapMux mobile single-column layout showing an agent chat with inline diff, tool output, composer, and top-bar drawer buttons" caption="On narrow viewports, LeapMux switches to a focused single-column shell with slide-out Workspaces and Files drawers." width="390" height="844" >}}
-
-On a narrow viewport the shell becomes a single column: one focused tile's tab bar and content, with no tiling chrome. Both sidebars become off-canvas overlays:
-
-- The tab bar shows a **menu** button (left, "Toggle workspaces") and a **panel** button (right, "Toggle files").
-- Opening one sidebar closes the other. Close a sidebar with its toggle button or a swipe; tapping the dimmed background closes the tab sheet.
-
-Splitting, gridding, and floating windows are desktop features — on mobile you work one tile at a time.
-
-## Keyboard shortcuts
-
-The shortcuts in this chapter — for opening, switching, and closing tabs, splitting tiles, and toggling floating windows and sidebars — are collected in [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/). That page is the full reference and explains how to customize bindings. To drive tabs, tiles, and layouts from a script, see [Control CLI](/docs/using/control-cli/).
+- [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — complete shortcut table and customization.
+- [Workspaces](/docs/using/workspaces/) — archiving, sidebar sections, and live sync across devices.
+- [Worktrees & Branches](/docs/using/worktrees-and-branches/) — the **Close last tab** dialog and branch management.
+- [CLI Guide](/docs/using/cli-guide/) — scripting tiles, layouts, floating windows, and tab status.

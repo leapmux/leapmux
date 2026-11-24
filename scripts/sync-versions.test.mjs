@@ -21,26 +21,24 @@ const ROOT = resolve(import.meta.dirname, '..')
 
 describe('CLAIMS derived rules', () => {
   it('preserves the file and rule order with independent regex instances', () => {
-    expect(CLAIMS.slice(0, 10).map(({ file, key }) => [file, key])).toEqual([
+    expect(CLAIMS.slice(0, 7).map(({ file, key }) => [file, key])).toEqual([
       ['README.md', 'GOLANG_VERSION'],
       ['README.md', 'NODE_VERSION'],
       ['README.md', 'BUN_VERSION'],
-      ['site/content/docs/getting-started/installation.md', 'GOLANG_VERSION'],
-      ['site/content/docs/getting-started/installation.md', 'NODE_VERSION'],
-      ['site/content/docs/getting-started/installation.md', 'BUN_VERSION'],
       ['go.work', 'GOLANG_VERSION'],
       ['backend/go.mod', 'GOLANG_VERSION'],
       ['desktop/go/go.mod', 'GOLANG_VERSION'],
       ['site/go.mod', 'GOLANG_VERSION'],
     ])
-    expect(new Set(CLAIMS.slice(0, 10).map(claim => claim.pattern)).size).toBe(10)
+    expect(new Set(CLAIMS.slice(0, 7).map(claim => claim.pattern)).size).toBe(7)
   })
 
   it('rewrites each documentation file and identifies a missing claim by its file', () => {
     const claims = CLAIMS.filter(claim => claim.key === 'GOLANG_VERSION' && claim.file.endsWith('.md'))
+    expect(claims).toHaveLength(1)
     for (const claim of claims)
       expect(applyClaim(claim, '- **Go** 1.0.0 or later\n', '1.27.1').content).toBe('- **Go** 1.27.1 or later\n')
-    expect(() => applyClaim(claims[1], 'missing', '1.27.1')).toThrow('site/content/docs/getting-started/installation.md')
+    expect(() => applyClaim(claims[0], 'missing', '1.27.1')).toThrow('README.md')
   })
 })
 

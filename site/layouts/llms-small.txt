@@ -19,7 +19,6 @@ This is the compact index. For the full documentation tree, see [`/llms.txt`]({{
   "/docs/getting-started/introduction"
   "/docs/getting-started/installation"
   "/docs/getting-started/quick-start"
-  "/docs/getting-started/ways-to-run"
   "/docs/getting-started/concepts"
 }}
 {{- template "llms-small-entry" . }}
@@ -29,19 +28,21 @@ This is the compact index. For the full documentation tree, see [`/llms.txt`]({{
 {{- range slice
   "/docs/recipes/parallel-agents"
   "/docs/recipes/second-opinion-review"
+  "/docs/recipes/remote-devbox"
   "/docs/recipes/cli-automation"
+  "/docs/recipes/migrating"
 }}
 {{- template "llms-small-entry" . }}
 {{- end }}
 
 ## Using LeapMux
 {{- range slice
+  "/docs/using/workspaces"
   "/docs/using/coding-agents"
   "/docs/using/worktrees-and-branches"
   "/docs/using/tabs-and-layout"
   "/docs/using/terminals"
-  "/docs/using/control-cli"
-  "/docs/using/cli-automation"
+  "/docs/using/cli-guide"
   "/docs/using/agent-skills"
 }}
 {{- template "llms-small-entry" . }}
@@ -49,10 +50,11 @@ This is the compact index. For the full documentation tree, see [`/llms.txt`]({{
 
 ## Administration & Deployment
 {{- range slice
+  "/docs/admin/production-checklist"
   "/docs/admin/running-leapmux"
   "/docs/admin/configuration"
   "/docs/admin/managing-workers"
-  "/docs/admin/security"
+  "/docs/admin/security-and-auth"
 }}
 {{- template "llms-small-entry" . }}
 {{- end }}
@@ -60,6 +62,8 @@ This is the compact index. For the full documentation tree, see [`/llms.txt`]({{
 ## Reference
 {{- range slice
   "/docs/reference/cli-reference"
+  "/docs/reference/commands"
+  "/docs/reference/supported-agents"
   "/docs/reference/troubleshooting"
 }}
 {{- template "llms-small-entry" . }}
@@ -67,7 +71,7 @@ This is the compact index. For the full documentation tree, see [`/llms.txt`]({{
 
 ## Agent Skills (SKILL.md)
 
-Install all curated LeapMux skills with `leapmux skill install --all` (matches the installed binary offline) or `npx skills add leapmux/leapmux` (tracks `main`), or fetch each raw `SKILL.md` directly:
+Install all curated LeapMux skills with `leapmux skill install --all` (add `--target claude` for Claude Code; matches the installed binary offline) or `npx skills add leapmux/leapmux` (tracks `main`), or fetch each raw `SKILL.md` directly:
 - [leapmux]({{ "skills/leapmux/SKILL.md" | absURL }}): Foundational reference for driving LeapMux tabs, workspaces, coding agents, terminals, worktrees, and Workers via the `leapmux` CLI.
 - [leapmux-delegate]({{ "skills/leapmux-delegate/SKILL.md" | absURL }}): Split an engineering task across parallel LeapMux agents in isolated git worktrees, wait without polling, inspect their diffs, and integrate or clean up their results ([worker-brief-template]({{ "skills/leapmux-delegate/references/worker-brief-template.md" | absURL }})).
 - [leapmux-review]({{ "skills/leapmux-review/SKILL.md" | absURL }}): Spawn an independent read-only LeapMux reviewer agent from a contrasting provider family with optional forwarded skills and `--output-schema` JSON validation ([review-schemas]({{ "skills/leapmux-review/references/review-schemas.md" | absURL }})).

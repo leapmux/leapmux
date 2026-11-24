@@ -25,13 +25,17 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { AgentProvider } from '../src/generated/proto/leapmux/v1/agent_pb'
+import { AppClientType, AppVisibility } from '../src/generated/proto/leapmux/v1/app_pb'
+import { Scope } from '../src/generated/proto/leapmux/v1/scope_pb'
 import { TabFileViewMode, TabInsertion } from '../src/generated/proto/leapmux/v1/tab_creation_pb'
 import { WorkerTerminalService } from '../src/generated/proto/leapmux/v1/terminal_pb'
 import { WorkerPrivateService } from '../src/generated/proto/leapmux/v1/worker_private_pb'
+import { accountStorageKey, KEY_KEY_PINS, storageAccountFor } from '../src/lib/browserStorage'
 import { agentOpenOptions } from '../tests/e2e/agentSettings'
 import {
   closeTestChannels,
   createWorkspaceViaAPI,
+  elevatedAdminSessionViaAPI,
   getTestChannel,
   listWorkersViaAPI,
   mintRegistrationKeyViaAPI,
@@ -42,6 +46,7 @@ import { finishCleanup } from '../tests/e2e/helpers/cleanup'
 import { E2E_BROWSER_HOST } from '../tests/e2e/helpers/hubTransport'
 import { extendMockModelScenario } from '../tests/e2e/helpers/mockModelScenario'
 import { AMBIENT_SCENARIO_ID } from '../tests/e2e/helpers/mockModelScript'
+import { authorizeURL, LOOPBACK_REDIRECT_URI, registerAppViaAPI } from '../tests/e2e/helpers/oauthApps'
 import { stopProcess } from '../tests/e2e/helpers/process'
 import { trackProcess } from '../tests/e2e/helpers/processRegistry'
 import {
@@ -49,9 +54,11 @@ import {
   bashToolCall,
   editToolCall,
   readToolCall,
+  updateTodosToolCall,
 } from '../tests/e2e/helpers/providerToolCalls'
 import { deliberateWorkingDir } from '../tests/e2e/helpers/providerWorkingDir'
 import { hubSpawnEnv } from '../tests/e2e/helpers/server'
+import { readEntry, writeEntry } from '../tests/e2e/helpers/storage'
 import { startSuiteServer } from '../tests/e2e/helpers/suiteServer'
 import { waitForAgentStartupViaAPI } from '../tests/e2e/helpers/workerTabs'
 import { initGitRepo } from '../tests/e2e/helpers/worktree'
@@ -66,6 +73,7 @@ const BINARY_PATH = resolve(ROOT, process.platform === 'win32'
   ? 'leapmux.exe'
   : 'leapmux')
 const OUT_DIR = resolve(ROOT, 'site/static/images/docs')
+const VIDEOS_OUT_DIR = resolve(ROOT, 'site/static/videos/docs')
 
 const VIEWPORT = { width: 1440, height: 900 }
 const MOD_KEY = process.platform === 'darwin'
@@ -86,6 +94,7 @@ interface FixtureRepos {
   wtTokenRace: string
   telemetryRepo: string
   backoffPath: string
+  webhookPath: string
   readmePath: string
 }
 
@@ -211,6 +220,21 @@ func HandleWebhook(w http.ResponseWriter, r *http.Request) {
 }
 `
 
+const WEBHOOK_RETRY_STAGED = `package handler
+
+import (
+\t"net/http"
+\t"strconv"
+)
+
+func HandleWebhook(w http.ResponseWriter, r *http.Request) {
+\tif attempt, err := strconv.Atoi(r.Header.Get("X-Retry-Attempt")); err == nil && attempt > 0 {
+\t\tw.Header().Set("X-Backoff-Policy", "exponential")
+\t}
+\tw.WriteHeader(http.StatusAccepted)
+}
+`
+
 const WEBHOOK_RETRY_MOD = `package handler
 
 import (
@@ -221,6 +245,7 @@ import (
 func HandleWebhook(w http.ResponseWriter, r *http.Request) {
 \tif attempt, err := strconv.Atoi(r.Header.Get("X-Retry-Attempt")); err == nil && attempt > 0 {
 \t\tw.Header().Set("X-Backoff-Policy", "full-jitter")
+\t\tw.Header().Set("X-Backoff-Cap", "30s")
 \t}
 \tw.WriteHeader(http.StatusAccepted)
 }
@@ -334,7 +359,11 @@ function createFixtureRepos(runDir: string): FixtureRepos {
   git(paymentsMain, 'worktree', 'add', '-b', 'fix/token-refresh-race', wtTokenRace)
 
   // Seed realistic working-tree diffs so File Browser and sidebar diff badges
-  // display authentic modified/untracked files.
+  // display authentic modified/untracked files. Stage one change on webhook.go
+  // before writing the working-tree edit so the Split Diff toolbar exposes both
+  // `vs Working` and `vs Staged` controls.
+  writeFile(join(wtRetryJitter, 'internal/handler/webhook.go'), WEBHOOK_RETRY_STAGED)
+  git(wtRetryJitter, 'add', 'internal/handler/webhook.go')
   writeFile(join(wtRetryJitter, 'internal/handler/webhook.go'), WEBHOOK_RETRY_MOD)
   writeFile(join(wtRetryJitter, 'internal/retry/backoff_test.go'), BACKOFF_TEST)
   writeFile(join(wtWebhookSigs, 'internal/handler/webhook.go'), WEBHOOK_HMAC_MOD)
@@ -362,6 +391,7 @@ function createFixtureRepos(runDir: string): FixtureRepos {
     wtTokenRace,
     telemetryRepo,
     backoffPath: join(wtRetryJitter, 'internal/retry/backoff.go'),
+    webhookPath: join(wtRetryJitter, 'internal/handler/webhook.go'),
     readmePath: join(wtRetryJitter, 'README.md'),
   }
 }
@@ -922,6 +952,79 @@ async function captureMarkdownViewerViews(
   await page.waitForTimeout(250)
 }
 
+async function captureSplitDiffViews(
+  page: Page,
+  channel: Awaited<ReturnType<typeof getTestChannel>>,
+  workerId: string,
+  wsMain: string,
+  wtRetryJitter: string,
+  webhookPath: string,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  const tile1 = page.locator('[data-testid="tile"]').nth(1)
+  const currentTile1Id = await tile1.getAttribute('data-tile-id')
+  if (!currentTile1Id)
+    throw new Error('Tile 1 has no data-tile-id attribute for Split diff viewer')
+
+  await waitFor('webhook.go tab registered in Tile 1', async () => {
+    await channel.callWorker(
+      workerId,
+      WorkerPrivateService.method.registerTabPayload,
+      {
+        payload: {
+          workingDir: wtRetryJitter,
+          kind: {
+            case: 'file',
+            value: { filePath: webhookPath },
+          },
+        },
+        creation: {
+          tabId: randomUUID(),
+          placement: {
+            workspaceId: wsMain,
+            destination: { case: 'tileId', value: currentTile1Id },
+            insertion: TabInsertion.LAST,
+          },
+          presentation: {
+            fileViewMode: TabFileViewMode.SPLIT_DIFF,
+            fileDiffBase: 'head-vs-working',
+          },
+        },
+      },
+    )
+    return true
+  }, 10_000, 200)
+
+  const webhookTab = tile1.locator('[data-testid="tab"]').filter({ hasText: 'webhook.go' }).first()
+  await webhookTab.waitFor({ state: 'visible', timeout: 15_000 })
+  await webhookTab.click()
+  const diffToolbar = tile1.locator('[data-testid="diff-mode-toolbar"]:visible').first()
+  await diffToolbar.waitFor({ state: 'visible', timeout: 15_000 })
+  await diffToolbar.getByText('Split', { exact: true }).click()
+  await diffToolbar.getByText('vs Staged', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 })
+  await waitFor('Split diff lines rendered for webhook.go', async () => {
+    const text = await tile1.textContent()
+    return Boolean(text && text.includes('X-Backoff-Policy') && text.includes('X-Backoff-Cap'))
+  }, 15_000)
+
+  const tile1Box = await requireBox(tile1, 'tile 1 split diff')
+  const splitClip = clampClip({
+    x: tile1Box.x - 16,
+    y: 0,
+    width: VIEWPORT.width - (tile1Box.x - 16),
+    height: tile1Box.y + tile1Box.height + 24,
+  })
+  await waitForTheme(page, 'light')
+  await snap(page, 'file-browser-split-diff', 'light', splitClip, recorded)
+  await waitForTheme(page, 'dark')
+  await snap(page, 'file-browser-split-diff', 'dark', splitClip, recorded)
+  await waitForTheme(page, 'light')
+
+  await webhookTab.locator('[data-testid="tab-close"]').click()
+  await webhookTab.waitFor({ state: 'hidden', timeout: 10_000 })
+  await page.waitForTimeout(250)
+}
+
 async function captureDialogsAndMenus(
   page: Page,
   theme: 'light' | 'dark',
@@ -1070,14 +1173,28 @@ async function captureDialogsAndMenus(
   await page.keyboard.press('Escape')
   await plusPopover.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
 
-  // 8. New workspace dialog (pre-filled with payments-api so Git options show).
+  // 8. Section header "..." menu & New workspace dialog (pre-filled with payments-api so Git options show).
   const inProgressMenuBtn = page.locator('[data-testid="sidebar-section-menu-workspaces_in_progress"]:visible').first()
   await inProgressMenuBtn.click()
+  const newWsMenuItem = page.locator('[data-testid="sidebar-new-workspace"]:visible').first()
+  await newWsMenuItem.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(150)
+  const sectionMenu = page.locator('menu[popover]:visible').first()
+  const sectionBtnBox = await requireBox(inProgressMenuBtn, 'in-progress section menu trigger')
+  const sectionMenuBox = await requireBox(sectionMenu, 'in-progress section menu')
+  const sectionUnion = unionRects(sectionBtnBox, sectionMenuBox)
+  await snap(page, 'workspace-section-menu', theme, clampClip({
+    x: 0,
+    y: Math.max(0, sectionUnion.y - 36),
+    width: sectionUnion.x + sectionUnion.width + 64,
+    height: Math.min(VIEWPORT.height - Math.max(0, sectionUnion.y - 36), sectionUnion.height + 88),
+  }), recorded)
+
   const repoItem = page.locator('[data-testid="sidebar-new-workspace-repo"]:visible').filter({ hasText: 'payments-api' }).first()
   if (await repoItem.waitFor({ state: 'visible', timeout: 4_000 }).then(() => true, () => false))
     await repoItem.click()
   else
-    await page.locator('[data-testid="sidebar-new-workspace"]:visible').first().click()
+    await newWsMenuItem.click()
   const newWsDialog = page.locator('dialog[open]').first()
   await newWsDialog.waitFor({ state: 'visible', timeout: 10_000 })
   const titleInput = newWsDialog.getByTestId('title-input')
@@ -1139,6 +1256,17 @@ async function captureDialogsAndMenus(
   await snap(page, 'change-branch-dialog', theme, padClip(await requireBox(changeBranchDialog, 'change branch dialog'), 48, 36), recorded)
   await page.keyboard.press('Escape')
   await changeBranchDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // 11b. Delete branch/worktree dialog (opened from branch context menu).
+  await branchRow.hover()
+  await branchRow.locator('[aria-expanded]').first().click()
+  await page.getByRole('menuitem', { name: /Delete (worktree|branch)\.\.\./ }).first().click()
+  const deleteBranchDialog = page.locator('dialog[open]').first()
+  await deleteBranchDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(450)
+  await snap(page, 'delete-branch-dialog', theme, padClip(await requireBox(deleteBranchDialog, 'delete branch dialog'), 48, 36), recorded)
+  await page.keyboard.press('Escape')
+  await deleteBranchDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
 
   // 12. Close last tab dialog (triggered on dirty linked worktree feat/webhook-signatures).
   const webhookLeaf = wsChildren.locator('[data-testid="tab-tree-leaf"]:visible').filter({ hasText: 'Webhook HMAC' }).first()
@@ -1321,6 +1449,89 @@ async function captureInputQueueAndQuestionViews(
   await snap(page, 'input-queue', 'dark', inputQueueClip, recorded)
   await waitForTheme(page, 'light')
 
+  // Open a second Claude tab in wtRetryJitter first so Retry jitter is NOT the
+  // last tab on the linked worktree (which would trigger Close last tab instead
+  // of BusyTabCloseDialog).
+  const goalsAgentId = await openAgentViaAPI(
+    server,
+    wsMain,
+    deliberateWorkingDir(wtRetryJitter, 'documentation screenshot goals and todos'),
+    {
+      ...agentOpenOptions(AgentProvider.CLAUDE_CODE, {
+        optionValues: { permissionMode: 'bypassPermissions' },
+      }),
+      title: 'Release checklist',
+    },
+  )
+  const goalsTab = page.locator(`[data-testid="tab"][data-tab-id="${goalsAgentId}"]:visible`).first()
+  await goalsTab.waitFor({ state: 'visible', timeout: 20_000 })
+
+  // Capture BusyTabCloseDialog while the Retry jitter agent turn is still running.
+  await claudeTabAfterCollapse.click()
+  const activeBusyTabClose = claudeTabAfterCollapse.locator('[data-testid="tab-close"]').first()
+  await activeBusyTabClose.click()
+  const busyDialog = page.locator('dialog[data-testid="busy-tab-close-dialog"]').first()
+  await busyDialog.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.waitForTimeout(200)
+  const busyClip = padClip(await requireBox(busyDialog, 'busy tab close dialog'), 48, 36)
+  await snap(page, 'busy-tab-close-dialog', 'light', busyClip, recorded)
+  await waitForTheme(page, 'dark')
+  await snap(page, 'busy-tab-close-dialog', 'dark', busyClip, recorded)
+  await waitForTheme(page, 'light')
+  await busyDialog.getByTestId('busy-tab-close-cancel').click()
+  await busyDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+
+  // Capture Goals & To-dos sidebar with a live session goal and structured to-do list.
+  await goalsTab.click()
+  await waitFor('goals agent composer ready', async () => {
+    return page.locator('[data-testid="composer-editor"]:visible .ProseMirror[contenteditable="true"]').first().isVisible().catch(() => false)
+  }, 20_000)
+
+  await typeComposerAndSend(
+    page,
+    'Track the retry backoff release checklist in the to-do sidebar.',
+  )
+  const todosSection = page.locator('[data-testid="section-header-todos"]:visible').first()
+  await todosSection.waitFor({ state: 'visible', timeout: 30_000 })
+  if (await todosSection.evaluate(el => el.hasAttribute('data-closed')))
+    await todosSection.locator('> [role="button"]').click()
+  await waitFor('goals and todos populated in right sidebar', async () => {
+    const text = await page.locator('[data-testid="goals-and-todos"]:visible').first().textContent().catch(() => '')
+    return Boolean(text && text.includes('Add full-jitter backoff') && text.includes('Update retry README'))
+  }, 30_000)
+
+  // Collapse Files and widen the right sidebar slightly so every to-do item reads
+  // cleanly without horizontal ellipsis and Goals & To-dos fills the frame.
+  const filesSection = page.locator('[data-testid="section-header-files"]:visible').first()
+  if (await filesSection.isVisible().catch(() => false)) {
+    const filesClosed = await filesSection.evaluate(el => el.hasAttribute('data-closed'))
+    if (!filesClosed)
+      await filesSection.locator('> [role="button"]').click()
+  }
+  const rightHandleBeforeDrag = await requireBox(page.locator('[data-testid="resize-handle"]').nth(1), 'right resize handle before drag')
+  await dragPointer(
+    page,
+    rightHandleBeforeDrag.x + rightHandleBeforeDrag.width / 2,
+    VIEWPORT.height / 2,
+    rightHandleBeforeDrag.x + rightHandleBeforeDrag.width / 2 - 120,
+    VIEWPORT.height / 2,
+  )
+  await page.waitForTimeout(300)
+
+  const rightHandleForGoals = await requireBox(page.locator('[data-testid="resize-handle"]').nth(1), 'right resize handle for goals')
+  const todosHeaderBox = await requireBox(todosSection, 'goals and todos section header')
+  const goalsTop = Math.max(0, todosHeaderBox.y - 8)
+  const goalsClip = clampClip({
+    x: rightHandleForGoals.x - 16,
+    y: goalsTop,
+    width: VIEWPORT.width - (rightHandleForGoals.x - 16),
+    height: VIEWPORT.height - goalsTop,
+  })
+  await snap(page, 'agent-goals-subagents', 'light', goalsClip, recorded)
+  await waitForTheme(page, 'dark')
+  await snap(page, 'agent-goals-subagents', 'dark', goalsClip, recorded)
+  await waitForTheme(page, 'light')
+
   // Open a fresh Claude Code tab to capture a clean AskUserQuestion control
   // banner without interrupting or mixing with the held benchmark turn.
   const questionAgentId = await openAgentViaAPI(
@@ -1428,6 +1639,378 @@ async function captureMobileAndLoginViews(
   void wsMain
 }
 
+function parseSessionCookie(token: string): { name: string, value: string } {
+  const [name, ...rest] = token.split('=')
+  if (!name)
+    throw new Error(`Invalid session cookie: ${token}`)
+  return {
+    name,
+    value: rest.join('='),
+  }
+}
+
+async function captureSecurityAndLauncherViews(
+  browser: Browser,
+  hubUrl: string,
+  adminToken: string,
+  adminUserId: string,
+  workerId: string,
+  wsMain: string,
+  recorded: Record<string, ClipRect>,
+): Promise<void> {
+  // 1. OAuth consent page (/oauth/authorize for an unverified registered app).
+  const elevatedCookie = await elevatedAdminSessionViaAPI(hubUrl)
+  const { clientId } = await registerAppViaAPI(hubUrl, elevatedCookie, {
+    clientName: 'Deploy Bot',
+    clientUri: 'https://deploy.acme.dev',
+    redirectUris: [LOOPBACK_REDIRECT_URI],
+    scopes: [Scope.WORKSPACE_READ, Scope.AGENT_READ, Scope.AGENT_WRITE],
+    visibility: AppVisibility.PRIVATE,
+    clientType: AppClientType.PUBLIC,
+  })
+  const elevCookie = parseSessionCookie(elevatedCookie)
+  const consentViewport = { width: 960, height: 1400 }
+  const consentContext = await browser.newContext({
+    baseURL: hubUrl,
+    viewport: consentViewport,
+    deviceScaleFactor: 2,
+    colorScheme: 'light',
+  })
+  try {
+    await consentContext.addCookies([
+      {
+        name: elevCookie.name,
+        value: elevCookie.value,
+        domain: E2E_BROWSER_HOST,
+        path: '/',
+        httpOnly: true,
+      },
+    ])
+    const consentPage = await consentContext.newPage()
+    await consentPage.goto(authorizeURL(hubUrl, {
+      clientId,
+      extra: {
+        scope: 'workspace:read agent:read agent:write',
+        installation_name: 'ci-runner-01',
+      },
+    }), { waitUntil: 'domcontentloaded' })
+    await consentPage.getByRole('button', { name: 'Allow' }).waitFor({ state: 'visible', timeout: 15_000 })
+    await consentPage.evaluate(() => document.fonts.ready)
+    await consentPage.waitForTimeout(250)
+    const card = consentPage.locator('main').first()
+    const cardBox = await requireBox(card, 'oauth consent card')
+    const fullHeight = Math.ceil(cardBox.y + cardBox.height + 48)
+    if (fullHeight > consentViewport.height) {
+      await consentPage.setViewportSize({ width: consentViewport.width, height: fullHeight })
+      await consentPage.waitForTimeout(150)
+    }
+    const updatedCardBox = await requireBox(card, 'oauth consent card resized')
+    const consentClip = clampClip({
+      x: Math.max(0, updatedCardBox.x - 40),
+      y: Math.max(0, updatedCardBox.y - 28),
+      width: updatedCardBox.width + 80,
+      height: updatedCardBox.height + 56,
+    }, {
+      width: consentViewport.width,
+      height: Math.max(consentViewport.height, fullHeight),
+    })
+    await snap(consentPage, 'oauth-consent', 'light', consentClip, recorded)
+    await consentPage.emulateMedia({ colorScheme: 'dark' })
+    await consentPage.waitForTimeout(300)
+    await snap(consentPage, 'oauth-consent', 'dark', consentClip, recorded)
+  }
+  finally {
+    await consentContext.close()
+  }
+
+  // 2. Worker public key changed (TOFU pin mismatch dialog) in an isolated context.
+  const adminCookie = parseSessionCookie(adminToken)
+  const mismatchViewport = { width: 1120, height: 760 }
+  const mismatchContext = await browser.newContext({
+    baseURL: hubUrl,
+    viewport: mismatchViewport,
+    deviceScaleFactor: 2,
+    colorScheme: 'light',
+  })
+  try {
+    await mismatchContext.addCookies([
+      {
+        name: adminCookie.name,
+        value: adminCookie.value,
+        domain: E2E_BROWSER_HOST,
+        path: '/',
+        httpOnly: true,
+      },
+    ])
+    const mismatchPage = await mismatchContext.newPage()
+    await mismatchPage.goto('/', { waitUntil: 'domcontentloaded' })
+    await mismatchPage.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first().waitFor({ state: 'visible', timeout: 25_000 })
+    const account = storageAccountFor(new URL(hubUrl).origin, adminUserId)
+    const storedKey = accountStorageKey(account, KEY_KEY_PINS)
+    await waitFor('worker key pin stored in IndexedDB', async () => {
+      const row = await readEntry(mismatchPage, storedKey)
+      const pins = row?.v as Record<string, { publicKeyHex: string, firstSeen: number }> | undefined
+      return Boolean(pins?.[workerId]?.publicKeyHex)
+    }, 20_000)
+
+    const row = await readEntry(mismatchPage, storedKey)
+    if (!row)
+      throw new Error('key-pin storage missing before tamper')
+    const pins = { ...(row.v as Record<string, { publicKeyHex: string, firstSeen: number }>) }
+    const existing = pins[workerId]
+    if (!existing)
+      throw new Error(`key-pin missing for worker ${workerId}`)
+    const flipped = (existing.publicKeyHex[0] === 'a'
+      ? 'b'
+      : 'a') + existing.publicKeyHex.slice(1)
+    pins[workerId] = { ...existing, publicKeyHex: flipped }
+    await writeEntry(mismatchPage, storedKey, pins, row.e)
+
+    await mismatchPage.reload({ waitUntil: 'domcontentloaded' })
+    const mismatchDialog = mismatchPage.locator('[data-testid="key-pin-mismatch-dialog"]').first()
+    await mismatchDialog.waitFor({ state: 'visible', timeout: 25_000 })
+    await waitForTheme(mismatchPage, 'light')
+    const mismatchClip = clampClip({
+      x: Math.max(0, (await requireBox(mismatchDialog, 'key pin mismatch dialog')).x - 48),
+      y: Math.max(0, (await requireBox(mismatchDialog, 'key pin mismatch dialog')).y - 36),
+      width: (await requireBox(mismatchDialog, 'key pin mismatch dialog')).width + 96,
+      height: (await requireBox(mismatchDialog, 'key pin mismatch dialog')).height + 72,
+    }, mismatchViewport)
+    await snap(mismatchPage, 'worker-key-mismatch', 'light', mismatchClip, recorded)
+    await waitForTheme(mismatchPage, 'dark')
+    await snap(mismatchPage, 'worker-key-mismatch', 'dark', mismatchClip, recorded)
+  }
+  finally {
+    await mismatchContext.close()
+  }
+
+  // 3. Desktop LauncherView (Solo vs. Distributed mode picker).
+  const launcherViewport = { width: 920, height: 640 }
+  const launcherContext = await browser.newContext({
+    baseURL: hubUrl,
+    viewport: launcherViewport,
+    deviceScaleFactor: 2,
+    colorScheme: 'light',
+  })
+  try {
+    const launcherPage = await launcherContext.newPage()
+    await launcherPage.goto('/login', { waitUntil: 'domcontentloaded' })
+    await launcherPage.getByRole('button', { name: /Sign in/i }).first().waitFor({ state: 'visible', timeout: 20_000 })
+    await launcherPage.evaluate(() => {
+      const win = window as unknown as { __leapmux_disconnectDesktop?: () => void }
+      win.__leapmux_disconnectDesktop?.()
+    })
+    await launcherPage.getByText('Choose how you\'d like to connect').waitFor({ state: 'visible', timeout: 10_000 })
+    await waitFor('launcher view faded in', async () => {
+      const opacity = await launcherPage.locator('h1').first().evaluate(el => Number.parseFloat(getComputedStyle(el.closest('div')?.parentElement ?? el).opacity || '1'))
+      return opacity > 0.95
+    }, 10_000)
+    await waitForTheme(launcherPage, 'light')
+    await snap(launcherPage, 'launcher-view', 'light', { x: 0, y: 0, ...launcherViewport }, recorded)
+    await waitForTheme(launcherPage, 'dark')
+    await snap(launcherPage, 'launcher-view', 'dark', { x: 0, y: 0, ...launcherViewport }, recorded)
+  }
+  finally {
+    await launcherContext.close()
+  }
+}
+
+async function encodeWebmToMp4(webmPath: string, mp4Path: string): Promise<void> {
+  mkdirSync(dirname(mp4Path), { recursive: true })
+  await execFileAsync('ffmpeg', [
+    '-y',
+    '-i',
+    webmPath,
+    '-vf',
+    'scale=1280:-2',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'medium',
+    '-crf',
+    '24',
+    '-pix_fmt',
+    'yuv420p',
+    '-movflags',
+    '+faststart',
+    '-an',
+    mp4Path,
+  ])
+}
+
+async function hasFfmpeg(): Promise<boolean> {
+  try {
+    await execFileAsync('ffmpeg', ['-version'])
+    return true
+  }
+  catch {
+    return false
+  }
+}
+
+async function captureParallelWorktreesClip(
+  browser: Browser,
+  hubUrl: string,
+  adminToken: string,
+  wsMain: string,
+  runDir: string,
+): Promise<void> {
+  if (!await hasFfmpeg()) {
+    console.log('Skipping workflow clips (ffmpeg not found on PATH).')
+    return
+  }
+  const adminCookie = parseSessionCookie(adminToken)
+  const clipViewport = { width: 1280, height: 800 }
+  for (const theme of ['light', 'dark'] as const) {
+    const videoDir = join(runDir, `clip-parallel-${theme}`)
+    mkdirSync(videoDir, { recursive: true })
+    const ctx = await browser.newContext({
+      baseURL: hubUrl,
+      viewport: clipViewport,
+      colorScheme: theme,
+      recordVideo: { dir: videoDir, size: clipViewport },
+    })
+    let videoPath: string | null = null
+    try {
+      await ctx.addCookies([
+        {
+          name: adminCookie.name,
+          value: adminCookie.value,
+          domain: E2E_BROWSER_HOST,
+          path: '/',
+          httpOnly: true,
+        },
+      ])
+      const p = await ctx.newPage()
+      await p.goto('/', { waitUntil: 'domcontentloaded' })
+      const mainRow = p.locator(`[data-testid="workspace-item-${wsMain}"]:visible`).first()
+      await mainRow.waitFor({ state: 'visible', timeout: 25_000 })
+      if (await mainRow.getAttribute('data-active') !== 'true')
+        await mainRow.getByTestId('workspace-title').click()
+      await p.locator('[data-testid="tile"]').nth(1).waitFor({ state: 'visible', timeout: 20_000 })
+      await waitForTheme(p, theme)
+      await p.waitForTimeout(800)
+
+      // Toggle Split diff mode in Tile 1, then back to Unified.
+      const tile1 = p.locator('[data-testid="tile"]').nth(1)
+      const diffToolbar = tile1.locator('[data-testid="diff-mode-toolbar"]:visible').first()
+      if (await diffToolbar.isVisible().catch(() => false)) {
+        await diffToolbar.getByText('Split', { exact: true }).click()
+        await p.waitForTimeout(1000)
+        await diffToolbar.getByText('Unified', { exact: true }).click()
+        await p.waitForTimeout(600)
+      }
+
+      // Switch between isolated worktree agent tabs in the sidebar.
+      const wsChildren = p.locator(`[data-testid="workspace-children-${wsMain}"]:visible`).first()
+      for (const label of ['Token refresh', 'Webhook HMAC', 'Retry jitter']) {
+        const leaf = wsChildren.locator('[data-testid="tab-tree-leaf"]:visible').filter({ hasText: label }).first()
+        if (await leaf.isVisible().catch(() => false)) {
+          await leaf.click()
+          await p.waitForTimeout(900)
+        }
+      }
+
+      // Briefly reveal the Quake terminal and dismiss it.
+      await p.keyboard.press('Control+Backquote')
+      await p.waitForTimeout(1100)
+      await p.keyboard.press('Control+Backquote')
+      await p.waitForTimeout(700)
+
+      videoPath = await p.video()?.path() ?? null
+      await p.close()
+    }
+    finally {
+      await ctx.close()
+    }
+    if (videoPath) {
+      const outPath = join(VIDEOS_OUT_DIR, `parallel-worktrees-${theme}.mp4`)
+      await encodeWebmToMp4(videoPath, outPath)
+      console.log(`  wrote parallel-worktrees-${theme}.mp4`)
+    }
+  }
+}
+
+async function captureInputQueueClip(
+  browser: Browser,
+  hubUrl: string,
+  adminToken: string,
+  wsMain: string,
+  claudeId: string,
+  runDir: string,
+): Promise<void> {
+  if (!await hasFfmpeg())
+    return
+  const adminCookie = parseSessionCookie(adminToken)
+  const clipViewport = { width: 1280, height: 800 }
+  for (const theme of ['light', 'dark'] as const) {
+    const videoDir = join(runDir, `clip-queue-${theme}`)
+    mkdirSync(videoDir, { recursive: true })
+    const ctx = await browser.newContext({
+      baseURL: hubUrl,
+      viewport: clipViewport,
+      colorScheme: theme,
+      recordVideo: { dir: videoDir, size: clipViewport },
+    })
+    let videoPath: string | null = null
+    try {
+      await ctx.addCookies([
+        {
+          name: adminCookie.name,
+          value: adminCookie.value,
+          domain: E2E_BROWSER_HOST,
+          path: '/',
+          httpOnly: true,
+        },
+      ])
+      const p = await ctx.newPage()
+      await p.goto('/', { waitUntil: 'domcontentloaded' })
+      const tab = p.locator(`[data-testid="tab"][data-tab-id="${claudeId}"]:visible`).first()
+      await tab.waitFor({ state: 'visible', timeout: 25_000 })
+      await tab.click()
+      await waitForTheme(p, theme)
+      await p.waitForTimeout(700)
+
+      const queueRoot = p.locator('[data-testid="agent-input-queue"]:visible').first()
+      if (await queueRoot.isVisible().catch(() => false)) {
+        const pauseBtn = p.locator('[data-testid="queue-pause-button"]:visible').first()
+        if (await pauseBtn.isVisible().catch(() => false)) {
+          await pauseBtn.click()
+          await p.waitForTimeout(900)
+          await pauseBtn.click()
+          await p.waitForTimeout(700)
+        }
+        const scheduleTrigger = p.locator('[data-testid="schedule-send-trigger"]:visible').first()
+        if (await scheduleTrigger.isVisible().catch(() => false)) {
+          await scheduleTrigger.click()
+          await p.waitForTimeout(1200)
+          await p.keyboard.press('Escape')
+          await p.waitForTimeout(600)
+        }
+        const editor = p.locator('[data-testid="composer-editor"]:visible .ProseMirror[contenteditable="true"]').first()
+        if (await editor.isVisible().catch(() => false)) {
+          await editor.click()
+          await p.keyboard.type('Verify zero allocations under -race before merging.', { delay: 22 })
+          await p.waitForTimeout(600)
+          await p.keyboard.press(`${MOD_KEY}+Enter`)
+          await p.waitForTimeout(1000)
+        }
+      }
+      videoPath = await p.video()?.path() ?? null
+      await p.close()
+    }
+    finally {
+      await ctx.close()
+    }
+    if (videoPath) {
+      const outPath = join(VIDEOS_OUT_DIR, `input-queue-steering-${theme}.mp4`)
+      await encodeWebmToMp4(videoPath, outPath)
+      console.log(`  wrote input-queue-steering-${theme}.mp4`)
+    }
+  }
+  void wsMain
+}
+
 async function main(): Promise<void> {
   mkdirSync(OUT_DIR, { recursive: true })
   // Native agent CLIs read instruction files from ancestor directories and
@@ -1469,13 +2052,30 @@ async function main(): Promise<void> {
           respond: { text: 'Audit token refresh' },
         },
         {
+          name: 'goals-todo-checklist',
+          priority: 'high',
+          once: true,
+          when: { user: 'Track the retry backoff release checklist' },
+          respond: {
+            text: 'I updated the release checklist in the Goals & To-dos sidebar.',
+            toolCalls: [
+              updateTodosToolCall(AgentProvider.CLAUDE_CODE, 'call_todos_retry', [
+                { step: 'Add full-jitter backoff in internal/retry/backoff.go', status: 'completed' },
+                { step: 'Verify 16-goroutine stress benchmark with -race', status: 'completed' },
+                { step: 'Review webhook.go staged and unstaged diff headers', status: 'in_progress' },
+                { step: 'Update retry README and open pull request', status: 'pending' },
+              ]),
+            ],
+          },
+        },
+        {
           name: 'input-queue-hold',
           priority: 'high',
           once: true,
           when: { user: 'Run the retry stress benchmark' },
           respond: {
             text: 'Completed the 16-goroutine retry stress benchmark with zero heap allocations.',
-            delayMs: 45_000,
+            delayMs: 90_000,
           },
         },
         {
@@ -1930,6 +2530,20 @@ async function main(): Promise<void> {
         recordedClips,
       )
 
+      console.log('Capturing Split diff toolbar screenshots (light & dark) ...')
+      await captureSplitDiffViews(
+        page,
+        channel,
+        state.workerId,
+        wsMain,
+        repos.wtRetryJitter,
+        repos.webhookPath,
+        recordedClips,
+      )
+
+      console.log('Capturing parallel worktrees workflow clips (light & dark) ...')
+      await captureParallelWorktreesClip(browser, state.hubUrl, state.adminToken, wsMain, runDir)
+
       console.log('Capturing light mode dialogs, menus, popovers & Preferences ...')
       await captureDialogsAndMenus(page, 'light', wsMain, recordedClips)
       console.log('Capturing dark mode dialogs, menus, popovers & Preferences ...')
@@ -1938,8 +2552,22 @@ async function main(): Promise<void> {
       console.log('Capturing mobile layout & login page (light & dark) ...')
       await captureMobileAndLoginViews(browser, context, state.hubUrl, wsMain, claudeId, recordedClips)
 
-      console.log('Capturing input queue, schedule popover & question banner (light & dark) ...')
+      console.log('Capturing input queue, schedule popover, busy close, goals & question banner (light & dark) ...')
       await captureInputQueueAndQuestionViews(page, server, wsMain, repos.wtRetryJitter, recordedClips)
+
+      console.log('Capturing input queue steering workflow clips (light & dark) ...')
+      await captureInputQueueClip(browser, state.hubUrl, state.adminToken, wsMain, claudeId, runDir)
+
+      console.log('Capturing OAuth consent, Worker key mismatch, and Desktop Launcher views (light & dark) ...')
+      await captureSecurityAndLauncherViews(
+        browser,
+        state.hubUrl,
+        state.adminToken,
+        state.adminUserId,
+        state.workerId,
+        wsMain,
+        recordedClips,
+      )
 
       console.log('Summary of captured dimensions:')
       for (const [name, clip] of Object.entries(recordedClips))

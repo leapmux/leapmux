@@ -1,94 +1,117 @@
 ---
 title: "Reverse Proxy"
-description: "Serve a LeapMux Hub over HTTPS behind nginx, Caddy, Traefik, HAProxy, or Apache: what the proxy must carry, a tested configuration for each, and how to check it."
+description: "Serve a LeapMux Hub over HTTPS behind Caddy, nginx, Traefik, HAProxy, or Apache: proxy comparison, required settings, /metrics protection, and tested configs."
 type: docs
-weight: 3
+weight: 6
 ---
 
-The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the Hub. This page states what the proxy must carry, gives a configuration for five common proxies, and shows how to check the result.
+The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, place a reverse proxy in front of the Hub. This page compares five common proxies, lists every requirement, explains why `/metrics` stays host-local, and provides a ready-to-use configuration for each proxy.
+
+## Reverse proxy comparison
+
+| Proxy | Automatic TLS | Minimum version | Request body-size handling | WebSocket notes | How `/metrics` is blocked |
+| --- | --- | --- | --- | --- | --- |
+| **Caddy** | Built-in (Let's Encrypt / ZeroSSL) | Caddy 2 | Unlimited by default | Automatic on `reverse_proxy` | `respond /metrics 404` |
+| **nginx** | External (for example Certbot) | 1.25.1 (`http2 on;`) | Must set `client_max_body_size 0` (1 MiB default rejects bulk RPCs) | Explicit `proxy_http_version 1.1` + `Upgrade` / `Connection` map | `location = /metrics { return 404; }` |
+| **Traefik** | Built-in via certificate resolvers | Traefik v3 | Unlimited by default | Automatic on HTTP router; default read timeout allows long streams | `!Path(\`/metrics\`)` in router rule |
+| **HAProxy** | External (combined PEM chain + key) | HAProxy 2.4+ | Unlimited by default | HTTP/1.1 backend carries upgrades; set `timeout tunnel` ≥ 1m | `http-request deny deny_status 404 if { path /metrics }` |
+| **Apache httpd** | External (for example Certbot) | 2.4.47 (`upgrade=websocket`) | Unlimited by default | Single `ProxyPass / ... upgrade=websocket` handles HTTP and WS | `ProxyPass /metrics !` + `Require all denied` |
 
 ## What the proxy must carry
 
 The Hub serves two kinds of traffic on one port:
 
 | Traffic | Path | How the proxy forwards it |
-|---|---|---|
-| The Worker's stream, web app live updates, and encrypted channels | `/ws/` | HTTP/1.1 WebSocket upgrades that stay open for hours |
-| The web app, its API calls, Worker registration, and `leapmux` | Every other path | HTTP/1.1 or HTTP/2 |
+| --- | --- | --- |
+| Worker streams, web app live updates, and encrypted channels | `/ws/` | HTTP/1.1 WebSocket upgrades that stay open for hours |
+| Web app assets, API calls, Worker registration, and `leapmux` CLI | Every other path | HTTP/1.1 or HTTP/2 |
 
-The Hub pings each WebSocket, including the Worker's stream, every 10 seconds. Use an inactivity timeout of one minute or longer. Regular probes keep a healthy connection active through that timeout.
+The Hub pings each WebSocket, including Worker streams, every 10 seconds. Configure an inactivity timeout of at least 1 minute so regular pings keep healthy streams alive.
 
-The proxy must also do these things:
+Every proxy must also:
 
-- Forward WebSocket upgrades.
-- Pass the `Host` header, and set `X-Forwarded-For` and `X-Forwarded-Proto`.
-- Serve LeapMux at the root of its own host name.
-
-{{< callout type="warning" >}}
-LeapMux does not support a sub-path such as `https://example.com/leapmux`, and the Hub refuses such a `public_url`. Give LeapMux its own host name or subdomain.
-{{< /callout >}}
+- Forward WebSocket upgrades on `/ws/`.
+- Preserve `Host` and set forwarding headers (`Forwarded`, or `X-Forwarded-For` and `X-Forwarded-Proto`).
+- Serve LeapMux at the root of its own hostname or subdomain — sub-path prefixes such as `https://example.com/leapmux` are unsupported and rejected by `public_url`.
+- **Block `/metrics` from external clients.** The Hub exposes Prometheus metrics at `/metrics` without authentication so host-local scrapers can read them. All five proxy examples below deny `/metrics` externally; scrape `http://127.0.0.1:4327/metrics` directly on the Hub host instead.
 
 ## Configure the Hub
 
-1. Make the Hub listen on loopback only, so that clients can reach it only through the proxy. Set `listen: "127.0.0.1:4327"` in the Hub's configuration file; see [Configuration](/docs/admin/configuration/#production-hub-behind-a-reverse-proxy). In Docker, publish the port on loopback with `-p 127.0.0.1:4327:4327`.
-2. Set `public_url` to the external HTTPS URL: `leapmux admin settings set public_url "https://hub.example.com"`.
-3. Enable secure cookies with `leapmux admin settings set secure_cookies true`. This signs out current sessions, so configure it during initial setup.
-4. Trust the proxy's address with `leapmux admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'`. This example trusts a proxy on the same machine over IPv4 or IPv6. Use the actual address or range for a remote proxy. The Hub ignores the forwarding headers of a proxy that it does not trust.
-5. Register each Worker with `--hub` set to the same external `https://` address. A Worker keeps using the URL that it registered with. Workers always initiate outbound connections, so they need no inbound ports of their own.
+{{% steps %}}
 
-The Hub applies the three settings within about 30 seconds. No restart is needed. For the supported proxy address formats and forwarding headers, see [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
+### Bind the Hub to loopback
+
+Configure `listen` in `hub.yaml` so only the local reverse proxy can reach the Hub:
+
+```yaml
+listen:
+  - "127.0.0.1:4327"
+```
+
+In Docker, publish the port on loopback only with `-p 127.0.0.1:4327:4327`. See [Production Hub behind a reverse proxy](/docs/admin/configuration/#production-hub-behind-a-reverse-proxy).
+
+### Set the public URL, secure cookies, and trusted proxies
+
+Apply the three reverse-proxy settings on the running Hub. All three are `hot` settings and take effect immediately on commit with no restart:
+
+```bash
+leapmux admin settings set public_url "https://hub.example.com"
+leapmux admin settings set secure_cookies true
+leapmux admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'
+```
+
+- `secure_cookies true` switches session cookies to `__Host-` prefixed secure cookies, signing out existing plain-cookie sessions. Set it during initial deployment.
+- `trusted_proxy_ranges` trusts a proxy on the same host in this example; replace it with the actual IP or CIDR range for a remote proxy. The Hub ignores forwarding headers from untrusted peers. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
+
+### Register Workers against the external HTTPS URL
+
+Register every standalone Worker with `--hub https://hub.example.com`. Each Worker saves that URL in `state.json` and connects out to it over HTTPS/WSS, requiring no inbound ports of its own.
+
+{{% /steps %}}
 
 {{< callout type="warning" >}}
-If you use `cloudflare` or `cloudfront` in `trusted_proxy_ranges`, those values trust the bundled ranges for the entire provider. Restrict access to your distribution or use authenticated origin requests. Configure every proxy to remove client-supplied forwarding headers or append only verified values. LeapMux does not download updated provider ranges automatically.
+If you put `cloudflare` or `cloudfront` in `trusted_proxy_ranges`, LeapMux trusts the bundled IP ranges for the entire provider. Restrict origin traffic to your own distribution or require authenticated origin requests, and configure every proxy to strip client-supplied forwarding headers. LeapMux does not download updated provider ranges automatically.
 {{< /callout >}}
 
 ## Proxy configurations
 
-Each configuration below does these things:
-
-- It serves `hub.example.com` on port 443, and redirects port 80 to it.
-- It reaches the Hub at `127.0.0.1:4327` on the same machine.
-- It forwards all traffic to the Hub over HTTP/1.1, including WebSocket upgrades.
-
-The repository's `task test-reverse-proxies` harness verifies registration, connection, and transfers larger than 4 MiB before and after a 200-second stability window. It checks the web app's event WebSocket for that window too. All five examples pass those checks. A separate HAProxy run verifies a 15-second inactivity timeout for 60 seconds.
-
-Replace the host name, the certificate paths, and the Hub's address with your own. The title of each file states where the file goes.
+Each configuration below serves `hub.example.com` on port `443`, redirects port `80` to HTTPS, blocks `/metrics` externally, and forwards all other traffic — including WebSocket upgrades — to `127.0.0.1:4327` over HTTP/1.1. Replace the hostname, certificate paths, and Hub address with your own. The first comment line of each file shows its install path.
 
 {{< tabs >}}
 {{< tab name="nginx" >}}
-The configuration requires nginx 1.25.1 or later, for the `http2` directive.
+Requires nginx 1.25.1 or later for the `http2 on;` directive.
 
-`client_max_body_size 0` lets the Hub enforce its own limit on unary requests. nginx's default limit of 1 MiB would reject bulk requests that the Hub accepts. The Worker's stream uses a WebSocket upgrade.
+`client_max_body_size 0` lets the Hub enforce its own payload ceiling on unary requests; nginx's 1 MiB default would reject valid bulk requests.
 
 {{< config-file file="nginx.conf" lang="nginx" >}}
 {{< /tab >}}
 
 {{< tab name="Caddy" >}}
-Caddy obtains and renews the certificate itself. One `reverse_proxy` forwards API calls and WebSocket upgrades to the Hub and sets the forwarding headers.
+Caddy obtains and renews TLS certificates automatically. `respond /metrics 404` keeps Prometheus metrics host-local while `reverse_proxy` forwards HTTP and WebSocket upgrades with forwarding headers.
 
 {{< config-file file="Caddyfile" lang="caddyfile" >}}
 {{< /tab >}}
 
 {{< tab name="Traefik" >}}
-The static configuration defines the entry points. Traefik's default request-read timeout permits the WebSocket stream; no timeout override is needed.
+The static configuration defines HTTP and HTTPS entry points. Traefik's default request-read timeout allows long-lived WebSocket streams without overrides.
 
 {{< config-file file="traefik.yml" lang="yaml" >}}
 
-The dynamic configuration uses one router and one HTTP upstream for the web app, API calls, and WebSocket upgrades.
+The dynamic configuration excludes `/metrics` from the public router and forwards all other requests and WebSocket upgrades to the Hub.
 
 {{< config-file file="traefik-dynamic.yml" lang="yaml" >}}
 
-To obtain the certificate from Let's Encrypt, define a certificate resolver in the static configuration, set it as `tls.certResolver` on the router, and remove the `tls.certificates` section. The Traefik documentation describes certificate resolvers.
+To obtain certificates from Let's Encrypt automatically, define a certificate resolver in `traefik.yml`, set `tls.certResolver` on the router, and remove the static `tls.certificates` block.
 {{< /tab >}}
 
 {{< tab name="HAProxy" >}}
-`alpn h2,http/1.1` on the `bind` line offers HTTP/2 to browsers. The HTTP/1.1 upstream carries API calls and WebSocket upgrades. The certificate file holds the certificate chain followed by the private key.
+`alpn h2,http/1.1` on the `bind` line offers HTTP/2 to browsers while forwarding HTTP/1.1 and WebSocket upgrades to the Hub. The PEM file must contain the full certificate chain followed by the private key.
 
 {{< config-file file="haproxy.cfg" lang="haproxy" >}}
 {{< /tab >}}
 
 {{< tab name="Apache" >}}
-The configuration requires Apache httpd 2.4.47 or later, for `upgrade=websocket`. One HTTP upstream carries all traffic, including the Worker's WebSocket. Enable the modules and the site on Debian or Ubuntu:
+Requires Apache httpd 2.4.47 or later for `upgrade=websocket`. Enable the required modules and site on Debian or Ubuntu:
 
 ```bash
 sudo a2enmod ssl http2 proxy proxy_http headers
@@ -102,20 +125,32 @@ sudo systemctl reload apache2
 
 ## Check the setup
 
-1. Check that the proxy serves the web app over HTTP/2:
+{{% steps %}}
 
-   ```bash
-   curl -sI https://hub.example.com/ | head -1
-   ```
+### Verify HTTPS, HTTP/2, and `/metrics` protection
 
-   The first line is `HTTP/2 200`.
-2. Register a Worker through the proxy, and start it. See [Managing Workers](/docs/admin/managing-workers/#register-a-worker).
+```bash
+# Confirm HTTP/2 and 200 OK for the web app:
+curl -sI https://hub.example.com/ | head -1
 
-   ```bash
-   leapmux daemon worker register --hub https://hub.example.com --registration-key <key>
-   leapmux daemon worker start
-   ```
+# Confirm /metrics is blocked externally (expect 404 or 403):
+curl -s -o /dev/null -w "%{http_code}\n" https://hub.example.com/metrics
 
-   The registration prints `Worker registered.`, and the Worker appears in the sidebar **Workers** section.
+# On the Hub host, confirm local scraping works:
+curl -s http://127.0.0.1:4327/metrics | head -5
+```
 
-If a step fails, see [A Worker cannot register or stay connected through a reverse proxy](/docs/reference/troubleshooting/#a-worker-cannot-register-or-stay-connected-through-a-reverse-proxy).
+### Register and start a Worker through the proxy
+
+See [Register a Worker](/docs/admin/managing-workers/#register-a-worker) to mint a registration key, then test end-to-end connectivity through TLS:
+
+```bash
+leapmux daemon worker register --hub https://hub.example.com --registration-key <key>
+leapmux daemon worker start
+```
+
+Registration prints `Worker registered.`, and the Worker appears online in the sidebar **Workers** section.
+
+{{% /steps %}}
+
+If any check fails, see [Troubleshooting — Reverse proxy](/docs/reference/troubleshooting/workers-and-network/#worker-fails-through-a-reverse-proxy).

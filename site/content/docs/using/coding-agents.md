@@ -1,403 +1,151 @@
 ---
 title: "Coding Agents"
-description: "Run coding-assistant CLIs like Claude Code and Codex in LeapMux: open an agent, chat, read tool calls, answer permission prompts, and switch models mid-session."
+description: "Run coding-assistant CLIs in LeapMux: open agents, manage the input queue, steer or preempt turns, review tool calls, approve permissions, and switch models mid-session."
 type: docs
-weight: 3
+weight: 2
 ---
 
-Coding agents are the core feature of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, and approve its actions. This chapter covers which agents are supported and how to open, chat with, and configure one.
+Coding agents are the core of LeapMux. Each agent tab runs a real coding-assistant CLI on a Worker and streams its conversation, tool calls, diffs, and approval prompts into your browser or desktop app over an end-to-end encrypted (E2EE) channel.
 
-For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Control CLI](/docs/using/control-cli/).
+For provider-by-provider capabilities — including approvals, native context resume, inline images, goals, and plan mode — see **[Supported Agents & Feature Matrix](/docs/reference/supported-agents/)**. For workspace placement and tiling, see [Tabs & Layout](/docs/using/tabs-and-layout/); for git branch isolation, see [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
-## Choosing a provider
+## Supported providers
 
-LeapMux integrates {{< agent-provider-count >}} coding-agent providers. It detects the installed coding agents on the Worker and lists them in the New agent dialog.
+LeapMux integrates {{< agent-provider-count >}} coding-agent providers and detects installed CLIs on each Worker automatically.
 
 {{< agent-logos >}}
 
-LeapMux turns off the self-update of each agent CLI that offers a switch for it in the environment, so an update does not replace a CLI while a session uses it. Update a CLI with its own installer or package manager between sessions.
+Every provider supports live chat and streamed tool calls. LeapMux disables built-in CLI self-updaters during active sessions so a binary never swaps out underneath a running conversation; update CLIs with your normal package manager between sessions. Check the **[Supported Agents & Feature Matrix](/docs/reference/supported-agents/)** to compare approval prompts, session resume, images, goals, and permission modes across providers.
 
-All {{< agent-provider-count >}} providers support chat and streamed tool calls. The [feature matrix](#feature-matrix) shows approval requests and native model context on resume. The Goals & To-dos sidebar appears when an agent has a to-do list or a session goal. Each provider offers its own models and settings, and its prompt style varies too.
+## Opening an agent
 
-## Opening a new agent
+{{< screenshot src="new-agent-dialog" alt="LeapMux New agent dialog showing Worker, Agent Provider, Title, Working Directory, Resume session, and Create new worktree git options" caption="The New agent dialog picks a Worker, provider, working directory, optional session to resume, provider startup options, and git mode." width="996" height="792" >}}
 
-{{< screenshot src="new-agent-dialog" alt="LeapMux New agent dialog showing Worker, Agent Provider, Title, Working Directory, Resume session, and Create new worktree git options" caption="The New agent dialog lets you pick a Worker, provider, directory, optional existing session to resume, and git branch or worktree mode." width="996" height="792" >}}
-
-Open the **New agent** dialog from the workspace, then fill in the fields below and click **Create**.
-
-### Dialog fields
+Press `⌘N` / `Ctrl+N` (or click a provider button in the tab bar) to quick-open an agent in the active tab's Worker and directory using your most recent provider. Press `⇧⌘N` / `Ctrl+Shift+N` (or double-click empty space in the tab bar) to open the full **New agent** dialog.
 
 | Field | What it does |
 | --- | --- |
-| **Worker** | The machine that will run the agent. Determines which providers are available and where the working directory lives. See [Managing Workers](/docs/admin/managing-workers/). |
-| **Agent Provider** | Which agent CLI to launch. Shows the provider icon, label, and a chevron; a check marks the current choice. |
-| **Directory** | The working directory for the agent, chosen from a directory tree on the Worker. A text box above the tree shows the selected path; type a path and press Enter to go there. It is the same picker the New Terminal dialog uses — see [Working Directory](/docs/using/terminals/#the-full-new-terminal-dialog) for the full behavior, including the path-style hint for a Windows Worker. |
-| **Resume an existing session** | Optional. A menu of recent sessions for the selected directory and provider, with a filter box, a refresh button, and an **Enter a session ID…** row for a handle the list does not hold. Leave it on **Start a new session** to begin fresh (see [Resuming a session](#resuming-an-existing-session)). |
-| **Title** | The tab name. Pre-filled with a random `Agent <Name>`; the refresh button beside the label picks another. Type your own to replace it. It cannot be empty. |
-| **Git options** | Appears once a Worker is selected. Lets you start the agent on the current branch, switch branches, create a branch, or create/use a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
+| **Worker** | Selects the machine that runs the agent and supplies its installed providers and filesystem. |
+| **Agent Provider** | Picks the CLI backend. LeapMux remembers and pre-selects your most recently used provider on that Worker. |
+| **Working Directory** | Browses the Worker's filesystem or accepts a typed path, with a **Go to home directory** button and a drive selector on Windows Workers. |
+| **Provider startup options** | Shown for providers that expose launch-time choices (for example, Muse Code's **Workspace trust**). |
+| **Resume an existing session** | Optional. Picks an earlier session for the selected provider and directory, or **Enter a session ID…** to paste a handle directly. Leave on **Start a new session** for a clean conversation. |
+| **Title** | Pre-filled with a random `Agent <Name>`; click the refresh icon for another suggestion or type your own. |
+| **Git options** | Shown inside git repositories to keep the current branch, switch branches, or create a branch or linked worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
 {{< callout type="info" >}}
-The dialog has **no model, effort, or permission-mode fields**. A new session takes the models and effort that your provider configuration states, and starts with a permission mode that asks before risky actions.
-
-A resumed session keeps its stored settings. Change settings from the composer after the session starts (see [Changing settings mid-session](#changing-settings-mid-session)).
+Model, reasoning effort, and permission mode are not in the **New agent** dialog. New sessions inherit your CLI's defaults and start in a safe approval mode; change them anytime from the composer status bar after launch.
 {{< /callout >}}
 
-LeapMux remembers your most recently used provider and pre-selects it (when it is available on the chosen Worker), so you usually only have to pick a directory and click **Create**.
+### Resuming sessions
 
-### Quick-open (no dialog)
+The **Resume an existing session** menu merges LeapMux's own agent history with the CLI's native session store on that Worker, so conversations started in a plain terminal appear too. Sessions already open in another tab are excluded to avoid corrupting a native store. Changing the Worker, provider, or directory clears any selected session.
 
-If you trigger "new agent" from a tab that already has a Worker and working directory, LeapMux skips the dialog and opens an agent directly, reusing the active tab's provider (or your most-recent provider). It only falls back to the full dialog when the Worker, directory, or provider can't be inferred.
-
-### Where the new agent lands
-
-The Worker assigns a friendly title from a shared name pool (you'll see titles like "Agent <Name>"); you can rename the tab later. For how tabs are placed, split, and tiled, see [Tabs & Layout](/docs/using/tabs-and-layout/).
-
-### Resuming an existing session
-
-To reopen a native session, pick it from the **Resume an existing session** field in the New agent dialog. The field lists recent sessions for the selected provider. It filters by directory when the native store records one. Each entry shows a title and age. A filter box narrows the list, and the refresh button asks the Worker again.
-
-The list combines LeapMux's agent records with each CLI's session history on that machine. A session you started in a terminal can appear here too. Where both stores know a session, LeapMux's record wins.
-
-A session already open in a tab isn't offered, because a second process against one native session store can corrupt it — close the tab first. Providers that record a session's directory also exclude sessions from another directory; some native stores record no directory and cannot apply that filter. Changing the directory or provider clears a session you had picked, since a session ID means nothing in another directory.
-
-Leave the field on **Start a new session** to begin fresh. It is a real entry in the menu, so it is also how you take back a session you picked.
-
-The last entry, **Enter a session ID…**, swaps the menu for a text box. Use it for a session from another machine, or one older than the newest fifty. The field also falls back to that box on its own when the Worker finds no sessions at all — a directory with no history, a provider whose store this machine doesn't have, or a Worker that can't answer. The box checks what you type and reports a session ID it cannot use.
-
-Once you submit, the Worker asks the provider to reopen the native session. The new tab shows the chat rows an earlier LeapMux tab saved on this Worker; an external native session can resume without them, because its provider replays its own history. The [feature matrix](#feature-matrix) lists which providers restore prior model context.
-
-If native resume fails, the agent doesn't start and the tab reports why. Send `/clear` in the chat to start a fresh session instead.
-
-### Automatic resume
-
-Most resumption happens automatically: the tab and its Worker transcript survive a Hub restart, a Worker restart, and a client reconnect. When LeapMux has to respawn an agent's process, it reconnects it to the prior session through the provider's own resume mechanism — see the [feature matrix](#feature-matrix) for which providers restore prior model context. If native resume fails, LeapMux reports the failure and keeps the transcript, so an empty session never replaces the conversation.
+Most resumption happens automatically: tabs and transcripts survive Hub restarts, Worker restarts, and browser reconnects. When LeapMux respawns a process, it reconnects through the provider's native resume mechanism. If native resume fails, LeapMux reports the error and keeps the saved transcript instead of replacing it with an empty session; send `/clear` to begin fresh.
 
 ## Chatting with an agent
 
-{{< screenshot src="coding-agent-chat" alt="LeapMux coding agent pane with Claude Code, Antigravity, and Codex tabs, an inline diff edit card, a permission prompt banner, and composer chips" caption="An active coding agent pane with Claude Code, Antigravity, and Codex tabs, an inline Edit diff card, a Bash permission prompt, and composer model and effort chips." width="992" height="900" >}}
+{{< screenshot src="coding-agent-chat" alt="LeapMux coding agent pane with Claude Code, Antigravity, and Codex tabs, an inline diff edit card, a permission prompt banner, and composer chips" caption="An active coding agent pane displaying inline edit diffs, a permission prompt banner, and composer setting chips." width="992" height="900" >}}
 
-The chat tab has the conversation transcript above and a Markdown editor at the bottom.
+The composer below the transcript is a single-box Markdown editor. It starts one line tall and expands automatically for multi-line messages. Standard Markdown shortcuts format as you type (`**bold**`, `` `code` ``, `# heading`, `- list`, code fences, and links; click any link to edit its URL).
 
-### Composing and sending
+- **Sending:** Press `⌘⏎` / `Ctrl+⏎` (default) or click **Send**. You can switch to plain `Enter` sends from the composer **[+]** menu or **Preferences → Chat & Composer**; see [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/#chat-editor-keys) for all editor keys.
+- **Attachments:** Use **[+] → Attach file...**, paste from the clipboard, or drag and drop files onto the editor. Supported attachment types vary by provider (see [Supported Agents & Feature Matrix](/docs/reference/supported-agents/)). For example, ZCode rejects image attachments when the selected model is text-only.
+- **Interrupting a turn:** While the agent works with no pending approval prompt, click the square **Interrupt** button to stop the turn cleanly via the provider's native interrupt signal. When a permission or question prompt is active, answer or reject the prompt instead.
 
-The editor is a full Markdown editor in a single input box. Type your message and send it with the **Send** button (the paper-plane icon) or with the keyboard. While the message is in flight, a spinner replaces the Send icon.
+## Input queue, scheduling, and steering
 
-The box starts one line tall, with the **[+]** menu at the left end and the send controls at the right. It expands into a taller layout, with those controls on their own row beneath the text, as soon as the message needs more than one line.
+{{< screenshot src="input-queue" alt="LeapMux agent input queue stacked above the composer while a turn runs, showing immediate queued rows with reorder, edit, delete, and Steer buttons, a scheduled row with local timestamp, and Pause Queue" caption="Messages sent during a turn stack in the Worker-backed input queue with Steer or Preempt, reorder, edit, schedule, and Pause Queue controls." width="948" height="363" >}}
 
-Send is disabled when the editor is empty and there are no attachments.
+Every input you submit — messages, attachments, `/clear`, plan approvals, and prompt answers — enters a durable **input queue** stored on the Worker. The queue survives page refreshes, Worker restarts, and multi-device switching.
 
-Markdown shortcuts apply as you type: `**bold**`, `` `code` ``, `# heading`, `- list`, ` ``` ` for a code block, and `[text](url)` for a link. Click a link to open a small editor for its URL, with **Save** and a remove button. Use it whenever a URL is wrong — editing the link's visible text does not change where it points.
+```mermaid
+flowchart LR
+  Compose["Compose message or schedule (--at)"] --> Queue["Worker Input Queue"]
+  Queue --> Order{"Priority order"}
+  Order -->|"1. Immediate items"| Ready{"Queue state"}
+  Order -->|"2. Scheduled items (by time)"| Ready
+  Ready -->|"Paused or waiting auth"| Hold["Hold until Resume Queue or Recover login"]
+  Ready -->|"Running turn"| Dispatch{"Head action"}
+  Dispatch -->|"Wait"| Next["Deliver when turn ends"]
+  Dispatch -->|"Steer"| Inject["Inject into active turn"]
+  Dispatch -->|"Preempt"| Cut["Interrupt turn and deliver next"]
+```
 
-#### Enter-key send mode
+Immediate items always deliver ahead of scheduled items, and scheduled items deliver in timestamp order. Click the calendar button beside **Send** to hold a message until a chosen local date and time; once that time arrives, the row promotes to the immediate group automatically. Providers such as Claude Code and Codex also schedule visible **Auto-retry (usage limit)** and **Auto-retry (server error)** rows in the same queue, which you can pause or cancel like your own messages.
 
-An item in the composer's **[+]** menu controls what the **Enter** key does. The two modes are:
+{{< screenshot src="schedule-send-popover" alt="LeapMux schedule send popover showing a local date and time picker with Clear schedule, Cancel, and Schedule buttons" caption="Click the calendar button beside Send to schedule a queued message for a specific local date and time." width="448" height="240" >}}
 
-| Mode | Enter | Modifier+Enter |
-| --- | --- | --- |
-| **Enter sends** | Sends the message | (Shift+Enter for a new line) |
-| **Cmd/Ctrl+Enter sends** (default) | Inserts a new line | Cmd+Enter (macOS) / Ctrl+Enter (other platforms) sends |
+{{< video-clip src="input-queue-steering" poster="input-queue" alt="Animated walkthrough of pausing and resuming the agent input queue, opening Schedule send, and queueing a follow-up prompt while a turn runs" caption="Pause and resume the input queue, inspect Schedule send, and queue follow-up prompts without interrupting an active turn." width="1280" height="800" >}}
 
-The default is **Cmd/Ctrl+Enter sends**, so plain Enter adds a newline. Open the **[+]** menu and click **Send with Cmd/Ctrl+Enter** to switch; the choice is saved as a [preference](/docs/using/settings/) and persists across sessions.
-
-### Attachments
-
-You can attach files with **[+] > Attach file...**, or by pasting or dropping them into the editor. Pending attachments appear in a strip above the editor. What you can attach depends on the provider. See the [feature matrix](#feature-matrix).
-
-ZCode accepts an image only when the selected model declares image input. LeapMux refuses an image on a text-only model and identifies that model. Without this check, ZCode accepts the image but does not send it to the model.
-
-### Message persistence and offline behavior
-
-Your messages appear immediately (optimistically) and are reconciled when the server echoes them back. If you send while the agent subprocess is still starting, the message is queued and delivered once the agent is ready. Optimistic messages survive a page refresh; if delivery fails, you can retry or delete the message. Everything you send passes through [the input queue](#the-input-queue), which is what makes that durable.
-
-### Interrupting a turn
-
-While the agent is actively working — and there is no pending permission prompt — an **Interrupt** button (a square icon) appears. Click it to stop the current turn. LeapMux asks the agent to stop via its native interrupt mechanism rather than killing the process.
-
-{{< callout type="info" >}}
-The **Interrupt** button is hidden whenever the agent is waiting on you with a permission or question prompt — answer the prompt instead (see [Permission and approval prompts](#permission-and-approval-prompts)).
-{{< /callout >}}
-
-## The input queue
-
-{{< screenshot src="input-queue" alt="LeapMux agent input queue stacked above the composer while a turn runs, showing immediate queued rows with reorder, edit, delete, and Steer buttons, a scheduled row with local timestamp, and Pause Queue" caption="Queued messages stack above the composer while a turn runs, with Steer on the first waiting item, reorder and edit controls, scheduled timestamps, and Pause Queue." width="948" height="363" >}}
-
-Everything you send an agent goes into its input queue first: a message, an
-attachment, a `/clear`, a plan execution, an answer to a permission prompt. The
-queue lives on the Worker, so it survives a page refresh, a reconnect, and a
-Worker restart, and every device you are signed in on sees the same one.
-
-An item leaves the queue when the agent takes it. While the agent works,
-anything you send waits its turn, and the queue appears above the composer with
-one row per waiting item. Each row shows a preview, what kind of input it is,
-its delivery state, and — for a scheduled item — the local date and time it
-waits for.
-
-### Working with queued items
+### Queue controls
 
 | Control | What it does |
 | --- | --- |
-| **Move up** / **Move down** | Reorder a waiting item inside its reorder group. Drag a row by its grip for the same effect. |
-| **Edit** | Load the item back into the composer to change it. Another device editing it shows **Take Over** instead. |
-| **Delete** | Drop the item. Click twice to confirm. |
-| **Retry** | Send an item again after a delivery failure. |
-| **Steer** | Hand the first item to the turn already running, instead of waiting for it to finish. |
-| **Pause Queue** | Stop delivering. The Send button reads **Queue** while paused. |
+| **Move up** / **Move down** (or drag grip) | Reorders waiting items within the same group (immediate items, or scheduled items sharing one timestamp). |
+| **Edit** / **Take Over** | Loads a queued item back into the composer to change its text or schedule. Shows **Take Over** if another device is editing it. |
+| **Delete** | Removes a waiting item (requires a second confirmation click). |
+| **Retry** | Re-attempts delivery after a failed send. |
+| **Steer** | Injects the first waiting item into a running turn on providers that support mid-turn steering. |
+| **Preempt** | Interrupts the active turn and dispatches the first waiting item next on providers that support preemption instead of steering. |
+| **Pause Queue** / **Resume Queue** | Holds or resumes delivery. While paused, the Send button reads **Queue**. When paused for authentication recovery, the button reads **Recover login**. |
 
-An item already on its way to the agent cannot be moved, reordered around, or deleted.
+With an **empty composer** while a turn runs, pressing `⌘⏎` / `Ctrl+⏎` resumes a paused queue (or opens **Recover login** when login recovery is required) and triggers **Steer** or **Preempt** on the first waiting item in one step. Clicking the row's **Steer** or **Preempt** button directly acts on that item without unpausing a paused queue. If a provider drops a steered item before reading it (for example, after an interrupt), LeapMux re-queues it automatically and notes that in the transcript.
 
 ### Messages from other agents
 
-An agent can send another agent a message with `leapmux agent send`. The message reaches the recipient as that agent's message, never as yours:
+When another agent sends a message via `leapmux agent send`, the Worker derives sender identity from the calling tab's credentials. The recipient sees a header identifying the sending agent and provider (stating the message is not from the operator), and the transcript and queue display the sender's icon and tab title. **Edit** is disabled on agent-sent queue rows, while reordering, deletion, and steering work normally.
 
-- The recipient reads the message after one line that states the sending agent and its provider, and that the message is not from its operator.
-- The transcript shows the sending agent's icon and the title of its tab above the message, and the queue row shows them in place of the kind.
-- **Edit** is disabled on such a row, because the text is the other agent's. **Delete**, the moves and **Steer** work as they do for your own messages.
-- A message that an agent drops after a steer, and that LeapMux queues again, still comes from the sending agent.
+## Reading tool calls, goals, and subagents
 
-LeapMux takes the sender from the credentials of the sending agent's tab, so an agent cannot claim to be another agent or pass its words off as yours. This holds for an agent on another Worker too.
-
-### Scheduling a send
-
-{{< screenshot src="schedule-send-popover" alt="LeapMux schedule send popover showing a local date and time picker with Clear schedule, Cancel, and Schedule buttons" caption="Click the calendar button beside Send to hold a message in the queue until a chosen local date and time." width="448" height="240" >}}
-
-The calendar button beside **Send** schedules the composer's next message:
-pick a local date and time, and the message waits in the queue until then
-instead of going out with the next delivery. Clearing the schedule returns the
-message to immediate delivery, and an edit of a queued item can change or
-clear its schedule the same way.
-
-Immediate and scheduled input share one queue with one rule: **immediate
-items always go ahead of scheduled ones**, and scheduled items run in the
-order of their times. A row can only be reordered inside its own group — an
-immediate item never swaps with a scheduled one, and two scheduled items swap
-only when they wait for the exact same instant. A deadline that passes while
-you watch simply promotes its row to the immediate group; nothing is re-sent
-or lost. The promoted row still waits behind an item that is on its way to the
-agent, and behind one whose delivery failed or is uncertain.
-
-Providers use the same mechanism for their own automatic retries. When Claude
-Code or Codex hits a usage limit that lifts at a known time, or a turn fails
-with a retryable server error, the queue gains an **Auto-retry (usage limit)**
-or **Auto-retry (server error)** row that shows the time it waits for. The row
-is visible, reorderable within its group, and cancellable like any other item. Pausing the queue holds
-a matured retry exactly as it holds anything else; resuming delivers it.
-
-### Pausing
-
-The queue pauses itself when something goes wrong — a delivery fails, delivery
-is uncertain, or the agent stopped — and a banner above the composer says which.
-Pause it yourself with **Pause Queue** to stack up several messages before
-letting the agent have them. **Resume** starts delivery again, and so does
-**`Cmd/Ctrl+Enter`** while the composer is empty (see [Steering](#steering)).
-When the queue waits for login recovery, the same shortcut opens the recovery
-dialog instead. A pause holds
-scheduled input too: an item whose time arrives while the queue is paused waits
-— visible with its state — until you resume.
-
-### Steering
-
-Steering hands the queue's **first** item to the turn the agent is already
-running, rather than letting it wait. It is how you correct an agent
-mid-thought: queue "use the existing helper instead", steer it, and the agent
-takes it into the work in progress.
-
-Press **`Cmd/Ctrl+Enter`** while the composer is empty, or click **Steer** on the
-first row. The shortcut and the button steer under the same conditions, and
-neither steers when any of them is unmet:
-
-- the agent's provider has to accept a steer while it runs;
-- a turn has to be in progress, and it has to be an ordinary turn rather than a
-  `/clear` or a `/compact`;
-- the first item has to be waiting — not on its way to the agent, and not open for edit.
-
-On a paused queue, one press of the shortcut steers and then resumes the queue.
-The **Steer** button steers through the pause and leaves the queue paused.
-
-The shortcut acts only on an **empty** composer, so it never takes
-`Cmd/Ctrl+Enter` away from the composer while there is text, an attachment, or a
-permission prompt waiting for approval. In **Cmd/Ctrl+Enter sends** mode (the
-default) with an empty queue, type a message and press the shortcut twice: the
-first press adds it to the queue, and the second press steers it. In
-**Enter sends** mode, press **`Enter`** first to queue the message, then press
-**`Cmd/Ctrl+Enter`** to steer it. When another item already waits in the queue,
-the shortcut steers that first item instead.
-
-Some agents can drop a steered item before the model reads it, for example when
-you stop the turn while the item still waits in the agent's own inbox. LeapMux
-then queues the item again behind what the queue holds, and the transcript
-states that the message was queued again. A message from another agent comes
-back as that agent's message, with the same sender. Every other item comes back
-as your own message, with the text that the agent would have read.
-
-## How tool calls and results render
-
-As an agent works, the transcript shows its assistant text, its thinking (where the provider exposes it), and a row for every tool call it makes, followed by that tool's result. The exact set of tools depends on the provider, but you will commonly see:
-
-- **File reads** — the file the agent opened.
-- **Edits and writes** — rendered with a diff. The result toolbar offers a **split / unified** diff toggle.
-- **Bash / command execution** — the command and its output.
-- **Search / grep / glob** — the query and matches.
-- **Web fetch / web search** — the URL or query and what came back.
-- **Todo / plan updates** — feed a persistent todo sidebar (see below).
-- **MCP tool calls** — calls into Model Context Protocol servers the agent has access to, rendered like any other tool call.
-
-Long tool results are collapsible (an **Expand** button), and most rows have a **Copy** button. Where it makes sense, a row's header also offers a **Quote** button (tooltip "Quote", pulls the row's text into the editor as a quoted reply), a **Copy Markdown** button (tooltip "Copy Markdown"), and a **Copy Raw JSON** button for debugging. The permission-prompt banner (see [Permission and approval prompts](#permission-and-approval-prompts)) carries its own **Copy Raw JSON** action too.
-
-{{< callout >}}
-Some rows are intentionally hidden to keep the transcript readable — for example, Claude Code suppresses its internal todo-list and tool-search bookkeeping rows. The information still drives the UI (the todo sidebar), it just isn't repeated inline.
-{{< /callout >}}
+As an agent works, the transcript streams assistant text, optional thinking blocks, and paired tool calls and results — file reads, inline diffs (with a **split / unified** toggle), shell commands, searches, web fetches, and Model Context Protocol (MCP) tool calls. Long outputs collapse behind **Expand**, and row headers offer **Copy**, **Quote** (inserts a quoted reply into the composer), **Copy Markdown**, and **Copy Raw JSON**.
 
 ### Images in tool results
 
-When a tool returns an image — a screenshot from an MCP browser tool, a `Read` on a PNG, a generated picture — the row shows the picture itself, scaled to fit the transcript.
+When a tool returns an image (such as a browser screenshot or image file read), LeapMux renders it inline and lets you click it to open a zoomable image tab (or the source file at full resolution when known). Images larger than about 5 MB show a placeholder, and external image URLs render as clickable links rather than auto-fetching remote hosts.
 
-Click one to open it in its own tab, where you can zoom it (fit, 100%, or any step in between) and pan. When the agent said which file the image came from, LeapMux opens that file instead, so you see it at full resolution straight from the Worker.
+### Goals & To-dos sidebar
 
-Not every image renders inline:
+{{< screenshot src="agent-goals-subagents" alt="LeapMux Goals and To-dos right sidebar section displaying the Session Goal card and completed, in-progress, and pending checklist items" caption="The Goals & To-dos sidebar tracks the session goal and live agent checklist items in the right sidebar." width="388" height="240" >}}
 
-- **Images above about 5 MB** show a placeholder instead of the picture.
-- **An image the agent gives by URL** shows an **open ↗** link instead of the picture. Rendering it would fetch from that host, which the transcript never does on its own.
+When an agent reports a to-do list or a session goal, the **Goals & To-dos** sidebar section appears (also accessible from the to-do count chip on the thinking indicator):
 
-Whether a tool result includes inline images depends on the provider — some return images from both file reads and MCP tools, some support file reads only, and others return text-only tool results. Check the [feature matrix](#feature-matrix) for each provider's support and notes.
+- **Session goal** — a standing objective the agent checks after each turn and keeps pursuing until satisfied. Set, update, pause, resume, or clear goals from the card menu on providers that support goal controls.
+- **To-do list** — tracks pending, in-progress, and completed items reported by the agent's tools, synced from the Worker across reconnects.
 
-### The Goals & To-dos sidebar
+### Subagents and Background tasks
 
-This section holds two things an agent works toward: its session goal, and its to-do list.
-
-The **session goal** is a standing objective. The agent re-tests it at the end of every turn and keeps working while the condition does not hold. The card shows the objective, its status, and the counters the CLI reports; the [feature matrix](#feature-matrix) states which providers report one and which controls each offers.
-
-Set a goal from the card, and use the card's menu to change, pause, resume, or clear it where the provider supports that. Some providers apply goal updates immediately through a native control, while others send the change as a chat message that takes a turn. Check the [feature matrix](#feature-matrix) for each provider's goal controls. Clear an existing goal before setting another.
-
-The **to-do list** shows each item's status (pending, in progress, completed). Whatever to-do or plan tracking the provider's own tools report feeds it. The list is server-authoritative, so it stays correct across reconnects.
-
-A chip on the thinking indicator shows the to-do count and opens the same section as a popover.
-
-### Subagents and the Background tasks sidebar
-
-When an agent spawns a subagent (a Task or Agent tool) or runs a background shell it reports, LeapMux tracks it in a **Background tasks** sidebar section. Each row shows the task's live status and, for subagents that own a transcript, is clickable to open the subagent in its own tab alongside its parent. A small chip on the thinking indicator shows the active count and opens the same list as a popover. A dynamic workflow that runs many subagents for one job groups them under the workflow's row.
-
-Closing a subagent tab closes only the tab. The transcript and registry survive, and you can reopen the tab from the section later. Only providers whose CLIs report subagent activity appear here; the registry lives in the Worker's local database and never reaches the Hub.
-
-### Turn boundaries and notifications
-
-The end of each turn is marked by a divider that may carry a label such as a duration ("Took 2.1s") or an error ("API Error: 529 …"). LeapMux also surfaces notifications for events like rate limits, context compaction, retries, and settings changes, collapsing repeated or no-op notifications so they don't flood the transcript.
+When a provider spawns child subagents or background shell tasks, LeapMux lists their live statuses in the **Background tasks** sidebar section and on the thinking-indicator chip. Dynamic workflows group their child subagents under one workflow row. Click any subagent with a transcript to open it in its own tab; closing that tab leaves the subagent's transcript intact so you can reopen it later.
 
 ## Permission and approval prompts
 
-When an agent needs your approval — to run a command, edit a file, or proceed with a plan — or wants to ask you a question, LeapMux shows a **control request** banner directly above the editor. Every banner has the same shape: a title stating the request, a body explaining the action (often as collapsible JSON), one button for each answer the provider offers, and the editor for a custom answer. The editor placeholder changes to hint at what to type — **"Type a custom answer..."** for a question, **"Type a rejection reason..."** for any other request.
+When an agent needs approval to run a command, edit a file, execute a plan, or ask a question, a **control request** banner appears directly above the composer. The provider supplies the available choices (such as one-time approval, session-wide approval, or saved rules). Typing into the composer while denying sends your text as the rejection reason.
 
-The provider's protocol supplies the buttons and labels. Most providers ask about one call at a time. Some offer approval for the rest of the session. Others offer a rule that the CLI remembers. Check each button's scope before you allow a call. Text that you submit with a denial reaches the agent as its rejection reason.
+- **Agent Client Protocol (ACP) fallbacks:** If an ACP provider exposes no refusal option, LeapMux adds **Cancel** to refuse the call and end the turn.
+- **Permission preset on approval:** Where supported, approval banners include a **Permissions** selector (**Unchanged**, **Smart**, or **Bypass**) that updates the session's permission preset alongside your approval.
+- **Questions:** Single-select prompts use radio buttons (typed text replaces the selection); multi-select prompts use checkboxes (typed text joins the checked options). Multi-question prompts show **Question N of M** and submit together. MCP input requests render as structured forms or native questions.
+- **Plan approvals:** Review the proposed plan and choose **Approve**, **Reject** (staying in plan mode with your feedback), or **Clear Context** (start implementation in a fresh session, where supported).
 
-Some agents that speak the Agent Client Protocol (ACP) offer no way to refuse a call. LeapMux then adds a **Cancel** button, which refuses the call and ends the agent's turn. An agent that offers no answer at all gets **Cancel** alone, because its protocol accepts no approval that the agent did not offer.
+{{< screenshot src="question-prompt-banner" alt="LeapMux agent question control banner displaying radio-button choices above a custom answer composer input" caption="Structured agent questions display selectable choices above a custom-answer input box." width="948" height="494" >}}
 
-The banner shows a **Permissions** choice when the provider supplies permission shortcuts. See [Changing settings mid-session](#changing-settings-mid-session). It offers **Unchanged**, **Smart**, or **Bypass** (only the shortcuts the session supports appear). An approval applies the selected shortcut to the session as well; the initial choice matches the session's current shortcut, and a plan-approval banner starts with **Smart** when the provider offers it.
-
-### Questions
-
-{{< screenshot src="question-prompt-banner" alt="LeapMux agent question control banner displaying radio-button choices above a custom answer composer input" caption="When an agent asks a structured question, LeapMux renders selectable options above the composer with a custom-answer box." width="948" height="494" >}}
-
-A question uses radio buttons for a single answer or checkboxes for several; you can also type a custom answer. For a question with radio buttons, the typed answer replaces the chosen one. For a question with checkboxes, the typed answer joins the checked options: checking **A** and typing **X** answers **A** and **X**. A prompt with several questions shows **Question N of M**, and one submission answers all of them. Requested MCP input is collected through a form or the provider's native questions (see the [feature matrix](#feature-matrix)).
-
-### Plan approvals
-
-When an agent finishes planning, the banner shows the plan. **Approve** starts the work. **Reject** keeps plan mode and sends your feedback. **Clear Context** starts the work in a fresh session when the provider offers that choice. Some providers end plan mode without asking (see the [feature matrix](#feature-matrix)).
-
-If several prompts queue up, you answer them one at a time. LeapMux de-duplicates requests and remembers answered ones, so a reconnect never re-asks something you already handled.
-
-An agent can replace a prompt while you answer it, for example when it asks something else at the same step. LeapMux then does not send your answer, because it was for the earlier prompt. The banner shows the new prompt. Answer that one.
-
-After you answer, the transcript keeps a row that states your answer in the same words for every provider:
-
-- **A permission:** the option that you chose.
-- **A plan:** **Approve** or **Reject**, or the choice that you picked. An approval that changes the permission mode states the mode after it, such as **Approve (Act)**.
-- **Questions:** each question with your answers. A dismissal reads **Dismissed:** followed by the questions.
-- **A form:** **Approved** and each field under its title, or **Rejected** or **Cancelled**.
-- **A dialog:** **Approved**, **Rejected**, **Cancelled**, or the value that you sent.
-
-A reason that reached the agent with your answer shows under **Sent feedback:** instead. A reason that the agent receives as your next message shows as that message.
-
-The exact buttons and their names come from the provider's own protocol.
-
-A script answers the same requests with `leapmux agent requests`, `approve`, `deny` and `answer`; see [Driving agents from a script](#driving-agents-from-a-script).
+LeapMux deduplicates prompts across reconnects and discards stale answers if the agent replaces a prompt before you submit. Answered prompts remain in the transcript with a consistent summary of your decision and any feedback you sent.
 
 ## Changing settings mid-session
 
-{{< screenshot src="composer-plus-menu" alt="LeapMux composer plus menu open above the status bar chips, showing Attach file, Model, Effort, Permission Mode, git branch, Agent info, Smart and Bypass permissions, and Enter-key send toggles" caption="Use the status bar chips or the composer [+] menu to change model, effort, permission mode, branch, or Enter-key behavior mid-session." width="960" height="646" >}}
+{{< screenshot src="composer-plus-menu" alt="LeapMux composer plus menu open above the status bar chips, showing Attach file, Model, Effort, Permission Mode, git branch, Agent info, Smart and Bypass permissions, and Enter-key send toggles" caption="Use the status bar chips or the composer [+] menu to switch model, effort, permission mode, branch, or Enter-key behavior mid-session." width="960" height="646" >}}
 
-Beneath the editor box is a status bar with one chip per setting axis — the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
+The status bar beneath the composer displays chips for the current git branch, model, reasoning effort, and mode. Click any chip — or open the **[+]** menu — to change settings, inspect context usage and rate limits under **Agent info**, or toggle **Show status bar**. Pickers with more than seven options switch to a searchable list automatically.
 
-The **[+]** menu holds every axis, including provider-specific options that have no chip. Each axis has a submenu. The menu also holds **Agent info** for context usage, rate limits, and the session.
+Most setting changes apply live; when a change requires a different CLI launch flag (such as changing permission mode or switching to a model that does not support the current effort level), LeapMux restarts the provider cleanly in place.
 
-LeapMux exposes the native settings its provider adapter supports — model, reasoning effort, mode, permissions, and other provider-specific axes — with the values the CLI's own configuration offers. You pick these as named radio options in the interface; when driving an agent with `leapmux agent set`, `--permission-mode` sets the permission axis and `--option` any other one.
+- **Permission shortcuts:** Where supported, **Smart permissions** enables the provider's safety-assisted reviewer (logging automated decisions in the transcript, with an **Approve** override for denied main-agent calls), and **Bypass permissions** disables prompts for trusted directories.
+- **Reasoning effort:** Defaults to **Auto**, omitting explicit effort flags so the provider's CLI picks its default tier.
+- **Plan mode:** Press `Shift+Tab` inside the composer to toggle plan mode on supported providers.
 
-You can hide the status bar with **[+] > Show status bar**. The **[+]** menu still gives access to all status bar settings.
-
-{{< callout type="info" >}}
-Most settings changes apply **live**. LeapMux restarts the provider when a launch flag must change. Examples include a permission-mode change, effort **Auto**, and a model change to a model that does not offer the current effort; a model change keeps the current effort when the new model offers it. The interface applies each change optimistically and restores the prior value after a failure.
+{{< callout type="warning" >}}
+**Bypass permissions** stays enabled until you turn it off. Use it only in directories and tasks you trust.
 {{< /callout >}}
 
-A picker shows radio items for up to 7 options and switches to a searchable list above that.
+## Driving agents from the CLI
 
-### Permission shortcuts
-
-Providers can add two adjacent permission shortcuts. **Smart permissions** selects the provider's safety-assisted mode. **Bypass permissions** disables permission prompts. Smart permissions is always directly above Bypass permissions. A shortcut appears only when the session offers every setting and value that the preset needs.
-
-Each safety-assisted mode approves the calls that it judges safe. The provider's mode decides what happens to the other calls: it asks you, or it denies the call.
-
-When a provider uses an automated reviewer for safety-assisted mode, the transcript logs each decision and its reason. On a denied action in the main agent, you can click **Approve** to record authorization for that action in its original context (this does not run the action automatically); subagent rows do not offer this override. See the [feature matrix](#feature-matrix) for each provider's permission modes.
-
-**Bypass** is a deliberate choice that stays set: it stops the agent from asking for approval. Use it only when you trust the working directory and the task. For Codex, Bypass also approves the requests of work that started before the switch. A turn that is running keeps the approval policy that it started with, so Codex still sends those requests. The transcript states how many waiting requests Bypass approved.
-
-### Reasoning effort and the "Auto" default
-
-For the providers whose effort LeapMux manages, effort defaults to **Auto**, meaning "let the CLI pick." When effort is Auto, LeapMux omits the effort flag entirely, so older CLI versions that don't recognize newer effort names still work. You only need to set effort explicitly if you want to force a particular tier.
-
-### Plan mode shortcut
-
-For providers that support a plan mode, **Shift+Tab** in the editor toggles between plan mode and the previous mode. The [feature matrix](#feature-matrix) lists which providers support plan mode.
-
-## Driving agents from a script
-
-Everything in this chapter has a programmatic counterpart in the `leapmux` CLI, which agents themselves can call (the Worker injects credentials into each spawned agent's environment). The most relevant commands:
-```bash
-# List your agents with their states (idle, working, waiting_for_user)
-leapmux agent list
-
-# Send a message to an agent, then follow its reply as it arrives
-leapmux agent send <agent> "Refactor the auth module"
-leapmux agent messages <agent> --follow
-
-# Inside an agent's tab, a message reaches the other agent as this agent's message
-leapmux agent send <agent> "Review the diff in the fix-auth branch"
-
-# Send a message, wait until the agent settles, and print its last reply
-leapmux agent send <agent> "Which tests fail?" --wait --timeout 30m
-
-# Wait until agents settle, or until one of them waits for an answer
-leapmux agent wait <agent> <agent>
-leapmux agent wait <agent> <agent> --until waiting_for_user --any
-
-# List the prompts that agents wait on, then answer one
-leapmux agent requests
-leapmux agent approve <agent> <request>
-leapmux agent deny <agent> <request> --message "Use the staging database"
-leapmux agent answer <agent> <request> --option 2
-
-# Interrupt the current turn
-leapmux agent interrupt <agent> --reason "wrong file"
-
-# Change model / effort / permission mode mid-session
-leapmux agent set <agent> --model gpt-5.4 --effort high
-
-# Open a new agent in a tab (provider, model, working dir, worktree, etc.)
-leapmux agent open --worker <worker> --provider claude \
-  --dir /repo --message "Start on the bug fix"
-```
-
-`<agent>` is an id, a unique id prefix, `title:<title>`, `name:<name>`, a bare case-insensitive title/slug, or `self` for the agent that runs the command. See [Control CLI](/docs/using/control-cli/) for targets, output, and errors, [CLI Automation](/docs/using/cli-automation/) for event-driven waits and JSON Schema replies, and the [Control Command Reference](/docs/reference/commands/agents/) for every agent command.
-
-## Feature matrix
-
-Every provider supports chat and streamed tool calls. Each matrix cell shows one of three states. The legend above the first table explains each symbol. The page splits the agents over several tables, and each table lists the features in groups. The first group header of a table shows no logos, because the table head shows them. Each later group header repeats the logos. Select a feature label for its exact definition. A † link beside a symbol opens a short note about that cell.
-
-{{< matrix >}}
+Every workflow in this chapter — opening agents, sending messages with `--wait` or `--output-schema`, inspecting and reordering the input queue, answering approval prompts, and switching models — has a scriptable CLI counterpart in `leapmux agent`. See [CLI Guide](/docs/using/cli-guide/) for authentication, targets, and automation patterns, and [Control Command Reference — Agents](/docs/reference/commands/agents/) for every command and flag.

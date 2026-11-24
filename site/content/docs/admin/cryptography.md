@@ -1,20 +1,20 @@
 ---
 title: "Cryptography & Key Architecture"
-description: "Hybrid post-quantum Noise_NK handshake (ML-KEM-1024 + X25519 + SLH-DSA), transport hardening, in-band rekey, Worker key storage, and TOFU pinning verification."
+description: "Hybrid post-quantum Noise_NK handshake (ML-KEM-1024 + X25519 + SLH-DSA), transport hardening, hourly in-band rekey, Worker key storage, and TOFU pinning."
 type: docs
 weight: 12
 ---
 
-This page describes the cryptographic protocol, transport hardening, key lifecycle, and trust-on-first-use (TOFU) verification behind LeapMux's end-to-end encrypted (E2EE) Frontend↔Worker channels. For the trust model and what the Hub can see, see [Security & Threat Model](/docs/admin/security/). For authentication, elevation, and OAuth security, see [Authentication & Session Security](/docs/admin/authentication-security/).
+This page specifies the cryptographic protocol, transport hardening, key lifecycle, and trust-on-first-use (TOFU) verification behind LeapMux's end-to-end encrypted (E2EE) Frontend↔Worker channels. For trust boundaries and authentication rules, see [Security & Authentication](/docs/admin/security-and-auth/). For Hub at-rest database encryption, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## Hybrid post-quantum `Noise_NK` handshake
 
-Frontend↔Worker traffic is protected by a **hybrid post-quantum `Noise_NK` handshake**. Combining classical and post-quantum primitives preserves confidentiality and authentication even if either primitive family is broken.
+Frontend↔Worker traffic uses a **hybrid post-quantum `Noise_NK` handshake**. Combining classical and post-quantum primitives preserves confidentiality and authentication even if either primitive family is broken.
 
-Channel setup runs in two stages across two transports:
+Channel setup runs in two stages:
 
-1. **Handshake over Hub-relayed unary RPCs:** The Frontend fetches the Worker's pinned composite public keys and encryption mode from the Hub, verifies them against its local pin, and runs the `Noise_NK` handshake through Hub-relayed unary RPCs. The Hub forwards opaque handshake messages without decrypting them.
-2. **Multiplexed transport over WebSocket:** Once the session keys exist, the Frontend attaches the channel to the shared `/ws/channel` WebSocket and sends an encrypted `Ping` round trip before returning the channel to the pool.
+1. **Handshake over Hub-relayed unary RPCs:** the Frontend fetches the Worker's pinned composite public keys and encryption mode from the Hub, verifies them against its local pin, and runs the `Noise_NK` handshake through Hub-relayed unary RPCs. The Hub forwards opaque handshake messages without decrypting them.
+2. **Multiplexed WebSocket transport:** once session keys exist, the Frontend attaches the channel to `/ws/channel` and round-trips an encrypted liveness `Ping` before returning the channel to the pool.
 
 ```mermaid
 sequenceDiagram
@@ -25,24 +25,24 @@ sequenceDiagram
     F->>H: 1. Fetch Worker composite public keys and mode
     H-->>F: Static keys (X25519 + ML-KEM-1024 + SLH-DSA) + mode
     Note over F: Check TOFU pin (abort or prompt on mismatch)
-    F->>H: 2. OpenChannel (Noise_NK handshake msg 1 via unary RPC)
+    F->>H: 2. OpenChannel (Noise_NK msg 1 via unary RPC)
     Note over H: Authenticates caller, binds user identity
-    H->>W: ChannelOpened (caller user ID + opaque handshake msg 1)
-    W-->>H: Opaque handshake msg 2 (with SLH-DSA sig in PQ mode)
-    H-->>F: OpenChannel response (caller user ID + opaque handshake msg 2)
-    Note over F,W: Session keys derived — attach channel to /ws/channel WebSocket
-    F->>W: 3. Encrypted Ping (relayed via Hub WebSocket)
+    H->>W: ChannelOpened (caller user ID + opaque msg 1)
+    W-->>H: Opaque msg 2 (with SLH-DSA signature in PQ mode)
+    H-->>F: OpenChannel response (caller user ID + opaque msg 2)
+    Note over F,W: Session keys derived — attach channel to /ws/channel
+    F->>W: 3. Encrypted Ping (relayed over WebSocket)
     W-->>F: Encrypted Pong (proves bidirectional decryption)
-    Note over F: Pin key on first contact — ready for chat, terminal, files, tunnels
+    Note over F: Pin key on first contact — ready for traffic
 ```
 
-### Primitives
+### Primitives and protocol labels
 
 | Role | Classical | Post-quantum |
 | --- | --- | --- |
 | Key exchange | X25519 ECDH | ML-KEM-1024 (FIPS 203) |
-| Forward secrecy | Ephemeral X25519 exchange | Ephemeral ML-KEM-1024 exchange (post-quantum mode) |
-| Worker static-key authentication | Noise NK pre-message and static ML-KEM-1024 encapsulation | Static ML-KEM-1024 encapsulation plus Stateless Hash-Based Digital Signature Algorithm (`SLH-DSA-SHAKE-256f`, FIPS 205) signature over the handshake hash |
+| Forward secrecy | Ephemeral X25519 exchange | Ephemeral ML-KEM-1024 exchange (`post-quantum` mode) |
+| Worker static-key authentication | Noise `NK` pre-message + static ML-KEM-1024 encapsulation | Static ML-KEM-1024 encapsulation + `SLH-DSA-SHAKE-256f` (FIPS 205) signature over the handshake hash |
 | Transport encryption | ChaCha20-Poly1305 AEAD | — |
 | Hashing and key derivation | BLAKE2b | — |
 
@@ -51,15 +51,15 @@ Exact Noise protocol labels:
 - **Post-quantum (default):** `Noise_NKhfs+skem+sig_25519+MLKEM1024+SLHDSASHAKE256f_ChaChaPoly_BLAKE2b`
 - **Classic:** `Noise_NK+skem_25519+MLKEM1024_ChaChaPoly_BLAKE2b`
 
-In the `NK` pattern, the responder (Worker) has a known static key verified by the initiator (Frontend), while the initiator stays permanently anonymous at the Noise layer.
+In the `NK` pattern, the responder (Worker) proves a known static key verified by the initiator (Frontend), while the initiator stays anonymous at the Noise layer.
 
-### Why this design defeats a curious Hub
+### Security properties against an observing Hub
 
-- The handshake hash covers the protocol label, the Worker ID, and all three of the Worker's static public keys. Another Worker or key set cannot complete the handshake.
-- Every key-exchange value is authenticated. In post-quantum mode, the Worker signs the handshake hash with its `SLH-DSA` private key; a signature verification failure aborts the handshake and zeroes its state.
-- Post-quantum mode mixes four shared secrets into session keys (two X25519 + two ML-KEM-1024); classic mode mixes three (two X25519 + one static ML-KEM-1024).
-- In post-quantum mode, later compromise of the Worker's static keys cannot decrypt previously recorded sessions even against an attacker who breaks X25519.
-- Every data frame authenticates its channel ID, correlation ID, and flags. A Hub that tampers with frame metadata causes channel teardown without learning plaintext.
+- The handshake hash binds the protocol label, Worker ID, and all three static public keys — another Worker or key set cannot complete the handshake.
+- In `post-quantum` mode, the Worker signs the handshake hash with its `SLH-DSA` private key; any verification failure aborts and zeroes handshake state.
+- `post-quantum` mode mixes four shared secrets into session keys (two X25519 + two ML-KEM-1024); `classic` mode mixes three (two X25519 + one static ML-KEM-1024).
+- In `post-quantum` mode, later compromise of Worker static keys cannot decrypt previously recorded sessions even against an attacker who breaks X25519.
+- Every transport frame authenticates its channel ID, correlation ID, and flags; tampering tears down the channel without exposing plaintext.
 
 ### Encryption modes
 
@@ -67,118 +67,84 @@ Configure the Worker mode with `--encryption-mode` (`encryption_mode` in YAML, `
 
 | Mode | Security properties |
 | --- | --- |
-| `post-quantum` (**default**) | Hybrid X25519 + ML-KEM-1024 + SLH-DSA signature + post-quantum forward secrecy. Aliases: `pq`, `post_quantum`, empty, or any unrecognized value (fail-safe). |
-| `classic` | Static ML-KEM-1024 authentication without the SLH-DSA signature or post-quantum forward secrecy. Recorded sessions stay secret only while the Worker's static keys stay secret. Smaller handshake messages. |
+| `post-quantum` (**default**) | Hybrid X25519 + ML-KEM-1024 + SLH-DSA signature + post-quantum forward secrecy. Aliases `pq`, `post_quantum`, empty, and unrecognized values fail safe here. |
+| `classic` | Static ML-KEM-1024 authentication without the SLH-DSA signature or post-quantum forward secrecy. Smaller handshake messages; recorded sessions stay secret only while static keys stay secret. |
 
-Both modes register and advertise all three static public keys. The Hub reports the Worker's live mode to the Frontend so both ends run the same handshake; a falsified mode report causes handshake failure rather than downgrade.
+Both modes register and advertise all three static public keys. The Hub advertises the Worker's live mode so both peers run the same handshake; falsifying the mode causes handshake failure rather than silent downgrade.
 
 ### User identity binding and liveness ping
 
-Because `Noise_NK` does not authenticate the initiator, the **Hub** authenticates `OpenChannel` and states the caller identity to both ends — to the Frontend in the `OpenChannel` response and to the Worker in `ChannelOpened`. Every RPC the Worker dispatches runs under that Hub-supplied identity. Identity never travels inside the channel because an in-channel claim would be unauthenticated and could drift from the Hub's decision.
-
-Before `OpenChannel` returns a pooled channel to callers, the client round-trips an encrypted no-op `Ping`. The handshake proves only that the client encrypted to the Worker's static key; the `Ping` proves the Worker decrypted the session and replied under the matching key, catching broken channels at open time rather than on a later caller's request.
+Because `Noise_NK` leaves the initiator anonymous, the Hub authenticates `OpenChannel` and supplies the caller's user ID to both ends. Every RPC the Worker executes runs under that Hub-verified identity. Before returning a pooled channel, the client round-trips an encrypted no-op `Ping` to verify that the Worker decrypted the session under the matching key.
 
 ## Transport hardening and in-band rekey
 
-Encrypted channels enforce fixed limits to cap desynchronization, replay, and resource exhaustion:
+Encrypted channels enforce fixed limits to prevent desynchronization, nonce exhaustion, and memory abuse:
 
 | Property | Value | Effect |
 | --- | --- | --- |
-| Max plaintext per frame | 65,519 bytes | Larger payloads are chunked automatically. |
-| Nonce exhaustion | Soft: 2³¹ − 1; Hard: 2³² − 1 | Past the soft threshold, the initiator requests an in-band rekey; past the hard ceiling, encryption and decryption refuse outright (fail-closed). |
-| Session key max age | 1 hour | Initiator requests an in-band rekey; the channel ID and multiplexed connections stay open. |
-| Session key hard ceiling | 70 minutes | Past this per-epoch age (reset on each rekey), the initiator closes and re-handshakes rather than continuing on an old key; the 10-minute margin covers one refused rekey. |
-| Min rekey interval | 50 minutes | Age-only rekeys inside this window are rejected (telling the initiator how long to wait); soft-nonce exhaustion bypasses this guard. |
-| Decrypt failure | Any | Treated as unrecoverable: both sides close the channel immediately. |
+| Max plaintext per frame | `65,519` bytes | Larger payloads are chunked automatically. |
+| Nonce exhaustion | Soft: 2³¹ − 1; Hard: 2³² − 1 | Past the soft threshold, the initiator triggers an in-band rekey; past the hard ceiling, encryption/decryption fail closed. |
+| Session key max age | 1 hour | Initiator requests an in-band rekey without dropping multiplexed traffic. |
+| Session key hard ceiling | 70 minutes | Past this per-epoch age (reset on each rekey), the initiator closes and re-handshakes; the 10-minute margin covers one refused rekey. |
+| Minimum rekey interval | 50 minutes | Age-only rekeys inside this window are rejected; soft-nonce exhaustion bypasses this guard. |
+| Decrypt failure | Any | Treated as unrecoverable; both ends close the channel immediately. |
 
-### Hub unencrypted resource limits
-
-The Hub enforces memory and CPU caps without decrypting:
-
-- Caps reassembled messages at the negotiated payload budget plus 64 KiB of envelope headroom (default ~16.06 MiB; administrators can raise `max_message_size_bytes` up to 64 MiB).
-- Allows only one in-flight chunked sequence per channel and direction.
-- The Worker fast-rejects duplicate channel IDs *before* running post-quantum handshake operations, preventing CPU-amplification replay attacks.
+Without decrypting payloads, the Hub caps reassembled messages at the negotiated payload ceiling (`max_message_size_bytes`, default 16 MiB, up to 64 MiB) plus 64 KiB of envelope headroom and permits at most one in-flight chunked sequence per channel and direction. Workers fast-reject duplicate channel IDs before running post-quantum handshake operations to prevent CPU-amplification replay attacks.
 
 ### In-band rekey
 
-In-band rekey rotates transport keys on the existing channel without dropping multiplexed traffic:
+In-band rekey rotates transport keys on a live channel without interrupting chats, terminals, CLI calls, or desktop tunnels:
 
 - Both modes mix a fresh ephemeral X25519 exchange into the next key epoch.
-- In post-quantum mode, the initiator also encapsulates to the Worker's static ML-KEM-1024 key and sends a fresh ephemeral ML-KEM-1024 public key; the Worker encapsulates to that fresh key, and both sides mix both ML-KEM secrets into the next epoch.
-- The exchange travels inside the active encrypted channel, so the current cipher authenticates it with no extra signature.
-- A ~10-second key-overlap window lets frames encrypted just before the swap decrypt cleanly, so browser sessions, `leapmux` CLI calls, cross-worker channels, and desktop port-forwards or SOCKS5 tunnels survive hourly rotation without stalling.
-- The Frontend re-checks key age on channel use, on a 1-minute idle timer, and on wake from suspend so a frozen clock cannot hide an over-age key.
-- Rekey rotates only the transport key epoch; Hub credential expiry (1 hour for CLI access and delegation tokens) and revocation watchers still terminate channels from the outside. Identity drift (expected user no longer matching the Hub-authenticated user) closes the channel and forces a fresh `OpenChannel`.
+- `post-quantum` mode also encapsulates to the Worker's static ML-KEM-1024 key and exchanges a fresh ephemeral ML-KEM-1024 keypair, mixing both ML-KEM secrets into the next epoch.
+- The rekey travels inside the active encrypted channel (authenticated by the current cipher) with a ~10-second key-overlap window so in-flight frames decrypt cleanly.
+- Frontends re-check key age on channel use, on a 1-minute idle timer, and on wake from suspend.
+- Rekey refreshes transport keys only; Hub credential expiration and revocation still terminate channels from the outside.
 
 ## Worker identity keys and storage
 
-### Composite static keypair
-
 `leapmux daemon worker register` generates the Worker's long-term composite keypair (`X25519` + `ML-KEM-1024` + `SLH-DSA-SHAKE-256f`) locally:
 
-- **`<data_dir>/pending-registration.json` (mode `0600`):** holds the Hub URL, registration key, and private keys while registration is in progress; deleted on completion.
+- **`<data_dir>/pending-registration.json` (mode `0600`):** holds the Hub URL, registration key, and private keys while registration is unfinished; deleted on completion.
 - **`<data_dir>/state.json` (mode `0600`):** holds the Hub URL, Worker ID, Hub auth token, and private keys in unencrypted JSON. Protect and back it up as a secret.
 
-The Hub receives only the public halves at registration, pins them permanently to the Worker ID, and refuses any Worker connection presenting different keys.
+The Hub pins the public keys permanently to the Worker ID and refuses connections presenting different keys. Because public keys are public, a stolen Worker auth token still allows displacing the live Worker stream, reading tab IDs, minting or revoking delegation tokens for the Worker's owner, or clearing the Worker's tab inventory. Registration recovery requires proof of possession of the pinned private keys and rotates the Worker auth token. Replacing a Worker's keys requires registering a new Worker ID.
 
-Because public keys are public, a stolen Worker auth token still lets an attacker:
-
-- Present the real public keys and displace the live Worker stream (taking the Worker offline because client handshakes fail)
-- Read the Worker's tab IDs
-- Mint delegation tokens for the Worker's owner (up to the delegation ceiling)
-- Revoke delegation tokens of the Worker's agents
-- Send an empty tab inventory, causing the Hub to tombstone every tab the Worker hosts
-
-Registration recovery requires proof of possession of the pinned private keys; a successful recovery replaces the Worker auth token, closes the old stream, and rejects delayed hellos using the replaced token. Deregistering a Worker ends its token when the Worker acknowledges the stop or 7 days later. Generating new keys requires a new registration, which creates a new Worker ID so clients pin it cleanly as a new Worker without triggering a mismatch dialog.
-
-### Hub at-rest keystore (separate layer)
-
-Separately from Worker E2EE keys, the Hub stores a versioned `XChaCha20-Poly1305` key ring (256-bit keys, 24-byte random nonces, 4-byte key-version prefix, per-column AAD binding table, column, and row key) and a stable token pepper in `<data_dir>/encryption.key` (mode `0600`). It encrypts 37 columns across 15 tables (14 persistent, 1 short-lived transient), hashes passwords with `Argon2id` (encrypted at rest), and stores bearer secrets as peppered `HMAC-SHA256` digests. See [Encryption & Data](/docs/admin/encryption-and-data/) for rotation and disaster recovery.
+Separately from channel E2EE, the Hub encrypts sensitive database columns at rest using its `XChaCha20-Poly1305` key ring and token pepper in `encryption.key`; see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## Pinning verification and audit
 
 ### Three independent TOFU pin stores
 
-| Client | Store location | Lifetime / management |
+| Client | Store location | Lifetime and management |
 | --- | --- | --- |
-| **Browser / Desktop Frontend** | Per-account IndexedDB (`leapmux-trust`, key `leapmux:u:<user-id>:key-pins`); desktop app keeps one isolated store per Hub | Kept 1 year, refreshed on use. Manage under **Preferences → Advanced → Trusted worker keys**. |
+| **Browser / Desktop Frontend** | Per-account IndexedDB trust store (`leapmux-trust`; desktop isolates per Hub) | Retained 1 year, refreshed on use. Manage under **Preferences → Advanced → Trusted worker keys**. |
 | **Worker → sibling Worker** | `<data_dir>/cross_worker_pins.json` | Aborts on mismatch until cleared with `leapmux daemon worker cross-worker-pins remove <worker-id>`. |
 | **`leapmux` CLI** | `<config-dir>/<scheme>_<hub-host>/pins.json` | Aborts on mismatch until cleared with `leapmux worker pins remove <worker>`. |
 
-A compromised Hub can serve modified Frontend code to a browser that reads or alters browser pins. The desktop app runs its bundled Frontend and isolates pins per Hub in its own storage, though the Hub remains trusted for caller identity.
+### Four-word fingerprints and mismatch handling
 
-### Four-word fingerprints and startup logs
+Fingerprints are **4 dash-joined English words** derived from a hash of the Worker's composite public key (for example `deep-idea-obey-tack`), drawn from a shared 256-word list so you can compare them aloud out of band.
 
-Fingerprints are **4 dash-joined English words** derived from a hash of the Worker's composite public key (for example, `deep-idea-obey-tack`), drawn from a fixed 256-word list of 4-letter words shared identically across the Worker and Frontend so you can compare them aloud over a phone call or out-of-band check.
+Every Worker logs `key_fingerprint` in its `worker initialized` startup line. To inspect the desktop app's bundled Worker log on macOS or Linux, launch the desktop binary from a terminal (`"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"` on macOS, or the AppImage/`leapmux-desktop` on Linux) and inspect `desktop-sidecar:` stderr output.
 
-Every Worker entry point (standalone Worker, solo, dev, and desktop sidecar) logs `key_fingerprint` in its `worker initialized` startup line. To inspect the desktop app's bundled Worker log:
-
-- **macOS:** run `"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"` from a terminal and look for `desktop-sidecar: ` lines on stderr.
-- **Linux:** run the AppImage or `leapmux-desktop` from a terminal.
-- **Windows:** release builds attach no console. In desktop solo mode, the local Worker runs in-process with the Hub, so a key mismatch indicates local pin or data directory changes rather than a network substitute.
-
-### The "Worker public key changed" dialog
-
-On a mismatch, the Frontend halts the connection and displays **"Worker public key changed"** with the **Expected** and **Actual** fingerprints and **Reject** / **Accept** (danger-styled) buttons. Dismissing the dialog or lacking confirmation UI fails closed (rejects). Rejecting blocks that Worker for the rest of the session until page reload or app restart.
-
-No ordinary operation changes a Worker's keys on the same Worker ID: reject by default, and accept only after out-of-band verification against the Worker's `key_fingerprint` log.
+On a mismatch, the Frontend halts and shows **Worker public key changed** with **Expected** and **Actual** fingerprints and **Reject** / **Accept** buttons (dismissing fails closed). Reject by default and accept only after out-of-band confirmation against the Worker's startup log.
 
 ### Tunnel key trust
 
-Desktop tunnels share the account's browser pin rather than keeping an independent pin store. Each tunnel create request identifies its owning account, and the webview rejects forms whose session ended:
+Desktop tunnels share the account's browser pin rather than keeping a separate trust store:
 
-1. **First contact:** Without a stored pin, **Create** opens a browser channel to verify the peer holds the matching private keys and responds, records the pin, and then creates the tunnel.
-2. **Shared trust:** Browser channels and new tunnels share the same pin; removing the pin requires a fresh verified browser session before new tunnel creation. Running tunnels keep their original key expectation.
-3. **Mismatch on reconnect:** If the Hub announces a key differing from the tunnel's expectation, the tunnel stops before dialing and keeps the stopped row with both fingerprints visible.
-4. **Exact-key confirmation before recreation:** **Verify Worker key** opens a fresh browser channel to review the changed key for that exact key, Worker, and account session, then returns to a prefilled form requiring a separate **Create** submission. If the pin was removed concurrently, the form offers first-contact trust; if another tab pinned a key first, it returns to stored-key review.
+1. **First contact:** without a pin, **Create** opens a browser channel to verify the peer holds the matching private keys and responds before recording the pin and creating the tunnel.
+2. **Shared trust:** new tunnels reuse the browser pin; running tunnels keep their initial key expectation.
+3. **Mismatch on reconnect:** if the Hub announces a different key, the tunnel stops before dialing and displays both fingerprints.
+4. **Exact-key confirmation:** **Verify Worker key** opens a browser channel to review the changed key for that exact Worker and session, returning to a prefilled form that still requires an explicit **Create** click.
 
-### Conformance and audit vectors
+### Differential conformance
 
-Both the Go backend (Hub/Worker/CLI) and TypeScript Frontend replay shared differential conformance test vectors (`testdata/noise_handshake_vectors.json`, `testdata/noise_rekey_vectors.json`, and `testdata/noise_rekey_pq_vectors.json`) to verify identical handshake transcripts, key derivation, and in-band rekey behavior across implementations.
+Both the Go implementation (Hub, Worker, CLI) and the TypeScript Frontend replay shared differential conformance test vectors covering handshake transcripts, key derivation, and both classic and post-quantum in-band rekey sequences.
 
 ## See also
 
-- [Security & Threat Model](/docs/admin/security/) — trust boundaries, solo mode, and administrator recommendations.
-- [Authentication & Session Security](/docs/admin/authentication-security/) — session elevation, passkeys, OAuth, app credentials, and revocation.
-- [Managing Workers](/docs/admin/managing-workers/) — registration, pin commands, and desktop tunnels.
-- [Encryption & Data](/docs/admin/encryption-and-data/) — Hub at-rest column encryption, key rotation, and backups.
+- [Security & Authentication](/docs/admin/security-and-auth/) — trust boundaries, session elevation, OAuth, and revocation.
+- [Encryption & Data](/docs/admin/encryption-and-data/) — Hub at-rest keystore, rotation, and backups.
+- [Managing Workers](/docs/admin/managing-workers/) — Worker registration and pin management commands.

@@ -5,15 +5,19 @@ type: docs
 weight: 2
 ---
 
-A coding agent that just wrote a patch often repeats the same blind spots when asked to review its own diff. LeapMux lets you spawn a fresh, **read-only** reviewer from a contrasting provider family — for example Codex reviewing Claude Code, or Claude Code reviewing Codex — without leaving your workspace.
+A coding agent that just wrote a patch often repeats the same blind spots when reviewing its own diff. LeapMux lets you spawn a fresh, **read-only** reviewer from a contrasting provider family — for example Codex reviewing Claude Code, or Claude Code reviewing Codex — without leaving your workspace.
 
 ## Prerequisites
 
 - At least two coding-agent providers available on your Worker (`leapmux agent providers`).
-- Optional: install the `leapmux-review` skill:
+- Optional: install the `leapmux-review` skill. By default skills install to `~/.agents/skills`; Claude Code users pass `--target claude`:
 
 ```sh
+# Default (~/.agents/skills):
 leapmux skill install leapmux leapmux-review
+
+# Claude Code (~/.claude/skills):
+leapmux skill install leapmux leapmux-review --target claude
 ```
 
 ## Prompt your agent with `/leapmux-review`
@@ -28,11 +32,13 @@ The `leapmux-review` skill checks available providers, writes a self-contained r
 
 ## Run a schema-validated review from the CLI
 
-For scripts, continuous integration (CI) checks, or structured coordinator pipelines, pair `--wait` with `--output-schema` and `--schema-retries`. The command validates the reviewer's final reply against your JSON Schema and automatically sends corrective follow-up turns (up to `--schema-retries`, default `2`) if the reply fails validation.
+For scripts, CI checks, or coordinator pipelines, pair `--wait` with `--output-schema` and `--schema-retries`. The command validates the reviewer's final reply against your JSON Schema and sends corrective follow-up turns automatically (up to `--schema-retries`, default `2`) if validation fails.
 
-First, write a minimal JSON Schema to `.tmp/review-schema.json`:
+Create `.tmp/` and write a minimal JSON Schema to `.tmp/review-schema.json`:
 
-```json
+```sh
+mkdir -p .tmp
+cat <<'EOF' > .tmp/review-schema.json
 {
   "type": "object",
   "required": ["verdict", "findings"],
@@ -53,12 +59,14 @@ First, write a minimal JSON Schema to `.tmp/review-schema.json`:
     }
   }
 }
+EOF
 ```
 
-Next, write a read-only brief to `.tmp/review-brief.md` stating the branch, scope, and a strict no-edits rule (`Read-only review. Do NOT edit, create, or delete files, and do NOT run mutating commands.`). Then launch and wait:
+Next, write a read-only brief to `.tmp/review-brief.md` specifying the branch, scope, and a strict no-edits rule (`Read-only review. Do NOT edit, create, or delete files, and do NOT run mutating commands.`). Then launch and wait:
 
 ```sh
 leapmux agent open \
+  --dir . \
   --provider codex \
   --name review-auth \
   --no-focus \
@@ -76,10 +84,10 @@ leapmux agent requests name:review-auth
 leapmux agent messages name:review-auth --limit 5
 ```
 
-When finished, close the one-off reviewer tab — or leave it open if you want follow-up rounds on your fixes:
+When finished, close the one-off reviewer tab — pass `--worktree keep` so closing the tab never removes your branch or working tree if it is the last tab on that checkout:
 
 ```sh
-leapmux agent close name:review-auth
+leapmux agent close name:review-auth --worktree keep
 ```
 
 ## Next steps

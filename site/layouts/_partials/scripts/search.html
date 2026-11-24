@@ -1,0 +1,16 @@
+{{/* Search override: supports chunked Pagefind search (default for LeapMux) while keeping Hextra's command palette UI. */}}
+{{- if (site.Params.search.enable | default true) -}}
+  {{- $searchType := site.Params.search.type | default "flexsearch" -}}
+  {{- if eq $searchType "pagefind" -}}
+    {{- $jsSearch := resources.Get "js/pagefind-search.js" | resources.ExecuteAsTemplate (printf "%s.pagefind-search.js" .Language.Lang) . -}}
+    {{- $jsDialog := resources.Get "js/search-dialog.js" | resources.ExecuteAsTemplate (printf "%s.search-dialog.js" .Language.Lang) . -}}
+    {{- if hugo.IsProduction -}}
+      {{- $jsSearch = $jsSearch | minify | fingerprint -}}
+      {{- $jsDialog = $jsDialog | minify | fingerprint -}}
+    {{- end -}}
+    <script defer src="{{ $jsSearch.RelPermalink }}" integrity="{{ $jsSearch.Data.Integrity }}"></script>
+    <script defer src="{{ $jsDialog.RelPermalink }}" integrity="{{ $jsDialog.Data.Integrity }}"></script>
+  {{- else -}}
+    {{- warnf `search type "%s" is not supported by LeapMux search override` $searchType -}}
+  {{- end -}}
+{{- end -}}

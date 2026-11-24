@@ -78,8 +78,19 @@ tasks:
       - task: build-renovate-re2
         if: '[ "{{OS}}" != "windows" ]'
 
+  install-site-deps:
+    desc: Install locked site build tools (pagefind, wrangler)
+    sources:
+      - site/package.json
+      - site/bun.lock
+    generates:
+      - site/node_modules/.bin/pagefind
+      - site/node_modules/.bin/wrangler
+    cmds:
+      - cd site && bun install --frozen-lockfile --ignore-scripts
+
   validate-site-tools:
-    desc: Install the locked site tools as the site workflow does, and validate wrangler
+    desc: Install the locked site tools as the site workflow does, and validate wrangler and pagefind
     dir: site
     env:
       CI: 'true'
@@ -87,6 +98,7 @@ tasks:
     cmds:
       - bun install --frozen-lockfile --ignore-scripts
       - ./node_modules/.bin/wrangler --version
+      - ./node_modules/.bin/pagefind --version
 
   lint-renovate:
     desc: Validate Renovate configuration with the pinned CLI
@@ -1866,6 +1878,8 @@ tasks:
       - versions.env
       - scripts/task-state.mjs
       - site/go.sum
+      - site/package.json
+      - site/bun.lock
       - site/archetypes/**/*
       - site/data/**/*
       - site/config/**/*
@@ -1898,10 +1912,12 @@ tasks:
     cmds:
       - *forget_artifacts
       - task: validate-json
+      - task: install-site-deps
       # Run Hugo through the tool dependency in site/go.mod.
       # GOWORK=off keeps the site's dependency graph outside the root workspace.
       # --cleanDestinationDir removes obsolete assets whose content hashes changed.
       - cd site && GOWORK=off go tool hugo --gc --minify --cleanDestinationDir
+      - cd site && ./node_modules/.bin/pagefind --site public --output-subdir pagefind --exclude-selectors 'nav,aside,.hextra-toc,.hextra-sidebar-container,.hextra-footer,script,style'
       - bun scripts/verify-coding-agent-site.mjs
       - *record_artifacts
 

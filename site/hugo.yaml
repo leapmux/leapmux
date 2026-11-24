@@ -1,8 +1,8 @@
 # Hugo configuration for the LeapMux documentation site -- https://leapmux.dev
 #
 # Built with the Hextra theme, imported as a Hugo module (see go.mod). Hugo is
-# not installed system-wide; it runs via `go tool hugo`, exactly like sqlc and
-# golangci-lint elsewhere in this repo. Build the site with:
+# not installed system-wide; it runs via `go tool hugo` inside site/. Build the
+# site (including Pagefind search indexing) with:
 #
 #   task site
 #
@@ -94,7 +94,7 @@ menu:
       pageRef: /docs
       weight: 1
     - name: Downloads
-      url: "https://github.com/leapmux/leapmux/releases"
+      pageRef: /download
       weight: 2
     - name: Search
       weight: 3
@@ -144,6 +144,9 @@ params:
   theme:
     default: system
     displayToggle: true
+  search:
+    enable: true
+    type: pagefind
   editURL:
     enable: true
     base: "https://github.com/leapmux/leapmux/edit/main/site/content"
@@ -159,7 +162,7 @@ params:
   # of one duration cannot drift apart and a typo cannot render nothing.
   #
   # Change a value here and every page follows. The canonical prose home is
-  # the Quick reference table in content/docs/admin/security.md.
+  # the Quick reference table in content/docs/admin/security-and-auth.md.
   durations:
     # How long one proven factor keeps a session or a CLI credential elevated.
     elevation-window:

@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'bun:test'
-import { codingAgentMatrixDimensions, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker } from './verify-coding-agent-site.mjs'
+import { codingAgentMatrixDimensions, verifyBuiltSiteArtifacts, verifyCodingAgentProviderCount, verifyCodingAgentSite, verifyCodingAgentTicker } from './verify-coding-agent-site.mjs'
 
 const SUPPORT_STATES = [
   { id: 'supported', symbol: '✅', label: 'Supported' },
@@ -604,5 +607,50 @@ describe('verifyCodingAgentTicker', () => {
       .toContain('duplicate ticker provider 1 must not be keyboard focusable')
     expect(verifyCodingAgentTicker(tickerHtml.replace('alt=""', 'alt="Pi"'), checklist))
       .toContain('duplicate ticker provider 1 must have an empty alt')
+  })
+})
+
+describe('verifyBuiltSiteArtifacts', () => {
+  function createMockPublicDir() {
+    const dir = mkdtempSync(join(tmpdir(), 'leapmux-site-artifacts-'))
+    mkdirSync(join(dir, 'docs/reference/faq'), { recursive: true })
+    mkdirSync(join(dir, 'docs/reference/supported-agents'), { recursive: true })
+    mkdirSync(join(dir, 'docs/reference/commands'), { recursive: true })
+    mkdirSync(join(dir, 'pagefind'), { recursive: true })
+    writeFileSync(join(dir, 'docs/reference/faq/index.md'), '# FAQ\n\nSupported: Pi\n')
+    writeFileSync(join(dir, 'docs/reference/supported-agents/index.md'), '# Supported Agents\n\n### Coding agent feature matrix\n')
+    writeFileSync(join(dir, 'docs/reference/commands/index.md'), '# Commands\n\nUse <workspace>.\n')
+    writeFileSync(join(dir, 'llms.txt'), '# LeapMux\n- [Command Reference](https://leapmux.dev/docs/reference/commands/index.md)\n')
+    writeFileSync(join(dir, 'index.html'), '<meta property="og:image:alt" content="LeapMux">')
+    writeFileSync(join(dir, 'pagefind/pagefind.js'), '// pagefind')
+    return dir
+  }
+
+  it('accepts clean Markdown companions, llms.txt, OG alt, and Pagefind output', () => {
+    const dir = createMockPublicDir()
+    try {
+      expect(verifyBuiltSiteArtifacts(dir, checklist)).toEqual([])
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects unexpanded shortcodes, leaked comments, escaped entities, duplicate OG alt, and FlexSearch JSON', () => {
+    const dir = createMockPublicDir()
+    try {
+      writeFileSync(join(dir, 'docs/reference/commands/index.md'), '<!-- The command tree generates -->\n{{< card >}} &lt;id&gt;\n')
+      writeFileSync(join(dir, 'index.html'), '<meta property="og:image:alt" content="LeapMux — LeapMux">')
+      writeFileSync(join(dir, 'en.search-data.json'), '{}')
+      const errors = verifyBuiltSiteArtifacts(dir, checklist)
+      expect(errors).toContain('docs/reference/commands/index.md: contains unexpanded Hugo shortcode')
+      expect(errors).toContain('docs/reference/commands/index.md: leaks internal generated-file HTML comment')
+      expect(errors).toContain('docs/reference/commands/index.md: contains unescaped HTML angle-bracket entities')
+      expect(errors).toContain('index.html: og:image:alt duplicates site title')
+      expect(errors).toContain('site/public/en.search-data.json: monolithic FlexSearch JSON should not be emitted when Pagefind is enabled')
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -1,49 +1,154 @@
 ---
 title: "OAuth API"
-description: "The wire contract for LeapMux's OAuth 2.1 authorization server: endpoints, grant types, PKCE, scopes, refresh rotation, and revocation."
+description: "The wire contract for LeapMux's OAuth 2.1 authorization server: discovery, dynamic registration, PKCE, device authorization, step-up elevation, refresh rotation, and revocation."
 type: docs
-weight: 6
+weight: 4
 ---
 
-This is the implementable specification for a program that wants access to an account on a LeapMux Hub. For the administrator's side — registering apps, verifying them, controlling what they may ask for — see [App Authorization](/docs/admin/app-authorization/).
+This is the wire-level specification for third-party applications that request access to a LeapMux account. For administrator policies — registering apps, verifying them, and managing scope ceilings — see [App Authorization](/docs/admin/app-authorization/).
 
-A Hub is an OAuth 2.1 authorization server. It follows RFC 6749 and RFC 6750 as OAuth 2.1 profiles them, with RFC 7636 (PKCE), RFC 8628 (device authorization), RFC 7009 (revocation), RFC 7591 (dynamic registration), RFC 8414 and RFC 9728 (metadata).
+A LeapMux Hub implements an OAuth 2.1 authorization server (OAuth 2.1 is an Internet Engineering Task Force (IETF) draft profiling RFC 6749 and RFC 6750), together with RFC 7636 (PKCE), RFC 8252 (native apps), RFC 8628 (device authorization), RFC 7009 (revocation), RFC 7591 (dynamic client registration), RFC 8414 and RFC 9728 (metadata), and RFC 9700 (OAuth 2.0 security best current practice).
+
+## Authorization and elevation flows
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant App as Client App
+  participant Browser as User Browser
+  participant Hub as LeapMux Hub
+
+  rect rgba(59, 130, 246, 0.08)
+    note over App,Hub: Flow 1: Authorization Code + PKCE (browser on same device)
+    App->>Browser: Open GET /oauth/authorize (S256 challenge, state)
+    Browser->>Hub: GET /oauth/authorize (elevated session cookie)
+    Hub-->>Browser: Consent screen
+    Browser->>Hub: POST /oauth/consent (decision=allow)
+    Hub-->>Browser: 302 redirect_uri?code=...&state=...
+    Browser-->>App: Callback with code & state
+    App->>Hub: POST /oauth/token (authorization_code + code_verifier)
+    Hub-->>App: 200 access_token + refresh_token
+  end
+
+  rect rgba(16, 185, 129, 0.08)
+    note over App,Hub: Flow 2: Device Authorization (headless / SSH / container)
+    App->>Hub: POST /oauth/device-authorization (client_id)
+    Hub-->>App: 200 device_code, user_code, verification_uri
+    Browser->>Hub: Open /oauth/device & approve user_code (elevated session)
+    loop Every interval seconds
+      App->>Hub: POST /oauth/token (device_code)
+      Hub-->>App: 400 authorization_pending → 200 access_token + refresh_token
+    end
+  end
+
+  rect rgba(245, 158, 11, 0.08)
+    note over App,Hub: Flow 3: Step-Up Elevation (existing credential, no new token)
+    alt Browser-issued token or Desktop session (loopback)
+      App->>Browser: GET /oauth/authorize?step_up=token:<id> (or session:<id>)
+      Browser->>Hub: Approve step-up on /oauth/consent → code
+      App->>Hub: POST /oauth/token (code + Bearer/Cookie)
+      Hub-->>App: 200 {"elevated": true}
+    else Device-code or admin-issued token
+      App->>Hub: POST /oauth/step-up (Authorization: Bearer <access_token>)
+      Hub-->>App: 200 device_code, user_code, verification_uri
+      Browser->>Hub: Approve user_code on /oauth/device
+      App->>Hub: Poll POST /oauth/token (device_code)
+      Hub-->>App: 200 {"elevated": true}
+    end
+  end
+```
+
+## Endpoint summary
+
+| Method & Path | Content-Type | Client / User Auth | Rate Limit | Success Status |
+|---|---|---|---|---|
+| `GET /.well-known/oauth-authorization-server` | — | None | None | `200 OK` |
+| `GET /.well-known/oauth-protected-resource` | — | None | None | `200 OK` |
+| `POST /oauth/register` | `application/json` (max 16 KiB) | None (requires `open_app_registration`) | Shared anonymous | `201 Created` |
+| `GET /oauth/authorize` | — | Elevated browser session (or local solo IPC) | None | `200 OK` (HTML) or `302 Found` |
+| `POST /oauth/consent` | `application/x-www-form-urlencoded` | Elevated browser session (or local solo IPC) | None | `302 Found` |
+| `POST /oauth/device-authorization` | `application/x-www-form-urlencoded` | Client auth (hub-wide apps only) | Shared anonymous | `200 OK` |
+| `GET`, `POST /oauth/device` | — / `application/x-www-form-urlencoded` | Elevated browser session (or local solo IPC) | None | `200 OK` (HTML) |
+| `POST /oauth/token` | `application/x-www-form-urlencoded` | Client auth (+ target Bearer or Cookie for step-up codes) | Shared anonymous | `200 OK` |
+| `POST /oauth/step-up` | `application/x-www-form-urlencoded` (optional) | `Authorization: Bearer <access_token>` (API token) | Shared anonymous | `200 OK` |
+| `POST /oauth/revoke` | `application/x-www-form-urlencoded` | Client auth for API tokens; none for delegation tokens | Shared anonymous | `200 OK` |
+| `GET /oauth/apps/<client_id>/icon` | — | None (verified apps only) | Shared anonymous | `200 OK` |
 
 ## Discovery
 
-Fetch the metadata before anything else. It is anonymous, and everything below is derived from it rather than hard-coded.
+Fetch the metadata documents first instead of hard-coding endpoint URLs:
 
-```
+```text
 GET /.well-known/oauth-authorization-server
 GET /.well-known/oauth-protected-resource
 ```
 
-The authorization-server document lists the endpoints, the grant types the Hub serves, and `code_challenge_methods_supported`, which is always exactly `["S256"]`. `registration_endpoint` is **absent** while open registration is off, which is the default — so a client library that reads it correctly does not attempt dynamic registration on a Hub that refuses it.
+Both documents are unauthenticated and return `Cache-Control: no-store`. If the Hub cannot determine its base URL (`public_url` unset and no TCP listener), both return `503` `server_error`.
+
+Key metadata guarantees:
+
+- `code_challenge_methods_supported` is always `["S256"]`.
+- `response_types_supported` is always `["code"]`.
+- `authorization_response_iss_parameter_supported` is `false` — the Hub does not emit the RFC 9207 `iss` parameter on authorization responses.
+- `registration_endpoint` is omitted while `open_app_registration` is off (the default), so conformant client libraries do not call `/oauth/register` on a Hub that refuses it.
 
 ## Client registration
 
-Every request specifies a `client_id`. A request without one is refused.
+Every authorization request requires a registered `client_id`. Register an app through **Preferences → Apps**, via `leapmux admin app`, or dynamically through `POST /oauth/register` when `open_app_registration` is enabled.
 
-- An administrator or a user registers the app; see [App Authorization](/docs/admin/app-authorization/).
-- Or, where the Hub allows it, the app registers itself through `POST /oauth/register` (RFC 7591).
+- **Public clients** (`token_endpoint_auth_method: "none"`) hold no secret and rely on PKCE. Use this type for CLIs, desktop apps, and browser apps.
+- **Confidential clients** (`client_secret_basic` or `client_secret_post`) hold a server-side secret returned once at registration.
 
-A **public** client holds no secret. That is the correct client type for a binary a user holds — a CLI, a desktop app, a browser app — and PKCE is what protects it. A **confidential** client holds a secret, which means a server the app administrator runs. The secret crosses once, at registration.
+Consent screens display the app's name and, for verified apps only, an icon served same-origin from `/oauth/apps/<client_id>/icon`. Unverified apps show a monogram.
 
-An app's name is what a consent screen states, and its icon is stored at registration and served same-origin from `/oauth/apps/<client_id>/icon` — a consent page fetches nothing from the app's own servers. The Hub serves an icon only for an app it verified; every other consent screen shows a monogram.
+### Dynamic registration (`POST /oauth/register`)
+
+Accepts `application/json` with a hard **16 KiB** (`16384` bytes) body limit; larger payloads return `413` `invalid_client_metadata`. When `open_app_registration` is off, the endpoint returns `403` `access_denied`.
+
+Dynamically registered apps are always hub-wide and unverified, cannot request `admin:*` scopes (rejected with `400` `invalid_client_metadata`), and have `elevation_allowed` forced to `false`.
+
+**Request fields (`application/json`)**
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `client_name` | string | Yes | Display name shown on the consent screen (max 128 bytes after cleanup). |
+| `redirect_uris` | string[] | Conditional | Required if `grant_types` includes `authorization_code`. Max 16 unique URIs (see [Redirect addresses](#redirect-addresses)). |
+| `grant_types` | string[] | No | Defaults to `["authorization_code", "refresh_token"]`. Supported: `authorization_code`, `refresh_token`, `urn:ietf:params:oauth:grant-type:device_code`. |
+| `scope` | string | Yes | Space-delimited permission ceiling (at least one scope; any `admin:*` scope is rejected). |
+| `client_uri` | string | No | App homepage URL (max 512 bytes). |
+| `token_endpoint_auth_method` | string | No | `"none"` (default), `"client_secret_basic"`, or `"client_secret_post"`. Unknown values return `400` `invalid_client_metadata`. |
+
+**Response fields (`201 Created`, `application/json`)**
+
+| Field | Type | Presence | Description |
+|---|---|---|---|
+| `client_id` | string | Always | Hub-generated client identifier. |
+| `client_secret` | string | Confidential only | One-time secret; the Hub stores only its hash. |
+| `client_id_issued_at` | integer | Always | Unix timestamp (seconds) when the client was created. |
+| `client_name` | string | Always | Accepted display name. |
+| `redirect_uris` | string[] | Always | Accepted redirect URIs. |
+| `grant_types` | string[] | Always | Accepted grant types. |
+| `scope` | string | Always | Closed permission ceiling (including implied scopes). |
+| `client_uri` | string | If set | Accepted app homepage URL. |
+| `token_endpoint_auth_method` | string | Always | Effective client authentication method. |
 
 ## Redirect addresses
 
-A redirect address must match one the app registered, exactly, with one exception: for a **loopback** address (`127.0.0.1` or `localhost`) the **port is ignored**, per RFC 8252 section 7.3. A native app binds whatever port is free at launch, so the port is ignored on both sides: any registered loopback address matches any port.
+Registration enforces all of these rules on `redirect_uris`:
 
-An IPv6 loopback literal such as `[::1]` is refused at registration: the consent page's content security policy cannot state an IPv6 host, so the login would hang. Use `127.0.0.1` or `localhost`.
+- **Count and uniqueness:** At most **16** redirect URIs per app; duplicate entries are rejected.
+- **Syntax:** Every URI must be absolute (with a scheme), contain no fragment (`#`), no wildcard (`*`), and no whitespace or control characters.
+- **Non-loopback web URIs:** Must use `https://`. Plain `http://` is rejected for non-loopback hosts.
+- **Loopback URIs:** `127.0.0.1` and `localhost` must use `http://` or `https://`. IPv6 literals such as `[::1]` are rejected at registration because the consent page's Content Security Policy (`form-action`) cannot represent an IPv6 host.
+- **Native private-use schemes:** Supported per RFC 8252 section 7.1 when the URI has no host and a reverse-domain scheme containing a dot (for example, `com.example.app:/cb`).
 
-Everything else is compared literally. No prefix match, no wildcard host, no scheme substitution.
+At authorization time, `redirect_uri` is compared literally against the registered list with one exception per RFC 8252 section 7.3: for a registered **loopback** URI (`127.0.0.1` or `localhost`), **any port matches**. The **scheme** (case-insensitive), **host**, **escaped path** (compared without percent-decoding), and **raw query** must still match exactly, and no fragment is allowed.
 
 ## Authorization code with PKCE
 
-The flow for anything that can open a browser.
+Use this flow for any client that can open a browser:
 
-```
+```text
 GET /oauth/authorize
   ?client_id=<id>
   &response_type=code
@@ -56,88 +161,92 @@ GET /oauth/authorize
   &step_up=<session:<session id> or token:<api token id>, optional>
 ```
 
-`state` is **required**, not recommended: a client that omits it cannot tell its own callback from one an attacker triggered. `code_challenge_method` must be `S256`; `plain` is not a challenge at all.
+- `state` is **required**.
+- `code_challenge_method` must be `S256` (`plain` is rejected), and both `code_challenge` and `code_verifier` must be 43–128 characters from the RFC 7636 unreserved set.
+- Omitting `scope` requests the app's registered ceiling minus all `admin:*` scopes. Admin scopes must be requested explicitly.
+- Passing `step_up` (`session:<id>` or `token:<id>`) requests an elevation window on an existing credential owned by the approving user and issued to the requesting app. `scope` must then be empty, and the app registration must allow elevation.
 
-An **omitted** `scope` is the app's registered ceiling minus every `admin:` permission. An admin permission must be specified.
+The Hub renders the consent screen at `GET /oauth/authorize`, and the browser submits the user's decision to `POST /oauth/consent`. Both routes require an elevated browser session (or solo local IPC). Proxies in front of the Hub must allow both routes.
 
-The `step_up` parameter requests a window on an existing credential. Use `session:<session id>` for a session or `token:<api token id>` for an app credential. `scope` must then be empty. The credential must belong to the approving account holder and the requesting app, and the app registration must allow elevation for either credential type. The consent page identifies the credential from the Hub’s records and states that the request issues nothing. Only a browser session with a current window can answer it. See [App Authorization](/docs/admin/app-authorization/#elevation).
+After the Hub verifies `client_id` and `redirect_uri`, it redirects the browser back with either a one-shot code or an error:
 
-The Hub serves the consent screen at `GET /oauth/authorize`. The browser submits the decision and authorization parameters as form fields to `POST /oauth/consent`. For step-up, the form includes the same `step_up` value, and the Hub validates it again. Proxies and content policies in front of the Hub must allow both routes.
-
-Either way the browser returns to `redirect_uri`:
-
-```
+```text
 <redirect_uri>?code=<one-shot code>&state=<echoed>
 <redirect_uri>?error=access_denied&error_description=...&state=<echoed>
 ```
 
-An error travels back to the app once the `client_id` and the address are both valid. Before that — an unknown client, an unregistered address — the Hub renders its own page and redirects nowhere, because redirecting to an address it did not verify is an open redirect.
+If `client_id` or `redirect_uri` is invalid, the Hub displays an error page on its own origin and does not redirect.
 
 Exchange the code within {{< duration authorization-code-ttl >}}:
 
-```
+```text
 POST /oauth/token
   grant_type=authorization_code
   client_id=<id>
   code=<code>
   code_verifier=<the verifier>
-  redirect_uri=<the same address>
+  redirect_uri=<the exact redirect_uri from authorization>
 ```
 
-`redirect_uri` must be present and identical to the one the authorization used. The stored grant fixes the app, permissions, and label. Holding a code cannot widen the grant.
+Confidential clients also authenticate with HTTP Basic or `client_secret` in the form body. To redeem a step-up code, also send the target credential: the target session cookie in `Cookie`, or the target access token in `Authorization: Bearer <access_token>` (a confidential client presenting a bearer sends `client_secret` in the form body).
 
-A **confidential** client also authenticates with HTTP Basic or `client_secret` in the body. For client authentication, a public client supplies only `client_id`.
+**One-shot consumption and replay revocation:** A successful exchange consumes the code. Replaying a consumed code is rejected with `400` `invalid_grant`; if the replay passes client authentication and matches the original `redirect_uri` and PKCE verifier while the code row still exists, the Hub revokes the credential issued by the first exchange (RFC 6749 section 4.1.2).
 
-To redeem a step-up code, also present the credential identified by `step_up`. Send the target session’s cookie in `Cookie`, or the target app credential’s current access token in `Authorization: Bearer <access_token>`. A confidential client that presents a bearer sends `client_secret` in the form body.
-
-**A successful exchange consumes the code.** The Hub refuses a repeat exchange. While the Hub still holds the code row, it revokes any credential issued by the first exchange after it verifies the repeat request (RFC 6749 section 4.1.2). The request must pass client authentication for the same app and supply the exact redirect address used to obtain the code and the matching PKCE verifier. For a `leapmux-desktop` sign-in code, the credential is the newly issued desktop session.
-
-What the exchange answers depends on the code:
-
-| The code | The answer |
+| Code kind | Response |
 |---|---|
-| An ordinary authorization code | The token response below. |
-| A sign-in code for the built-in app `leapmux-desktop` | `200` with `{"signed_in": true}` and a new, independent Desktop session cookie in `Set-Cookie`. The session starts without an elevation window. The body holds no secret, and the Hub sends no app authorization email. |
-| A step-up code, when the request carries the credential the code identifies | `200` with `{"elevated": true}`. The Hub opens a window on the existing credential and issues no new credential. |
-| A step-up code, when the request carries no credential, or one the Hub rejects | `401` `invalid_token`. The code stays valid: repair the credential and present the code again. |
-| A step-up code, when the request carries a different credential, or the Hub can no longer elevate the target | `400` `invalid_grant`. The code stays valid. |
-| Any request, while the Hub cannot read the credential | `500`. The code stays valid. |
+| Standard authorization code | `200 OK` with [the token response](#the-token-response). |
+| Sign-in code for built-in `leapmux-desktop` | `200 OK` with `{"signed_in": true}` and a new Desktop session cookie in `Set-Cookie` (starts without an elevation window). |
+| Step-up code with matching target credential | `200 OK` with `{"elevated": true}`. Opens an elevation window on the existing credential and issues no new token. |
+| Step-up code with missing or rejected credential | `401` `invalid_token`. The code stays valid so the client can retry. |
+| Step-up code with mismatched credential or un-elevatable target | `400` `invalid_grant`. The code stays valid. |
 
 ## Device authorization
 
-The flow for a machine with no browser: a headless server, an SSH session, a container.
+Use this flow on headless servers, SSH sessions, and containers without a local browser.
 
-```
-POST /oauth/device-authorization
-  client_id=<id>
-  client_secret=<secret>            # a confidential client authenticates here too
-  scope=<space-delimited, optional>
-  installation_name=<label, optional>
-```
+### Starting device authorization (`POST /oauth/device-authorization`)
 
-The response carries `device_code`, `user_code`, `verification_uri`, `verification_uri_complete`, `expires_in` and `interval`. Show the user code and the URL; the person opens it on any device they can sign in on. `verification_uri` is the Hub's own page at `/oauth/device`, where the code is typed or confirmed — never the token endpoint, which a machine polls.
+Because this request carries no user session, it serves **hub-wide apps only**. Submitting a private app's `client_id` is refused with `400` `invalid_client`. Apps not registered for `urn:ietf:params:oauth:grant-type:device_code` receive `400` `unauthorized_client`.
 
-`verification_uri_complete` carries the user code and nothing else. The permissions the app asked for live in the grant the Hub stored, so a rewritten link cannot ask somebody to approve one thing while the grant records another.
+**Request fields (`application/x-www-form-urlencoded`)**
 
-A grant that reaches the hub-administration family answers the first **Authorize** with a confirmation page and binds nothing until the second: the typed-code flow authorizes a machine the person cannot see, so the highest-stakes ask takes a deliberate second stop.
+| Field | Required | Description |
+|---|---|---|
+| `client_id` | Yes | Registered client ID (or supplied via HTTP Basic for confidential apps). |
+| `client_secret` | Confidential only | Client secret in form body or HTTP Basic header. Public apps must not send a secret. |
+| `scope` | No | Space-delimited scopes within the app ceiling. Defaults to the ceiling minus `admin:*` scopes. |
+| `installation_name` | No | Label for this copy of the app (max 128 bytes after cleanup). |
 
-Poll the token endpoint no faster than `interval` seconds:
+**Response fields (`200 OK`, `application/json`)**
 
-```
+| Field | Type | Description |
+|---|---|---|
+| `device_code` | string | Secret polling handle for `/oauth/token`. |
+| `user_code` | string | Short human-entry code formatted as `XXX-XXX`. |
+| `verification_uri` | string | Hub activation page URL (`<hub>/oauth/device`). |
+| `verification_uri_complete` | string | `<hub>/oauth/device?user_code=XXX-XXX` (carries no scope parameters). |
+| `expires_in` | integer | Grant lifetime in seconds (`600`). |
+| `interval` | integer | Minimum polling interval in seconds (`5`). |
+
+A device grant requesting any `admin:*` scope requires a second confirmation click on `/oauth/device` before binding. Denying a grant (or submitting without approval) is final.
+
+### Polling for the token
+
+Poll `POST /oauth/token` no faster than `interval` seconds:
+
+```text
 POST /oauth/token
   grant_type=urn:ietf:params:oauth:grant-type:device_code
   client_id=<id>
   device_code=<device_code>
 ```
 
-| Body | Meaning |
+| Error code (`400`) | Meaning |
 |---|---|
-| `authorization_pending` | Nobody answered yet. Keep polling. |
-| `slow_down` | You polled too fast. Add five seconds and continue. |
-| `access_denied` | Somebody refused. Final. |
-| `expired_token` | The grant timed out after {{< duration device-code-ttl >}}. Start again. |
-
-An **absent** decision on the consent form is a refusal, and it is final: a grant somebody denied can never become approved.
+| `authorization_pending` | User has not answered yet. Continue polling. |
+| `slow_down` | Polled faster than `interval`. Wait longer before the next poll. |
+| `access_denied` | User refused. Stop polling. |
+| `expired_token` | Grant expired after {{< duration device-code-ttl >}}. Start a new flow. |
 
 ## The token response
 
@@ -155,84 +264,101 @@ An **absent** decision on the consent form is a refusal, and it is final: a gran
 }
 ```
 
-`scope` is what the credential **reaches**, including every permission the asked-for ones imply — so it may be **wider** than what was asked for, and `file:read` comes back with `worker:read` beside it. It is never wider in a way the consent screen did not show.
+`scope` reports what the credential can actually reach: the granted scopes (including implied scopes) intersected with the app's current registered ceiling. The Hub evaluates that intersection on every request, so shrinking an app's ceiling narrows existing credentials immediately without rewriting stored consent.
 
-Reaching is the account's consent intersected with the app's **registered ceiling**, and the Hub applies that intersection at every request rather than only at the consent. So an owner who removes a permission from a registration takes it from the credentials the app already holds, and this field says so at the next refresh. The consent itself is not rewritten: put the permission back on the registration and the credential reaches it again, with no fresh authorization.
-
-Present the access token as `Authorization: Bearer <access_token>`.
+Present the access token in the header `Authorization: Bearer <access_token>`. Bearer tokens are never accepted in query parameters or form bodies.
 
 ## Refreshing
 
-```
+```text
 POST /oauth/token
   grant_type=refresh_token
   client_id=<id>
   refresh_token=<refresh_token>
-  scope=<optional, to NARROW>
+  scope=<optional, to narrow>
 ```
 
-The refresh token **rotates**: each exchange returns a new pair and retires the old one. Presenting a retired refresh token after a sixty-second grace window means it leaked, so the Hub revokes the whole credential (RFC 6749 section 6).
+Refresh tokens **rotate** on every exchange, retiring the previous token. Presenting a retired refresh token after a 60-second grace window indicates token reuse or theft, so the Hub revokes the entire credential per **OAuth 2.1 / RFC 9700 section 4.14.2**.
 
-An optional `scope` may only narrow. A refresh cannot widen a grant, because the account holder is not there to approve it — and it is measured against what the credential **reaches**, so asking for a permission the app's registration no longer lists answers `invalid_scope` rather than succeeding and failing at the next call.
+An optional `scope` parameter may only narrow what the credential currently reaches; requesting a scope outside the grant or outside the app's current ceiling returns `400` `invalid_scope`.
 
-Two deadlines apply. A credential refreshes for {{< duration refresh-token >}} from its last rotation, and it stops entirely {{< duration absolute-cap >}} after the consent that created it. The second is why an `invalid_grant` reading *this credential reached its maximum lifetime* means the app must be authorized again rather than retried.
+A credential refreshes for up to {{< duration refresh-token >}} from its last rotation and expires permanently {{< duration absolute-cap >}} after the consent that created it (`400` `invalid_grant`).
 
 ## Revocation
 
-```
+```text
 POST /oauth/revoke
-  token=<access or refresh token>
-  client_id=<id>                    # always for a public client
-  client_secret=<secret>            # or HTTP Basic, for a confidential one
+  token=<full access or refresh token>
+  client_id=<id>                    # required for public app credentials
+  client_secret=<secret>            # or HTTP Basic, for confidential app credentials
 ```
 
-The client is authenticated before the token is verified, per RFC 7009 section 2.1. A **confidential** client sends its secret — HTTP Basic or the body, the two forms RFC 6749 section 2.3.1 defines — and a **public** client identifies itself with its `client_id`. In both cases only the app a credential was issued to may end it, so one app cannot tear down another's installations. The token itself must also be presented in full: an identifier alone revokes nothing.
+Revocation follows RFC 7009 with strict ownership checks and non-disclosure:
 
-Per RFC 7009 section 2.2, the answer is `200` for a token that was revoked **and** for one that was already invalid — an invalid token is not an error a client can act on. That uniformity is also the non-disclosure: the response separates nothing, so the endpoint cannot be used to discover which token identifiers are live.
+1. A missing `token` parameter returns `400` `invalid_request`; a malformed form body returns plain-text `400`.
+2. If the request includes client credentials (HTTP Basic or `client_id`), the Hub authenticates that client first and rejects bad credentials with `401` `invalid_client`.
+3. Next, the Hub verifies the full presented token secret (a `token_id` alone revokes nothing). If the token is invalid, the Hub returns **`200 OK`** without leaking token validity — including for unauthenticated requests.
+4. If the token is a valid app credential, the Hub checks app ownership **after** token verification:
+   - If the owning app was already retired, the Hub returns `200 OK` idempotently.
+   - If an authenticated client submits another app's token, the Hub rejects it with **`400` `invalid_grant`** when the owning app is public, or **`401` `invalid_client`** when the owning app is confidential.
+   - If no client identity was presented, the Hub rejects it with `400` `invalid_request` (public owner) or `401` `invalid_client` (confidential owner).
+5. If the token is a delegation token, it has no owning app and the full secret alone revokes it (`200 OK`).
 
-A missing `token` parameter is the one shape refusal: `400 invalid_request`. A client that cannot be authenticated, or one that is not the credential's own, is refused before the token is read.
+## Step-up elevation
 
-## Errors
+Sensitive operations require a recently proven factor. A credential without an active elevation window receives `FAILED_PRECONDITION` with the `Leapmux-Elevation-Required: 1` header. Both step-up ceremonies require the app's registration to have `elevation_allowed` enabled; see [Security & Authentication](/docs/admin/security-and-auth/).
 
-Every token-endpoint error is `400` with an RFC 6749 section 5.2 body, except `invalid_client`, which is `401`. The distinction is one a client library acts on: `401` says the client's own credentials are wrong, and `400` says the grant is finished. One more answer exists: an address that spent the shared anonymous budget gets `429` with `slow_down`; wait and retry.
+| Credential type | Ceremony |
+|---|---|
+| App credential issued via `device_code` or by an administrator | Call `POST /oauth/step-up` and poll `/oauth/token` with `device_code`. |
+| App credential issued via `authorization_code` (such as default `leapmux auth login`) | Loopback ceremony via `GET /oauth/authorize?step_up=token:<token_id>`. |
+| LeapMux Desktop session | Loopback ceremony via `GET /oauth/authorize?step_up=session:<session_id>`. |
+
+### Starting device-code step-up (`POST /oauth/step-up`)
+
+**Request**
+
+| Location & Field | Required | Description |
+|---|---|---|
+| Header `Authorization` | Yes | `Bearer <access_token>` of the app credential to elevate. |
+| Form `installation_name` | No | Optional label carried on the grant (the activation page always displays the Hub's stored record for the credential). |
+
+**Responses**
+
+| Status & Error Code | Meaning |
+|---|---|
+| `200 OK` | Returns the same six JSON fields as `/oauth/device-authorization` (`device_code`, `user_code`, `verification_uri`, `verification_uri_complete`, `expires_in`, `interval`). Poll `/oauth/token` until it returns `{"elevated": true}`. |
+| `401` `invalid_token` | Missing, malformed, expired, or revoked bearer token. |
+| `403` `insufficient_scope` | Credential is forbidden from requesting verification. |
+| `400` `unsupported_credential` | Presented bearer is not an API token (for example, a delegation token). |
+| `403` `unauthorized_client` | The app's registration does not allow elevation (`elevation_allowed` is `false`). |
+| `400` `browser_step_up_required` | The credential was issued via `authorization_code` and must elevate through the browser loopback ceremony. |
+| `503` `server_error` | Hub cannot determine its base URL (`public_url` unset and no TCP listener). |
+
+## Errors and rate limits
+
+OAuth JSON error responses follow RFC 6749 section 5.2:
 
 ```json
 { "error": "invalid_grant", "error_description": "code expired or already consumed" }
 ```
 
-The Hub writes every error description itself, and no description names a client or tells it what to do. One endpoint serves every registered app, so a remedy that made sense for one would be noise to the rest; each client renders its own remedy.
+HTTP status codes across the OAuth endpoints:
 
-## Step-up
+| HTTP Status | Error shape | When returned |
+|---|---|---|
+| `400` (JSON) | RFC 6749 `{"error": ...}` | Grant, request, scope, or client-metadata errors (`invalid_grant`, `invalid_request`, `invalid_scope`, `unauthorized_client`, `unsupported_grant_type`, `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, `unsupported_credential`, `browser_step_up_required`), and `invalid_client` on `/oauth/device-authorization` when called for a private app. |
+| `400` (plain text) | `bad form` | Malformed `application/x-www-form-urlencoded` body on form endpoints (`/oauth/token`, `/oauth/device-authorization`, `/oauth/revoke`, `/oauth/consent`, `/oauth/device`). |
+| `401` (JSON) | `invalid_client` or `invalid_token` | Failed client authentication (`invalid_client`) on `/oauth/token`, `/oauth/device-authorization`, or `/oauth/revoke` (including confidential owner mismatch); missing or rejected credential (`invalid_token`) when redeeming a step-up code on `/oauth/token` or calling `/oauth/step-up`. Includes `WWW-Authenticate`. |
+| `403` (JSON) | `access_denied`, `insufficient_scope`, `unauthorized_client` | Disabled open registration on `/oauth/register`, or forbidden/disallowed step-up on `/oauth/step-up`. |
+| `413` (JSON) | `invalid_client_metadata` | `POST /oauth/register` JSON body exceeds 16 KiB. |
+| `429` (JSON) | `slow_down` | Shared per-address anonymous rate limit exceeded (`rate_limit.oauth_anonymous`). |
 
-Some actions need a recently proven factor. A credential that lacks one is refused with `FAILED_PRECONDITION` and the `Leapmux-Elevation-Required: 1` header. Both step-up ceremonies require the app registration to allow elevation. The credential’s issuance determines which ceremony it uses. See [App Authorization](/docs/admin/app-authorization/#elevation).
-
-| The credential | The ceremony |
-|---|---|
-| An app credential issued through the device-code grant or by an administrator | Start the device-code ceremony with `POST /oauth/step-up`. |
-| An app credential issued through the authorization-code grant, such as with the default `leapmux auth login` | Use the loopback ceremony. |
-| A LeapMux Desktop session | Use the loopback ceremony. |
-
-### The device-code ceremony
-
-```
-POST /oauth/step-up
-  Authorization: Bearer <access_token>
-```
-
-For an authenticated app credential, the Hub checks the app's elevation permission before it checks how the credential was issued. If the app's registration disallows elevation, the response is `403` `unauthorized_client`. If the registration allows elevation and the authorization-code grant issued the credential, the response is `400` `browser_step_up_required`. Neither response creates a device grant.
-
-A successful request starts the device-code ceremony for the existing credential. The Hub opens the window when the account holder approves the request in a browser. The app polls `/oauth/token` with the device-code grant. On success the response is `{"elevated": true}`.
-
-### The loopback ceremony
-
-Start the authorization request with `step_up=token:<its token id>` for an app credential or `step_up=session:<its session id>` for a desktop session. The browser on the same machine sends the approved code to the app's loopback listener. The Hub opens the window when the app successfully redeems the code with the existing credential. The control CLI runs both parts of this ceremony for you. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
-
-## Rate limits
-
-The anonymous endpoints — device authorization, the token endpoint, revocation, dynamic registration, step-up, and the app icons — share one per-address budget. The budget counts admitted requests, not failures, so it is a ceiling on a loop, not a lockout. An administrator adjusts it as `rate_limit.oauth_anonymous`.
+The six anonymous-surface endpoints — `/oauth/device-authorization`, `/oauth/token`, `/oauth/revoke`, `/oauth/register`, `/oauth/step-up`, and `/oauth/apps/<client_id>/icon` — share one per-client-address rate-limit budget (`rate_limit.oauth_anonymous`), counting admitted requests rather than failures.
 
 ## See also
 
-- [App Authorization](/docs/admin/app-authorization/) — registering and verifying apps
-- [Connected Apps](/docs/using/connected-apps/) — what an account holder sees
-- [Control CLI](/docs/using/control-cli/) — a worked client, and the one that ships
+- [App Authorization](/docs/admin/app-authorization/) — registering, verifying, and scoping apps
+- [Accounts & Connected Apps](/docs/using/accounts-and-apps/) — user-facing consent and disconnection
+- [Security & Authentication](/docs/admin/security-and-auth/) — session elevation and token lifetimes
+- [CLI Guide](/docs/using/cli-guide/) — reference client implementation built into `leapmux`

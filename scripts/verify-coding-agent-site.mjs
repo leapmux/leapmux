@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import process from 'node:process'
 import { markdownBlockTexts, markdownLinks, markdownText } from './matrix-markdown.mjs'
 import { readCodingAgentMatrix } from './validate-coding-agent-matrix.mjs'
@@ -435,16 +435,82 @@ export function verifyCodingAgentSite(html, features, checklist) {
   return errors
 }
 
+/** Walk a directory tree and return all matching files. */
+function walkMarkdownFiles(dir) {
+  const out = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory())
+      out.push(...walkMarkdownFiles(full))
+    else if (entry.name.endsWith('.md'))
+      out.push(full)
+  }
+  return out
+}
+
+/** Verify built Markdown companions, llms.txt, homepage OG metadata, and Pagefind output. */
+export function verifyBuiltSiteArtifacts(publicDir, checklist) {
+  const errors = []
+  const docsDir = resolve(publicDir, 'docs')
+  const mdFiles = walkMarkdownFiles(docsDir)
+  if (mdFiles.length === 0)
+    errors.push('no generated Markdown companions found under site/public/docs/')
+
+  for (const file of mdFiles) {
+    const rel = relative(publicDir, file)
+    const text = readFileSync(file, 'utf8')
+    if (text.includes('{{<') || text.includes('{{%'))
+      errors.push(`${rel}: contains unexpanded Hugo shortcode`)
+    if (text.includes('<!-- The command tree generates'))
+      errors.push(`${rel}: leaks internal generated-file HTML comment`)
+    if (rel.startsWith('docs/reference/commands/') && (text.includes('&lt;') || text.includes('&gt;')))
+      errors.push(`${rel}: contains unescaped HTML angle-bracket entities`)
+  }
+
+  const faqMd = readFileSync(resolve(publicDir, 'docs/reference/faq/index.md'), 'utf8')
+  const firstProvider = checklist.providerGroups.flat()[0]
+  if (firstProvider && !faqMd.includes(firstProvider.label))
+    errors.push(`docs/reference/faq/index.md: missing expanded provider roster (expected ${firstProvider.label})`)
+
+  const matrixMd = readFileSync(resolve(publicDir, 'docs/reference/supported-agents/index.md'), 'utf8')
+  if (!matrixMd.includes('### Coding agent feature matrix'))
+    errors.push('docs/reference/supported-agents/index.md: missing rendered Markdown feature matrix')
+
+  const llmsTxt = readFileSync(resolve(publicDir, 'llms.txt'), 'utf8')
+  if (!llmsTxt.includes('/docs/reference/commands/index.md'))
+    errors.push('llms.txt: missing /docs/reference/commands/index.md overview entry')
+
+  const homeHTML = readFileSync(resolve(publicDir, 'index.html'), 'utf8')
+  if (homeHTML.includes('og:image:alt" content="LeapMux — LeapMux"'))
+    errors.push('index.html: og:image:alt duplicates site title')
+
+  if (!existsSync(resolve(publicDir, 'pagefind/pagefind.js')))
+    errors.push('site/public/pagefind/pagefind.js: missing Pagefind search index')
+  if (existsSync(resolve(publicDir, 'en.search-data.json')))
+    errors.push('site/public/en.search-data.json: monolithic FlexSearch JSON should not be emitted when Pagefind is enabled')
+
+  return errors
+}
+
 if (import.meta.main) {
   const { features, checklist } = readCodingAgentMatrix()
-  const html = readFileSync(resolve(ROOT, 'site/public/docs/using/coding-agents/index.html'), 'utf8')
+  const publicDir = resolve(ROOT, 'site/public')
+  const html = readFileSync(resolve(publicDir, 'docs/reference/supported-agents/index.html'), 'utf8')
   const errors = verifyCodingAgentSite(html, features, checklist)
-  for (const page of ['getting-started/introduction', 'reference/faq']) {
-    const pageHTML = readFileSync(resolve(ROOT, `site/public/docs/${page}/index.html`), 'utf8')
+  const providerCountPages = [
+    'getting-started/introduction',
+    'using/coding-agents',
+    'recipes/migrating',
+    'reference/faq',
+    'reference/glossary',
+  ]
+  for (const page of providerCountPages) {
+    const pageHTML = readFileSync(resolve(publicDir, `docs/${page}/index.html`), 'utf8')
     errors.push(...verifyCodingAgentProviderCount(pageHTML, checklist).map(error => `${page}: ${error}`))
   }
-  const homeHTML = readFileSync(resolve(ROOT, 'site/public/index.html'), 'utf8')
+  const homeHTML = readFileSync(resolve(publicDir, 'index.html'), 'utf8')
   errors.push(...verifyCodingAgentTicker(homeHTML, checklist).map(error => `home: ${error}`))
+  errors.push(...verifyBuiltSiteArtifacts(publicDir, checklist))
   for (const error of errors)
     console.error(error)
   if (errors.length) {
@@ -452,6 +518,6 @@ if (import.meta.main) {
   }
   else {
     const dimensions = codingAgentMatrixDimensions(features, checklist)
-    console.log(`Verified ${dimensions.features} rendered features and ${dimensions.cells} matrix cells.`)
+    console.log(`Verified ${dimensions.features} rendered features, ${dimensions.cells} matrix cells, Markdown endpoints, and Pagefind index.`)
   }
 }

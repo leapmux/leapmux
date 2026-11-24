@@ -1442,7 +1442,11 @@ describe('renovate workflow and protection', () => {
     // Every JavaScript tool comes from a lockfile that the release-age check reads.
     expect(yaml('Taskfile.yaml').tasks['validate-site-tools']).toMatchObject({
       dir: 'site',
-      cmds: ['bun install --frozen-lockfile --ignore-scripts', './node_modules/.bin/wrangler --version'],
+      cmds: [
+        'bun install --frozen-lockfile --ignore-scripts',
+        './node_modules/.bin/wrangler --version',
+        './node_modules/.bin/pagefind --version',
+      ],
     })
     for (const file of ['Taskfile.yaml', ...workflowFiles])
       expect(raw(file), file).not.toMatch(/\bbunx\b|wrangler-action/)

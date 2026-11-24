@@ -7,10 +7,7 @@ sidebar:
   open: true
 ---
 
-These recipes show how to combine LeapMux worktrees, remote Workers, Agent Skills,
-and the `leapmux` command-line interface (CLI) to solve real engineering workflows.
-Each playbook gives both a natural-language prompt for your coding agent and the
-exact CLI commands underneath.
+These recipes combine LeapMux worktrees, remote Workers, Agent Skills, and the `leapmux` command-line interface (CLI) to solve real engineering workflows. Each playbook includes both a natural-language prompt for your coding agent and the underlying CLI commands.
 
 {{< cards >}}
   {{< card link="/docs/recipes/parallel-agents/" title="Run Parallel Coding Agents" icon="view-grid" subtitle="Fan out a task across three agents in isolated git worktrees, inspect their diffs, and merge the winner." >}}

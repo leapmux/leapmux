@@ -3,72 +3,159 @@ title: LeapMux
 layout: hextra-home
 ---
 
-<div class="hx:mt-6 hx:mb-6 hero-headline-with-ticker">
+<div class="hx:mt-6 hx:mb-4 hero-headline-with-ticker">
 {{< hextra/hero-headline >}}
   A workspace for a fleet&nbsp;<br class="hx:sm:block hx:hidden" />of coding agents
 {{< /hextra/hero-headline >}}
 {{< agent-ticker >}}
 </div>
 
-<div class="hx:mb-8">
+<div class="hx:mb-6">
 {{< hextra/hero-subtitle >}}
-  Run Claude Code, Codex, and more side by side &mdash; each in its own git worktree and branch,&nbsp;<br class="hx:sm:block hx:hidden" />tiled or floating, on a local or remote machine, with traffic to your agents end-to-end encrypted.
+  Run Claude Code, Codex, and {{< agent-provider-count >}} coding agents side by side &mdash; each in its own git worktree and branch,&nbsp;<br class="hx:sm:block hx:hidden" />tiled or floating, on a local or remote machine, with end-to-end encrypted traffic.
 {{< /hextra/hero-subtitle >}}
 </div>
 
-<div class="hx:mb-8">
-{{< hextra/hero-button text="Read the manual" link="/docs/" >}}
-{{< hextra/hero-button text="Quick Start" link="/docs/getting-started/quick-start/" style="background:transparent;color:var(--hx-color-primary-600);border:1px solid var(--hx-color-primary-600);margin-left:0.75rem" >}}
-{{< hextra/hero-button text="Downloads" link="https://github.com/leapmux/leapmux/releases" style="background:transparent;color:var(--hx-color-primary-600);border:1px solid var(--hx-color-primary-600);margin-left:0.75rem" >}}
+<div class="lm-hero-actions">
+  <a class="lm-btn-primary" id="lm-home-download-cta" href="/download/">Download LeapMux</a>
+  <a class="lm-btn-secondary" href="/docs/getting-started/quick-start/">5-Minute Quick Start</a>
+  <a class="lm-btn-secondary" href="/docs/">Read the Docs</a>
 </div>
 
-<div class="hx:mb-10">
+<p class="lm-hero-meta">
+  macOS, Linux, Windows &amp; browser &middot; Bring your own agent subscriptions &middot; <a href="/docs/reference/supported-agents/">Compare all {{< agent-provider-count >}} supported agents</a>
+</p>
+
+<script>
+(() => {
+  const btn = document.getElementById('lm-home-download-cta');
+  if (!btn) return;
+  const hint = (((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '') + ' ' + (navigator.userAgent || '')).toLowerCase();
+  if (hint.includes('mac')) btn.textContent = 'Download for macOS';
+  else if (hint.includes('win')) btn.textContent = 'Download for Windows';
+  else if (hint.includes('linux')) btn.textContent = 'Download for Linux';
+})();
+</script>
+
+<div class="hx:mb-8">
 {{< screenshot src="hero-workspace" alt="LeapMux workspace running Claude Code, Antigravity, Codex, a live file diff viewer, and an integrated PTY terminal across isolated git worktrees" caption="Claude Code, Antigravity, Codex, a syntax-highlighted diff viewer, and a live PTY terminal running side by side in isolated git worktrees." width="1440" height="900" eager="true" >}}
+</div>
+
+<div class="lm-proof-strip">
+  <div class="lm-proof-item">
+    <div class="lm-proof-value">{{< agent-provider-count >}} coding agents</div>
+    <div class="lm-proof-label">Unified chat, diffs, queueing, and permissions backed by an E2E-verified capability matrix.</div>
+  </div>
+  <div class="lm-proof-item">
+    <div class="lm-proof-value">Hybrid post-quantum E2EE</div>
+    <div class="lm-proof-label">Your Hub relays ciphertext between clients and Workers and cannot read agent chats, terminal output, or files.</div>
+  </div>
+  <div class="lm-proof-item">
+    <div class="lm-proof-value">Zero inbound ports</div>
+    <div class="lm-proof-label">Remote Workers on Linux servers or GPU boxes dial out over WebSockets through firewalls and NAT.</div>
+  </div>
+  <div class="lm-proof-item">
+    <div class="lm-proof-value">Cross-platform &amp; self-hosted</div>
+    <div class="lm-proof-label">Native desktop app plus browser UI for macOS, Linux, and Windows under FSL-1.1-ALv2 (Apache 2.0 after 2 years).</div>
+  </div>
 </div>
 
 <div class="hx:mb-10">
   <h2 class="hx:text-xl hx:font-semibold hx:mb-3">Or let your coding agent introduce you</h2>
-  <p class="hx:text-gray-600 hx:dark:text-gray-400 hx:mb-4">Paste this prompt into Claude Code, Codex, Cursor, or any other coding agent to pick a setup mode, install LeapMux, and launch your first parallel session.</p>
+  <p class="hx:text-gray-600 hx:dark:text-gray-400 hx:mb-4">Paste this prompt into Claude Code, Codex, Cursor, or any other coding agent to pick a deployment mode, install LeapMux, and launch your first parallel session.</p>
 {{< copy-prompt label="Ask your coding agent to set up LeapMux" >}}
 Read https://leapmux.dev/agent-guide.md and help me choose the right LeapMux setup mode for my machine, install it, and start my first parallel coding-agent session.
 {{< /copy-prompt >}}
 </div>
 
-{{< hextra/feature-grid >}}
-  {{< hextra/feature-card
-    title="Many agents, isolated"
-    icon="view-grid"
-    subtitle="Run several coding agents at once, each in its own branch and worktree, so their changes do not conflict."
-    link="/docs/using/coding-agents/"
-  >}}
-  {{< hextra/feature-card
-    title="Git worktrees & branches"
-    icon="code"
-    subtitle="Open every agent or terminal in a new or existing worktree, with dirty-worktree protection on close."
-    link="/docs/using/worktrees-and-branches/"
-  >}}
-  {{< hextra/feature-card
-    title="Integrated terminals"
-    icon="terminal"
-    subtitle="Full pseudo-terminal (PTY) shells live alongside your agents in the same layout, and persist across reconnects."
-    link="/docs/using/terminals/"
-  >}}
-  {{< hextra/feature-card
-    title="End-to-end encrypted"
-    icon="lock-closed"
-    subtitle="Traffic between your app and your agents uses a hybrid post-quantum handshake. While the Hub only relays that traffic, it cannot read the content."
-    link="/docs/admin/security/"
-  >}}
-  {{< hextra/feature-card
-    title="NAT-friendly remote machines"
-    icon="server"
-    subtitle="The machines running your agents dial out to connect, so they work behind firewalls and NATs with no inbound ports open."
-    link="/docs/admin/managing-workers/"
-  >}}
-  {{< hextra/feature-card
-    title="Tiling & floating layout"
-    icon="template"
-    subtitle="Tile, split, grid, and float your agents and terminals. Layouts sync live across your devices."
-    link="/docs/using/tabs-and-layout/"
-  >}}
-{{< /hextra/feature-grid >}}
+<div class="lm-showcase">
+  <section class="lm-showcase-row">
+    <div class="lm-showcase-copy">
+      <div class="lm-showcase-eyebrow">Parallel Worktrees &amp; Layout</div>
+      <h2 class="lm-showcase-title">Run parallel agents without merge collisions</h2>
+      <p class="lm-showcase-text">Open each agent in its own git worktree and branch from one dialog. Tile agents beside a syntax-highlighted diff viewer and live PTY terminals, steer running turns mid-flight, and clean up worktrees safely when you close the last tab.</p>
+      <ul class="lm-showcase-list">
+        <li>Create isolated git worktrees and branches in one click</li>
+        <li>Queue follow-up prompts, steer or preempt mid-turn, and inspect diffs side by side</li>
+        <li>Dirty-worktree close guards prevent losing uncommitted agent edits</li>
+      </ul>
+      <a class="lm-showcase-link" href="/docs/recipes/parallel-agents/">Read the parallel agents recipe &rarr;</a>
+    </div>
+    <div class="lm-showcase-media">
+      {{< video-clip src="parallel-worktrees" poster="tabs-tiling-layout" alt="Animated walkthrough of switching between parallel coding agents in isolated git worktrees, toggling Split diff view, and opening the Quake terminal" caption="Switch between isolated worktrees, toggle split diffs, and pop down a Quake terminal without losing focus." width="1280" height="800" >}}
+    </div>
+  </section>
+
+  <section class="lm-showcase-row lm-showcase-row--reverse">
+    <div class="lm-showcase-copy">
+      <div class="lm-showcase-eyebrow">Remote Workers &amp; E2EE</div>
+      <h2 class="lm-showcase-title">Connect any devbox behind NAT, end-to-end encrypted</h2>
+      <p class="lm-showcase-text">Start solo on your laptop with one click, or pair a Hub with remote Workers on cloud VMs, office desktops, or GPU servers. Workers dial out over HTTPS/WebSocket, so you open zero inbound ports on your devboxes.</p>
+      <ul class="lm-showcase-list">
+        <li>Hybrid post-quantum end-to-end encrypted channels between your client and each Worker</li>
+        <li>Live layout sync across your browser and desktop devices when network access or a Hub is enabled</li>
+        <li>Persistent background sessions in daemon and distributed modes survive browser closes and network drops</li>
+      </ul>
+      <a class="lm-showcase-link" href="/docs/recipes/remote-devbox/">Connect a remote devbox &rarr;</a>
+    </div>
+    <div class="lm-showcase-media">
+      {{< screenshot src="register-worker-dialog" alt="Register Worker dialog generating a one-time registration command for a remote machine" caption="Register remote Workers behind NAT with a single one-time key command." width="640" height="460" >}}
+    </div>
+  </section>
+
+  <section class="lm-showcase-row">
+    <div class="lm-showcase-copy">
+      <div class="lm-showcase-eyebrow">CLI &amp; Agent Skills</div>
+      <h2 class="lm-showcase-title">Script your fleet from shell, CI, or another agent</h2>
+      <p class="lm-showcase-text">Every workspace action is scriptable through the <code>leapmux</code> CLI (short alias <code>lmx</code>) and six built-in Agent Skills. Spawn worktree agents, wait without polling, enforce JSON schemas on replies, and forward TCP ports over encrypted channels.</p>
+      <ul class="lm-showcase-list">
+        <li>Event-driven <code>agent send --wait --output-schema</code> and <code>agent wait --any</code></li>
+        <li>Checkpoint-resumable <code>events</code> streams and idempotent <code>--request-id</code> retries</li>
+        <li>Built-in skills for delegation, contrasting second-opinion review, council, and handoff</li>
+      </ul>
+      <a class="lm-showcase-link" href="/docs/using/cli-guide/">Explore the CLI guide &rarr;</a>
+    </div>
+    <div class="lm-showcase-media">
+      {{< highlight sh >}}
+# Open two agents on isolated worktrees and wait for the first to finish
+A1=$(leapmux agent open --provider claude --worktree feat/api --base main --dir . -q)
+A2=$(leapmux agent open --provider codex  --worktree feat/cli --base main --dir . -q)
+
+leapmux agent send "$A1" "Implement the /health endpoint with tests."
+leapmux agent send "$A2" "Add the health subcommand and JSON output."
+
+leapmux agent wait "$A1" "$A2" --any --json
+      {{< /highlight >}}
+    </div>
+  </section>
+</div>
+
+<section class="lm-home-faq">
+  <h2>Common Questions</h2>
+  <details>
+    <summary>Does LeapMux include AI models or charge per token?</summary>
+    <p>No. LeapMux wraps the coding-agent CLIs you already have installed on your machine or remote Workers and uses your existing subscriptions and API keys. See <a href="/docs/reference/supported-agents/">Supported Agents</a> for all {{< agent-provider-count >}} providers.</p>
+  </details>
+  <details>
+    <summary>Do agents keep running if I close LeapMux?</summary>
+    <p>Closing a browser tab never stops an agent. In Solo Desktop mode, closing the window minimizes to the tray while quitting the desktop app stops the bundled local sidecar. For sessions that outlive app quits or laptop reboots, run <code>leapmux up</code> (background daemon) or Distributed mode with a Hub and Workers.</p>
+  </details>
+  <details>
+    <summary>What can the Hub see in distributed mode?</summary>
+    <p>Agent conversations, tool output, terminal I/O, and files travel over end-to-end encrypted channels directly between your client and each Worker. As long as the Hub acts only as a relay, it cannot read channel contents. See <a href="/docs/admin/security-and-auth/">Security &amp; Authentication</a> for the exact trust boundary.</p>
+  </details>
+  <details>
+    <summary>How is LeapMux licensed?</summary>
+    <p>LeapMux is source-available under the Functional Source License (<a href="/docs/reference/legal/">FSL-1.1-ALv2</a>), which allows personal, commercial, and internal team self-hosting and converts automatically to Apache 2.0 two years after each release.</p>
+  </details>
+</section>
+
+<section class="lm-closing-cta">
+  <h2 class="hx:text-2xl hx:font-bold hx:mb-2">Ready to run your fleet?</h2>
+  <p class="hx:text-gray-600 hx:dark:text-gray-400 hx:mb-5">Download LeapMux Desktop or start solo mode from the command line in under five minutes.</p>
+  <div class="lm-download-hero-actions">
+    <a class="lm-btn-primary" href="/download/">Download LeapMux</a>
+    <a class="lm-btn-secondary" href="/docs/getting-started/quick-start/">5-Minute Quick Start</a>
+    <a class="lm-btn-secondary" href="https://github.com/leapmux/leapmux/releases">Latest Releases on GitHub</a>
+  </div>
+</section>

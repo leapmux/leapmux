@@ -1,452 +1,102 @@
 ---
 title: "Terminals"
-description: "Full shell terminals in LeapMux that run on a Worker and stream over the end-to-end-encrypted channel: open one, use it, and keep it across reconnects."
+description: "Run interactive shell terminals and per-directory Quake panels on any Worker in LeapMux, with automatic remote control and reconnect persistence."
 type: docs
 weight: 5
 ---
 
-LeapMux gives you full shell terminals that run on a Worker and stream into your Frontend (browser or desktop app) over the same end-to-end-encrypted channel as your agents. A terminal is a tab, just like an agent or a file viewer — you can tile it, float it, move it between workspaces, and it survives page refreshes and reconnects.
+LeapMux gives you full interactive shell terminals running on any Worker and streamed into your browser or desktop app over the same end-to-end encrypted (E2EE) channel as your coding agents. Terminal tabs tile, float, move across workspaces, survive page refreshes, and automatically wire up the `leapmux` control CLI inside every shell.
 
-This chapter covers how to open a terminal, how the shell list is built, how to use the terminal view, and how persistence works. It also covers the automatic remote control wired into every terminal.
+For tiling and tab management, see [Tabs & Layout](/docs/using/tabs-and-layout/). For git worktree creation, see [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
-For the bigger picture of tabs, tiling, and layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening a terminal in a worktree or branch, see [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+## How LeapMux terminals work
 
-## What a LeapMux terminal is
+{{< screenshot src="terminal-pane" alt="LeapMux integrated PTY terminal running git status and go test with colored output" caption="Integrated PTY terminals run full interactive shells on the Worker alongside your agents." width="496" height="450" >}}
 
-{{< screenshot src="terminal-pane" alt="LeapMux integrated PTY terminal running git status and go test with colored output" caption="Integrated PTY terminals run full shells alongside your agents and stay alive across reconnects." width="496" height="450" >}}
+When you open a terminal, the Worker spawns your chosen shell inside a real pseudo-terminal (PTY) on the Worker machine — right beside your code and repositories — and streams it to an xterm.js view supporting 256-color output, mouse events, and full-screen terminal user interfaces (TUIs) like `vim`, `htop`, and `tmux`.
 
-When you open a terminal, the Worker spawns your chosen shell as an interactive login shell (for example `bash -i -l` or `zsh -i -l`), connects it to a real pseudo-terminal (PTY), and streams its output to an [xterm.js](https://xtermjs.org/) view in your tab. The shell and all of its child processes run on the Worker machine — the same machine where your code and git repositories live — not in your browser.
+Every spawned shell receives:
 
-Every spawned shell gets:
+- `TERM=xterm-256color` for full color support.
+- Automatic `LEAPMUX_CONTROL_*` environment variables for calling `leapmux` without logging in (see [Automatic remote control](#automatic-remote-control)).
+- A dedicated process group so closing the tab terminates the shell and all of its child processes cleanly.
 
-- `TERM=xterm-256color` so colour-aware programs render correctly.
-- A set of `LEAPMUX_CONTROL_*` environment variables (see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control)).
-- A process kill group, so closing the tab reaps the whole process tree (the shell and everything it started) rather than leaking orphans.
-
-Each terminal is given an auto-generated title of the form **`Terminal <Name>`** (for example `Terminal Aaliyah` or `Terminal Zoe`), drawn from a fixed pool of names. You can rename it at any time (see [Renaming a terminal](#renaming-a-terminal)).
+New terminals receive a generated title (`Terminal <Name>`) that updates automatically when programs emit standard window-title escape sequences. You can also double-click the tab to rename it manually, or run `leapmux tab rename`.
 
 ## Opening a terminal
 
-There are three ways to open a terminal from the UI, plus a CLI path.
+- **Quick open (`⌘T` / `Ctrl+T` or the tab-bar terminal icon):** When an active tab already establishes a Worker and working directory, opens a terminal immediately in that directory using the Worker's default shell. Otherwise opens the full dialog.
+- **Specific shell (`+` tab-bar menu):** Under **Terminals**, pick any shell installed on the current Worker (the default is marked **(default)**) to open it immediately, or choose **New terminal...**.
+- **Full dialog (`⇧⌘T` / `Ctrl+Shift+T`):** Opens **New terminal** to choose every option explicitly.
 
-### Quick action: the New terminal button
-
-The tab bar has a terminal icon button. Its tooltip depends on context:
-
-- **"New terminal at the current working directory"** when there is an active tab to inherit a Worker and working directory from.
-- **"New terminal..."** otherwise.
-
-The default keyboard shortcut is **`Cmd/Ctrl+T`** (command `app.newTerminal`, active only when no dialog is open).
-
-The button is context-aware:
-
-- If you already have a Worker and working directory in scope (because another tab is active), it opens a terminal **immediately** using that Worker's **default shell**, anchored to that working directory. A later restart returns to the same directory.
-- If there is no Worker or working directory in scope, it instead opens the full **New terminal** dialog so you can pick one.
-
-### Shell picker: the overflow menu
-
-{{< screenshot src="tab-bar-more-menu" alt="LeapMux tab bar overflow menu listing detected shells with the Worker's default shell marked" caption="Open the tab bar + menu to launch a specific shell immediately or open the full New terminal dialog." width="480" height="712" >}}
-
-The tab bar's overflow ("More options") menu has a **"Terminals"** section. It contains:
-
-- **"New terminal..."** — opens the full dialog.
-- One entry per shell that the current Worker reports as available, each shown as its path. The Worker's default shell is annotated with **"(default)"**.
-
-Clicking a specific shell opens a terminal with exactly that shell, skipping the dialog.
-
-### The full New terminal dialog
-
-{{< screenshot src="new-terminal-dialog" alt="LeapMux New terminal dialog showing Worker, Shell with default marker, Title, Working Directory tree, and Git options" caption="The New terminal dialog picks a Worker, shell binary, working directory, title, and optional git branch or worktree." width="996" height="792" >}}
-
-Open the dialog with **`Cmd/Ctrl+Shift+T`** (command `app.newTerminalDialog`, active only when no dialog is open), via the overflow menu's **"New terminal..."** item, or with the quick-action button when it shows **"New terminal..."**. Its title is **"New terminal"**.
-
-The dialog has these fields:
+{{< screenshot src="new-terminal-dialog" alt="LeapMux New terminal dialog showing Worker, Shell with default marker, Title, Working Directory tree, and Git options" caption="The New terminal dialog selects a Worker, shell binary, working directory, title, and optional git branch or worktree." width="996" height="792" >}}
 
 | Field | What it does |
 | --- | --- |
-| **"Worker"** | Selects which Worker spawns the shell. Options show `name (version, os, arch)`. A **"Refresh workers"** button re-queries online Workers. When none are connected: **"No workers online"**. |
-| **"Shell"** | Picks the shell binary. A **"Refresh shells"** button re-queries the selected Worker. See [Shell selection](#shell-selection). |
-| **"Working Directory"** | Browses the Worker's filesystem from `~`. Type a path and press Enter (or click away) to go there. |
-| **"Title"** | The tab name. Pre-filled with a random `Terminal <Name>`; the refresh button beside the label (tooltip **"Generate random name"**) picks another. Type your own to replace it. It cannot be empty. |
-| **"Git options"** | Appears when the selected path is (or becomes) a git repository. Lets you open the terminal in a branch or worktree. See [Git options](#git-options-open-a-terminal-in-a-branch-or-worktree). |
+| **Worker** | Selects which online Worker hosts the shell. |
+| **Shell** | Picks any shell discovered on the Worker, with a refresh button to re-scan. |
+| **Working Directory** | Browses the Worker's filesystem or accepts a typed path, with **Go to home directory**, hidden-files toggle, and a Windows drive selector. |
+| **Title** | Tab title (pre-filled with a random `Terminal <Name>`). |
+| **Git options** | Appears inside git repositories to switch branches or launch in a new or existing linked worktree. |
 
-The directory box abbreviates your home directory as `~`. If the path style does not match the Worker's OS, a hint appears below the box. The tree includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button, and shows **"No workers online. Connect a worker to browse directories."** when no Worker is selected.
+To open terminals from scripts or agents, use `leapmux terminal open` (including `--command` to run an initial command inside the interactive shell after startup files load). See [CLI Guide](/docs/using/cli-guide/) and [Control Command Reference — Terminals](/docs/reference/commands/terminals/).
 
-Submit with the **"Create"** button; cancel with **"Cancel"**. The Create button stays disabled until you have a Worker, a non-blank working directory, a selected shell, a non-blank title, a valid git-mode choice, and a workspace. If creation fails, the dialog reports the failure.
+## Shell discovery and default shell
 
-### Opening a terminal from the CLI
+Each Worker builds its shell list by putting its default shell first, then scanning `PATH` for `sh`, `bash`, `zsh`, `fish`, `nu` (or `nushell`), `elvish`, `pwsh`, and `powershell`. Shells invoked in distinct modes (such as `sh` vs. `bash`) appear as separate entries.
 
-You can create a terminal from a script or another agent with the [Control CLI](/docs/using/control-cli/):
+When you do not pick a specific shell, the Worker selects its default in this order:
 
-```bash
-leapmux terminal open \
-  --worker <worker> \
-  --dir /home/me/project \
-  --shell /bin/zsh
-```
+1. `LEAPMUX_DEFAULT_SHELL` (name on `PATH` or absolute path)
+2. `SHELL`
+3. Platform default: macOS login shell from `dscl` (fallback `/bin/zsh`), Linux shell from `/etc/passwd` (fallback `/bin/sh`), Windows `pwsh` then `powershell`
 
-`--shell` is optional — leaving it empty uses the Worker's default shell. `--start-dir` defaults to the working directory. See [`terminal open`](/docs/reference/commands/terminals/#leapmux-terminal-open) for the full flag set, including the placement flags.
-
-The original interactive shell evaluates `--command` after its startup files run. For example, use `leapmux terminal open --dir /home/me/project --command 'make test'`. The Worker releases the command when the shell reaches its startup hook. The shell retains variables and definitions from the command, and a restart does not run it again. See [CLI Automation](/docs/using/cli-automation/#terminal-input-startup-commands-and-reading) for the supported shells and startup errors.
-
-{{< callout type="info" >}}
-Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
-{{< /callout >}}
-
-## Shell selection
-
-The **Shell** dropdown is populated per-Worker by querying the Worker for the shells it has installed. While the list is loading it shows **"Loading shells..."**; if the Worker reports none it shows **"No shells available"**. Each option shows the shell's path, and the default shell is labelled `<path> (default)`.
-
-The shell list is per-Worker. Switching workspace while staying on the same Worker does **not** re-fetch it; switching to a different Worker does, and resets any shell override you had selected.
-
-### How the Worker builds the list
-
-1. The Worker resolves its **default shell** (see below) and places it **first** in the list.
-2. It searches `PATH` for `sh`, `bash`, `zsh`, `fish`, `nu` (Nushell), `elvish`, `pwsh`, and `powershell`. For Nushell, it uses `nushell` when it finds no `nu`.
-
-Shells with different invocation modes get separate entries even when they share a binary. For example, invoking Bash as `sh` activates POSIX mode.
-
-### Default shell resolution
-
-When you don't choose a shell explicitly, the Worker uses its default, resolved in this order:
-
-1. The `LEAPMUX_DEFAULT_SHELL` environment variable (accepts a bare name like `zsh` resolved via `PATH`, or an absolute path like `/bin/zsh`).
-2. The `SHELL` environment variable.
-3. Platform detection:
-   - **macOS:** the user's login shell from `dscl`, falling back to `/bin/zsh`.
-   - **Linux:** the user's shell from `/etc/passwd`, falling back to `/bin/sh`.
-   - **Windows:** `pwsh`, then `powershell`, falling back to the bundled Windows PowerShell.
-   - **Other platforms:** `/bin/sh`.
-
-{{< callout >}}
-To force a specific default shell for every terminal a Worker spawns, set `LEAPMUX_DEFAULT_SHELL` in the Worker's environment. See [Troubleshooting](/docs/reference/troubleshooting/) for the resolution order in full.
-{{< /callout >}}
-
-### Login-shell flags
-
-The Worker invokes each shell with interactive-login flags appropriate to that shell. Most POSIX shells (`bash`, `zsh`, and the like) get `-i -l` (interactive login), and PowerShell Core (`pwsh`) gets `-Login`. A few edge shells differ: classic Windows PowerShell 5.1 gets none (it has no `-Login`), `cmd` gets `/D`, and `tcsh`/`csh` get `-l`.
-
-## Git options: open a terminal in a branch or worktree
-
-When the working directory is inside a git repository, the **Git options** panel offers the same five modes used when opening an agent or a workspace — use current state, switch to branch, create new branch, create new worktree, or use existing worktree. The modes, their fields, branch-name validation, the worktree path formula, and the dirty-tree warnings are all covered in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
-
-The terminal's tab is grouped in the sidebar under its repository and branch. If a terminal owns a worktree it created, closing its last tab can offer to remove that worktree (see [Closing a terminal](#closing-a-terminal)).
+The Worker launches each shell with its interactive login flags (`-i -l` for most POSIX shells, `-Login` for `pwsh`, `/D` for `cmd`, `-l` for `csh`/`tcsh`, and no login flag for classic Windows PowerShell 5.1).
 
 ## Using the terminal
 
-The terminal view is a real xterm.js terminal: it renders 256-colour output, supports full-screen ("alt screen") TUIs like `vim`, `htop`, and `tmux`, and accepts mouse interaction where the running program supports it.
-
-### Copy and paste
-
-Selection uses **copy-on-select**: highlighting text in the terminal automatically copies it to the clipboard (the same behaviour as iTerm2's "Copy on Select"). Empty selections are ignored. You don't need a dedicated copy shortcut. Paste using your platform's standard paste gesture.
-
-### Scrollback
-
-The terminal keeps scrollback you can scroll through with your mouse or trackpad. Two shortcuts page the **active** terminal:
-
-| Shortcut | Command | Action |
-| --- | --- | --- |
-| **Alt+PageUp** | `app.scrollActiveTabPageUp` | Scroll up one page |
-| **Alt+PageDown** | `app.scrollActiveTabPageDown` | Scroll down one page |
-
-### macOS line/word navigation
-
-On macOS, when a terminal is focused, these shortcuts send the correct escape sequences to the shell:
-
-| Shortcut | Action |
-| --- | --- |
-| `Cmd+Left` / `Cmd+Right` | Move to start / end of line |
-| `Alt+Left` / `Alt+Right` | Move one word left / right |
-
-### Resizing
-
-The terminal automatically fits its tile. When you resize the tile or window, LeapMux tells the Worker, which resizes the PTY so the running program re-flows correctly. For a terminal whose shell has already exited, the view re-flows the preserved output locally so it stays readable.
-
-### Appearance
-
-The terminal uses your monospace-font preference. The default font is `"Hack NF", Hack, "SF Mono", Consolas, monospace` at size 13.
-
-The **Terminal theme** row in Appearance settings has two halves, and a third control appears for a palette that offers more than one look per side:
-
-| Half | Options | Behaviour |
-| --- | --- | --- |
-| Palette | **Match UI** (default), or any palette the app itself offers | Which colors the terminal paints |
-| Mode | **System**, **Light**, **Dark** | Which variant of that palette |
-
-**Match UI** follows the app theme — palette, variant, and light/dark — and keeps following it after you switch. It governs the rest of the row, which greys out and reports what the app resolved to. Any other palette detaches the row. The controls become live and start from the app's own mode. **System** then reads your OS directly; this differs from the app only when the app theme is pinned.
-
-Some palettes offer more than one look, and a variant menu appears beside the palette when one is chosen. It lists both sides at once, under a **Light** and a **Dark** heading, and a pick applies to the side that look belongs to.
-
-Each palette supplies the sixteen ANSI colors. The background, foreground, cursor, and selection colors come from the same palette. A terminal set to a different theme than the app therefore stays consistent. When a palette comes from another project, the entry names that project beside the palette.
-
-See [Settings & Preferences](/docs/using/settings/) for fonts, themes, and other appearance options.
+- **Copy and paste:** Selecting text automatically copies it to your clipboard (copy-on-select); paste with your system shortcut.
+- **Scrollback and resizing:** Scroll with the mouse or trackpad, or page with `⌥PageUp` / `Alt+PageUp` and `⌥PageDown` / `Alt+PageDown`. Resizing a tile automatically resizes the PTY on the Worker. On macOS, line and word navigation keys (`⌘←`, `⌘→`, `⌥←`, `⌥→`) send standard shell movement sequences; see [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/#terminal).
+- **Themes and fonts:** Terminals use your monospace font stack (defaulting to bundled **Hack NF**) and follow your app theme by default (**Match UI**), or can use an independent palette and renderer. Configure appearance and renderer backend in [Settings & Preferences](/docs/using/settings/#appearance).
+- **Status indicators:** Tabs show a spinner while starting (including git worktree setup), a faded label when the Worker disconnects, a faded struck-through label after the shell exits, and a notification dot when a background terminal rings the bell.
 
 ## Quake-mode terminal
 
-{{< screenshot src="quake-terminal" alt="LeapMux translucent Quake-mode terminal sliding down from the top over tiled agent and diff panes running git diff --stat" caption="Press Ctrl+` from any tab to slide down a translucent Quake-mode terminal bound to that tab's working directory." width="948" height="900" >}}
+{{< screenshot src="quake-terminal" alt="LeapMux translucent Quake-mode terminal sliding down from the top over tiled agent and diff panes running git diff --stat" caption="Press ⌃` / Ctrl+` from any tab to slide down a translucent Quake-mode terminal bound to that tab's working directory." width="948" height="900" >}}
 
-A Quake-mode terminal is a shell that slides over the centre of the app for one
-**working directory**. It belongs to that directory rather than to a tab or a
-tile, so it costs the tab underneath none of its space: press the shortcut, run
-a command, press it again, and the transcript is exactly where you left it.
+A **Quake-mode terminal** slides over the center canvas without changing your tile layout. It is keyed to the active tab's **(Worker, working directory)** pair, so any agent, terminal, file, or image tab in that directory shares the same persistent shell.
 
-Press **`Ctrl`** and the key under `Esc` to show or hide it (command
-`terminal.toggleQuake`). The first press creates the shell; every press after
-that only shows or hides the panel.
+- **Toggle:** Press ``⌃` `` / ``Ctrl+` `` (using `Control` on macOS as well, since macOS reserves ``⌘` `` for app windows). The binding follows the physical key below `Esc` across keyboard layouts; on Japanese (JIS) keyboards where that key triggers input-method switching, remap it in **Preferences → Keyboard Shortcuts**. Unbound **Open Quake Terminal** and **Close Quake Terminal** actions are also available to bind separately.
+- **Shared shell, per-device visibility:** Every device signed in to your account attaches to the same running shell and scrollback for that directory, while whether the panel is currently slid open stays local to each screen.
+- **Lifecycle:** The shell keeps running while hidden and survives page refreshes. It closes only when you exit the shell (`exit` or `Ctrl+D`) or when no active (non-archived) tabs remain in that directory across all workspaces. When it ends, the panel retracts and the next toggle starts a fresh shell.
+- **Position, size, animation, and opacity:** Configure all four Quake settings under **Preferences → Terminal** (see [Settings & Preferences](/docs/using/settings/#terminal)).
+- **CLI control:** Run `leapmux terminal quake open`, `close`, or `toggle` to control the panel from scripts (`--dir` defaults to `$LEAPMUX_CONTROL_WORKING_DIR`).
 
-It works in **any** tab — agent, terminal, file viewer, image viewer — because
-every tab has a working directory. Two tabs that work in the same directory
-share one shell, so the build you started from one agent tab is right there when
-you press the shortcut from the one beside it.
+## Persistence, exit, and restart
 
-The panel opens from the keyboard or the Control CLI, and from nowhere else:
-there is no button or menu item for it. On a phone you can therefore hide a
-panel that the CLI opened, using the control in its corner, but you cannot open
-one. A tablet with an external keyboard uses the shortcut like any other device.
+Live shells keep running on the Worker across browser reloads, workspace switches, and temporary disconnects; reconnecting replays the preserved screen so full-screen apps redraw cleanly. If the Worker itself restarts, the running shell cannot survive, but the tab keeps its final preserved screen so you can see where you left off.
 
-`Ctrl` on every platform, and not `Cmd` on macOS: macOS reserves `Cmd` and that
-key for "switch between the windows of the app you're using", so the shortcut
-would never reach LeapMux. The binding follows the key's POSITION rather than
-the character on it, so it is the same key on a US, German, French or Spanish
-layout even though that key prints `` ` ``, `^`, `²` or `º`. A Japanese (JIS)
-keyboard is the exception: there the same position is the 半角/全角 key, which
-the input method takes, so rebind the command in Preferences. There are two more commands, unbound by
-default, for a key that only ever opens or only ever closes:
-`terminal.openQuake` and `terminal.closeQuake`.
+When a shell exits, LeapMux appends an exit notice with the exit code (also readable via `leapmux terminal get` and `leapmux terminal wait --exit`). On an exited terminal tab, press **`Enter`** to start a fresh shell in the same working directory with newly minted remote-control credentials while preserving prior output above the new prompt.
 
-The shell is the Worker's default shell, started in the focused tab's working
-directory. It is a full terminal: the same scrollback, copy and paste, and
-resizing every other LeapMux terminal has.
-
-One thing differs, and it shows up in the Control CLI. **A Quake terminal has no
-tab, so it is given no `LEAPMUX_CONTROL_TAB_ID` and no `LEAPMUX_CONTROL_TAB_TYPE`.**
-
-That is deliberate rather than a gap. The panel belongs to a *directory*, and
-every tab in that directory can reach it — so no one of them is "the tab you are
-in". Picking one anyway would hand every command a target you never chose, and
-which agent you got would depend on the order the tabs happened to be opened in.
-
-What the panel does get is enough to identify **itself**:
-
-| Inside the panel | Identifies |
-| --- | --- |
-| `LEAPMUX_CONTROL_TERMINAL_ID` | the panel's own shell |
-| `LEAPMUX_CONTROL_WORKING_DIR` | the directory that addresses the panel |
-| `LEAPMUX_CONTROL_WORKER_ID` | the host Worker |
-
-So these work with no other argument:
-
-```bash
-leapmux terminal quake toggle   # hides the panel you typed it into
-leapmux terminal quake close
-leapmux terminal get            # this shell's own geometry, shell, dir
-leapmux terminal send self $'ls\n'
-leapmux git status              # worker + working dir are enough
-```
-
-And anything that acts on a **tab** takes the tab as an argument:
-
-```bash
-leapmux agent send "$AGENT" "done"
-```
-
-`self` on a `tab` or `agent` command fails inside the panel, because the panel
-has no tab. Use `leapmux tab list` to find the one you mean.
-
-### What it belongs to
-
-One shell per **(Worker, working directory)**, shared by every tab in that
-directory and by every device you are signed in on. Open the panel on a second
-device and it attaches to the shell the first one started, with the same
-scrollback. Whether the panel is **showing** is per-device, exactly as which tab
-is active in a tile is per-device — so a second screen can keep the panel up
-while the first one hides it.
-
-Two directories are two shells, even in one workspace: switch to a tab working
-somewhere else and the panel shows that directory's terminal, with its own
-scrollback.
-
-The shell keeps running while the panel is hidden, and it survives a page
-refresh. It ends in exactly two cases:
-
-- its directory runs out of tabs anyone can reach it from — the last one closes,
-  or every one of them is archived; or
-- you end it yourself, with `exit` or `Ctrl+D`.
-
-Archiving is the same rule rather than a special case. A shell reached from two
-workspaces survives one of them being archived, because the other still has a
-live tab in the directory; it ends once none is left. It is closed rather than
-archived, because a Quake terminal has no restart contract for an unarchive to
-restore — the next press starts a fresh shell.
-
-After it ends, the panel retracts and the next press starts a fresh shell. This
-differs from a terminal tab, which stays on screen after its shell exits and
-offers **Enter** to restart.
-
-### Settings
-
-Four rows under **Terminal** in Preferences. Each is an account setting you can
-override on one device.
-
-| Setting | Default | What it does |
-| --- | --- | --- |
-| **Quake terminal position** | Top | Edge the panel slides in from: **Top**, **Bottom**, **Left**, or **Right**. |
-| **Quake terminal size** | 65% | Share of the centre area the panel covers. Height for top and bottom, width for left and right. |
-| **Quake terminal animation** | 200 ms | How long the slide takes. |
-| **Quake terminal background opacity** | 0.9 | Opacity of the panel background. The terminal text stays fully opaque. |
-
-If your system asks for reduced motion, the panel appears and disappears without
-animating, whatever the duration says.
-
-### Driving the panel from the CLI
-
-`leapmux terminal quake open`, `close`, and `toggle` do the same thing
-the shortcut does, in every browser and desktop window you have open:
-
-```bash
-leapmux terminal quake toggle --dir <path>
-```
-
-`--dir` defaults to `$LEAPMUX_CONTROL_WORKING_DIR`, which every LeapMux
-shell exports — so the bare `leapmux terminal quake toggle` works from
-an agent's own terminal, from a terminal tab, and from inside the Quake terminal
-itself, where it hides the panel you typed it into.
-
-These commands carry no state. They ask the frontends to act now, which is why
-they can move a panel although the active tab and the focused tile stay
-client-local. See [Control CLI](/docs/using/control-cli/).
-
-## Terminal status indicators
-
-A terminal moves through several states, reflected both in the terminal pane and in the tab label.
-
-| Status | Meaning |
-| --- | --- |
-| Starting | The Worker spawns the PTY. |
-| Ready | The PTY is up and the view can mount. |
-| Startup failed | The shell could not be spawned. |
-| Disconnected | The connection to the terminal's Worker was lost. |
-| Exited | The shell process exited. |
-
-How each state appears:
-
-- **Starting:** a centered spinner with a per-shell label like **"Starting zsh…"** (falling back to **"Starting terminal…"**). When you open a terminal with git options, the label may instead describe the git work, for example `Creating worktree "feature/x"…`. The spinner stays until the terminal has actually painted visible content, not merely until the PTY spawns.
-- **Startup failed:** a full-pane error that states the terminal failed to start, with the Worker's error message.
-- **Disconnected:** the tab label is faded.
-- **Exited:** the tab label is faded **and** struck through.
-
-If a program in a background (non-active) terminal rings the terminal bell, that tab gets a notification indicator.
-
-## Persistence and reattachment
-
-Terminals are durable. Refresh the page, switch workspaces, or lose and regain your connection, and the live shell keeps running on the Worker — the Frontend simply reattaches. A Worker restart is different: the shell process can't survive it, but the terminal's last screen is preserved, so the tab comes back showing where it left off and can be restarted.
-
-This works because the Worker keeps a rolling **100 KB screen buffer** for each terminal and also persists the terminal (its working directory, shell, title, dimensions, and last-seen screen) to its database:
-
-- **Page refresh / tab re-mount:** the Frontend re-fetches the saved screen and resumes streaming from where it left off, so a full-screen TUI redraws correctly rather than showing a blank pane.
-- **Workspace switch:** the on-screen contents (viewport plus scrollback) are captured when you switch away, so switching back restores exactly what was showing.
-- **Worker restart:** the running shell cannot survive the Worker going down, but because the terminal and its last screen are persisted to the database, the terminal is still listed when the Worker returns — showing its final screen — and pressing **Enter** restarts the shell.
+## Automatic remote control
 
 {{< callout type="info" >}}
-Restored output is replayed byte-for-byte, so full-screen apps redraw correctly. Content older than the 100 KB window scrolls off.
+Remote control requires no checkbox or setup. Every terminal LeapMux spawns is automatically wired to the `leapmux` CLI whenever Worker remote control is enabled.
 {{< /callout >}}
 
-### When a shell exits
+The Worker injects `LEAPMUX_CONTROL_*` environment variables — including `LEAPMUX_CONTROL_CLI` pointing at the Worker's matching `leapmux` binary — and strips any inherited parent variables so nested terminals always target themselves. For the complete environment variable table and CLI version-matching rules, see [CLI Guide — Inside a managed tab](/docs/using/cli-guide/#inside-a-managed-tab).
 
-When the shell process exits, the Worker writes a notice into the screen so you can see it and so it persists. The notice reports that the terminal process exited, gives its exit code, and tells you that Enter restarts the shell.
+One intentional difference applies inside a **Quake-mode terminal**: because a Quake panel belongs to a directory rather than a single tab, it receives `LEAPMUX_CONTROL_TERMINAL_ID`, `LEAPMUX_CONTROL_WORKING_DIR`, and `LEAPMUX_CONTROL_WORKER_ID`, and omits `LEAPMUX_CONTROL_TAB_ID` and `LEAPMUX_CONTROL_TAB_TYPE`. Commands targeting the panel itself (`leapmux terminal get`, `leapmux terminal quake close`, `leapmux git status`) work with no arguments, while commands targeting a specific tab or agent require an explicit target argument instead of `self`.
 
-The Worker keeps the exit code, so `leapmux terminal wait <terminal> --exit` prints it even after the shell ended, and `terminal get` reports it as `exit_code`. A Worker that was killed while the shell ran never saw it end, so it reports no exit code for that shell.
-
-If the Worker was disconnected or forcibly shut down, the exit code is unknown. The notice then reports the disconnected Worker instead of an exit code, and it offers the same restart.
-
-On an exited terminal, **Enter** is the only key that does anything — it restarts the shell. All other input is ignored. A restart reuses the terminal's saved working directory, shell, and start directory, mints fresh remote-control credentials, and preserves the existing screen so the new prompt appears below the exit notice. If a restart can't proceed, LeapMux reports the failure (for example, the Worker reports the terminal is still running).
-
-## Driving LeapMux from inside a terminal (remote control)
-
-{{< callout type="info" >}}
-There is no "remote-enabled" checkbox or toggle in the New terminal dialog, the CLI, or anywhere else. **Every** terminal LeapMux spawns is remote-enabled automatically (as long as the Worker has remote control configured). This is a frequent point of confusion — there is nothing to turn on.
-{{< /callout >}}
-
-When the Worker spawns your shell, it injects a set of `LEAPMUX_CONTROL_*` environment variables that let any script or program running inside the terminal drive LeapMux through the [`leapmux`](/docs/using/control-cli/) CLI — without needing to log in separately. The CLI detects these variables and routes its calls over a local socket the Worker provides, scoped to the terminal's own identity.
-
-The variables injected into a terminal are:
-
-| Variable | When set | Meaning |
-| --- | --- | --- |
-| `LEAPMUX_CONTROL_SOCK` | Always | Local IPC socket the CLI connects to |
-| `LEAPMUX_CONTROL_TOKEN` | Always | Per-spawn bearer token for that socket |
-| `LEAPMUX_CONTROL_USER_ID` | Always | The authenticated user (informational; no flag defaults from it) |
-| `LEAPMUX_CONTROL_WORKER_ID` | Always | The host Worker |
-| `LEAPMUX_CONTROL_TAB_ID` | When known | This terminal's tab id |
-| `LEAPMUX_CONTROL_TAB_TYPE` | When known | `terminal` |
-| `LEAPMUX_CONTROL_TERMINAL_ID` | Always | The terminal you are running inside. The same id as `TAB_ID` here; it differs only in a Quake panel. |
-| `LEAPMUX_CONTROL_WORKING_DIR` | When known | The working directory at spawn |
-
-Because these are set, `self` selects this terminal, and the commands that open a tab place it beside this one. For example, these work with no flags from inside the terminal:
-
-```bash
-# Who am I, and where?
-leapmux whoami
-
-# Open a sibling terminal next to this one
-leapmux terminal open --last
-```
-
-{{< callout type="info" >}}
-Workspace id and tile id are deliberately **not** injected. The CLI derives them from `LEAPMUX_CONTROL_TAB_ID` at call time, which keeps them correct even if you move the tab. Terminals also do **not** get `LEAPMUX_CONTROL_AGENT_PROVIDER` (that is agents-only).
-{{< /callout >}}
-
-Any pre-existing `LEAPMUX_CONTROL_*` values are stripped before the Worker re-injects its own, so a terminal opened from inside another agent or terminal targets itself, not its parent. The per-spawn token is retired when the terminal is closed and re-minted on restart.
-
-### Controlling a terminal from outside
-
-The reverse also works: from any authenticated `leapmux` session (or from another agent), you can write to and inspect a terminal:
-
-```bash
-# Run a command: paste the command line and press Enter in one request
-leapmux terminal run <tab> 'ls -la'
-
-# Press keys, such as Ctrl-C to stop the running command
-leapmux terminal send <tab> --key ctrl-c
-
-# Pipe binary or escape sequences in through standard input
-printf '\x1b[A' | leapmux terminal send <tab> -
-
-# Inspect a terminal's metadata, print the last lines that it shows,
-# or print the bytes that it retains with their escape sequences
-leapmux terminal get <tab>
-leapmux terminal read <tab> --lines 20
-leapmux terminal read <tab> --raw | less -R
-
-# List a worker's available shells (and its default)
-leapmux terminal shells --worker <worker>
-```
-
-See [Control CLI](/docs/using/control-cli/) for authentication and output formatting, [CLI Automation](/docs/using/cli-automation/#zero-polling-terminal-waits-and-shell-control) for zero-polling waits, and the [Control Command Reference](/docs/reference/commands/terminals/) for every terminal command.
-
-## Renaming a terminal
-
-A terminal's title updates automatically when a program sets the terminal window title (the standard OSC title escape sequence) — for example, many shells set it to the current directory or running command. You can also rename a terminal tab through its tab menu, or from a script:
-
-```bash
-leapmux tab rename <tab> "Build watcher"
-```
+From outside a terminal, scripts and agents can run commands (`leapmux terminal run`), send keys (`leapmux terminal send --key`), read rendered text (`leapmux terminal read`), and wait without polling (`leapmux terminal wait`). See [CLI Guide](/docs/using/cli-guide/) and [Control Command Reference — Terminals](/docs/reference/commands/terminals/).
 
 ## Closing a terminal
 
-Closing a terminal tab removes it from your layout immediately and tells the Worker to tear down the PTY and reap the shell's whole process tree. If the close fails on the Worker side, LeapMux reports the failure, but the tab is already gone from your view.
+Closing a terminal tab removes it from your layout and stops the shell and its child process tree on the Worker. Closing a busy terminal triggers the two-click **Close tab** confirmation (see [Tabs & Layout](/docs/using/tabs-and-layout/#closing-tabs)), and closing the last tab on a worktree or dirty branch opens the **Close last tab** dialog (see [Worktrees & Branches](/docs/using/worktrees-and-branches/#dirty-worktree-protection-when-closing-tabs)).
 
-If the terminal you're closing is the **last** tab for a worktree, or the last non-worktree tab on a branch with unsaved work — uncommitted changes, unpushed commits, or a branch that was never pushed to a remote — LeapMux shows the **"Close last tab"** confirmation so you don't lose work. From there you can push, close anyway, or — for a worktree — schedule the worktree for removal. This flow is described in full in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+## Related chapters
 
-## Keyboard shortcuts
-
-The terminal and tab shortcuts (opening, closing, scrollback paging, the Quake-mode toggle, and the macOS line/word navigation keys) are all customizable. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the full keybinding system and how to remap commands.
-
-## See also
-
-- [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, floating, and moving terminal tabs.
-- [Worktrees & Branches](/docs/using/worktrees-and-branches/) — git options, worktree creation, and the close-last-tab flow.
-- [Coding Agents](/docs/using/coding-agents/) — agents share the same tab, Worker, and git-options model.
-- [Control CLI](/docs/using/control-cli/) — the full `leapmux terminal` (including `terminal quake`), `tab`, and `agent` command surface.
-- [Settings & Preferences](/docs/using/settings/) — terminal theme, fonts, and the four Quake-mode terminal settings.
-- [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — remap any of the shortcuts above.
+- [CLI Guide](/docs/using/cli-guide/) — `LEAPMUX_CONTROL_*` variables, zero-polling terminal waits, and remote control.
+- [Settings & Preferences](/docs/using/settings/) — terminal themes, renderer backend, fonts, and Quake settings.
+- [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — terminal navigation, scrollback, and Quake bindings.
+- [Worktrees & Branches](/docs/using/worktrees-and-branches/) — opening terminals in git worktrees.

@@ -117,11 +117,15 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Install the locked site tools
-        # site/bun.lock locks wrangler and its whole tree, and the release-age check of
-        # The dependency-age job covers that lockfile. Install scripts stay disabled in the job that
+        # site/bun.lock locks wrangler and pagefind, and the dependency-age job of CI
+        # covers that lockfile. Install scripts stay disabled in the job that
         # holds the Cloudflare token.
         working-directory: site
         run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build Pagefind search index
+        working-directory: site
+        run: ./node_modules/.bin/pagefind --site public --output-subdir pagefind --exclude-selectors 'nav,aside,.hextra-toc,.hextra-sidebar-container,.hextra-footer,script,style'
 
       - name: Deploy to Cloudflare Workers
         # Run wrangler in site/ so it picks up site/wrangler.jsonc, whose ./public assets

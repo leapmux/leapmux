@@ -129,6 +129,7 @@ function fixture(platform = hostPlatform) {
   delete config.dotenv
   const outputs = {
     'install-frontend-deps': ['frontend/node_modules/package/index.js'],
+    'install-site-deps': ['site/node_modules/.bin/pagefind', 'site/node_modules/.bin/wrangler'],
     'generate-proto': ['backend/generated/proto/agent.pb.go', 'frontend/src/generated/proto/agent_pb.ts'],
     'generate-contracts': ['backend/generated/contracts/wire.go', 'frontend/src/generated/contracts/wire.ts', 'desktop/rust/src/generated/contracts.rs'],
     'fetch-spinners': ['spinner-cache/spinners/default.json'],
@@ -223,6 +224,8 @@ for (const path of outputs[task] ?? []) {
     'frontend/src/app.ts',
     'frontend/package.json',
     'frontend/bun.lock',
+    'site/package.json',
+    'site/bun.lock',
     'frontend/scripts/generate-icons.mjs',
     'icons/leapmux-icon.svg',
     'icons/leapmux-icon-square.svg',
@@ -630,7 +633,12 @@ describe('task build cache', () => {
     const before = process.env.HUGO_BASEURL
     try {
       process.env.HUGO_BASEURL = 'https://first.example/'
-      expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
+      expect(run(dir, 'site')).toEqual([
+        'install-frontend-deps',
+        'validate-json',
+        'install-site-deps',
+        'site',
+      ])
       expect(run(dir, 'site')).toEqual([])
       process.env.HUGO_BASEURL = 'https://second.example/'
       expect(run(dir, 'site')).toEqual(['site'])
@@ -646,7 +654,12 @@ describe('task build cache', () => {
 
   it('rebuilds the site and validates a changed provider matrix', () => {
     const dir = fixture()
-    expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
+    expect(run(dir, 'site')).toEqual([
+      'install-frontend-deps',
+      'validate-json',
+      'install-site-deps',
+      'site',
+    ])
     expect(run(dir, 'site')).toEqual([])
     write(dir, 'frontend/tests/e2e/feature-matrix/checklist.json', '{"changed":true}')
     expect(run(dir, 'site')).toEqual(['validate-json', 'site'])
@@ -655,7 +668,12 @@ describe('task build cache', () => {
 
   it('rebuilds the site when the provider roster contract changes', () => {
     const dir = fixture()
-    expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
+    expect(run(dir, 'site')).toEqual([
+      'install-frontend-deps',
+      'validate-json',
+      'install-site-deps',
+      'site',
+    ])
     expect(run(dir, 'site')).toEqual([])
     write(dir, 'contracts/providers.json', '{"changed":true}')
     expect(run(dir, 'site')).toEqual(['validate-json', 'site'])

@@ -30,7 +30,7 @@
 
 ## Agent Skills (SKILL.md)
 
-Install all curated LeapMux skills with `leapmux skill install --all` (matches the installed binary offline) or `npx skills add leapmux/leapmux` (tracks `main`), or fetch each raw `SKILL.md` directly:
+Install all curated LeapMux skills with `leapmux skill install --all` (add `--target claude` for Claude Code; matches the installed binary offline) or `npx skills add leapmux/leapmux` (tracks `main`), or fetch each raw `SKILL.md` directly:
 - [leapmux]({{ "skills/leapmux/SKILL.md" | absURL }}): Foundational reference for driving LeapMux tabs, workspaces, coding agents, terminals, worktrees, and Workers via the `leapmux` CLI.
 - [leapmux-delegate]({{ "skills/leapmux-delegate/SKILL.md" | absURL }}): Split an engineering task across parallel LeapMux agents in isolated git worktrees, wait without polling, inspect their diffs, and integrate or clean up their results ([worker-brief-template]({{ "skills/leapmux-delegate/references/worker-brief-template.md" | absURL }})).
 - [leapmux-review]({{ "skills/leapmux-review/SKILL.md" | absURL }}): Spawn an independent read-only LeapMux reviewer agent from a contrasting provider family with optional forwarded skills and `--output-schema` JSON validation ([review-schemas]({{ "skills/leapmux-review/references/review-schemas.md" | absURL }})).
@@ -48,6 +48,10 @@ Site: {{ .Site.BaseURL }}
 {{- $headerHashes := strings.Repeat $level "#" -}}
 {{- "\n" }}
 {{ $headerHashes }} {{ $context.Title }}
+{{- if strings.Contains $context.RawContent "\n## " }}
+{{- $idxUrl := $context.Permalink }}{{- with $context.OutputFormats.Get "markdown" }}{{- $idxUrl = .Permalink }}{{- end }}
+- [{{ $context.Title }} (Overview)]({{ $idxUrl }}): {{ with $context.Description }}{{ . }}{{ else }}{{ $context.Summary | plainify | truncate 200 | strings.TrimSpace }}{{ end }}
+{{- end }}
 {{- range where $context.RegularPages "Params.llms" "ne" false }}
 {{- $url := .Permalink }}{{- with .OutputFormats.Get "markdown" }}{{- $url = .Permalink }}{{- end }}
 - [{{ .Title }}]({{ $url }}): {{ with .Description }}{{ . }}{{ else }}{{ .Summary | plainify | truncate 200 | strings.TrimSpace }}{{ end }}

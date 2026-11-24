@@ -1,0 +1,68 @@
+{{- $src := .Get "src" -}}
+{{- $poster := .Get "poster" | default $src -}}
+{{- $alt := .Get "alt" | default "" -}}
+{{- $caption := .Get "caption" | default "" -}}
+{{- $width := .Get "width" | default "1280" -}}
+{{- $height := .Get "height" | default "800" -}}
+{{- $lightVideo := printf "/videos/docs/%s-light.mp4" $src -}}
+{{- $darkVideo := printf "/videos/docs/%s-dark.mp4" $src -}}
+{{- $lightPoster := printf "/images/docs/%s-light.png" $poster -}}
+{{- $darkPoster := printf "/images/docs/%s-dark.png" $poster -}}
+<figure class="doc-screenshot lm-video-clip">
+  <div class="doc-screenshot-frame">
+    <video
+      class="doc-screenshot-light lm-clip-video"
+      autoplay
+      loop
+      muted
+      playsinline
+      preload="metadata"
+      width="{{ $width }}"
+      height="{{ $height }}"
+      poster="{{ $lightPoster | relURL }}"
+      aria-label="{{ $alt }}"
+    >
+      <source src="{{ $lightVideo | relURL }}" type="video/mp4" />
+    </video>
+    <video
+      class="doc-screenshot-dark lm-clip-video"
+      autoplay
+      loop
+      muted
+      playsinline
+      preload="metadata"
+      width="{{ $width }}"
+      height="{{ $height }}"
+      poster="{{ $darkPoster | relURL }}"
+      aria-label="{{ $alt }}"
+    >
+      <source src="{{ $darkVideo | relURL }}" type="video/mp4" />
+    </video>
+  </div>
+  {{- if $caption }}
+  <figcaption class="doc-screenshot-caption">{{ $caption }}</figcaption>
+  {{- end }}
+</figure>
+<script>
+(() => {
+  if (window.__lmClipMotionWired) return;
+  window.__lmClipMotionWired = true;
+  const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const sync = () => {
+    document.querySelectorAll('video.lm-clip-video').forEach((v) => {
+      if (mq.matches) {
+        v.pause();
+        v.removeAttribute('autoplay');
+      } else {
+        v.play().catch(() => {});
+      }
+    });
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', sync, { once: true });
+  } else {
+    sync();
+  }
+  mq.addEventListener('change', sync);
+})();
+</script>

@@ -75,7 +75,7 @@ const ARM64_SUFFIX = `\${{ matrix.arch == 'arm64' && '-arm' || '' }}`
  * second source of truth for the same number.
  */
 export const CLAIMS = [
-  ...['README.md', 'site/content/docs/getting-started/installation.md'].flatMap(file => [
+  ...['README.md'].flatMap(file => [
     {
       file,
       key: 'GOLANG_VERSION',

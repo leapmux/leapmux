@@ -1,8 +1,8 @@
 ---
-title: Legal
+title: "Legal"
 description: "License, trademark, third-party attribution, and privacy information for LeapMux, including a summary of the FSL-1.1-ALv2 license terms."
 type: docs
-weight: 7
+weight: 8
 ---
 
 License, trademark, third-party attribution, and privacy information for LeapMux. This page is informational and does not replace the full license text or professional legal advice.
@@ -31,12 +31,12 @@ LeapMux bundles open-source components, each under its own license. The complete
 
 LeapMux is **self-hosted software**, not a hosted service. You — or your organization — run the Hub and Workers. The LeapMux project does not operate a central service that receives your data. The software contains no third-party analytics or "phone-home" telemetry. The only metrics LeapMux emits are exposed on a Prometheus `/metrics` endpoint on the Hub. The endpoint is unauthenticated; restrict its network access to infrastructure you control.
 
-What data is stored, where it lives, and what is end-to-end encrypted are described in [Security & Threat Model](/docs/admin/security/) and [Encryption & Data](/docs/admin/encryption-and-data/). Because LeapMux is self-hosted, the privacy and data-handling practices of any particular deployment are determined by whoever operates the Hub.
+What data is stored, where it lives, and what is end-to-end encrypted are described in [Security & Authentication](/docs/admin/security-and-auth/) and [Encryption & Data](/docs/admin/encryption-and-data/). Because LeapMux is self-hosted, the privacy and data-handling practices of any particular deployment are determined by whoever operates the Hub.
 
 ### This documentation website
 
 The pages you are reading (hosted at leapmux.dev) use Cloudflare's Real User Monitoring (RUM) to collect anonymous, aggregate performance and usage metrics — for example page-load timing and which pages are visited. RUM does not set tracking cookies or identify you individually, and visitors in the EU are excluded from measurement. This applies only to the website; the LeapMux software you run yourself emits no analytics, as described above.
 
 {{< callout type="info" >}}
-If [Event Loop, Inc.](https://eventloop.io/) offers a hosted version of LeapMux, that service's privacy policy is provided separately and governs data you submit to it. This page describes the self-hosted open-source software.
+If [Event Loop, Inc.](https://eventloop.io/) offers a hosted version of LeapMux, that service's privacy policy is provided separately and governs data you submit to it. This page describes the self-hosted LeapMux software, distributed under the Functional Source License (FSL-1.1-ALv2, a source-available license that converts to Apache 2.0 two years after each release).
 {{< /callout >}}
