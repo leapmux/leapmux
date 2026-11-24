@@ -46,8 +46,9 @@ type AppService struct {
 	// lifecycle applies each revoked credential's effects after the cascade
 	// commits. Effects ACCUMULATE, so they must not run inside a transaction
 	// the store may retry.
-	lifecycle *auth.CredentialLifecycleEffects
-	now       func() time.Time
+	lifecycle   *auth.CredentialLifecycleEffects
+	deviceAuths DeviceAuthorizationStore
+	now         func() time.Time
 }
 
 var _ leapmuxv1connect.AppServiceHandler = (*AppService)(nil)
@@ -58,13 +59,18 @@ func NewAppService(
 	setMgr *settings.Manager,
 	validator *auth.TokenValidator,
 	lifecycle *auth.CredentialLifecycleEffects,
+	deviceAuths DeviceAuthorizationStore,
 ) *AppService {
+	if deviceAuths == nil {
+		deviceAuths = NewMemoryDeviceAuthorizationStore()
+	}
 	return &AppService{
-		store:     st,
-		settings:  setMgr,
-		validator: validator,
-		lifecycle: lifecycle,
-		now:       time.Now,
+		store:       st,
+		settings:    setMgr,
+		validator:   validator,
+		lifecycle:   lifecycle,
+		deviceAuths: deviceAuths,
+		now:         time.Now,
 	}
 }
 
@@ -613,24 +619,36 @@ func (s *AppService) RevokeApp(
 		return nil, err
 	}
 
-	refs, err := s.store.OAuthClients().ListTokenRefs(ctx, app.ClientID)
-	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
-	}
-
-	var revoked int64
-	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		rows, err := tx.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
-			ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
+	var (
+		ids     []string
+		revoked int64
+	)
+	if err := withDeviceInvalidation(s.deviceAuths, s.deviceAuths.BeginInvalidateForClient(app.ClientID), s.now, func() error {
+		return s.store.RunInTransaction(ctx, func(tx store.Store) error {
+			rows, err := tx.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
+				ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
+			})
+			if err != nil {
+				return err
+			}
+			if rows == 0 {
+				return store.ErrNotFound
+			}
+			refs, err := tx.OAuthClients().ListTokenRefs(ctx, app.ClientID)
+			if err != nil {
+				return fmt.Errorf("list app credentials: %w", err)
+			}
+			attemptIDs := make([]string, 0, len(refs))
+			for _, ref := range refs {
+				attemptIDs = append(attemptIDs, ref.ID)
+			}
+			revoked, err = tx.OAuthClients().RevokeTokens(ctx, app.ClientID)
+			if err != nil {
+				return err
+			}
+			ids = attemptIDs
+			return nil
 		})
-		if err != nil {
-			return err
-		}
-		if rows == 0 {
-			return store.ErrNotFound
-		}
-		revoked, err = tx.OAuthClients().RevokeTokens(ctx, app.ClientID)
-		return err
 	}); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, "no such app")
@@ -641,10 +659,6 @@ func (s *AppService) RevokeApp(
 	// AFTER the commit, so a retried transaction cannot apply these twice.
 	// ONE batched eviction for the whole set, with the channel sweep per row
 	// inside the batch.
-	ids := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		ids = append(ids, ref.ID)
-	}
 	s.lifecycle.BearerRevokedBatch(auth.BearerKindAPI, ids)
 	return &leapmuxv1.RevokeAppResponse{RevokedCredentialCount: revoked}, nil
 }
@@ -692,14 +706,22 @@ func (s *AppService) DeleteApp(
 		return nil, connect.Errorf(connect.CodeFailedPrecondition,
 			"this app holds %d credential(s), %d of them live; revoke it instead of deleting it", held, live)
 	}
-	rows, err := s.store.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
-		ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
-	})
-	if err != nil {
+	if err := withDeviceInvalidation(s.deviceAuths, s.deviceAuths.BeginDeleteForClient(app.ClientID), s.now, func() error {
+		rows, err := s.store.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
+			ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
+		})
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, "no such app")
+		}
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete app: %w", err))
-	}
-	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, "no such app")
 	}
 	return &leapmuxv1.DeleteAppResponse{}, nil
 }

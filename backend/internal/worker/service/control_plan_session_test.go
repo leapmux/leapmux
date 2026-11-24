@@ -29,7 +29,7 @@ func createPlanSessionTestAgent(t *testing.T, svc *Service, provider leapmuxv1.A
 	require.NoError(t, svc.Queries.UpdateAgentPlan(t.Context(), db.UpdateAgentPlanParams{ID: "agent-1", PlanFilePath: path}))
 	_, err := svc.InputQueue.SetPaused(t.Context(), "agent-1", true)
 	require.NoError(t, err)
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", AgentSessionID: "original", RequestID: "plan", ClaimToken: "claim",
 		Payload: []byte(`{"request":{"tool_name":"` + tool + `"}}`),
 	})

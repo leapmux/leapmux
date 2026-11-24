@@ -13,8 +13,11 @@ import (
 // droidChildSpawn keeps the Task input until Droid announces the child session.
 // The announcement gives a stable session id but does not repeat the prompt.
 type droidChildSpawn struct {
-	description string
-	prompt      string
+	description   string
+	prompt        string
+	resume        string
+	archivePos    *droidArchivePosition
+	archiveProbed bool
 }
 
 type droidChildAnnouncementID struct {
@@ -23,21 +26,40 @@ type droidChildAnnouncementID struct {
 }
 
 // rememberTaskSpawn saves only the Task fields needed for the child transcript.
-func (a *Agent) rememberTaskSpawn(sessionID string, tool droidToolUse) {
+// When Task sets resume and the child archive has not been probed yet for that
+// target, it returns the spawn key and child session id so handleFrame can
+// capture EOF outside dispatchMu before Job 2 writes to the archive.
+func (a *Agent) rememberTaskSpawn(sessionID string, tool droidToolUse) (string, string) {
 	if tool.Name != "Task" || tool.ID == "" {
-		return
+		return "", ""
 	}
 	var input struct {
 		Description string `json:"description"`
 		Prompt      string `json:"prompt"`
+		Resume      string `json:"resume"`
 	}
 	if err := json.Unmarshal(tool.Input, &input); err != nil {
-		return
+		return "", ""
 	}
 	if a.childSpawns == nil {
 		a.childSpawns = make(map[string]droidChildSpawn)
 	}
-	a.childSpawns[droidSpawnKey(sessionID, tool.ID)] = droidChildSpawn{description: input.Description, prompt: input.Prompt}
+	key := droidSpawnKey(sessionID, tool.ID)
+	resume := strings.TrimSpace(input.Resume)
+	spawn := droidChildSpawn{
+		description: input.Description,
+		prompt:      input.Prompt,
+		resume:      resume,
+	}
+	if existing, exists := a.childSpawns[key]; exists && existing.resume == resume {
+		spawn.archivePos = existing.archivePos
+		spawn.archiveProbed = existing.archiveProbed
+	}
+	a.childSpawns[key] = spawn
+	if resume != "" && !spawn.archiveProbed {
+		return key, resume
+	}
+	return "", ""
 }
 
 func droidSpawnKey(sessionID, toolUseID string) string {
@@ -46,7 +68,9 @@ func droidSpawnKey(sessionID, toolUseID string) string {
 
 // registerChildSession links the native session, its Task span, and a child tab.
 // Droid can replay the announcement. A replay keeps the first link and tail.
-func (a *Agent) registerChildSession(parentSessionID string, payload []byte) string {
+// When Task explicitly sets resume to the same child session id, it revives the
+// existing child row and returns resumed=true so the caller resumes tailing from EOF.
+func (a *Agent) registerChildSession(parentSessionID string, payload []byte) (string, bool, *droidArchivePosition, bool) {
 	var n struct {
 		ChildSessionID string `json:"childSessionId"`
 		ToolUseID      string `json:"toolUseId"`
@@ -54,25 +78,49 @@ func (a *Agent) registerChildSession(parentSessionID string, payload []byte) str
 		Description    string `json:"description"`
 	}
 	if err := json.Unmarshal(payload, &n); err != nil || n.ChildSessionID == "" {
-		return ""
+		return "", false, nil, false
 	}
 	parent, ok := a.outputTargetFor(parentSessionID)
 	if !ok {
-		return ""
+		return "", false, nil, false
 	}
 	identity := droidChildAnnouncementID{parentSessionID: parentSessionID, toolUseID: n.ToolUseID}
-	if prior, exists := a.childAnnouncements[n.ChildSessionID]; exists {
-		if prior != identity {
-			slog.Warn("droid: child announcement changed identity", "session_id", n.ChildSessionID)
+	spawnKey := droidSpawnKey(parentSessionID, n.ToolUseID)
+	spawn := a.childSpawns[spawnKey]
+	if prior, exists := a.childAnnouncements[n.ChildSessionID]; exists && prior == identity {
+		return "", false, nil, false
+	}
+	if spawn.resume != "" && spawn.resume == n.ChildSessionID {
+		childID := a.childAgents[n.ChildSessionID]
+		if childID == "" {
+			lookedUp, _, found, err := a.sink.LookupBackgroundTask(n.ChildSessionID)
+			if err != nil {
+				slog.Warn("droid: look up resumed child", "session_id", n.ChildSessionID, "error", err)
+				return "", false, nil, false
+			}
+			if found {
+				childID = lookedUp
+			}
 		}
-		return ""
+		if childID != "" {
+			if strings.TrimSpace(spawn.prompt) != "" {
+				if err := parent.sink.PersistChildUserMessage(childID, spawn.prompt); err != nil {
+					slog.Warn("droid: persist resumed child prompt", "session_id", n.ChildSessionID, "error", err)
+					return "", false, nil, false
+				}
+			}
+			a.recordRegisteredChild(n.ChildSessionID, childID, identity, spawnKey)
+			return n.ChildSessionID, true, spawn.archivePos, spawn.archiveProbed
+		}
+	}
+	if _, exists := a.childAnnouncements[n.ChildSessionID]; exists {
+		slog.Warn("droid: child announcement changed identity", "session_id", n.ChildSessionID)
+		return "", false, nil, false
 	}
 	if a.childAgents[n.ChildSessionID] != "" {
 		slog.Warn("droid: child announcement has no stored identity", "session_id", n.ChildSessionID)
-		return ""
+		return "", false, nil, false
 	}
-	spawnKey := droidSpawnKey(parentSessionID, n.ToolUseID)
-	spawn := a.childSpawns[spawnKey]
 	title := strings.TrimSpace(n.Description)
 	if title == "" {
 		title = strings.TrimSpace(spawn.description)
@@ -89,11 +137,11 @@ func (a *Agent) registerChildSession(parentSessionID string, payload []byte) str
 		SpawnSpanID:  spawnSpanID, ProviderChildKey: n.ChildSessionID, Title: title})
 	if err != nil {
 		slog.Warn("droid: ensure child", "session_id", n.ChildSessionID, "error", err)
-		return ""
+		return "", false, nil, false
 	}
 	if err := parent.sink.PersistChildPrompt(childID, spawn.prompt); err != nil {
 		slog.Warn("droid: persist child prompt", "session_id", n.ChildSessionID, "error", err)
-		return ""
+		return "", false, nil, false
 	}
 	parentAgentID := a.AgentID()
 	if parent.childSessionID != "" {
@@ -104,19 +152,25 @@ func (a *Agent) registerChildSession(parentSessionID string, payload []byte) str
 		ParentAgentID: parentAgentID, Title: title, Status: bgtask.StatusRunning,
 	}); err != nil {
 		providerkit.LogRegistryRefusal("droid", "register child", err)
-		return ""
+		return "", false, nil, false
 	}
+	a.recordRegisteredChild(n.ChildSessionID, childID, identity, spawnKey)
+	a.armChildTurn(n.ChildSessionID)
+	return n.ChildSessionID, false, nil, false
+}
+
+// recordRegisteredChild saves the native child mapping and consumes its pending
+// Task spawn entry. Caller holds a.dispatchMu.
+func (a *Agent) recordRegisteredChild(sessionID, childID string, identity droidChildAnnouncementID, spawnKey string) {
 	if a.childAgents == nil {
 		a.childAgents = make(map[string]string)
 	}
 	if a.childAnnouncements == nil {
 		a.childAnnouncements = make(map[string]droidChildAnnouncementID)
 	}
-	a.childAgents[n.ChildSessionID] = childID
-	a.childAnnouncements[n.ChildSessionID] = identity
+	a.childAgents[sessionID] = childID
+	a.childAnnouncements[sessionID] = identity
 	delete(a.childSpawns, spawnKey)
-	a.armChildTurn(n.ChildSessionID)
-	return n.ChildSessionID
 }
 
 // outputTargetFor resolves a session to its own transcript and span state.

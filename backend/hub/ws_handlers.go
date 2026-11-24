@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/util/drain"
 )
 
@@ -43,7 +42,7 @@ func trackWebSocket(gate *drain.Gate, next http.Handler) http.Handler {
 }
 
 // backgroundLoopDrainTimeout limits the join of the periodic background loops.
-const backgroundLoopDrainTimeout = max(5*time.Second, service.OAuthTokenRefreshJoinTimeout)
+const backgroundLoopDrainTimeout = 5 * time.Second
 
 // joinLoops waits, under one deadline, for every background loop's stopped
 // channel to close. The deadline spans the whole set, so a wedged loop costs

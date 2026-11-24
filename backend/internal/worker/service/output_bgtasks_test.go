@@ -2,16 +2,19 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -184,14 +187,15 @@ func TestBgTask_UpsertIdenticalReplaySkipsBroadcast(t *testing.T) {
 func TestBgTask_UpdateStatusTransitions(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupBgTaskTest(t)
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "x", Status: bgtask.StatusRunning,
 	}))
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running Bash"))
-	rows := listRows()
-	require.Len(t, rows, 1)
-	assert.Equal(t, "running Bash", rows[0].ActiveForm)
+	items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "running Bash", items[0].ActiveForm)
 }
 
 // TestBgTask_UpdateStatusFinalStampsEndedAt verifies that a final status
@@ -1053,7 +1057,7 @@ func TestBgTask_CleanupDropsCache(t *testing.T) {
 func TestUpsertBackgroundTaskKeepsTheRowKeyVerbatim(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupBgTaskTest(t)
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	const key = "call-abc\nfc-def"
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: key,
@@ -1073,7 +1077,10 @@ func TestUpsertBackgroundTaskKeepsTheRowKeyVerbatim(t *testing.T) {
 	rows = listRows()
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), rows[0].Status)
-	assert.Equal(t, "working", rows[0].ActiveForm)
+	items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "working", items[0].ActiveForm)
 }
 
 // The regression this rule exists for, end to end. Two providers' keys that a
@@ -1126,7 +1133,7 @@ func TestUpsertBackgroundTaskRefusesToMergeTwoKeys(t *testing.T) {
 func TestUpsertBackgroundTaskDerivesAKeyForAnUnusableOne(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupBgTaskTest(t)
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "good-key",
 		Kind:   bgtask.KindShell,
@@ -1159,8 +1166,12 @@ func TestUpsertBackgroundTaskDerivesAKeyForAnUnusableOne(t *testing.T) {
 
 			row := findRow(t, listRows(), stored)
 			assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), row.Status, "the close must find the row the upsert opened")
-			assert.Equal(t, "working", row.ActiveForm)
 			assert.Equal(t, "derived "+tc.name, row.Title)
+			items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+			require.NoError(t, err)
+			idx := slices.IndexFunc(items, func(i bgtask.Item) bool { return i.RowKey == stored })
+			require.GreaterOrEqual(t, idx, 0)
+			assert.Equal(t, "working", items[idx].ActiveForm)
 		})
 	}
 
@@ -1569,7 +1580,10 @@ func TestBgTask_StatusUpdateReachesARetainedRow(t *testing.T) {
 
 	row := storedRow(t, svc, ownerID, "task-1")
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusFailed), row.Status)
-	assert.Equal(t, "late failure detail", row.ActiveForm)
+	assert.NotContains(t, displayedRowKeys(t, svc, ownerID), "task-1",
+		"the finished retained row stays outside the display list when active rows fill the cap")
+	assert.Empty(t, svc.Output.bgTaskEphemeral(ownerID).activeFormOf("task-1"),
+		"ephemeral active_form is capped by the display window")
 }
 
 // Active rows stay displayed past MaxTasks and closing one records its outcome
@@ -1754,12 +1768,11 @@ func TestBgTask_AReviveThatMatchesNothingAdoptsTheStoredRow(t *testing.T) {
 	// The cache says finished; the ROW is active. Only the DB moves, so the
 	// revive's UPDATE (which filters on a final status) matches nothing.
 	_, err := svc.Queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
-		OutputGeneration: storedRow(t, svc, ownerID, "task-1").OutputGeneration,
-		Status:           leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
-		MinFinalStatus:   leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
-		UpdatedAt:        sqltime.NewSQLiteTime(nowMillis()),
-		OwnerAgentID:     ownerID,
-		RowKey:           "task-1",
+		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		UpdatedAt:      sqltime.NewSQLiteTime(nowMillis()),
+		OwnerAgentID:   ownerID,
+		RowKey:         "task-1",
 	})
 	require.NoError(t, err)
 
@@ -1818,12 +1831,11 @@ func TestBgTask_AReviveThatMatchesNothingSparesTheDisplayListForARetainedRow(t *
 	// Flip the retained row back to Running directly in SQLite so the revive's
 	// UPDATE (which filters on a final status) matches nothing.
 	_, err = svc.Queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
-		OutputGeneration: storedRow(t, svc, ownerID, "task-1").OutputGeneration,
-		Status:           leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
-		MinFinalStatus:   leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
-		UpdatedAt:        sqltime.NewSQLiteTime(nowMillis()),
-		OwnerAgentID:     ownerID,
-		RowKey:           "task-1",
+		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+		UpdatedAt:      sqltime.NewSQLiteTime(nowMillis()),
+		OwnerAgentID:   ownerID,
+		RowKey:         "task-1",
 	})
 	require.NoError(t, err)
 	beforeRows := len(listRows())
@@ -1959,5 +1971,590 @@ func TestBgTask_ColdSeedWithCapFullOfActiveRowsReclaimsUnlinkedFinishedRows(t *t
 	assert.Len(t, remaining, bgtask.MaxTasks+2, "unlinked finished surplus is reclaimed on cold seed")
 	for i := range 3 {
 		assert.NotContains(t, remaining, fmt.Sprintf("finished-%d", i))
+	}
+}
+
+func TestBgTask_NotifyBackgroundWorkChangedFiresOnlyOnWorkOrLinkageChanges(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	notifications := 0
+	svc.Output.SetBackgroundWorkFunc(func(rootAgentID string) {
+		if rootAgentID == ownerID {
+			notifications++
+		}
+	})
+
+	// New Running row notifies.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "worker", Status: bgtask.StatusRunning,
+	}))
+	assert.Equal(t, 1, notifications, "new running row must notify")
+
+	// ActiveForm-only progress ticks must not notify.
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "reading files"))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running tests"))
+	assert.Equal(t, 1, notifications, "ActiveForm-only updates must not notify")
+
+	// Description-only update must not notify.
+	require.NoError(t, sink.UpdateBackgroundTaskDescription("task-1", "output path"))
+	assert.Equal(t, 1, notifications, "description-only update must not notify")
+
+	// Pure row-key rename must not notify.
+	require.NoError(t, sink.RenameBackgroundTask("task-1", "task-1-renamed"))
+	assert.Equal(t, 1, notifications, "pure row-key rename must not notify")
+
+	// Closing a running row (Running -> Succeeded) must notify.
+	require.NoError(t, sink.CloseBackgroundTask("task-1-renamed", bgtask.StatusSucceeded))
+	assert.Equal(t, 2, notifications, "Running -> Succeeded close must notify")
+
+	// Reviving a finished row (Succeeded -> Running) must notify.
+	require.NoError(t, sink.ReviveBackgroundTask("task-1-renamed"))
+	assert.Equal(t, 3, notifications, "Succeeded -> revived Running must notify")
+
+	// Final status transition via UpdateBackgroundTaskStatus (Running -> Succeeded) must notify.
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1-renamed", bgtask.StatusSucceeded, ""))
+	assert.Equal(t, 4, notifications, "Running -> Succeeded status update must notify")
+
+	// Linking a new running child agent must notify.
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "child-link",
+		Title:            "child worker",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 5, notifications, "EnsureChildAgent creating a linked running row must notify")
+}
+
+func TestBgTask_ActiveFormOnlyTickSkipsSQLiteWrite(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		tick func(sink agent.ProviderServices) error
+	}{
+		{
+			name: "UpdateBackgroundTaskStatus",
+			tick: func(sink agent.ProviderServices) error {
+				return sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "running tests")
+			},
+		},
+		{
+			name: "UpsertBackgroundTask",
+			tick: func(sink agent.ProviderServices) error {
+				return sink.UpsertBackgroundTask(bgtask.Upsert{
+					RowKey:     "task-1",
+					Kind:       bgtask.KindSubagent,
+					Title:      "worker",
+					Status:     bgtask.StatusRunning,
+					ActiveForm: "running tests",
+				})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey:     "task-1",
+				Kind:       bgtask.KindSubagent,
+				Title:      "worker",
+				Status:     bgtask.StatusRunning,
+				ActiveForm: "starting",
+			}))
+			var sawBroadcast bool
+			writer := &turnAdmissionWatchingWriter{
+				testResponseWriter: &testResponseWriter{channelID: "active-form-watcher"},
+				onEvent: func(event *leapmuxv1.AgentEvent) {
+					changed := event.GetBackgroundTasksChanged()
+					if changed == nil {
+						return
+					}
+					for _, task := range changed.GetTasks() {
+						if task.GetId() == "task-1" && task.GetActiveForm() == "running tests" {
+							sawBroadcast = true
+						}
+					}
+				},
+			}
+			registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+
+			_, err := svc.DB.ExecContext(t.Context(), `
+				CREATE TRIGGER forbid_bgtask_update
+				BEFORE UPDATE ON agent_background_tasks
+				BEGIN
+					SELECT RAISE(ABORT, 'unexpected update');
+				END`)
+			require.NoError(t, err)
+
+			require.NoError(t, tc.tick(sink))
+
+			items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+			require.NoError(t, err)
+			require.Len(t, items, 1)
+			assert.Equal(t, "running tests", items[0].ActiveForm)
+			assert.True(t, sawBroadcast, "ActiveForm-only tick must broadcast BackgroundTasksChanged with new ActiveForm")
+		})
+	}
+}
+
+func TestBgTask_DisplayEvictionDropsActiveFormButPreservesRowGenFencing(t *testing.T) {
+	t.Parallel()
+	const ownerID = "display-eviction-fencing"
+	svc, sink1 := setupRootSink(t, ownerID)
+	sink2 := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	gen2 := requireRootOutputSink(t, svc.Output, ownerID).outputGeneration
+
+	_, err := sink2.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "span-old",
+		ProviderChildKey: "old",
+		Title:            "Old child",
+	})
+	require.NoError(t, err)
+	require.NoError(t, sink2.UpdateBackgroundTaskStatus("old", bgtask.StatusRunning, "working"))
+	require.NoError(t, sink2.CloseBackgroundTask("old", bgtask.StatusSucceeded))
+	require.Equal(t, "working", svc.Output.bgTaskEphemeral(ownerID).activeFormOf("old"))
+
+	// Fill the display cap to evict "old" from display while retaining its child-linked row in SQLite.
+	fillSubagentDisplayCap(t, sink2, bgtask.MaxTasks)
+	require.NotContains(t, displayedRowKeys(t, svc, ownerID), "old")
+
+	meta := svc.Output.bgTaskEphemeral(ownerID)
+	assert.Empty(t, meta.activeFormOf("old"), "display eviction must drop activeForm")
+	assert.Equal(t, gen2, meta.rowGeneration("old"), "display eviction must preserve rowGen fencing")
+
+	// Stale write from sink1 (G1 < G2) on the evicted retained row must be fenced.
+	before := storedRow(t, svc, ownerID, "old")
+	require.NoError(t, sink1.UpdateBackgroundTaskStatus("old", bgtask.StatusFailed, "stale failure"))
+	assert.Equal(t, before, storedRow(t, svc, ownerID, "old"))
+	assert.Empty(t, meta.activeFormOf("old"))
+}
+
+func TestBgTask_UpsertActiveFormOnFinishedRowWithNullEndedAtStampsEndedAt(t *testing.T) {
+	t.Parallel()
+	const ownerID = "finished-null-ended-at"
+	svc, sink := setupRootSink(t, ownerID)
+	ctx := t.Context()
+
+	// Seed a finished row whose ended_at is NULL in SQLite, then warm the display cache.
+	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		OwnerAgentID:  ownerID,
+		ParentAgentID: ownerID,
+		RowKey:        "done-null",
+		Seq:           1,
+		Kind:          leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
+		Role:          leapmuxv1.BackgroundTaskRole(bgtask.RoleTaskOutcome),
+		Title:         "Done task",
+		Status:        leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
+	})
+	loaded, err := svc.Output.LoadBackgroundTasks(ctx, ownerID)
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.True(t, loaded[0].EndedAt.IsZero())
+
+	// An upsert that supplies only a new ActiveForm on an already-displayed finished row
+	// whose ended_at is NULL must still stamp ended_at in SQLite and in the display cache.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     "done-null",
+		Kind:       bgtask.KindSubagent,
+		Status:     bgtask.StatusSucceeded,
+		ActiveForm: "finalizing",
+	}))
+
+	row := storedRow(t, svc, ownerID, "done-null")
+	assert.True(t, row.EndedAt.Valid, "finished row with NULL ended_at must be stamped in SQLite")
+	items, err := svc.Output.LoadBackgroundTasks(ctx, ownerID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.False(t, items[0].EndedAt.IsZero(), "display cache must reflect stamped EndedAt")
+	assert.Equal(t, "finalizing", items[0].ActiveForm)
+}
+
+func TestBgTaskEphemeral_UndoRollbackAndCommit(t *testing.T) {
+	t.Parallel()
+
+	newMeta := func() *bgTaskEphemeral {
+		return &bgTaskEphemeral{
+			rowGen:     make(map[string]int64),
+			activeForm: make(map[string]string),
+		}
+	}
+
+	t.Run("multiple writes, new key, deleteKey, and deleteActiveForm roll back cleanly", func(t *testing.T) {
+		t.Parallel()
+		meta := newMeta()
+		meta.setRowGen("k1", 1)
+		meta.setActiveForm("k1", "initial-1")
+		meta.setRowGen("k2", 2)
+		meta.setActiveForm("k2", "initial-2")
+		meta.setRowGen("k3", 3)
+		meta.setActiveForm("k3", "initial-3")
+
+		meta.beginUndo()
+		meta.setRowGen("k1", 5)
+		meta.setActiveForm("k1", "mid-1")
+		meta.setRowGen("k1", 9)
+		meta.setActiveForm("k1", "final-1")
+
+		meta.setRowGen("new-key", 10)
+		meta.setActiveForm("new-key", "brand-new")
+
+		meta.deleteKey("k2")
+		meta.deleteActiveForm("k3")
+
+		meta.rollbackUndo()
+
+		assert.Equal(t, int64(1), meta.rowGeneration("k1"))
+		assert.Equal(t, "initial-1", meta.activeFormOf("k1"))
+		assert.Zero(t, meta.rowGeneration("new-key"))
+		assert.Empty(t, meta.activeFormOf("new-key"))
+		_, hasNewGen := meta.rowGen["new-key"]
+		_, hasNewForm := meta.activeForm["new-key"]
+		assert.False(t, hasNewGen)
+		assert.False(t, hasNewForm)
+
+		assert.Equal(t, int64(2), meta.rowGeneration("k2"))
+		assert.Equal(t, "initial-2", meta.activeFormOf("k2"))
+		assert.Equal(t, int64(3), meta.rowGeneration("k3"))
+		assert.Equal(t, "initial-3", meta.activeFormOf("k3"))
+	})
+
+	t.Run("renameKey restores both oldKey and pre-existing newKey on rollback", func(t *testing.T) {
+		t.Parallel()
+		meta := newMeta()
+		meta.setRowGen("old-key", 4)
+		meta.setActiveForm("old-key", "old-form")
+		meta.setRowGen("new-key", 5)
+		meta.setActiveForm("new-key", "existing-new-form")
+
+		meta.beginUndo()
+		meta.renameKey("old-key", "new-key", 9)
+		assert.Zero(t, meta.rowGeneration("old-key"))
+		assert.Empty(t, meta.activeFormOf("old-key"))
+		assert.Equal(t, int64(9), meta.rowGeneration("new-key"))
+		assert.Equal(t, "old-form", meta.activeFormOf("new-key"))
+
+		meta.rollbackUndo()
+		assert.Equal(t, int64(4), meta.rowGeneration("old-key"))
+		assert.Equal(t, "old-form", meta.activeFormOf("old-key"))
+		assert.Equal(t, int64(5), meta.rowGeneration("new-key"))
+		assert.Equal(t, "existing-new-form", meta.activeFormOf("new-key"))
+	})
+
+	t.Run("commitUndo retains values and disables recording for later mutations", func(t *testing.T) {
+		t.Parallel()
+		meta := newMeta()
+		meta.setRowGen("k1", 1)
+		meta.setActiveForm("k1", "before")
+
+		meta.beginUndo()
+		meta.setRowGen("k1", 7)
+		meta.setActiveForm("k1", "committed")
+		meta.commitUndo()
+
+		// Mutations after commitUndo are not recorded, so a later rollbackUndo is a no-op.
+		meta.setRowGen("k1", 8)
+		meta.setActiveForm("k1", "after-commit")
+		meta.rollbackUndo()
+
+		assert.Equal(t, int64(8), meta.rowGeneration("k1"))
+		assert.Equal(t, "after-commit", meta.activeFormOf("k1"))
+		assert.False(t, meta.recordingUndo)
+		assert.Nil(t, meta.undo)
+	})
+}
+
+type countingFaultBgTaskDBTX struct {
+	calls atomic.Int64
+}
+
+func (c *countingFaultBgTaskDBTX) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	c.calls.Add(1)
+	return nil, errors.New("unexpected SQLite ExecContext on fast path")
+}
+
+func (c *countingFaultBgTaskDBTX) PrepareContext(context.Context, string) (*sql.Stmt, error) {
+	c.calls.Add(1)
+	return nil, errors.New("unexpected SQLite PrepareContext on fast path")
+}
+
+func (c *countingFaultBgTaskDBTX) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	c.calls.Add(1)
+	return nil, errors.New("unexpected SQLite QueryContext on fast path")
+}
+
+func (c *countingFaultBgTaskDBTX) QueryRowContext(context.Context, string, ...any) *sql.Row {
+	c.calls.Add(1)
+	return nil
+}
+
+func TestBgTask_FastPathsBypassSQLiteAndEnforceInvariants(t *testing.T) {
+	t.Parallel()
+	const rootID = "fast-path-root"
+	svc, rootSink := setupRootSink(t, rootID)
+
+	// Seed a grandchild running row with ReviveCount > 0 and a finished row.
+	childID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "span-child",
+		ProviderChildKey: "child-1",
+		Title:            "Child",
+	})
+	require.NoError(t, err)
+	childSink := rootSink.ChildSink(childID)
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "span-gc",
+		ProviderChildKey: "gc-1",
+		Title:            "Grandchild",
+	})
+	require.NoError(t, err)
+	require.NoError(t, rootSink.CloseBackgroundTask("gc-1", bgtask.StatusSucceeded))
+	require.NoError(t, rootSink.ReviveBackgroundTask("gc-1"))
+	require.NoError(t, rootSink.UpdateBackgroundTaskStatus("gc-1", bgtask.StatusRunning, "initial-gc"))
+
+	require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     "done-1",
+		Kind:       bgtask.KindShell,
+		Title:      "Done Shell",
+		Status:     bgtask.StatusRunning,
+		ActiveForm: "finishing",
+	}))
+	require.NoError(t, rootSink.CloseBackgroundTask("done-1", bgtask.StatusSucceeded))
+
+	// Warm the cache and verify initial expectations.
+	warmItems, err := svc.Output.LoadBackgroundTasks(t.Context(), rootID)
+	require.NoError(t, err)
+	var gcBefore, doneBefore bgtask.Item
+	for _, it := range warmItems {
+		switch it.RowKey {
+		case "gc-1":
+			gcBefore = it
+		case "done-1":
+			doneBefore = it
+		}
+	}
+	require.Equal(t, int64(1), gcBefore.ReviveCount)
+	require.Equal(t, childID, gcBefore.ParentAgentID)
+	require.Equal(t, bgtask.StatusSucceeded, doneBefore.Status)
+	require.False(t, doneBefore.EndedAt.IsZero())
+
+	// Replace Output's DB handle with a closed SQLite handle and a counting faulting DBTX.
+	closedDB, err := sqlitedb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	require.NoError(t, closedDB.Close())
+
+	liveDB := svc.Output.db
+	liveQueries := svc.Output.queries
+	faultCounter := &countingFaultBgTaskDBTX{}
+	svc.Output.db = closedDB
+	svc.Output.queries = db.New(faultCounter)
+	t.Cleanup(func() {
+		svc.Output.db = liveDB
+		svc.Output.queries = liveQueries
+	})
+
+	meta := svc.Output.bgTaskEphemeral(rootID)
+	gen1 := meta.rowGeneration("gc-1")
+	require.Positive(t, gen1)
+	gen2 := gen1 + 1
+	gen3 := gen2 + 1
+
+	// generation <= 0 returns error on both methods.
+	for _, badGen := range []int64{0, -1} {
+		_, err = svc.Output.applyBackgroundTaskUpsert(rootID, badGen, rootID, bgtask.Upsert{
+			RowKey: "gc-1", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning,
+		})
+		require.Error(t, err)
+		_, err = svc.Output.applyBackgroundTaskStatus(rootID, "gc-1", badGen, bgtask.StatusRunning, "bad")
+		require.Error(t, err)
+	}
+	assert.Zero(t, faultCounter.calls.Load())
+
+	// 1. ActiveForm-only upsert with blank ParentAgentID preserves grandchild ParentAgentID & ReviveCount, advances rowGen, zero SQL.
+	change, err := svc.Output.applyBackgroundTaskUpsert(rootID, gen2, rootID, bgtask.Upsert{
+		Role:         bgtask.RoleChildTask,
+		RowKey:       "gc-1",
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: grandchildID,
+		Title:        "Grandchild",
+		Status:       bgtask.StatusRunning,
+		ActiveForm:   "upsert-tick",
+	})
+	require.NoError(t, err)
+	assert.True(t, change.changed)
+	assert.Equal(t, gen2, meta.rowGeneration("gc-1"))
+	assert.Equal(t, "upsert-tick", meta.activeFormOf("gc-1"))
+	gcAfterUpsert := registrySnapshotRow(t, svc, rootID, "gc-1")
+	assert.Equal(t, childID, gcAfterUpsert.ParentAgentID, "blank-parent upsert must preserve grandchild ParentAgentID")
+	assert.Equal(t, int64(1), gcAfterUpsert.ReviveCount, "fast-path upsert must preserve ReviveCount")
+	assert.Equal(t, "upsert-tick", gcAfterUpsert.ActiveForm)
+
+	// 2. Identical upsert replay executes zero SQL and advances rowGen when G3 > G2.
+	change, err = svc.Output.applyBackgroundTaskUpsert(rootID, gen3, rootID, bgtask.Upsert{
+		Role:         bgtask.RoleChildTask,
+		RowKey:       "gc-1",
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: grandchildID,
+		Title:        "Grandchild",
+		Status:       bgtask.StatusRunning,
+		ActiveForm:   "upsert-tick",
+	})
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, gen3, meta.rowGeneration("gc-1"))
+
+	// 3. Stale upsert (G1 < G3) is fenced early with zero SQL and no state change.
+	change, err = svc.Output.applyBackgroundTaskUpsert(rootID, gen1, rootID, bgtask.Upsert{
+		RowKey: "gc-1", Kind: bgtask.KindSubagent, Title: "Stale", Status: bgtask.StatusFailed, ActiveForm: "stale",
+	})
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, "upsert-tick", meta.activeFormOf("gc-1"))
+	assert.Equal(t, gen3, meta.rowGeneration("gc-1"))
+
+	// 4. ActiveForm-only status tick, identical replay, and stale fencing execute zero SQL.
+	gen4 := gen3 + 1
+	change, err = svc.Output.applyBackgroundTaskStatus(rootID, "gc-1", gen4, bgtask.StatusRunning, "status-tick")
+	require.NoError(t, err)
+	assert.True(t, change.changed)
+	assert.Equal(t, gen4, meta.rowGeneration("gc-1"))
+	assert.Equal(t, "status-tick", meta.activeFormOf("gc-1"))
+
+	gen5 := gen4 + 1
+	change, err = svc.Output.applyBackgroundTaskStatus(rootID, "gc-1", gen5, bgtask.StatusRunning, "status-tick")
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, gen5, meta.rowGeneration("gc-1"))
+
+	change, err = svc.Output.applyBackgroundTaskStatus(rootID, "gc-1", gen1, bgtask.StatusFailed, "stale-status")
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, "status-tick", meta.activeFormOf("gc-1"))
+	assert.Equal(t, gen5, meta.rowGeneration("gc-1"))
+
+	// 5. Finished-row absorbing active replay on both upsert and status bypasses SQL and advances rowGen.
+	doneGen := meta.rowGeneration("done-1")
+	change, err = svc.Output.applyBackgroundTaskUpsert(rootID, doneGen+1, rootID, bgtask.Upsert{
+		RowKey:     "done-1",
+		Kind:       bgtask.KindShell,
+		Title:      "Done Shell",
+		Status:     bgtask.StatusRunning,
+		ActiveForm: "finishing",
+	})
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, doneGen+1, meta.rowGeneration("done-1"))
+	assert.Equal(t, bgtask.StatusSucceeded, registrySnapshotRow(t, svc, rootID, "done-1").Status)
+
+	change, err = svc.Output.applyBackgroundTaskStatus(rootID, "done-1", doneGen+2, bgtask.StatusRunning, "late-running")
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, doneGen+2, meta.rowGeneration("done-1"))
+	doneAfter := registrySnapshotRow(t, svc, rootID, "done-1")
+	assert.Equal(t, bgtask.StatusSucceeded, doneAfter.Status)
+	assert.Equal(t, doneBefore.EndedAt, doneAfter.EndedAt)
+
+	assert.Zero(t, faultCounter.calls.Load(), "every fast-path case must execute zero SQLite queries")
+
+	// 6. Invalid Role on a warm upsert must not take the fast path and must return a validation error.
+	svc.Output.db = liveDB
+	svc.Output.queries = liveQueries
+	_, err = svc.Output.applyBackgroundTaskUpsert(rootID, gen5+1, rootID, bgtask.Upsert{
+		Role:   bgtask.Role(999),
+		RowKey: "gc-1",
+		Kind:   bgtask.KindSubagent,
+		Status: bgtask.StatusRunning,
+	})
+	require.ErrorContains(t, err, "invalid background task role")
+}
+
+func TestBgTaskWorkStateChanged(t *testing.T) {
+	t.Parallel()
+
+	runningA := bgtask.Item{RowKey: "a", ParentAgentID: "root", ChildAgentID: "c1", Status: bgtask.StatusRunning}
+	runningB := bgtask.Item{RowKey: "b", ParentAgentID: "root", ChildAgentID: "c2", Status: bgtask.StatusRunning}
+	finishedUnlinked := bgtask.Item{RowKey: "shell-done", ParentAgentID: "root", Status: bgtask.StatusSucceeded}
+	finishedLinked := bgtask.Item{RowKey: "a", ParentAgentID: "root", ChildAgentID: "c1", Status: bgtask.StatusSucceeded}
+	runningUnlinked := bgtask.Item{RowKey: "s1", ParentAgentID: "root", Status: bgtask.StatusRunning}
+	runningUnlinked2 := bgtask.Item{RowKey: "s2", ParentAgentID: "root", Status: bgtask.StatusRunning}
+
+	cases := []struct {
+		name          string
+		before        []bgtask.Item
+		after         []bgtask.Item
+		beforeEvicted int
+		afterEvicted  int
+		want          bool
+	}{
+		{
+			name:          "evicted active count changed",
+			before:        []bgtask.Item{runningA},
+			after:         []bgtask.Item{runningA},
+			beforeEvicted: 0,
+			afterEvicted:  1,
+			want:          true,
+		},
+		{
+			name:   "identical order",
+			before: []bgtask.Item{runningA, runningB},
+			after:  []bgtask.Item{runningA, runningB},
+			want:   false,
+		},
+		{
+			name:   "same multiset in different order",
+			before: []bgtask.Item{runningA, runningB},
+			after:  []bgtask.Item{runningB, runningA},
+			want:   false,
+		},
+		{
+			name:   "adding finished unlinked row",
+			before: []bgtask.Item{runningA},
+			after:  []bgtask.Item{runningA, finishedUnlinked},
+			want:   false,
+		},
+		{
+			name:   "removing finished unlinked row",
+			before: []bgtask.Item{runningA, finishedUnlinked},
+			after:  []bgtask.Item{runningA},
+			want:   false,
+		},
+		{
+			name:   "changing ParentAgentID",
+			before: []bgtask.Item{runningA},
+			after:  []bgtask.Item{{RowKey: "a", ParentAgentID: "other-parent", ChildAgentID: "c1", Status: bgtask.StatusRunning}},
+			want:   true,
+		},
+		{
+			name:   "changing ChildAgentID",
+			before: []bgtask.Item{runningA},
+			after:  []bgtask.Item{{RowKey: "a", ParentAgentID: "root", ChildAgentID: "c-other", Status: bgtask.StatusRunning}},
+			want:   true,
+		},
+		{
+			name:   "changing Status working to finished",
+			before: []bgtask.Item{runningA},
+			after:  []bgtask.Item{finishedLinked},
+			want:   true,
+		},
+		{
+			name:   "changing Status finished to working",
+			before: []bgtask.Item{finishedLinked},
+			after:  []bgtask.Item{runningA},
+			want:   true,
+		},
+		{
+			name:   "changing duplicate working counts",
+			before: []bgtask.Item{runningUnlinked},
+			after:  []bgtask.Item{runningUnlinked, runningUnlinked2},
+			want:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, bgTaskWorkStateChanged(tc.before, tc.after, tc.beforeEvicted, tc.afterEvicted))
+		})
 	}
 }

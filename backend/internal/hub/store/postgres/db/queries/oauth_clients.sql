@@ -59,6 +59,14 @@ WHERE client_id = sqlc.arg(client_id)
   AND elevation_allowed
 FOR UPDATE;
 
+-- name: LockActiveOAuthClient :one
+-- Hold a shared row lock on the active registration so RevokeOAuthClient
+-- (FOR NO KEY UPDATE) serializes against concurrent credential mints.
+SELECT client_id FROM oauth_clients
+WHERE client_id = sqlc.arg(client_id)
+  AND revoked_at IS NULL
+FOR SHARE;
+
 -- name: GetOAuthClientIcon :one
 -- The icon bytes, their media type, and the three facts that gate serving
 -- them, for the /oauth/apps/<id>/icon asset
@@ -252,19 +260,10 @@ GROUP BY client_id;
 SELECT COUNT(*) FROM api_tokens
 WHERE client_id = sqlc.arg(client_id);
 
--- name: DeleteEphemeralGrantsForOAuthClient :execresult
--- The one-shot artifacts of a flow, cleared so the delete below can proceed.
---
--- A device grant lives ten minutes and an authorization code one, and each is
--- consumed or abandoned; neither is history anybody reads. Without this an app
--- that ran a single abandoned device flow could never be deleted, and the
--- operator met a foreign-key error naming a table they have no surface for.
--- api_tokens is deliberately NOT here: a revoked credential IS history, and the
--- delete refuses while one exists.
-DELETE FROM device_authorizations WHERE client_id = sqlc.arg(client_id);
-
 -- name: DeleteAuthorizationCodesForOAuthClient :execresult
--- The sibling of DeleteEphemeralGrantsForOAuthClient; see its comment.
+-- One-shot authorization codes cleared so the app delete below can proceed.
+-- api_tokens is deliberately NOT here: a revoked credential is history, and
+-- the delete refuses while one exists.
 DELETE FROM oauth_authorization_codes WHERE client_id = sqlc.arg(client_id);
 
 -- name: LockDeletableOAuthClient :one

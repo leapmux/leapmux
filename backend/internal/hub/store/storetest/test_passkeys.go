@@ -4,9 +4,7 @@ import (
 	"testing"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -127,138 +125,6 @@ func (s *Suite) testPasskeys(t *testing.T) {
 		count, err := st.PasskeyCredentials().CountByUser(ctx, user.ID)
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, count)
-	})
-
-	t.Run("webauthn session create get delete", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "wa-session")
-		sessionID := id.Generate()
-		now := time.Now().UTC()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID:          sessionID,
-			Kind:        leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN,
-			UserID:      user.ID,
-			PayloadJSON: "{}",
-			SessionData: []byte("encrypted-session"),
-			ExpiresAt:   now.Add(5 * time.Minute),
-			CreatedAt:   now,
-		}))
-
-		got, err := st.WebAuthnSessions().Get(ctx, sessionID)
-		require.NoError(t, err)
-		assert.Equal(t, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, got.Kind)
-		assert.Equal(t, []byte("encrypted-session"), got.SessionData)
-
-		require.NoError(t, st.WebAuthnSessions().Delete(ctx, sessionID))
-		_, err = st.WebAuthnSessions().Get(ctx, sessionID)
-		assert.ErrorIs(t, err, store.ErrNotFound)
-	})
-
-	t.Run("consume ceremony session is single use", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "wa-ceremony")
-		sessionID := id.Generate()
-		now := time.Now().UTC()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID:          sessionID,
-			Kind:        leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN,
-			UserID:      user.ID,
-			PayloadJSON: "{}",
-			SessionData: []byte("ceremony"),
-			ExpiresAt:   now.Add(5 * time.Minute),
-			CreatedAt:   now,
-		}))
-
-		n, err := st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, time.Now().UTC())
-		require.NoError(t, err)
-		assert.EqualValues(t, 1, n)
-
-		n, err = st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, time.Now().UTC())
-		require.NoError(t, err)
-		assert.EqualValues(t, 0, n)
-
-		n, err = st.WebAuthnSessions().ConsumeCeremony(ctx, sessionID, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_REGISTER, time.Now().UTC())
-		require.NoError(t, err)
-		assert.EqualValues(t, 0, n)
-	})
-
-	t.Run("delete by user and kind leaves other kinds", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "wa-kind")
-		now := time.Now().UTC()
-		elevationID := id.Generate()
-		loginID := id.Generate()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: elevationID, Kind: webauthn.KindElevation, UserID: user.ID, PayloadJSON: "{}",
-			SessionData: []byte("elevation"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		}))
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: loginID, Kind: webauthn.KindLogin, UserID: user.ID, PayloadJSON: "{}",
-			SessionData: []byte("login"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		}))
-		require.NoError(t, st.WebAuthnSessions().DeleteByUserAndKind(ctx, user.ID, webauthn.KindElevation))
-		_, err := st.WebAuthnSessions().Get(ctx, elevationID)
-		assert.ErrorIs(t, err, store.ErrNotFound)
-		_, err = st.WebAuthnSessions().Get(ctx, loginID)
-		require.NoError(t, err)
-	})
-
-	t.Run("one live ceremony per user and kind", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "wa-unique")
-		now := time.Now().UTC()
-		firstID := id.Generate()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: firstID, Kind: webauthn.KindLogin, UserID: user.ID, PayloadJSON: "{}",
-			SessionData: []byte("first"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		}))
-		err := st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: id.Generate(), Kind: webauthn.KindLogin, UserID: user.ID, PayloadJSON: "{}",
-			SessionData: []byte("second"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		})
-		assert.ErrorIs(t, err, store.ErrConflict)
-		_, err = st.WebAuthnSessions().Get(ctx, firstID)
-		require.NoError(t, err, "the unique index must refuse the second insert, not replace the first")
-
-		require.NoError(t, st.WebAuthnSessions().DeleteByUserAndKind(ctx, user.ID, webauthn.KindLogin))
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: id.Generate(), Kind: webauthn.KindLogin, UserID: user.ID, PayloadJSON: "{}",
-			SessionData: []byte("after-delete"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		}))
-	})
-
-	t.Run("two users may hold the same ceremony kind", func(t *testing.T) {
-		st := s.NewStore(t)
-		alice := SeedUser(t, st, "wa-unique-a")
-		bob := SeedUser(t, st, "wa-unique-b")
-		now := time.Now().UTC()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: id.Generate(), Kind: webauthn.KindLogin, UserID: alice.ID, PayloadJSON: "{}",
-			SessionData: []byte("alice"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		}))
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: id.Generate(), Kind: webauthn.KindLogin, UserID: bob.ID, PayloadJSON: "{}",
-			SessionData: []byte("bob"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		}))
-	})
-
-	t.Run("signup ceremonies with no user may coexist", func(t *testing.T) {
-		st := s.NewStore(t)
-		now := time.Now().UTC()
-		firstID := id.Generate()
-		secondID := id.Generate()
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: firstID, Kind: webauthn.KindSignup, UserID: "", PayloadJSON: "{}",
-			SessionData: []byte("signup-a"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		}))
-		require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-			ID: secondID, Kind: webauthn.KindSignup, UserID: "", PayloadJSON: "{}",
-			SessionData: []byte("signup-b"), ExpiresAt: now.Add(time.Minute), CreatedAt: now,
-		}))
-		_, err := st.WebAuthnSessions().Get(ctx, firstID)
-		require.NoError(t, err)
-		_, err = st.WebAuthnSessions().Get(ctx, secondID)
-		require.NoError(t, err)
 	})
 
 	t.Run("blank user id refused on passkey list", func(t *testing.T) {

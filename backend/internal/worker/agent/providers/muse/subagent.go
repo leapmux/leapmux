@@ -35,7 +35,12 @@ func childStatus(status string) bgtask.Status {
 // remains alive. A control word alone supplies no outcome.
 func resolvedChildStatus(item nativeItem) bgtask.Status {
 	status := childStatus(item.Status)
-	if item.Kind != museItemSubagent || item.Status != contracts.MuseItemStatusInProgress || item.ControlStatus != "resultReady" {
+	if item.Kind != museItemSubagent || item.Status != contracts.MuseItemStatusInProgress {
+		return status
+	}
+	switch item.ControlStatus {
+	case "resultReady", "closing", "closed":
+	default:
 		return status
 	}
 	var result struct {
@@ -58,8 +63,11 @@ func resolvedChildStatus(item nativeItem) bgtask.Status {
 		return bgtask.StatusSucceeded
 	}
 	var errorKind *string
-	if json.Unmarshal(result.ErrorKind, &errorKind) != nil || errorKind == nil {
+	if json.Unmarshal(result.ErrorKind, &errorKind) != nil {
 		return status
+	}
+	if errorKind == nil {
+		return bgtask.StatusSucceeded
 	}
 	if *errorKind == "generated_child_cancelled" {
 		return bgtask.StatusStopped
@@ -173,7 +181,25 @@ func (a *Agent) prepareChildOrTaskLocked(params itemParams, parent *sessionState
 	if child.childID != "" {
 		role = bgtask.RoleChildTask
 	}
-	plan := nativeRegistryPlan{setupErr: promptErr, rows: []nativeRegistryRow{{upsert: bgtask.Upsert{Role: role, RowKey: key, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, ParentAgentID: parent.childID, GroupKey: group, GroupLabel: label, Title: item.Objective, Description: item.Role, Status: status}, revive: head && !hasFold && status.IsWorking()}}}
+	liveRestart := false
+	if !hasFold && publication != nil {
+		publication.mu.Lock()
+		if previous.Kind == museItemSubagent && resolvedChildStatus(previous).IsFinished() && status.IsWorking() {
+			if publication.subagentRestarts == nil {
+				publication.subagentRestarts = make(map[string]int64)
+			}
+			if pending, ok := publication.subagentRestarts[key]; !ok || item.Revision > pending {
+				publication.subagentRestarts[key] = item.Revision
+			}
+		}
+		_, liveRestart = publication.subagentRestarts[key]
+		publication.mu.Unlock()
+	}
+	plan := nativeRegistryPlan{setupErr: promptErr, rows: []nativeRegistryRow{{
+		upsert:          bgtask.Upsert{Role: role, RowKey: key, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, ParentAgentID: parent.childID, GroupKey: group, GroupLabel: label, Title: item.Objective, Description: item.Role, Status: status},
+		revive:          !hasFold && status.IsWorking() && (head || liveRestart),
+		subagentRestart: !hasFold,
+	}}}
 	if promptErr == nil && (created || previous.Kind != "" && (previous.ChildSessionID != item.ChildSessionID || previous.ControlStatus != item.ControlStatus)) {
 		a.requestChildView(item.ChildSessionID)
 	}

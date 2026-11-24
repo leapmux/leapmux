@@ -140,8 +140,6 @@ sql:
           # comparison could flip silently. database/sql converts an INTEGER
           # 0/1 to *bool through driver.Bool, and a bool parameter back the
           # same way, so the retype is correct in both directions.
-          - column: "terminals.is_quake"
-            go_type: "bool"
           - column: "messages.transcript_only"
             go_type: "bool"
           - column: "terminals.workspace_archived"
@@ -151,10 +149,6 @@ sql:
           - column: "worker_tab_payloads.workspace_archived"
             go_type: "bool"
           - column: "tab_locations.workspace_archived"
-            go_type: "bool"
-          - column: "tab_locations.is_quake"
-            go_type: "bool"
-          - column: "control_requests.non_blocking"
             go_type: "bool"
           - column: "control_response_payloads.non_blocking"
             go_type: "bool"

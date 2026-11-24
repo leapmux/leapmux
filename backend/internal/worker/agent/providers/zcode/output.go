@@ -2644,12 +2644,12 @@ type zcodeBackgroundTask struct {
 // status that is not final, so the row stays open rather than being closed by a
 // value the registry would treat as absorbing.
 func zcodeBackgroundStatus(status string) (bgtask.Status, bool) {
-	switch status {
-	case "completed":
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "complete", "success", "succeeded", "done":
 		return bgtask.StatusSucceeded, true
-	case "failed", "spawn_error", "timed_out":
+	case "failed", "failure", "error", "spawn_error", "timeout", "timed_out":
 		return bgtask.StatusFailed, true
-	case "cancelled":
+	case "cancelled", "canceled", "killed", "stopped", "terminated", "aborted", "interrupted":
 		return bgtask.StatusStopped, true
 	case "lost":
 		// The app-server lost track of the task. It will never report again, so leaving
@@ -2697,12 +2697,66 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 	// tool call's own span. A subagent shares its key with the tool.updated path --
 	// see zcodeSubagentRowKey.
 	rowKey := zcodeSubagentRowKey(task.ToolCallID, task.ChildSessionID, task.TaskID)
-	if kind == bgtask.KindSubagent && task.ToolCallID != "" {
-		rowKey = a.resolveZCodeSpawn(event, task.ToolCallID, task.ChildSessionID, "")
-		if rowKey == "" {
+	trackedSpawn := false
+	if kind == bgtask.KindSubagent {
+		if task.ToolCallID != "" {
+			rowKey = a.resolveZCodeSpawn(event, task.ToolCallID, task.ChildSessionID, "")
+			if rowKey == "" {
+				return
+			}
+			trackedSpawn = true
+		} else if existingSpan, active, ended := a.children.lookupExistingSpawn(task.ChildSessionID, task.TaskID); active || ended {
+			rowKey = existingSpan
+			trackedSpawn = true
+		}
+	}
+
+	if trackedSpawn {
+		if !a.tryReviveEndedSpawn(rowKey, !final, task.TaskID) {
 			return
 		}
+
+		priorRegistryKey := a.zcodeSubagentRegistryKey(rowKey)
+		priorChildID, _ := a.children.child(rowKey)
 		a.children.rememberSession(rowKey, task.ChildSessionID)
+		// The task is what an Interrupt of the subagent's tab cancels.
+		a.children.rememberTask(rowKey, task.TaskID)
+		if status == bgtask.StatusStopped {
+			status = a.children.cancelledStatus(rowKey)
+		}
+		childID, childTitle, ok := a.ensureZCodeSubagentTranscript(rowKey, rowKey, title)
+		if !ok && final {
+			a.closeUnensuredZCodeSubagent(rowKey, priorRegistryKey, priorChildID, status, !a.children.reportsLifecycle(rowKey))
+			return
+		}
+		upsert := bgtask.Upsert{
+			RowKey:         a.zcodeSubagentRegistryKey(rowKey),
+			Kind:           kind,
+			Title:          title,
+			TitleIsCommand: titleIsCommand,
+			Description:    strings.TrimSpace(task.Description),
+			Status:         status,
+		}
+		if ok {
+			a.children.rememberSession(rowKey, task.ChildSessionID)
+			upsert.Role = bgtask.RoleChildTask
+			upsert.ChildAgentID = childID
+			upsert.Title = childTitle
+		}
+		if task.Blocked && !final {
+			upsert.ActiveForm = task.BlockedReason
+		}
+		providerkit.LogRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(upsert))
+		// A subagent that reports lifecycle events ends with one, which follows
+		// this final status and carries the report, so that event ends the
+		// transcript. Ending it here would leave the report nowhere to land.
+		if ok && final && !a.children.reportsLifecycle(rowKey) {
+			// Publish the final row while its activity entry still exists. Cleanup
+			// removes that entry, so a later tree refresh cannot publish its idle state.
+			a.persistIncompleteZCodeToolsForChild(rowKey, zcodeIncompleteChildCompletion(upsert.Status))
+			a.cleanupZCodeChild(rowKey, childID)
+		}
+		return
 	}
 
 	upsert := bgtask.Upsert{
@@ -2717,6 +2771,19 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 		upsert.ActiveForm = task.BlockedReason
 	}
 
+	if kind == bgtask.KindShell && upsert.RowKey != "" {
+		a.Mu.Lock()
+		if final {
+			delete(a.openShellTasks, upsert.RowKey)
+		} else {
+			if a.openShellTasks == nil {
+				a.openShellTasks = make(map[string]struct{})
+			}
+			a.openShellTasks[upsert.RowKey] = struct{}{}
+		}
+		a.Mu.Unlock()
+	}
+
 	// A workflow run's own row heads the group of its subagents' rows, which only
 	// the conversation subscription states. See workflow.go.
 	if kind == bgtask.KindWorkflow {
@@ -2729,47 +2796,7 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 		}
 	}
 
-	var finishedChildID string
-	// A subagent task with a tool-call ID can resolve or create its child
-	// transcript through the same internal spawn record as tool updates.
-	//
-	// A background task without a tool-call ID records its registry row
-	// but does not create a transcript.
-	if kind == bgtask.KindSubagent && task.ToolCallID != "" {
-		// The task is what an Interrupt of the subagent's tab cancels.
-		a.children.rememberTask(rowKey, task.TaskID)
-		if status == bgtask.StatusStopped {
-			upsert.Status = a.children.cancelledStatus(rowKey)
-		}
-		childID, childTitle, ok := a.ensureZCodeSubagentTranscript(rowKey, rowKey, title)
-		if ok {
-			a.children.rememberSession(rowKey, task.ChildSessionID)
-			upsert.ChildAgentID = childID
-			upsert.Role = bgtask.RoleChildTask
-			// The creator may have used the spawn's own label instead of this event's, so
-			// the row states what the tab states.
-			upsert.Title = childTitle
-			// A subagent that reports lifecycle events ends with one, which follows
-			// this final status and carries the report, so that event ends the
-			// transcript. Ending it here would leave the report nowhere to land.
-			if final && !a.children.reportsLifecycle(rowKey) {
-				// Drop the index entry too, or the spawn's own result would clean up a
-				// transcript this path already tore down.
-				finishedChildID = childID
-			}
-		}
-	}
-
 	providerkit.LogRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(upsert))
-	if finishedChildID != "" {
-		// Publish the final row while its activity entry still exists. Cleanup
-		// removes that entry, so a later tree refresh cannot publish its idle state.
-		a.persistIncompleteZCodeToolsForChild(rowKey, zcodeIncompleteChildCompletion(upsert.Status))
-		a.children.takeChild(rowKey)
-		a.children.forgetTitle(rowKey)
-		a.sink.CleanupChildAgent(finishedChildID)
-		a.reapZCodeSettledTurns()
-	}
 }
 
 // zcodeBackgroundTitle labels a background-task row with its command, description,

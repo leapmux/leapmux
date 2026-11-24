@@ -436,7 +436,7 @@ func TestDroidChildTailContinuesAtSavedOffset(t *testing.T) {
 		`{"type":"message","id":"assistant-second","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_SECOND_TURN"}]}}`,
 		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`,
 	)
-	// SendChildInput resumes this same native session through startChildTail.
+	// Continuation calls reuse the saved offset through ensureChildTail.
 	a.startChildTail(archiveChildID)
 	a.tailMu.Lock()
 	second := a.childTails[archiveChildID]
@@ -749,4 +749,109 @@ func TestDroidChildArchiveValidatesIdentityAndReadOffset(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, count, "a second poll does not repeat an earlier record")
+}
+
+func TestDroidChildTailInvalidArchiveClosesOpenChildRow(t *testing.T) {
+	a, sink, clock, dir, _ := droidArchiveHarness(t)
+	path := filepath.Join(dir, archiveChildID+".jsonl")
+	appendDroidArchive(t, path, `{not valid json`)
+
+	a.HandleOutput([]byte(droidTaskCall))
+	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
+	advanceDroidArchive(t, clock)
+
+	testutil.RequireEventually(t, func() bool {
+		row, ok := sink.BackgroundTask(archiveChildID)
+		return ok && row.Status == bgtask.StatusEndedWithUnknownOutcome && !a.ActiveChildTurnState(archiveChildID).Active
+	}, "invalid child archive must close open child row and disarm childTurns")
+}
+
+func TestDroidArchiveSkipIfUnchangedAndIdentityChecks(t *testing.T) {
+	t.Parallel()
+
+	newArchive := func(t *testing.T, content string) (dataRoot, work, archivePath string) {
+		t.Helper()
+		home := t.TempDir()
+		work = filepath.Join(home, "workspace")
+		require.NoError(t, os.MkdirAll(work, 0o700))
+		dataRoot = filepath.Join(home, ".factory")
+		sessionsDir := filepath.Join(dataRoot, droidSessionsDirName, droidSanitizeCwd(work))
+		require.NoError(t, os.MkdirAll(sessionsDir, 0o700))
+		archivePath = filepath.Join(sessionsDir, archiveChildID+droidSessionSuffix)
+		require.NoError(t, os.WriteFile(archivePath, []byte(content), 0o600))
+		return dataRoot, work, archivePath
+	}
+
+	t.Run("withValidatedDroidArchive skips callback when skipIfUnchanged returns true", func(t *testing.T) {
+		t.Parallel()
+		dataRoot, work, _ := newArchive(t, `{"type":"session_start"}`+"\n")
+		skipCalled := false
+		fnCalled := false
+		err := withValidatedDroidArchive(dataRoot, work, archiveChildID, func(os.FileInfo) bool {
+			skipCalled = true
+			return true
+		}, func(*os.File, os.FileInfo) error {
+			fnCalled = true
+			return nil
+		})
+		require.NoError(t, err)
+		assert.True(t, skipCalled)
+		assert.False(t, fnCalled, "callback must not run when skipIfUnchanged returns true")
+	})
+
+	t.Run("tail.read returns nil on unchanged file and rejects same-size replacement", func(t *testing.T) {
+		t.Parallel()
+		initial := `{"type":"session_start","id":"1"}` + "\n"
+		dataRoot, work, archivePath := newArchive(t, initial)
+		tail := &droidChildTail{dataRoot: dataRoot, workDir: work, sessionID: archiveChildID}
+
+		chunk, err := tail.read()
+		require.NoError(t, err)
+		require.Equal(t, initial, string(chunk))
+		tail.offset = int64(len(chunk))
+		require.NotNil(t, tail.fileInfo)
+
+		// Unchanged file at EOF skips opening and returns (nil, nil).
+		chunk, err = tail.read()
+		require.NoError(t, err)
+		assert.Nil(t, chunk)
+
+		// Atomic replacement with a new file of identical byte size must not skip.
+		replacement := `{"type":"session_start","id":"2"}` + "\n"
+		require.Len(t, replacement, len(initial))
+		tmpPath := archivePath + ".replacement"
+		require.NoError(t, os.WriteFile(tmpPath, []byte(replacement), 0o600))
+		require.NoError(t, os.Rename(tmpPath, archivePath))
+
+		replacedInfo, statErr := os.Stat(archivePath)
+		require.NoError(t, statErr)
+		require.False(t, os.SameFile(tail.fileInfo, replacedInfo))
+		require.Equal(t, tail.offset, replacedInfo.Size())
+
+		chunk, err = tail.read()
+		require.ErrorContains(t, err, "droid child archive file changed identity")
+		assert.Nil(t, chunk)
+	})
+
+	t.Run("tail.read rejects in-place truncation", func(t *testing.T) {
+		t.Parallel()
+		initial := `{"type":"session_start","id":"truncate-test"}` + "\n"
+		dataRoot, work, archivePath := newArchive(t, initial)
+		tail := &droidChildTail{dataRoot: dataRoot, workDir: work, sessionID: archiveChildID}
+
+		chunk, err := tail.read()
+		require.NoError(t, err)
+		tail.offset = int64(len(chunk))
+		require.NotNil(t, tail.fileInfo)
+
+		require.NoError(t, os.Truncate(archivePath, 4))
+		truncInfo, statErr := os.Stat(archivePath)
+		require.NoError(t, statErr)
+		require.True(t, os.SameFile(tail.fileInfo, truncInfo))
+		require.Less(t, truncInfo.Size(), tail.offset)
+
+		chunk, err = tail.read()
+		require.ErrorContains(t, err, "droid child archive was truncated")
+		assert.Nil(t, chunk)
+	})
 }

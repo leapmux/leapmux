@@ -11,13 +11,13 @@ import (
 func (sink *agentOutputSink) UpdateBackgroundTaskDescription(rowKey, description string) error {
 	description = (bgtask.Upsert{Description: description}).Clean().Description
 	return sink.applyAndBroadcast(rowKey, func(root, key string) (registryChange, error) {
-		return sink.h.withBgTaskRow(root, key, sink.outputGeneration, func(ctx context.Context, reg bgTaskView, existing bgtask.Item, _ bool, _ func() (int, error)) error {
+		return sink.h.withBgTaskRow(root, key, sink.outputGeneration, func(ctx context.Context, reg bgTaskView, _ *bgTaskEphemeral, existing bgtask.Item, _ bool, _ func() (int, error)) error {
 			if existing.Description == description {
 				return nil
 			}
 			now := nowMillis()
 			rows, err := reg.queries.UpdateAgentBackgroundTaskDescription(ctx, db.UpdateAgentBackgroundTaskDescriptionParams{
-				OwnerAgentID: root, RowKey: key, OutputGeneration: sink.outputGeneration, Description: description, UpdatedAt: sqltime.NewSQLiteTime(now),
+				OwnerAgentID: root, RowKey: key, Description: description, UpdatedAt: sqltime.NewSQLiteTime(now),
 			})
 			if err != nil {
 				return err

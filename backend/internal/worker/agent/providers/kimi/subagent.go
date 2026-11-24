@@ -249,14 +249,25 @@ func (a *Agent) updateChildRegistryMetadata(sink agent.ProviderServices, agentID
 }
 
 func (a *Agent) closeSubagentRegistryRow(subagentID string, child kimiChild, status bgtask.Status) error {
-	err := a.queueRegistryClose(a.sink, child.rowKey, status)
+	var err error
+	if child.ended {
+		writer := a.sink
+		if run := a.run(subagentID); run.childLifetime != nil && run.childLifetime.parent != nil {
+			writer = run.childLifetime.parent
+		}
+		err = a.queueRegistryUpsert(writer, bgtask.Upsert{
+			RowKey: child.rowKey, Kind: bgtask.KindSubagent, ChildAgentID: child.childAgentID,
+			Title: child.title, Status: status,
+		})
+	} else {
+		err = a.queueRegistryClose(a.sink, child.rowKey, status)
+	}
 	providerkit.LogRegistryRefusal("kimi", "close", err)
 	if !agent.OutputRetained(err) {
 		return err
 	}
 	a.children.update(subagentID, func(c *kimiChild) {
 		c.ended = true
-
 	})
 	return err
 }

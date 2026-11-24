@@ -78,8 +78,8 @@ func TestReplacementEnsureChildAgentClaimsTheOriginalChildWithoutChangingIdentit
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
 	expected := registryBefore
-	expected.OutputGeneration = requireRootOutputSink(t, svc.Output, rootID).outputGeneration
 	assert.Equal(t, expected, storedRow(t, svc, rootID, "shared-child"), "an unchanged linkage transfers only registry ownership")
+	assert.Equal(t, requireRootOutputSink(t, svc.Output, rootID).outputGeneration, svc.Output.bgTaskEphemeral(rootID).rowGeneration("shared-child"))
 	resolved, err = outgoing.EnsureChildAgent(spec)
 	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Empty(t, resolved)
@@ -105,7 +105,7 @@ func TestHistoricalEnsureChildAgentCanFinishAnIndependentChild(t *testing.T) {
 		ProviderChildKey: "independent-old-child", SpawnSpanID: "independent-old-span"})
 	require.NoError(t, err, "physical replacement alone cannot reject independent retained history")
 	assert.NotEqual(t, newChildID, oldChildID)
-	assert.Equal(t, oldGeneration, storedRow(t, svc, rootID, "independent-old-child").OutputGeneration)
+	assert.Equal(t, oldGeneration, svc.Output.bgTaskEphemeral(rootID).rowGeneration("independent-old-child"))
 	assert.Equal(t, newBefore, storedRow(t, svc, rootID, "replacement-child"))
 }
 
@@ -231,7 +231,7 @@ BEGIN SELECT RAISE(ABORT, 'child registry linkage refused'); END`)
 	expected.SpawnSpanID = "replacement-span"
 	assert.Equal(t, expected, final)
 	linked := storedRow(t, svc, rootID, "shared-child")
-	assert.Equal(t, requireRootOutputSink(t, svc.Output, rootID).outputGeneration, linked.OutputGeneration)
+	assert.Equal(t, requireRootOutputSink(t, svc.Output, rootID).outputGeneration, svc.Output.bgTaskEphemeral(rootID).rowGeneration("shared-child"))
 	assert.Equal(t, childID, linked.ChildAgentID)
 	assert.Equal(t, registryBefore.CreatedAt, linked.CreatedAt)
 	children, err := svc.Queries.ListAgentDescendantsForResume(t.Context(), sqlString(rootID))

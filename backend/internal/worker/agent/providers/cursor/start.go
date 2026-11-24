@@ -49,6 +49,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				ClientCapabilityMeta:   map[string]any{"subagents": true, "parameterizedModelPicker": true},
 				SessionMetadataHandler: a.handleCursorSubagentLifecycle,
 				SessionUpdateHandler:   a.handleCursorSessionUpdate,
+				IsReplayUpdate:         isCursorSubagentLifecycleUpdate,
 				// Cursor stores the normalized (display) model id, not the wire form. The
 				// registration hands the same normalizeCursorModelID to NormalizeModelID, so
 				// the offline-label and live paths can't diverge.

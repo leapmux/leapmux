@@ -826,7 +826,6 @@ func (s *Suite) testZeroIDMutationsRefused(t *testing.T) {
 	// Bulk: every row belonging to one user.
 	require.ErrorIs(t, st.Sessions().DeleteByUser(ctx, userid.UserID{}), store.ErrInvalidArgument)
 	require.ErrorIs(t, st.Workspaces().SoftDeleteAllByUser(ctx, userid.UserID{}), store.ErrInvalidArgument)
-	require.ErrorIs(t, st.OAuthTokens().DeleteByUser(ctx, userid.UserID{}), store.ErrInvalidArgument)
 
 	_, err := st.Users().RevokeUserTokens(ctx, userid.UserID{})
 	require.ErrorIs(t, err, store.ErrInvalidArgument)
@@ -844,9 +843,6 @@ func (s *Suite) testZeroIDMutationsRefused(t *testing.T) {
 		UserID: userid.UserID{}, KeepID: "keep",
 	}), store.ErrInvalidArgument)
 	require.ErrorIs(t, st.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
-		UserID: userid.UserID{}, ProviderID: "github",
-	}), store.ErrInvalidArgument)
-	require.ErrorIs(t, st.OAuthTokens().DeleteByUserAndProvider(ctx, store.DeleteOAuthTokensByUserAndProviderParams{
 		UserID: userid.UserID{}, ProviderID: "github",
 	}), store.ErrInvalidArgument)
 	require.ErrorIs(t, st.WorkspaceSections().UpdatePosition(ctx, store.UpdateWorkspaceSectionPositionParams{
@@ -874,9 +870,6 @@ func (s *Suite) testZeroIDMutationsRefused(t *testing.T) {
 		UserID: ownerID, KeepID: "keep",
 	}), "control: a real caller reaches the query")
 	require.NoError(t, st.OAuthUserLinks().Delete(ctx, store.DeleteOAuthUserLinkParams{
-		UserID: ownerID, ProviderID: "github",
-	}), "control: a real caller reaches the query")
-	require.NoError(t, st.OAuthTokens().DeleteByUserAndProvider(ctx, store.DeleteOAuthTokensByUserAndProviderParams{
 		UserID: ownerID, ProviderID: "github",
 	}), "control: a real caller reaches the query")
 	require.NoError(t, st.WorkspaceSectionItems().Delete(ctx, store.DeleteWorkspaceSectionItemParams{

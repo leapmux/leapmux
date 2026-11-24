@@ -12,7 +12,8 @@ import (
 
 // The hub dispatcher sends events in native order. HandleOutput supplies the same path for tests.
 // dispatchMu serializes each event with lifecycle changes.
-// Text and tool events carry no agent identity. The worker uses the active spawn chain to find their transcript.
+// Tagged events carry agent metadata and route directly to the lead or bound child transcript.
+// Untagged text and tool events use the active spawn chain to find their transcript.
 // Teammate notices carry their agent identity. handleSessionNotice resolves their active run.
 
 // handleEvent dispatches one event.
@@ -39,9 +40,9 @@ func (a *Agent) handleEvent(event hubEvent) {
 	case eventSessionUpdated:
 		a.handleSessionUpdated(event)
 	case eventIterationStarted:
-		a.handleIterationStarted()
+		a.handleIterationStarted(event.Payload)
 	case eventIterationFinished:
-		if t := a.routeWithinTurn(); t != nil {
+		if t := a.routeWithinTurn(event.Payload); t != nil {
 			a.discardUnflushedReasoning(t)
 		}
 	case eventPendingPrompts:
@@ -49,23 +50,15 @@ func (a *Agent) handleEvent(event hubEvent) {
 	case eventPendingPromptSubmitted:
 		a.handlePendingPromptSubmitted(event)
 	case eventReasoningDelta:
-		if t := a.routeContent(); t != nil {
-			a.handleReasoningDelta(t, event.Payload)
-		}
+		a.handleReasoningDelta(event.Payload)
 	case eventAssistantDelta:
-		if t := a.routeContent(); t != nil {
-			a.handleAssistantDelta(t, event.Payload)
-		}
+		a.handleAssistantDelta(event.Payload)
 	case contracts.ClineEventAssistantFinished:
-		if t := a.routeContent(); t != nil {
-			a.handleAssistantFinished(t, event)
-		}
+		a.handleAssistantFinished(event)
 	case contracts.ClineEventReasoningFinished:
-		if t := a.routeContent(); t != nil {
-			a.handleReasoningFinished(t, event)
-		}
+		a.handleReasoningFinished(event)
 	case contracts.ClineEventAssistantMedia:
-		if t := a.routeContent(); t != nil {
+		if t := a.routeContent(event.Payload); t != nil {
 			a.flushReasoning(t, event.SessionID)
 			a.persistRow(t, event.Raw, noCompletion)
 		}
@@ -200,7 +193,7 @@ func (a *Agent) dispatchToolStarted(event hubEvent) {
 	if open || dropped {
 		return
 	}
-	t := a.routeContent()
+	t := a.routeContentMeta(call.Agent)
 	if t == nil {
 		a.Mu.Lock()
 		a.out.dropped[call.ToolCallID] = true
@@ -260,25 +253,33 @@ func (a *Agent) handleSessionNotice(event hubEvent) {
 			Kind  string `json:"kind"`
 			Phase string `json:"phase"`
 		} `json:"metadata"`
-		Agent struct {
-			Kind        string `json:"kind"`
-			TeamAgentID string `json:"teamAgentId"`
-		} `json:"agent"`
+		Agent eventAgent `json:"agent"`
 	}
 	if json.Unmarshal(event.Payload, &notice) != nil || notice.Message == "" || a.IsDiscardingOutput() {
 		return
 	}
 	var sink agent.ProviderServices
 	var target *transcript
-	switch notice.Agent.Kind {
-	case "", agentKindLead:
-		target = a.routeWithinTurn()
+	switch {
+	case notice.Agent.Kind == agentKindTeammate:
+		teamAgentID := notice.Agent.TeamAgentID
+		if teamAgentID == "" {
+			teamAgentID = notice.Agent.AgentID
+		}
+		if run := a.teamRunOfAgent(teamAgentID); run != nil && run.childID != "" {
+			target = run.transcript
+			sink = a.sinkFor(target)
+		}
+	case notice.Agent.hasTag():
+		a.Mu.Lock()
+		target, _ = a.routeTaggedLocked(notice.Agent)
+		a.Mu.Unlock()
 		if target != nil {
 			sink = a.sinkFor(target)
 		}
-	case agentKindTeammate:
-		if run := a.teamRunOfAgent(notice.Agent.TeamAgentID); run != nil && run.childID != "" {
-			target = run.transcript
+	case notice.Agent.Kind == "" || notice.Agent.Kind == agentKindLead:
+		target = a.routeWithinTurn(nil)
+		if target != nil {
 			sink = a.sinkFor(target)
 		}
 	}

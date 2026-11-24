@@ -258,7 +258,7 @@ func (a *Agent) handleSystemTo(target agent.ProviderServices, raw []byte, owner 
 			return
 		case contracts.QoderSystemSubtypeInterrupt:
 			return
-		case qoderTaskStarted, qoderTaskNotification:
+		case qoderTaskStarted, qoderTaskNotification, qoderSubtypeTaskUpdated, qoderSubtypeBackgroundTasksChanged:
 			if root && a.handleTaskEvent(raw) {
 				return
 			}
@@ -557,11 +557,12 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, childID st
 		SessionID string `json:"session_id"`
 		Message   struct {
 			Content []struct {
-				Type    string `json:"type"`
-				ID      string `json:"id"`
-				Name    string `json:"name"`
-				CallID  string `json:"tool_use_id"`
-				IsError bool   `json:"is_error"`
+				Type    string          `json:"type"`
+				ID      string          `json:"id"`
+				Name    string          `json:"name"`
+				Input   json.RawMessage `json:"input"`
+				CallID  string          `json:"tool_use_id"`
+				IsError bool            `json:"is_error"`
 			} `json:"content"`
 		} `json:"message"`
 	}
@@ -579,6 +580,9 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, childID st
 		if frame.Type == contracts.QoderFrameKindAssistant && block.Type == "tool_use" && block.ID != "" && block.Name != "" {
 			stored = true
 			opened++
+			if target == a.sink && block.Name == "Agent" && qoderToolInputRunsInBackground(block.Input) {
+				a.markChildTaskBackground(block.ID, true)
+			}
 			spawns := block.Name == "Agent" || block.Name == "Workflow"
 			if clonedRaw == nil {
 				clonedRaw = bytes.Clone(raw)

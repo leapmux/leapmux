@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -621,4 +623,224 @@ func assertCopilotClosingToolRow(t *testing.T, messages []agenttest.Message, spa
 		}
 	}
 	t.Errorf("expected closing row for span %q with completion %q", spanID, want)
+}
+
+func TestNativeCopilotUnroutedChildEventsDoNotMutateRootAndCloseRow(t *testing.T) {
+	t.Parallel()
+
+	a, sink := newNativeCopilotForEvents(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:        "agent-unrouted",
+		Kind:          bgtask.KindSubagent,
+		ParentAgentID: a.AgentID(),
+		Title:         "Pre-restart child",
+		Status:        bgtask.StatusRunning,
+	}))
+
+	// Unrouted child turn start must not activate root turn.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-unrouted", contracts.CopilotEventAssistantTurnStart, map[string]any{"turnId": "1"}))
+	assert.Empty(t, sink.TurnActives(), "unrouted child turn_start must not mutate root turn active state")
+
+	// Start a real root turn, then deliver unrouted child session.idle — root must remain active.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{"turnId": "root-1"}))
+	require.Equal(t, []bool{true}, sink.TurnActives())
+	a.HandleOutput(nativeCopilotEvent(t, "agent-unrouted", contracts.CopilotEventSessionIdle, map[string]any{}))
+	assert.Equal(t, []bool{true}, sink.TurnActives(), "unrouted child session.idle must not end root turn")
+
+	// Completing the unrouted child must still close its durable registry row.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-unrouted", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-unrouted"}))
+	row, ok := copilotBackgroundRow(t, sink, "agent-unrouted")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.False(t, row.EndedAt.IsZero())
+}
+
+func TestNativeCopilotBackgroundTasksChangedPromotesSyncChildAndReusesSubagent(t *testing.T) {
+	t.Parallel()
+
+	h := newCopilotTaskHarness(t, copilotTaskScript{
+		list: `{"tasks":[{"type":"agent","id":"worker-task","toolCallId":"task-1"}]}`,
+	})
+	a, sink := h.agent, h.sink
+
+	// Start root turn and a sync subagent.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{"turnId": "root-1"}))
+	_, child := startCopilotSubagent(t, a, sink, "sync")
+	require.Equal(t, "sync", child.LastSettingsRefresh().Options[copilotOptionExecutionMode])
+
+	rootMsgsBefore := len(sink.Messages())
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionBackgroundTasksChanged, map[string]any{}))
+	require.Eventually(t, a.backgroundWork.Idle, offReaderWait, time.Millisecond)
+
+	assert.Len(t, sink.Messages(), rootMsgsBefore, "session.background_tasks_changed must not persist a transcript row")
+	assert.Equal(t, []string{"session.tasks.list"}, h.methods())
+	assert.Equal(t, copilotExecutionBackground, child.LastSettingsRefresh().Options[copilotOptionExecutionMode])
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, child.TurnStates()[len(child.TurnStates())-1])
+
+	// End root turn: promoted background child stays active.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	row, ok := copilotBackgroundRow(t, sink, "agent-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Contains(t, a.children, "agent-1")
+
+	// Completing the promoted child pauses it (proving background promotion), then cancelling closes it.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}))
+	row, ok = copilotBackgroundRow(t, sink, "agent-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusPaused, row.Status)
+
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1", "cancelled": true}))
+	row, ok = copilotBackgroundRow(t, sink, "agent-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusStopped, row.Status)
+	assert.NotContains(t, a.children, "agent-1")
+
+	// Second subagent.started for the same AgentID revives the finished row via ReviveBackgroundTask.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+		"toolCallId": "task-2", "toolName": contracts.CopilotToolTask,
+		"arguments": map[string]any{"name": "Worker", "prompt": "Job 2."},
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentStarted, map[string]any{
+		"toolCallId": "task-2", "agentName": "worker", "executionMode": "sync",
+	}))
+
+	assert.Equal(t, []string{"agent-1"}, sink.RevivedTasks())
+	row, ok = copilotBackgroundRow(t, sink, "agent-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.True(t, row.EndedAt.IsZero())
+	assert.Contains(t, a.children, "agent-1")
+}
+
+type lockCheckChildSink struct {
+	agent.ProviderServices
+	a               *Agent
+	refreshLocked   bool
+	turnStateLocked bool
+}
+
+func (s *lockCheckChildSink) PersistSettingsRefresh(options optionmap.Map) {
+	if !s.a.outputMu.TryLock() {
+		s.refreshLocked = true
+	} else {
+		s.a.outputMu.Unlock()
+	}
+	s.ProviderServices.PersistSettingsRefresh(options)
+}
+
+func (s *lockCheckChildSink) SetTurnState(state agent.TurnState, seq uint64) {
+	if !s.a.outputMu.TryLock() {
+		s.turnStateLocked = true
+	} else {
+		s.a.outputMu.Unlock()
+	}
+	s.ProviderServices.SetTurnState(state, seq)
+}
+
+func TestNativeCopilotBackgroundTasksChangedReleasesOutputMuBeforeSinkCalls(t *testing.T) {
+	t.Parallel()
+	h := newCopilotTaskHarness(t, copilotTaskScript{
+		list: `{"tasks":[{"type":"agent","id":"worker-task","toolCallId":"task-1"}]}`,
+	})
+	a, sink := h.agent, h.sink
+	startCopilotSubagent(t, a, sink, "sync")
+
+	a.outputMu.Lock()
+	child := a.children["agent-1"]
+	require.NotNil(t, child)
+	checker := &lockCheckChildSink{ProviderServices: child.sink, a: a}
+	child.sink = checker
+	a.outputMu.Unlock()
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionBackgroundTasksChanged, map[string]any{}))
+	require.Eventually(t, a.backgroundWork.Idle, offReaderWait, time.Millisecond)
+
+	assert.False(t, checker.refreshLocked, "outputMu must not be held during PersistSettingsRefresh")
+	assert.False(t, checker.turnStateLocked, "outputMu must not be held during PublishTurnState")
+}
+
+type orderedTurnStateSink struct {
+	agent.ProviderServices
+	mu              sync.Mutex
+	onRefresh       func()
+	publishedStates []agent.TurnState
+	publishedSeqs   []uint64
+}
+
+func (s *orderedTurnStateSink) PersistSettingsRefresh(options optionmap.Map) {
+	if s.onRefresh != nil {
+		s.onRefresh()
+	}
+	s.ProviderServices.PersistSettingsRefresh(options)
+}
+
+func (s *orderedTurnStateSink) SetTurnState(state agent.TurnState, seq uint64) {
+	s.mu.Lock()
+	s.publishedStates = append(s.publishedStates, state)
+	s.publishedSeqs = append(s.publishedSeqs, seq)
+	s.mu.Unlock()
+	s.ProviderServices.SetTurnState(state, seq)
+}
+
+func TestNativeCopilotBackgroundPromotionTurnSeqPrecedesConcurrentFinish(t *testing.T) {
+	t.Parallel()
+	h := newCopilotTaskHarness(t, copilotTaskScript{
+		list: `{"tasks":[{"type":"agent","id":"worker-task","toolCallId":"task-1"}]}`,
+	})
+	a, sink := h.agent, h.sink
+	_, childSink := startCopilotSubagent(t, a, sink, "sync")
+
+	enteredRefresh := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	var refreshOnce sync.Once
+
+	a.outputMu.Lock()
+	child := a.children["agent-1"]
+	require.NotNil(t, child)
+	recorder := &orderedTurnStateSink{
+		ProviderServices: child.sink,
+		onRefresh: func() {
+			refreshOnce.Do(func() {
+				close(enteredRefresh)
+				<-releaseRefresh
+			})
+		},
+	}
+	child.sink = recorder
+	a.outputMu.Unlock()
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionBackgroundTasksChanged, map[string]any{}))
+	<-enteredRefresh
+
+	// While background promotion is between outputMu.Unlock() and SetTurnState,
+	// finishNativeSubagent finishes the child and publishes Active: false.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentFailed, map[string]any{
+		"toolCallId": "task-1", "error": "boom",
+	}))
+	close(releaseRefresh)
+	require.Eventually(t, a.backgroundWork.Idle, offReaderWait, time.Millisecond)
+
+	recorder.mu.Lock()
+	require.Len(t, recorder.publishedStates, 2)
+	// Find the sequence of the Active:false (finish) vs Active:true (promotion) calls.
+	var sawPromo, sawFinish bool
+	var finishSeq, promoSeq uint64
+	for i, st := range recorder.publishedStates {
+		if st.Active && st.Steerable {
+			sawPromo = true
+			promoSeq = recorder.publishedSeqs[i]
+		} else if !st.Active && !st.Steerable {
+			sawFinish = true
+			finishSeq = recorder.publishedSeqs[i]
+		}
+	}
+	recorder.mu.Unlock()
+	assert.True(t, sawPromo, "background promotion must publish an active steerable turn state")
+	assert.True(t, sawFinish, "concurrent finish must publish an inactive non-steerable turn state")
+	assert.Positive(t, promoSeq)
+	assert.Greater(t, finishSeq, promoSeq, "concurrent finish must receive a strictly higher turn sequence than the earlier background promotion")
+	latest, published := childSink.LatestTurnState()
+	require.True(t, published)
+	assert.Equal(t, agent.TurnState{Active: false, Steerable: false}, latest)
 }

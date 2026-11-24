@@ -53,7 +53,7 @@ The table describes a Hub that only observes. Treat what the Hub **can** see as 
 
 | The Hub **can** see | The Hub **cannot** see |
 |---------------------|------------------------|
-| Account metadata: user names, emails, password hashes, OAuth tokens, public session IDs and session-secret digests, passkey credential metadata (friendly names, credential IDs, encrypted public keys) | Agent chat transcripts, tool-call arguments, or tool outputs |
+| Account metadata: user names, emails, password hashes, public session IDs and session-secret digests, passkey credential metadata (friendly names, credential IDs, encrypted public keys) | Agent chat transcripts, tool-call arguments, or tool outputs |
 | Account and workspace records | Terminal I/O, shell history, or PTY state |
 | Workspace **titles**, tab positions, and tiling layout geometry | File contents or diffs |
 | Worker registration data (Worker ID, online status, last-seen time) and the composite public keys each Worker registered with | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
@@ -458,9 +458,9 @@ A callback the Hub refuses leaves the flow open, so the browser that started the
 
 Distinct from the channel E2EE above, the Hub encrypts a small set of stored secrets **at rest** using a versioned XChaCha20-Poly1305 key ring kept in an `encryption.key` file (mode `0600`, default `<DataDir>/encryption.key`, auto-generated on first run). Exactly these are encrypted:
 
-- OAuth provider client secrets and per-user OAuth access/refresh tokens (including pending-signup tokens).
+- OAuth provider client secrets.
 - Hub settings secret halves — the SMTP password and captcha provider keys.
-- **Passkey credential public keys** and **WebAuthn ceremony session payloads** — the in-flight sign-up, login, and elevation handshakes (each row's ciphertext is bound to that row's id as additional authenticated data).
+- **Passkey credential public keys** (each row's ciphertext is bound to that row's id as additional authenticated data).
 
 If the Hub's database is exfiltrated without the key file, those fields stay unreadable.
 
@@ -469,10 +469,9 @@ Be clear on what this does **not** cover, since "encrypted at rest" invites over
 - Session secrets
 - Worker auth tokens
 - Registration keys
-- Device codes
 - API and delegation token secrets
 
-A copy of the database therefore holds none of those secrets in plaintext. OAuth authorization codes, pending sign-up tokens, and OAuth flow states remain plaintext. They are short-lived, and each requires a second value that the database does not hold.
+A copy of the database therefore holds none of those secrets in plaintext. OAuth authorization codes remain plaintext in the database; they are short-lived, and each requires a PKCE verifier that the database does not hold. Pending OAuth sign-ups, OAuth flow states, WebAuthn ceremony sessions, and device authorizations (stored as peppered HMAC-SHA256 digests) live only in Hub memory and are never written to the database.
 
 The key ring is managed with `leapmux recover encryption-key rotate | remove | reencrypt | rotate-pepper`. The full keystore, key-rotation runbook, database backends, and backup/restore guidance live in [Encryption & Data](/docs/admin/encryption-and-data/).
 

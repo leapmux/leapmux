@@ -64,7 +64,7 @@ func assertStoredInstant(t *testing.T, label string, requested, stored time.Time
 // deadline-bearing write path through the store API with sub-millisecond
 // probes and pins the readback.
 func (s *Suite) testTimeFloor(t *testing.T) {
-	t.Run("delegation token create floors bound expiries", func(t *testing.T) {
+	t.Run("delegation token create floors bound expiry", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "floor-user")
 		worker := SeedWorker(t, st, user.ID)
@@ -72,22 +72,18 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 		tokenID := id.Generate()
 		expiresAt := floorProbe(base, 0)
-		refreshExpiresAt := floorProbe(base, 1)
 		require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-			GrantedScopes:    "workspace:read workspace:write worker:read",
-			ID:               tokenID,
-			UserID:           userid.MustNew(user.ID),
-			WorkerID:         worker.ID,
-			SecretHash:       []byte("secret"),
-			ExpiresAt:        expiresAt,
-			RefreshExpiresAt: &refreshExpiresAt,
+			GrantedScopes: "workspace:read workspace:write worker:read",
+			ID:            tokenID,
+			UserID:        userid.MustNew(user.ID),
+			WorkerID:      worker.ID,
+			SecretHash:    []byte("secret"),
+			ExpiresAt:     expiresAt,
 		}))
 
 		tok, err := st.DelegationTokens().GetByID(ctx, tokenID)
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, tok.ExpiresAt)
-		require.NotNil(t, tok.RefreshExpiresAt)
-		assertStoredInstant(t, "refresh_expires_at", refreshExpiresAt, *tok.RefreshExpiresAt)
 	})
 
 	t.Run("api token create floors bound expiries", func(t *testing.T) {
@@ -195,22 +191,6 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		assertStoredInstant(t, "expires_at", expiresAt, code.ExpiresAt)
 	})
 
-	t.Run("device authorization create floors bound expiry", func(t *testing.T) {
-		st := s.NewStore(t)
-
-		expiresAt := floorProbe(floorProbeBase(), 0)
-		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:       oauthapp.ControlCLIClientID,
-			DeviceCodeHash: FixtureSecretHash("floor-device"),
-			UserCode:       "FLOOR-USER",
-			ExpiresAt:      expiresAt,
-		}))
-
-		auth, err := st.DeviceAuthorizations().Get(ctx, FixtureSecretHash("floor-device"))
-		require.NoError(t, err)
-		assertStoredInstant(t, "expires_at", expiresAt, auth.ExpiresAt)
-	})
-
 	t.Run("pending email expiry floors bound instant", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "floor-user")
@@ -252,72 +232,5 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		row, err := st.UserRecentBatchIDs().Get(ctx, userid.MustNew(user.ID), "floor-batch")
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, row.ExpiresAt)
-	})
-
-	t.Run("oauth state create floors bound expiry", func(t *testing.T) {
-		st := s.NewStore(t)
-		prov := SeedOAuthProvider(t, st, "floor-provider")
-
-		expiresAt := floorProbe(floorProbeBase(), 0)
-		require.NoError(t, st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
-			State:        "floor-state",
-			ProviderID:   prov.ID,
-			PkceVerifier: "verifier",
-			Purpose:      store.OAuthStatePurposeLogin,
-			ExpiresAt:    expiresAt,
-		}))
-
-		state, err := st.OAuthStates().Get(ctx, "floor-state")
-		require.NoError(t, err)
-		assertStoredInstant(t, "expires_at", expiresAt, state.ExpiresAt)
-	})
-
-	t.Run("oauth tokens upsert floors bound expiry", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "floor-user")
-		prov := SeedOAuthProvider(t, st, "floor-provider")
-
-		expiresAt := floorProbe(floorProbeBase(), 0)
-		require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       userid.MustNew(user.ID),
-			ProviderID:   prov.ID,
-			AccessToken:  []byte("access"),
-			RefreshToken: []byte("refresh"),
-			TokenType:    "Bearer",
-			ExpiresAt:    expiresAt,
-			KeyVersion:   1,
-		}))
-
-		tok, err := st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     userid.MustNew(user.ID),
-			ProviderID: prov.ID,
-		})
-		require.NoError(t, err)
-		assertStoredInstant(t, "expires_at", expiresAt, tok.ExpiresAt)
-	})
-
-	t.Run("pending oauth signup create floors bound expiries", func(t *testing.T) {
-		st := s.NewStore(t)
-		prov := SeedOAuthProvider(t, st, "floor-provider")
-		base := floorProbeBase()
-
-		tokenExpiresAt := floorProbe(base, 0)
-		expiresAt := floorProbe(base, 1)
-		require.NoError(t, st.PendingOAuthSignups().Create(ctx, store.CreatePendingOAuthSignupParams{
-			Token:           "floor-signup",
-			ProviderID:      prov.ID,
-			ProviderSubject: "subject",
-			AccessToken:     []byte("access"),
-			RefreshToken:    []byte("refresh"),
-			TokenType:       "Bearer",
-			TokenExpiresAt:  tokenExpiresAt,
-			KeyVersion:      1,
-			ExpiresAt:       expiresAt,
-		}))
-
-		signup, err := st.PendingOAuthSignups().Get(ctx, "floor-signup")
-		require.NoError(t, err)
-		assertStoredInstant(t, "token_expires_at", tokenExpiresAt, signup.TokenExpiresAt)
-		assertStoredInstant(t, "expires_at", expiresAt, signup.ExpiresAt)
 	})
 }

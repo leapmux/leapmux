@@ -73,41 +73,6 @@ enum AppRegistrationSource {
   APP_REGISTRATION_SOURCE_DYNAMIC = 4;
 }
 
-// OAuthStatePurpose is what the identity-provider round trip that owns a
-// short-lived state row will do when it comes back. Numbers
-// oauth_states.purpose.
-//
-// The callback branches on this, and the two branches differ in what they are
-// allowed to do, so the column may not carry an unset value: LOGIN and
-// CONSENT_LOGIN may create a session and link an identity, and REAUTH must do
-// neither. The CHECK
-// excludes UNSPECIFIED for that reason -- an insert that forgot the purpose
-// fails rather than defaulting into the branch with more authority.
-enum OAuthStatePurpose {
-  OAUTH_STATE_PURPOSE_UNSPECIFIED = 0;
-  // Starts a sign-in. May create a session or link an identity.
-  OAUTH_STATE_PURPOSE_LOGIN = 1;
-  // Proves the identity again for a session that is already signed in, to
-  // elevate it. Must never create a session or link an identity.
-  OAUTH_STATE_PURPOSE_REAUTH = 2;
-  // Starts a sign-in that returns to an OAuth consent route. The provider must
-  // reauthenticate, and a provider-only account may receive a sign-in window.
-  OAUTH_STATE_PURPOSE_CONSENT_LOGIN = 3;
-}
-
-// WebAuthnSessionKind is which ceremony a short-lived WebAuthn session row
-// belongs to. Numbers webauthn_sessions.kind.
-enum WebAuthnSessionKind {
-  WEB_AUTHN_SESSION_KIND_UNSPECIFIED = 0;
-  // The one kind with no user yet, which is why it sits outside the
-  // one-live-ceremony-per-user unique index.
-  WEB_AUTHN_SESSION_KIND_SIGNUP = 1;
-  WEB_AUTHN_SESSION_KIND_LOGIN = 2;
-  WEB_AUTHN_SESSION_KIND_REGISTER = 3;
-  WEB_AUTHN_SESSION_KIND_ELEVATION = 4;
-  WEB_AUTHN_SESSION_KIND_RECOVERY = 5;
-}
-
 // IdentityProviderType is the protocol an administrator-configured identity
 // provider speaks. Numbers oauth_providers.provider_type.
 //
@@ -128,16 +93,6 @@ enum WorkspaceLifecycleOp {
   WORKSPACE_LIFECYCLE_OP_CREATE = 1;
   WORKSPACE_LIFECYCLE_OP_RENAME = 2;
   WORKSPACE_LIFECYCLE_OP_DELETE = 3;
-}
-
-// DeviceAuthorizationState is where one RFC 8628 device authorization stands.
-// Numbers device_authorizations.state.
-enum DeviceAuthorizationState {
-  DEVICE_AUTHORIZATION_STATE_UNSPECIFIED = 0;
-  // Waiting for the user to approve or deny the code.
-  DEVICE_AUTHORIZATION_STATE_PENDING = 1;
-  DEVICE_AUTHORIZATION_STATE_APPROVED = 2;
-  DEVICE_AUTHORIZATION_STATE_DENIED = 3;
 }
 
 // ApiTokenIssuance records which ceremony issued an app credential.

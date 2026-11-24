@@ -52,19 +52,17 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "canon-ws")
 	provider := storetest.SeedOAuthProvider(t, st, "canon-provider")
 
-	// delegation_tokens: expires_at + refresh_expires_at on Create (created_at
-	// via its column DEFAULT); last_used_at and revoked_at are exercised by
-	// the Touch/Revoke fixtures further down.
+	// delegation_tokens: expires_at on Create (created_at via its column
+	// DEFAULT); last_used_at and revoked_at are exercised by the Touch/Revoke
+	// fixtures further down.
 	delegationID := id.Generate()
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               delegationID,
-		UserID:           userid.MustNew(user.ID),
-		WorkerID:         worker.ID,
-		SecretHash:       []byte("dt-secret"),
-		RefreshHash:      []byte("dt-refresh"),
-		ExpiresAt:        future,
-		RefreshExpiresAt: ptr(farFuture),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            delegationID,
+		UserID:        userid.MustNew(user.ID),
+		WorkerID:      worker.ID,
+		SecretHash:    []byte("dt-secret"),
+		ExpiresAt:     future,
 	}))
 
 	// api_tokens: expires_at + refresh_expires_at on Create, the New*/Prev*
@@ -136,43 +134,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, retired)
 
-	// oauth_states.expires_at.
-	require.NoError(t, st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
-		State:        "canon-state",
-		ProviderID:   provider.ID,
-		PkceVerifier: "verifier",
-		Purpose:      store.OAuthStatePurposeLogin,
-		ExpiresAt:    future,
-	}))
-
-	// oauth_tokens: expires_at on insert, then the ON CONFLICT branch, which
-	// rewrites updated_at.
-	upsert := store.UpsertOAuthTokensParams{
-		UserID:       userid.MustNew(user.ID),
-		ProviderID:   provider.ID,
-		AccessToken:  []byte("access"),
-		RefreshToken: []byte("refresh"),
-		TokenType:    "Bearer",
-		ExpiresAt:    future,
-		KeyVersion:   1,
-	}
-	require.NoError(t, st.OAuthTokens().Upsert(ctx, upsert))
-	upsert.ExpiresAt = farFuture
-	require.NoError(t, st.OAuthTokens().Upsert(ctx, upsert))
-
-	// pending_oauth_signups: token_expires_at + expires_at.
-	require.NoError(t, st.PendingOAuthSignups().Create(ctx, store.CreatePendingOAuthSignupParams{
-		Token:           "canon-signup",
-		ProviderID:      provider.ID,
-		ProviderSubject: "subject",
-		AccessToken:     []byte("access"),
-		RefreshToken:    []byte("refresh"),
-		TokenType:       "Bearer",
-		TokenExpiresAt:  future,
-		KeyVersion:      1,
-		ExpiresAt:       farFuture,
-	}))
-
 	// cli_authorization_codes: expires_at on Create, consumed_at on Consume.
 	require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 		ClientID:      oauthapp.ControlCLIClientID,
@@ -185,25 +146,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	}))
 	err = st.OAuthAuthorizationCodes().Consume(ctx, "canon-code", time.Now().UTC())
 	require.NoError(t, err)
-
-	// device_authorizations: expires_at on Create, last_polled_at on
-	// TouchPoll, consumed_at on Consume.
-	require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: storetest.FixtureSecretHash("canon-device-code"),
-		UserCode:       "CANON-USER-CODE",
-		ExpiresAt:      future,
-	}))
-	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, storetest.FixtureSecretHash("canon-device-code"), time.Now().UTC()))
-	approved, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-		DeviceCodeHash: storetest.FixtureSecretHash("canon-device-code"),
-		UserID:         userid.MustNew(user.ID),
-	}, time.Now().UTC())
-	require.NoError(t, err)
-	require.EqualValues(t, 1, approved)
-	consumed, err := st.DeviceAuthorizations().Consume(ctx, storetest.FixtureSecretHash("canon-device-code"), time.Now().UTC())
-	require.NoError(t, err)
-	require.EqualValues(t, 1, consumed)
 
 	// lifecycle_outbox.consumed_at.
 	require.NoError(t, st.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
@@ -345,17 +287,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		UserID:       user.ID,
 		SignCount:    1,
 		LastUsedAt:   now.UTC(),
-	}))
-
-	webauthnSessionID := id.Generate()
-	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-		ID:          webauthnSessionID,
-		Kind:        leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_ELEVATION,
-		UserID:      user.ID,
-		PayloadJSON: "{}",
-		SessionData: []byte("canon-session"),
-		ExpiresAt:   future.UTC(),
-		CreatedAt:   now.UTC(),
 	}))
 
 	// workers.last_seen_at via UpdateLastSeen's strftime.

@@ -258,3 +258,61 @@ func TestJunieChildEventLinkIgnoresUnrelatedFrames(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "agent-1", link.handle)
 }
+
+func TestJunieChildToolRecordsMatchesReusedHandlePrompt(t *testing.T) {
+	t.Parallel()
+	const firstPrompt = "First job prompt."
+	const secondPrompt = "Second job prompt."
+	child := map[string]any{
+		"handle": "agent-1", "typeId": "leapmux-e2e-child", "displayName": "leapmux-e2e-child",
+		"status": "RUNNING", "tasks": []string{firstPrompt, secondPrompt},
+		"resume": map[string]any{"state": map[string]any{"observations": []any{
+			map[string]any{"records": []any{map[string]any{
+				"request": map[string]any{
+					"type": "com.intellij.ml.llm.matterhorn.agent.actions.ToolActionRequest",
+					"toolCallId": map[string]any{
+						"id": "junie-child-read-2", "callId": "callid_child_read_2", "name": "open_entire_file",
+					},
+					"inputParams": map[string]any{"rawJsonObject": map[string]any{"path": "/work/note.txt"}},
+				},
+				"result": map[string]any{"content": "JOB2_MARKER", "text": "JOB2_MARKER", "images": []any{}},
+			}}},
+		}}},
+	}
+	blob, err := json.Marshal(map[string]any{
+		"lastAgentState": map[string]any{"subagents": map[string]any{"runs": []any{child}}},
+	})
+	require.NoError(t, err)
+	snapshot, err := json.Marshal(map[string]any{
+		"kind": "SessionA2uxEvent", "taskId": "task-1",
+		"event": map[string]any{"state": "IN_PROGRESS", "agentEvent": map[string]any{
+			"kind": "AgentStateUpdatedEvent", "agent": map[string]any{"kind": "MainAgent", "id": "main"},
+			"blob": string(blob),
+		}},
+	})
+	require.NoError(t, err)
+
+	records, err := junieChildToolRecords(snapshot, junieChildLink{handle: "agent-1", taskID: "task-1"}, "leapmux-e2e-child", secondPrompt)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "callid_child_read_2", records[0].callID)
+
+	_, err = junieChildToolRecords(snapshot, junieChildLink{handle: "agent-1", taskID: "task-1"}, "leapmux-e2e-child", "Unrelated prompt.")
+	require.ErrorContains(t, err, "differs from its ACP announcement")
+
+	child["tasks"] = []string{}
+	emptyBlob, err := json.Marshal(map[string]any{
+		"lastAgentState": map[string]any{"subagents": map[string]any{"runs": []any{child}}},
+	})
+	require.NoError(t, err)
+	emptySnapshot, err := json.Marshal(map[string]any{
+		"kind": "SessionA2uxEvent", "taskId": "task-1",
+		"event": map[string]any{"state": "IN_PROGRESS", "agentEvent": map[string]any{
+			"kind": "AgentStateUpdatedEvent", "agent": map[string]any{"kind": "MainAgent", "id": "main"},
+			"blob": string(emptyBlob),
+		}},
+	})
+	require.NoError(t, err)
+	_, err = junieChildToolRecords(emptySnapshot, junieChildLink{handle: "agent-1", taskID: "task-1"}, "leapmux-e2e-child", secondPrompt)
+	require.ErrorContains(t, err, "differs from its ACP announcement")
+}

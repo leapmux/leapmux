@@ -709,15 +709,17 @@ func (failingChildSink) EnsureChildAgent(agent.ChildAgentSpec) (string, error) {
 }
 
 // A subagent whose transcript cannot be created still gets its registry row,
-// so the reader sees that it runs. Its events have no transcript to reach.
+// so the reader sees that it runs. A subagent started without a parent tool
+// call still gets a child transcript keyed by its provider key.
 func TestASubagentWithNoTranscriptStillGetsARow(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name    string
-		failing bool
-		started string
+		name           string
+		failing        bool
+		wantTranscript bool
+		started        string
 	}{
-		{name: "a subagent that no call started", started: `{"type":"subagent_lifecycle","payload":{"id":"Probe","status":"started","description":"Scout the repo\nin detail","index":0}}`},
+		{name: "a subagent that no call started", wantTranscript: true, started: `{"type":"subagent_lifecycle","payload":{"id":"Probe","status":"started","description":"Scout the repo\nin detail","index":0}}`},
 		{name: "a transcript the store refused", failing: true, started: frameStarted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -728,9 +730,14 @@ func TestASubagentWithNoTranscriptStillGetsARow(t *testing.T) {
 			}
 			r.emit(frameTaskStart, tc.started)
 			row := subagentRow(t, r, "Probe")
-			assert.Empty(t, row.ChildAgentID)
 			assert.Equal(t, bgtask.StatusRunning, row.Status)
-			assert.Empty(t, r.sink.ChildAgentIDs())
+			if tc.wantTranscript {
+				require.NotEmpty(t, row.ChildAgentID, "parentless subagent receives a child transcript")
+				assert.Contains(t, r.sink.ChildAgentIDs(), row.ChildAgentID)
+			} else {
+				assert.Empty(t, row.ChildAgentID)
+				assert.Empty(t, r.sink.ChildAgentIDs())
+			}
 			parentRows := len(r.sink.Messages())
 
 			r.emit(
@@ -740,6 +747,13 @@ func TestASubagentWithNoTranscriptStillGetsARow(t *testing.T) {
 			)
 			assert.Len(t, r.sink.Messages(), parentRows, "no event of the subagent reaches the parent transcript")
 			assert.Equal(t, bgtask.StatusSucceeded, subagentRow(t, r, "Probe").Status)
+			if tc.wantTranscript {
+				child := r.sink.Child(row.ChildAgentID)
+				assert.Equal(t, []string{"message_end", "tool_execution_end"}, persistedTypes(child.Messages()))
+				reports := subagentReports(r, row.ChildAgentID)
+				require.Len(t, reports, 1)
+				assert.Equal(t, "The answer.", reports[0]["text"])
+			}
 		})
 	}
 }
@@ -1043,4 +1057,170 @@ func TestOhMyPiChildTurnEndPreservesOpenToolsAndFinishSubagentResetsSpans(t *tes
 	assert.Contains(t, child.ClosedSpans(), "child_tool")
 	assert.Equal(t, 1, child.ResetSpanCount())
 	assert.Contains(t, child.ProgressUpdates(), agent.ResetProgress())
+}
+
+func TestAsyncResultMapsRealShellStatus(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status string
+		want   bgtask.Status
+	}{
+		{name: "empty defaults to succeeded", status: "", want: bgtask.StatusSucceeded},
+		{name: "completed maps to succeeded", status: "completed", want: bgtask.StatusSucceeded},
+		{name: "failed maps to failed", status: "failed", want: bgtask.StatusFailed},
+		{name: "error maps to failed", status: "error", want: bgtask.StatusFailed},
+		{name: "aborted maps to stopped", status: "aborted", want: bgtask.StatusStopped},
+		{name: "cancelled maps to stopped", status: "cancelled", want: bgtask.StatusStopped},
+		{name: "killed maps to stopped", status: "killed", want: bgtask.StatusStopped},
+		{name: "stopped maps to stopped", status: "stopped", want: bgtask.StatusStopped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.emit(frameBackgroundBashStart, frameBackgroundBashEnd)
+			rowKey := shellRowKey(r.agent.sessionID, "bash-1")
+			job := map[string]any{"jobId": "bash-1"}
+			if tc.status != "" {
+				job["status"] = tc.status
+			}
+			frame := mustJSON(t, map[string]any{
+				"type": "message_end",
+				"message": map[string]any{
+					"role":       "custom",
+					"customType": "async-result",
+					"content":    "done",
+					"display":    true,
+					"details":    map[string]any{"jobs": []any{job}},
+				},
+			})
+			r.emit(frame)
+			row, ok := r.sink.BackgroundTask(rowKey)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, row.Status)
+		})
+	}
+}
+
+func TestWaitAndProcKillCloseTrackedShells(t *testing.T) {
+	t.Parallel()
+
+	t.Run("wait closes tracked shells from details.jobs and leaves running jobs open", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(
+			frameBackgroundBashStart,
+			frameBackgroundBashEnd,
+			`{"type":"tool_execution_start","toolCallId":"call_b2","toolName":"bash","args":{"command":"sleep 60"}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_b2","toolName":"bash","result":{"content":[],"details":{"async":{"state":"running","jobId":"bash-2","type":"bash"}}},"isError":false}`,
+			`{"type":"tool_execution_start","toolCallId":"call_wait","toolName":"wait","args":{"jobIds":["bash-1","bash-2"]}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_wait","toolName":"wait","result":{"content":[],"details":{"jobs":[{"jobId":"bash-1","status":"failed"},{"jobId":"bash-2","status":"running"}]}},"isError":false}`,
+		)
+		row1, ok := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-1"))
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, row1.Status)
+		row2, ok := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-2"))
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row2.Status, "still-running job stays open")
+	})
+
+	t.Run("wait closes tracked shell from details.jobId and args fallback", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(
+			frameBackgroundBashStart,
+			frameBackgroundBashEnd,
+			`{"type":"tool_execution_start","toolCallId":"call_b2","toolName":"bash","args":{"command":"make"}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_b2","toolName":"bash","result":{"content":[],"details":{"async":{"state":"running","jobId":"bash-2","type":"bash"}}},"isError":false}`,
+			`{"type":"tool_execution_start","toolCallId":"call_w1","toolName":"wait","args":{"jobId":"bash-1"}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_w1","toolName":"wait","result":{"content":[],"details":{"jobId":"bash-1","status":"completed"}},"isError":false}`,
+			`{"type":"tool_execution_start","toolCallId":"call_w2","toolName":"wait","args":{"jobId":"bash-2"}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_w2","toolName":"wait","result":{"content":[{"type":"text","text":"done"}]},"isError":false}`,
+		)
+		row1, _ := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-1"))
+		assert.Equal(t, bgtask.StatusSucceeded, row1.Status)
+		row2, _ := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-2"))
+		assert.Equal(t, bgtask.StatusSucceeded, row2.Status)
+	})
+
+	t.Run("write to proc kill closes tracked shell as stopped", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(
+			frameBackgroundBashStart,
+			frameBackgroundBashEnd,
+			// A failed kill write must not close the shell.
+			`{"type":"tool_execution_start","toolCallId":"call_kill_err","toolName":"write","args":{"path":"proc://bash-1/kill","content":""}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_kill_err","toolName":"write","result":{"content":[]},"isError":true}`,
+		)
+		row, _ := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-1"))
+		assert.Equal(t, bgtask.StatusRunning, row.Status, "failed write must not close shell")
+
+		r.emit(
+			`{"type":"tool_execution_start","toolCallId":"call_kill","toolName":"write","args":{"path":"proc://bash-1/kill","content":""}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_kill","toolName":"write","result":{"content":[]},"isError":false}`,
+		)
+		row, _ = r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-1"))
+		assert.Equal(t, bgtask.StatusStopped, row.Status)
+	})
+
+	t.Run("write to proc kill via uri closes tracked shell", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(
+			frameBackgroundBashStart,
+			frameBackgroundBashEnd,
+			`{"type":"tool_execution_start","toolCallId":"call_kill_uri","toolName":"write","args":{"uri":"proc://bash-1/kill"}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_kill_uri","toolName":"write","result":{"content":[]},"isError":false}`,
+		)
+		row, _ := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-1"))
+		assert.Equal(t, bgtask.StatusStopped, row.Status)
+	})
+
+	t.Run("write to proc kill with JSON-escaped slashes closes tracked shell", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(
+			frameBackgroundBashStart,
+			frameBackgroundBashEnd,
+			`{"type":"tool_execution_start","toolCallId":"call_kill_esc","toolName":"write","args":{"path":"proc:\/\/bash-1\/kill"}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_kill_esc","toolName":"write","result":{"content":[]},"isError":false}`,
+		)
+		row, _ := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-1"))
+		assert.Equal(t, bgtask.StatusStopped, row.Status, "RFC 8259 escaped slashes in proc:// kill URI must close the shell")
+	})
+}
+
+func TestReusedSubagentRevivesRowAndWritesDistinctReport(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	rowKey := subagentRowKey(r.agent.sessionID, "Probe")
+
+	// Job 1 starts, yields report 1, and finishes.
+	r.emit(frameTaskStart, frameStarted)
+	childID := subagentRow(t, r, "Probe").ChildAgentID
+	r.emit(
+		subagentEvent("Probe", `{"type":"tool_execution_end","toolCallId":"y1","toolName":"yield","result":{"content":[],"details":{"data":"First answer."}},"isError":false}`),
+		frameCompleted,
+	)
+	assert.Equal(t, bgtask.StatusSucceeded, subagentRow(t, r, "Probe").Status)
+
+	// Job 2 starts under the same subagent id, revives the finished row, yields report 2, and completes.
+	r.emit(
+		`{"type":"subagent_lifecycle","payload":{"id":"Probe","agent":"task","parentToolCallId":"call_task_2","status":"started","description":"Second run","index":0}}`,
+	)
+	assert.Equal(t, []string{rowKey}, r.sink.RevivedTasks(), "Job 2 revives the finished row")
+	row2 := subagentRow(t, r, "Probe")
+	assert.Equal(t, bgtask.StatusRunning, row2.Status)
+	assert.Equal(t, childID, row2.ChildAgentID, "Job 2 reuses the existing child transcript")
+
+	r.emit(
+		subagentEvent("Probe", `{"type":"tool_execution_end","toolCallId":"y2","toolName":"yield","result":{"content":[],"details":{"data":"Second answer."}},"isError":false}`),
+		`{"type":"subagent_lifecycle","payload":{"id":"Probe","parentToolCallId":"call_task_2","status":"completed","index":0}}`,
+	)
+	assert.Equal(t, bgtask.StatusSucceeded, subagentRow(t, r, "Probe").Status)
+	reports := subagentReports(r, childID)
+	require.Len(t, reports, 2, "Job 2 report uses a distinct ReportID")
+	assert.Equal(t, "First answer.", reports[0]["text"])
+	assert.Equal(t, "Second answer.", reports[1]["text"])
 }

@@ -211,7 +211,9 @@ func (w *zcodeWorkflowRuns) apply(frame zcodeConversationFrame) (upserts []bgtas
 			states = append(states, state)
 			if run := w.runs[delta.RunID]; run != nil {
 				for _, removed := range delta.RemovedNodes {
-					run.forgetNode(zcodeWorkflowSiteKey(removed.SiteID, removed.Ordinal))
+					if closed, ok := run.forgetNode(zcodeWorkflowSiteKey(removed.SiteID, removed.Ordinal)); ok {
+						upserts = append(upserts, closed)
+					}
 				}
 			}
 		case "workflowRun.removed":
@@ -299,11 +301,18 @@ func mergeZCodeWorkflowNode(node, change zcodeWorkflowNodeState) zcodeWorkflowNo
 	return node
 }
 
-// forgetNode drops a node that a change removed. Its row stays, as the record
-// of work that ran.
-func (r *zcodeWorkflowRun) forgetNode(key string) {
+// forgetNode drops a node that a change removed, and returns a closing row
+// when its previously emitted row is still active.
+func (r *zcodeWorkflowRun) forgetNode(key string) (bgtask.Upsert, bool) {
 	delete(r.nodes, key)
 	r.order = slices.DeleteFunc(r.order, func(candidate string) bool { return candidate == key })
+	row, written := r.rows[key]
+	if !written || row.Status.IsFinished() {
+		return bgtask.Upsert{}, false
+	}
+	row.Status = bgtask.StatusStopped
+	r.rows[key] = row
+	return row, true
 }
 
 // changedRows returns the row of each ask node whose row changed.

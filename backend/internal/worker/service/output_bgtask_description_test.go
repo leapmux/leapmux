@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,6 @@ func TestBackgroundTaskDescriptionPreservesLifecycleAndDisplayAdmission(t *testi
 				assert.Equal(t, "Actual profile", after.Description)
 				after.Description = before.Description
 				after.UpdatedAt = before.UpdatedAt
-				after.OutputGeneration = before.OutputGeneration
 				assert.Equal(t, before, after, "descriptive metadata cannot alter any lifecycle or linkage field")
 				cache.Mu.Lock()
 				index := cache.indexOf("task")
@@ -77,8 +77,8 @@ func TestBackgroundTaskDescriptionKeepsCacheAndStoreAfterRefusal(t *testing.T) {
 	cache.Mu.Unlock()
 	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER refuse_description")
 	require.NoError(t, err)
-	_, err = svc.DB.ExecContext(t.Context(), "UPDATE agent_background_tasks SET output_generation = ? WHERE owner_agent_id = ? AND row_key = ?", before.OutputGeneration+10, "description-refusal", "task")
-	require.NoError(t, err)
+	replacement := newTestRootOutputSink(t, svc.Output, "description-refusal", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, replacement.UpdateBackgroundTaskStatus("task", bgtask.StatusRunning, ""))
 	newer := storedRow(t, svc, "description-refusal", "task")
 	require.NoError(t, sink.UpdateBackgroundTaskDescription("task", "Stale metadata"))
 	assert.Equal(t, newer, storedRow(t, svc, "description-refusal", "task"))

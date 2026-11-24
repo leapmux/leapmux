@@ -388,3 +388,49 @@ func TestCursorSubagentDetectorsClaimOnlyTheSpawn(t *testing.T) {
 		}
 	}
 }
+
+func TestACP_CursorLateSubagentSpawnedRevivesEarlyBackgroundTask(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCursorTestAgent(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("cursor-root")
+	a.HooksForTest().SessionUpdateHandler = a.handleCursorSessionUpdate
+
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-root","update":{"sessionUpdate":"tool_call","toolCallId":"call-bg-task","kind":"other","status":"pending","title":"Task: Run background audit","rawInput":{"_toolName":"task","prompt":"Audit the repo"}}}}`))
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-root","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-bg-task","status":"completed","rawOutput":{"isBackground":true}}}}`))
+
+	row, ok := sink.BackgroundTask("call-bg-task")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	childID := row.ChildAgentID
+	require.NotEmpty(t, childID)
+
+	// Late subagent_spawned after early isBackground:true close must revive and attach.
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-root","update":{"sessionUpdate":"subagent_spawned","subagentSessionId":"bg-child-session","name":"audit","task":"Audit the repo","_meta":{"cursor":{"toolCallId":"call-bg-task","agentId":"audit-1"}}}}}`))
+
+	row, ok = sink.BackgroundTask("call-bg-task")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, []string{"call-bg-task"}, sink.RevivedTasks())
+	assert.Equal(t, "Run background audit", row.Title)
+
+	// Updates on the attached child session must route to the revived child transcript.
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"bg-child-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"LATE_BG_CHILD_OUTPUT"}}}}`))
+	assert.Contains(t, sink.Child(childID).ProgressUpdates(), agent.ModelTextProgress("acp:agent_message_chunk", "LATE_BG_CHILD_OUTPUT"))
+
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-root","update":{"sessionUpdate":"subagent_state_update","subagentSessionId":"bg-child-session","state":"completed","_meta":{"cursor":{"toolCallId":"call-bg-task","agentId":"audit-1"}}}}}`))
+	row, ok = sink.BackgroundTask("call-bg-task")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// A finished foreground task must NOT be revived by a late subagent_spawned.
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-root","update":{"sessionUpdate":"tool_call","toolCallId":"call-fg-task","kind":"other","status":"pending","title":"Task: Foreground","rawInput":{"_toolName":"task","prompt":"Run fg"}}}}`))
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-root","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-fg-task","status":"completed","rawOutput":{"isBackground":false}}}}`))
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"cursor-root","update":{"sessionUpdate":"subagent_spawned","subagentSessionId":"fg-child-session","name":"fg","task":"Run fg","_meta":{"cursor":{"toolCallId":"call-fg-task","agentId":"fg-1"}}}}}`))
+
+	fgRow, ok := sink.BackgroundTask("call-fg-task")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, fgRow.Status)
+	assert.Equal(t, []string{"call-bg-task"}, sink.RevivedTasks(), "a finished foreground task must not revive")
+}

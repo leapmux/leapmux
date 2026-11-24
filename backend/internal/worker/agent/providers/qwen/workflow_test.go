@@ -615,3 +615,84 @@ func TestQwenStopDoesNotWaitForAWorkflowReplyBeforeStoppingTheProcess(t *testing
 	assert.Empty(t, a.children.workflows)
 	a.stateMu.Unlock()
 }
+
+func TestQwenBackgroundWorkflowStaysOpenUntilPollerSettles(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	trap := clock.Trap().NewTicker("qwen", "workflow")
+	defer trap.Close()
+	var completed atomic.Bool
+	a, sink, _ := newQwenAgent(t, clock, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if completed.Load() {
+			return qwenWorkflowTaskList(qwenWorkflowCompletedEntry)(request)
+		}
+		return qwenWorkflowTaskList(qwenWorkflowRunningEntry)(request)
+	})
+	ctx := testutil.DeadlineContext(t)
+
+	opened := make(chan struct{})
+	go func() {
+		defer close(opened)
+		a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_wf","status":"pending","title":"Workflow","kind":"other","rawInput":{"name":"triage","run_in_background":true},"_meta":{"toolName":"workflow"}}`))
+	}()
+	testutil.WaitForTimer(t, ctx, trap)
+	<-opened
+
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_wf","status":"completed","_meta":{"toolName":"workflow"}}`))
+	waitForQwenRegistryStorage(t, a)
+
+	rowKey := qwenWorkflowRowKey(qwenTestSession, "call_wf")
+	row, ok := sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "background workflow launch completion must keep its row running")
+	assert.True(t, row.EndedAt.IsZero())
+	a.stateMu.Lock()
+	poller := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
+	require.NotNil(t, poller, "background workflow must keep its poller active after launch")
+
+	completed.Store(true)
+	clock.Advance(workflowPollInterval).MustWait(ctx)
+	waitForQwenWorkflowStorage(t, a, poller)
+
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.False(t, row.EndedAt.IsZero(), "poller final snapshot must close the workflow row")
+}
+
+func TestQwenBackgroundWorkflowClosesOnBackgroundTaskCompletedNotice(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	trap := clock.Trap().NewTicker("qwen", "workflow")
+	defer trap.Close()
+	a, sink, _ := newQwenAgent(t, clock, qwenWorkflowTaskList(qwenWorkflowRunningEntry))
+	ctx := testutil.DeadlineContext(t)
+
+	opened := make(chan struct{})
+	go func() {
+		defer close(opened)
+		a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_wf","status":"pending","title":"Workflow","kind":"other","rawInput":{"name":"triage","run_in_background":true},"_meta":{"toolName":"workflow"}}`))
+	}()
+	testutil.WaitForTimer(t, ctx, trap)
+	<-opened
+
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_wf","status":"completed","_meta":{"toolName":"workflow"}}`))
+	waitForQwenRegistryStorage(t, a)
+
+	a.stateMu.Lock()
+	poller := a.children.workflows["call_wf"]
+	a.stateMu.Unlock()
+	require.NotNil(t, poller)
+
+	a.HandleOutput(backgroundNotice(t, "background_task_completed", map[string]any{
+		"taskId": "wf_1", "status": "failed", "kind": "workflow", "toolUseId": "call_wf", "description": "triage",
+	}))
+	waitForQwenWorkflowStorage(t, a, poller)
+
+	row, ok := sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.False(t, row.EndedAt.IsZero())
+	assert.Empty(t, statusTexts(sink), "a tracked workflow completion notice is consumed by its row")
+}

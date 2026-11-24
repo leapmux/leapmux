@@ -395,3 +395,15 @@ func TestOpenCodeAFailedChildLoadLeavesTheChildUnsteerable(t *testing.T) {
 		synctest.Wait()
 	})
 }
+
+func TestOpenCodeFollowChildSessionDoesNotRaceWithBackgroundClaim(t *testing.T) {
+	t.Parallel()
+	a, _, stdin := newChildSessionAgent(t)
+	a.HandleToolCallForTest(openCodeTaskRequest(t, "call-race", "", "Run in background."))
+	a.followChildSession("session-1", "call-race", "ses-race")
+	// Immediately claim the background launch on the same child while the spawned
+	// follower goroutine prepares to load the child session.
+	a.claimBackgroundChildLaunch("session-1", "call-race", "", "ses-race")
+	load := awaitRequest(t, stdin, "session/load", 1)
+	require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Result: json.RawMessage(`{}`)})))
+}

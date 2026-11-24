@@ -6,10 +6,13 @@
 package codewhale
 
 import (
+	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,4 +88,78 @@ func TestCodewhaleWorkflowEndRequiresAKnownSuccessfulOutcome(t *testing.T) {
 			assert.Len(t, sink.BackgroundTasks(), 1)
 		})
 	}
+}
+
+type failingReportAdmissionServices struct {
+	agent.ProviderServices
+	cleanups atomic.Int32
+}
+
+func (s *failingReportAdmissionServices) ReserveTranscriptOutput(*agent.OutputQueue, ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
+	return nil, errors.New("report admission rejected")
+}
+
+func (s *failingReportAdmissionServices) CleanupChildAgent(childID string) {
+	s.cleanups.Add(1)
+	s.ProviderServices.CleanupChildAgent(childID)
+}
+
+func TestCodewhaleFinishChildClosesOnNonRetainedReportError(t *testing.T) {
+	t.Parallel()
+	services := &failingReportAdmissionServices{}
+	a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+		services.ProviderServices = inner
+		return services
+	}})
+	child := &codewhaleChild{agentID: testChildID, childID: "child-admit-err", title: "worker"}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role:         bgtask.RoleChildTask,
+		RowKey:       child.agentID,
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: child.childID,
+		Status:       bgtask.StatusRunning,
+	}))
+
+	a.finishChild(a.sink.ChildSink(child.childID), child, bgtask.StatusSucceeded, "Completed work.")
+
+	row, found := sink.BackgroundTask(child.agentID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "a non-retained report error must not strand the row Running")
+	assert.Equal(t, int32(1), services.cleanups.Load(), "cleanup must still run")
+}
+
+func TestCodewhaleFinishChildClosesOnCaptureError(t *testing.T) {
+	t.Parallel()
+	var cleanups atomic.Int32
+	a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+		return &captureErrCleanupServices{ProviderServices: inner, cleanups: &cleanups}
+	}})
+	a.captureReport = func(agent.TranscriptServices, agent.SubagentReportWrite) (agent.CapturedTranscript, bool, error) {
+		return agent.CapturedTranscript{}, false, errors.New("capture failed")
+	}
+	child := &codewhaleChild{agentID: testChildID, childID: "child-capture-err", title: "worker"}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role:         bgtask.RoleChildTask,
+		RowKey:       child.agentID,
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: child.childID,
+		Status:       bgtask.StatusRunning,
+	}))
+
+	a.finishChild(a.sink.ChildSink(child.childID), child, bgtask.StatusSucceeded, "Completed work.")
+
+	row, found := sink.BackgroundTask(child.agentID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "a report capture error must not strand the row Running")
+	assert.Equal(t, int32(1), cleanups.Load(), "cleanup must still run")
+}
+
+type captureErrCleanupServices struct {
+	agent.ProviderServices
+	cleanups *atomic.Int32
+}
+
+func (s *captureErrCleanupServices) CleanupChildAgent(childID string) {
+	s.cleanups.Add(1)
+	s.ProviderServices.CleanupChildAgent(childID)
 }

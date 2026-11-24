@@ -102,18 +102,6 @@ func enumRangeColumns(t *testing.T) []enumRangeColumn {
 			checks:       []string{"CHECK (registration_source BETWEEN 1 AND 4)"},
 		},
 		{
-			column:       "oauth_states.purpose",
-			lastOrdinal:  int32(leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_CONSENT_LOGIN),
-			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.OAuthStatePurpose_name),
-			checks:       []string{"CHECK (purpose BETWEEN 1 AND 3)"},
-		},
-		{
-			column:       "webauthn_sessions.kind",
-			lastOrdinal:  int32(leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_RECOVERY),
-			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.WebAuthnSessionKind_name),
-			checks:       []string{"CHECK (kind BETWEEN 1 AND 5)"},
-		},
-		{
 			column:       "oauth_providers.provider_type",
 			lastOrdinal:  int32(leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_GITHUB),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.IdentityProviderType_name),
@@ -130,12 +118,6 @@ func enumRangeColumns(t *testing.T) []enumRangeColumn {
 			lastOrdinal:  int32(leapmuxv1.TabType_TAB_TYPE_IMAGE),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.TabType_name),
 			checks:       []string{"CHECK (tab_type BETWEEN 1 AND 4)"},
-		},
-		{
-			column:       "device_authorizations.state",
-			lastOrdinal:  int32(leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED),
-			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.DeviceAuthorizationState_name),
-			checks:       []string{"CHECK (state BETWEEN 1 AND 3)"},
 		},
 		{
 			column:       "api_tokens.issuance",
@@ -233,27 +215,6 @@ func TestRevocationEventKindNumbering(t *testing.T) {
 		assert.Contains(t, sql,
 			"CREATE INDEX idx_revocation_events_session_revoked ON revocation_events(subject_id) WHERE kind = 2",
 			"%s must seek SESSION_REVOKED by its ordinal", rel)
-	}
-}
-
-// The other ordinal a hub migration spells outside a range check.
-//
-// oauth_states ties session_id to the REAUTH purpose with a table constraint,
-// and a constraint takes no parameter, so this literal cannot follow a
-// renumber either. Renumber REAUTH and the constraint refuses every reauth
-// state that carries its session, while it admits a LOGIN state that carries
-// one.
-func TestOAuthStatePurposeReauthNumbering(t *testing.T) {
-	t.Parallel()
-
-	require.Equal(t, leapmuxv1.OAuthStatePurpose(2),
-		leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_REAUTH,
-		"the oauth_states constraint below spells this number; renumbering it needs a migration, not just a proto edit")
-
-	for _, rel := range enumColumnMigrations {
-		sql := statementsOf(t, rel)
-		assert.Contains(t, sql, "CHECK ((purpose = 2) = (session_id <> ''))",
-			"%s must tie session_id to REAUTH by its ordinal", rel)
 	}
 }
 

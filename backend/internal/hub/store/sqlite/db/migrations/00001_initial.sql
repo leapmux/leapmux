@@ -675,12 +675,10 @@ CREATE TABLE delegation_tokens (
     -- none: an unstated grant must fail the INSERT, not authenticate.
     granted_scopes                TEXT NOT NULL,
     secret_hash                   BLOB NOT NULL,
-    refresh_hash                  BLOB,
     created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  DATETIME,
     expires_at                    DATETIME NOT NULL,
-    refresh_expires_at            DATETIME,
     revoked_at                    DATETIME
 );
 CREATE INDEX idx_delegation_tokens_user ON delegation_tokens(user_id);
@@ -696,53 +694,6 @@ CREATE INDEX idx_delegation_tokens_user_created ON delegation_tokens(user_id, cr
 -- high-churn table: seek the expired live rows instead of scanning every
 -- live token. Partial on revoked_at IS NULL to match the sweep's filter.
 CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at) WHERE revoked_at IS NULL;
-
--- RFC 8628 device authorizations. The CLI starts the flow on a headless
--- machine, the user activates the user_code from any browser, then the
--- CLI polls for the result. Rows live for `expires_at`; the cleanup
--- loop hard-deletes expired rows daily.
-CREATE TABLE device_authorizations (
-    device_code_hash BLOB PRIMARY KEY CHECK (typeof(device_code_hash) = 'blob' AND length(device_code_hash) = 32),
-    user_code             TEXT NOT NULL UNIQUE,
-    device_name           TEXT NOT NULL DEFAULT '',
-    -- WHICH APP started the flow. The device leg is anonymous no longer: the
-    -- activation page has to name the app it is about, and the token leg has
-    -- to refuse a redemption by a different one.
-    client_id             TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
-    -- What the app ASKED for. The request and the consent happen on two
-    -- machines with a six-character code between them, so the row is the only
-    -- carrier: nothing the browser posts could state the ask, and taking it
-    -- from the activation form would let whoever types the code widen it.
-    requested_scopes      TEXT NOT NULL DEFAULT '',
-    -- What the approval GRANTED. It binds HERE, at the consent, and the
-    -- exchange reads it back. Written as its own column rather than inferred
-    -- from requested_scopes, so the leg that mints reads a value named for
-    -- what it means -- and a pending row is distinguishable from one approved
-    -- for nothing.
-    granted_scopes        TEXT NOT NULL DEFAULT '',
-    user_id               TEXT REFERENCES users(id) ON DELETE CASCADE,
-    -- Where the authorization stands: a DeviceAuthorizationState ordinal
-    -- (proto/leapmux/v1/storage.proto), 1 pending, 2 approved, 3 denied.
-    -- No DEFAULT: the create binds PENDING, so an unstated state fails the
-    -- INSERT. TestEnumColumnChecksMatchTheirProtoRanges checks the range.
-    state                 INTEGER NOT NULL CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 3),
-    last_polled_at        DATETIME,
-    created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    expires_at            DATETIME NOT NULL,
-    consumed_at           DATETIME,
-    -- The app credential this grant ELEVATES, when it elevates one
-    -- rather than minting one. NULL for a login: those two flows differ only
-    -- in what the approval does, so they share the row, the TTL, the poll
-    -- throttle, the expiry sweep and the activation page.
-    --
-    -- No foreign key, deliberately: the row outlives nothing here, and a
-    -- revoked or deleted credential must make the approval a no-op rather
-    -- than fail the insert. The approval re-reads api_tokens under the
-    -- approving user's own id, so a grant that specifies a row somebody else
-    -- owns elevates nothing.
-    elevate_token_id      TEXT
-);
-CREATE INDEX idx_device_authorizations_expires_at ON device_authorizations(expires_at);
 
 -- One-shot RFC 6749 section 4.1 authorization codes. Each row is consumed
 -- exactly once during the /oauth/token exchange.
@@ -778,10 +729,11 @@ CREATE TABLE oauth_authorization_codes (
     -- to name it. An empty id means nothing was minted.
     minted_ref_id         TEXT NOT NULL DEFAULT '',
     -- The credential that this code VERIFIES, when it verifies one rather
-    -- than issuing one. One reference carries at most one
-    -- target is structural, since a reference holds one kind and one id. No
-    -- foreign key, for the reason device_authorizations.elevate_token_id
-    -- gives.
+    -- than issuing one. Carrying at most one target is structural, since a
+    -- reference holds one kind and one id. No foreign key, deliberately: a
+    -- revoked or deleted credential must make redemption a no-op rather than
+    -- fail the insert, and redemption re-reads the target under the approving
+    -- user's own id.
     step_up_kind          INTEGER CHECK (step_up_kind IS NULL OR typeof(step_up_kind) = 'integer') CHECK (step_up_kind BETWEEN 1 AND 2),
     step_up_ref_id        TEXT NOT NULL DEFAULT '',
     -- What this code redeems into, decided at consent and read at redeem. The
@@ -824,68 +776,6 @@ CREATE TABLE oauth_user_links (
 );
 CREATE UNIQUE INDEX idx_oauth_user_links_provider_subject ON oauth_user_links(provider_id, provider_subject);
 
--- Encrypted OAuth tokens per user per provider
-CREATE TABLE oauth_tokens (
-    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    provider_id     TEXT NOT NULL REFERENCES oauth_providers(id) ON DELETE CASCADE,
-    access_token    BLOB NOT NULL,   -- encrypted, AAD: 'access_token:' || user_id || ':' || provider_id
-    refresh_token   BLOB NOT NULL,   -- encrypted, AAD: 'refresh_token:' || user_id || ':' || provider_id
-    token_type      TEXT NOT NULL DEFAULT 'Bearer',
-    expires_at      DATETIME NOT NULL,
-    key_version     INTEGER NOT NULL DEFAULT 1,
-    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    PRIMARY KEY (user_id, provider_id)
-);
-CREATE INDEX idx_oauth_tokens_provider_id ON oauth_tokens(provider_id);
-CREATE INDEX idx_oauth_tokens_expires_at ON oauth_tokens(expires_at);
-CREATE INDEX idx_oauth_tokens_key_version ON oauth_tokens(key_version);
-
--- Short-lived OAuth state for CSRF + PKCE during auth flow
-CREATE TABLE oauth_states (
-    state           TEXT PRIMARY KEY,
-    provider_id     TEXT NOT NULL REFERENCES oauth_providers(id),
-    pkce_verifier   TEXT NOT NULL,
-    nonce_hash      TEXT NOT NULL DEFAULT '',
-    redirect_uri    TEXT NOT NULL DEFAULT '',
-    -- LOGIN starts a sign-in. REAUTH proves the identity again for an ALREADY
-    -- signed-in session, to elevate it. The callback branches on this: a
-    -- reauth state must never create a session or link an identity.
-    --
-    -- An OAuthStatePurpose ordinal. The CHECK is the enforcement, not the
-    -- DEFAULT: Go's zero value for the column is 0 (UNSPECIFIED), which the
-    -- CHECK refuses, so an insert that forgot the purpose FAILS instead of
-    -- reaching the DEFAULT. That matters because the callback treats every
-    -- callback dispatches only the three explicit purposes and refuses every
-    -- other value before it can create a session or link an identity.
-    purpose         INTEGER NOT NULL DEFAULT 1 CHECK (typeof(purpose) = 'integer') CHECK (purpose BETWEEN 1 AND 3),
-    -- The session a REAUTH state elevates on success. Empty for login states.
-    session_id      TEXT NOT NULL DEFAULT '',
-    expires_at      DATETIME NOT NULL,
-    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    -- A REAUTH (2) state carries the session it elevates, and a LOGIN state
-    -- login states carry none. TestOAuthStatePurposeReauthNumbering pins 2,
-    -- which a constraint cannot take as a parameter.
-    CHECK ((purpose = 2) = (session_id <> ''))
-);
-
--- Pending OAuth signups (new users choosing their username)
-CREATE TABLE pending_oauth_signups (
-    token            TEXT PRIMARY KEY,
-    provider_id      TEXT NOT NULL REFERENCES oauth_providers(id),
-    provider_subject TEXT NOT NULL,
-    nonce_hash       TEXT NOT NULL DEFAULT '',
-    email            TEXT NOT NULL DEFAULT '',
-    display_name     TEXT NOT NULL DEFAULT '',
-    access_token     BLOB NOT NULL,
-    refresh_token    BLOB NOT NULL,
-    token_type       TEXT NOT NULL DEFAULT 'Bearer',
-    token_expires_at DATETIME NOT NULL,
-    key_version      INTEGER NOT NULL DEFAULT 1,
-    redirect_uri     TEXT NOT NULL DEFAULT '',
-    expires_at       DATETIME NOT NULL,
-    created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-
 -- Passkey (WebAuthn) credentials for email-local accounts
 CREATE TABLE passkey_credentials (
     id              TEXT PRIMARY KEY,
@@ -905,29 +795,6 @@ CREATE TABLE passkey_credentials (
 CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials(credential_id);
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
 CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
-
--- Ephemeral WebAuthn ceremony state (signup, login, register, elevation, recovery)
-CREATE TABLE webauthn_sessions (
-    id           TEXT PRIMARY KEY,
-    -- A WebAuthnSessionKind ordinal.
-    kind         INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 5),
-    user_id      TEXT REFERENCES users(id) ON DELETE CASCADE,
-    payload_json TEXT NOT NULL DEFAULT '{}', -- '{}' or encrypted signup draft (base64), AAD: 'webauthn_payload:' || id
-    session_data BLOB NOT NULL,   -- keystore-encrypted, AAD: 'webauthn_session:' || id
-    expires_at   DATETIME NOT NULL,
-    created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-CREATE INDEX idx_webauthn_sessions_expires_at ON webauthn_sessions(expires_at);
-
--- One live ceremony per (user_id, kind) for per-user kinds (login, register,
--- elevation, recovery). persistSession deletes then inserts; this unique
--- index is what stops two concurrent Begins from leaving two encrypted
--- rows, and it also serves the delete-by-user-and-kind lookup. Signup has
--- no user yet (NULL user_id) and sits outside the predicate so concurrent
--- anonymous signups can coexist.
-CREATE UNIQUE INDEX idx_webauthn_sessions_user_kind
-    ON webauthn_sessions(user_id, kind)
-    WHERE user_id IS NOT NULL;
 
 -- Instance-level hub settings: one row per setting key. `value` is a JSON
 -- document whose shape is defined by the owning package's typed key handle
@@ -971,20 +838,15 @@ CREATE INDEX idx_worker_tab_publications_worker ON worker_tab_publications(worke
 -- +goose Down
 DROP TABLE IF EXISTS worker_tab_publications;
 DROP TABLE IF EXISTS oauth_authorization_codes;
-DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;
 DROP TABLE IF EXISTS api_tokens;
 DROP TABLE IF EXISTS oauth_clients;
 DROP TABLE IF EXISTS hub_runtime_lease;
 DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;
-DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS altcha_used_salts;
-DROP TABLE IF EXISTS webauthn_sessions;
 DROP TABLE IF EXISTS passkey_credentials;
 DROP TABLE IF EXISTS hub_settings;
-DROP TABLE IF EXISTS oauth_states;
-DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;
 DROP TABLE IF EXISTS oauth_providers;
 DROP TABLE IF EXISTS lifecycle_outbox;

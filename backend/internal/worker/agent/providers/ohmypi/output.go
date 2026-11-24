@@ -935,6 +935,14 @@ func (a *Agent) handleToolEnd(c *conversation, raw []byte) {
 		if c.isRoot() && !env.IsError {
 			a.openBackgroundShell(env.ToolCallID, args, env.Result)
 		}
+	case toolWait:
+		if c.isRoot() {
+			a.closeWaitedShells(args, env.Result, env.IsError)
+		}
+	case contracts.OhMyPiToolWrite:
+		if c.isRoot() && !env.IsError {
+			a.closeCancelledShell(args)
+		}
 	case contracts.OhMyPiToolYield:
 		if !c.isRoot() {
 			a.rememberYield(c, env.Result)

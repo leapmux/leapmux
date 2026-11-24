@@ -225,15 +225,16 @@ func TestInspectBusyWork_TitleFallbacksCleaningAndSortOrder(t *testing.T) {
 	startLiveTestTerminal(t, svc, "term-db", "")
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID: "term-db", WorkingDir: t.TempDir(), Title: "  Beta\tDB  ",
-		Cols: 80, Rows: 24, Screen: []byte{}, IsQuake: false,
+		Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	startSleepDescendant(t, svc, "term-db")
 
 	startLiveTestTerminal(t, svc, "term-quake", "")
-	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+	_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
 		ID: "term-quake", WorkingDir: t.TempDir(), Title: "   ",
-		Cols: 80, Rows: 24, Screen: []byte{}, IsQuake: true,
-	}))
+		Cols: 80, Rows: 24,
+	})
+	require.True(t, created)
 	startSleepDescendant(t, svc, "term-quake")
 
 	startLiveTestTerminal(t, svc, "term-plain", "")

@@ -3,7 +3,6 @@ package oauth
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -64,28 +63,13 @@ func (p *GitHubProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions
 	return p.oauth2Config.AuthCodeURL(state, options...)
 }
 
-func (p *GitHubProvider) Exchange(ctx context.Context, code, codeVerifier string) (*TokenSet, *UserClaims, error) {
+func (p *GitHubProvider) Exchange(ctx context.Context, code, codeVerifier string) (*UserClaims, error) {
 	token, err := p.oauth2Config.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
-		return nil, nil, fmt.Errorf("github exchange: %w", err)
+		return nil, fmt.Errorf("github exchange: %w", err)
 	}
 
-	claims, err := fetchGitHubUser(ctx, token.AccessToken, p.baseURL)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return TokenSetFromOAuth2Token(token), claims, nil
-}
-
-func (p *GitHubProvider) Refresh(ctx context.Context, refreshToken string) (*TokenSet, error) {
-	tokens, err := refreshWithConfig(ctx, p.oauth2Config, refreshToken, "github")
-	var refusal *oauth2.RetrieveError
-	if errors.As(err, &refusal) && refusal != nil && refusal.Response != nil && refusal.ErrorCode == "bad_refresh_token" &&
-		(refusal.Response.StatusCode == http.StatusOK || refusal.Response.StatusCode == http.StatusBadRequest) {
-		return nil, fmt.Errorf("%w: %w", ErrRefreshTokenRejected, err)
-	}
-	return tokens, err
+	return fetchGitHubUser(ctx, token.AccessToken, p.baseURL)
 }
 
 // fetchGitHubUser retrieves user info from the GitHub API (or a custom base URL for testing).

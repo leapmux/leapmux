@@ -2,7 +2,9 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -423,7 +425,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		alice := SeedUser(t, st, "deleter")
 		owner := userid.MustNew(alice.ID)
 		clientID := seedApp(t, st, "held", alice.ID, store.OAuthClientSourceUser)
-		deviceCode, authorizationCode := seedOAuthFlow(t, st, clientID, owner)
+		authorizationCode := seedOAuthFlow(t, st, clientID, owner)
 
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
@@ -454,8 +456,6 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		require.Error(t, err)
 		_, err = st.OAuthClients().Get(ctx, clientID)
 		require.NoError(t, err)
-		_, err = st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
-		require.NoError(t, err, "a failed deletion must restore the device grant")
 		_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
 		require.NoError(t, err, "a failed deletion must restore the authorization code")
 		_, err = st.APITokens().GetByID(ctx, tokenID)
@@ -468,15 +468,9 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		owner := userid.MustNew(alice.ID)
 		clientID := seedApp(t, st, "ran-a-flow", alice.ID, store.OAuthClientSourceUser)
 
-		// An ABANDONED device flow and an unredeemed authorization code. Both
-		// reference the app under the same RESTRICT key as a credential, but
-		// neither is history: a device grant lives ten minutes and a code one.
-		deviceCode, authorizationCode := id.Generate(), id.Generate()
-		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:       clientID,
-			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: "ABC-DEF",
-			ExpiresAt: time.Now().Add(10 * time.Minute),
-		}))
+		// An unredeemed authorization code refers to the app under the same
+		// RESTRICT key as a credential, but is not history.
+		authorizationCode := id.Generate()
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 			Code: authorizationCode, UserID: owner, ClientID: clientID,
 			CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
@@ -492,8 +486,6 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		assert.EqualValues(t, 1, rows)
 
 		_, err = st.OAuthClients().Get(ctx, clientID)
-		RequireNotFound(t, err)
-		_, err = st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
 		RequireNotFound(t, err)
 		_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
 		RequireNotFound(t, err)
@@ -516,7 +508,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				if !builtIn {
 					clientID = seedApp(t, st, "private-flow", alice.ID, store.OAuthClientSourceUser)
 				}
-				deviceCode, authorizationCode := seedOAuthFlow(t, st, clientID, userid.MustNew(alice.ID))
+				authorizationCode := seedOAuthFlow(t, st, clientID, userid.MustNew(alice.ID))
 				remove := func(tx store.Store) error {
 					rows, err := tx.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
 						ClientID: clientID, CallerUserID: userid.MustNew(bob.ID), CallerIsAdmin: builtIn,
@@ -535,8 +527,6 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				require.NoError(t, err)
 				_, err = st.OAuthClients().Get(ctx, clientID)
 				require.NoError(t, err)
-				_, err = st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
-				assert.NoError(t, err, "a refused app deletion must preserve the device grant")
 				_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
 				assert.NoError(t, err, "a refused app deletion must preserve the authorization code")
 			})
@@ -651,6 +641,82 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		require.NoError(t, err)
 		require.EqualValues(t, 1, rows)
 		assert.ErrorIs(t, lock(retiredID), store.ErrNotFound)
+
+		require.ErrorIs(t, st.OAuthClients().LockActive(ctx, appID), store.ErrLockingReadOutsideTransaction)
+		lockActive := func(clientID string) error {
+			return st.RunInTransaction(ctx, func(tx store.Store) error {
+				return tx.OAuthClients().LockActive(ctx, clientID)
+			})
+		}
+		require.NoError(t, lockActive(appID))
+		assert.ErrorIs(t, lockActive("unknown-client"), store.ErrNotFound)
+		assert.ErrorIs(t, lockActive(retiredID), store.ErrNotFound)
+	})
+
+	t.Run("LockActive serializes concurrent token creation against client revocation", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "lock-active-race")
+		ownerID := userid.MustNew(owner.ID)
+		raceCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+
+		for i := range 10 {
+			appID := seedApp(t, st, fmt.Sprintf("lock-active-race-app-%d", i), owner.ID, store.OAuthClientSourceUser)
+			start := make(chan struct{})
+			var (
+				wg        sync.WaitGroup
+				mintErr   error
+				revokeErr error
+			)
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				mintErr = st.RunInTransaction(raceCtx, func(tx store.Store) error {
+					if err := tx.OAuthClients().LockActive(raceCtx, appID); err != nil {
+						return err
+					}
+					return tx.APITokens().Create(raceCtx, store.CreateAPITokenParams{
+						Issuance:         store.APITokenIssuanceDeviceCode,
+						ID:               id.Generate(),
+						UserID:           ownerID,
+						ClientID:         appID,
+						InstallationName: "race-client",
+						GrantedScopes:    "workspace:read",
+						SecretHash:       []byte("race-hash"),
+					})
+				})
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				revokeErr = st.RunInTransaction(raceCtx, func(tx store.Store) error {
+					rows, err := tx.OAuthClients().Revoke(raceCtx, store.OAuthClientOwnershipParams{
+						ClientID:     appID,
+						CallerUserID: ownerID,
+					})
+					if err != nil {
+						return err
+					}
+					if rows != 1 {
+						return fmt.Errorf("expected 1 revoked app row, got %d", rows)
+					}
+					_, err = tx.OAuthClients().RevokeTokens(raceCtx, appID)
+					return err
+				})
+			}()
+			close(start)
+			wg.Wait()
+
+			require.NoError(t, revokeErr, "iteration %d: Revoke transaction must succeed", i)
+			if mintErr != nil {
+				assert.Truef(t, errors.Is(mintErr, store.ErrNotFound),
+					"iteration %d: mint must succeed or fail with ErrNotFound, got %v", i, mintErr)
+			}
+			live, err := st.OAuthClients().CountLiveTokens(raceCtx, appID)
+			require.NoError(t, err)
+			assert.Zero(t, live, "iteration %d: no live api_tokens row may survive concurrent revocation", i)
+		}
 	})
 
 	t.Run("a write refuses an unminted caller", func(t *testing.T) {
@@ -882,14 +948,10 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 	})
 }
 
-func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.UserID) (deviceCode, authorizationCode string) {
+func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.UserID) (authorizationCode string) {
 	t.Helper()
-	deviceCode, authorizationCode = id.Generate(), id.Generate()
+	authorizationCode = id.Generate()
 	ctx := context.Background()
-	require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID: clientID, DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: "FLOW-CODE",
-		ExpiresAt: time.Now().Add(10 * time.Minute),
-	}))
 	require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 		Code: authorizationCode, UserID: owner, ClientID: clientID,
 		CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
@@ -898,7 +960,7 @@ func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.U
 		// No step-up target, so the code redeems into an app credential.
 		Redemption: store.RedemptionKindToken,
 	}))
-	return deviceCode, authorizationCode
+	return authorizationCode
 }
 
 // seedApp registers one app. An EMPTY owner is hub-wide, which is the same

@@ -243,44 +243,6 @@ func TestDrainUntilEmpty(t *testing.T) {
 	})
 }
 
-func TestRun_DeletesExpiredWebAuthnSessions(t *testing.T) {
-	st := setupTestStore(t)
-	ctx := context.Background()
-
-	hash, err := password.Hash("TestPassword1!")
-	require.NoError(t, err)
-	expiredUserID := id.Generate()
-	liveUserID := id.Generate()
-	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID: expiredUserID, Username: "wauser-expired",
-		PasswordHash: hash, DisplayName: "WA Expired", FirstCredentialExempt: true,
-	}))
-	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID: liveUserID, Username: "wauser-live",
-		PasswordHash: hash, DisplayName: "WA Live", FirstCredentialExempt: true,
-	}))
-
-	expiredID := id.Generate()
-	liveID := id.Generate()
-	now := time.Now().UTC()
-	// Two users, same kind: one live ceremony per (user_id, kind).
-	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-		ID: expiredID, Kind: leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, UserID: expiredUserID, PayloadJSON: "{}",
-		SessionData: []byte("x"), ExpiresAt: now.Add(-time.Hour), CreatedAt: now.Add(-2 * time.Hour),
-	}))
-	require.NoError(t, st.WebAuthnSessions().Create(ctx, store.CreateWebAuthnSessionParams{
-		ID: liveID, Kind: leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN, UserID: liveUserID, PayloadJSON: "{}",
-		SessionData: []byte("y"), ExpiresAt: now.Add(time.Hour), CreatedAt: now,
-	}))
-
-	run(ctx, st)
-
-	_, err = st.WebAuthnSessions().Get(ctx, expiredID)
-	require.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.WebAuthnSessions().Get(ctx, liveID)
-	require.NoError(t, err)
-}
-
 // TestRun_DeletesAPITokensPastBothDeadlines covers the sweep that the capped
 // credential lifetime needs. A live row that can no longer authenticate AND
 // can no longer renew never works again, so nothing removes it otherwise:

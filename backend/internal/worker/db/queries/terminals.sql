@@ -1,8 +1,8 @@
 -- name: UpsertTerminal :exec
--- Initial records retain the existing shell and quake kind on conflict.
--- A terminal keeps both properties for its entire lifetime.
+-- Initial records retain the existing shell on conflict.
+-- A terminal keeps its shell for its entire lifetime.
 -- Later title and exit writes use dedicated UPDATE statements that preserve closed_at.
-INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, is_quake, closed_at)
+INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, closed_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(working_dir),
@@ -12,8 +12,6 @@ VALUES (
   sqlc.arg(cols),
   sqlc.arg(rows),
   sqlc.arg(screen),
-  sqlc.arg(exit_code),
-  sqlc.arg(is_quake),
   -- Initial records can carry a persisted closed state.
   sqlc.narg(closed_at)
 )
@@ -24,7 +22,6 @@ ON CONFLICT (id) DO UPDATE SET
   cols            = excluded.cols,
   rows            = excluded.rows,
   screen          = excluded.screen,
-  exit_code       = excluded.exit_code,
   closed_at       = excluded.closed_at;
 
 -- name: GetTerminal :one
@@ -35,27 +32,21 @@ SELECT * FROM terminals WHERE id = ?;
 -- name: SaveTerminalExit :exec
 UPDATE terminals SET
   title = CASE WHEN title = sqlc.arg(previous_title) THEN sqlc.arg(title) ELSE title END,
-  cols = sqlc.arg(cols), rows = sqlc.arg(rows), screen = sqlc.arg(screen), exit_code = sqlc.arg(exit_code)
+  cols = sqlc.arg(cols), rows = sqlc.arg(rows), screen = sqlc.arg(screen)
 WHERE id = sqlc.arg(id);
 
 -- Read before the runtime snapshot so a concurrent rename cannot be overwritten by that snapshot.
--- name: GetTerminalExitState :one
-SELECT is_quake, title FROM terminals WHERE id = ?;
+-- name: GetTerminalTitle :one
+SELECT title FROM terminals WHERE id = ?;
 
--- ListTerminalExitStatesByIDs batches GetTerminalExitState for busy-work
+-- ListTerminalTitlesByIDs batches GetTerminalTitle for busy-work
 -- inspection so quitting or switching mode avoids N+1 lookups while still
 -- skipping the 100KB screen BLOB.
--- name: ListTerminalExitStatesByIDs :many
-SELECT id, is_quake, title FROM terminals WHERE id IN (sqlc.slice('ids'));
+-- name: ListTerminalTitlesByIDs :many
+SELECT id, title FROM terminals WHERE id IN (sqlc.slice('ids'));
 
 -- name: UpdateTerminalTitle :exec
 UPDATE terminals SET title = ? WHERE id = ?;
-
--- GetTerminalExitCode reads the one column the archive teardown broadcasts.
--- GetTerminal would answer the same question, and it reads the 100KB screen
--- BLOB that this caller never looks at.
--- name: GetTerminalExitCode :one
-SELECT exit_code FROM terminals WHERE id = ?;
 
 -- GetTerminalID is the existence probe behind requireTerminalID: it answers
 -- sql.ErrNoRows for an unknown id while reading two narrow columns, so the
@@ -86,11 +77,8 @@ SELECT closed_at, title, workspace_archived FROM terminals WHERE id = ?;
 -- loading the BLOB on every Enter-press restart, which is wasted work
 -- in the common case (in-memory entry still present, Respawn carries
 -- the live buffer forward and length is ignored).
---
--- is_quake comes back too, because a QUAKE terminal has no restart contract:
--- its shell exiting ends it, and the handler refuses the respawn.
 SELECT working_dir, shell_start_dir, shell, cols, rows,
-       length(screen) AS screen_length, workspace_archived, is_quake
+       length(screen) AS screen_length, workspace_archived
 FROM terminals WHERE id = ?;
 
 -- name: CloseTerminal :execresult
@@ -110,65 +98,11 @@ WHERE id = ? AND closed_at IS NULL;
 -- collect ids. Mirrors ListAllAgentIDs.
 SELECT id FROM terminals;
 
--- name: ListAllOpenTerminalIDsWithQuake :many
--- Open terminals only. Mirrors ListAllOpenAgentIDs, and exists for the same
--- reason the orphan reconciler needs it: a closed row has nothing left to
--- converge, so comparing it against the hub's live list only re-runs a teardown
--- that already happened. Reads two narrow columns, so it never touches the
--- 100KB screen blob.
---
--- is_quake comes back with the id because the reconciler must SKIP a quake
--- terminal in its hub comparison. A quake terminal has no CRDT tab of its own,
--- so the hub can never list it, and keying it on its own id would reap a live
--- shell the user is typing in. It is reconciled by working DIRECTORY instead --
--- see ListOpenQuakeTerminals.
-SELECT id, is_quake FROM terminals WHERE closed_at IS NULL;
+-- name: ListAllOpenTerminalIDs :many
+-- Open terminal tabs only. Mirrors ListAllOpenAgentIDs. Quake terminals live in
+-- memory and never appear in this table, so every open row is a real tab.
+SELECT id FROM terminals WHERE closed_at IS NULL;
 
--- name: ListAllOpenTabTerminalIDs :many
--- Open terminals that are TABS, i.e. quake terminals excluded. The
--- terminal-side equivalent of ListAllOpenRootAgentIDs, and it exists for the
--- same reason: a delegation mint must give a tab the HUB agrees this worker
--- owns. A quake terminal has no CRDT tab, so the hub answers "tab not owned by
--- calling worker" and the mint backoff loops to a permanent failure. A child
--- agent id causes the identical failure, which is why that query filters too.
-SELECT id FROM terminals WHERE closed_at IS NULL AND is_quake = 0;
-
--- name: GetTerminalQuakeAndClosed :one
--- The two columns the exit handler needs to decide whether the terminal that
--- exited is a QUAKE terminal that is still open. Narrow for the reason
--- GetTerminalExitCode states: GetTerminal answers the same question and reads
--- the 100KB screen blob, and this runs on EVERY terminal exit.
-SELECT is_quake, closed_at FROM terminals WHERE id = ?;
-
--- name: ListOpenQuakeTerminalIDs :many
--- Every open QUAKE row. The worker boot sweep reads this to close the rows
--- whose PTY did not survive the restart: a quake terminal is valid only while
--- this process hosts its shell, and no other pass reclaims one while a live tab
--- still works in its directory.
-SELECT id FROM terminals WHERE is_quake = 1 AND closed_at IS NULL;
-
--- name: ListOpenQuakeTerminals :many
--- Every open QUAKE row, with the directory that addresses it. The orphan
--- reconciler reads this to ask, per row, whether any open tab still works in
--- that directory -- which is the whole liveness question for a quake terminal.
-SELECT id, working_dir FROM terminals WHERE is_quake = 1 AND closed_at IS NULL;
-
--- name: GetOpenQuakeTerminalByWorkingDir :one
--- The quake terminal of one working directory, if it has a live one. The unique
--- partial index on (working_dir) over open quake rows is what makes ":one"
--- honest.
-SELECT id, title FROM terminals
-WHERE working_dir = ? AND is_quake = 1 AND closed_at IS NULL
-LIMIT 1;
-
--- name: ListOpenQuakeTerminalsByWorkingDirs :many
--- Quake terminals for a set of directories, for the hydration ListTerminals
--- serves. Two narrow columns, never the row: the caller folds these ids into
--- the id set it already walks, and the walk re-reads each row through
--- ListTerminalsByIDs. `SELECT *` here read the 100KB screen blob a second time
--- and dropped it.
-SELECT id, working_dir FROM terminals
-WHERE working_dir IN (sqlc.slice('working_dirs')) AND is_quake = 1 AND closed_at IS NULL;
 -- name: ListTerminalsByIDs :many
 SELECT * FROM terminals WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 
@@ -195,14 +129,10 @@ UPDATE terminals SET workspace_archived = sqlc.arg(workspace_archived)
 WHERE id = sqlc.arg(id) AND closed_at IS NULL
   AND workspace_archived <> sqlc.arg(workspace_archived);
 
--- GetTerminalQuakeAndWorkingDir reads the two columns the terminal close path
--- needs to reap the directory's quake terminal: whether this row IS that
--- terminal (which is what stops the reap recursing) and which directory to ask
--- about. Narrow for the reason GetTerminalExitCode states -- GetTerminal
--- answers the same question and reads the 100KB screen blob, and this runs on
--- every terminal close.
--- name: GetTerminalQuakeAndWorkingDir :one
-SELECT is_quake, working_dir FROM terminals WHERE id = ?;
+-- GetTerminalWorkingDir reads the working directory on terminal close to reap
+-- the directory's quake terminal without scanning the 100KB screen blob.
+-- name: GetTerminalWorkingDir :one
+SELECT working_dir FROM terminals WHERE id = ?;
 
 -- ListOpenTabsByWorkingDirs is the WHOLE answer to "does any open tab still
 -- work in this directory?", which is the entire liveness question for a quake
@@ -211,25 +141,20 @@ SELECT is_quake, working_dir FROM terminals WHERE id = ?;
 -- Reads tab_locations rather than restating the per-type rule a fourth time.
 -- That view already encodes which tables hold tabs, what OPEN means for each
 -- (agents and terminals stamp closed_at; a payload-backed tab is hard deleted,
--- so its presence IS its openness), and which kinds carry an owner. A count
--- built from three hand-written SELECTs had to agree with it by hand.
---
--- is_quake = 0 excludes the quake terminal itself: a shell must never be the
--- reference that keeps it alive, or it would live for ever. The view reports 0
--- for every non-terminal branch, so this filter costs those branches nothing.
+-- so its presence IS its openness), and which kinds carry an owner.
 --
 -- tab_type comes back because the identity is the PAIR. A payload-backed tab id
 -- is minted client-side and unique only within one account, so the id alone
 -- cannot say whether two rows are the same tab -- see dirTabRef.
 -- name: ListOpenTabsByWorkingDirs :many
 SELECT tab_type, tab_id, working_dir, workspace_archived FROM tab_locations
-WHERE is_quake = 0 AND working_dir IN (sqlc.slice('working_dirs'));
+WHERE working_dir IN (sqlc.slice('working_dirs'));
 
 -- name: CreateTerminal :exec
--- Initial records retain the existing shell and quake kind on conflict.
--- A terminal keeps both properties for its entire lifetime.
+-- Initial records retain the existing shell on conflict.
+-- A terminal keeps its shell for its entire lifetime.
 -- Later title and exit writes use dedicated UPDATE statements that preserve closed_at.
-INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, is_quake, closed_at)
+INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, closed_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(working_dir),
@@ -239,12 +164,9 @@ VALUES (
   sqlc.arg(cols),
   sqlc.arg(rows),
   sqlc.arg(screen),
-  sqlc.arg(exit_code),
-  sqlc.arg(is_quake),
   -- Initial records can carry a persisted closed state.
   sqlc.narg(closed_at)
-)
-;
+);
 
 -- name: SaveCreationTerminalDimensions :execrows
 -- Retain resizes while a published creation transfers its startup claim.

@@ -138,6 +138,10 @@ func (b *Base) isCancelledTurnEnd(frame json.RawMessage) bool {
 }
 
 func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, response json.RawMessage, err error) {
+	// Flush registry closes queued by PromptEnded or incomplete-tool cleanup
+	// immediately after releasing sessionMu, because checkRegistryPublicationLocks
+	// defers flushes while sessionMu is held.
+	defer b.FlushRegistryObservations()
 	b.sessionMu.RLock()
 	defer b.sessionMu.RUnlock()
 	b.Mu.Lock()

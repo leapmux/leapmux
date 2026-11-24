@@ -118,13 +118,9 @@ UPDATE agents
 SET resumed = 1
 WHERE id = sqlc.arg(agent_id)
   AND agent_session_id = sqlc.arg(agent_session_id)
-  AND output_generation = sqlc.arg(output_generation)
   AND agent_session_id <> ''
   AND workspace_archived = 0
   AND closed_at IS NULL;
-
--- name: ReopenAgent :exec
-UPDATE agents SET closed_at = NULL WHERE id = ?;
 
 -- name: SetAgentOptions :exec
 UPDATE agents SET options = ? WHERE id = ?;
@@ -240,9 +236,6 @@ WHERE id = sqlc.arg(id) AND closed_at IS NULL
 -- and option_groups TEXT columns that this caller never looks at.
 -- name: GetAgentForInactiveBroadcast :one
 SELECT id, agent_session_id, agent_provider FROM agents WHERE id = ?;
-
--- name: UpdateAgentPlanFilePath :exec
-UPDATE agents SET plan_file_path = ? WHERE id = ?;
 
 -- name: UpdateAgentPlan :exec
 UPDATE agents SET plan_file_path = ?, plan_title = ? WHERE id = ?;
@@ -516,12 +509,6 @@ UPDATE agents SET provider_child_key = sqlc.arg(provider_child_key)
 WHERE id = sqlc.arg(id) AND parent_agent_id = sqlc.arg(parent_agent_id)
   AND provider_child_key = '';
 
--- AllocateAgentOutputGeneration reserves one physical root writer and its native session.
--- The limit prevents SQLite from converting an overflowing sum to REAL.
--- name: AllocateAgentOutputGeneration :one
-UPDATE agents
-SET output_generation = output_generation + 1
-WHERE id = sqlc.arg(id)
-  AND parent_agent_id IS NULL
-  AND output_generation < 9223372036854775807
-RETURNING output_generation, agent_session_id;
+-- GetRootAgentSessionID validates that id is a root agent and reads its native session ID.
+-- name: GetRootAgentSessionID :one
+SELECT agent_session_id FROM agents WHERE id = ? AND parent_agent_id IS NULL;

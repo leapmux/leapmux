@@ -463,6 +463,7 @@ func (p *workflowPoller) apply(entry *qwenWorkflowEntry) error {
 		Title:        entry.Label,
 		Activity:     entry.CurrentPhase,
 		Status:       qwenWorkflowRowStatus(entry.Status),
+		CloseRow:     qwenWorkflowStatusFinal(entry.Status),
 	}); err != nil {
 		return err
 	}
@@ -568,6 +569,7 @@ func (a *Agent) retireWorkflowPoller(poller *workflowPoller) {
 	if a.children.workflows[poller.toolCallID] == poller {
 		delete(a.children.workflows, poller.toolCallID)
 	}
+	delete(a.children.openBgWorkflows, poller.toolCallID)
 	if poller.reader != nil {
 		delete(poller.reader.pollers, poller)
 	}

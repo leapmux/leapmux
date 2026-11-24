@@ -43,7 +43,6 @@ func seedDelegationTokenForList(t *testing.T, st store.Store, userID, workspaceI
 		UserID:        userid.MustNew(userID),
 		WorkerID:      worker.ID,
 		SecretHash:    []byte("hash"),
-		RefreshHash:   []byte("refresh"),
 		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 	return tokenID

@@ -336,6 +336,7 @@ func (a *Agent) recoverGoalRunOf(sessionID string) error {
 	}
 	run, found := latestOpenGoalRun(list.Runs, sessionID)
 	if !found {
+		a.seedRecoveredOpenRuns(sessionID, list.Runs, "")
 		return nil
 	}
 	params, err = json.Marshal(map[string]string{"workflowId": run.WorkflowID})
@@ -351,6 +352,7 @@ func (a *Agent) recoverGoalRunOf(sessionID string) error {
 			Status      string            `json:"status"`
 			Inputs      map[string]string `json:"inputs"`
 			PauseReason string            `json:"pauseReason"`
+			Root        kiroWorkflowNode  `json:"root"`
 		} `json:"state"`
 	}
 	if err := json.Unmarshal(reply, &inspect); err != nil {
@@ -360,8 +362,63 @@ func (a *Agent) recoverGoalRunOf(sessionID string) error {
 	if status == "" {
 		status = run.Status
 	}
-	a.restoreGoalRun(sessionID, run.WorkflowID, strings.TrimSpace(inspect.State.Inputs["prompt"]), status, inspect.State.PauseReason)
+	objective := strings.TrimSpace(inspect.State.Inputs["prompt"])
+	a.restoreGoalRun(sessionID, run.WorkflowID, objective, status, inspect.State.PauseReason)
+	a.seedRecoveredWorkflowRun(sessionID, run.WorkflowID, kiroGoalWorkflowName, objective, status, inspect.State.Root)
+	a.seedRecoveredOpenRuns(sessionID, list.Runs, run.WorkflowID)
 	return nil
+}
+
+// seedRecoveredOpenRuns seeds remaining open workflow runs reported by
+// `_kiro/workflow/list` without issuing extra inspect requests.
+func (a *Agent) seedRecoveredOpenRuns(sessionID string, runs []kiroWorkflowRunSummary, skipWorkflowID string) {
+	for _, run := range runs {
+		if run.WorkflowID == "" || run.WorkflowID == skipWorkflowID {
+			continue
+		}
+		if run.ParentSessionID != "" && run.ParentSessionID != sessionID {
+			continue
+		}
+		if run.Status != kiroRunRunning && run.Status != kiroRunPaused {
+			continue
+		}
+		name := run.WorkflowName
+		if name == "" {
+			name = run.Name
+		}
+		a.seedRecoveredWorkflowRun(sessionID, run.WorkflowID, name, "", run.Status, kiroWorkflowNode{})
+	}
+}
+
+// seedRecoveredWorkflowRun records a recovered open workflow run and any active
+// step sessions from its inspected tree into Agent.workflows.runs. It uses the
+// same goalRestoreMu -> stateMu order as restoreGoalRun and never overwrites
+// newer live state or writes after a session replacement.
+func (a *Agent) seedRecoveredWorkflowRun(sessionID, workflowID, name, objective, status string, root kiroWorkflowNode) {
+	if workflowID == "" || (status != kiroRunRunning && status != kiroRunPaused) {
+		return
+	}
+	a.goalRestoreMu.Lock()
+	defer a.goalRestoreMu.Unlock()
+	if !a.IsCurrentSession(sessionID) {
+		return
+	}
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if existing := a.workflows.runs[workflowID]; existing != nil && existing.rootSessionID == sessionID {
+		// A live notification reported this run first, and it is newer.
+		return
+	}
+	if a.workflows.runs == nil {
+		a.workflows.runs = make(map[string]*workflowRun)
+	}
+	a.workflows.runs[workflowID] = &workflowRun{
+		rootSessionID: sessionID,
+		name:          strings.TrimSpace(name),
+		objective:     objective,
+		status:        status,
+		steps:         root.activeSteps(),
+	}
 }
 
 // latestOpenGoalRun picks the newest goal run of a session that did not end.

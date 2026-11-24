@@ -313,7 +313,13 @@ func (a *Agent) persistNoticeTo(target agent.ProviderServices, payload []byte) {
 // finishOutputAfterExit preserves unfinished output before the worker retires this process.
 func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
+	flush := false
+	defer func() {
+		a.dispatchMu.Unlock()
+		if flush {
+			a.flushOutputQueue()
+		}
+	}()
 	if a.outputEnded {
 		return
 	}
@@ -332,7 +338,9 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 	if discarding {
 		a.generation.DiscardMatching(func(string) bool { return true })
 		a.heldErrors = nil
+		a.backgroundProcesses = nil
 	}
+	flush = true
 	ids := []string{""}
 	for id, child := range a.children {
 		if child.registered && !child.closed {
@@ -355,6 +363,7 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 		a.closeToolScope(id, target, completion)
 		providerkit.ResetSpansAndProgress(target)
 	}
+	a.closeBackgroundProcesses(lettaExitStatus(completion))
 	a.setTurnActive(false)
 }
 

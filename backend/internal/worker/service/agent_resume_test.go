@@ -906,7 +906,7 @@ func TestAgentResume_DrainsRecoveredInputOnlyAfterWorkerOwner(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	require.NoError(t, svc.InputQueue.RecoverState(t.Context()))
+	require.NoError(t, svc.InputQueue.RecoverState(t.Context(), nil))
 
 	svc.owner.Store(nil)
 	r := svc.AgentResumer()

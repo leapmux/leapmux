@@ -379,3 +379,74 @@ func failedToolUpdate(callID string) acp.ToolCallUpdateEnvelope {
 func runningShellUpdate(callID string) acp.ToolCallUpdateEnvelope {
 	return acp.ToolCallUpdateEnvelope{ToolCallID: callID, Status: "in_progress", Title: "bash", RawInput: json.RawMessage(`{"command":"ls"}`)}
 }
+
+func TestOpenCodeInterruptBackgroundAndReusedChild(t *testing.T) {
+	t.Parallel()
+
+	t.Run("interrupts a running background child directly by its session row key", func(t *testing.T) {
+		t.Parallel()
+		a, sink, daemon := newTaskPartAgent(t, map[string]taskPartPage{
+			// The parent launch task part is already completed while the background child runs.
+			"": {messages: []string{storedTaskMessage(t, "call-bg", "completed", `{"sessionId":"ses-bg","background":true}`)}},
+		})
+		a.HandleToolCallForTest(openCodeTaskRequest(t, "call-bg", "", "Run in background."))
+		a.HandleToolCallUpdateForTest(openCodeBackgroundLaunchResult(t, "call-bg", "ses-bg"))
+
+		row, found := sink.BackgroundTask("ses-bg")
+		require.True(t, found)
+		require.Equal(t, bgtask.StatusRunning, row.Status)
+
+		require.NoError(t, a.InterruptChild("ses-bg", agent.StopContext{}))
+		reads, aborts := daemon.recorded()
+		assert.Empty(t, reads, "tracked background child aborts without scanning parent task parts")
+		assert.Equal(t, []string{"ses-bg"}, aborts)
+
+		a.handleDaemonEvent(json.RawMessage(`{"type":"session.error","properties":{"sessionID":"ses-bg"}}`))
+		closed, found := sink.BackgroundTask("ses-bg")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusInterrupted, closed.Status)
+	})
+
+	t.Run("interrupts a running reused child by its task_id row key", func(t *testing.T) {
+		t.Parallel()
+		a, sink, daemon := newTaskPartAgent(t, map[string]taskPartPage{
+			"": {messages: []string{runningTask(t, "call-2", "ses-reused")}},
+		})
+		a.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Job 1."))
+		a.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-reused", "Job 1 done."))
+
+		a.HandleToolCallForTest(openCodeTaskRequest(t, "call-2", "ses-reused", "Job 2."))
+		require.NoError(t, a.InterruptChild("ses-reused", agent.StopContext{}))
+		_, aborts := daemon.recorded()
+		assert.Equal(t, []string{"ses-reused"}, aborts)
+
+		a.HandleToolCallUpdateForTest(openCodeTaskFailure(t, "call-2", "ses-reused"))
+		closed, found := sink.BackgroundTask("ses-reused")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusInterrupted, closed.Status)
+	})
+
+	t.Run("interrupts a running background child after restart via durable child identity", func(t *testing.T) {
+		t.Parallel()
+		a, sink, daemon := newTaskPartAgent(t, map[string]taskPartPage{"": {}})
+		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole:     bgtask.RoleChildTask,
+			SpawnSpanID:      "call-bg-old",
+			ProviderChildKey: "ses-bg-durable",
+			Title:            "Durable BG",
+		})
+		require.NoError(t, err)
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:       "ses-bg-durable",
+			Kind:         bgtask.KindSubagent,
+			ChildAgentID: childID,
+			Title:        "Durable BG",
+			Status:       bgtask.StatusRunning,
+		}))
+
+		require.NoError(t, a.InterruptChild("ses-bg-durable", agent.StopContext{}))
+		reads, aborts := daemon.recorded()
+		assert.Empty(t, reads)
+		assert.Equal(t, []string{"ses-bg-durable"}, aborts)
+	})
+}

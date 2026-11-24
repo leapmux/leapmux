@@ -1072,3 +1072,175 @@ func TestQwenChildMessagesUseTheirResolvedDelegate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, foreignSpawn, "the root is not the nested child's direct parent")
 }
+
+func TestQwenEarlyShellCompletionSettlesRowOnLaunch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status string
+		want   bgtask.Status
+	}{
+		{name: "completed", status: "completed", want: bgtask.StatusSucceeded},
+		{name: "failed", status: "failed", want: bgtask.StatusFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newQwenAgent(t, nil, nil)
+			a.HandleOutput(metaChunk(t, "Background shell finished.", map[string]any{
+				"source":         "background_task_completed",
+				"backgroundTask": map[string]any{"taskId": "bg_early1", "status": tc.status, "kind": "shell", "commandLabel": "echo hi"},
+			}))
+
+			a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_sh","status":"pending","kind":"execute","rawInput":{"command":"echo hi","is_background":true},"_meta":{"toolName":"run_shell_command"}}`))
+			a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_sh","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Background shell started.\nid: bg_early1\npid: 42\n"}}],"_meta":{"toolName":"run_shell_command"}}`))
+
+			row, ok := sink.BackgroundTask("shell:bg_early1")
+			require.True(t, ok, "early completion must still leave a settled shell row")
+			assert.Equal(t, bgtask.KindShell, row.Kind)
+			assert.Equal(t, tc.want, row.Status)
+			assert.False(t, row.EndedAt.IsZero(), "an early-completed shell row must open already closed")
+		})
+	}
+}
+
+func TestQwenSendMessageRevivesFinishedSubagentAndResumesTranscriptTail(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	trap := clock.Trap().NewTicker("qwen", "transcript")
+	defer trap.Close()
+	a, sink, _ := newQwenAgent(t, clock, nil)
+	path := subagentTranscriptPath(t)
+	ctx := testutil.DeadlineContext(t)
+
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_686a7e3e21","status":"pending","title":"Agent","kind":"other","rawInput":{},"_meta":{"toolName":"agent","phase":"preparing"}}`))
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_686a7e3e21","status":"in_progress","rawInput":{"description":"Background child","prompt":"CHILD_TASK: job 1","subagent_type":"general-purpose"},"_meta":{"toolName":"agent"}}`))
+
+	launch := backgroundLaunchResult(t, path)
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		a.HandleOutput(launch)
+	}()
+	testutil.WaitForTimer(t, ctx, trap)
+	<-read
+
+	appendRecords(t, path,
+		`{"uuid":"u1","type":"user","isSidechain":true,"message":{"role":"user","parts":[{"text":"CHILD_TASK: job 1"}]}}`,
+		`{"uuid":"a1","type":"assistant","isSidechain":true,"message":{"role":"model","parts":[{"text":"Job 1 done."}]}}`,
+	)
+	a.HandleOutput(backgroundDone(t, "completed"))
+
+	rowKey := qwenAgentRowKey(qwenTestSession, "call_686a7e3e21")
+	row, ok := sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	child := sink.Child(row.ChildAgentID)
+	require.Equal(t, []string{"text:Job 1 done."}, childTexts(child))
+
+	// Job 2 wakes the finished subagent through send_message.
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_sm_1","status":"pending","title":"Send Message","kind":"other","rawInput":{"task_id":"general-purpose-call_686a7e3e21","message":"Run job 2"},"_meta":{"toolName":"send_message"}}`))
+		a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_sm_1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Message sent."}}],"_meta":{"toolName":"send_message"}}`))
+	}()
+	testutil.WaitForTimer(t, ctx, trap)
+	<-sendDone
+
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "send_message must revive the finished subagent row")
+	assert.True(t, row.EndedAt.IsZero(), "revived subagent must clear EndedAt")
+	assert.Contains(t, sink.RevivedTasks(), rowKey)
+
+	appendRecords(t, path,
+		`{"uuid":"u2","type":"user","isSidechain":true,"message":{"role":"user","parts":[{"text":"Run job 2"}]}}`,
+		`{"uuid":"a2","type":"assistant","isSidechain":true,"message":{"role":"model","parts":[{"text":"Job 2 done."}]}}`,
+	)
+	clock.Advance(transcriptPollInterval).MustWait(ctx)
+	testutil.RequireEventually(t, func() bool {
+		return len(childUserMessages(child)) == 1
+	}, "restarted tail must read Job 2 user message live from the saved offset")
+
+	a.HandleOutput(backgroundDone(t, "failed"))
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.Equal(t, []string{"text:Job 1 done.", "text:Job 2 done."}, childTexts(child),
+		"resuming from saved offset must not replay Job 1 records")
+	assert.Equal(t, []string{"Run job 2"}, childUserMessages(child),
+		"Job 2 user message must reach the child transcript")
+
+	// A failed or cancelled send_message call carrying task_id on tool_call or
+	// in_progress must not revive the finished subagent or start a transcript tail.
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_sm_fail","status":"pending","title":"Send Message","kind":"other","rawInput":{"task_id":"general-purpose-call_686a7e3e21","message":"Fail"},"_meta":{"toolName":"send_message"}}`))
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_sm_fail","status":"in_progress","rawInput":{"task_id":"general-purpose-call_686a7e3e21","message":"Fail"},"_meta":{"toolName":"send_message"}}`))
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_sm_fail","status":"failed","_meta":{"toolName":"send_message"}}`))
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, row.Status, "a failed send_message with task_id on pending/in_progress must leave the finished row closed")
+	assert.Len(t, sink.RevivedTasks(), 1, "failed send_message must not emit a spurious revival")
+
+	// send_message arguments arriving on tool_call_update also revive cleanly once completed.
+	sendUpdateDone := make(chan struct{})
+	go func() {
+		defer close(sendUpdateDone)
+		a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_sm_2","status":"pending","title":"Send Message","kind":"other","rawInput":{},"_meta":{"toolName":"send_message"}}`))
+		a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_sm_2","status":"in_progress","rawInput":{"task_id":"general-purpose-call_686a7e3e21","message":"Run job 3"},"_meta":{"toolName":"send_message"}}`))
+		a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_sm_2","status":"completed","_meta":{"toolName":"send_message"}}`))
+	}()
+	testutil.WaitForTimer(t, ctx, trap)
+	<-sendUpdateDone
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "send_message arguments on tool_call_update must revive the row")
+}
+
+func TestQwenBackgroundTaskCompletedBeforeLaunchUpdateDoesNotReopenOrStartTail(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	a, sink, _ := newQwenAgent(t, clock, nil)
+	path := subagentTranscriptPath(t)
+
+	// Open the agent tool call, then deliver background_task_completed before
+	// the launch tool_call_update arrives.
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_686a7e3e21","status":"pending","title":"Agent","kind":"other","rawInput":{"description":"Fast background child"},"_meta":{"toolName":"agent"}}`))
+	a.HandleOutput(backgroundDone(t, "completed"))
+
+	rowKey := qwenAgentRowKey(qwenTestSession, "call_686a7e3e21")
+	row, ok := sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Late launch update arrives after the task already completed.
+	a.HandleOutput(backgroundLaunchResult(t, path))
+
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "late launch update must leave the completed row finished")
+
+	a.stateMu.Lock()
+	_, inOpenBgAgents := a.children.openBgAgents["call_686a7e3e21"]
+	_, hasTail := a.children.tails["call_686a7e3e21"]
+	a.stateMu.Unlock()
+	assert.False(t, inOpenBgAgents, "already-closed background agent must not enter openBgAgents")
+	assert.False(t, hasTail, "already-closed background agent must not start a transcriptTail")
+}
+
+func TestQwenFinalToolCallDoesNotStartWorkflowPollerOrTrackSpawn(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	a, _, _ := newQwenAgent(t, clock, nil)
+
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_wf_final","status":"completed","title":"Workflow","kind":"other","rawInput":{"name":"nightly","run_in_background":true},"_meta":{"toolName":"workflow"}}`))
+	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_agent_final","status":"failed","title":"Agent","kind":"other","rawInput":{"description":"Already failed"},"_meta":{"toolName":"agent"}}`))
+
+	a.stateMu.Lock()
+	workflowsCount := len(a.children.workflows)
+	spawnsCount := len(a.children.spawns)
+	byCallCount := len(a.tools.byCall)
+	a.stateMu.Unlock()
+	assert.Zero(t, workflowsCount, "an already-final workflow tool_call must not start a workflowPoller")
+	assert.Zero(t, spawnsCount, "an already-final agent tool_call must not register in children.spawns")
+	assert.Zero(t, byCallCount, "an already-final tool_call must not remain in tools.byCall")
+}

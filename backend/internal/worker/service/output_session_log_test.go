@@ -89,7 +89,6 @@ WHEN NEW.id = 'session-log-owner' BEGIN SELECT RAISE(ABORT, 'session update refu
 			after, err := svc.Queries.GetAgentByID(t.Context(), agentID)
 			require.NoError(t, err)
 			expected := before
-			expected.OutputGeneration++
 			if boundary == "successful update" {
 				expected.AgentSessionID = "requested-native-session"
 			}

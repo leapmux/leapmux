@@ -69,6 +69,7 @@ func (svc *Service) applyTabCloseEffects(ctx context.Context, key ownedTabKey, r
 	if key.tabType == leapmuxv1.TabType_TAB_TYPE_AGENT {
 		svc.Output.CleanupChildAgents(retirement.Descendants)
 		for _, id := range retirement.ClosedAgentIDs {
+			svc.Output.ForgetAgentGenerationState(id)
 			if err := svc.InputQueue.RetireAgent(ctx, id); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 				slog.Warn("retire the input queue of a closed agent failed", "agent_id", id, "error", err)
 			}

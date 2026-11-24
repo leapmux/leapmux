@@ -82,8 +82,7 @@ WHERE w.deleted_at IS NULL
 SELECT l.tab_type, l.tab_id, l.user_id, l.working_dir, p.payload
 FROM tab_locations l
 LEFT JOIN worker_tab_payloads p
-  ON p.tab_type = l.tab_type AND p.tab_id = l.tab_id AND p.user_id = l.user_id
-WHERE l.is_quake = 0;
+  ON p.tab_type = l.tab_type AND p.tab_id = l.tab_id AND p.user_id = l.user_id;
 
 -- name: DeleteDeadWorktreeTabs :exec
 -- sqlc requires this qualifier because the correlated view exposes worktree_id too.

@@ -35,6 +35,17 @@ type sessionStream struct {
 	// contextWindow is the native context window of the model of this Session, in tokens,
 	// or 0 while the native process has stated none. Only the Remote reader reads and writes it.
 	contextWindow int64
+	// resumed is true for child streams opened from a root snapshot's subagentCatalog.
+	resumed bool
+	// replay holds transient snapshot replay state while replayChildSnapshot runs.
+	// Non-nil only during replay; only the Remote reader accesses it under dispatchMu.
+	replay *childSnapshotReplay
+}
+
+type childSnapshotReplay struct {
+	sawTurnStart   bool
+	turnOpen       bool
+	lastCompletion agent.MessageCompletion
 }
 
 type sessionAddress struct {
@@ -136,12 +147,16 @@ func (a *Agent) openConnection(ctx context.Context) error {
 }
 
 func (a *Agent) followSession(address sessionAddress, childAgentID string) error {
+	return a.followSessionWithMode(address, childAgentID, false)
+}
+
+func (a *Agent) followSessionWithMode(address sessionAddress, childAgentID string, resumed bool) error {
 	sessionID := address.SessionID
 	if address.Kind == "subagent" {
 		sessionID = address.ChildSessionID
 	}
 	streamID := "session-" + uuid.NewString()
-	stream := &sessionStream{address: address, sessionID: sessionID, parentSessionID: address.ParentSessionID, childAgentID: childAgentID, lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{})}
+	stream := &sessionStream{address: address, sessionID: sessionID, parentSessionID: address.ParentSessionID, childAgentID: childAgentID, lastSeq: -1, pending: map[string][]byte{}, ready: make(chan struct{}), resumed: resumed}
 	a.Mu.Lock()
 	a.streams[streamID] = stream
 	a.Mu.Unlock()
@@ -304,25 +319,8 @@ func (a *Agent) handleFrame(raw []byte) error {
 		}
 		stream.seedContextWindow(item.Projections.Values)
 		if stream.childAgentID != "" {
-			ownSeq, err := childOwnSequence(stream, item.Projections.Values, *item.Cursor)
-			if err != nil {
+			if err := a.replayChildSnapshot(stream, item.Projections.Values, *item.Cursor, item.Records, item.HasMore); err != nil {
 				return err
-			}
-			records, err := a.historyRecords(stream, *item.Cursor, historyPage{Records: item.Records, HasMore: item.HasMore})
-			if err != nil {
-				return err
-			}
-			for _, record := range records {
-				var event sessionEvent
-				if err := json.Unmarshal(record.Event, &event); err != nil || event.Seq == nil {
-					return fmt.Errorf("DeepSeek Harness child history has no native sequence")
-				}
-				if *event.Seq < ownSeq {
-					continue
-				}
-				if err := a.handleSessionEvent(stream, record.Event); err != nil {
-					return err
-				}
 			}
 		}
 		if err := a.applyProjections(stream, item.Projections.Values, true); err != nil {
@@ -476,4 +474,45 @@ func (a *Agent) streamSink(stream *sessionStream) agent.ProviderServices {
 		return a.sink.ChildSink(stream.childAgentID)
 	}
 	return a.sink
+}
+
+// replayChildSnapshot replays historical child events without triggering live
+// per-event revival or close churn, then reconciles the child's registry row once.
+func (a *Agent) replayChildSnapshot(stream *sessionStream, projections map[string]json.RawMessage, cursor int64, pageRecords []historyRecord, hasMore bool) error {
+	ownSeq, err := childOwnSequence(stream, projections, cursor)
+	if err != nil {
+		return err
+	}
+	records, err := a.historyRecords(stream, cursor, historyPage{Records: pageRecords, HasMore: hasMore})
+	if err != nil {
+		return err
+	}
+	replay := &childSnapshotReplay{}
+	stream.replay = replay
+	defer func() { stream.replay = nil }()
+	for _, record := range records {
+		var event sessionEvent
+		if err := json.Unmarshal(record.Event, &event); err != nil || event.Seq == nil {
+			return fmt.Errorf("DeepSeek Harness child history has no native sequence")
+		}
+		if *event.Seq < ownSeq {
+			continue
+		}
+		if err := a.handleSessionEvent(stream, record.Event); err != nil {
+			return err
+		}
+	}
+	stream.replay = nil
+	switch {
+	case replay.sawTurnStart && !replay.turnOpen:
+		return a.childTurnState(stream.sessionID, false, replay.lastCompletion)
+	case replay.turnOpen:
+		if stream.resumed {
+			return a.childTurnState(stream.sessionID, false, agent.MessageCompletionFinished)
+		}
+		a.setChildActive(stream.sessionID, true)
+	case stream.resumed && !stream.readyOnce:
+		return a.childTurnState(stream.sessionID, false, agent.MessageCompletionFinished)
+	}
+	return nil
 }

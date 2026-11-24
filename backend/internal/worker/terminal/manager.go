@@ -535,6 +535,19 @@ func (m *Manager) IsExited(terminalID string) bool {
 	return t.IsExited()
 }
 
+// ExitCode returns the shell's exit code and true when terminalID is tracked
+// and has exited, or (0, false) when unknown or still running.
+func (m *Manager) ExitCode(terminalID string) (int, bool) {
+	m.mu.RLock()
+	t, ok := m.currentTerminalLocked(terminalID)
+	m.mu.RUnlock()
+
+	if !ok {
+		return 0, false
+	}
+	return t.ExitCode()
+}
+
 // HangUpRequested reports whether the current terminal received a hang-up
 // request before its exit was observed.
 func (m *Manager) HangUpRequested(terminalID string) bool {

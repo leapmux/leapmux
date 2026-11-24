@@ -581,7 +581,7 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 				require.NoError(t, err)
 				seqs = append(seqs, seq)
 			}
-			createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{
 				AgentID:    "agent-1",
 				RequestID:  "request-1",
 				Payload:    []byte(`{"type":"permission","id":"request-1"}`),

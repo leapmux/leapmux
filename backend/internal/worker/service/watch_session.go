@@ -129,7 +129,7 @@ type resolveResult struct {
 	agentRows []db.Agent
 	agentReqs []*leapmuxv1.WatchAgentEntry
 	// Terminal-only (set by resolveTerminals; ignored for agents).
-	termRows    []db.Terminal
+	termRows    []terminalRecord
 	termIDs     []string
 	termOffsets map[string]int64
 }
@@ -218,7 +218,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 	}
 
 	var promotedTermIDs []string
-	var promotedTermRows []db.Terminal
+	var promotedTermRows []terminalRecord
 	var promotedOffsets map[string]int64
 	if termResult.applied {
 		promotedOffsets = make(map[string]int64)
@@ -412,20 +412,20 @@ func (s *watchSession) resolveTerminals(terminals []*leapmuxv1.WatchTerminalEntr
 		return resolveResult{applied: true, termOffsets: offsets}
 	}
 
-	rows, err := s.svc.Queries.ListTerminalsByIDs(bgCtx(), requestedIDs)
+	rows, err := s.svc.terminalCatalog().listByIDs(bgCtx(), requestedIDs)
 	if err != nil {
-		slog.Warn("WatchEvents: ListTerminalsByIDs failed", "error", err)
+		slog.Warn("WatchEvents: listTerminalsByIDs failed", "error", err)
 		return resolveResult{applied: false, rejections: lookupFailedRejections(requestedIDs)}
 	}
 
-	byID := make(map[string]db.Terminal, len(rows))
+	byID := make(map[string]terminalRecord, len(rows))
 	for _, row := range rows {
 		byID[row.ID] = row
 	}
 
 	var (
 		outEntries []watchEntry
-		outRows    []db.Terminal
+		outRows    []terminalRecord
 		outIDs     []string
 		rejections []*leapmuxv1.WatchRejection
 	)

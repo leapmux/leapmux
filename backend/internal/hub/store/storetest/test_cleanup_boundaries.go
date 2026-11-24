@@ -246,31 +246,6 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		})
 	})
 
-	t.Run("device authorization expiry sweep is millisecond-exact", func(t *testing.T) {
-		st := s.NewStore(t)
-		cutoff := boundaryCutoff()
-
-		for _, d := range []struct {
-			suffix    string
-			expiresAt time.Time
-		}{
-			{"expired", cutoff.Add(-time.Millisecond)},
-			{"at-cutoff", cutoff},
-			{"live", cutoff.Add(time.Millisecond)},
-		} {
-			require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-				ClientID:       oauthapp.ControlCLIClientID,
-				DeviceCodeHash: FixtureSecretHash("device-" + d.suffix),
-				UserCode:       "USER-" + d.suffix,
-				ExpiresAt:      d.expiresAt,
-			}))
-		}
-
-		assertBoundarySweep(t, cutoff, func(c time.Time) (int64, error) {
-			return st.Cleanup().DeleteExpiredDeviceAuthorizations(ctx, c)
-		})
-	})
-
 	t.Run("registration key expiry sweep is millisecond-exact", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "boundary-user")

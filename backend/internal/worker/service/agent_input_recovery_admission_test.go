@@ -305,9 +305,11 @@ func TestInputRecoveryApprovalAuthorizesWorkThatStartsAfterResumeIntent(t *testi
 					owner := id
 					if work == "descendant nonblocking control" {
 						owner = "child"
+						_, err := queries.StoreControlRequest(ctx, db.StoreControlRequestParams{AgentID: owner, RequestID: "late-control", Payload: []byte(`{}`)})
+						return err
 					}
-					_, err := queries.StoreControlRequest(ctx, db.StoreControlRequestParams{AgentID: owner, RequestID: "late-control", Payload: []byte(`{}`), NonBlocking: work == "descendant nonblocking control"})
-					return err
+					createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{AgentID: owner, RequestID: "late-control", Payload: []byte(`{}`)})
+					return nil
 				}
 			}}
 			svc.Queries = db.New(hook)
@@ -326,7 +328,7 @@ func TestInputRecoveryApprovalAuthorizesWorkThatStartsAfterResumeIntent(t *testi
 				if work == "descendant nonblocking control" {
 					owner = "child"
 				}
-				controls, err := queries.ListControlRequestsByAgentID(t.Context(), owner)
+				controls, err := svc.Output.ListControlRequests(t.Context(), owner)
 				require.NoError(t, err)
 				if work == "descendant nonblocking control" {
 					assert.Len(t, controls, 1)

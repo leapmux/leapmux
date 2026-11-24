@@ -151,46 +151,47 @@ func (s *UserService) DisconnectApp(ctx context.Context, req *leapmuxv1.Disconne
 	if clientID == "" {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "client_id is required")
 	}
-	// The rows are READ before the cascade, because each one's lifecycle
-	// effects run AFTER the write commits: effects accumulate, and a retried
-	// transaction would apply some of them twice.
-	refs, err := s.store.OAuthClients().ListUserTokenRefs(ctx, clientID, userInfo.ID)
-	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
-	}
-	// The three writes run in ONE transaction, like the equivalent cascade in
-	// AppService.RevokeApp: a failure or crash between them would leave the
-	// credentials revoked while an outstanding grant survives, and the grant's
-	// whole purpose below is that it must NOT outlive the disconnect.
-	var revoked int64
-	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		var err error
-		revoked, err = tx.OAuthClients().RevokeUserTokens(ctx, clientID, userInfo.ID)
-		if err != nil {
-			return fmt.Errorf("disconnect app: %w", err)
-		}
-		// The GRANTS this authorization produced die with it: outstanding
-		// authorization codes and approved-but-unpolled device grants stay
-		// redeemable for their TTL otherwise, and a consent the account allowed
-		// seconds before disconnecting would mint a fresh credential for the app
-		// the account just cut off.
-		now := s.now().UTC()
-		if _, err := tx.OAuthAuthorizationCodes().ConsumeActiveForUserClient(ctx, clientID, userInfo.ID, now); err != nil {
-			return fmt.Errorf("spend outstanding authorization codes: %w", err)
-		}
-		if _, err := tx.DeviceAuthorizations().ConsumeApprovedForUserClient(ctx, clientID, userInfo.ID, now); err != nil {
-			return fmt.Errorf("spend outstanding device grants: %w", err)
-		}
-		return nil
+	// Hold an in-memory invalidation guard before the user-auth transaction so
+	// no concurrent device-code exchange can slip past the disconnect, and read
+	// ListUserTokenRefs INSIDE the transaction so any token committed just
+	// before this lock acquisition is both revoked in SQL and evicted from the
+	// auth cache/channels by BearerRevokedBatch.
+	var (
+		ids     []string
+		revoked int64
+	)
+	err = withDeviceInvalidation(s.deviceAuths, s.deviceAuths.BeginInvalidateForUserClient(clientID, userInfo.ID), s.now, func() error {
+		return s.store.RunInUserAuthTransaction(ctx, userInfo.ID, func(tx store.Store) error {
+			refs, err := tx.OAuthClients().ListUserTokenRefs(ctx, clientID, userInfo.ID)
+			if err != nil {
+				return fmt.Errorf("list app credentials: %w", err)
+			}
+			// Allocate fresh per attempt so a retried transaction never duplicates IDs.
+			attemptIDs := make([]string, 0, len(refs))
+			for _, ref := range refs {
+				attemptIDs = append(attemptIDs, ref.ID)
+			}
+			revoked, err = tx.OAuthClients().RevokeUserTokens(ctx, clientID, userInfo.ID)
+			if err != nil {
+				return fmt.Errorf("disconnect app: %w", err)
+			}
+			// The GRANTS this authorization produced die with it: outstanding
+			// authorization codes and approved-but-unpolled device grants stay
+			// redeemable for their TTL otherwise, and a consent the account allowed
+			// seconds before disconnecting would mint a fresh credential for the app
+			// the account just cut off.
+			now := s.now().UTC()
+			if _, err := tx.OAuthAuthorizationCodes().ConsumeActiveForUserClient(ctx, clientID, userInfo.ID, now); err != nil {
+				return fmt.Errorf("spend outstanding authorization codes: %w", err)
+			}
+			ids = attemptIDs
+			return nil
+		})
 	})
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// ONE batched eviction, exactly as RevokeApp runs its cascade's effects.
-	ids := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		ids = append(ids, ref.ID)
-	}
 	s.lifecycle.BearerRevokedBatch(auth.BearerKindAPI, ids)
 	return &leapmuxv1.DisconnectAppResponse{RevokedCredentialCount: revoked}, nil
 }

@@ -17,6 +17,8 @@ const (
 	fastagentChildHistoryLimit  = 16 << 20
 )
 
+var errFastagentArchiveAmbiguous = errors.New("ambiguous fastagent child archive match")
+
 type fastagentArchiveCandidate struct {
 	childID, modelCallID string
 	directory            string
@@ -157,7 +159,7 @@ func readFastagentChildArchiveFromRoot(root sessionstore.ArchiveRoot, parentSess
 			continue
 		}
 		if matched != nil {
-			return nil, errors.New("multiple fastagent children match one ACP subagent")
+			return nil, fmt.Errorf("multiple fastagent children match one ACP subagent: %w", errFastagentArchiveAmbiguous)
 		}
 		matched = &fastagentChildArchive{childID: candidate.childID, messages: messages}
 	}
@@ -327,7 +329,7 @@ func fastagentChildForParentResult(root sessionstore.ArchiveRoot, parentSessionI
 					continue
 				}
 				if matched != nil && (matched.childID != identity.childID || matched.modelCallID != identity.modelCallID) {
-					return nil, errors.New("multiple fastagent parent results match one ACP subagent")
+					return nil, fmt.Errorf("multiple fastagent parent results match one ACP subagent: %w", errFastagentArchiveAmbiguous)
 				}
 				matched = &identity
 			}

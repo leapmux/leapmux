@@ -48,22 +48,6 @@ func (s *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.Ti
 	return s.conn.rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, sqltime.MySQLNullTimeOf(cutoff)))
 }
 
-func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context, now time.Time) (int64, error) {
-	return s.conn.rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx, sqltime.NewMySQLTime(now)))
-}
-
-func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error) {
-	return s.conn.rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx, sqltime.NewMySQLTime(now)))
-}
-
-func (s *cleanupStore) DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error) {
-	return s.conn.rowsAffected(s.conn.q.DeleteExpiredWebAuthnSessions(ctx, sqltime.NewMySQLTime(now)))
-}
-
-func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error) {
-	return s.conn.rowsAffected(s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, sqltime.NewMySQLTime(now)))
-}
-
 func (s *cleanupStore) DeleteExpiredOAuthAuthorizationCodes(ctx context.Context, now time.Time) (int64, error) {
 	return s.conn.rowsAffected(s.conn.q.DeleteExpiredOAuthAuthorizationCodes(ctx, sqltime.NewMySQLTime(now)))
 }

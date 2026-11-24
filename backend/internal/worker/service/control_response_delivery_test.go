@@ -37,7 +37,7 @@ func TestControlResponseRefusesAReplacedProviderSession(t *testing.T) {
 			require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "old-session"}))
 			oldAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", AgentSessionID: "old-session", RequestID: "request", ClaimToken: "claim",
 				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
 			})
@@ -64,7 +64,7 @@ func TestClearContextDoesNotSuppressOtherControlResponses(t *testing.T) {
 				ID: "agent-1", WorkingDir: t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			}))
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 				Payload: []byte(fmt.Sprintf(`{"type":"control_request","request_id":"request","request":{"tool_name":%q}}`, tool)),
 			})
@@ -104,7 +104,7 @@ func TestControlResponseRecoveryKeepsTheBytesThatWereDelivered(t *testing.T) {
 	}
 	svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, provider, encoder)))
 	createClaimTestAgent(t, svc, "agent-1")
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
 	})
@@ -135,7 +135,7 @@ func TestControlResponseRecoveryKeepsTheBytesThatWereDelivered(t *testing.T) {
 func TestLeapMuxPlanApprovalKeepsTheRequestWhenRecordingFails(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim",
 		Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
 	})
@@ -149,8 +149,7 @@ func TestLeapMuxPlanApprovalKeepsTheRequestWhenRecordingFails(t *testing.T) {
 	}
 	response := []byte(`{"response":{"request_id":"plan","response":{"behavior":"deny"}}}`)
 	require.ErrorContains(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim"}), "answer storage failed")
-	request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "plan"})
-	require.NoError(t, err)
+	request := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "plan")
 	require.Equal(t, "claim", request.ClaimToken)
 	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_control_answer")
 	require.NoError(t, err)
@@ -160,7 +159,7 @@ func TestLeapMuxPlanApprovalKeepsTheRequestWhenRecordingFails(t *testing.T) {
 func TestLeapMuxPlanApprovalRejectsMissingDecisions(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim",
 		Payload: []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
 	})
@@ -174,12 +173,20 @@ func TestLeapMuxPlanApprovalRejectsMissingDecisions(t *testing.T) {
 }
 
 func TestControlResponseRecoversRecordingWithoutRepeatingDelivery(t *testing.T) {
-	for _, replaceRequest := range []bool{false, true} {
-		t.Run(map[bool]string{false: "same request", true: "reissued request"}[replaceRequest], func(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		replaceRequest bool
+		nonBlocking    bool
+	}{
+		{name: "same request"},
+		{name: "reissued request", replaceRequest: true},
+		{name: "reissued non-blocking request", replaceRequest: true, nonBlocking: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
+				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", NonBlocking: tc.nonBlocking,
 				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 			})
 			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
@@ -193,15 +200,14 @@ func TestControlResponseRecoversRecordingWithoutRepeatingDelivery(t *testing.T) 
 			err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim"})
 			require.ErrorContains(t, err, "answer storage failed")
 			require.Equal(t, 1, sends)
-			request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
-			require.NoError(t, err)
+			request := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "request")
 			require.Equal(t, "claim", request.ClaimToken)
 			_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_control_answer")
 			require.NoError(t, err)
 
-			if replaceRequest {
-				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-					AgentID: "agent-1", RequestID: "request", ClaimToken: "new-claim",
+			if tc.replaceRequest {
+				createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
+					AgentID: "agent-1", RequestID: "request", ClaimToken: "new-claim", NonBlocking: tc.nonBlocking,
 					Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"date"}}`),
 				})
 			}
@@ -217,9 +223,9 @@ func TestControlResponseRecoversRecordingWithoutRepeatingDelivery(t *testing.T) 
 			require.Len(t, answers, 1)
 			stored := decodeStructuredControlResponse(t, answers[0])
 			require.JSONEq(t, string(response), string(stored.Response))
-			requests, err := restored.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+			requests, err := restored.Output.ListControlRequests(t.Context(), "agent-1")
 			require.NoError(t, err)
-			if replaceRequest {
+			if tc.replaceRequest && tc.nonBlocking {
 				require.Len(t, requests, 1)
 				require.Equal(t, "new-claim", requests[0].ClaimToken)
 			} else {
@@ -232,7 +238,7 @@ func TestControlResponseRecoversRecordingWithoutRepeatingDelivery(t *testing.T) 
 func TestControlResponseKeepsTheRequestWhenTheAgentCannotReceiveIt(t *testing.T) {
 	svc, dispatcher, writer := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 	})
@@ -244,8 +250,7 @@ func TestControlResponseKeepsTheRequestWhenTheAgentCannotReceiveIt(t *testing.T)
 	response := decodeQueueResponse(t, writer, &leapmuxv1.SendControlResponseResponse{})
 	require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY, response.State)
 	require.NotEmpty(t, response.Error)
-	request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
-	require.NoError(t, err, "a response that did not reach the agent must not remove its request")
+	request := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "request")
 	require.Equal(t, "claim", request.ClaimToken)
 	rows, err := svc.Queries.ListMessagesByAgentID(t.Context(), db.ListMessagesByAgentIDParams{AgentID: "agent-1", Limit: 10})
 	require.NoError(t, err)
@@ -257,7 +262,7 @@ func TestControlResponseRetriesOnlyAfterConfirmedDeliveryFailure(t *testing.T) {
 		t.Run(map[bool]string{false: "not sent", true: "uncertain"}[uncertain], func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 			})
@@ -278,7 +283,7 @@ func TestControlResponseRetriesOnlyAfterConfirmedDeliveryFailure(t *testing.T) {
 			response := []byte(`{"id":"request","result":{"decision":"accept"}}`)
 			err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim"})
 			require.ErrorIs(t, err, failure)
-			requests, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), "agent-1")
+			requests, err := svc.Output.ListControlRequests(t.Context(), "agent-1")
 			require.NoError(t, err)
 			require.Len(t, requests, 1)
 			err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim"})
@@ -296,14 +301,14 @@ func TestControlResponseRetriesOnlyAfterConfirmedDeliveryFailure(t *testing.T) {
 func TestDeliveredControlResponseKeepsAReissuedRequest(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "old-claim",
 		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 	})
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	svc.sendControlResponseFn = func(string, []byte) error {
-		createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 			AgentID: "agent-1", RequestID: "request", ClaimToken: "new-claim",
 			Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"date"}}`),
 		})
@@ -311,8 +316,7 @@ func TestDeliveredControlResponseKeepsAReissuedRequest(t *testing.T) {
 	}
 	err = svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: []byte(`{"id":"request","result":{"decision":"accept"}}`), ClaimToken: "old-claim"})
 	require.NoError(t, err)
-	request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request"})
-	require.NoError(t, err)
+	request := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "request")
 	require.Equal(t, "new-claim", request.ClaimToken)
 }
 
@@ -364,7 +368,7 @@ func createControlResponseChild(t *testing.T, svc *Service, parent db.Agent, id 
 func pendingControlResponsePlan(t *testing.T, svc *Service, row db.Agent) controlResponsePlan {
 	t.Helper()
 	payload := []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`)
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: row.ID, RequestID: "request", ClaimToken: "claim", AgentSessionID: row.AgentSessionID, Payload: payload,
 	})
 	return controlResponsePlan{
@@ -411,12 +415,10 @@ func TestExecuteControlResponseWaitsForRootLifecycle(t *testing.T) {
 				assert.Zero(t, sends.Load(), "delivery must wait for the root process lifecycle")
 				switch mutation {
 				case "retired":
-					_, err := svc.Queries.DeleteControlRequestInstance(t.Context(), db.DeleteControlRequestInstanceParams{
-						AgentID: child.ID, RequestID: plan.requestMeta.RequestID, ClaimToken: plan.requestMeta.ClaimToken,
-					})
-					require.NoError(t, err)
+					_, ok := svc.Output.controls.deleteBlocking(child.ID, plan.requestMeta.RequestID, plan.requestMeta.ClaimToken)
+					require.True(t, ok)
 				case "replaced":
-					createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+					createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 						AgentID: child.ID, RequestID: plan.requestMeta.RequestID, ClaimToken: "replacement-claim",
 						AgentSessionID: child.AgentSessionID, Payload: plan.requestMeta.Payload,
 					})
@@ -448,4 +450,47 @@ func TestExecuteControlResponseWaitsForRootLifecycle(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestFinalizeControlResponseRetainsBlockingRequestOnCommitFailure(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	payload := []byte(`{"id":"req-retry","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`)
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "req-retry", Payload: payload}))
+	stored := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "req-retry")
+	response := []byte(`{"id":"req-retry","result":{"decision":"accept"}}`)
+	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
+		AgentID:         "agent-1",
+		RequestID:       "req-retry",
+		ClaimToken:      stored.ClaimToken,
+		RequestPayload:  stored.Payload,
+		ResponseContent: response,
+		ResolvedContent: response,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, deliveryID)
+	_, err = svc.Queries.SetControlDeliveryState(t.Context(), db.SetControlDeliveryStateParams{
+		ID:            deliveryID,
+		State:         storedStateDelivered,
+		RequiredState: storedStatePending,
+	})
+	require.NoError(t, err)
+	answer, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{
+		AgentID: "agent-1", RequestID: "req-retry", ClaimToken: stored.ClaimToken,
+	})
+	require.NoError(t, err)
+	_, err = svc.DB.ExecContext(t.Context(), "CREATE TRIGGER fail_finalize_commit BEFORE UPDATE ON control_deliveries BEGIN SELECT RAISE(ABORT, 'finalize commit failed'); END")
+	require.NoError(t, err)
+
+	err = svc.finalizeControlResponse(answer)
+	require.ErrorContains(t, err, "finalize commit failed")
+	retained := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "req-retry")
+	assert.Equal(t, stored.ClaimToken, retained.ClaimToken)
+
+	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_finalize_commit")
+	require.NoError(t, err)
+	require.NoError(t, svc.finalizeControlResponse(answer))
+	requireNoControlRequest(t, t.Context(), svc.Output, "agent-1", "req-retry")
 }

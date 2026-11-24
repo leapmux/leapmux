@@ -11,8 +11,8 @@ import (
 // (children before parents).
 var SQLTruncateTableOrder = []string{
 	"worker_tab_publications",
-	"oauth_authorization_codes", "device_authorizations",
-	"pending_oauth_signups", "oauth_states", "oauth_tokens", "oauth_user_links", "oauth_providers",
+	"oauth_authorization_codes",
+	"oauth_user_links", "oauth_providers",
 	"altcha_used_salts", "hub_settings",
 	"hub_runtime_lease", "revocation_events", "revocation_event_sequence",
 	"lifecycle_outbox", "user_recent_batch_ids", "workspace_tab_owned",
@@ -20,11 +20,11 @@ var SQLTruncateTableOrder = []string{
 	"workspace_section_items", "workspace_sections",
 	"delegation_tokens", "api_tokens",
 	// oauth_clients comes after every table whose foreign key points at it --
-	// api_tokens, device_authorizations and oauth_authorization_codes -- and
+	// api_tokens and oauth_authorization_codes -- and
 	// before users, which its own owner and vouch columns point at.
 	"oauth_clients",
 	"workspaces", "worker_registration_keys", "workers",
-	"passkey_credentials", "webauthn_sessions",
+	"passkey_credentials",
 	"user_sessions", "users",
 }
 

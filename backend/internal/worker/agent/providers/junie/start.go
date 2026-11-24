@@ -73,7 +73,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// its own (see observeJunieTurnEnd).
 				SessionNotificationMetadata: a.observeJunieTurnEnd,
 				// Junie streams the output of a running command in rawOutput.
-				ToolOutput: a.junieToolOutput,
+				ToolOutput:  a.junieToolOutput,
+				PromptEnded: a.finishOpenChildren,
 				ClearProviderState: func() {
 					a.stopChildTails()
 					transcript.Reset()

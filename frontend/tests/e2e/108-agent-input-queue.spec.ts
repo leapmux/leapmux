@@ -1,14 +1,18 @@
 import type { Page } from '@playwright/test'
+import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { localFieldValueOf } from '../../src/components/chat/composer/scheduleSend'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { getUserId } from './helpers/api'
 import { nativeUserStrings } from './helpers/attachmentModelProbe'
 import { attachFile, attachmentPills, writeAttachmentFixture } from './helpers/attachments'
 import { finishCleanup, withCleanup } from './helpers/cleanup'
 import { boxCenter, mouseDragOnto } from './helpers/drag'
 import { withExtraClients } from './helpers/multiClient'
+import { spawnSubagentToolCall } from './helpers/providerToolCalls'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { expectSteerAccepted, QUEUED_INPUT_ROW_TESTID, queuedInputRow, steerButton } from './helpers/steer'
+import { backgroundTaskRows, expectRowBecomesFinal, requireRegistryRow } from './helpers/subagentRegistry'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { agentTabs, assistantBubbles, composerEditor, fillComposer, focusComposer, inputQueue, interruptButton, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, userBubbles, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
@@ -49,6 +53,57 @@ async function seedTwoQueuedRows(page: Page) {
     source: rows.filter({ hasText: 'first queued' }),
     target: rows.filter({ hasText: 'second queued' }),
   }
+}
+
+async function spawnHeldBackgroundSubagent(
+  page: Page,
+  modelScript: ModelScript,
+  spec: {
+    gate: string
+    childMarker: string
+    childDone: string
+    callId: string
+    description: string
+    rootPrompt: string
+    rootDone: string
+    followUpMatch: string
+    followUpReply: string
+  },
+) {
+  await modelScript.rule(
+    {
+      name: `claude background child holds on ${spec.gate}`,
+      when: { user: spec.childMarker },
+      respond: { gate: spec.gate, text: spec.childDone },
+      once: true,
+    },
+    {
+      name: `claude answers follow-up for ${spec.callId}`,
+      when: { user: spec.followUpMatch },
+      respond: { text: spec.followUpReply },
+      once: true,
+    },
+  )
+  const start = await modelScript.queue(
+    {
+      toolCalls: [
+        spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, spec.callId, {
+          description: spec.description,
+          prompt: modelScript.prompt(`Hold at ${spec.childMarker}.`),
+          background: true,
+        }),
+      ],
+    },
+    { text: spec.rootDone },
+  )
+  await sendMessage(page, modelScript.prompt(spec.rootPrompt))
+  await modelScript.waitForSteps(start + 2)
+  await modelScript.waitForGate(spec.gate)
+  await expect(assistantBubbles(page).filter({ hasText: spec.rootDone })).toHaveCount(1)
+  await requireRegistryRow(page)
+  const bgRow = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: spec.description }).first()
+  await expect(bgRow).toHaveAttribute('data-status', 'running')
+  return bgRow
 }
 
 test.describe('agent input queue', () => {
@@ -417,6 +472,84 @@ test.describe('agent input queue', () => {
     // Require the plus button to accept a click after the geometry check.
     await plus.click()
     await expect(page.getByTestId('composer-plus-popover')).toBeVisible()
+  })
+
+  test('holds queued input while a background task runs, drains when it finishes, and dispatches immediately on Steer', async ({ page, authenticatedWorkspace, modelScript }) => {
+    void authenticatedWorkspace
+    const drainGate = 'claude-bg-queue-drain-gate'
+    const steerGate = 'claude-bg-queue-steer-gate'
+    await withCleanup(async () => {
+      // Part (a): hold queued input behind a running background subagent, then auto-drain when it finishes.
+      const drainRow = await spawnHeldBackgroundSubagent(page, modelScript, {
+        gate: drainGate,
+        childMarker: 'BG_DRAIN_CHILD_MARKER',
+        childDone: 'BG_DRAIN_CHILD_DONE',
+        callId: 'bg-drain-spawn',
+        description: 'Background drain task',
+        rootPrompt: 'Spawn a background task for queue hold test.',
+        rootDone: 'ROOT_DRAIN_TURN_DONE',
+        followUpMatch: 'queued behind background drain',
+        followUpReply: 'DRAINED_AFTER_BG_REPLY',
+      })
+
+      await sendMessage(page, modelScript.prompt('queued behind background drain'))
+      const heldRow = queuedInputRow(page, 'queued behind background drain')
+      await expect(inputQueue(page)).toContainText('queued behind background drain')
+      await expect(heldRow).toBeVisible()
+      await expect(steerButton(heldRow)).toBeVisible()
+      await expect(userBubbles(page).filter({ hasText: 'queued behind background drain' })).toHaveCount(0)
+
+      await modelScript.rule({
+        name: 'root handles background drain completion notification',
+        when: { user: '<task-notification>' },
+        respond: { text: 'ROOT_DRAIN_NOTICE_DONE' },
+        once: true,
+      })
+      await modelScript.releaseGate(drainGate)
+      await expectRowBecomesFinal(page, drainRow)
+      await expect(userBubbles(page).filter({ hasText: 'queued behind background drain' })).toHaveCount(1)
+      await expect(assistantBubbles(page).filter({ hasText: 'DRAINED_AFTER_BG_REPLY' })).toHaveCount(1)
+      await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(0)
+      await waitForAgentIdle(page)
+
+      // Part (b): repeat and click Steer while the background task still runs -> dispatches immediately.
+      const steerBgRow = await spawnHeldBackgroundSubagent(page, modelScript, {
+        gate: steerGate,
+        childMarker: 'BG_STEER_CHILD_MARKER',
+        childDone: 'BG_STEER_CHILD_DONE',
+        callId: 'bg-steer-spawn',
+        description: 'Background steer task',
+        rootPrompt: 'Spawn a second background task for Steer bypass test.',
+        rootDone: 'ROOT_STEER_TURN_DONE',
+        followUpMatch: 'steered behind background task',
+        followUpReply: 'STEERED_WHILE_BG_RUNNING_REPLY',
+      })
+
+      await sendMessage(page, modelScript.prompt('steered behind background task'))
+      const steerRow = queuedInputRow(page, 'steered behind background task')
+      await expect(inputQueue(page)).toContainText('steered behind background task')
+      await expect(steerRow).toBeVisible()
+      await expect(userBubbles(page).filter({ hasText: 'steered behind background task' })).toHaveCount(0)
+
+      await steerButton(steerRow).click()
+      await expect(userBubbles(page).filter({ hasText: 'steered behind background task' })).toHaveCount(1)
+      await expect(assistantBubbles(page).filter({ hasText: 'STEERED_WHILE_BG_RUNNING_REPLY' })).toHaveCount(1)
+      await expect(page.getByTestId(QUEUED_INPUT_ROW_TESTID)).toHaveCount(0)
+
+      await modelScript.rule({
+        name: 'root handles background steer completion notification',
+        when: { user: '<task-notification>' },
+        respond: { text: 'ROOT_STEER_NOTICE_DONE' },
+        once: true,
+      })
+      await modelScript.releaseGate(steerGate)
+      await expectRowBecomesFinal(page, steerBgRow)
+      await expect(assistantBubbles(page).filter({ hasText: 'ROOT_STEER_NOTICE_DONE' })).toHaveCount(1)
+      await waitForAgentIdle(page)
+    }, () => finishCleanup([
+      modelScript.releaseGateIfHeld(drainGate),
+      modelScript.releaseGateIfHeld(steerGate),
+    ]))
   })
 })
 

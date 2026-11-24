@@ -241,6 +241,37 @@ func (k BearerKind) IsValid() bool {
 // FormatBearer(kind, tokenID, secret).
 func MintAccessSecret() string { return id.Generate() }
 
+// MintedAccessBearer carries the access-only outputs of one mint call for
+// credentials that do not carry a refresh token (such as delegation tokens).
+type MintedAccessBearer struct {
+	AccessBearer    string
+	AccessHash      []byte
+	AccessExpiresAt time.Time
+}
+
+// MintAccessBearer generates a fresh access-only bearer bound to tokenID for
+// the given BearerKind.
+func (v *TokenValidator) MintAccessBearer(kind BearerKind, tokenID string, now time.Time, accessTTL time.Duration) (MintedAccessBearer, error) {
+	if !kind.IsValid() {
+		return MintedAccessBearer{}, fmt.Errorf("invalid bearer kind %d", kind)
+	}
+	if tokenID == "" {
+		return MintedAccessBearer{}, errors.New("token ID must not be empty")
+	}
+	if accessTTL <= 0 {
+		return MintedAccessBearer{}, errors.New("access TTL must be positive")
+	}
+	return v.newAccessBearer(kind, tokenID, MintAccessSecret(), now, accessTTL), nil
+}
+
+func (v *TokenValidator) newAccessBearer(kind BearerKind, tokenID, secret string, now time.Time, ttl time.Duration) MintedAccessBearer {
+	return MintedAccessBearer{
+		AccessBearer:    FormatBearer(kind, tokenID, secret),
+		AccessHash:      v.HashSecret(secret),
+		AccessExpiresAt: now.Add(ttl),
+	}
+}
+
 // MintedBearerPair carries the (access, refresh) outputs of one mint
 // call. Hashes are what the row stores; bearers are what the client
 // receives.
@@ -254,9 +285,8 @@ type MintedBearerPair struct {
 }
 
 // MintBearerPair generates a fresh (access, refresh) pair bound to
-// tokenID for the given BearerKind. Centralises bearer formatting +
-// hash + TTL derivation so api_token and delegation_token issuers
-// can't drift on shape.
+// tokenID for the given BearerKind, sharing bearer formatting, secret
+// hashing, and TTL derivation with MintAccessBearer and DeriveRefreshBearerPair.
 func (v *TokenValidator) MintBearerPair(kind BearerKind, tokenID string, now time.Time, accessTTL, refreshTTL time.Duration) MintedBearerPair {
 	return v.newBearerPair(kind, tokenID, MintAccessSecret(), MintAccessSecret(), now, accessTTL, refreshTTL)
 }
@@ -267,13 +297,15 @@ func (v *TokenValidator) MintBearerPair(kind BearerKind, tokenID string, now tim
 // bearer wire format, secret hashing, and TTL derivation live in one place and
 // cannot drift between them.
 func (v *TokenValidator) newBearerPair(kind BearerKind, tokenID, access, refresh string, now time.Time, accessTTL, refreshTTL time.Duration) MintedBearerPair {
+	accessHalf := v.newAccessBearer(kind, tokenID, access, now, accessTTL)
+	refreshHalf := v.newAccessBearer(kind, tokenID, refresh, now, refreshTTL)
 	return MintedBearerPair{
-		AccessBearer:     FormatBearer(kind, tokenID, access),
-		RefreshBearer:    FormatBearer(kind, tokenID, refresh),
-		AccessHash:       v.HashSecret(access),
-		RefreshHash:      v.HashSecret(refresh),
-		AccessExpiresAt:  now.Add(accessTTL),
-		RefreshExpiresAt: now.Add(refreshTTL),
+		AccessBearer:     accessHalf.AccessBearer,
+		RefreshBearer:    refreshHalf.AccessBearer,
+		AccessHash:       accessHalf.AccessHash,
+		RefreshHash:      refreshHalf.AccessHash,
+		AccessExpiresAt:  accessHalf.AccessExpiresAt,
+		RefreshExpiresAt: refreshHalf.AccessExpiresAt,
 	}
 }
 
@@ -359,7 +391,7 @@ func (v *TokenValidator) lookupRowSecretHashes(ctx context.Context, kind BearerK
 		if err != nil {
 			return "", nil, err
 		}
-		return row.ID, [][]byte{row.SecretHash, row.RefreshHash}, nil
+		return row.ID, [][]byte{row.SecretHash}, nil
 	}
 	return "", nil, ErrInvalidToken
 }

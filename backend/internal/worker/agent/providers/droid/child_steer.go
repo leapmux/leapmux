@@ -1,6 +1,8 @@
 package droid
 
 import (
+	"log/slog"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -35,6 +37,28 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	if backgroundRunning {
 		return agent.ChildInputResult{StartsTurn: true}, agent.ErrAgentBusy
 	}
+	a.dispatchMu.Lock()
+	if a.childAgents == nil {
+		a.childAgents = make(map[string]string)
+	}
+	if a.childAgents[childKey] == "" {
+		a.childAgents[childKey] = childID
+	}
+	a.dispatchMu.Unlock()
+
+	a.tailMu.Lock()
+	hasTail := a.childTails[childKey] != nil
+	a.tailMu.Unlock()
+	var initial *droidArchivePosition
+	if !hasTail {
+		pos, probeErr := a.probeChildArchiveEnd(childKey)
+		if probeErr == nil {
+			initial = pos
+		} else {
+			slog.Warn("droid: probe child archive end failed; tailing from start", "session_id", childKey, "error", probeErr)
+		}
+	}
+
 	child, err := a.childConnection(childKey, childID)
 	if err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
@@ -42,8 +66,11 @@ func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.C
 	if err := child.SendInputForSession(childKey, input.Content, input.Attachments); err != nil {
 		return agent.ChildInputResult{StartsTurn: true}, err
 	}
-	providerkit.LogRegistryRefusal("droid", "revive child", a.sink.ReviveBackgroundTask(childKey))
-	a.resumeChildTail(childKey)
+	ready := make(chan struct{})
+	if a.resumeChildTail(childKey, initial, ready) {
+		providerkit.LogRegistryRefusal("droid", "revive child", a.sink.ReviveBackgroundTask(childKey))
+		close(ready)
+	}
 	a.finishExitedChild(childKey, child)
 	return agent.ChildInputResult{
 

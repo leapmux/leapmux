@@ -1257,3 +1257,49 @@ func TestSinkRetractedToolRowIsAbsentFromSequenceReadsAndEnrichment(t *testing.T
 	assert.True(t, attempts[0].Retracted)
 	assert.Empty(t, attempts[0].SupplementalContent)
 }
+
+func TestSink_UpsertBackgroundTaskDefaultsParentAgentIDAfterPreservingBlanks(t *testing.T) {
+	t.Parallel()
+	root := &Sink{}
+	childAID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "spawn-a",
+		ProviderChildKey: "child-a",
+		Title:            "Child A",
+	})
+	require.NoError(t, err)
+	childBID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "spawn-b",
+		ProviderChildKey: "child-b",
+		Title:            "Child B",
+	})
+	require.NoError(t, err)
+
+	childA := root.Child(childAID)
+	childB := root.Child(childBID)
+
+	require.NoError(t, childA.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     "shared-task",
+		Kind:       bgtask.KindShell,
+		Title:      "Run build",
+		ActiveForm: "Building",
+		Status:     bgtask.StatusRunning,
+	}))
+	row, ok := root.BackgroundTask("shared-task")
+	require.True(t, ok)
+	assert.Equal(t, childAID, row.ParentAgentID)
+	assert.Equal(t, "Building", row.ActiveForm)
+
+	require.NoError(t, childB.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     "shared-task",
+		Kind:       bgtask.KindShell,
+		ActiveForm: "Testing",
+		Status:     bgtask.StatusRunning,
+	}))
+	row, ok = root.BackgroundTask("shared-task")
+	require.True(t, ok)
+	assert.Equal(t, childAID, row.ParentAgentID, "PreservingBlanksFrom keeps the stored parent before blank defaulting")
+	assert.Equal(t, "Run build", row.Title)
+	assert.Equal(t, "Testing", row.ActiveForm)
+}

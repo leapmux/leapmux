@@ -594,7 +594,7 @@ func TestGrokWorkflowRunKeepsOneGroupedRow(t *testing.T) {
 
 	a.HandleOutput(workflow("infra_paused", map[string]any{"pause_message": "Rate limited"}))
 	row, _ = sink.BackgroundTask("workflow:run-1")
-	assert.Equal(t, bgtask.StatusRunning, row.Status, "a paused run can resume")
+	assert.Equal(t, bgtask.StatusPaused, row.Status, "a paused run stays paused until it resumes")
 	assert.Equal(t, "infra paused: Rate limited", row.ActiveForm)
 
 	a.HandleOutput(workflow("complete", nil))
@@ -694,9 +694,11 @@ func TestGrokClearContextEndsTheRowsOfTheOutgoingSession(t *testing.T) {
 func TestGrokWorkflowStatusMapping(t *testing.T) {
 	t.Parallel()
 	for status, want := range map[string]bgtask.Status{
-		"active": bgtask.StatusRunning, "user_paused": bgtask.StatusRunning, "blocked": bgtask.StatusRunning,
-		"budget_limited": bgtask.StatusRunning, "complete": bgtask.StatusSucceeded, "failed": bgtask.StatusFailed,
-		"cancelled": bgtask.StatusStopped, "interrupted": bgtask.StatusStopped,
+		"active": bgtask.StatusRunning, "user_paused": bgtask.StatusPaused,
+		"back_off_paused": bgtask.StatusPaused, "no_progress_paused": bgtask.StatusPaused,
+		"infra_paused": bgtask.StatusPaused, "blocked": bgtask.StatusPaused,
+		"budget_limited": bgtask.StatusPaused, "complete": bgtask.StatusSucceeded,
+		"failed": bgtask.StatusFailed, "cancelled": bgtask.StatusStopped, "interrupted": bgtask.StatusStopped,
 	} {
 		assert.Equal(t, want, grokWorkflowStatus(status), status)
 	}
@@ -1028,4 +1030,341 @@ func TestGrokWorkflowRunWithNoNameOrObjective(t *testing.T) {
 	assert.Equal(t, "Workflow", row.Title)
 	assert.Equal(t, "Workflow", row.GroupLabel)
 	assert.Empty(t, row.ActiveForm)
+}
+
+func TestGrokEmptyDescriptionSpawnLinksCorrectly(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+
+	a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+		"sessionUpdate": "tool_call", "toolCallId": "call-plain", "title": "spawn_subagent",
+		"rawInput": map[string]any{"prompt": "first", "description": ""},
+		"_meta":    grokToolMetaFixture("spawn_subagent"),
+	}))
+	a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+		"sessionUpdate": "tool_call", "toolCallId": "call-explore", "title": "spawn_subagent",
+		"rawInput": map[string]any{"prompt": "second", "description": "", "subagent_type": "explore"},
+		"_meta":    grokToolMetaFixture("spawn_subagent"),
+	}))
+
+	// Matching subagent_type claims call-explore before the older plain empty-description spawn.
+	a.HandleOutput(spawned(t, "sub-explore", "", map[string]any{"subagent_type": "explore"}))
+	assert.Equal(t, "call-explore", a.childRowForSession("sub-explore"))
+	_, extra := sink.BackgroundTask("sub-explore")
+	assert.False(t, extra)
+
+	// Unmatched subagent_type falls back to the oldest remaining empty-description spawn.
+	a.HandleOutput(spawned(t, "sub-plain", "", map[string]any{"subagent_type": "general-purpose"}))
+	assert.Equal(t, "call-plain", a.childRowForSession("sub-plain"))
+	_, extra = sink.BackgroundTask("sub-plain")
+	assert.False(t, extra)
+
+	a.HandleOutput(finished(t, "sub-explore", "completed", "Found it."))
+	a.HandleOutput(finished(t, "sub-plain", "completed", "Done."))
+	rowExplore, ok := sink.BackgroundTask("call-explore")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, rowExplore.Status)
+	rowPlain, ok := sink.BackgroundTask("call-plain")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, rowPlain.Status)
+}
+
+func TestGrokBackgroundSpawnFinishedBeforeSpawnedAndEarlyFinish(t *testing.T) {
+	t.Parallel()
+	t.Run("finished resolves backgroundSpawns without subagent_spawned", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(spawnCall(t, "call-bg-1", "Background job", "work", true))
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call_update", "toolCallId": "call-bg-1", "status": "completed",
+			"rawOutput": map[string]any{"type": "Text", "text": "Subagent started in background.\nsubagent_id: bg-1\n"},
+		}))
+		a.HandleOutput(finished(t, "bg-1", "completed", "All done."))
+
+		row, ok := sink.BackgroundTask("call-bg-1")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		_, extra := sink.BackgroundTask("bg-1")
+		assert.False(t, extra)
+
+		// A delayed Job 1 subagent_spawned without wake_origin must not revive the settled row.
+		a.HandleOutput(spawned(t, "bg-1", "Background job", nil))
+		row, _ = sink.BackgroundTask("call-bg-1")
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status, "delayed Job 1 subagent_spawned after backgroundSpawns finish must not revive")
+		assert.Empty(t, sink.RevivedTasks())
+	})
+
+	t.Run("early finish before background tool_call_update settles on arrival", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(spawnCall(t, "call-bg-2", "Fast background job", "work", true))
+		a.HandleOutput(finished(t, "bg-2", "failed", "fast boom"))
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call_update", "toolCallId": "call-bg-2", "status": "completed",
+			"rawOutput": map[string]any{"type": "Text", "text": "Subagent started in background.\nsubagent_id: bg-2\n"},
+		}))
+
+		row, ok := sink.BackgroundTask("call-bg-2")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+		_, extra := sink.BackgroundTask("bg-2")
+		assert.False(t, extra)
+		assert.Equal(t, []string{"fast boom"}, reportTexts(sink.Child(row.ChildAgentID)))
+
+		// A delayed Job 1 subagent_spawned without wake_origin must not revive the settled row.
+		a.HandleOutput(spawned(t, "bg-2", "Fast background job", nil))
+		row, _ = sink.BackgroundTask("call-bg-2")
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+		assert.Empty(t, sink.RevivedTasks())
+	})
+
+	t.Run("early finish before subagent_spawned settles on arrival", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(finished(t, "early-sub", "completed", "instant"))
+		a.HandleOutput(spawned(t, "early-sub", "Instant worker", nil))
+
+		row, ok := sink.BackgroundTask("early-sub")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		assert.Equal(t, []string{"instant"}, reportTexts(sink.Child(row.ChildAgentID)))
+	})
+}
+
+func TestGrokInterruptChildInspectsCancelReply(t *testing.T) {
+	t.Parallel()
+	t.Run("empty reply marks interrupted", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+		a.HandleOutput(spawned(t, "sub-1", "worker", nil))
+		require.NoError(t, a.InterruptChild("sub-1", agent.StopContext{}))
+		a.HandleOutput(finished(t, "sub-1", "cancelled", ""))
+
+		row, ok := sink.BackgroundTask("sub-1")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusInterrupted, row.Status)
+	})
+
+	t.Run("already_finished skips markInterrupted", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+			if req.Method == grokSubagentCancelMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"cancelled":false,"status":"already_finished"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+		a.HandleOutput(spawned(t, "sub-1", "worker", nil))
+		require.NoError(t, a.InterruptChild("sub-1", agent.StopContext{}))
+		a.HandleOutput(finished(t, "sub-1", "cancelled", ""))
+
+		row, ok := sink.BackgroundTask("sub-1")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, row.Status)
+	})
+
+	t.Run("not_found closes tracked row as stopped", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, func(req agenttest.RecordedRequest) agenttest.RPCReply {
+			if req.Method == grokSubagentCancelMethod {
+				return agenttest.RPCReply{Result: json.RawMessage(`{"cancelled":false,"reason":"not_found"}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+		a.HandleOutput(spawned(t, "sub-1", "worker", nil))
+		require.NoError(t, a.InterruptChild("sub-1", agent.StopContext{}))
+
+		row, ok := sink.BackgroundTask("sub-1")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, row.Status)
+		assert.ErrorIs(t, a.InterruptChild("sub-1", agent.StopContext{}), agent.ErrChildRouteNotReady)
+	})
+}
+
+func TestGrokSpawnToolAliasesOpenRows(t *testing.T) {
+	t.Parallel()
+	for _, toolName := range []string{"task", "Task", "Agent"} {
+		t.Run(toolName, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+			a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+				"sessionUpdate": "tool_call", "toolCallId": "call-" + toolName, "title": toolName,
+				"rawInput": map[string]any{"prompt": "Inspect", "description": "Inspect code"},
+				"_meta":    grokToolMetaFixture(toolName),
+			}))
+			row, ok := sink.BackgroundTask("call-" + toolName)
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+			a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+				"sessionUpdate": "tool_call_update", "toolCallId": "call-" + toolName, "status": "completed",
+				"rawOutput": map[string]any{"type": "SubagentCompleted", "output": "Done.", "subagent_id": "sub-" + toolName},
+			}))
+			row, _ = sink.BackgroundTask("call-" + toolName)
+			assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		})
+	}
+}
+
+func TestGrokWakeOriginAndWorkflowRevival(t *testing.T) {
+	t.Parallel()
+	t.Run("wake_origin revives finished subagent and reattaches child session", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(spawnCall(t, "call-wake", "Helper", "Job 1", false))
+		a.HandleOutput(spawned(t, "sub-wake", "Helper", map[string]any{"child_session_id": "child-s1"}))
+		task, ok := sink.BackgroundTask("call-wake")
+		require.True(t, ok)
+		child := sink.Child(task.ChildAgentID)
+
+		a.HandleOutput(childChunk(t, "child-s1", "First answer."))
+		a.HandleOutput(childTurnCompleted(t, "child-s1"))
+		a.HandleOutput(finished(t, "sub-wake", "completed", "Job 1 done."))
+		task, _ = sink.BackgroundTask("call-wake")
+		assert.Equal(t, bgtask.StatusSucceeded, task.Status)
+
+		// Job 2 wakes the finished subagent under a new child session.
+		a.HandleOutput(spawned(t, "sub-wake", "Helper", map[string]any{
+			"child_session_id": "child-s2",
+			"wake_origin":      "user_message",
+		}))
+		assert.Equal(t, []string{"call-wake"}, sink.RevivedTasks())
+		task, _ = sink.BackgroundTask("call-wake")
+		assert.Equal(t, bgtask.StatusRunning, task.Status)
+		_, extra := sink.BackgroundTask("sub-wake")
+		assert.False(t, extra)
+
+		a.HandleOutput(childChunk(t, "child-s2", "Second answer."))
+		a.HandleOutput(childTurnCompleted(t, "child-s2"))
+		assert.Equal(t, []string{"First answer.", "Second answer."}, childTexts(t, child))
+
+		a.HandleOutput(finished(t, "sub-wake", "failed", "Job 2 failed."))
+		task, _ = sink.BackgroundTask("call-wake")
+		assert.Equal(t, bgtask.StatusFailed, task.Status)
+		assert.Equal(t, []string{"Job 1 done.", "Job 2 failed."}, reportTexts(child), "Job 2 report must persist under a distinct ReportID")
+	})
+
+	t.Run("empty spawned description matches pending spawn whose description equals subagent_type", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call", "toolCallId": "call-type-desc", "title": "spawn_subagent",
+			"rawInput": map[string]any{"prompt": "inspect", "description": "explore"},
+			"_meta":    grokToolMetaFixture("spawn_subagent"),
+		}))
+
+		a.HandleOutput(spawned(t, "sub-explore-match", "", map[string]any{"subagent_type": "explore"}))
+		assert.Equal(t, "call-type-desc", a.childRowForSession("sub-explore-match"))
+		_, extra := sink.BackgroundTask("sub-explore-match")
+		assert.False(t, extra, "spawned with empty description must link pending spawn whose description equals subagent_type")
+	})
+
+	t.Run("already-final spawn tool_call does not leak pending or spawnTools entries", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call", "toolCallId": "call-done", "title": "spawn_subagent",
+			"status":   "completed",
+			"rawInput": map[string]any{"prompt": "done", "description": "Helper"},
+			"_meta":    grokToolMetaFixture("spawn_subagent"),
+		}))
+		a.stateMu.Lock()
+		assert.Empty(t, a.children.spawnTools, "final tool_call must not insert into spawnTools")
+		assert.Empty(t, a.children.pending, "final tool_call must not insert into pending")
+		a.stateMu.Unlock()
+
+		// A later subagent_spawned with the same description must open its own row rather than linking to call-done.
+		a.HandleOutput(spawned(t, "sub-fresh", "Helper", nil))
+		assert.Equal(t, "sub-fresh", a.childRowForSession("sub-fresh"))
+		row, ok := sink.BackgroundTask("sub-fresh")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
+
+	t.Run("workflow revival transitions finished workflow back to running", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		workflow := func(status string, extra map[string]any) []byte {
+			update := map[string]any{
+				"sessionUpdate": "workflow_updated", "run_id": "wf-reuse", "name": "deep-research",
+				"objective": "Compare options", "status": status,
+			}
+			for k, v := range extra {
+				update[k] = v
+			}
+			return notification(t, grokTestSession, update)
+		}
+
+		a.HandleOutput(workflow("active", map[string]any{"current_phase": "Start"}))
+		a.HandleOutput(workflow("failed", map[string]any{"pause_message": "transient error"}))
+		row, ok := sink.BackgroundTask("workflow:wf-reuse")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+
+		a.HandleOutput(workflow("active", map[string]any{"current_phase": "Retry"}))
+		assert.Equal(t, []string{"workflow:wf-reuse"}, sink.RevivedTasks())
+		row, _ = sink.BackgroundTask("workflow:wf-reuse")
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+		a.HandleOutput(workflow("complete", map[string]any{"result_summary": "Recovered"}))
+		row, _ = sink.BackgroundTask("workflow:wf-reuse")
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	})
+
+	t.Run("trailing background launch tool_call_update after early finish and spawn does not break subsequent wake revival", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(spawnCall(t, "call-bg-trail", "Worker", "Job 1.", true))
+		// Out-of-order: subagent_finished arrives first, then initial subagent_spawned consumes it.
+		a.HandleOutput(finished(t, "sub-trail", "completed", "Job 1 done."))
+		a.HandleOutput(spawned(t, "sub-trail", "Worker", nil))
+		row, ok := sink.BackgroundTask("call-bg-trail")
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+		// Trailing background launch tool_call_update arrives AFTER subagent already finished.
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call_update", "toolCallId": "call-bg-trail", "status": "completed",
+			"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": "Subagent started in background.\nsubagent_id: sub-trail\n"}}},
+		}))
+
+		// A later wake must revive call-bg-trail and bump runSeq rather than silently staying finished.
+		a.HandleOutput(spawned(t, "sub-trail", "Worker", map[string]any{"wake_origin": "user_message"}))
+		assert.Equal(t, []string{"call-bg-trail"}, sink.RevivedTasks(), "wake after trailing launch update must revive the finished row")
+		row, _ = sink.BackgroundTask("call-bg-trail")
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
+
+	t.Run("background launch update for already-active subagent does not poison backgroundSpawns or wake revival", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(spawnCall(t, "call-bg-active", "Worker", "Job 1.", true))
+		a.HandleOutput(spawned(t, "sub-active", "Worker", nil))
+
+		// Background launch tool_call_update arrives while sub-active is already active in children.subagents.
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call_update", "toolCallId": "call-bg-active", "status": "completed",
+			"rawOutput": map[string]any{
+				"type": "Text",
+				"text": "Subagent started in background.\nsubagent_id: sub-active\ndescription: Worker\n",
+			},
+		}))
+
+		a.stateMu.Lock()
+		_, recorded := a.children.backgroundSpawns["sub-active"]
+		a.stateMu.Unlock()
+		assert.False(t, recorded, "already-active subagent must not be recorded in backgroundSpawns")
+
+		a.HandleOutput(finished(t, "sub-active", "completed", "Job 1 done."))
+		row, ok := sink.BackgroundTask("call-bg-active")
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+		a.HandleOutput(spawned(t, "sub-active", "Worker", map[string]any{"wake_origin": "user_message"}))
+		assert.Contains(t, sink.RevivedTasks(), "call-bg-active")
+		row, ok = sink.BackgroundTask("call-bg-active")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
 }

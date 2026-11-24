@@ -1,10 +1,15 @@
 package mimo
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
+	"net/http"
+	"slices"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -141,4 +146,75 @@ func (a *Agent) soleRunningWorkflowLocked() string {
 		found = runID
 	}
 	return found
+}
+
+// reconcileWorkflowsLocked closes active workflow runs whose workflow.finished
+// event was lost while the event stream was disconnected. The caller holds
+// a.dispatchMu.
+func (a *Agent) reconcileWorkflowsLocked(ctx context.Context, sessionID string) {
+	a.Mu.Lock()
+	if a.sessionID != sessionID {
+		a.Mu.Unlock()
+		return
+	}
+	hasActive := false
+	for _, workflow := range a.workflows {
+		if !workflow.finished {
+			hasActive = true
+			break
+		}
+	}
+	a.Mu.Unlock()
+	if !hasActive {
+		return
+	}
+
+	runs, err := a.rpc.sessionWorkflows(ctx, sessionID)
+	type closedWorkflow struct {
+		rowKey string
+		status bgtask.Status
+	}
+	var toClose []closedWorkflow
+	var byRunID map[string]mimoWorkflowRun
+	notFound := false
+	if err != nil {
+		if !providerkit.IsHTTPStatus(err, http.StatusNotFound) {
+			slog.Debug("mimo read session workflows", "agent_id", a.AgentID(), "error", err)
+			return
+		}
+		notFound = true
+	} else {
+		byRunID = make(map[string]mimoWorkflowRun, len(runs))
+		for _, run := range runs {
+			if run.RunID != "" {
+				byRunID[run.RunID] = run
+			}
+		}
+	}
+	a.Mu.Lock()
+	// Older servers expose no /workflows route. Close active workflows only
+	// when the main session turn and all session actors are idle.
+	if a.sessionID == sessionID && (!notFound || (!a.turnActive && a.runningActorsLocked() == 0)) {
+		for _, runID := range slices.Sorted(maps.Keys(a.workflows)) {
+			workflow := a.workflows[runID]
+			if workflow.finished {
+				continue
+			}
+			status := bgtask.StatusEndedWithUnknownOutcome
+			if !notFound {
+				if run, present := byRunID[workflow.runID]; present {
+					if run.Status == contracts.MiMoActorStatusRunning {
+						continue
+					}
+					status = workflowStatus(run.Status)
+				}
+			}
+			workflow.finished = true
+			toClose = append(toClose, closedWorkflow{rowKey: workflow.rowKey(), status: status})
+		}
+	}
+	a.Mu.Unlock()
+	for _, row := range toClose {
+		providerkit.LogRegistryRefusal("mimo", "close", a.sink.CloseBackgroundTask(row.rowKey, row.status))
+	}
 }

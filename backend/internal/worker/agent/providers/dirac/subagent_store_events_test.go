@@ -19,9 +19,23 @@ func TestDiracTaskletJournalKeepsExplicitLifetimeAndOutcomeIdentities(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, "resumed", journal.Lifecycle.ID)
 	assert.Equal(t, "resumed", journal.Lifecycle.State)
+	assert.EqualValues(t, 2, journal.Lifecycle.CreatedAt)
 	require.NotNil(t, journal.Lifecycle.Assignment)
 	assert.Empty(t, *journal.Lifecycle.Assignment)
-	assert.JSONEq(t, `{"kind":"completed","response":"Done","completedAt":1}`, string(journal.Outcome), "native idempotent outcome reuse remains visible across resumes")
+	assert.Empty(t, journal.Outcome, "a resumed lifecycle clears the prior job's journal outcome")
+	require.Len(t, journal.PriorOutcomes, 1)
+	assert.JSONEq(t, `{"kind":"completed","response":"Done","completedAt":1}`, string(journal.PriorOutcomes[0]))
+
+	settledAfterResume := `[
+{"id":"accepted","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},
+{"id":"outcome-1","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"Job 1","completedAt":1}}},
+{"id":"resumed","taskletId":"Witten","createdAt":2,"communication":{"type":"lifecycle","state":"resumed","assignment":"Next"}},
+{"id":"outcome-2","taskletId":"Witten","createdAt":3,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"Job 2","completedAt":3}}}
+]`
+	journal, err = decodeDiracTaskletJournal([]byte(settledAfterResume), "Witten")
+	require.NoError(t, err)
+	assert.Equal(t, "resumed", journal.Lifecycle.ID)
+	assert.JSONEq(t, `{"kind":"completed","response":"Job 2","completedAt":3}`, string(journal.Outcome))
 }
 
 func TestDiracTaskletJournalAcceptsNativeCommunicationVariants(t *testing.T) {

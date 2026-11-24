@@ -672,7 +672,7 @@ func TestAntigravityClearClosesRemovedShellDuringReconciliation(t *testing.T) {
 	})
 	retired := a.root
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "removed-shell", Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
-	retired.background[2] = backgroundTask{rowKey: "removed-shell", stepIndex: 2, slot: 0}
+	retired.background["removed-shell"] = backgroundTask{rowKey: "removed-shell", stepIndex: 2, slot: 0}
 	retired.steps[2] = &stepState{status: "CORTEX_STEP_STATUS_RUNNING"}
 	a.beginTurn(retired)
 	a.startCascadeWorker(retired, func(_ context.Context, state *cascadeState) {
@@ -1047,7 +1047,7 @@ func TestAntigravityInterruptChildIdleAndCancelRollback(t *testing.T) {
 		rpc, _ := fakeAntigravityRPC(t)
 		a.rpc = rpc
 		childSink := sink.Child(child.childAgentID)
-		child.background[4] = backgroundTask{rowKey: "child-bg", stepIndex: 4}
+		child.background["child-bg"] = backgroundTask{rowKey: "child-bg", stepIndex: 4}
 
 		var preserved bool
 		require.NoError(t, a.InterruptChild(child.id, agent.StopContext{}.WithPreserveOpenSpans(func() { preserved = true })))

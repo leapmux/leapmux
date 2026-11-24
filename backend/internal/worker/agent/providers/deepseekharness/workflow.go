@@ -2,6 +2,7 @@ package deepseekharness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -11,8 +12,17 @@ import (
 )
 
 type nativeWorkflow struct {
-	Name     string
-	Children map[int]string
+	Name      string
+	Children  map[int]string
+	RowClosed bool
+}
+
+type pendingWorkflowChild struct {
+	RunID      string
+	GroupKey   string
+	GroupLabel string
+	Label      string
+	Sequence   int
 }
 
 func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) error {
@@ -44,8 +54,22 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 			run.Children[data.Sequence] = data.ChildID
 			a.workflows[data.RunID] = run
 		}
+		if exists && child == nil && data.Sequence > 0 && data.ChildID != "" {
+			if a.pendingWorkflowChildren == nil {
+				a.pendingWorkflowChildren = map[string]pendingWorkflowChild{}
+			}
+			a.pendingWorkflowChildren[data.ChildID] = pendingWorkflowChild{
+				RunID:      data.RunID,
+				GroupKey:   key,
+				GroupLabel: run.Name,
+				Label:      data.Label,
+				Sequence:   data.Sequence,
+			}
+			a.Mu.Unlock()
+			return nil
+		}
 		a.Mu.Unlock()
-		if !exists || child == nil || data.Sequence <= 0 {
+		if !exists || data.Sequence <= 0 || data.ChildID == "" {
 			return fmt.Errorf("DeepSeek Harness workflow work has no owned run or child")
 		}
 		return sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: data.ChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.agentID, GroupKey: key, GroupLabel: run.Name, Title: data.Label, Status: bgtask.StatusRunning})
@@ -53,6 +77,13 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 		a.Mu.Lock()
 		run, exists := a.workflows[data.RunID]
 		childID := run.Children[data.Sequence]
+		if exists && childID != "" {
+			delete(run.Children, data.Sequence)
+			delete(a.pendingWorkflowChildren, childID)
+			if child := a.children[childID]; child != nil {
+				child.active = false
+			}
+		}
 		a.Mu.Unlock()
 		if !exists || childID == "" {
 			return fmt.Errorf("DeepSeek Harness workflow completion has no owned work")
@@ -69,9 +100,27 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 		}
 		return sink.CloseBackgroundTask(childID, status)
 	case contracts.DeepseekHarnessEventWorkflowEnd:
+		type remainingWorkflowChild struct {
+			seq     int
+			childID string
+		}
 		a.Mu.Lock()
-		_, exists := a.workflows[data.RunID]
-		delete(a.workflows, data.RunID)
+		run, exists := a.workflows[data.RunID]
+		rowClosed := run.RowClosed
+		var remainingChildren []remainingWorkflowChild
+		if exists {
+			openSeqs := make([]int, 0, len(run.Children))
+			for seq := range run.Children {
+				openSeqs = append(openSeqs, seq)
+			}
+			slices.Sort(openSeqs)
+			remainingChildren = make([]remainingWorkflowChild, 0, len(openSeqs))
+			for _, seq := range openSeqs {
+				if childID := run.Children[seq]; childID != "" {
+					remainingChildren = append(remainingChildren, remainingWorkflowChild{seq: seq, childID: childID})
+				}
+			}
+		}
 		a.Mu.Unlock()
 		if !exists {
 			return fmt.Errorf("DeepSeek Harness workflow completion has no owned run")
@@ -83,7 +132,41 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 				status = bgtask.StatusInterrupted
 			}
 		}
-		return sink.CloseBackgroundTask(key, status)
+		var closeErr error
+		closedChildren := make([]remainingWorkflowChild, 0, len(remainingChildren))
+		for _, entry := range remainingChildren {
+			if err := sink.CloseBackgroundTask(entry.childID, status); err != nil {
+				closeErr = errors.Join(closeErr, err)
+				continue
+			}
+			closedChildren = append(closedChildren, entry)
+		}
+		workflowClosed := rowClosed
+		if !rowClosed {
+			if err := sink.CloseBackgroundTask(key, status); err != nil {
+				closeErr = errors.Join(closeErr, err)
+			} else {
+				workflowClosed = true
+			}
+		}
+		a.Mu.Lock()
+		if current, ok := a.workflows[data.RunID]; ok {
+			for _, entry := range closedChildren {
+				delete(current.Children, entry.seq)
+				delete(a.pendingWorkflowChildren, entry.childID)
+				if child := a.children[entry.childID]; child != nil {
+					child.active = false
+				}
+			}
+			current.RowClosed = workflowClosed
+			if closeErr == nil {
+				delete(a.workflows, data.RunID)
+			} else {
+				a.workflows[data.RunID] = current
+			}
+		}
+		a.Mu.Unlock()
+		return closeErr
 	}
 	return nil
 }

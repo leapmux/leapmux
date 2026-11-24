@@ -19,16 +19,18 @@ import (
 // Cline's parent spawn_agent call starts a child with task, waits for it, and returns the child's answer.
 // The child runs tools without approval, as the call's approval card states.
 //
-// The child's iterations and text have no agent identity, as do its reasoning and tool calls.
-// They arrive in the parent stream between tool.started and tool.finished.
-// The worker resolves ownership from the preceding events:
-//   - The parent waits while its child runs, so the first iteration after the spawn call starts belongs to the child.
-//   - Subsequent unlinked output and new tool calls belong to that child. A nested spawn_agent applies the same rule recursively.
+// Events that carry native agent metadata (agent.agentId and agent.parentAgentId)
+// route directly to the lead or bound child transcript.
+// Untagged iterations, text, reasoning, and tool calls fall back to positional ownership
+// in the parent stream between tool.started and tool.finished:
+//   - The parent waits while its child runs, so the first untagged iteration after the spawn call starts belongs to the child.
+//   - Subsequent untagged output and new tool calls belong to that child. A nested spawn_agent applies the same rule recursively.
 //   - Each tool-call ID retains the transcript in which that call starts.
 //
 // Cline can run multiple spawn calls from one model step concurrently.
-// Their untagged output interleaves and cannot be assigned safely, so the worker writes none of it live.
-// After each child ends, Cline stores its conversation under <root>__<agentId>.
+// Tagged events route each child live without marking siblings ambiguous.
+// Untagged output from concurrent spawns interleaves and cannot be assigned safely, so the worker writes none of it live.
+// After each ambiguous child ends, Cline stores its conversation under <root>__<agentId>.
 // startBackfill copies that stored session into the child's transcript.
 // The session identifies its task but no spawning call, so match it by task and start time.
 //
@@ -38,11 +40,41 @@ import (
 // spawnTitleFallback supplies the title for a child whose task is empty.
 const spawnTitleFallback = "Cline subagent"
 
+// agentKindSubagent identifies native events that belong to a subagent.
+const agentKindSubagent = "subagent"
+
+// eventAgent holds the optional native agent metadata carried on hub event payloads.
+type eventAgent struct {
+	AgentID       string `json:"agentId"`
+	ParentAgentID string `json:"parentAgentId"`
+	Kind          string `json:"kind"`
+	TeamAgentID   string `json:"teamAgentId"`
+}
+
+// hasTag reports whether the event carries an explicit agent or parent identifier.
+func (m eventAgent) hasTag() bool {
+	return m.AgentID != "" || m.ParentAgentID != ""
+}
+
+// parseEventAgent extracts optional agent metadata from a hub event payload.
+func parseEventAgent(payload json.RawMessage) eventAgent {
+	if len(payload) == 0 {
+		return eventAgent{}
+	}
+	var envelope struct {
+		Agent eventAgent `json:"agent"`
+	}
+	_ = json.Unmarshal(payload, &envelope)
+	return envelope.Agent
+}
+
 // spawnCall represents one running spawn_agent call.
 // Agent.Mu protects its state.
 type spawnCall struct {
 	id   string
 	task string
+	// agentID is the native agent.agentId bound to this spawn when events carry tags.
+	agentID string
 	// parent is the transcript that shows the call.
 	parent *transcript
 	// child is the subagent's own transcript, or nil when the worker could not
@@ -102,32 +134,55 @@ type spawnOutput struct {
 	FinishReason string `json:"finishReason"`
 }
 
-// routeContent returns the transcript for one output event without an agent ID.
-// Return nil when its owner is unresolved, so the worker writes it to no transcript.
+// ensureLeadEventTurn starts a lead turn when an output or iteration event arrives outside one.
+// It returns false when no lead turn is active and the event belongs to a teammate or an active team run.
 // The caller holds dispatchMu.
-//
-// Output outside a running lead turn belongs to an active teammate run or a lead run that Cline starts independently.
-// See team.go for teammate routing.
-func (a *Agent) routeContent() *transcript {
+func (a *Agent) ensureLeadEventTurn(meta eventAgent) bool {
 	a.Mu.Lock()
 	active, teamBusy := a.turn.active, a.team.busy()
 	a.Mu.Unlock()
 	if !active {
-		if teamBusy {
-			return nil
+		if teamBusy || meta.Kind == agentKindTeammate || meta.TeamAgentID != "" {
+			return false
 		}
 		a.ensureTurn()
 	}
-	return a.routeWithinTurn()
+	return true
+}
+
+// routeContent returns the transcript for one output event.
+// Tagged events route directly by native agent metadata.
+// Untagged events fall back to the active spawn chain.
+// Return nil when ownership is unresolved, so the worker writes it to no transcript.
+// The caller holds dispatchMu.
+//
+// Output outside a running lead turn belongs to an active teammate run or a lead run that Cline starts independently.
+// See team.go for teammate routing.
+func (a *Agent) routeContent(payload json.RawMessage) *transcript {
+	return a.routeContentMeta(parseEventAgent(payload))
+}
+
+func (a *Agent) routeContentMeta(meta eventAgent) *transcript {
+	if !a.ensureLeadEventTurn(meta) {
+		return nil
+	}
+	return a.routeWithinTurnMeta(meta)
 }
 
 // routeWithinTurn finds the current transcript without starting a turn.
-// The caller holds dispatchMu. Ambiguous child output belongs to no transcript.
-func (a *Agent) routeWithinTurn() *transcript {
+// The caller holds dispatchMu. Ambiguous untagged child output belongs to no transcript.
+func (a *Agent) routeWithinTurn(payload json.RawMessage) *transcript {
+	return a.routeWithinTurnMeta(parseEventAgent(payload))
+}
+
+func (a *Agent) routeWithinTurnMeta(meta eventAgent) *transcript {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	if !a.turn.active && a.team.busy() {
 		return nil
+	}
+	if t, handled := a.routeTaggedLocked(meta); handled {
+		return t
 	}
 	t := a.out.lead
 	for {
@@ -145,6 +200,16 @@ func (a *Agent) routeWithinTurn() *transcript {
 			}
 			t = s.child
 		default:
+			allUnstarted := true
+			for _, s := range t.spawns {
+				if s.started {
+					allUnstarted = false
+					break
+				}
+			}
+			if allUnstarted {
+				return t
+			}
 			for _, s := range t.spawns {
 				s.markAmbiguous()
 			}
@@ -153,20 +218,122 @@ func (a *Agent) routeWithinTurn() *transcript {
 	}
 }
 
-// handleIterationStarted records a child's first iteration.
-// An iteration belongs to that child when its transcript has exactly one active spawn call whose child does not yet start.
-func (a *Agent) handleIterationStarted() {
-	a.Mu.Lock()
-	active, teamBusy := a.turn.active, a.team.busy()
-	a.Mu.Unlock()
-	if !active {
-		if teamBusy {
-			return
+// routeTaggedLocked resolves an event carrying native agent metadata without
+// marking sibling spawns ambiguous. It reports whether metadata handled routing.
+// The caller holds Agent.Mu.
+func (a *Agent) routeTaggedLocked(meta eventAgent) (*transcript, bool) {
+	if meta.Kind == agentKindTeammate || meta.TeamAgentID != "" {
+		return nil, true
+	}
+	if !meta.hasTag() {
+		if meta.Kind == agentKindSubagent {
+			return nil, true
 		}
-		a.ensureTurn()
+		return nil, false
+	}
+	if !a.turn.active && a.team.busy() {
+		return nil, true
+	}
+	if meta.AgentID != "" {
+		if s := a.out.spawnsByAgent[meta.AgentID]; s != nil {
+			s.started = true
+			return s.child, true
+		}
+	}
+	isChild := meta.ParentAgentID != "" || meta.Kind == agentKindSubagent
+	if !isChild && meta.AgentID != "" {
+		if s := a.out.spawns[meta.AgentID]; s != nil {
+			a.bindSpawnAgentLocked(s, meta.AgentID)
+			return s.child, true
+		}
+		if meta.Kind == agentKindLead || meta.AgentID == agentKindLead || meta.AgentID == a.sessionID || (a.out.leadAgentID != "" && meta.AgentID == a.out.leadAgentID) {
+			if a.out.leadAgentID == "" {
+				a.out.leadAgentID = meta.AgentID
+			}
+			return a.out.lead, true
+		}
+		if len(a.out.spawns) == 0 {
+			a.out.leadAgentID = meta.AgentID
+			return a.out.lead, true
+		}
+		isChild = true
+	}
+	if !isChild {
+		return a.out.lead, true
+	}
+	parent := a.parentTranscriptForLocked(meta.ParentAgentID)
+	if parent == nil {
+		return nil, true
+	}
+	if meta.AgentID != "" {
+		if s := a.bindSpawnInParentLocked(parent, meta.AgentID); s != nil {
+			return s.child, true
+		}
+	}
+	return nil, true
+}
+
+// parentTranscriptForLocked resolves parentAgentID to the parent transcript.
+// The caller holds Agent.Mu.
+func (a *Agent) parentTranscriptForLocked(parentAgentID string) *transcript {
+	if parentAgentID == "" {
+		return a.out.lead
+	}
+	if s := a.out.spawnsByAgent[parentAgentID]; s != nil {
+		return s.child
+	}
+	if s := a.out.spawns[parentAgentID]; s != nil {
+		return s.child
+	}
+	if a.out.leadAgentID == "" || parentAgentID == a.out.leadAgentID || parentAgentID == agentKindLead || parentAgentID == a.sessionID {
+		return a.out.lead
+	}
+	return nil
+}
+
+// bindSpawnInParentLocked binds agentID to an unbound spawn call under parent.
+// It prefers a direct tool-call ID match and otherwise binds the earliest unbound call.
+// The caller holds Agent.Mu.
+func (a *Agent) bindSpawnInParentLocked(parent *transcript, agentID string) *spawnCall {
+	for _, s := range parent.spawns {
+		if s.id == agentID && s.agentID == "" {
+			a.bindSpawnAgentLocked(s, agentID)
+			return s
+		}
+	}
+	for _, s := range parent.spawns {
+		if s.agentID == "" {
+			a.bindSpawnAgentLocked(s, agentID)
+			return s
+		}
+	}
+	return nil
+}
+
+// bindSpawnAgentLocked indexes spawn s under its native agentID.
+// The caller holds Agent.Mu.
+func (a *Agent) bindSpawnAgentLocked(s *spawnCall, agentID string) {
+	s.agentID = agentID
+	s.started = true
+	if a.out.spawnsByAgent == nil {
+		a.out.spawnsByAgent = make(map[string]*spawnCall)
+	}
+	a.out.spawnsByAgent[agentID] = s
+}
+
+// handleIterationStarted records a child's first iteration.
+// Tagged events bind directly without marking sibling spawns ambiguous.
+// An untagged iteration belongs to that child when its transcript has exactly one active spawn call whose child does not yet start.
+func (a *Agent) handleIterationStarted(payload json.RawMessage) {
+	meta := parseEventAgent(payload)
+	if !a.ensureLeadEventTurn(meta) {
+		return
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
+	if _, handled := a.routeTaggedLocked(meta); handled {
+		return
+	}
 	t := a.out.lead
 	for {
 		switch len(t.spawns) {
@@ -301,6 +468,9 @@ func (a *Agent) finishSpawn(s *spawnCall, status bgtask.Status, report string) {
 		return
 	}
 	delete(a.out.spawns, s.id)
+	if s.agentID != "" && a.out.spawnsByAgent[s.agentID] == s {
+		delete(a.out.spawnsByAgent, s.agentID)
+	}
 	s.parent.spawns = removeSpawn(s.parent.spawns, s)
 	var nested []*spawnCall
 	if s.child != nil {

@@ -50,15 +50,13 @@ func soloUserService(t *testing.T) (*service.UserService, store.Store, *auth.Sol
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
 
 	gate := auth.NewSoloGate(true, st)
-	svc := service.NewUserService(
-		st,
-		&config.Config{SoloMode: true},
-		servicetest.NewSettingsManager(t, st, nil),
-		auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		nil,
-		mail.Renderer{},
-		nil,
-	)
+	svc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    &config.Config{SoloMode: true},
+		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Renderer:  mail.Renderer{},
+	})
 
 	soloUser, err := auth.LoadSoloUser(context.Background(), st)
 	require.NoError(t, err)
@@ -138,15 +136,13 @@ func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 	admin, err := st.Users().GetByUsername(context.Background(), hubtestutil.TestAdminUsername)
 	require.NoError(t, err)
 
-	svc := service.NewUserService(
-		st,
-		&config.Config{},
-		servicetest.NewSettingsManager(t, st, nil),
-		auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		nil,
-		mail.Renderer{},
-		nil,
-	)
+	svc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    &config.Config{},
+		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Renderer:  mail.Renderer{},
+	})
 
 	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), mustUserID(t, admin.ID), auth.SessionCreationOptions{Lifetime: time.Hour, Proof: auth.SignInProvedNoFactor})
 	require.NoError(t, err)

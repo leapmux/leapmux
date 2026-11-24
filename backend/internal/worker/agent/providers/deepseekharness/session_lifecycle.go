@@ -141,7 +141,7 @@ func (a *Agent) applyProjections(stream *sessionStream, values map[string]json.R
 			if entry.Label != nil {
 				descriptor.Label = *entry.Label
 			}
-			if err := a.beginOwnedChild(stream, descriptor); err != nil {
+			if err := a.beginOwnedChild(stream, descriptor, snapshot); err != nil {
 				return err
 			}
 		}

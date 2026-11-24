@@ -218,12 +218,14 @@ func (svc *Service) cancellationStopAction(ctx context.Context, row db.TabCreati
 		}
 		return func() { svc.stopRootAgentTabForClose(ctx, row.UserID, row.TabID, resource, action, dropWorktreeLink) }, nil
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		resource, err := svc.Queries.GetTerminalQuakeAndWorkingDir(ctx, row.TabID)
+		workingDir, err := svc.Queries.GetTerminalWorkingDir(ctx, row.TabID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 		known := err == nil
-		return func() { svc.stopTerminalTabForClose(row.UserID, row.TabID, resource, known, action, dropWorktreeLink) }, nil
+		return func() {
+			svc.stopTerminalTabForClose(row.UserID, row.TabID, workingDir, known, action, dropWorktreeLink)
+		}, nil
 	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
 		resource, err := svc.Queries.GetWorkerTabPayload(ctx, db.GetWorkerTabPayloadParams{UserID: ownerID.String(), TabID: row.TabID})
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {

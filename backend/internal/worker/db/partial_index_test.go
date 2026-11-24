@@ -236,13 +236,11 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		"idx_agents_parent":                         "an IS NOT NULL predicate, which an equality term already implies",
 		"idx_agents_closed_at":                      "no query filters on closed_at through this index",
 		"idx_agents_open_working_dir":               "no query filters on working_dir through this index",
-		"idx_agent_input_queue_one_edit":            "a uniqueness constraint, enforced on write rather than read",
 		"idx_agent_input_queue_one_auto_retry_kind": "a uniqueness constraint, enforced on write rather than read",
 		"idx_worktrees_path":                        "a uniqueness constraint, enforced on write rather than read",
 		"idx_worktrees_deleted_at":                  "no query filters on deleted_at through this index",
 		"idx_terminals_closed_at":                   "no query filters on closed_at through this index",
 		"idx_terminals_open_working_dir":            "no query filters on working_dir through this index",
-		"idx_terminals_quake_working_dir":           "a uniqueness constraint, enforced on write rather than read",
 		"idx_agent_todos_task_id":                   "a uniqueness constraint, enforced on write rather than read",
 	}
 	for _, index := range partialIndexes(t, connection) {
@@ -368,7 +366,7 @@ func TestEveryQueryRepeatsThePartialIndexPredicateItNeeds(t *testing.T) {
 		}
 	}
 	require.NoError(t, rows.Close())
-	require.Len(t, terms, 6, "the schema declares inequality-family partial indexes on six tables")
+	require.Len(t, terms, 5, "the schema declares inequality-family partial indexes on five tables")
 
 	files, err := filepath.Glob(filepath.Join("queries", "*.sql"))
 	require.NoError(t, err)

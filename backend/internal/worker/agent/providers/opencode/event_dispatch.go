@@ -152,6 +152,9 @@ func (a *Agent) dispatchRunEventLocked(ctx context.Context, run *openCodeRun, ev
 		run.mu.Unlock()
 		run.setNativeActivity(true, compacting)
 		if run.childAgentID != "" {
+			if err := run.sink.ReviveBackgroundTask(run.id); err != nil {
+				return err
+			}
 			return run.sink.UpdateBackgroundTaskStatus(run.id, bgtask.StatusRunning, "")
 		}
 		return nil
@@ -297,7 +300,7 @@ func (a *Agent) retireRunLocked(run *openCodeRun, completion agent.MessageComple
 	}
 	run.cancel()
 	a.controls.retireOwner(run.id)
-	result = errors.Join(result, run.text.finish(completion), run.tools.finish(completion))
+	result = errors.Join(result, run.text.finish(completion), run.tools.finish(completion), run.closeNativeBackgroundTask(completion))
 	providerkit.ResetSpansAndProgress(run.sink)
 	run.finishPendingSteers()
 	if run.childLease != nil && run.childLease.Cleanup != nil {

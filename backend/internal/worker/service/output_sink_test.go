@@ -18,22 +18,8 @@ func newTestRootOutputSink(t testing.TB, output *OutputHandler, agentID string, 
 	return services
 }
 
-// fixtureOutputGeneration gives raw storage fixtures an actual durable writer allocation.
-func fixtureOutputGeneration(t testing.TB, queries *db.Queries, ownerID string) int64 {
-	t.Helper()
-	row, err := queries.GetAgentByID(context.Background(), ownerID)
-	require.NoError(t, err)
-	if row.OutputGeneration > 0 {
-		return row.OutputGeneration
-	}
-	source, err := queries.AllocateAgentOutputGeneration(context.Background(), ownerID)
-	require.NoError(t, err)
-	return source.OutputGeneration
-}
-
 func writeBackgroundTaskFixture(t testing.TB, queries *db.Queries, task db.UpsertAgentBackgroundTaskParams) {
 	t.Helper()
-	task.OutputGeneration = fixtureOutputGeneration(t, queries, task.OwnerAgentID)
 	rows, err := queries.UpsertAgentBackgroundTask(context.Background(), task)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -41,7 +27,6 @@ func writeBackgroundTaskFixture(t testing.TB, queries *db.Queries, task db.Upser
 
 func updateBackgroundTaskFixture(t testing.TB, queries *db.Queries, task db.UpdateAgentBackgroundTaskStatusParams) {
 	t.Helper()
-	task.OutputGeneration = fixtureOutputGeneration(t, queries, task.OwnerAgentID)
 	rows, err := queries.UpdateAgentBackgroundTaskStatus(context.Background(), task)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -49,7 +34,6 @@ func updateBackgroundTaskFixture(t testing.TB, queries *db.Queries, task db.Upda
 
 func closeBackgroundTaskFixture(t testing.TB, queries *db.Queries, task db.CloseAgentBackgroundTaskParams) {
 	t.Helper()
-	task.OutputGeneration = fixtureOutputGeneration(t, queries, task.OwnerAgentID)
 	rows, err := queries.CloseAgentBackgroundTask(context.Background(), task)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)

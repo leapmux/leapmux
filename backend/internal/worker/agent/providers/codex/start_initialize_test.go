@@ -31,7 +31,6 @@ func TestCodexInitializeParamsCarryTheOptOutList(t *testing.T) {
 		contracts.CodexMethodAccountUpdated,
 		"account/gatewayOAuth/changed",
 		contracts.CodexMethodThreadStarted,
-		contracts.CodexMethodThreadStatusChanged,
 		"thread/readState/changed",
 		"thread/queue/changed",
 		"thread/environment/connected",

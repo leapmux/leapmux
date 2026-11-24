@@ -42,11 +42,12 @@ type Agent struct {
 	// The output dispatcher serializes quota ownership and publication.
 	quotaState   lettaQuotaState
 	quotaRetries map[lettaQuotaAccount]time.Time
-	// The output dispatcher owns held errors and the process-exit boundary.
-	heldErrors      map[string][]lettaHeldError
-	outputEnded     bool
-	finishedTurnIDs []string
-	compactionLive  map[string]bool
+	// The output dispatcher owns held errors, background shell tracking, and the process-exit boundary.
+	heldErrors          map[string][]lettaHeldError
+	outputEnded         bool
+	finishedTurnIDs     []string
+	compactionLive      map[string]bool
+	backgroundProcesses map[string]struct{}
 
 	// --- guarded by Mu ---
 

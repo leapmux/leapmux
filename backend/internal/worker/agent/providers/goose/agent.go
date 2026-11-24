@@ -34,10 +34,21 @@ type Agent struct {
 	// that arrives after the ack still names the spawn id, so it must reach
 	// the renamed row.
 	gooseChildRenames map[string]string
-	// activeDelegations tracks foreground delegated subagent session IDs
-	// started in this session until a completed/failed notice or interrupted
-	// prompt closes them. Guarded by a.Mu.
+	// activeDelegations tracks open Goose delegated subagent row keys until a
+	// completed/failed notice, prompt error/interrupt, or idle interrupt closes
+	// them. Guarded by a.Mu.
 	activeDelegations map[string]struct{}
+	// resumedCalls records delegate toolCallIDs that already revived a session
+	// row on tool_call so their later ACK does not re-revive it.
+	resumedCalls map[string]string
+	// pendingResumeNotices records sessions whose resumed run was started by
+	// tool_call or ACK and whose matching "Resuming subagent <id>" notice has
+	// not been consumed yet.
+	pendingResumeNotices map[string]bool
+	// pendingResumeAcks records sessions whose resumed run was started by a
+	// standalone "Resuming subagent <id>" notice and whose matching ACK has
+	// not been consumed yet.
+	pendingResumeAcks map[string]bool
 }
 
 // This assertion makes a missing Agent method a compile error.

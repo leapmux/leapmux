@@ -22,6 +22,11 @@ func installDiracTestWatch(a *Agent, sessionID string) *diracTaskletWatch {
 	return watch
 }
 
+func (a *Agent) pollDiracTasklets(watch *diracTaskletWatch) (bool, error) {
+	result, err := a.pollDiracTaskletsPass(watch, false)
+	return result.finished, err
+}
+
 func TestDiracTaskletSettlementRetainsAnUnfinishedNativeTool(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -400,4 +405,231 @@ func TestDiracTaskletExitPublishesItsCommittedOutcomeBeforeCleanup(t *testing.T)
 	notifications, err := json.Marshal(child.LeapMuxNotifications())
 	require.NoError(t, err)
 	assert.Contains(t, string(notifications), "Actual committed child result")
+}
+
+func TestDiracSettledResumedTaskletDoesNotSpuriouslyReviveOnWatcherRestart(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	a, sink, _ := newDiracSubagentAgentForRPC(t, root)
+	a.SetSessionIDForTest("dirac-session")
+	sink.UpdateSessionID("dirac-session")
+	writeDiracTaskletStore(t, root)
+	eventsPath := filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "tasklet_events.json")
+	resumedEvents := `[
+		{"id":"native-created","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},
+		{"id":"outcome:Witten:completed:1","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"Job 1 result.","completedAt":1}}},
+		{"id":"native-resumed","taskletId":"Witten","createdAt":2,"communication":{"type":"lifecycle","state":"resumed","assignment":"Continue."}},
+		{"id":"outcome:Witten:completed:2","taskletId":"Witten","createdAt":3,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"The parser is correct.","completedAt":1}}}
+	]`
+	require.NoError(t, os.WriteFile(eventsPath, []byte(resumedEvents), 0o600))
+
+	first := installDiracTestWatch(a, "dirac-session")
+	finished, err := a.pollDiracTasklets(first)
+	require.NoError(t, err)
+	assert.True(t, finished)
+	assert.Equal(t, bgtask.StatusSucceeded, waitDiracChildClose(t, testutil.DeadlineContext(t), sink))
+
+	key := diracTaskletKey("dirac-session", "Witten", "01M7P10WRK68MMQJW753C9KJ2T")
+	row, ok := sink.BackgroundTask(key)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	child := sink.Child(row.ChildAgentID)
+	require.NotNil(t, child)
+
+	// Simulate a retired watcher restarting on the same settled resumed tasklet.
+	child.ReviveErr = errors.New("unexpected revive during idle replay")
+	second := installDiracTestWatch(a, "dirac-session")
+	finished, err = a.pollDiracTasklets(second)
+	require.NoError(t, err)
+	assert.True(t, finished)
+	assert.Equal(t, bgtask.StatusSucceeded, waitDiracChildClose(t, testutil.DeadlineContext(t), sink))
+	assert.Empty(t, sink.RevivedTasks(), "replaying an already-settled resumed tasklet must not revive its row")
+	row, ok = sink.BackgroundTask(key)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Transition to a new resumed lifetime whose settled status differs from the prior closed state.
+	// A history read failure must leave the prior closed row untouched instead of stranding it Running.
+	mutateDiracTaskletRecord(t, root, func(record map[string]any) {
+		record["outcome"] = map[string]any{
+			"kind":     "failed",
+			"failedAt": 4,
+			"error":    map[string]any{"name": "Error", "message": "Job 3 failed"},
+		}
+	})
+	failedEvents := `[
+		{"id":"native-created","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},
+		{"id":"native-resumed-2","taskletId":"Witten","createdAt":3,"communication":{"type":"lifecycle","state":"resumed","assignment":"Try again."}},
+		{"id":"outcome:Witten:failed:4","taskletId":"Witten","createdAt":4,"communication":{"type":"outcome","outcome":{"kind":"failed","failedAt":4,"error":{"name":"Error","message":"Job 3 failed"}}}}
+	]`
+	require.NoError(t, os.WriteFile(eventsPath, []byte(failedEvents), 0o600))
+	historyPath := filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "api_conversation_history.json")
+	require.NoError(t, os.WriteFile(historyPath, []byte(`[{"role":"user","content":[{"type":"tool_result","tool_use_id":"missing","content":"Broken history"}]}]`), 0o600))
+	child.ReviveErr = nil
+	third := installDiracTestWatch(a, "dirac-session")
+	_, err = a.pollDiracTasklets(third)
+	require.ErrorContains(t, err, "no owning declaration")
+	assert.Empty(t, sink.RevivedTasks(), "a failed history read must not revive the row before settlement")
+	row, ok = sink.BackgroundTask(key)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Once history is readable, the different settled status revives and closes together.
+	require.NoError(t, os.WriteFile(historyPath, []byte(`[{"role":"user","content":[{"type":"text","text":"Inspect the parser"}]}]`), 0o600))
+	finished, err = a.pollDiracTasklets(third)
+	require.NoError(t, err)
+	assert.True(t, finished)
+	assert.Equal(t, bgtask.StatusFailed, waitDiracChildClose(t, testutil.DeadlineContext(t), sink))
+	assert.Equal(t, []string{key}, sink.RevivedTasks())
+	row, ok = sink.BackgroundTask(key)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, row.Status)
+}
+
+func TestDiracTaskletOutcomeMismatchSettlesAfterGraceOrExit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("after grace window", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		a, sink, clock := newDiracSubagentAgentForRPC(t, root)
+		a.SetSessionIDForTest("dirac-session")
+		sink.UpdateSessionID("dirac-session")
+		writeDiracTaskletStore(t, root)
+		eventsPath := filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "tasklet_events.json")
+		require.NoError(t, os.WriteFile(eventsPath, []byte(`[{"id":"native-created","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}}]`), 0o600))
+
+		timer := clock.Trap().NewTimer(diracArchiveTimerTag)
+		t.Cleanup(func() { timer.Close(); a.CancelForTest(); a.archiveWG.Wait() })
+		a.HandleOutput(diracFrame(t, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "native-spawn-card", "name": "subagents", "status": "completed"}))
+
+		ctx := testutil.DeadlineContext(t)
+		first := testutil.WaitForTimer(t, ctx, timer)
+		assert.Equal(t, diracArchiveRetryInterval, first)
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusRunning, rows[0].Status, "mismatch defers settlement during the grace window")
+
+		// Advance through backoff until the 5-second grace window elapses.
+		clock.Advance(first).MustWait(ctx)
+		second := testutil.WaitForTimer(t, ctx, timer)
+		assert.Equal(t, 2*diracArchiveRetryInterval, second)
+		elapsed := first + second
+		clock.Advance(second).MustWait(ctx)
+		for elapsed < 5*time.Second {
+			interval := testutil.WaitForTimer(t, ctx, timer)
+			clock.Advance(interval).MustWait(ctx)
+			elapsed += interval
+		}
+		assert.Equal(t, bgtask.StatusSucceeded, waitDiracChildClose(t, ctx, sink))
+		a.archiveWG.Wait()
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+		child := sink.Child(rows[0].ChildAgentID)
+		require.NotNil(t, child)
+		notifications, err := json.Marshal(child.LeapMuxNotifications())
+		require.NoError(t, err)
+		assert.Contains(t, string(notifications), "The parser is correct.")
+	})
+
+	t.Run("on process exit during grace window", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		a, sink, clock := newDiracSubagentAgentForRPC(t, root)
+		a.SetSessionIDForTest("dirac-session")
+		sink.UpdateSessionID("dirac-session")
+		writeDiracTaskletStore(t, root)
+		eventsPath := filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "tasklet_events.json")
+		require.NoError(t, os.WriteFile(eventsPath, []byte(`[{"id":"native-created","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}}]`), 0o600))
+
+		timer, _ := testutil.NewTimerTraps(t, clock, diracArchiveTimerTag)
+		a.HandleOutput(diracFrame(t, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "native-spawn-card", "name": "subagents", "status": "completed"}))
+		ctx := testutil.DeadlineContext(t)
+		assert.Equal(t, diracArchiveRetryInterval, testutil.WaitForTimer(t, ctx, timer))
+
+		a.SimulateExitForTest()
+		a.CancelForTest()
+		require.NoError(t, a.Wait())
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status, "exit accepts tasklet.json outcome even when the journal lags")
+	})
+}
+
+func TestDiracResumedTaskletWithStalePriorOutcomeStaysRunningPastGrace(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		events string
+	}{
+		{
+			name: "matching prior outcome before resume",
+			events: `[
+				{"id":"native-created","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},
+				{"id":"outcome:Witten:completed:1","taskletId":"Witten","createdAt":1,"communication":{"type":"outcome","outcome":{"kind":"completed","response":"The parser is correct.","completedAt":1}}},
+				{"id":"native-resumed","taskletId":"Witten","createdAt":1,"communication":{"type":"lifecycle","state":"resumed","assignment":"Inspect the follow-up."}}
+			]`,
+		},
+		{
+			name: "outcome timestamp older than resume without prior outcome event",
+			events: `[
+				{"id":"native-created","taskletId":"Witten","createdAt":0,"communication":{"type":"lifecycle","state":"accepted"}},
+				{"id":"native-resumed","taskletId":"Witten","createdAt":2,"communication":{"type":"lifecycle","state":"resumed","assignment":"Inspect the follow-up."}}
+			]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			a, sink, clock := newDiracSubagentAgentForRPC(t, root)
+			a.SetSessionIDForTest("dirac-session")
+			sink.UpdateSessionID("dirac-session")
+			writeDiracTaskletStore(t, root)
+			eventsPath := filepath.Join(root, "data", "tasks", "native-root", "tasklets", "Witten", "tasklet_events.json")
+			require.NoError(t, os.WriteFile(eventsPath, []byte(tc.events), 0o600))
+
+			timer := clock.Trap().NewTimer(diracArchiveTimerTag)
+			t.Cleanup(func() { timer.Close(); a.CancelForTest(); a.archiveWG.Wait() })
+			a.HandleOutput(diracFrame(t, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "native-spawn-card", "name": "subagents", "status": "completed"}))
+
+			ctx := testutil.DeadlineContext(t)
+			for elapsed := time.Duration(0); elapsed < 15*time.Second; {
+				interval := testutil.WaitForTimer(t, ctx, timer)
+				clock.Advance(interval).MustWait(ctx)
+				elapsed += interval
+			}
+			pendingInterval := testutil.WaitForTimer(t, ctx, timer)
+
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, bgtask.StatusRunning, rows[0].Status, "a stale Job 1 outcome in tasklet.json must not force-close a running Job 2")
+			select {
+			case status := <-sink.closed:
+				t.Fatalf("running Job 2 was closed with stale Job 1 outcome: %v", status)
+			default:
+			}
+
+			// A real torn write for Job 2 (timestamp >= resumed.createdAt) still settles after the 5-second grace window.
+			mutateDiracTaskletRecord(t, root, func(record map[string]any) {
+				record["outcome"] = map[string]any{"kind": "completed", "response": "Job 2 result.", "completedAt": 5}
+			})
+			clock.Advance(pendingInterval).MustWait(ctx)
+			for elapsed := time.Duration(0); elapsed < diracOutcomeMismatchGrace; {
+				interval := testutil.WaitForTimer(t, ctx, timer)
+				clock.Advance(interval).MustWait(ctx)
+				elapsed += interval
+			}
+			assert.Equal(t, bgtask.StatusSucceeded, waitDiracChildClose(t, ctx, sink))
+			a.archiveWG.Wait()
+			rows = sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+			child := sink.Child(rows[0].ChildAgentID)
+			require.NotNil(t, child)
+			notifications, err := json.Marshal(child.LeapMuxNotifications())
+			require.NoError(t, err)
+			assert.Contains(t, string(notifications), "Job 2 result.")
+		})
+	}
 }

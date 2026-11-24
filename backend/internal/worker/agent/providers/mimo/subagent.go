@@ -250,11 +250,15 @@ func (a *Agent) linkSpawn(spanID, actorID, title, prompt string) {
 	}
 	a.Mu.Lock()
 	actor := a.actorLocked(actorID)
+	sessionID := a.sessionID
+	var renameFrom string
 	if actor.spawnSpanID == "" {
 		actor.spawnSpanID = spanID
 		actor.pendingSpawnPrompt = prompt
 		if actor.rowKey == "" {
 			actor.rowKey = spanID
+		} else if actor.rowKey != spanID && actor.rowKey == sessionID+"/"+actor.id {
+			renameFrom = actor.rowKey
 		}
 		// A workflow's actor has no spawn call, so an actor that a call started
 		// is the main agent's own, whichever workflow ran when it registered.
@@ -264,8 +268,36 @@ func (a *Agent) linkSpawn(spanID, actorID, title, prompt string) {
 	if actor.description == "" {
 		actor.description = strings.TrimSpace(title)
 	}
-	a.retainSpawnPromptLocked(actor, a.sessionID)
+	hadChild, resolvedTitle := actor.childAgentID != "", actor.title()
+	a.retainSpawnPromptLocked(actor, sessionID)
 	a.Mu.Unlock()
+
+	if renameFrom != "" {
+		if err := a.sink.RenameBackgroundTask(renameFrom, spanID); err != nil {
+			providerkit.LogRegistryRefusal("mimo", "rename", err)
+		} else {
+			a.Mu.Lock()
+			if a.actors[actorID] == actor && actor.rowKey == renameFrom {
+				actor.rowKey = spanID
+			}
+			closed := actor.closed
+			a.Mu.Unlock()
+			if hadChild {
+				if _, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+					RegistryRole:     bgtask.RoleChildTask,
+					SpawnSpanID:      spanID,
+					ProviderChildKey: spanID,
+					AgentSessionID:   sessionID,
+					Title:            resolvedTitle,
+				}); err != nil {
+					slog.Warn("mimo subagent adopt renamed child failed", "agent_id", a.AgentID(), "actor_id", actorID, "error", err)
+				}
+				if !closed {
+					a.upsertActorRow(actor, sessionID, bgtask.StatusRunning)
+				}
+			}
+		}
+	}
 	a.ensureActorTranscript(actorID)
 }
 
@@ -306,8 +338,13 @@ func (a *Agent) ensureActorRecordTranscript(actor *mimoActor, sessionID string) 
 		actor.rowKey = sessionID + "/" + actor.id
 	}
 	rowKey, spawnSpan, title, childID := actor.rowKey, actor.spawnSpanID, actor.title(), actor.childAgentID
+	providerKey := rowKey
 	if spawnSpan == "" {
+		// An actor observed before linkSpawn (or one with no spawn call) starts
+		// provisional so a later linkSpawn can rename its row to the spawn span
+		// and adopt that span as ProviderChildKey without identity refusal.
 		spawnSpan = rowKey
+		providerKey = ""
 	}
 	a.Mu.Unlock()
 	created := childID == ""
@@ -316,7 +353,7 @@ func (a *Agent) ensureActorRecordTranscript(actor *mimoActor, sessionID string) 
 		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{
 			RegistryRole: bgtask.RoleChildTask,
 
-			SpawnSpanID: spawnSpan, ProviderChildKey: rowKey, AgentSessionID: sessionID, Title: title,
+			SpawnSpanID: spawnSpan, ProviderChildKey: providerKey, AgentSessionID: sessionID, Title: title,
 		})
 		if err != nil {
 			slog.Warn("mimo subagent ensure child failed", "agent_id", a.AgentID(), "actor_id", actor.id, "error", err)
@@ -374,7 +411,12 @@ func (a *Agent) upsertActorRow(actor *mimoActor, sessionID string, status bgtask
 		a.Mu.Unlock()
 		return
 	}
+	role := bgtask.RoleUnspecified
+	if actor.childAgentID != "" {
+		role = bgtask.RoleChildTask
+	}
 	upsert := bgtask.Upsert{
+		Role:         role,
 		RowKey:       actor.rowKey,
 		Kind:         bgtask.KindSubagent,
 		ChildAgentID: actor.childAgentID,
@@ -443,17 +485,23 @@ func (a *Agent) startActorTurn(actorID string, wasRunning, wasClosed bool) {
 	a.Mu.Lock()
 	actor := a.actorLocked(actorID)
 	actor.running, actor.closed = true, false
-	rowKey, sessionID, hadChild := actor.rowKey, a.sessionID, actor.childAgentID != ""
+	sessionID, hadChild := a.sessionID, actor.childAgentID != ""
 	a.Mu.Unlock()
-	if _, ok := a.ensureActorRecordTranscript(actor, sessionID); !ok || wasRunning || !hadChild {
+	if _, ok := a.ensureActorRecordTranscript(actor, sessionID); !ok || wasRunning {
 		return
 	}
+	a.Mu.Lock()
+	rowKey := actor.rowKey
+	a.Mu.Unlock()
 	if wasClosed && rowKey != "" {
 		providerkit.LogRegistryRefusal("mimo", "revive", a.sink.ReviveBackgroundTask(rowKey))
-	} else {
+		a.upsertActorRow(actor, sessionID, bgtask.StatusRunning)
+	} else if hadChild {
 		a.upsertActorRow(actor, sessionID, bgtask.StatusRunning)
 	}
-	a.publishChildTurn(actor, sessionID)
+	if hadChild {
+		a.publishChildTurn(actor, sessionID)
+	}
 }
 
 // publishChildTurn reports an actor's turn on its own tab, from the running flag
@@ -475,8 +523,12 @@ func (a *Agent) publishChildTurn(actor *mimoActor, sessionID string) {
 // endActorTurn persists unfinished output and updates the actor's registry outcome.
 // A background actor also reports its last text to the parent.
 func (a *Agent) endActorTurn(payload mimoActorStatus) {
-	a.endLiveCompactions(payload.ActorID)
 	status, completion := actorOutcomeStatus(payload.LastOutcome)
+	a.endActorTurnWithOutcome(payload, status, completion)
+}
+
+func (a *Agent) endActorTurnWithOutcome(payload mimoActorStatus, status bgtask.Status, completion agent.MessageCompletion) {
+	a.endLiveCompactions(payload.ActorID)
 	a.flushActorText(payload.ActorID, completion)
 	a.closeUnfinishedTools(payload.ActorID, completion)
 	childID, ok := a.ensureActorTranscript(payload.ActorID)

@@ -312,6 +312,33 @@ func TestCredentialLifecycleEffectsUserInfoInvalidationTellsEachObserver(t *test
 	assert.Equal(t, []string{"user", "other"}, first, "an observer runs without an auth-context registry")
 }
 
+func TestWithUserRevokedObserver(t *testing.T) {
+	type call struct {
+		observer   int
+		userID     string
+		generation int64
+	}
+	var calls []call
+	effects := NewCredentialLifecycleEffects(nil, nil, nil,
+		WithUserRevokedObserver(func(userID string, generation int64) {
+			calls = append(calls, call{observer: 1, userID: userID, generation: generation})
+		}),
+		WithUserRevokedObserver(nil),
+		WithUserRevokedObserver(func(userID string, generation int64) {
+			calls = append(calls, call{observer: 2, userID: userID, generation: generation})
+		}),
+	)
+
+	effects.UserRevoked("", 5)
+	assert.Empty(t, calls, "blank userID must invoke no observers")
+
+	effects.UserRevoked("u1", 7)
+	assert.Equal(t, []call{
+		{observer: 1, userID: "u1", generation: 7},
+		{observer: 2, userID: "u1", generation: 7},
+	}, calls)
+}
+
 func TestCredentialLifecycleEffectsUserInfoInvalidationDoesNotCloseChannels(t *testing.T) {
 	registry := &AuthContextRegistry{state: &authState{}}
 	closer := &recordingCredentialCloser{}

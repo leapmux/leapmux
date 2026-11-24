@@ -3,7 +3,6 @@ package webauthn_test
 import (
 	"testing"
 
-	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,7 +27,7 @@ func newWebAuthnTestService(t *testing.T) *webauthn.Service {
 		RPID:          "localhost",
 		RPDisplayName: "LeapMux",
 		RPOrigins:     []string{"http://localhost"},
-	}, st, ks)
+	}, st, ks, webauthn.NewSessionStore())
 	require.NoError(t, err)
 	return svc
 }
@@ -79,46 +78,4 @@ func TestPasskeyPublicKeyAADIsRowBound(t *testing.T) {
 	got, err := ks.Decrypt(enc, aad)
 	require.NoError(t, err)
 	assert.Equal(t, plain, got)
-}
-
-func TestWebAuthnPayloadAADIsSessionBound(t *testing.T) {
-	ks := newTestKeystore(t)
-	plain := []byte(`{"email":"a@example.com"}`)
-	aad := keystore.WebAuthnPayloadAAD("sess-1")
-
-	enc, err := ks.Encrypt(plain, aad)
-	require.NoError(t, err)
-
-	_, err = ks.Decrypt(enc, keystore.WebAuthnPayloadAAD("sess-2"))
-	assert.Error(t, err)
-
-	got, err := ks.Decrypt(enc, aad)
-	require.NoError(t, err)
-	assert.Equal(t, plain, got)
-}
-
-func TestWebAuthnSessionDataAADIsSessionBound(t *testing.T) {
-	ks := newTestKeystore(t)
-	plain := []byte(`{"challenge":"abc"}`)
-	aad := keystore.WebAuthnSessionDataAAD("sess-1")
-
-	enc, err := ks.Encrypt(plain, aad)
-	require.NoError(t, err)
-
-	_, err = ks.Decrypt(enc, keystore.WebAuthnSessionDataAAD("sess-2"))
-	assert.Error(t, err)
-
-	got, err := ks.Decrypt(enc, aad)
-	require.NoError(t, err)
-	assert.Equal(t, plain, got)
-}
-
-func TestRoundTripSessionData(t *testing.T) {
-	svc := newWebAuthnTestService(t)
-	data := &gowebauthn.SessionData{Challenge: "test-challenge", UserID: []byte("user-1")}
-
-	got, err := svc.RoundTripSessionData("sess-1", data)
-	require.NoError(t, err)
-	assert.Equal(t, data.Challenge, got.Challenge)
-	assert.Equal(t, data.UserID, got.UserID)
 }

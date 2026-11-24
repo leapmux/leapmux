@@ -24,6 +24,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -95,15 +96,15 @@ func stateFromLoginResponse(t *testing.T, resp *http.Response) string {
 
 // seedOAuthState writes a state row directly, so a test can drive the
 // callback without walking the whole login leg.
-func seedOAuthState(t *testing.T, st store.Store, providerID, nonceHash string) string {
+func seedOAuthState(t *testing.T, states service.OAuthStateStore, providerID, nonceHash string) string {
 	t.Helper()
 	state := id.Generate()
-	require.NoError(t, st.OAuthStates().Create(context.Background(), store.CreateOAuthStateParams{
+	require.NoError(t, states.Create(service.CreateOAuthStateParams{
 		State:        state,
 		ProviderID:   providerID,
 		PkceVerifier: "verifier",
 		NonceHash:    nonceHash,
-		Purpose:      store.OAuthStatePurposeLogin,
+		Purpose:      service.OAuthStatePurposeLogin,
 		ExpiresAt:    time.Now().Add(5 * time.Minute).UTC(),
 	}))
 	return state
@@ -112,10 +113,10 @@ func seedOAuthState(t *testing.T, st store.Store, providerID, nonceHash string) 
 func TestOAuthLogin_SetsNonceCookieAndStoresOnlyItsHash(t *testing.T) {
 	t.Parallel()
 
-	server, st, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, st, ks)
+	env := setupOAuthTestEnv(t)
+	providerID := createTestProvider(t, env.store, env.ks)
 
-	resp, err := noRedirectClient().Get(server.URL + "/auth/idp/" + providerID + "/login")
+	resp, err := noRedirectClient().Get(env.server.URL + "/auth/idp/" + providerID + "/login")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusFound, resp.StatusCode)
@@ -134,8 +135,8 @@ func TestOAuthLogin_SetsNonceCookieAndStoresOnlyItsHash(t *testing.T) {
 
 	// The row stores only the hash. A read of oauth_states must not yield a
 	// value that completes somebody's in-flight login.
-	row, err := st.OAuthStates().Get(context.Background(), state)
-	require.NoError(t, err)
+	row, ok := env.states.Get(state)
+	require.True(t, ok)
 	assert.NotEmpty(t, row.NonceHash)
 	assert.NotEqual(t, cookie.Value, row.NonceHash, "the raw nonce must never be stored")
 	assert.Equal(t, hashNonceForTest(cookie.Value), row.NonceHash)
@@ -144,13 +145,13 @@ func TestOAuthLogin_SetsNonceCookieAndStoresOnlyItsHash(t *testing.T) {
 func TestOAuthCallback_WithoutNonceCookie_Refuses(t *testing.T) {
 	t.Parallel()
 
-	server, st, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, st, ks)
-	state := seedOAuthState(t, st, providerID, hashNonceForTest("the-real-nonce"))
+	env := setupOAuthTestEnv(t)
+	providerID := createTestProvider(t, env.store, env.ks)
+	state := seedOAuthState(t, env.states, providerID, hashNonceForTest("the-real-nonce"))
 
 	// This is the attack: the pair is valid, the browser is not the one that
 	// started the flow, so it carries no nonce cookie.
-	resp, err := noRedirectClient().Get(server.URL + "/auth/idp/" + providerID + "/callback?code=c&state=" + state)
+	resp, err := noRedirectClient().Get(env.server.URL + "/auth/idp/" + providerID + "/callback?code=c&state=" + state)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -162,19 +163,19 @@ func TestOAuthCallback_WithoutNonceCookie_Refuses(t *testing.T) {
 	// owner-only. Consuming it here would let anyone who learns a live
 	// state destroy the owner's in-flight login with one request, and the
 	// owner's real callback would then report "invalid or expired state".
-	surviving, err := st.OAuthStates().Get(context.Background(), state)
-	require.NoError(t, err, "a refused callback must not consume somebody else's flow")
+	surviving, ok := env.states.Get(state)
+	require.True(t, ok, "a refused callback must not consume somebody else's flow")
 	assert.Equal(t, state, surviving.State)
 }
 
 func TestOAuthCallback_WrongNonceCookie_Refuses(t *testing.T) {
 	t.Parallel()
 
-	server, st, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, st, ks)
-	state := seedOAuthState(t, st, providerID, hashNonceForTest("the-real-nonce"))
+	env := setupOAuthTestEnv(t)
+	providerID := createTestProvider(t, env.store, env.ks)
+	state := seedOAuthState(t, env.states, providerID, hashNonceForTest("the-real-nonce"))
 
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/auth/idp/"+providerID+"/callback?code=c&state="+state, nil)
+	req, err := http.NewRequest(http.MethodGet, env.server.URL+"/auth/idp/"+providerID+"/callback?code=c&state="+state, nil)
 	require.NoError(t, err)
 	req.AddCookie(auth.BuildOAuthNonceCookie(state, "some-other-browsers-nonce", time.Minute, false))
 
@@ -194,11 +195,11 @@ func TestOAuthCallback_WrongNonceCookie_Refuses(t *testing.T) {
 func TestOAuthCallback_StateWithoutNonce_Refuses(t *testing.T) {
 	t.Parallel()
 
-	server, st, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, st, ks)
-	state := seedOAuthState(t, st, providerID, "")
+	env := setupOAuthTestEnv(t)
+	providerID := createTestProvider(t, env.store, env.ks)
+	state := seedOAuthState(t, env.states, providerID, "")
 
-	resp, err := noRedirectClient().Get(server.URL + "/auth/idp/" + providerID + "/callback?code=c&state=" + state)
+	resp, err := noRedirectClient().Get(env.server.URL + "/auth/idp/" + providerID + "/callback?code=c&state=" + state)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -317,11 +318,11 @@ func TestOAuthCallback_ConcurrentFlowsDoNotEvictEachOther(t *testing.T) {
 func TestOAuthFlowBindingUnderSecureCookies(t *testing.T) {
 	t.Parallel()
 
-	server, st, ks, set := setupOAuthTestServerWithSettings(t)
-	require.NoError(t, settings.KeySecureCookies.Set(context.Background(), set, true))
-	providerID := createTestOIDCProviderWithStub(t, st, ks)
+	env := setupOAuthTestEnv(t)
+	require.NoError(t, settings.KeySecureCookies.Set(context.Background(), env.set, true))
+	providerID := createTestOIDCProviderWithStub(t, env.store, env.ks)
 
-	loginResp, err := noRedirectClient().Get(server.URL + "/auth/idp/" + providerID + "/login")
+	loginResp, err := noRedirectClient().Get(env.server.URL + "/auth/idp/" + providerID + "/login")
 	require.NoError(t, err)
 	defer func() { _ = loginResp.Body.Close() }()
 
@@ -333,12 +334,12 @@ func TestOAuthFlowBindingUnderSecureCookies(t *testing.T) {
 	assert.Equal(t, "/", cookie.Path)
 	assert.Empty(t, cookie.Domain)
 
-	row, err := st.OAuthStates().Get(context.Background(), state)
-	require.NoError(t, err)
+	row, ok := env.states.Get(state)
+	require.True(t, ok)
 	assert.Equal(t, hashNonceForTest(cookie.Value), row.NonceHash)
 
 	// The matching cookie passes the guard.
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/auth/idp/"+providerID+"/callback?code=c&state="+state, nil)
+	req, err := http.NewRequest(http.MethodGet, env.server.URL+"/auth/idp/"+providerID+"/callback?code=c&state="+state, nil)
 	require.NoError(t, err)
 	req.AddCookie(cookie)
 	resp, err := noRedirectClient().Do(req)
@@ -349,8 +350,8 @@ func TestOAuthFlowBindingUnderSecureCookies(t *testing.T) {
 
 	// And the hub refuses a browser holding only the INSECURE spelling, so the
 	// two names cannot be confused for one another.
-	state2 := seedOAuthState(t, st, providerID, hashNonceForTest("n2"))
-	req2, err := http.NewRequest(http.MethodGet, server.URL+"/auth/idp/"+providerID+"/callback?code=c&state="+state2, nil)
+	state2 := seedOAuthState(t, env.states, providerID, hashNonceForTest("n2"))
+	req2, err := http.NewRequest(http.MethodGet, env.server.URL+"/auth/idp/"+providerID+"/callback?code=c&state="+state2, nil)
 	require.NoError(t, err)
 	req2.AddCookie(auth.BuildOAuthNonceCookie(state2, "n2", time.Minute, false))
 	resp2, err := noRedirectClient().Do(req2)
@@ -436,15 +437,15 @@ func signupNonceCookie(t *testing.T, resp *http.Response, token string) *http.Co
 func TestGetPendingOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 	t.Parallel()
 
-	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, st, ks)
+	env := setupOAuthTestEnvWithAuthService(t)
+	providerID := createTestProvider(t, env.store, env.ks)
 	token := id.Generate()
-	insertPendingSignup(t, st, ks, providerID, token, "victim@example.com", "Victim", "sub-1",
+	insertPendingSignup(t, env.pendingSignups, providerID, token, "victim@example.com", "Victim", "sub-1",
 		time.Now().Add(5*time.Minute).UTC())
 
 	// The attack: a valid token, delivered to a browser that never started
 	// the flow, so it carries no binding cookie.
-	_, err := client.GetPendingOAuthSignup(context.Background(),
+	_, err := env.client.GetPendingOAuthSignup(context.Background(),
 		&leapmuxv1.GetPendingOAuthSignupRequest{SignupToken: token})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -455,13 +456,13 @@ func TestCompleteOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, st, ks)
+	env := setupOAuthTestEnvWithAuthService(t)
+	providerID := createTestProvider(t, env.store, env.ks)
 	token := id.Generate()
-	insertPendingSignup(t, st, ks, providerID, token, "victim@example.com", "Victim", "sub-1",
+	insertPendingSignup(t, env.pendingSignups, providerID, token, "victim@example.com", "Victim", "sub-1",
 		time.Now().Add(5*time.Minute).UTC())
 
-	_, err := client.CompleteOAuthSignup(ctx,
+	_, err := env.client.CompleteOAuthSignup(ctx,
 		&leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "victim"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -469,10 +470,10 @@ func TestCompleteOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 
 	// The hub created no account, and the pending row survives for the browser
 	// that really started the flow.
-	_, err = st.Users().GetByUsername(ctx, "victim")
+	_, err = env.store.Users().GetByUsername(ctx, "victim")
 	assert.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.PendingOAuthSignups().Get(ctx, token)
-	assert.NoError(t, err, "a refused signup must not consume somebody else's pending row")
+	_, ok := env.pendingSignups.Get(token)
+	assert.True(t, ok, "a refused signup must not consume somebody else's pending row")
 }
 
 // TestCompleteOAuthSignup_WrongBindingCookie_Refuses pins that any nonce is
@@ -480,10 +481,10 @@ func TestCompleteOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 func TestCompleteOAuthSignup_WrongBindingCookie_Refuses(t *testing.T) {
 	t.Parallel()
 
-	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, st, ks)
+	env := setupOAuthTestEnvWithAuthService(t)
+	providerID := createTestProvider(t, env.store, env.ks)
 	token := id.Generate()
-	insertPendingSignup(t, st, ks, providerID, token, "victim@example.com", "Victim", "sub-1",
+	insertPendingSignup(t, env.pendingSignups, providerID, token, "victim@example.com", "Victim", "sub-1",
 		time.Now().Add(5*time.Minute).UTC())
 
 	req := &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "victim"}
@@ -491,7 +492,7 @@ func TestCompleteOAuthSignup_WrongBindingCookie_Refuses(t *testing.T) {
 	ctx, info := connect.NewClientContext(context.Background())
 	info.RequestHeader().Set("Cookie", wrong.Name+"="+wrong.Value)
 
-	_, err := client.CompleteOAuthSignup(ctx, req)
+	_, err := env.client.CompleteOAuthSignup(ctx, req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -503,27 +504,19 @@ func TestCompleteOAuthSignup_UnboundRowRefuses(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
-	providerID := createTestProvider(t, st, ks)
+	env := setupOAuthTestEnvWithAuthService(t)
+	providerID := createTestProvider(t, env.store, env.ks)
 	token := id.Generate()
-	encAccess, err := ks.Encrypt([]byte("a"), keystore.AccessTokenAAD(token, providerID))
-	require.NoError(t, err)
-	encRefresh, err := ks.Encrypt([]byte("r"), keystore.RefreshTokenAAD(token, providerID))
-	require.NoError(t, err)
-	require.NoError(t, st.PendingOAuthSignups().Create(ctx, store.CreatePendingOAuthSignupParams{
+	expiresAt := time.Now().Add(5 * time.Minute).UTC()
+	require.NoError(t, env.pendingSignups.Create(service.CreatePendingOAuthSignupParams{
 		Token:           token,
 		ProviderID:      providerID,
 		ProviderSubject: "sub-1",
 		Email:           "victim@example.com",
-		AccessToken:     encAccess,
-		RefreshToken:    encRefresh,
-		TokenType:       "bearer",
-		TokenExpiresAt:  time.Now().Add(time.Hour).UTC(),
-		KeyVersion:      int64(ks.ActiveVersion()),
-		ExpiresAt:       time.Now().Add(5 * time.Minute).UTC(),
+		ExpiresAt:       expiresAt,
 	}))
 
-	_, err = client.CompleteOAuthSignup(signupReq(ctx, &leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := env.client.CompleteOAuthSignup(signupReq(ctx, &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: token, Username: "victim",
 	}))
 	require.Error(t, err, "an unbound row must refuse rather than skip the check")
@@ -537,12 +530,11 @@ func TestCompleteOAuthSignup_UnboundRowRefuses(t *testing.T) {
 func TestOAuthCallback_NewUserBindsThePendingSignup(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	server, st, ks, set := setupOAuthTestServerWithSettings(t)
-	enableSignup(t, set)
-	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "newcomer@example.com", "sub-new")
+	env := setupOAuthTestEnv(t)
+	enableSignup(t, env.set)
+	providerID := createTestOIDCProviderWithStubClaims(t, env.store, env.ks, "newcomer@example.com", "sub-new")
 
-	loginResp, err := noRedirectClient().Get(server.URL + "/auth/idp/" + providerID + "/login")
+	loginResp, err := noRedirectClient().Get(env.server.URL + "/auth/idp/" + providerID + "/login")
 	require.NoError(t, err)
 	defer func() { _ = loginResp.Body.Close() }()
 	state := stateFromLoginResponse(t, loginResp)
@@ -550,7 +542,7 @@ func TestOAuthCallback_NewUserBindsThePendingSignup(t *testing.T) {
 	require.NotNil(t, flowCookie)
 
 	req, err := http.NewRequest(http.MethodGet,
-		server.URL+"/auth/idp/"+providerID+"/callback?code=c&state="+state, nil)
+		env.server.URL+"/auth/idp/"+providerID+"/callback?code=c&state="+state, nil)
 	require.NoError(t, err)
 	req.AddCookie(flowCookie)
 	resp, err := noRedirectClient().Do(req)
@@ -570,8 +562,8 @@ func TestOAuthCallback_NewUserBindsThePendingSignup(t *testing.T) {
 	assert.True(t, cookie.HttpOnly, "script must not read the signup nonce")
 	assert.Equal(t, "/", cookie.Path)
 
-	pending, err := st.PendingOAuthSignups().Get(ctx, signupToken)
-	require.NoError(t, err)
+	pending, ok := env.pendingSignups.Get(signupToken)
+	require.True(t, ok)
 	assert.NotEqual(t, cookie.Value, pending.NonceHash, "the raw nonce must never be stored")
 	assert.Equal(t, hashNonceForTest(cookie.Value), pending.NonceHash)
 }

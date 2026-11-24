@@ -79,6 +79,8 @@ type Agent struct {
 
 	// children watches the subagents this thread started. See subagent.go.
 	children *codewhaleChildren
+	// captureReport overrides agent.CaptureSubagentReport in tests. Nil in production.
+	captureReport func(agent.TranscriptServices, agent.SubagentReportWrite) (agent.CapturedTranscript, bool, error)
 
 	// --- guarded by Mu ---
 
@@ -115,6 +117,8 @@ type Agent struct {
 	usage codewhaleUsage
 	// shells holds the background shell jobs that run. See subagent.go.
 	shells codewhaleShells
+	// workflows holds the background workflow runs that are still active. See subagent.go.
+	workflows codewhaleWorkflows
 	// steers holds the steers that LeapMux sent and whose fate is not settled.
 	// See steer.go.
 	steers    codewhaleSteers
@@ -494,6 +498,7 @@ func (a *Agent) finishAfterExit(completion agent.MessageCompletion) {
 	a.finishSteerRequestBoundary()
 	a.withdrawAllControls()
 	a.closeOpenChildren(completion)
+	a.closeOpenWorkflows()
 	a.closeOpenShells()
 	a.settleSteersAfterExit()
 	a.Mu.Lock()

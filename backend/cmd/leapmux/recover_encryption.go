@@ -7,8 +7,6 @@ import (
 	"math"
 	"strings"
 
-	"github.com/leapmux/leapmux/internal/util/userid"
-
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -77,20 +75,9 @@ func runRemoveEncryptionKey(cmd cmdCtx, args []string) error {
 // countEncryptedRefs returns human-readable descriptions of data still
 // encrypted under the given key version. An empty result means the version is
 // safe to remove. It scans the persistent encrypted secrets — OAuth provider
-// client secrets, user OAuth tokens, captcha provider secrets, and passkey
-// public keys. Transient pending_oauth_signups and webauthn_sessions are not
-// scanned: they auto-expire, are never migrated by reencrypt, and a bricked
-// row only fails an in-flight signup or ceremony the user can simply retry.
+// client secrets, settings secrets, and passkey public keys.
 func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]string, error) {
 	var refs []string
-
-	tokens, err := st.OAuthTokens().CountByKeyVersion(ctx, int64(version))
-	if err != nil {
-		return nil, fmt.Errorf("count oauth tokens for key version %d: %w", version, err)
-	}
-	if tokens > 0 {
-		refs = append(refs, fmt.Sprintf("%d OAuth token(s)", tokens))
-	}
 
 	providers, err := st.OAuthProviders().ListAllWithSecrets(ctx)
 	if err != nil {
@@ -201,57 +188,6 @@ func runReencryptSecrets(cmd cmdCtx, args []string) error {
 				return fmt.Errorf("update provider %s: %w", p.ID, err)
 			}
 			count++
-		}
-
-		// Re-encrypt oauth_tokens.
-		for _, ver := range ks.Versions() {
-			if ver == activeVer {
-				continue
-			}
-			tokens, listErr := st.OAuthTokens().ListByKeyVersion(ctx, int64(ver))
-			if listErr != nil {
-				return fmt.Errorf("list tokens for key version %d: %w", ver, listErr)
-			}
-			for _, tok := range tokens {
-				accessAAD := keystore.AccessTokenAAD(tok.UserID, tok.ProviderID)
-				refreshAAD := keystore.RefreshTokenAAD(tok.UserID, tok.ProviderID)
-
-				newAccess, err := reencryptBlob(ks, tok.AccessToken, accessAAD,
-					fmt.Sprintf("access_token for user %s", tok.UserID))
-				if err != nil {
-					return err
-				}
-				newRefresh, err := reencryptBlob(ks, tok.RefreshToken, refreshAAD,
-					fmt.Sprintf("refresh_token for user %s", tok.UserID))
-				if err != nil {
-					return err
-				}
-
-				// A blank owner on an oauth_tokens row is corrupt data. Report
-				// it rather than panicking through MustNew: this loop commits
-				// each Upsert independently, so a panic would abort a key
-				// rotation with some rows already at the new version and no
-				// diagnosable cause. Matches the production refresh path in
-				// hub/service/oauth_refresh.go.
-				tokUID, mintOK := userid.New(tok.UserID)
-				if !mintOK {
-					return fmt.Errorf("oauth_tokens row for provider %s has a blank user id", tok.ProviderID)
-				}
-
-				err = st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-					UserID:       tokUID,
-					ProviderID:   tok.ProviderID,
-					AccessToken:  newAccess,
-					RefreshToken: newRefresh,
-					TokenType:    tok.TokenType,
-					ExpiresAt:    tok.ExpiresAt,
-					KeyVersion:   int64(activeVer),
-				})
-				if err != nil {
-					return fmt.Errorf("update tokens for user %s: %w", tok.UserID, err)
-				}
-				count++
-			}
 		}
 
 		// Re-encrypt hub_settings secret halves (SMTP passwords, captcha

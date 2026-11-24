@@ -76,6 +76,12 @@ const droidNotificationQueuedMessagesChanged = "queued_messages_changed"
 // droidNotificationScriptOracleChanged updates the live Script tool call's oracle.
 const droidNotificationScriptOracleChanged = "script_oracle_changed"
 
+// droidNotificationBackgroundProcessesChanged reports the active background shell processes.
+const droidNotificationBackgroundProcessesChanged = "background_processes_changed"
+
+// droidBackgroundProcessRowPrefix keys the registry row of one Droid background process.
+const droidBackgroundProcessRowPrefix = "bg-proc:"
+
 // Envelope type words.
 const (
 	droidTypeRequest      = "request"

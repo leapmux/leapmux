@@ -102,13 +102,75 @@ type kiroWorkflowNotification struct {
 	} `json:"finalState"`
 }
 
-// kiroWorkflowNode is one node of the final state of a run, reduced to what
-// states why the run failed. Kiro states a failure reason on the nodes of a
-// run, and never on the run itself.
+// kiroWorkflowNode is one node of a workflow run's tree state. Kiro states
+// failure reasons and step session IDs on nodes of the tree, not on the run
+// header.
 type kiroWorkflowNode struct {
+	NodeID        string             `json:"nodeId"`
+	Type          string             `json:"type"`
+	Iteration     *int               `json:"iteration"`
 	Status        string             `json:"status"`
+	SessionID     string             `json:"sessionId"`
 	FailureReason string             `json:"failureReason"`
 	Children      []kiroWorkflowNode `json:"children"`
+}
+
+// kiroNodeFinished reports whether a workflow node status is final.
+func kiroNodeFinished(status string) bool {
+	return status == kiroRunCompleted || status == kiroRunFailed || status == kiroRunAborted || status == kiroNodeSkipped
+}
+
+// pathSegment returns the nodePath segment Kiro uses in live notifications for
+// this node. Repeat iterations carry nodeId like "goal-loop#0" in tree state
+// while live nodePath notifications use "iter-0".
+func (n kiroWorkflowNode) pathSegment(parentType string) string {
+	if parentType == "repeat" && n.Iteration != nil {
+		return fmt.Sprintf("iter-%d", *n.Iteration)
+	}
+	return strings.TrimSpace(n.NodeID)
+}
+
+// activeSteps collects active (non-final) step nodePath -> sessionID entries
+// from a recovered workflow tree.
+func (n kiroWorkflowNode) activeSteps() map[string]string {
+	steps := make(map[string]string)
+	n.collectActiveSteps("", nil, steps)
+	return steps
+}
+
+func (n kiroWorkflowNode) collectActiveSteps(parentType string, prefix []string, out map[string]string) {
+	path := prefix
+	if segment := n.pathSegment(parentType); segment != "" {
+		path = append(append([]string(nil), prefix...), segment)
+	}
+	if n.Type == kiroNodeTypeStep {
+		if sid := strings.TrimSpace(n.SessionID); sid != "" && !kiroNodeFinished(n.Status) {
+			if key := nodePathKey(path); key != "" {
+				out[key] = sid
+			}
+		}
+	}
+	for _, child := range n.Children {
+		child.collectActiveSteps(n.Type, path, out)
+	}
+}
+
+// stepSessionIDs collects every step node's non-empty sessionId in tree order.
+func (n kiroWorkflowNode) stepSessionIDs() []string {
+	var ids []string
+	n.collectStepSessionIDs(&ids)
+	return ids
+}
+
+func (n kiroWorkflowNode) collectStepSessionIDs(out *[]string) {
+	if n.Type == kiroNodeTypeStep {
+		if sid := strings.TrimSpace(n.SessionID); sid != "" {
+			*out = append(*out, sid)
+		}
+	}
+	for _, child := range n.Children {
+		child.collectStepSessionIDs(out)
+	}
 }
 
 // failureReason is the reason of the deepest failed node that states one, in
@@ -224,33 +286,39 @@ func runLabel(run *workflowRun) string {
 	return run.name
 }
 
-// upsertRunRow writes the registry row of one run.
-func (a *Agent) upsertRunRow(workflowID string, run *workflowRun, status bgtask.Status, activity string, closeRow bool) {
+// upsertRunRow writes the registry row of one run through ACP's output queue.
+// ApplySubagentObservationForSession is required here because workflow
+// notifications run inside RouteSessionNotification, which already holds
+// sessionUpdates.mu; ApplySubagentObservation with RegistryOnly would
+// re-acquire sessionUpdates.mu and deadlock.
+func (a *Agent) upsertRunRow(workflowID string, run *workflowRun, status bgtask.Status, activity string, closeRow, reviveRow bool) {
 	label := runLabel(run)
 	title := label
 	if run.objective != "" {
 		title = label + ": " + run.objective
 	}
-	a.ApplySubagentObservation(&acp.SubagentObservation{
-		RowKey:     kiroWorkflowRowPrefix + workflowID,
-		Kind:       bgtask.KindWorkflow,
-		Title:      title,
-		Activity:   activity,
-		Status:     status,
-		GroupKey:   workflowID,
-		GroupLabel: label,
-		CloseRow:   closeRow,
+	a.ApplySubagentObservationForSession(run.rootSessionID, &acp.SubagentObservation{
+		RegistryOnly: true,
+		RowKey:       kiroWorkflowRowPrefix + workflowID,
+		Kind:         bgtask.KindWorkflow,
+		Title:        title,
+		Activity:     activity,
+		Status:       status,
+		GroupKey:     workflowID,
+		GroupLabel:   label,
+		CloseRow:     closeRow,
+		ReviveRow:    reviveRow,
 	})
 }
 
-// handleRunStart opens the row of a run that starts or resumes.
+// handleRunStart opens the row of a run that starts, resumes, or retries.
 func (a *Agent) handleRunStart(note kiroWorkflowNotification) {
 	a.stateMu.Lock()
 	run := a.runForLocked(note)
 	run.status = kiroRunRunning
 	snapshot := *run
 	a.stateMu.Unlock()
-	a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusRunning, "", false)
+	a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusRunning, "", false, true)
 	a.observeGoalRun(note.WorkflowID, snapshot)
 }
 
@@ -309,8 +377,18 @@ func (a *Agent) handleNodeComplete(note kiroWorkflowNotification) {
 	key := nodePathKey(note.NodePath)
 	sessionID, running := run.steps[key]
 	delete(run.steps, key)
-	a.stateMu.Unlock()
 	if !running {
+		sessionID = strings.TrimSpace(note.SessionID)
+		if sessionID != "" {
+			for stepKey, stepSession := range run.steps {
+				if stepSession == sessionID {
+					delete(run.steps, stepKey)
+				}
+			}
+		}
+	}
+	a.stateMu.Unlock()
+	if sessionID == "" {
 		return
 	}
 	report := strings.TrimSpace(note.CapturedOutput)
@@ -341,6 +419,9 @@ func (a *Agent) handleNodePaused(note kiroWorkflowNotification) {
 	sessionID, running := run.steps[nodePathKey(note.NodePath)]
 	a.stateMu.Unlock()
 	if !running {
+		sessionID = strings.TrimSpace(note.SessionID)
+	}
+	if sessionID == "" {
 		return
 	}
 	a.ApplySubagentObservation(&acp.SubagentObservation{
@@ -375,7 +456,7 @@ func (a *Agent) handleRunPaused(note kiroWorkflowNotification) {
 	run.status = kiroRunPaused
 	snapshot := *run
 	a.stateMu.Unlock()
-	a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusPaused, pausedActivity(note.PauseReason), false)
+	a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusPaused, pausedActivity(note.PauseReason), false, false)
 	a.observeGoalPause(note.WorkflowID, note.PauseReason)
 }
 
@@ -410,16 +491,30 @@ func (a *Agent) handleRunComplete(note kiroWorkflowNotification) {
 	a.stateMu.Unlock()
 
 	if note.Status == kiroRunPaused {
-		a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusPaused, pausedActivity(note.FinalState.PauseReason), false)
+		a.upsertRunRow(note.WorkflowID, &snapshot, bgtask.StatusPaused, pausedActivity(note.FinalState.PauseReason), false, false)
 		a.observeGoalPause(note.WorkflowID, note.FinalState.PauseReason)
 		return
 	}
 	status := kiroRunStatus(note.Status)
-	for _, sessionID := range openSteps {
+	seenSteps := make(map[string]struct{}, len(openSteps))
+	closeStep := func(sessionID string) {
+		if sessionID == "" {
+			return
+		}
+		if _, seen := seenSteps[sessionID]; seen {
+			return
+		}
+		seenSteps[sessionID] = struct{}{}
 		a.ApplySubagentObservation(&acp.SubagentObservation{RowKey: sessionID, Status: status, CloseRow: true, Mode: acp.ModeCloseOnly})
 	}
+	for _, sessionID := range openSteps {
+		closeStep(sessionID)
+	}
+	for _, sessionID := range note.FinalState.Root.stepSessionIDs() {
+		closeStep(sessionID)
+	}
 	failure := note.FinalState.Root.failureReason()
-	a.upsertRunRow(note.WorkflowID, &snapshot, status, failure, true)
+	a.upsertRunRow(note.WorkflowID, &snapshot, status, failure, true, false)
 	a.observeGoalEnd(note.WorkflowID, note.Status, failure)
 }
 

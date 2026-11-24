@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -115,7 +116,7 @@ func TestCodewhaleLateCancellationCannotNotifyAReplacementChild(t *testing.T) {
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the cancellation did not return")
 	}
-	status, current := a.children.observation(replacement)
+	status, _, current := a.children.observation(replacement)
 	assert.True(t, current)
 	assert.Zero(t, status)
 	row, _ := sink.BackgroundTask(testChildID)
@@ -306,4 +307,307 @@ func TestCodewhaleFinalOnlyPollingStopsAndRestartsForPausedChildren(t *testing.T
 	a.startChildRunPoller()
 	testutil.WaitForTimer(t, testutil.DeadlineContext(t), poll)
 	assert.EqualValues(t, 2, requests.Load(), "new admission restarts the stopped poller")
+}
+
+func TestCodewhalePrunedChildClosesAsUnknownOutcome(t *testing.T) {
+	t.Parallel()
+	t.Run("seen child pruned from agent-runs closes", func(t *testing.T) {
+		t.Parallel()
+		runtime := newFakeRuntime(t)
+		clock := testutil.NewQuartzMock(t)
+		a, sink := newTestAgentWithClock(t, runtime, clock)
+		runtime.respondJSON(http.MethodGet, routeAgentRuns, 200, map[string]any{
+			"runs": []any{map[string]any{"spec": map[string]string{"worker_id": testChildID}, "status": "running"}},
+		})
+		poll := clock.Trap().NewTimer(childRunTimerTag)
+		t.Cleanup(poll.Close)
+		ctx := testutil.DeadlineContext(t)
+		startChildRun(a)
+		testutil.WaitForTimer(t, ctx, poll)
+
+		// Child disappears from /v1/agent-runs on next snapshot.
+		runtime.respondJSON(http.MethodGet, routeAgentRuns, 200, map[string]any{"runs": []any{}})
+		clock.Advance(childTailInterval).MustWait(ctx)
+		require.Eventually(t, func() bool {
+			row, ok := sink.BackgroundTask(testChildID)
+			return ok && row.Status == bgtask.StatusEndedWithUnknownOutcome
+		}, 30*time.Second, 5*time.Millisecond)
+		assert.Nil(t, a.children.lookup(testChildID))
+		testutil.WaitForTimer(t, ctx, poll)
+		clock.Advance(childTailInterval).MustWait(ctx)
+		require.Eventually(t, func() bool {
+			a.children.mu.Lock()
+			defer a.children.mu.Unlock()
+			return !a.children.polling
+		}, 30*time.Second, 5*time.Millisecond)
+	})
+
+	t.Run("never-seen child absent for three consecutive snapshots closes", func(t *testing.T) {
+		t.Parallel()
+		runtime := newFakeRuntime(t)
+		clock := testutil.NewQuartzMock(t)
+		a, sink := newTestAgentWithClock(t, runtime, clock)
+		runtime.respondJSON(http.MethodGet, routeAgentRuns, 200, map[string]any{"runs": []any{}})
+		poll := clock.Trap().NewTimer(childRunTimerTag)
+		t.Cleanup(poll.Close)
+		ctx := testutil.DeadlineContext(t)
+		startChildRun(a)
+
+		// Snapshot 1 (initial): 1 absence -> still running.
+		testutil.WaitForTimer(t, ctx, poll)
+		row, _ := sink.BackgroundTask(testChildID)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+		// Snapshot 2: 2 absences -> still running.
+		clock.Advance(childTailInterval).MustWait(ctx)
+		testutil.WaitForTimer(t, ctx, poll)
+		row, _ = sink.BackgroundTask(testChildID)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+		// Snapshot 3: 3 consecutive absences -> closes as StatusEndedWithUnknownOutcome.
+		clock.Advance(childTailInterval).MustWait(ctx)
+		require.Eventually(t, func() bool {
+			row, ok := sink.BackgroundTask(testChildID)
+			return ok && row.Status == bgtask.StatusEndedWithUnknownOutcome
+		}, 30*time.Second, 5*time.Millisecond)
+	})
+}
+
+func TestCodewhalePausedChildParksAndWakesCleanly(t *testing.T) {
+	t.Parallel()
+	for _, wakeBy := range []string{"followup", "steer", "wait_settled", "wait_unsettled_target", "interrupt_pending"} {
+		t.Run(wakeBy, func(t *testing.T) {
+			t.Parallel()
+			runtime := newFakeRuntime(t)
+			clock := testutil.NewQuartzMock(t)
+			a, sink := newTestAgentWithClock(t, runtime, clock)
+			var runRequests atomic.Int32
+			var statusMu sync.Mutex
+			currentStatus := "interrupted"
+			runtime.handle(http.MethodGet, routeAgentRuns, func(w http.ResponseWriter, _ *http.Request) {
+				runRequests.Add(1)
+				statusMu.Lock()
+				st := currentStatus
+				statusMu.Unlock()
+				writeFakeJSON(w, 200, map[string]any{
+					"runs": []any{map[string]any{"spec": map[string]string{"worker_id": testChildID}, "status": st}},
+				})
+			})
+			runtime.respondJSON(http.MethodPost, routeAgentRuns+"/"+testChildID+"/cancel", 202,
+				map[string]any{"spec": map[string]string{"worker_id": testChildID}, "status": "running"})
+
+			poll := clock.Trap().NewTimer(childRunTimerTag)
+			t.Cleanup(poll.Close)
+			ctx := testutil.DeadlineContext(t)
+			startChildRun(a)
+
+			// First snapshot reports interrupted -> child pauses and parks.
+			testutil.WaitForTimer(t, ctx, poll)
+			require.Eventually(t, func() bool {
+				row, ok := sink.BackgroundTask(testChildID)
+				return ok && row.Status == bgtask.StatusPaused
+			}, 30*time.Second, 5*time.Millisecond)
+
+			// Advance once so pollChildRuns re-checks snapshots, sees only paused child, and exits.
+			clock.Advance(childTailInterval).MustWait(ctx)
+			require.Eventually(t, func() bool {
+				a.children.mu.Lock()
+				defer a.children.mu.Unlock()
+				return !a.children.polling
+			}, 30*time.Second, 5*time.Millisecond)
+			requestsWhilePaused := runRequests.Load()
+			// Advancing further while paused produces zero additional run polls.
+			clock.Advance(5 * childTailInterval).MustWait(ctx)
+			assert.Equal(t, requestsWhilePaused, runRequests.Load(), "zero timer polls while paused")
+
+			// Switch runtime to completed before waking.
+			statusMu.Lock()
+			currentStatus = "completed"
+			statusMu.Unlock()
+
+			switch wakeBy {
+			case "followup", "steer":
+				a.HandleOutput(toolEndEvent(30, "item.completed", "item_wake", "call_wake", "agent",
+					"resumed", map[string]any{"action": wakeBy, "agent_id": testChildID, "prompt": "continue"}, nil))
+			case "wait_settled":
+				a.HandleOutput(toolEndEvent(30, "item.completed", "item_wake", "call_wake", "agent",
+					`{"settled":[{"agent_id":"`+testChildID+`","status":"running"}]}`, map[string]any{"action": "wait"}, nil))
+			case "wait_unsettled_target":
+				a.HandleOutput(toolEndEvent(30, "item.completed", "item_wake", "call_wake", "agent",
+					`{"settled":[]}`, map[string]any{"action": "wait", "agent_id": testChildID}, nil))
+			case "interrupt_pending":
+				require.NoError(t, a.InterruptChild(testChildID, agent.StopContext{}))
+			}
+
+			// Poller restarts and observes completed status -> closes row.
+			require.Eventually(t, func() bool {
+				row, ok := sink.BackgroundTask(testChildID)
+				return ok && row.Status == bgtask.StatusSucceeded
+			}, 30*time.Second, 5*time.Millisecond)
+			assert.Nil(t, a.children.lookup(testChildID))
+		})
+	}
+
+	t.Run("wake during pause status publication does not park", func(t *testing.T) {
+		t.Parallel()
+		runtime := newFakeRuntime(t)
+		clock := testutil.NewQuartzMock(t)
+		pauseEntered := make(chan struct{})
+		pauseRelease := make(chan struct{})
+		var pauseOnce sync.Once
+		a, sink := newTestAgentWith(t, runtime, testAgentOptions{clock: clock, services: func(inner agent.ProviderServices) agent.ProviderServices {
+			return &pauseGateServices{
+				ProviderServices: inner,
+				onPaused: func() {
+					pauseOnce.Do(func() {
+						close(pauseEntered)
+						<-pauseRelease
+					})
+				},
+			}
+		}})
+		t.Cleanup(func() {
+			select {
+			case <-pauseRelease:
+			default:
+				close(pauseRelease)
+			}
+		})
+		runtime.respondJSON(http.MethodGet, routeAgentRuns, 200, map[string]any{
+			"runs": []any{map[string]any{"spec": map[string]string{"worker_id": testChildID}, "status": "running"}},
+		})
+		startChildRun(a)
+
+		// Deliver StatusPaused and block watchChild inside UpdateBackgroundTaskStatus
+		// (between observation and parkPausedChild).
+		a.settleChild(testChildID, bgtask.StatusPaused)
+		select {
+		case <-pauseEntered:
+		case <-testutil.DeadlineContext(t).Done():
+			t.Fatal("watchChild did not publish StatusPaused")
+		}
+
+		// Concurrently wake with StatusSucceeded before watchChild reaches parkPausedChild.
+		a.settleChild(testChildID, bgtask.StatusSucceeded)
+		close(pauseRelease)
+
+		require.Eventually(t, func() bool {
+			row, ok := sink.BackgroundTask(testChildID)
+			return ok && row.Status == bgtask.StatusSucceeded
+		}, 30*time.Second, 5*time.Millisecond)
+		assert.Nil(t, a.children.lookup(testChildID))
+	})
+
+	t.Run("in-flight poll snapshot wakes paused child on non-paused status and ignores paused", func(t *testing.T) {
+		t.Parallel()
+		runtime := newFakeRuntime(t)
+		clock := testutil.NewQuartzMock(t)
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var enterOnce, releaseOnce sync.Once
+		t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+		runtime.handle(http.MethodGet, routeAgentRuns, func(w http.ResponseWriter, r *http.Request) {
+			enterOnce.Do(func() { close(entered) })
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+			writeFakeJSON(w, 200, map[string]any{
+				"runs": []any{map[string]any{"spec": map[string]string{"worker_id": testChildID}, "status": "completed"}},
+			})
+		})
+		a, sink := newTestAgentWithClock(t, runtime, clock)
+		startChildRun(a)
+		select {
+		case <-entered:
+		case <-testutil.DeadlineContext(t).Done():
+			t.Fatal("in-flight poll did not start")
+		}
+		// Simulate child parking with the same observationSequence as the in-flight snapshot.
+		child := a.children.lookup(testChildID)
+		require.NotNil(t, child)
+		a.children.mu.Lock()
+		child.paused = true
+		a.children.mu.Unlock()
+		releaseOnce.Do(func() { close(release) })
+
+		require.Eventually(t, func() bool {
+			row, ok := sink.BackgroundTask(testChildID)
+			return ok && row.Status == bgtask.StatusSucceeded
+		}, 30*time.Second, 5*time.Millisecond)
+		assert.Nil(t, a.children.lookup(testChildID))
+	})
+}
+
+type pauseGateServices struct {
+	agent.ProviderServices
+	onPaused func()
+}
+
+func (s *pauseGateServices) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
+	err := s.ProviderServices.UpdateBackgroundTaskStatus(rowKey, status, activeForm)
+	if status == bgtask.StatusPaused && s.onPaused != nil {
+		s.onPaused()
+	}
+	return err
+}
+
+func TestCodewhaleFailedOrCanceledWaitDoesNotWakePausedChild(t *testing.T) {
+	t.Parallel()
+	for _, eventName := range []string{contracts.CodewhaleEventItemFailed, contracts.CodewhaleEventItemCanceled} {
+		t.Run(eventName, func(t *testing.T) {
+			t.Parallel()
+			runtime := newFakeRuntime(t)
+			clock := testutil.NewQuartzMock(t)
+			a, sink := newTestAgentWithClock(t, runtime, clock)
+			var runRequests atomic.Int32
+			runtime.handle(http.MethodGet, routeAgentRuns, func(w http.ResponseWriter, _ *http.Request) {
+				runRequests.Add(1)
+				writeFakeJSON(w, 200, map[string]any{
+					"runs": []any{map[string]any{"spec": map[string]string{"worker_id": testChildID}, "status": "interrupted"}},
+				})
+			})
+			poll := clock.Trap().NewTimer(childRunTimerTag)
+			t.Cleanup(poll.Close)
+			ctx := testutil.DeadlineContext(t)
+			startChildRun(a)
+
+			testutil.WaitForTimer(t, ctx, poll)
+			require.Eventually(t, func() bool {
+				row, ok := sink.BackgroundTask(testChildID)
+				return ok && row.Status == bgtask.StatusPaused
+			}, 30*time.Second, 5*time.Millisecond)
+
+			clock.Advance(childTailInterval).MustWait(ctx)
+			require.Eventually(t, func() bool {
+				a.children.mu.Lock()
+				defer a.children.mu.Unlock()
+				return !a.children.polling
+			}, 30*time.Second, 5*time.Millisecond)
+
+			child := a.children.lookup(testChildID)
+			require.NotNil(t, child)
+			require.Eventually(t, func() bool {
+				a.children.mu.Lock()
+				defer a.children.mu.Unlock()
+				return child.paused
+			}, 30*time.Second, 5*time.Millisecond)
+
+			requestsBefore := runRequests.Load()
+			a.HandleOutput(toolEndEvent(30, eventName, "item_wait_err", "call_wait_err", contracts.CodewhaleToolAgent,
+				"wait timed out", map[string]any{"action": "wait", "agent_id": testChildID}, nil))
+
+			a.children.mu.Lock()
+			paused := child.paused
+			polling := a.children.polling
+			a.children.mu.Unlock()
+			assert.True(t, paused, "a failed or canceled wait must not wake a parked paused child")
+			assert.False(t, polling, "a failed or canceled wait must not restart the run poller")
+			assert.Equal(t, requestsBefore, runRequests.Load())
+			row, ok := sink.BackgroundTask(testChildID)
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusPaused, row.Status)
+		})
+	}
 }

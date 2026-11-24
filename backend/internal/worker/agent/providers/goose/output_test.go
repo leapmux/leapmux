@@ -2,6 +2,7 @@ package goose
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -329,4 +331,105 @@ func TestGoosePromptFailureDoesNotReuseAnotherPromptsMessage(t *testing.T) {
 	err := &providerkit.JSONRPCResponseError{Code: -32603, Message: "failure", Data: json.RawMessage(`{"reason":"turn_failed"}`)}
 	assert.True(t, a.finishGoosePrompt(err, false).NoteWritten)
 	assert.False(t, a.finishGoosePrompt(err, false).NoteWritten, "a later failure without native text still needs a host note")
+}
+
+func TestGooseFinishPromptClosesOpenSubagents(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		err     error
+		stopped bool
+		want    bgtask.Status
+	}{
+		{name: "prompt error closes open subagents as failed", err: errors.New("turn failed"), stopped: false, want: bgtask.StatusFailed},
+		{name: "prompt cancel closes open subagents as interrupted", err: errors.New("cancelled"), stopped: true, want: bgtask.StatusInterrupted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newGooseOutputAgent(agent.NewProviderServices(sink))
+			a.HooksForTest().SubagentFromToolCall = a.observeGooseSubagentCall
+			a.HooksForTest().SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+			a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-1","title":"delegate","status":"pending","rawInput":{"instructions":"work"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+			a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent 20261019_2"}}]}`))
+			a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-pending","title":"delegate","status":"pending","rawInput":{"instructions":"queued"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 2)
+
+			a.finishGoosePrompt(tc.err, tc.stopped)
+			rows = sink.BackgroundTasks()
+			require.Len(t, rows, 2)
+			for _, row := range rows {
+				assert.Equal(t, tc.want, row.Status, row.RowKey)
+			}
+			a.Mu.Lock()
+			assert.Empty(t, a.activeDelegations)
+			a.Mu.Unlock()
+		})
+	}
+
+	t.Run("normal prompt end keeps open subagents running until idle interrupt", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newGooseOutputAgent(agent.NewProviderServices(sink))
+		a.HooksForTest().SubagentFromToolCall = a.observeGooseSubagentCall
+		a.HooksForTest().SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-1","title":"delegate","status":"pending","rawInput":{"instructions":"work"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent 20261019_2"}}]}`))
+
+		a.finishGoosePrompt(nil, false)
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+
+		a.cancelActiveDelegations()
+		rows = sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusInterrupted, rows[0].Status)
+	})
+
+	t.Run("completed subagent stays succeeded across prompt end", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newGooseOutputAgent(agent.NewProviderServices(sink))
+		a.HooksForTest().SubagentFromToolCall = a.observeGooseSubagentCall
+		a.HooksForTest().SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-1","title":"delegate","status":"pending","rawInput":{"instructions":"work"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent 20261019_2"}}]}`))
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_2 completed"}}}}`))
+
+		a.finishGoosePrompt(errors.New("later error"), false)
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+	})
+}
+
+func TestGooseClearProviderStateResetsMaps(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newGooseOutputAgent(agent.NewProviderServices(sink))
+	a.HooksForTest().ClearProviderState = a.clearGooseState
+	a.Mu.Lock()
+	a.gooseChildRenames = map[string]string{"delegate-1": "20261019_2"}
+	a.gooseOutput = map[string]gooseOutputState{"shell-1": {sequence: 1, bytes: 5, tail: "hello"}}
+	a.activeDelegations = map[string]struct{}{"20261019_2": {}}
+	a.resumedCalls = map[string]string{"delegate-2": "20261019_2"}
+	a.pendingResumeNotices = map[string]bool{"20261019_2": true}
+	a.pendingResumeAcks = map[string]bool{"20261019_2": true}
+	a.promptOutput = goosePromptOutputState{goalArmed: true, goalObjective: "Finish", lastMessageID: "msg-1", lastMessageText: []byte("hi"), compactPending: true}
+	a.Mu.Unlock()
+
+	a.HooksForTest().ClearProviderState()
+
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Empty(t, a.gooseChildRenames)
+	assert.Empty(t, a.gooseOutput)
+	assert.Empty(t, a.activeDelegations)
+	assert.Empty(t, a.resumedCalls)
+	assert.Empty(t, a.pendingResumeNotices)
+	assert.Empty(t, a.pendingResumeAcks)
+	assert.Equal(t, goosePromptOutputState{}, a.promptOutput)
 }

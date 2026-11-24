@@ -809,6 +809,16 @@ func (t *Terminal) IsExited() bool {
 	}
 }
 
+// ExitCode returns the shell's exit code and true once the terminal has exited,
+// or (0, false) while it is still running. Reading exitCode after exitCh closes
+// is synchronized by the channel close in waitForExit.
+func (t *Terminal) ExitCode() (int, bool) {
+	if !t.IsExited() {
+		return 0, false
+	}
+	return t.exitCode, true
+}
+
 // ID returns the terminal's ID.
 func (t *Terminal) ID() string {
 	return t.id

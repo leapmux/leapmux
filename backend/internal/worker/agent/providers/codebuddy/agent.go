@@ -114,9 +114,6 @@ type codebuddyModelInfo struct {
 	Description string `json:"description"`
 }
 
-// AgentID returns the worker's identifier for this agent.
-func (a *Agent) AgentIDValue() string { return a.AgentID() }
-
 // NativeTurnRestartRequired reports when the next prompt needs a new process
 // to apply native Plan settings or restore input after a rejected plan.
 func (a *Agent) NativeTurnRestartRequired() bool {
@@ -435,11 +432,13 @@ func (a *Agent) Wait() error {
 	return err
 }
 
-// cleanupAfterProcessExit stops archive retries and clears controls, open tools, and turn state.
+// cleanupAfterProcessExit stops archive retries and clears controls, open
+// tools, open foreground children, and turn state.
 func (a *Agent) cleanupAfterProcessExit() {
 	a.stopWorkflowArchiveRetries()
 	a.withdrawControls()
 	a.closeOpenTools(a.ProcessExitCompletion(), false, true)
+	a.closeForegroundChildren(agent.IncompleteTaskStatus(a.ProcessExitCompletion()))
 	a.setTurnActive(false)
 }
 

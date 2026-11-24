@@ -186,7 +186,7 @@ func TestClaude_PendingTaskEndRecordsAndConsumes(t *testing.T) {
 
 	got, ok := index.startTask("task-1", bgtask.KindSubagent, "tu-1", "tu-1")
 	assert.True(t, ok, "pending end taken on the late task_started")
-	assert.Equal(t, bgtask.StatusSucceeded, got)
+	assert.Equal(t, bgtask.StatusSucceeded, got.status)
 	_, ok = index.startTask("task-1", bgtask.KindSubagent, "tu-1", "tu-1")
 	assert.False(t, ok, "entry consumed so it cannot fire twice")
 }
@@ -557,38 +557,66 @@ func TestClaude_BackgroundTasksChangedLeavesTheRegistryAlone(t *testing.T) {
 	assertTaskEventConsumed(t, sink)
 }
 
-// task_updated repeats task_notification's final status and can report a foreground-to-background change through patch.is_backgrounded.
-// Consume it without changing the registry.
-// Only the final notification determines finality, and a patch must not close a row independently.
-// The background flag changes nothing because the registry already contains that shell row.
+// task_updated drives row status transitions on final statuses and paused.
 func TestClaude_TaskUpdatedDoesNotChangeTheRow(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.Sink{}
-	a := newTestAgent(agentapi.NewProviderServices(sink))
-	a.HandleOutput([]byte(`{
-		"type": "system",
-		"subtype": "task_started",
-		"task_id": "task-sh",
-		"tool_use_id": "tu-shell",
-		"task_type": "local_bash",
-		"description": "sleep 30"
-	}`))
-	require.Len(t, sink.BackgroundTasks(), 1)
+	t.Run("final completed closes row", func(t *testing.T) {
+		t.Parallel()
 
-	a.HandleOutput([]byte(`{
-		"type": "system",
-		"subtype": "task_updated",
-		"task_id": "task-sh",
-		"patch": {"status": "completed", "end_time": 1760000000000, "is_backgrounded": true}
-	}`))
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{
+			"type": "system",
+			"subtype": "task_started",
+			"task_id": "task-sh",
+			"tool_use_id": "tu-shell",
+			"task_type": "local_bash",
+			"description": "sleep 30"
+		}`))
+		require.Len(t, sink.BackgroundTasks(), 1)
 
-	tasks := sink.BackgroundTasks()
-	require.Len(t, tasks, 1)
-	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status,
-		"only task_notification ends a row")
-	assert.True(t, tasks[0].EndedAt.IsZero(), "the row is still active")
-	assertTaskEventConsumed(t, sink)
+		a.HandleOutput([]byte(`{
+			"type": "system",
+			"subtype": "task_updated",
+			"task_id": "task-sh",
+			"patch": {"status": "completed", "end_time": 1760000000000, "is_backgrounded": true}
+		}`))
+
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero(), "final task_updated closes the row")
+		assertTaskEventConsumed(t, sink)
+	})
+
+	t.Run("paused updates row without closing", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{
+			"type": "system",
+			"subtype": "task_started",
+			"task_id": "task-agent",
+			"tool_use_id": "tu-agent",
+			"task_type": "local_agent",
+			"description": "Review changes"
+		}`))
+
+		a.HandleOutput([]byte(`{
+			"type": "system",
+			"subtype": "task_updated",
+			"task_id": "task-agent",
+			"patch": {"status": "paused", "description": "Waiting for input"}
+		}`))
+
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusPaused, tasks[0].Status)
+		assert.True(t, tasks[0].EndedAt.IsZero(), "paused leaves the row open")
+		assertTaskEventConsumed(t, sink)
+	})
 }
 
 // A task event without an earlier task_started creates no row.
@@ -1969,7 +1997,7 @@ func TestClaude_StartTaskWithoutAToolUseIDStillRecordsTheKind(t *testing.T) {
 
 	pending, hasPending := idx.startTask("task-1", bgtask.KindSubagent, "", "")
 	assert.False(t, hasPending, "no spawn span means no pending close to take")
-	assert.Equal(t, bgtask.StatusPending, pending)
+	assert.Equal(t, bgtask.StatusPending, pending.status)
 	assert.Equal(t, bgtask.KindSubagent, idx.kindForTask("task-1"))
 	// Inspect the maps directly.
 	// taskIDForToolUse("") returns before reading either map, so it cannot prove that startTask inserts no empty-key entries.
@@ -2056,7 +2084,7 @@ func TestClaude_StartTaskTakesAPendingCloseUnderEitherToolUseID(t *testing.T) {
 
 			pending, hasPending := idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
 			assert.True(t, hasPending, "the reordered close is taken")
-			assert.Equal(t, bgtask.StatusFailed, pending)
+			assert.Equal(t, bgtask.StatusFailed, pending.status)
 
 			_, hasPending = idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
 			assert.False(t, hasPending, "the close is consumed, not left to fire twice")
@@ -2075,7 +2103,7 @@ func TestClaude_StartTakesTheSpawnSpansCloseWhenBothIDsHoldOne(t *testing.T) {
 
 	pending, hasPending := idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
 	assert.True(t, hasPending)
-	assert.Equal(t, bgtask.StatusFailed, pending, "the spawn span decides, not the last id visited")
+	assert.Equal(t, bgtask.StatusFailed, pending.status, "the spawn span decides, not the last id visited")
 	assert.Empty(t, idx.runs.pendingEnd, "and both entries are consumed")
 }
 
@@ -2709,5 +2737,493 @@ func TestClaudeChildResultAndNotificationCleanupOpenTools(t *testing.T) {
 			"superseded child run notification must not reset replacement run spans")
 		assert.Equal(t, int64(88), child.ProgressSnapshot().OutputBytes,
 			"superseded child run notification must not wipe replacement run progress")
+	})
+}
+
+func TestClaude_TaskUpdatedLifecycleAndTrailingNotification(t *testing.T) {
+	t.Parallel()
+
+	t.Run("completed and trailing notification", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "task-1", "tool_use_id": "tu-1", "task_type": "local_agent", "description": "Explore"
+		}`))
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-1", "patch": {"status": "completed"}
+		}`))
+
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero())
+		assert.False(t, a.tasks.knowsTask("task-1"))
+		require.ErrorIs(t, a.InterruptChild("task-1", agentapi.StopContext{}), agentapi.ErrChildRouteNotReady)
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-1", "tool_use_id": "tu-1", "status": "completed",
+			"summary": "All done", "output_file": "/tmp/task-1.log"
+		}`))
+
+		tasks = sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
+		assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
+		assert.Equal(t, "All done", tasks[0].ActiveForm)
+		assert.Equal(t, "/tmp/task-1.log", tasks[0].Description)
+		assert.Empty(t, a.tasks.runs.pendingTaskEnd)
+	})
+
+	t.Run("failed closes row and workflow", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "wf-1", "tool_use_id": "tu-wf", "task_type": "local_workflow",
+			"workflow_name": "deploy", "description": "Deploy"
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_progress",
+			"task_id": "wf-1",
+			"workflow_progress": [{"type": "workflow_agent", "index": 0, "label": "Builder", "state": "progress"}]
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "wf-1", "patch": {"status": "failed", "error": "build failed"}
+		}`))
+
+		_, wfStatus, ok, err := sink.LookupBackgroundTask("wf-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, wfStatus)
+
+		_, agentStatus, ok, err := sink.LookupBackgroundTask("wf-1/wf/0")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, agentStatus)
+	})
+
+	t.Run("killed without interrupt closes stopped", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "task-kill", "tool_use_id": "tu-kill", "task_type": "local_agent", "description": "Run"
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-kill", "patch": {"status": "killed"}
+		}`))
+
+		_, status, ok, err := sink.LookupBackgroundTask("task-kill")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusStopped, status)
+	})
+
+	t.Run("killed after InterruptChild preserves StatusInterrupted across trailing stopped notification", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "task-int", "tool_use_id": "tu-int", "task_type": "local_agent", "description": "Run"
+		}`))
+		a.tasks.markInterrupted("task-int")
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-int", "patch": {"status": "killed"}
+		}`))
+
+		_, status, ok, err := sink.LookupBackgroundTask("task-int")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusInterrupted, status)
+		assert.False(t, a.tasks.knowsTask("task-int"))
+		require.ErrorIs(t, a.InterruptChild("task-int", agentapi.StopContext{}), agentapi.ErrChildRouteNotReady)
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-int", "tool_use_id": "tu-int", "status": "stopped",
+			"summary": "Subagent interrupted", "output_file": "/tmp/task-int.log"
+		}`))
+
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusInterrupted, tasks[0].Status, "trailing stopped notification must preserve StatusInterrupted")
+		assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
+		assert.Equal(t, "Subagent interrupted", tasks[0].ActiveForm)
+		assert.Equal(t, "/tmp/task-int.log", tasks[0].Description)
+		assert.Empty(t, a.tasks.runs.pendingTaskEnd)
+	})
+
+	t.Run("unknown non-final patch is ignored", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "unknown-task", "patch": {"status": "paused"}
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "unknown-task", "patch": {"status": "running"}
+		}`))
+
+		assert.Empty(t, sink.BackgroundTasks())
+	})
+
+	t.Run("shell closed by task_updated enables subsequent shell wake", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		spawnAndFinishSubagent(t, a, sink)
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "shell-upd", "tool_use_id": "tu-bash", "task_type": "local_bash", "description": "sleep 1"
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "shell-upd", "patch": {"status": "completed"}
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "task-1", "task_type": "local_agent",
+			"prompt": ` + strconv.Quote(wakePrompt("shell-upd")) + `
+		}`))
+
+		assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+	})
+}
+
+func TestClaude_OutOfOrderTaskNotificationAndPreRestartKnownTask(t *testing.T) {
+	t.Parallel()
+
+	t.Run("task_notification before task_started buffers without KindUnspecified and closes on start", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-early", "tool_use_id": "tu-early", "status": "completed",
+			"summary": "Finished early", "output_file": "/tmp/early.log"
+		}`))
+		assert.Empty(t, sink.BackgroundTasks(), "buffering must not create a KindUnspecified row")
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "task-early", "tool_use_id": "tu-early", "task_type": "local_bash",
+			"description": "fast cmd"
+		}`))
+
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.KindShell, tasks[0].Kind)
+		assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero())
+		assert.Equal(t, "Finished early", tasks[0].ActiveForm)
+		assert.Equal(t, "/tmp/early.log", tasks[0].Description)
+		assert.False(t, a.tasks.knowsTask("task-early"))
+	})
+
+	t.Run("final task_updated before task_started buffers and closes on start", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-early-upd", "patch": {"status": "failed", "error": "boom"}
+		}`))
+		assert.Empty(t, sink.BackgroundTasks())
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "task-early-upd", "tool_use_id": "tu-early-upd", "task_type": "local_agent",
+			"description": "worker"
+		}`))
+
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
+		assert.Equal(t, bgtask.StatusFailed, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero())
+		assert.Equal(t, "boom", tasks[0].ActiveForm)
+	})
+
+	t.Run("pre-restart task in registry closes immediately without buffering", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:        "task-prerestart",
+			Kind:          bgtask.KindSubagent,
+			ParentAgentID: "agent-root",
+			Title:         "Resumed worker",
+			Status:        bgtask.StatusRunning,
+		}))
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-prerestart", "status": "completed", "summary": "done after restart"
+		}`))
+
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero())
+		assert.Equal(t, "done after restart", tasks[0].ActiveForm)
+	})
+}
+
+func TestClaude_ShellWakePromptIsNoticeAndNamedSendMessage(t *testing.T) {
+	t.Parallel()
+
+	t.Run("promptIsNotice shell wake with stripped prompt revives without persisting message", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		child := spawnAndFinishSubagent(t, a, sink)
+		before := len(child.Messages())
+		finishShellTask(a, "shell-1")
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "task-1", "task_type": "local_agent",
+			"prompt": "", "promptIsNotice": true
+		}`))
+
+		assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+		assert.Len(t, child.Messages(), before)
+		_, status, ok, err := sink.LookupBackgroundTask("task-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, status)
+	})
+
+	t.Run("promptIsNotice never persists non-empty prompt as user message", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		child := spawnAndFinishSubagent(t, a, sink)
+		before := len(child.Messages())
+
+		sendMessageTo(a, "tu-send", "task-1")
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_started",
+			"task_id": "task-1", "tool_use_id": "tu-send", "task_type": "local_agent",
+			"prompt": "internal harness notice", "promptIsNotice": true
+		}`))
+
+		assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+		assert.Len(t, child.Messages(), before, "promptIsNotice must suppress user message persistence")
+	})
+
+	t.Run("SendMessage by subagent spawn name revives finished subagent", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{
+			"type": "assistant",
+			"message": {"content": [{
+				"type": "tool_use",
+				"id": "tu-spawn",
+				"name": "Agent",
+				"input": {"name": "reviewer", "prompt": "Find every caller."}
+			}]}
+		}`))
+		child := spawnAndFinishSubagent(t, a, sink)
+		before := len(child.Messages())
+
+		sendMessageTo(a, "tu-send", "reviewer")
+		restartTaskStarted(a, "tu-send", "Please also check edge cases.")
+
+		assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+		_, status, ok, err := sink.LookupBackgroundTask("task-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, status)
+		msgs := child.Messages()
+		require.Len(t, msgs, before+1)
+		assert.JSONEq(t, `{"content":"Please also check edge cases."}`, string(msgs[len(msgs)-1].Content))
+	})
+}
+
+func TestClaude_OutOfOrderRestartedJobEndBuffersAndClosesOnStart(t *testing.T) {
+	t.Parallel()
+
+	t.Run("task_notification for restarted job before task_started closes on start", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		spawnAndFinishSubagent(t, a, sink)
+
+		sendMessageTo(a, "tu-send-2", "task-1")
+		// Job 2's notification arrives BEFORE Job 2's task_started.
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-1", "tool_use_id": "tu-send-2", "status": "failed",
+			"summary": "Job 2 failed early", "output_file": "/tmp/job2.log"
+		}`))
+		restartTaskStarted(a, "tu-send-2", "Run job 2.")
+
+		assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusFailed, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero())
+		assert.Equal(t, "Job 2 failed early", tasks[0].ActiveForm)
+		assert.Equal(t, "/tmp/job2.log", tasks[0].Description)
+		assert.False(t, a.tasks.knowsTask("task-1"))
+	})
+
+	t.Run("final task_updated for restarted job before task_started closes on start", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		spawnAndFinishSubagent(t, a, sink)
+
+		sendMessageTo(a, "tu-send-3", "task-1")
+		// Job 2's final task_updated arrives BEFORE Job 2's task_started.
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-1", "patch": {"status": "failed", "error": "Job 2 crashed"}
+		}`))
+		restartTaskStarted(a, "tu-send-3", "Run job 2.")
+
+		assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
+		tasks := sink.BackgroundTasks()
+		require.Len(t, tasks, 1)
+		assert.Equal(t, bgtask.StatusFailed, tasks[0].Status)
+		assert.False(t, tasks[0].EndedAt.IsZero())
+		assert.Equal(t, "Job 2 crashed", tasks[0].ActiveForm)
+		assert.False(t, a.tasks.knowsTask("task-1"))
+	})
+
+	t.Run("duplicate job 1 task_updated without armed restart is still suppressed", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newTestAgent(agentapi.NewProviderServices(sink))
+		spawnAndFinishSubagent(t, a, sink)
+
+		// Duplicate Job 1 final task_updated with no armed restart must not buffer a pending end.
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-1", "patch": {"status": "failed", "error": "stale duplicate"}
+		}`))
+		assert.Empty(t, a.tasks.runs.pendingTaskEnd)
+
+		// A later legitimate SendMessage restart must stay running until its own end arrives.
+		sendMessageTo(a, "tu-send-4", "task-1")
+		restartTaskStarted(a, "tu-send-4", "Run job 2 cleanly.")
+		_, status, ok, err := sink.LookupBackgroundTask("task-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, status)
+	})
+}
+
+type recordingUpsertKindSink struct {
+	*agenttest.Sink
+	upsertedKinds []bgtask.Kind
+}
+
+func (s *recordingUpsertKindSink) UpsertBackgroundTask(task bgtask.Upsert) error {
+	s.upsertedKinds = append(s.upsertedKinds, task.Kind)
+	return s.Sink.UpsertBackgroundTask(task)
+}
+
+func TestClaude_PreRestartTaskUpdatedPreservesKindForTrailingOutputFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pre-restart subagent derives KindSubagent from known child link", func(t *testing.T) {
+		t.Parallel()
+		base := &agenttest.Sink{}
+		childID, err := base.EnsureChildAgent(agentapi.ChildAgentSpec{
+			RegistryRole:     bgtask.RoleChildTask,
+			SpawnSpanID:      "spawn-pre",
+			ProviderChildKey: "task-pre-sub",
+			Title:            "Pre-restart worker",
+		})
+		require.NoError(t, err)
+		require.NoError(t, base.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:        "task-pre-sub",
+			Kind:          bgtask.KindSubagent,
+			ChildAgentID:  childID,
+			ParentAgentID: "agent-root",
+			Title:         "Pre-restart worker",
+			Status:        bgtask.StatusRunning,
+		}))
+		rec := &recordingUpsertKindSink{Sink: base}
+		a := newTestAgent(agentapi.NewProviderServices(rec))
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-pre-sub", "patch": {"status": "completed"}
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-pre-sub", "status": "completed",
+			"summary": "Done after restart", "output_file": "/tmp/pre-sub.log"
+		}`))
+
+		require.Equal(t, []bgtask.Kind{bgtask.KindSubagent}, rec.upsertedKinds)
+		row, ok := base.BackgroundTask("task-pre-sub")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.KindSubagent, row.Kind)
+		assert.Equal(t, "/tmp/pre-sub.log", row.Description)
+		assert.Equal(t, "Done after restart", row.ActiveForm)
+	})
+
+	t.Run("pre-restart shell without child link never upserts KindUnspecified", func(t *testing.T) {
+		t.Parallel()
+		base := &agenttest.Sink{}
+		require.NoError(t, base.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:        "task-pre-shell",
+			Kind:          bgtask.KindShell,
+			ParentAgentID: "agent-root",
+			Title:         "sleep 5",
+			Status:        bgtask.StatusRunning,
+		}))
+		rec := &recordingUpsertKindSink{Sink: base}
+		a := newTestAgent(agentapi.NewProviderServices(rec))
+
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_updated",
+			"task_id": "task-pre-shell", "patch": {"status": "completed"}
+		}`))
+		a.HandleOutput([]byte(`{
+			"type": "system", "subtype": "task_notification",
+			"task_id": "task-pre-shell", "status": "completed",
+			"summary": "Shell done", "output_file": "/tmp/pre-shell.log"
+		}`))
+
+		assert.NotContains(t, rec.upsertedKinds, bgtask.KindUnspecified, "must never upsert KindUnspecified")
+		row, ok := base.BackgroundTask("task-pre-shell")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.KindShell, row.Kind)
+		assert.Equal(t, "/tmp/pre-shell.log", row.Description)
+		assert.Equal(t, "Shell done", row.ActiveForm)
 	})
 }

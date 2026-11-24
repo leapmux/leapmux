@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
@@ -436,7 +435,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 		// The ASK carries the admin scope, and it is on the GRANT ROW: the
 		// device flow's request and its consent happen on two machines with a
 		// six-character code between them, so the row is the only carrier.
-		require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+		require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: "admin:read admin:users admin:settings admin:workers",
 			DeviceCodeHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "headless-box",
@@ -453,10 +452,10 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 		assert.Contains(t, bodyOf(t, resp), "not a hub administrator")
 
-		row, err := env.store.DeviceAuthorizations().GetByUserCode(ctx, userCode)
-		require.NoError(t, err)
+		row, ok := env.deviceAuths.GetByUserCode(userCode)
+		require.True(t, ok)
 		assert.Empty(t, row.GrantedScopes, "a refused activation must bind no grant")
-		assert.NotEqual(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, row.State, "a refused activation must not approve the grant")
+		assert.NotEqual(t, service.DeviceAuthorizationStateApproved, row.State, "a refused activation must not approve the grant")
 	})
 }
 
@@ -467,11 +466,10 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	t.Parallel()
 
 	env := setupAPIAuth(t)
-	ctx := context.Background()
 
 	seedGrant := func(ask string) string {
 		userCode := verifycode.Generate()
-		require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+		require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: ask,
 			DeviceCodeHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "headless",
@@ -488,9 +486,9 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	row, err := env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State, "a refused activation must approve nothing")
+	row, ok := env.deviceAuths.GetByUserCode(code)
+	require.True(t, ok)
+	assert.Equal(t, service.DeviceAuthorizationStatePending, row.State, "a refused activation must approve nothing")
 
 	// Elevated, and the approval binds the ASK the row already carries. The
 	// browser posts a DECISION and never a scope: the request and the consent
@@ -513,9 +511,9 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(page), "hub administration",
 		"the first Allow must return the confirmation page")
-	row, err = env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State,
+	row, ok = env.deviceAuths.GetByUserCode(code)
+	require.True(t, ok)
+	assert.Equal(t, service.DeviceAuthorizationStatePending, row.State,
 		"the unconfirmed Allow binds nothing; the grant stays pending")
 
 	resp, err = postForm(env.server.URL+"/oauth/device", url.Values{
@@ -524,9 +522,9 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	row, err = env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, row.State)
+	row, ok = env.deviceAuths.GetByUserCode(code)
+	require.True(t, ok)
+	assert.Equal(t, service.DeviceAuthorizationStateApproved, row.State)
 	assert.Contains(t, row.GrantedScopes, "admin:settings", "the browser's consent is what the row records")
 
 	// A routine ask never meets the second step: its Allow binds on the first
@@ -538,9 +536,9 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	row, err = env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, row.State,
+	row, ok = env.deviceAuths.GetByUserCode(code)
+	require.True(t, ok)
+	assert.Equal(t, service.DeviceAuthorizationStateApproved, row.State,
 		"a non-admin ask binds with one click, exactly as every routine consent always did")
 }
 
@@ -590,11 +588,10 @@ func TestDeviceActivation_IdentifiesTheAppForACLISuppliedCode(t *testing.T) {
 	t.Parallel()
 
 	env := setupAPIAuth(t)
-	ctx := context.Background()
 	cookie := env.elevatedAdminCookie(t)
 
 	userCode := verifycode.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
 		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "ci-runner-7",
 		ExpiresAt: env.now().Add(10 * time.Minute),

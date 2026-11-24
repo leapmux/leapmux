@@ -1869,3 +1869,51 @@ func TestManagerResizeKeepsMetadataAfterNativeFailure(t *testing.T) {
 	assert.Equal(t, uint32(80), meta.Cols)
 	assert.Equal(t, uint32(24), meta.Rows)
 }
+
+func TestTerminalAndManagerExitCode(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	code, ok := mgr.ExitCode("missing")
+	assert.False(t, ok)
+	assert.Zero(t, code)
+
+	const id = "test-exit-code"
+	require.NoError(t, mgr.StartTerminal(context.Background(), Options{
+		ID:         id,
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       200,
+		Rows:       24,
+	}, func([]byte, int64, []Signal) {}, nil))
+	t.Cleanup(func() { mgr.RemoveTerminal(id) })
+
+	mgr.mu.RLock()
+	term, ok := mgr.currentTerminalLocked(id)
+	mgr.mu.RUnlock()
+	require.True(t, ok)
+	require.NotNil(t, term)
+
+	code, ok = term.ExitCode()
+	assert.False(t, ok, "running terminal has no exit code yet")
+	assert.Zero(t, code)
+	code, ok = mgr.ExitCode(id)
+	assert.False(t, ok, "manager reports no exit code while terminal is running")
+	assert.Zero(t, code)
+
+	wantCode := 42
+	exitCmd := "exit 42"
+	if runtime.GOOS == "windows" {
+		wantCode = 0
+		exitCmd = "exit"
+	}
+	require.NoError(t, mgr.SendInput(id, []byte(exitCmd+testutil.TestShellEnter())))
+	require.NoError(t, mgr.WaitForExitContext(testutil.DeadlineContext(t), id))
+
+	code, ok = term.ExitCode()
+	assert.True(t, ok)
+	assert.Equal(t, wantCode, code)
+	code, ok = mgr.ExitCode(id)
+	assert.True(t, ok)
+	assert.Equal(t, wantCode, code)
+}

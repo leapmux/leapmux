@@ -2,17 +2,20 @@ package mimo
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // mimoListenPattern matches the stdout line `mimo serve` prints once it
@@ -178,7 +181,70 @@ func (a *Agent) onStreamConnected(ctx context.Context) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 	a.reconcileTurnLocked(restateCtx)
+	a.reconcileActorsAndWorkflowsLocked(restateCtx)
 	a.restatePendingControls(restateCtx)
+}
+
+// reconcileActorsAndWorkflowsLocked closes running actors and active workflows
+// whose completion event was lost while the event stream was disconnected. The
+// caller holds a.dispatchMu.
+func (a *Agent) reconcileActorsAndWorkflowsLocked(ctx context.Context) {
+	a.Mu.Lock()
+	sessionID := a.sessionID
+	var runningActorIDs []string
+	for actorID, actor := range a.actors {
+		if actor.running {
+			runningActorIDs = append(runningActorIDs, actorID)
+		}
+	}
+	a.Mu.Unlock()
+	slices.Sort(runningActorIDs)
+	if sessionID == "" {
+		return
+	}
+	if len(runningActorIDs) > 0 {
+		snapshots, err := a.rpc.sessionActors(ctx, sessionID)
+		if err != nil {
+			slog.Debug("mimo read session actors", "agent_id", a.AgentID(), "error", err)
+		} else {
+			byID := make(map[string]mimoActorSnapshot, len(snapshots))
+			for _, snap := range snapshots {
+				if snap.ActorID != "" {
+					byID[snap.ActorID] = snap
+				}
+			}
+			for _, actorID := range runningActorIDs {
+				a.Mu.Lock()
+				stillRunning := a.sessionID == sessionID && a.actors[actorID] != nil && a.actors[actorID].running
+				a.Mu.Unlock()
+				if !stillRunning {
+					continue
+				}
+				snap, present := byID[actorID]
+				if present && snap.isRunning() {
+					continue
+				}
+				a.retryForActor(actorID).Reset()
+				if present {
+					a.endActorTurn(mimoActorStatus{
+						SessionID:   sessionID,
+						ActorID:     actorID,
+						Status:      contracts.MiMoActorStatusIdle,
+						LastOutcome: snap.LastOutcome,
+						TurnCount:   snap.TurnCount,
+						Error:       cmp.Or(snap.Error, snap.LastError),
+					})
+				} else {
+					a.endActorTurnWithOutcome(mimoActorStatus{
+						SessionID: sessionID,
+						ActorID:   actorID,
+						Status:    contracts.MiMoActorStatusIdle,
+					}, bgtask.StatusEndedWithUnknownOutcome, agent.MessageCompletionFinished)
+				}
+			}
+		}
+	}
+	a.reconcileWorkflowsLocked(ctx, sessionID)
 }
 
 // reconcileTurnLocked brings the turn flag in line with the server's own

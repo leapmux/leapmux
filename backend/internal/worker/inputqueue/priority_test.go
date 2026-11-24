@@ -455,7 +455,7 @@ func TestPriorityMaturedRetryStaysBehindAnUncertainDelivery(t *testing.T) {
 	require.Equal(t, "message", prepared.Item.ID)
 
 	clock.Set(*retry.ScheduledAt)
-	snapshots, err := store.Recover(ctx)
+	snapshots, err := store.Recover(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, snapshots, 1)
 	assert.Equal(t, []string{"message", retry.ID}, itemIDs(snapshots[0]))
@@ -595,7 +595,7 @@ func TestPriorityValidateSchedule(t *testing.T) {
 // storedItem reads one item's full row, the way the dispatch path does.
 func storedItem(t *testing.T, store *Store, id string) StoredItem {
 	t.Helper()
-	item, _, found, err := getItem(t.Context(), store.db, "agent-1", id, false)
+	item, _, found, err := store.getItem(t.Context(), store.db, "agent-1", id, false)
 	require.NoError(t, err)
 	require.True(t, found)
 	return item
@@ -650,7 +650,7 @@ func TestPrioritySnapshotCarriesNoSourcePayload(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotContains(t, string(encoded), "overloaded")
 	}
-	stored, _, found, err := getItem(t.Context(), store.db, "agent-1", snapshot.Items[0].ID, false)
+	stored, _, found, err := store.getItem(t.Context(), store.db, "agent-1", snapshot.Items[0].ID, false)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.JSONEq(t, `{"error":"overloaded"}`, string(stored.SourcePayload))

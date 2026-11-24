@@ -127,16 +127,27 @@ func TestBackgroundTaskAliasRestoresSourceAfterTargetWriteFailure(t *testing.T) 
 			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: role, ProviderChildKey: canonicalKey, Title: "Child"})
 			require.NoError(t, err)
 			if !promotion {
-				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleTaskOutcome, RowKey: "source", Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: bgtask.StatusRunning}))
+				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleTaskOutcome, RowKey: "source", Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: bgtask.StatusRunning, ActiveForm: "source work"}))
 				require.NoError(t, sink.CloseBackgroundTask("source", bgtask.StatusSucceeded))
+			} else {
+				require.NoError(t, sink.UpdateBackgroundTaskStatus("source", bgtask.StatusRunning, "source work"))
 			}
 			targetStatus := bgtask.StatusRunning
 			if promotion {
 				targetStatus = bgtask.StatusSucceeded
 			}
-			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleTaskOutcome, RowKey: "target", Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: targetStatus}))
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleTaskOutcome, RowKey: "target", Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: targetStatus, ActiveForm: "target work"}))
 			sourceBefore := storedRow(t, svc, root, "source")
 			targetBefore := storedRow(t, svc, root, "target")
+			meta := svc.Output.bgTaskEphemeral(root)
+			sourceGenBefore := meta.rowGeneration("source")
+			sourceFormBefore := meta.activeFormOf("source")
+			targetGenBefore := meta.rowGeneration("target")
+			targetFormBefore := meta.activeFormOf("target")
+			require.NotZero(t, sourceGenBefore)
+			require.NotZero(t, targetGenBefore)
+			require.Equal(t, "source work", sourceFormBefore)
+			require.Equal(t, "target work", targetFormBefore)
 			replacement := newTestRootOutputSink(t, svc.Output, root, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			before, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), root)
 			require.NoError(t, err)
@@ -152,6 +163,10 @@ func TestBackgroundTaskAliasRestoresSourceAfterTargetWriteFailure(t *testing.T) 
 			_, err = svc.DB.ExecContext(t.Context(), trigger)
 			require.NoError(t, err)
 			require.ErrorContains(t, replacement.RenameBackgroundTask("source", "target"), "alias target held")
+			assert.Equal(t, sourceGenBefore, meta.rowGeneration("source"), "rollback must restore source generation")
+			assert.Equal(t, sourceFormBefore, meta.activeFormOf("source"), "rollback must restore source active form")
+			assert.Equal(t, targetGenBefore, meta.rowGeneration("target"), "rollback must restore target generation")
+			assert.Equal(t, targetFormBefore, meta.activeFormOf("target"), "rollback must restore target active form")
 			after, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), root)
 			require.NoError(t, err)
 			assert.Equal(t, before, after, "a refused target write restores the deleted source and both generation claims")
@@ -165,7 +180,7 @@ func TestBackgroundTaskAliasRestoresSourceAfterTargetWriteFailure(t *testing.T) 
 				assert.NotEqual(t, "source", row.RowKey)
 			}
 			target := storedRow(t, svc, root, "target")
-			assert.Greater(t, target.OutputGeneration, targetBefore.OutputGeneration)
+			assert.Greater(t, svc.Output.bgTaskEphemeral(root).rowGeneration("target"), targetGenBefore)
 			assert.Equal(t, leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_SUCCEEDED, target.Status)
 			if promotion {
 				assert.Equal(t, leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_CHILD_TASK, target.Role)
@@ -226,4 +241,42 @@ func TestOutcomeAliasReadsAnOccupiedTargetOutsideTheColdDisplayCache(t *testing.
 	assert.Equal(t, "activity", canonical.RowKey)
 	assert.EqualValues(t, bgtask.MaxTasks, svc.Output.AgentActivitySnapshot(root, root).ActiveTasks)
 	assert.True(t, svc.Output.AgentActivitySnapshot(childID, root).Working())
+}
+
+func TestRenameBackgroundTaskMigratesRowGenAndActiveForm(t *testing.T) {
+	t.Parallel()
+	const root = "rename-migrates-ephemeral"
+	svc, sink1 := setupRootSink(t, root)
+	sink2 := newTestRootOutputSink(t, svc.Output, root, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	gen2 := requireRootOutputSink(t, svc.Output, root).outputGeneration
+	require.NoError(t, sink2.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     "old-key",
+		Kind:       bgtask.KindSubagent,
+		Title:      "Indexer",
+		Status:     bgtask.StatusRunning,
+		ActiveForm: "indexing",
+	}))
+	require.NoError(t, sink2.RenameBackgroundTask("old-key", "new-key"))
+
+	items, err := svc.Output.LoadBackgroundTasks(t.Context(), root)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "new-key", items[0].RowKey)
+	assert.Equal(t, "indexing", items[0].ActiveForm)
+
+	meta := svc.Output.bgTaskEphemeral(root)
+	assert.Zero(t, meta.rowGeneration("old-key"))
+	assert.Empty(t, meta.activeFormOf("old-key"))
+	assert.Equal(t, gen2, meta.rowGeneration("new-key"))
+	assert.Equal(t, "indexing", meta.activeFormOf("new-key"))
+
+	// A stale write from sink1 (G1 < G2) to "new-key" must be fenced.
+	before := storedRow(t, svc, root, "new-key")
+	require.NoError(t, sink1.UpdateBackgroundTaskStatus("new-key", bgtask.StatusFailed, "stale activity"))
+	assert.Equal(t, before, storedRow(t, svc, root, "new-key"))
+	itemsAfter, err := svc.Output.LoadBackgroundTasks(t.Context(), root)
+	require.NoError(t, err)
+	require.Len(t, itemsAfter, 1)
+	assert.Equal(t, "indexing", itemsAfter[0].ActiveForm)
+	assert.Equal(t, bgtask.StatusRunning, itemsAfter[0].Status)
 }

@@ -2,6 +2,7 @@ package letta
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func beginNativeMode(t *testing.T, fake *fakeAppServer, a *Agent, mode string) (<-chan agent.SettingsApplyResult, map[string]any) {
@@ -118,4 +120,156 @@ func TestModeSyncReplyCannotConfirmAnotherRuntime(t *testing.T) {
 	result, snapshot := beginNativeMode(t, fake, a, contracts.LettaModeUnrestricted)
 	fake.replies <- []byte(fmt.Sprintf(`{"type":"sync_response","request_id":%q,"runtime":{"agent_id":"foreign","conversation_id":"foreign"},"success":true}`, snapshot["request_id"]))
 	assert.Equal(t, contracts.LettaModeStandard, waitModeResult(t, result).ConfirmedOptions()[agent.OptionIDPermissionMode])
+}
+
+func TestLettaDeviceStatusTracksBackgroundProcesses(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	currentRuntime := map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"}
+
+	// Frame with no current_permission_mode still tracks background_processes.
+	openFrame, err := json.Marshal(map[string]any{
+		"type":    "update_device_status",
+		"runtime": currentRuntime,
+		"device_status": map[string]any{
+			"background_processes": []any{
+				map[string]any{"process_id": "bash-1", "kind": "bash", "command": "npm run dev", "status": "running"},
+				map[string]any{"process_id": "mon-1", "kind": "monitor", "description": "Watch build", "status": "running"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(openFrame)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 2)
+	byTitle := map[string]bgtask.Item{}
+	for _, task := range tasks {
+		byTitle[task.Title] = task
+	}
+	bashRow, ok := byTitle["npm run dev"]
+	require.True(t, ok)
+	assert.Equal(t, bgtask.KindShell, bashRow.Kind)
+	assert.True(t, bashRow.TitleIsCommand)
+	assert.Equal(t, bgtask.StatusRunning, bashRow.Status)
+
+	monRow, ok := byTitle["Watch build"]
+	require.True(t, ok)
+	assert.Equal(t, bgtask.KindShell, monRow.Kind)
+	assert.False(t, monRow.TitleIsCommand)
+	assert.Equal(t, bgtask.StatusRunning, monRow.Status)
+
+	// Omitted and null background_processes must NOT evict tracked shells.
+	a.HandleOutput([]byte(lettaLiveDeviceStatus))
+	nullFrame, err := json.Marshal(map[string]any{
+		"type":          "update_device_status",
+		"runtime":       currentRuntime,
+		"device_status": map[string]any{"current_permission_mode": "standard", "background_processes": nil},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(nullFrame)
+
+	// Foreign runtime empty array must NOT evict tracked shells.
+	foreignFrame, err := json.Marshal(map[string]any{
+		"type":          "update_device_status",
+		"runtime":       map[string]any{"agent_id": "agent-other", "conversation_id": "local-conv-1"},
+		"device_status": map[string]any{"background_processes": []any{}},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(foreignFrame)
+
+	row, ok := sink.BackgroundTask(bashRow.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	row, ok = sink.BackgroundTask(monRow.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// Explicit finished status closes bash-1 as succeeded, and omitting mon-1 closes it with unknown outcome.
+	closeFrame, err := json.Marshal(map[string]any{
+		"type":    "update_device_status",
+		"runtime": currentRuntime,
+		"device_status": map[string]any{
+			"background_processes": []any{
+				map[string]any{"process_id": "bash-1", "kind": "bash", "command": "npm run dev", "status": "completed", "exit_code": 0},
+			},
+		},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(closeFrame)
+
+	row, ok = sink.BackgroundTask(bashRow.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	row, ok = sink.BackgroundTask(monRow.RowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+}
+
+type lettaCloseFailSink struct {
+	agent.ProviderServices
+	closeErr error
+}
+
+// OutputQueue returns nil so queueRegistryClose runs synchronously and returns
+// CloseBackgroundTask errors directly to reconcileBackgroundProcesses.
+func (*lettaCloseFailSink) OutputQueue() *agent.OutputQueue { return nil }
+
+func (s *lettaCloseFailSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	if s.closeErr != nil {
+		return s.closeErr
+	}
+	return s.ProviderServices.CloseBackgroundTask(rowKey, status)
+}
+
+func TestLettaReconcileBackgroundProcessesCloseFailureRollbackAndAgentTaskFilter(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	failingSink := &lettaCloseFailSink{ProviderServices: a.sink}
+	a.sink = failingSink
+
+	currentRuntime := map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"}
+	marshalStatus := func(processes []any) []byte {
+		frame, err := json.Marshal(map[string]any{
+			"type":          "update_device_status",
+			"runtime":       currentRuntime,
+			"device_status": map[string]any{"background_processes": processes},
+		})
+		require.NoError(t, err)
+		return frame
+	}
+
+	// Open one tracked shell row.
+	a.HandleOutput(marshalStatus([]any{
+		map[string]any{"process_id": "bash-1", "kind": "bash", "command": "npm run dev", "status": "running"},
+	}))
+	rowKey := lettaBackgroundProcessRowPrefix + "bash-1"
+	row, ok := sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+	require.Contains(t, a.backgroundProcesses, rowKey)
+
+	// When CloseBackgroundTask fails, the row stays tracked and running.
+	failingSink.closeErr = errors.New("registry close refused")
+	a.HandleOutput(marshalStatus([]any{}))
+	assert.Contains(t, a.backgroundProcesses, rowKey, "failed close must keep row tracked for retry")
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// Clearing the error lets the next empty snapshot close the row and empty tracking.
+	failingSink.closeErr = nil
+	a.HandleOutput(marshalStatus([]any{}))
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+	assert.Empty(t, a.backgroundProcesses)
+
+	// An agent_task entry with a non-empty subagent_id must be skipped without creating a shell row.
+	a.HandleOutput(marshalStatus([]any{
+		map[string]any{"kind": "agent_task", "subagent_id": "sub-1", "process_id": "p-1", "status": "running"},
+	}))
+	_, agentTaskRowExists := sink.BackgroundTask(lettaBackgroundProcessRowPrefix + "p-1")
+	assert.False(t, agentTaskRowExists, "agent_task entries must not create background shell rows")
+	assert.Empty(t, a.backgroundProcesses)
 }

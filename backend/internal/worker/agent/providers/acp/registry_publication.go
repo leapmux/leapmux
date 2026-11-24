@@ -55,6 +55,9 @@ func validateRegistryObservation(obs *SubagentObservation) error {
 	if obs.CloseRow && !obs.Status.IsFinished() {
 		return errors.New("a registry close requires a final status")
 	}
+	if obs.ReviveRow && (obs.Mode == ModeCloseOnly || obs.CloseRow || obs.Status.IsFinished()) {
+		return errors.New("a registry revival requires a non-final upsert observation")
+	}
 	if obs.ChildAgentKey != "" || obs.ChildSpawnSpanID != "" || obs.ChildAgentSessionID != "" ||
 		obs.Prompt != "" || obs.ChildTranscriptPayload != nil || obs.ChildUpdate != nil || obs.ChildUpdateFlush ||
 		obs.ReportID != "" || obs.Report != (agent.SubagentReport{}) {
@@ -81,10 +84,20 @@ func (c *conversation) applyRegistryObservation(observation *SubagentObservation
 	if sink == nil || queue == nil {
 		return errors.New("the registry observation has no output queue")
 	}
-	writes := make([]agent.OutputWrite, 0, 3)
+	writes := make([]agent.OutputWrite, 0, 4)
 	if from, to := obs.RenameFrom, obs.RowKey; from != "" && from != to {
 		writes = append(writes, agent.OutputWrite{Label: "rename ACP registry row", Run: func() error {
 			return sink.RenameBackgroundTask(from, to)
+		}})
+	}
+	if obs.ReviveRow {
+		key := obs.RowKey
+		writes = append(writes, agent.OutputWrite{Label: "revive ACP registry row", Run: func() error {
+			if err := sink.ReviveBackgroundTask(key); err != nil {
+				return err
+			}
+			c.b.reopenChildRoute(key)
+			return nil
 		}})
 	}
 	if obs.Mode == ModeUpsert {

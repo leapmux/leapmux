@@ -83,19 +83,45 @@ type transcriptTail struct {
 }
 
 func newTranscriptTail(a *Agent, rowKey, path string) *transcriptTail {
+	return newTranscriptTailFrom(a, rowKey, path, 0)
+}
+
+// newTranscriptTailFrom creates a background transcript reader starting at a
+// saved byte offset. A nonzero offset marks the initial spawn prompt as already
+// seen so follow-up user messages in the file reach the child tab.
+func newTranscriptTailFrom(a *Agent, rowKey, path string, offset int64) *transcriptTail {
+	if offset < 0 {
+		offset = 0
+	}
 	return &transcriptTail{
 		agent:   a,
 		rowKey:  rowKey,
 		path:    path,
+		offset:  offset,
+		convert: transcriptConverter{promptSeen: offset > 0},
 		done:    make(chan struct{}),
 		stopped: make(chan struct{}),
 	}
+}
+
+// currentOffset returns the byte offset of the last complete line consumed.
+func (t *transcriptTail) currentOffset() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	offset := t.offset - int64(len(t.partial))
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 // start runs the poll loop. It runs once: a second call does nothing.
 func (t *transcriptTail) start(clock quartz.Clock) {
 	if !t.started.CompareAndSwap(false, true) {
 		return
+	}
+	if clock == nil {
+		clock = quartz.NewReal()
 	}
 	ticker := clock.NewTicker(transcriptPollInterval, "qwen", "transcript")
 	go func() {

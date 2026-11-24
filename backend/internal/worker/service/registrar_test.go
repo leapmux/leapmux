@@ -116,7 +116,7 @@ func TestRegisterTerminalGuarded_PassesLoadedRow(t *testing.T) {
 
 	var gotID, gotDir string
 	registerTerminalGuarded(o, "ProbeTerm",
-		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RenameTerminalRequest, row db.Terminal, sender channel.ResponseWriter) {
+		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RenameTerminalRequest, row terminalRecord, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.RenameTerminalResponse{})

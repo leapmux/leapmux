@@ -397,20 +397,19 @@ func (svc *Service) stopArchivedTabs(changed archiveTabSet) {
 		svc.Terminals.WaitForExit(terminalID)
 		svc.terminalCleanups.retire(terminalID)
 		svc.clearTerminalBellCoalesce(terminalID)
-		exitCode, err := svc.Queries.GetTerminalExitCode(bgCtx(), terminalID)
-		if err != nil {
+		if _, err := svc.Queries.GetTerminalID(bgCtx(), terminalID); err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				slog.Warn("archive: read terminal for exited broadcast", "terminal_id", terminalID, "error", err)
 			}
 			continue
 		}
+		exitCode, _ := svc.Terminals.ExitCode(terminalID)
 		// Broadcast even though a PTY that was RUNNING already broadcast the
 		// same event from makeTerminalExitFn: a terminal that never spawned, or
 		// that exited before the archive, fires no exit handler, and the client
 		// has to learn that its shell is gone from something. WaitForExit above
-		// returns only after that handler persisted the row, so the exit code
-		// read here is the final one rather than a stale zero, and the repeat is
-		// a repeat rather than a contradiction.
+		// returns only after the exit handler finished, so ExitCode reads the
+		// final code for a PTY that ran in this process and 0 otherwise.
 		svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{

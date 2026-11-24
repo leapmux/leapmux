@@ -2,6 +2,7 @@ package kiro
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -539,4 +540,111 @@ func TestKiroWorkflowNodeFailureReason(t *testing.T) {
 			assert.Equal(t, tc.want, decode(tc.tree).failureReason())
 		})
 	}
+}
+
+func TestKiroNodeCompleteAndPausedFallBackToNoteSessionID(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	a.HandleOutput(runStart(t, "review"))
+
+	// Simulate an existing running step row that run.steps does not know (e.g. after resume).
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: kiroStepSession, Kind: bgtask.KindSubagent, Title: "review · work #1", Status: bgtask.StatusRunning,
+	}))
+
+	a.HandleOutput(workflowNote(t, kiroWorkflowNodePausedMethod, map[string]any{
+		"nodeId": "work", "nodePath": stepPath("iter-0"), "sessionId": kiroStepSession, "reason": "Waiting on user",
+	}))
+	step, ok := sink.BackgroundTask(kiroStepSession)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusPaused, step.Status)
+	assert.Equal(t, "Paused: Waiting on user", step.ActiveForm)
+
+	a.HandleOutput(workflowNote(t, kiroWorkflowNodeCompleteMethod, map[string]any{
+		"nodeId": "work", "nodePath": stepPath("iter-0"), "sessionId": kiroStepSession, "status": kiroRunCompleted, "capturedOutput": "all clear",
+	}))
+	step, ok = sink.BackgroundTask(kiroStepSession)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, step.Status)
+}
+
+func TestKiroRunCompleteClosesStepSessionIDsFromFinalStateRoot(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	a.HandleOutput(runStart(t, "review"))
+	a.HandleOutput(nodeStart(t, 0, "sess_tracked"))
+
+	// Simulate a second step session present only in finalState.root (not in run.steps).
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "sess_untracked", Kind: bgtask.KindSubagent, Title: "review · work #2", Status: bgtask.StatusRunning,
+	}))
+
+	closeCount := make(map[string]int)
+	sink.OnCloseBackgroundTask = func(rowKey string, _ bgtask.Status) {
+		closeCount[rowKey]++
+	}
+
+	finalState := map[string]any{
+		"workflowId": kiroRunID,
+		"status":     kiroRunFailed,
+		"root": map[string]any{
+			"nodeId": kiroRunID,
+			"type":   "sequence",
+			"status": kiroRunFailed,
+			"children": []any{
+				map[string]any{"nodeId": "work-1", "type": "step", "status": kiroRunFailed, "sessionId": "sess_tracked"},
+				map[string]any{"nodeId": "work-2", "type": "step", "status": kiroRunFailed, "sessionId": "sess_untracked"},
+			},
+		},
+	}
+	a.HandleOutput(runComplete(t, kiroRunFailed, finalState))
+
+	tracked, ok := sink.BackgroundTask("sess_tracked")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, tracked.Status)
+
+	untracked, ok := sink.BackgroundTask("sess_untracked")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, untracked.Status)
+
+	// Deduplicated against openSteps: sess_tracked is closed only once.
+	assert.Equal(t, 1, closeCount["sess_tracked"])
+	assert.Equal(t, 1, closeCount["sess_untracked"])
+}
+
+func TestKiroWorkflowRetryRevivesFinishedRowThroughOutputQueue(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+
+	// Run 1 starts and fails.
+	a.HandleOutput(runStart(t, "review"))
+	a.HandleOutput(runComplete(t, kiroRunFailed, failedFinalState("Build failed.")))
+	run, ok := sink.BackgroundTask(runRowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, run.Status)
+	assert.False(t, run.EndedAt.IsZero())
+
+	// Inject a transient ReviveErr to verify _kiro/workflow/retry routes through
+	// ACP's OutputQueue FIFO path and holds Run 2's upsert behind revival retry.
+	sink.ReviveErr = errors.New("transient storage error")
+	a.HandleOutput(runStart(t, "review"))
+
+	run, _ = sink.BackgroundTask(runRowKey)
+	assert.Equal(t, bgtask.StatusFailed, run.Status, "retry revival stays queued behind transient error")
+	assert.Empty(t, sink.RevivedTasks())
+
+	// Clear the transient error and flush the output queue.
+	sink.ReviveErr = nil
+	require.NoError(t, agent.FlushPendingOutput(a.Sink()))
+
+	run, _ = sink.BackgroundTask(runRowKey)
+	assert.Equal(t, bgtask.StatusRunning, run.Status)
+	assert.True(t, run.EndedAt.IsZero())
+	assert.Equal(t, []string{runRowKey}, sink.RevivedTasks())
+
+	// Run 2 completes with a new outcome.
+	a.HandleOutput(runComplete(t, kiroRunCompleted, map[string]any{}))
+	run, _ = sink.BackgroundTask(runRowKey)
+	assert.Equal(t, bgtask.StatusSucceeded, run.Status)
+	assert.False(t, run.EndedAt.IsZero())
 }

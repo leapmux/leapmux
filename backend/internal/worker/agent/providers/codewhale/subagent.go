@@ -52,6 +52,11 @@ const (
 const childTimerTag = "codewhale-child-tail"
 const childRunTimerTag = "codewhale-child-runs"
 
+// childRunMaxConsecutiveAbsences is the number of consecutive successful
+// /v1/agent-runs snapshots a never-seen watched child may miss before it is
+// treated as pruned.
+const childRunMaxConsecutiveAbsences = 3
+
 // codewhaleChildren tracks the thread's subagents.
 type codewhaleChildren struct {
 	ctx    context.Context
@@ -77,9 +82,13 @@ type codewhaleChild struct {
 	spawnSpan string
 	title     string
 	path      string
-	// observedStatus is guarded by codewhaleChildren.mu. Only the watcher publishes it.
+	// observedStatus, observationSequence, paused, seenInRuns, and missedRunPolls
+	// are guarded by codewhaleChildren.mu. Only the watcher publishes observedStatus.
 	observedStatus      bgtask.Status
 	observationSequence uint64
+	paused              bool
+	seenInRuns          bool
+	missedRunPolls      int
 	// nudge wakes the watcher before its next tick.
 	nudge chan struct{}
 
@@ -156,27 +165,23 @@ func (c *codewhaleChildren) lookup(agentID string) *codewhaleChild {
 	return c.byID[agentID]
 }
 
-func (c *codewhaleChildren) observation(child *codewhaleChild) (bgtask.Status, bool) {
+func (c *codewhaleChildren) observation(child *codewhaleChild) (bgtask.Status, uint64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.byID[child.agentID] != child {
-		return 0, false
+		return 0, 0, false
 	}
 	status := child.observedStatus
+	sequence := child.observationSequence
 	if !status.IsFinished() {
 		child.observedStatus = 0
 	}
-	return status, true
+	return status, sequence, true
 }
 
-// observe delivers native state to the watcher that owns this exact child.
-func (c *codewhaleChildren) observe(child *codewhaleChild, status bgtask.Status) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.byID[child.agentID] != child {
-		return
-	}
-	child.observationSequence++
+// deliverObservationLocked records status unless a final status already exists,
+// and nudges the child's watcher without blocking. The caller holds children.mu.
+func deliverObservationLocked(child *codewhaleChild, status bgtask.Status) {
 	if !child.observedStatus.IsFinished() {
 		child.observedStatus = status
 	}
@@ -184,6 +189,27 @@ func (c *codewhaleChildren) observe(child *codewhaleChild, status bgtask.Status)
 	case child.nudge <- struct{}{}:
 	default:
 	}
+}
+
+// observe delivers native state to the watcher that owns this exact child.
+// It reports whether it woke a paused child to a non-finished status, so the
+// caller can restart the run poller outside children.mu.
+func (c *codewhaleChildren) observe(child *codewhaleChild, status bgtask.Status) bool {
+	c.mu.Lock()
+	if c.byID[child.agentID] != child {
+		c.mu.Unlock()
+		return false
+	}
+	wokeFromPause := false
+	if status != 0 && status != bgtask.StatusPaused && child.paused {
+		child.paused = false
+		child.missedRunPolls = 0
+		wokeFromPause = !status.IsFinished() && !child.observedStatus.IsFinished()
+	}
+	child.observationSequence++
+	deliverObservationLocked(child, status)
+	c.mu.Unlock()
+	return wokeFromPause
 }
 
 // drain removes and returns every child that is still watched. Call it after
@@ -212,10 +238,38 @@ func childTranscriptPath(workspace, agentID string) string {
 
 // agentToolInput is the part of an `agent` call's input that the provider reads.
 type agentToolInput struct {
-	Action string `json:"action"`
-	Prompt string `json:"prompt"`
-	Name   string `json:"name"`
-	Type   string `json:"type"`
+	Action  string `json:"action"`
+	AgentID string `json:"agent_id"`
+	Prompt  string `json:"prompt"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+}
+
+func isAgentStartAction(action string) bool {
+	switch action {
+	case "", contracts.CodewhaleAgentActionStart, agentActionSpawn, agentActionRun:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAgentWakeAction(action string) bool {
+	switch action {
+	case agentActionFollowup, agentActionFollowUp, agentActionSteer:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAgentWaitAction(action string) bool {
+	switch action {
+	case contracts.CodewhaleAgentActionWait, agentActionJoin, agentActionAwait, agentActionBlock:
+		return true
+	default:
+		return false
+	}
 }
 
 // toolSpawnsSubagent reports whether a tool call starts a subagent. A spawn
@@ -225,7 +279,7 @@ func toolSpawnsSubagent(name string, input json.RawMessage) bool {
 		return false
 	}
 	var parsed agentToolInput
-	return json.Unmarshal(input, &parsed) == nil && parsed.Action == contracts.CodewhaleAgentActionStart
+	return json.Unmarshal(input, &parsed) == nil && isAgentStartAction(parsed.Action)
 }
 
 // agentToolResult contains the native start receipt ID and the settled children from a wait result.
@@ -242,8 +296,8 @@ type settledRun struct {
 	Status  string `json:"status"`
 }
 
-// observeAgentToolResult starts a watcher for a started child, and wakes the
-// watchers of the children a wait settled.
+// observeAgentToolResult starts a watcher for a started child, wakes a paused
+// child on follow-up or steer, and delivers wait outcomes to watched children.
 func (a *Agent) observeAgentToolResult(env codewhaleEnvelope, payload itemEventPayload, spanID string, input json.RawMessage) {
 	var parsed agentToolInput
 	if json.Unmarshal(input, &parsed) != nil {
@@ -251,27 +305,45 @@ func (a *Agent) observeAgentToolResult(env codewhaleEnvelope, payload itemEventP
 	}
 	var result agentToolResult
 	_ = json.Unmarshal([]byte(payload.Item.Detail), &result)
-	switch parsed.Action {
-	case contracts.CodewhaleAgentActionStart:
+	resolveAgentID := func() string {
+		if id := strings.TrimSpace(result.AgentID); id != "" {
+			return id
+		}
+		var metadata agentToolResult
+		_ = json.Unmarshal(payload.Item.Metadata, &metadata)
+		if id := strings.TrimSpace(metadata.AgentID); id != "" {
+			return id
+		}
+		return strings.TrimSpace(parsed.AgentID)
+	}
+	switch {
+	case isAgentStartAction(parsed.Action), isAgentWakeAction(parsed.Action):
 		if env.Event != contracts.CodewhaleEventItemCompleted {
-			// The start failed, so no child runs. The call's own row says why.
+			// The call failed, so no child started or resumed. The call's own row says why.
 			return
 		}
-		agentID := result.AgentID
-		if agentID == "" {
-			var metadata agentToolResult
-			_ = json.Unmarshal(payload.Item.Metadata, &metadata)
-			agentID = metadata.AgentID
-		}
+		agentID := resolveAgentID()
 		if agentID == "" {
 			slog.Warn("codewhale subagent start stated no agent id", "agent_id", a.AgentID(), "span", spanID)
 			return
 		}
+		if a.children.lookup(agentID) != nil {
+			a.wakeChild(agentID)
+			return
+		}
 		a.startChild(agentID, spanID, subagentTitle(parsed), parsed.Prompt)
-	case contracts.CodewhaleAgentActionWait:
+	case isAgentWaitAction(parsed.Action):
+		targetID := strings.TrimSpace(parsed.AgentID)
+		settledTarget := false
 		for _, settled := range result.Settled {
 			status, _ := agentRunStatus(settled.Status)
 			a.settleChild(settled.AgentID, status)
+			if targetID != "" && settled.AgentID == targetID {
+				settledTarget = true
+			}
+		}
+		if env.Event == contracts.CodewhaleEventItemCompleted && targetID != "" && !settledTarget {
+			a.wakeChild(targetID)
 		}
 	}
 }
@@ -279,8 +351,15 @@ func (a *Agent) observeAgentToolResult(env codewhaleEnvelope, payload itemEventP
 // settleChild delivers the native wait outcome to the watcher that owns the child.
 func (a *Agent) settleChild(agentID string, status bgtask.Status) {
 	if child := a.children.lookup(agentID); child != nil {
-		a.children.observe(child, status)
+		if a.children.observe(child, status) {
+			a.startChildRunPoller()
+		}
 	}
+}
+
+// wakeChild resumes a paused child and restarts the shared run poller outside children.mu.
+func (a *Agent) wakeChild(agentID string) {
+	a.settleChild(agentID, bgtask.StatusRunning)
 }
 
 // subagentTitle selects the first available child label in this order:
@@ -408,7 +487,7 @@ func agentRunStatus(word string) (status bgtask.Status, final bool) {
 func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 	sink := a.sink.ChildSink(child.childID)
 	for {
-		status, current := a.children.observation(child)
+		status, sequence, current := a.children.observation(child)
 		if !current || ctx.Err() != nil {
 			return
 		}
@@ -428,6 +507,12 @@ func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 			if status != 0 {
 				providerkit.LogRegistryRefusal(codewhaleProviderName, "update", a.sink.UpdateBackgroundTaskStatus(child.agentID, status, ""))
 			}
+			if status == bgtask.StatusPaused {
+				if a.parkPausedChild(ctx, child, sequence) {
+					continue
+				}
+				return
+			}
 		}
 		timer := a.clock.NewTimer(childTailInterval, childTimerTag)
 		select {
@@ -437,6 +522,45 @@ func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 		case <-child.nudge:
 			timer.Stop()
 		case <-timer.C:
+		}
+	}
+}
+
+// parkPausedChild parks the watcher without arming a timer when no newer
+// observation arrived after observation returned StatusPaused. It returns true
+// when the watcher should resume its loop, or false when the watcher must exit.
+func (a *Agent) parkPausedChild(ctx context.Context, child *codewhaleChild, sequence uint64) bool {
+	a.children.mu.Lock()
+	if a.children.byID[child.agentID] != child {
+		a.children.mu.Unlock()
+		return false
+	}
+	if child.observationSequence != sequence || child.observedStatus != 0 {
+		a.children.mu.Unlock()
+		return true
+	}
+	child.paused = true
+	select {
+	case <-child.nudge:
+	default:
+	}
+	a.children.mu.Unlock()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-child.nudge:
+		}
+		a.children.mu.Lock()
+		current := a.children.byID[child.agentID] == child
+		stillPaused := child.paused && child.observedStatus == 0
+		a.children.mu.Unlock()
+		if !current {
+			return false
+		}
+		if !stillPaused {
+			return true
 		}
 	}
 }
@@ -472,7 +596,7 @@ func (a *Agent) pollChildRuns(ctx context.Context) {
 		}
 		snapshots := make(map[string]childRunObservation, len(children.byID))
 		for key, child := range children.byID {
-			if !child.observedStatus.IsFinished() {
+			if !child.observedStatus.IsFinished() && !child.paused {
 				snapshots[key] = childRunObservation{child: child, sequence: child.observationSequence}
 			}
 		}
@@ -509,15 +633,36 @@ func (a *Agent) pollChildRuns(ctx context.Context) {
 				children.mu.Lock()
 				child := observed.child
 				if children.byID[key] == child && child.observationSequence == observed.sequence {
-					if !child.observedStatus.IsFinished() {
-						child.observedStatus = status
-					}
-					select {
-					case child.nudge <- struct{}{}:
-					default:
+					child.seenInRuns = true
+					child.missedRunPolls = 0
+					if child.paused {
+						if status != 0 && status != bgtask.StatusPaused {
+							child.paused = false
+							deliverObservationLocked(child, status)
+						}
+					} else {
+						deliverObservationLocked(child, status)
 					}
 				}
 				children.mu.Unlock()
+			}
+			for key, observed := range snapshots {
+				if delivered[key] {
+					continue
+				}
+				var pruned *codewhaleChild
+				children.mu.Lock()
+				child := observed.child
+				if children.byID[key] == child && child.observationSequence == observed.sequence && !child.paused && !child.observedStatus.IsFinished() {
+					child.missedRunPolls++
+					if child.seenInRuns || child.missedRunPolls >= childRunMaxConsecutiveAbsences {
+						pruned = child
+					}
+				}
+				children.mu.Unlock()
+				if pruned != nil {
+					a.children.observe(pruned, bgtask.StatusEndedWithUnknownOutcome)
+				}
 			}
 		}
 		timer := a.clock.NewTimer(childTailInterval, childRunTimerTag)
@@ -557,12 +702,15 @@ func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
 	}
 	// The watcher owns the returned outcome. A pending cancellation keeps its row open.
 	status, _ := agentRunStatus(record.Status)
-	a.children.observe(child, status)
+	if a.children.observe(child, status) {
+		a.startChildRunPoller()
+	}
 	return nil
 }
 
 // finishChild retains child output, the parent report, registry close, and cleanup in order.
-// A closed registry row therefore always has its available report persisted.
+// When report capture or admission fails, finishChild logs a warning and still closes the row
+// so the child does not remain in StatusRunning.
 func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, status bgtask.Status, summary string) {
 	closeChildTools(sink, child, providerkit.ChildCompletion(status), a.IsDiscardingOutput())
 	providerkit.ResetSpansAndProgress(sink)
@@ -570,7 +718,11 @@ func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, 
 	if childQueue := sink.OutputQueue(); childQueue != nil && childQueue != queue {
 		queue.Append(agent.OutputWrite{Label: "flush Codewhale child output", Run: childQueue.Flush})
 	}
-	captured, present, captureErr := agent.CaptureSubagentReport(agent.DirectTranscript(a.sink), agent.SubagentReportWrite{
+	captureFn := a.captureReport
+	if captureFn == nil {
+		captureFn = agent.CaptureSubagentReport
+	}
+	captured, present, captureErr := captureFn(agent.DirectTranscript(a.sink), agent.SubagentReportWrite{
 		ReportID: providerkit.SubagentReportContentID(codewhaleProviderName, child.agentID, summary),
 		Report:   agent.SubagentReport{Label: child.title, Text: summary, Status: bgtask.StatusWire(status)},
 	})
@@ -579,20 +731,16 @@ func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, 
 	}}
 	cleanup := agent.OutputWrite{Label: "release Codewhale child", Run: func() error { a.sink.CleanupChildAgent(child.childID); return nil }}
 	if captureErr != nil {
-		queue.Append(agent.OutputWrite{Label: "prepare Codewhale child report", Run: func() error { return captureErr }})
+		slog.Warn("codewhale could not capture child report", "agent_id", a.AgentID(), "child", child.agentID, "error", captureErr)
 	} else if present {
 		err := agent.PersistCapturedTranscriptBatch(a.sink, func() []agent.CapturedTranscriptOperation {
 			return []agent.CapturedTranscriptOperation{captured.NotificationOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)}
 		})
 		if !agent.OutputRetained(err) {
-			// An unaccepted report keeps registry close and cleanup behind its failed admission.
-			queue.Append(agent.OutputWrite{Label: "admit Codewhale child report", Run: func() error { return err }})
-		} else {
-			queue.Append(closeWrite, cleanup)
+			slog.Warn("codewhale could not admit child report", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
 		}
-	} else {
-		queue.Append(closeWrite, cleanup)
 	}
+	queue.Append(closeWrite, cleanup)
 	if err := queue.Flush(); err != nil {
 		slog.Debug("codewhale retained final child output", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
 	}
@@ -868,6 +1016,26 @@ func (a *Agent) persistChildBlock(sink agent.ProviderServices, child *codewhaleC
 
 // --- workflows ---
 
+// workflowPollInterval controls checks of the local workflow journal JSONL file.
+const (
+	workflowPollInterval = 2 * time.Second
+	workflowPollTimerTag = "codewhale-workflow-poll"
+	workflowJournalLimit = 16 << 20
+)
+
+// codewhaleWorkflow tracks one active background workflow run.
+type codewhaleWorkflow struct {
+	runID      string
+	relJournal string
+}
+
+// codewhaleWorkflows indexes active workflow runs by run ID.
+// The caller holds Mu.
+type codewhaleWorkflows struct {
+	runs    map[string]codewhaleWorkflow
+	polling bool
+}
+
 // workflowToolInput is the part of a `workflow` call's input that labels its run.
 type workflowToolInput struct {
 	Name string `json:"name"`
@@ -878,8 +1046,9 @@ type workflowToolInput struct {
 
 // workflowResultMetadata is the run summary a `workflow` result carries.
 type workflowResultMetadata struct {
-	RunID  string `json:"run_id"`
-	Status string `json:"status"`
+	RunID       string `json:"run_id"`
+	Status      string `json:"status"`
+	JournalPath string `json:"journal_path"`
 	// Ended reads the native terminal flag, which states finality independently of the status word.
 	Ended bool `json:"terminal"`
 }
@@ -899,6 +1068,32 @@ func workflowRunStatus(word string) bgtask.Status {
 	default:
 		return bgtask.StatusRunning
 	}
+}
+
+// confineWorkflowJournalPath resolves journalPath to a relative path strictly
+// inside workingDir. It returns "" when journalPath is empty or escapes workingDir.
+func confineWorkflowJournalPath(workingDir, journalPath string) string {
+	journalPath = strings.TrimSpace(journalPath)
+	if workingDir == "" || journalPath == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(journalPath)
+	if !filepath.IsAbs(cleaned) {
+		if !filepath.IsLocal(cleaned) || cleaned == "." {
+			return ""
+		}
+		return cleaned
+	}
+	rel, err := filepath.Rel(workingDir, cleaned)
+	if err == nil && filepath.IsLocal(rel) && rel != "." {
+		return rel
+	}
+	if resolvedRoot, evalErr := filepath.EvalSymlinks(workingDir); evalErr == nil {
+		if rel, err = filepath.Rel(resolvedRoot, cleaned); err == nil && filepath.IsLocal(rel) && rel != "." {
+			return rel
+		}
+	}
+	return ""
 }
 
 // observeWorkflowToolResult maintains one registry row per workflow run.
@@ -923,6 +1118,7 @@ func (a *Agent) observeWorkflowToolResult(env codewhaleEnvelope, payload itemEve
 		// An unknown status supplies no successful outcome.
 		status = bgtask.StatusEndedWithUnknownOutcome
 	}
+	relJournal := confineWorkflowJournalPath(a.workingDir, metadata.JournalPath)
 	providerkit.LogRegistryRefusal(codewhaleProviderName, "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey:     metadata.RunID,
 		Kind:       bgtask.KindWorkflow,
@@ -931,6 +1127,251 @@ func (a *Agent) observeWorkflowToolResult(env codewhaleEnvelope, payload itemEve
 		Title:      title,
 		Status:     status,
 	}))
+	startPoller := false
+	a.Mu.Lock()
+	if status.IsFinished() {
+		delete(a.workflows.runs, metadata.RunID)
+	} else {
+		if a.workflows.runs == nil {
+			a.workflows.runs = make(map[string]codewhaleWorkflow)
+		}
+		tracked := a.workflows.runs[metadata.RunID]
+		tracked.runID = metadata.RunID
+		if relJournal != "" {
+			tracked.relJournal = relJournal
+		}
+		a.workflows.runs[metadata.RunID] = tracked
+		if tracked.relJournal != "" && !a.workflows.polling {
+			a.workflows.polling = true
+			startPoller = true
+		}
+	}
+	a.Mu.Unlock()
+	if startPoller && (a.children == nil || !a.children.run(a.pollWorkflowJournal)) {
+		a.Mu.Lock()
+		a.workflows.polling = false
+		a.Mu.Unlock()
+	}
+}
+
+// finishWorkflow closes one tracked workflow run once.
+func (a *Agent) finishWorkflow(runID string, status bgtask.Status) {
+	a.Mu.Lock()
+	_, tracked := a.workflows.runs[runID]
+	delete(a.workflows.runs, runID)
+	a.Mu.Unlock()
+	if !tracked {
+		return
+	}
+	providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(runID, status))
+}
+
+// workflowJournalCursor holds incremental read state for one workspace-confined workflow journal.
+type workflowJournalCursor struct {
+	info     os.FileInfo
+	size     int64
+	modTime  time.Time
+	offset   int64
+	statuses map[string]bgtask.Status
+}
+
+// pollWorkflowJournal polls confined workspace workflow journals until no
+// tracked journaled workflow remains or ctx ends.
+func (a *Agent) pollWorkflowJournal(ctx context.Context) {
+	stopped := false
+	defer func() {
+		if !stopped {
+			a.Mu.Lock()
+			a.workflows.polling = false
+			a.Mu.Unlock()
+		}
+	}()
+	cursors := make(map[string]*workflowJournalCursor)
+	for {
+		a.Mu.Lock()
+		byJournal := make(map[string][]string)
+		for runID, wf := range a.workflows.runs {
+			if wf.relJournal != "" {
+				byJournal[wf.relJournal] = append(byJournal[wf.relJournal], runID)
+			}
+		}
+		if len(byJournal) == 0 {
+			a.workflows.polling = false
+			stopped = true
+			a.Mu.Unlock()
+			return
+		}
+		a.Mu.Unlock()
+
+		for relJournal := range cursors {
+			if _, ok := byJournal[relJournal]; !ok {
+				delete(cursors, relJournal)
+			}
+		}
+
+		timer := a.clock.NewTimer(workflowPollInterval, workflowPollTimerTag)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		a.pollWorkflowJournalCycle(ctx, byJournal, cursors)
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+// pollWorkflowJournalCycle opens the workspace root once and updates each tracked journal cursor.
+func (a *Agent) pollWorkflowJournalCycle(ctx context.Context, byJournal map[string][]string, cursors map[string]*workflowJournalCursor) {
+	root, err := os.OpenRoot(a.workingDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Debug("codewhale open workflow journal root", "agent_id", a.AgentID(), "error", err)
+		}
+		return
+	}
+	defer func() { _ = root.Close() }()
+
+	for relJournal, runIDs := range byJournal {
+		if ctx.Err() != nil {
+			return
+		}
+		cursor := cursors[relJournal]
+		if cursor == nil {
+			cursor = &workflowJournalCursor{}
+			cursors[relJournal] = cursor
+		}
+		statuses, _, err := cursor.read(root, relJournal)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				slog.Debug("codewhale read workflow journal", "agent_id", a.AgentID(), "path", relJournal, "error", err)
+			}
+			continue
+		}
+		for _, runID := range runIDs {
+			if status, ok := statuses[runID]; ok && status.IsFinished() {
+				a.finishWorkflow(runID, status)
+			}
+		}
+	}
+}
+
+// read reads only newly appended lines from relPath under root, skipping unchanged files
+// and resetting to offset 0 when the file is truncated or replaced.
+// It reports whether it opened and read the file.
+func (c *workflowJournalCursor) read(root *os.Root, relPath string) (map[string]bgtask.Status, bool, error) {
+	info, err := root.Lstat(relPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("the Codewhale workflow journal is not a regular file")
+	}
+	if c.info != nil && os.SameFile(c.info, info) && info.Size() == c.size && info.ModTime().Equal(c.modTime) {
+		return c.statuses, false, nil
+	}
+	file, err := root.Open(relPath)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !os.SameFile(info, opened) {
+		return nil, false, fmt.Errorf("the Codewhale workflow journal changed while opening it")
+	}
+	reset := c.info == nil || !os.SameFile(c.info, opened) || opened.Size() < c.offset || (opened.Size() == c.offset && !opened.ModTime().Equal(c.modTime))
+	if reset {
+		c.offset = 0
+		c.statuses = make(map[string]bgtask.Status)
+	} else if c.statuses == nil {
+		c.statuses = make(map[string]bgtask.Status)
+	}
+	startOffset := c.offset
+	truncatedHead := false
+	if opened.Size()-startOffset > workflowJournalLimit {
+		startOffset = opened.Size() - workflowJournalLimit
+		truncatedHead = true
+	}
+	if startOffset > 0 {
+		if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
+			return nil, false, err
+		}
+	}
+	readLimit := min(opened.Size()-startOffset, workflowJournalLimit)
+	data := make([]byte, 0, max(readLimit, 0))
+	if readLimit > 0 {
+		buf := make([]byte, readLimit)
+		n, readErr := io.ReadFull(file, buf)
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			return nil, false, readErr
+		}
+		data = buf[:n]
+	}
+	parseOffset := startOffset
+	if truncatedHead {
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			c.info = opened
+			c.size = opened.Size()
+			c.modTime = opened.ModTime()
+			c.offset = startOffset + int64(len(data))
+			return c.statuses, true, nil
+		}
+		data = data[idx+1:]
+		parseOffset += int64(idx + 1)
+	}
+	nextOffset := parseOffset
+	tail := data
+	if lastNL := bytes.LastIndexByte(data, '\n'); lastNL >= 0 {
+		parseWorkflowJournalLines(data[:lastNL], c.statuses)
+		nextOffset = parseOffset + int64(lastNL+1)
+		tail = data[lastNL+1:]
+	}
+	if trimmed := bytes.TrimSpace(tail); len(trimmed) == 0 {
+		nextOffset = parseOffset + int64(len(data))
+	} else {
+		parseWorkflowJournalLines(trimmed, c.statuses)
+	}
+	c.info = opened
+	c.size = opened.Size()
+	c.modTime = opened.ModTime()
+	c.offset = nextOffset
+	return c.statuses, true, nil
+}
+
+func parseWorkflowJournalLines(data []byte, statuses map[string]bgtask.Status) {
+	for rawLine := range bytes.SplitSeq(data, []byte{'\n'}) {
+		line := bytes.TrimSpace(rawLine)
+		if len(line) == 0 {
+			continue
+		}
+		var entry workflowJournalEntry
+		if json.Unmarshal(line, &entry) != nil || entry.Kind != "snapshot" || entry.Run == nil || entry.Run.RunID == "" {
+			continue
+		}
+		statuses[entry.Run.RunID] = workflowRunStatus(entry.Run.Status)
+	}
+}
+
+// closeOpenWorkflows closes every active workflow row at process exit.
+// Call it after children.stopAll stops the journal poller.
+func (a *Agent) closeOpenWorkflows() {
+	a.Mu.Lock()
+	runs := a.workflows.runs
+	a.workflows.runs = nil
+	a.workflows.polling = false
+	a.Mu.Unlock()
+	for runID := range runs {
+		providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(runID, bgtask.StatusStopped))
+	}
 }
 
 // --- Background shells ---

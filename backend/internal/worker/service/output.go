@@ -201,6 +201,18 @@ type OutputHandler struct {
 	// through to its root's cache. Mirrors `todos`.
 	bgtasks sync.Map // rootAgentID -> *bgTaskCache
 
+	// Process-wide monotonic physical output generation counter and per-root
+	// ephemeral state (current generation, per-row fencing generations, and
+	// live active_form text). Never persisted to SQLite.
+	outputGenSeq     atomic.Int64
+	currentOutputGen sync.Map // rootAgentID -> int64
+	bgTaskMeta       sync.Map // rootAgentID -> *bgTaskEphemeral
+
+	// Pending blocking control requests, kept strictly in memory because a
+	// blocking prompt belongs only to the live subprocess that asked it.
+	// Mutated only while holding lockControlMutation.
+	controls controlRequestStore
+
 	// Per-agent derived activity ("is this agent busy") plus the last value
 	// published for it. Keyed by AGENT id, children included. See
 	// output_activity.go for the derivation and the edge-trigger rule.
@@ -321,6 +333,10 @@ type OutputHandler struct {
 	// inputProcessState refreshes root metadata after process health changes.
 	// It reads current health rather than retaining provider-supplied state.
 	inputProcessState func(agentID string)
+	// backgroundWorkChanged reconciles queued input across a root agent's tree
+	// after a committed background-task mutation. Set via SetBackgroundWorkFunc
+	// in service.New; nil in tests that build an OutputHandler directly.
+	backgroundWorkChanged func(rootAgentID string)
 	// requeueDroppedInput queues input that a provider dropped as the reader's
 	// next message, and reports whether this call added it. Set via
 	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
@@ -519,6 +535,12 @@ func (h *OutputHandler) SetInputProcessStateFunc(fn func(agentID string)) {
 	h.inputProcessState = fn
 }
 
+// SetBackgroundWorkFunc wires background-task registry mutations to the input
+// queue before output processing starts.
+func (h *OutputHandler) SetBackgroundWorkFunc(fn func(rootAgentID string)) {
+	h.backgroundWorkChanged = fn
+}
+
 // SetRequeueDroppedInputFunc wires the input queue that takes back the input a
 // provider dropped. Call it before any agent output is processed.
 func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error)) {
@@ -533,8 +555,17 @@ func (h *OutputHandler) SetSteerEchoFuncs(echoed func(agentID string, count int,
 // CleanupAgent removes all per-agent state from the handler's maps.
 // Call this when an agent is permanently closed.
 func (h *OutputHandler) CleanupAgent(agentID string) {
+	rootID, retiredIDs, retiredSink, retired := h.retireAgentState(agentID)
+	if !retired {
+		return
+	}
+	h.clearBlockingControlsForCleanup(agentID, rootID, retiredSink)
+	h.finishAgentCleanup(agentID, retiredIDs)
+}
+
+func (h *OutputHandler) retireAgentState(agentID string) (rootID string, retiredIDs []string, retiredSink *agentOutputSink, retired bool) {
 	target := h.sinkForAgent(agentID)
-	rootID := h.resolveRoot(agentID, "")
+	rootID = h.resolveRoot(agentID, "")
 	if target != nil {
 		rootID = target.rootAgentID
 	}
@@ -544,35 +575,49 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 		mutation.Lock()
 		if h.sinkForAgent(agentID) != target {
 			mutation.Unlock()
-			return
+			return "", nil, nil, false
 		}
 		if !h.cleanupChildMapsLocked(agentID, removal) {
 			mutation.Unlock()
 			continue
 		}
-		h.bgtasks.Delete(agentID)
+		if v, ok := h.bgTaskMeta.Load(agentID); ok {
+			meta := v.(*bgTaskEphemeral)
+			meta.opMu.Lock()
+			h.bgtasks.Delete(agentID)
+			meta.mu.Lock()
+			clear(meta.activeForm)
+			meta.mu.Unlock()
+			meta.opMu.Unlock()
+		} else {
+			h.bgtasks.Delete(agentID)
+		}
 		h.goalMu.Delete(agentID)
-		var retiredIDs []string
 		unlockRootSinks := h.lockRootSinkMutation()
 		root, removed := h.rootSinks.LoadAndDelete(agentID)
 		unlockRootSinks()
 		if removed {
-			retiredIDs = root.(*agentOutputSink).retireRegisteredTree()
+			retiredSink = root.(*agentOutputSink)
+			retiredIDs = retiredSink.retireRegisteredTree()
 		} else if target != nil {
 			if root, present := h.rootSinks.Load(rootID); present {
 				root.(*agentOutputSink).detachChildSink(agentID)
 			}
+			retiredSink = target
 			retiredIDs = target.retireRegisteredTree()
 		}
 		h.enqueueProgressClears(retiredIDs)
 		mutation.Unlock()
-		h.watcher.DrainAgentEvents(agentID)
-		h.drainProgressClears(retiredIDs)
-		// Retries die with the agent. The queue's own coordinator and observer
-		// work must not run beneath the transcript mutation lock.
-		h.cancelAllAutoRetries(agentID)
-		return
+		return rootID, retiredIDs, retiredSink, true
 	}
+}
+
+func (h *OutputHandler) finishAgentCleanup(agentID string, retiredIDs []string) {
+	h.watcher.DrainAgentEvents(agentID)
+	h.drainProgressClears(retiredIDs)
+	// Retries die with the agent. The queue's own coordinator and observer
+	// work must not run beneath the transcript mutation lock.
+	h.cancelAllAutoRetries(agentID)
 }
 
 // CleanupChildAgents prunes per-child state for a set of descendants in one
@@ -610,6 +655,7 @@ func (h *OutputHandler) cleanupChildMaps(childID string) {
 			continue
 		}
 		mutation.Unlock()
+		h.clearBlockingControlsForCleanup(childID, rootID, target)
 		h.watcher.DrainAgentEvents(childID)
 		// The child's retries die with its transcript, outside the
 		// transcript mutation lock like every queue operation here.
@@ -655,16 +701,115 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 	h.drainProgressClears(retiredIDs)
 }
 
+func (h *OutputHandler) hasBlockingControlsOrActiveMutation(agentID string) bool {
+	if h.controls.hasBlocking(agentID) {
+		return true
+	}
+	if v, ok := h.activity.Load(agentID); ok {
+		st := v.(*agentActivity)
+		st.mu.Lock()
+		active := st.controlMutations > 0
+		st.mu.Unlock()
+		return active
+	}
+	return false
+}
+
+// clearBlockingControlsForCleanup serializes blocking-control teardown with
+// lockControlMutation after cleanup releases the transcript mutation lock.
+// If a concurrent PublishControlRequest was in flight for retiredSink, this
+// waits for it to finish, drains any control it wrote, broadcasts cancellations
+// in order, and removes the retained activity entry when no replacement sink
+// took over.
+func (h *OutputHandler) clearBlockingControlsForCleanup(agentID, rootID string, retiredSink *agentOutputSink) {
+	if !h.hasBlockingControlsOrActiveMutation(agentID) {
+		return
+	}
+	_, _, release := h.lockControlMutation(agentID, rootID)
+	publication := controlPublication{}
+	current := h.sinkForAgent(agentID)
+	var drained []blockingControlRecord
+	if current != nil && current != retiredSink {
+		if retiredSink != nil {
+			drained = h.controls.drainBlockingForPublisher(agentID, retiredSink)
+		}
+	} else {
+		drained = h.controls.drainBlocking(agentID)
+	}
+	for _, request := range drained {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	if current == nil || current == retiredSink {
+		publication.activityChanged = h.recordControlRequestsRemoved(agentID, rootID) || publication.activityChanged
+	}
+	h.finishControlPublication(agentID, rootID, publication, release)
+	if current := h.sinkForAgent(agentID); current == nil || current == retiredSink {
+		h.ForgetActivity(agentID)
+	}
+}
+
+// LookupControlRequest resolves a pending control request from memory (blocking)
+// or SQLite (non-blocking).
+func (h *OutputHandler) LookupControlRequest(ctx context.Context, agentID, requestID string) (storedControlRequest, bool, error) {
+	return h.controls.lookup(ctx, h.queries, agentID, requestID)
+}
+
+// ListControlRequests returns all pending control requests for an agent across
+// in-memory blocking requests and SQLite non-blocking requests, ordered by
+// creation time ascending.
+func (h *OutputHandler) ListControlRequests(ctx context.Context, agentID string) ([]storedControlRequest, error) {
+	return h.controls.list(ctx, h.queries, agentID)
+}
+
 // claimControlResponseAnswer reserves one request instance before delivery.
 // A database failure must prevent delivery because the worker cannot establish ownership.
 func (h *OutputHandler) claimControlResponseAnswer(params db.StoreControlResponseAnswerParams) (string, error) {
-	return reserveControlDelivery(h.db, controlDeliveryIdentity{
+	_, _, release := h.lockControlMutation(params.AgentID, "")
+	defer release()
+	identity := controlDeliveryIdentity{
 		agentID: params.AgentID, kind: leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_CONTROL_RESPONSE,
 		operationID: params.RequestID, instanceID: params.ClaimToken,
-	}, func(queries *db.Queries, deliveryID string) (int64, error) {
+	}
+	if !params.NonBlocking {
+		if !h.controls.hasBlockingInstance(params.AgentID, params.RequestID, params.ClaimToken) {
+			return "", nil
+		}
+		return reserveControlDelivery(h.db, identity, func(queries *db.Queries, deliveryID string) (int64, error) {
+			return queries.StoreBlockingControlResponseAnswer(bgCtx(), db.StoreBlockingControlResponseAnswerParams{
+				DeliveryID:           deliveryID,
+				RequestPayload:       params.RequestPayload,
+				ResponseContent:      params.ResponseContent,
+				ResolvedContent:      params.ResolvedContent,
+				PlanApprovalSettings: params.PlanApprovalSettings,
+				SourceSeq:            params.SourceSeq,
+				FollowUp:             params.FollowUp,
+				FollowUpKind:         params.FollowUpKind,
+				NonBlocking:          false,
+				AgentSessionID:       params.AgentSessionID,
+				InputID:              params.InputID,
+			})
+		})
+	}
+	return reserveControlDelivery(h.db, identity, func(queries *db.Queries, deliveryID string) (int64, error) {
 		params.DeliveryID = deliveryID
 		return queries.StoreControlResponseAnswer(bgCtx(), params)
 	})
+}
+
+// ForgetAgentGenerationState drops the per-root output-generation and
+// background-task fencing state for a permanently closed or deleted agent.
+// Transient restarts (CleanupAgent) preserve this state so stale writers stay
+// fenced across context clears and workspace archives.
+func (h *OutputHandler) ForgetAgentGenerationState(agentID string) {
+	h.bgTaskMeta.Delete(agentID)
+	h.currentOutputGen.Delete(agentID)
+}
+
+func (h *OutputHandler) currentOutputGeneration(agentID string) int64 {
+	if v, ok := h.currentOutputGen.Load(agentID); ok {
+		return v.(int64)
+	}
+	return 0
 }
 
 // TrackedAgentIDs returns the set of agent ids that currently hold any in-memory
@@ -689,7 +834,7 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 	// caller that knows only an agent id can still find the feeding process. So
 	// a ListAgents reply alone can leave an entry for an agent this worker never
 	// tore down, and only the sweep reclaims it.
-	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.rootSinks, &h.goalMu, &h.activity} {
+	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.bgTaskMeta, &h.currentOutputGen, &h.rootSinks, &h.goalMu, &h.activity} {
 		m.Range(func(key, _ any) bool {
 			if id, ok := key.(string); ok {
 				seen[id] = struct{}{}
@@ -702,6 +847,9 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 	h.trackers.rangeAll(func(id string) bool {
 		seen[id] = struct{}{}
 		return true
+	})
+	h.controls.rangeBlockingAgentIDs(func(id string) {
+		seen[id] = struct{}{}
 	})
 	ids := make([]string, 0, len(seen))
 	for id := range seen {
@@ -736,7 +884,7 @@ func (publication *controlPublication) enqueueCancellation(handler *OutputHandle
 // enqueueControlCancel records and queues one exact cancellation without watcher delivery or logging.
 func (h *OutputHandler) enqueueControlCancel(agentID, requestID, claimToken string) (bool, error) {
 	changed := h.recordControlRequestsRemoved(agentID, "", controlRequestInstance{RequestID: requestID, ClaimToken: claimToken})
-	state, err := controlResponseState(h.queries, agentID, requestID, claimToken)
+	state, err := controlResponseState(h, agentID, requestID, claimToken)
 	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ControlCancel{
@@ -798,11 +946,11 @@ func (h *OutputHandler) clearControlRequests(agentID, failureMessage string, age
 	return err
 }
 
-// ClearPendingControlRequests drops the agent's pending BLOCKING control_requests
-// from the DB and broadcasts a controlCancel for each, so request_ids bound to a
-// now-exited subprocess don't reappear stale on resume. A non-blocking request
-// belongs to the conversation, not to the process, so an exit keeps it. It deletes
-// by agent id ALONE (no per-process generation column), so it must run only when
+// ClearPendingControlRequests drops the agent's pending BLOCKING control
+// requests from memory and broadcasts a controlCancel for each, so request_ids
+// bound to a now-exited subprocess don't reappear stale on resume. A
+// non-blocking request belongs to the conversation, not to the process, so an
+// exit keeps it in SQLite. It clears by agent id ALONE, so it must run only when
 // no LATER process for the same agent id could own pending requests. The worker
 // wires it as the per-exit onExit handler, where that holds:
 // agent.Manager.stopAndWait blocks every relaunch until the OLD process's exit goroutine
@@ -820,9 +968,14 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 }
 
 func (h *OutputHandler) clearPendingControlRequests(agentID string) error {
-	return h.clearControlRequests(agentID, "clear pending control requests: delete rows", false, func(ctx context.Context) ([]db.ControlRequest, error) {
-		return h.queries.DeleteBlockingControlRequestsByAgentID(ctx, agentID)
-	})
+	_, _, release := h.lockControlMutation(agentID, "")
+	publication := controlPublication{}
+	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
+	for _, request := range h.controls.drainBlocking(agentID) {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+	return nil
 }
 
 // RetireNonBlockingControlRequestsOutsideSession removes the questions that belong
@@ -837,7 +990,8 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 }
 
 // ClearAgentRuntimeState tears down the state tied to a dying SUBPROCESS: pending
-// control_requests in the DB plus the in-memory trackers cleared by CleanupAgent.
+// blocking control requests in memory, pending non-blocking control_requests in
+// the DB, plus the in-memory trackers cleared by CleanupAgent.
 // It leaves the durable control-response answer claims intact, so a duplicate answer
 // straddling a transient restart stays deduped.
 //
@@ -846,10 +1000,26 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
 func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
-	_ = h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(ctx context.Context) ([]db.ControlRequest, error) {
-		return h.queries.DeleteControlRequestsByAgentID(ctx, agentID)
-	})
-	h.CleanupAgent(agentID)
+	_, _, release := h.lockControlMutation(agentID, "")
+	publication := controlPublication{}
+	for _, request := range h.controls.drainBlocking(agentID) {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	deleted, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
+	if err != nil {
+		publication.recordFailure("clear agent runtime state: delete control requests", "agent_id", agentID, "error", err)
+	}
+	for _, request := range deleted {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+	h.finishControlPublication(agentID, "", publication, release)
+	// Blocking controls were already drained under lockControlMutation above;
+	// retire the remaining agent state without re-clearing controls published
+	// by callbacks after finishControlPublication released the lock.
+	if _, retiredIDs, _, retired := h.retireAgentState(agentID); retired {
+		h.finishAgentCleanup(agentID, retiredIDs)
+	}
 }
 
 // rootTracker returns the SpanTracker for a ROOT main agent, creating one if
@@ -901,16 +1071,18 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 	}
 	mutation := h.transcriptMutationMutex(agentID)
 	mutation.Lock()
-	source, err := h.queries.AllocateAgentOutputGeneration(h.bgTaskCtx(), agentID)
+	sessionID, err := h.queries.GetRootAgentSessionID(h.bgTaskCtx(), agentID)
 	if err != nil {
 		mutation.Unlock()
 		return nil, fmt.Errorf("allocate the root output source for %s: %w", agentID, err)
 	}
+	gen := h.outputGenSeq.Add(1)
+	h.currentOutputGen.Store(agentID, gen)
 	s := &agentOutputSink{
 		h: h, agentID: agentID, rootAgentID: agentID,
 		agentProvider: agentProvider, plugin: h.agents.Registry().Plugin(agentProvider),
-		outputGeneration: source.OutputGeneration,
-		messageSession:   &nativeSessionFact{id: source.AgentSessionID},
+		outputGeneration: gen,
+		messageSession:   &nativeSessionFact{id: sessionID},
 	}
 	s.spanTracker.Store(h.trackers.replace(agentID, spanTrackerRoot))
 	s.progress = newGenerationProgressPublisher(&h.progressPublishers, func(info map[string]interface{}) {
@@ -989,6 +1161,7 @@ func (s *agentOutputSink) retireRegisteredTree() []string {
 	s.closeProgressTree()
 	agentIDs := make([]string, 0, len(sinks))
 	for _, sink := range sinks {
+		sink.retired.Store(true)
 		if sink.h.sinksByAgent.CompareAndDelete(sink.agentID, sink) {
 			agentIDs = append(agentIDs, sink.agentID)
 		}
@@ -1076,6 +1249,7 @@ type agentOutputSink struct {
 	lastSessionInfo map[string][]byte
 	// The root mutation lock and sessionInfoMu both protect retirement writes.
 	processOutputRetired   atomic.Bool
+	retired                atomic.Bool
 	activePermissionChecks map[permissionCheckKey]json.RawMessage
 	progress               *generationProgressPublisher
 
@@ -1512,58 +1686,75 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			}
 		}
 	}
-	// The database owns persisted values. The live scope owns the request association.
-	// An unknown association starts a new instance, even when the persisted payload agrees.
-	// The SQLite generator omits a parameter used only in an ON CONFLICT predicate.
-	// Select the claim token before the store, which replaces the row in one statement.
-	current, err := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("read the pending control request: %w", err)
-	}
-	if !s.ownsControlPublisher() {
-		return nil
-	}
-	claimToken := request.InstanceID
-	if claimToken == "" {
-		claimToken = id.Generate()
-	}
-	reusable := request.InstanceID == "" && err == nil && previous.claimToken == current.ClaimToken &&
-		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID
-	if request.NonBlocking {
-		// A non-blocking request outlives its scope, so its claim reuse reads no
-		// scope: only the stored row decides.
-		if err == nil && request.InstanceID == "" && current.NonBlocking &&
-			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+	var storedClaimToken string
+	var storedSourceSeq int64
+	var storedSessionID string
+	if !request.NonBlocking {
+		if !s.ownsControlPublisher() {
+			return nil
+		}
+		// Keep (agentID, requestID) unique across both stores without deleting a
+		// replacement publisher's live SQLite non-blocking row if ownership changes.
+		existingSQL, err := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read non-blocking control request before blocking publish: %w", err)
+		}
+		hasExistingSQL := err == nil
+		if !s.ownsControlPublisher() {
+			return nil
+		}
+		var deletedSQL db.ControlRequest
+		var deletedSQLRow bool
+		if hasExistingSQL {
+			deleted, delErr := s.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{
+				AgentID: s.agentID, RequestID: requestID, ClaimToken: existingSQL.ClaimToken,
+			})
+			if delErr != nil && !errors.Is(delErr, sql.ErrNoRows) {
+				return fmt.Errorf("clear non-blocking control request before blocking publish: %w", delErr)
+			}
+			deletedSQL = deleted
+			deletedSQLRow = delErr == nil
+			if !s.ownsControlPublisher() {
+				if deletedSQLRow {
+					if restoreErr := s.restoreDeletedNonBlockingControl(deletedSQL); restoreErr != nil {
+						return restoreErr
+					}
+				}
+				return nil
+			}
+		}
+		current, hasCurrent := s.h.controls.getBlocking(s.agentID, requestID)
+		claimToken := request.InstanceID
+		if claimToken == "" {
+			claimToken = id.Generate()
+		}
+		reusable := request.InstanceID == "" && hasCurrent && previous.claimToken == current.ClaimToken &&
+			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID
+		if reusable && known && previous.scope == scope {
 			claimToken = current.ClaimToken
 		}
-	} else if reusable && known && previous.scope == scope {
-		claimToken = current.ClaimToken
-	}
-	stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
-		AgentID:        s.agentID,
-		AgentSessionID: request.AgentSessionID,
-		RequestID:      requestID,
-		Payload:        payload,
-		ClaimToken:     claimToken,
-		SourceSeq:      request.SourceSeq,
-		NonBlocking:    request.NonBlocking,
-	})
-	if err != nil {
-		return fmt.Errorf("store control request: %w", err)
-	}
-	if !s.ownsControlPublisher() {
-		_, retireErr := s.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{
-			AgentID: s.agentID, RequestID: requestID, ClaimToken: stored.ClaimToken,
+		stored := s.h.controls.upsertBlocking(blockingControlRecord{
+			AgentID:        s.agentID,
+			AgentSessionID: request.AgentSessionID,
+			RequestID:      requestID,
+			Payload:        payload,
+			ClaimToken:     claimToken,
+			SourceSeq:      request.SourceSeq,
+			CreatedAt:      nowMillis(),
+			publisher:      s,
 		})
-		if retireErr != nil && !errors.Is(retireErr, sql.ErrNoRows) {
-			return fmt.Errorf("retire the obsolete control instance: %w", retireErr)
+		if !s.ownsControlPublisher() {
+			s.h.controls.deleteBlocking(s.agentID, requestID, stored.ClaimToken)
+			if deletedSQLRow {
+				if restoreErr := s.restoreDeletedNonBlockingControl(deletedSQL); restoreErr != nil {
+					return restoreErr
+				}
+			}
+			return nil
 		}
-		return nil
-	}
-	// A non-blocking request never enters pendingControl: the map is what an
-	// interrupt consults (NoteAgentStopRequested, Delivered), and a question
-	// survives both.
-	if !request.NonBlocking {
+		storedClaimToken = stored.ClaimToken
+		storedSourceSeq = stored.SourceSeq
+		storedSessionID = stored.AgentSessionID
 		st.mu.Lock()
 		if st.pendingControl == nil {
 			st.pendingControl = make(map[string]ownedControlRequest)
@@ -1571,10 +1762,58 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
 		st.mu.Unlock()
 		publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
+	} else {
+		// The database owns persisted non-blocking values. A non-blocking request
+		// outlives its scope, so its claim reuse reads only the stored row.
+		current, err := s.h.queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read the pending control request: %w", err)
+		}
+		if !s.ownsControlPublisher() {
+			return nil
+		}
+		claimToken := request.InstanceID
+		if claimToken == "" {
+			claimToken = id.Generate()
+		}
+		if err == nil && request.InstanceID == "" &&
+			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+			claimToken = current.ClaimToken
+		}
+		stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
+			AgentID:        s.agentID,
+			AgentSessionID: request.AgentSessionID,
+			RequestID:      requestID,
+			Payload:        payload,
+			ClaimToken:     claimToken,
+			SourceSeq:      request.SourceSeq,
+		})
+		if err != nil {
+			return fmt.Errorf("store control request: %w", err)
+		}
+		if !s.ownsControlPublisher() {
+			_, retireErr := s.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{
+				AgentID: s.agentID, RequestID: requestID, ClaimToken: stored.ClaimToken,
+			})
+			if retireErr != nil && !errors.Is(retireErr, sql.ErrNoRows) {
+				return fmt.Errorf("retire the obsolete control instance: %w", retireErr)
+			}
+			return nil
+		}
+		// Only after the durable write commits and publisher ownership still holds,
+		// drop any same-requestID blocking entry from memory to keep (agentID, requestID) unique.
+		if removedBlocking, ok := s.h.controls.deleteBlocking(s.agentID, requestID, ""); ok {
+			publication.activityChanged = s.h.recordControlRequestsRemoved(s.agentID, s.rootAgentID, controlRequestInstance{
+				RequestID: removedBlocking.RequestID, ClaimToken: removedBlocking.ClaimToken,
+			}) || publication.activityChanged
+		}
+		storedClaimToken = stored.ClaimToken
+		storedSourceSeq = stored.SourceSeq
+		storedSessionID = stored.AgentSessionID
 	}
-	request.SourceSeq = stored.SourceSeq
-	request.AgentSessionID = stored.AgentSessionID
-	prepared, stateErr := buildAgentControlRequest(s.h.queries, s.agentID, s.agentProvider, request, stored.ClaimToken)
+	request.SourceSeq = storedSourceSeq
+	request.AgentSessionID = storedSessionID
+	prepared, stateErr := buildAgentControlRequest(s.h, s.agentID, s.agentProvider, request, storedClaimToken)
 	if stateErr != nil {
 		publication.recordFailure("could not read the control response state", "agent_id", s.agentID, "request_id", requestID, "error", stateErr)
 	}
@@ -1584,6 +1823,21 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 			ControlRequest: prepared,
 		},
 	})
+	return nil
+}
+
+func (s *agentOutputSink) restoreDeletedNonBlockingControl(row db.ControlRequest) error {
+	_, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
+		AgentID:        row.AgentID,
+		AgentSessionID: row.AgentSessionID,
+		RequestID:      row.RequestID,
+		Payload:        row.Payload,
+		ClaimToken:     row.ClaimToken,
+		SourceSeq:      row.SourceSeq,
+	})
+	if err != nil {
+		return fmt.Errorf("restore non-blocking control request after ownership loss: %w", err)
+	}
 	return nil
 }
 
@@ -1604,6 +1858,10 @@ func (s *agentOutputSink) cancelControlRequest(requestID, instanceID string) {
 	publication := controlPublication{}
 	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
 	if !s.ownsControlPublisher() {
+		return
+	}
+	if removed, ok := s.h.controls.deleteBlocking(s.agentID, requestID, instanceID); ok {
+		publication.enqueueCancellation(s.h, s.agentID, removed.RequestID, removed.ClaimToken)
 		return
 	}
 	var request db.ControlRequest
@@ -2006,6 +2264,16 @@ func (s *agentOutputSink) PersistLeapMuxNotification(content map[string]interfac
 }
 
 func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
+	if write.RowKey != "" {
+		item, found, err := s.lookupBackgroundTask(write.RowKey)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			write.ReportID = agent.ScopeSubagentReportID(write.ReportID, item.ReviveCount)
+		}
+		write.RowKey = ""
+	}
 	captured, present, err := agent.CaptureSubagentReport(s, write)
 	if err != nil || !present {
 		return false, err
@@ -2016,23 +2284,26 @@ func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite)
 func (s *agentOutputSink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
 	// The COMPLETE native key, never a trimmed one: trimming maps two provider
 	// identities onto one string, and the report then lands on a different
-	// child than the one the provider named. LookupBackgroundTask normalizes
+	// child than the one the provider named. lookupBackgroundTask normalizes
 	// the full key, so a spaced native key finds the row its spaced key opened.
 	if write.RowKey == "" {
 		return false, fmt.Errorf("child subagent report has no row key")
 	}
-	childID, _, found, err := s.LookupBackgroundTask(write.RowKey)
+	item, found, err := s.lookupBackgroundTask(write.RowKey)
 	if err != nil {
 		return false, err
 	}
-	if !found || childID == "" {
+	if !found || item.ChildAgentID == "" {
 		return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
 	}
-	childSink := s.ChildSink(childID)
+	childSink := s.ChildSink(item.ChildAgentID)
 	if childSink == nil {
-		return false, fmt.Errorf("subagent report child %q is unavailable", childID)
+		return false, fmt.Errorf("subagent report child %q is unavailable", item.ChildAgentID)
 	}
-	return childSink.PersistSubagentReport(write.Write)
+	reportWrite := write.Write
+	reportWrite.ReportID = agent.ScopeSubagentReportID(reportWrite.ReportID, item.ReviveCount)
+	reportWrite.RowKey = ""
+	return childSink.PersistSubagentReport(reportWrite)
 }
 
 func (s *agentOutputSink) StorePlanModeToolUse(toolUseID, targetMode string) {

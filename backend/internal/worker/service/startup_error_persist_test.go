@@ -75,7 +75,7 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 
 	svc, _, _ := setupTestService(t)
 
-	term := db.Terminal{ID: "term-1"}
+	term := terminalRecord{ID: "term-1"}
 
 	// 1. Registry STARTING.
 	terminalHandle := beginForTest(t, &svc.TerminalStartup.startupCore, "term-1")
@@ -387,6 +387,8 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 	require.Len(t, ids, 1)
 	terminalID := ids[0]
 	waitForStartupFailure(t, svc, terminalID)
+	// Wait for runTerminalStartup's deferred finishEntry before replacing the registry.
+	svc.TerminalStartup.WaitForInFlight()
 
 	// Simulate worker restart.
 	svc.TerminalStartup = newTerminalStartupRegistry(testutil.NewQuartzMock(t))
@@ -436,7 +438,7 @@ func TestListTerminals_ReportsThePersistedStartupErrorOfAnExitedShellTheManagerH
 
 	// The replay reads the same row through deriveTerminalStatus, and the two
 	// answers must agree.
-	row, err := svc.Queries.GetTerminal(ctx, id)
+	row, err := svc.terminalCatalog().get(ctx, id)
 	require.NoError(t, err)
 	status, startupError, _ := svc.deriveTerminalStatus(&row)
 	assert.Equal(t, info.GetStatus().String(), status.String())
@@ -455,7 +457,7 @@ func TestDeriveTerminalStatus_ALiveShellIsReadyOverAPersistedStartupError(t *tes
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "live")
-	row, err := svc.Queries.GetTerminal(ctx, "live")
+	row, err := svc.terminalCatalog().get(ctx, "live")
 	require.NoError(t, err)
 	row.StartupError = "stale failure"
 
@@ -528,7 +530,7 @@ func TestDeriveTerminalStatus_AnExitedShellTheManagerStillHoldsIsExited(t *testi
 	svc.Terminals.WaitForExit("exited-in-manager")
 	require.True(t, svc.Terminals.HasTerminal("exited-in-manager"), "precondition: the manager still holds the terminal")
 
-	row, err := svc.Queries.GetTerminal(ctx, "exited-in-manager")
+	row, err := svc.terminalCatalog().get(ctx, "exited-in-manager")
 	require.NoError(t, err)
 	status, startupError, _ := svc.deriveTerminalStatus(&row)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
@@ -543,7 +545,7 @@ func TestDeriveTerminalStatus_ReadyWhileTheShellRunsAndExitedWithoutAShell(t *te
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "running")
-	row, err := svc.Queries.GetTerminal(ctx, "running")
+	row, err := svc.terminalCatalog().get(ctx, "running")
 	require.NoError(t, err)
 	status, _, _ := svc.deriveTerminalStatus(&row)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, status)
@@ -551,7 +553,7 @@ func TestDeriveTerminalStatus_ReadyWhileTheShellRunsAndExitedWithoutAShell(t *te
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID: "no-shell", WorkingDir: t.TempDir(), Cols: 80, Rows: 24, Screen: []byte{},
 	}))
-	row, err = svc.Queries.GetTerminal(ctx, "no-shell")
+	row, err = svc.terminalCatalog().get(ctx, "no-shell")
 	require.NoError(t, err)
 	status, _, _ = svc.deriveTerminalStatus(&row)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)

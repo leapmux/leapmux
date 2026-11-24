@@ -113,7 +113,9 @@ func TestProviderCacheHoldsOneEntryPerProvider(t *testing.T) {
 // which is all the cache tests below touch.
 func newProviderCacheTestHandler() *IdPHandler {
 	return &IdPHandler{
-		sessionHasher: hubtestutil.TestSecretHasher(),
+		sessionHasher:  hubtestutil.TestSecretHasher(),
+		states:         NewMemoryOAuthStateStore(),
+		pendingSignups: NewPendingOAuthSignupStore(),
 
 		providers:   make(map[providerCacheKey]huboauth.Provider),
 		providerGen: make(map[string]uint64),
@@ -221,7 +223,14 @@ func TestBuildProviderDoesNotCacheADeletedProvider(t *testing.T) {
 		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub",
 		ClientID: "cid", ClientSecret: secret, Enabled: true,
 	}))
-	h := NewIdPHandler(st, hubtestutil.TestSecretHasher(), &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	h := NewIdPHandler(IdPHandlerDeps{
+		SessionHasher: hubtestutil.TestSecretHasher(),
+		Store:         st,
+		Config:        &config.Config{},
+		Settings:      set,
+		Lifecycle:     auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Keystore:      ks,
+	})
 
 	// A build that races nothing caches, so the assertion below fails for
 	// the reason it states rather than because nothing ever caches.
@@ -284,15 +293,19 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	require.NoError(t, set.Load(context.Background()))
 	require.NoError(t, settings.KeySessionDurationSeconds.Set(context.Background(), set, int64(configured/time.Second)))
 
-	h := NewIdPHandler(st, hubtestutil.TestSecretHasher(), &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	h := NewIdPHandler(IdPHandlerDeps{
+		SessionHasher: hubtestutil.TestSecretHasher(),
+		Store:         st,
+		Config:        &config.Config{},
+		Settings:      set,
+		Lifecycle:     auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Keystore:      ks,
+	})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/idp/test/callback", nil)
 	before := time.Now()
-	h.loginOAuthUser(rec, req, userID, providerID, providerSubject, "", &huboauth.TokenSet{
-		AccessToken: "access", RefreshToken: "refresh", TokenType: "bearer",
-		ExpiresAt: time.Now().Add(time.Hour),
-	}, "", store.OAuthStatePurposeLogin)
+	h.loginOAuthUser(rec, req, userID, providerID, providerSubject, "", "", OAuthStatePurposeLogin)
 
 	require.Equal(t, http.StatusFound, rec.Code)
 	parsed, err := http.ParseSetCookie(rec.Header().Get("Set-Cookie"))
@@ -326,11 +339,35 @@ func TestInvalidateProviderDropsEveryEntry(t *testing.T) {
 	kept := providerCacheKey{providerID: "okta", redirectURL: "http://a/cb"}
 	h.providers[kept] = stub
 
+	exp := time.Now().UTC().Add(10 * time.Minute)
+	require.NoError(t, h.states.Create(CreateOAuthStateParams{
+		State: "state-gh", ProviderID: "gh", Purpose: OAuthStatePurposeLogin, ExpiresAt: exp,
+	}))
+	require.NoError(t, h.states.Create(CreateOAuthStateParams{
+		State: "state-okta", ProviderID: "okta", Purpose: OAuthStatePurposeLogin, ExpiresAt: exp,
+	}))
+	require.NoError(t, h.pendingSignups.Create(CreatePendingOAuthSignupParams{
+		Token: "signup-gh", ProviderID: "gh", ProviderSubject: "sub-gh", ExpiresAt: exp,
+	}))
+	require.NoError(t, h.pendingSignups.Create(CreatePendingOAuthSignupParams{
+		Token: "signup-okta", ProviderID: "okta", ProviderSubject: "sub-okta", ExpiresAt: exp,
+	}))
+
 	h.InvalidateProvider("gh")
 
 	require.Len(t, h.providers, 1)
 	_, ok := h.providers[kept]
 	assert.True(t, ok, "the eviction is per provider id, not a cache flush")
+
+	_, ok = h.states.Get("state-gh")
+	assert.False(t, ok, "invalidated provider states must be evicted")
+	_, ok = h.states.Get("state-okta")
+	assert.True(t, ok, "other provider states must remain readable")
+
+	_, ok = h.pendingSignups.Get("signup-gh")
+	assert.False(t, ok, "invalidated provider pending signups must be evicted")
+	_, ok = h.pendingSignups.Get("signup-okta")
+	assert.True(t, ok, "other provider pending signups must remain readable")
 
 	// Idempotent: an id with no entries is the state a second delete finds.
 	h.InvalidateProvider("gh")

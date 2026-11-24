@@ -42,7 +42,7 @@ func TestSendControlResponseStatesTheReasonOfARefusal(t *testing.T) {
 			plugin := refusingProvider{Provider: testRegistry.Plugin(provider), reason: tc.reason}
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, provider, plugin)))
 			createClaimTestAgent(t, svc, "agent-1")
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 				Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
 			})
@@ -72,7 +72,7 @@ func TestSendControlResponseStatesTheReasonOfAProviderRefusal(t *testing.T) {
 		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID,
 	}))
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "droid-perm-1", ClaimToken: "claim",
 		Payload: []byte(`{"type":"permission_request","requestId":"droid-perm-1","rpcId":"rpc-1",` +
 			`"toolUse":{"type":"tool_use","id":"1","name":"Edit","input":{}},"confirmationType":"edit",` +

@@ -71,6 +71,10 @@ const (
 // async-result message.
 const asyncJobTypeBash = "bash"
 
+// toolWait is omp's background-job wait tool. Only the worker dispatches on it,
+// so it stays out of contracts/ohmypi-protocol.json.
+const toolWait = "wait"
+
 // contentBlockText is the `type` of a text content block in a message or a tool
 // result.
 const contentBlockText = "text"

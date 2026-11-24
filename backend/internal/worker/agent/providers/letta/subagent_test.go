@@ -2,9 +2,11 @@ package letta
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -391,24 +393,37 @@ func TestLettaChildCompletionReadsTheFullNativeTaskReport(t *testing.T) {
 
 func lettaOutputChildState(t *testing.T, childID, status string) []byte {
 	t.Helper()
+	return lettaOutputChildStates(t, lettaOutputChildEntry(childID, status))
+}
+
+func lettaOutputChildStates(t *testing.T, children ...map[string]any) []byte {
+	t.Helper()
 	frame, err := json.Marshal(map[string]any{
-		"type": "update_subagent_state",
-		"subagents": []any{map[string]any{
-			"subagent_id": childID, "subagent_type": "explore", "description": "Native output child",
-			"prompt": "Read the native output " + childID, "status": status, "tool_call_id": "spawn-" + childID,
-			"parent_agent_id": "agent-local-1", "parent_conversation_id": "local-conv-1",
-		}},
+		"type":      "update_subagent_state",
+		"runtime":   map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"},
+		"subagents": children,
 	})
 	require.NoError(t, err)
 	return frame
+}
+
+func lettaOutputChildEntry(childID, status string) map[string]any {
+	return map[string]any{
+		"subagent_id": childID, "subagent_type": "explore", "description": "Native output child",
+		"prompt": "Read the native output " + childID, "status": status, "tool_call_id": "spawn-" + childID,
+		"parent_agent_id": "agent-local-1", "parent_conversation_id": "local-conv-1",
+	}
 }
 
 func TestLettaLiveOutputKeepsRootAndTwoChildOwnersSeparate(t *testing.T) {
 	t.Parallel()
 	a, root := newLettaChildTestAgent(t)
 	children := map[string]*agenttest.Sink{}
+	a.HandleOutput(lettaOutputChildStates(t,
+		lettaOutputChildEntry("child-one", "running"),
+		lettaOutputChildEntry("child-two", "running"),
+	))
 	for _, scope := range []string{"child-one", "child-two"} {
-		a.HandleOutput(lettaOutputChildState(t, scope, "running"))
 		row, found := root.BackgroundTask(scope)
 		require.True(t, found)
 		children[scope] = root.Child(row.ChildAgentID)
@@ -426,7 +441,10 @@ func TestLettaLiveOutputKeepsRootAndTwoChildOwnersSeparate(t *testing.T) {
 	unknown, _ := lettaOutputFrame(t, "unknown-child", lettaOutputWindow("shared-call", "run-", "unowned window"))
 	a.HandleOutput(unknown)
 	assert.Len(t, root.Messages(), 2)
-	a.HandleOutput(lettaOutputChildState(t, "child-one", "completed"))
+	a.HandleOutput(lettaOutputChildStates(t,
+		lettaOutputChildEntry("child-one", "completed"),
+		lettaOutputChildEntry("child-two", "running"),
+	))
 	assert.NotContains(t, a.tools, lettaToolKey("child-one", "shared-call"))
 	assert.Contains(t, a.tools, lettaToolKey("child-two", "shared-call"))
 	assert.Contains(t, a.tools, lettaToolKey("", "shared-call"))
@@ -446,7 +464,10 @@ func TestLettaLiveOutputKeepsRootAndTwoChildOwnersSeparate(t *testing.T) {
 	assert.Contains(t, a.tools, lettaToolKey("child-two", "shared-call"))
 	assert.Equal(t, []int{1}, agenttest.TurnToolUseCounts(t, root.Messages()))
 	assert.Equal(t, []string{"letta-tool-shared-call"}, root.ClosedSpans())
-	a.HandleOutput(lettaOutputChildState(t, "child-two", "error"))
+	a.HandleOutput(lettaOutputChildStates(t,
+		lettaOutputChildEntry("child-one", "completed"),
+		lettaOutputChildEntry("child-two", "error"),
+	))
 	assert.Empty(t, a.tools)
 }
 
@@ -478,4 +499,276 @@ func TestLettaTaskNotificationClearsLiveCallsBeforeItsLateNativeFinal(t *testing
 	rows := child.Messages()
 	assert.Equal(t, native, rows[len(rows)-1].Content)
 	assert.True(t, rows[len(rows)-1].Closing)
+}
+
+type lettaRetryCloseSink struct {
+	*agenttest.Sink
+	mu       sync.Mutex
+	closeErr error
+	attempts int
+}
+
+func (s *lettaRetryCloseSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	s.mu.Lock()
+	s.attempts++
+	err := s.closeErr
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.Sink.CloseBackgroundTask(rowKey, status)
+}
+
+func TestLettaChildCloseRetriesThroughOutputQueue(t *testing.T) {
+	t.Parallel()
+	for _, viaNotification := range []bool{false, true} {
+		name := "snapshot"
+		if viaNotification {
+			name = "notification"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			base := &agenttest.Sink{}
+			sink := &lettaRetryCloseSink{Sink: base}
+			a := &Agent{sink: agent.NewProviderServices(sink)}
+			a.Mu.Lock()
+			a.agentID = "agent-local-1"
+			a.conversationID = "local-conv-1"
+			a.Mu.Unlock()
+
+			a.HandleOutput(lettaChildStateFrame(t, "running"))
+			row, ok := base.BackgroundTask(lettaTestChildID)
+			require.True(t, ok)
+			require.Equal(t, bgtask.StatusRunning, row.Status)
+
+			if viaNotification {
+				a.HandleOutput(lettaChildTaskReceipt(t))
+			}
+
+			sink.mu.Lock()
+			sink.closeErr = errors.New("temporary registry write failure")
+			sink.mu.Unlock()
+
+			if viaNotification {
+				a.HandleOutput(lettaChildTaskNotification(t, "task_1", "Child finished."))
+			} else {
+				a.HandleOutput(lettaChildStateFrame(t, "completed"))
+			}
+
+			queue := agent.OutputQueueFor(a.sink)
+			require.NotNil(t, queue)
+			assert.True(t, queue.HasPending(), "a failed close must remain queued for retry")
+			stillOpen, ok := base.BackgroundTask(lettaTestChildID)
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusRunning, stillOpen.Status)
+
+			sink.mu.Lock()
+			sink.closeErr = nil
+			sink.mu.Unlock()
+
+			require.NoError(t, queue.Flush())
+			assert.False(t, queue.HasPending())
+			closed, ok := base.BackgroundTask(lettaTestChildID)
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusSucceeded, closed.Status)
+		})
+	}
+}
+
+func lettaMultiChildStateFrame(t *testing.T, runtime map[string]any, subagents any) []byte {
+	t.Helper()
+	payload := map[string]any{
+		"type":      "update_subagent_state",
+		"subagents": subagents,
+	}
+	if runtime != nil {
+		payload["runtime"] = runtime
+	}
+	frame, err := json.Marshal(payload)
+	require.NoError(t, err)
+	return frame
+}
+
+func lettaNativeChildPayload(childID, status string) map[string]any {
+	return map[string]any{
+		"subagent_id":            childID,
+		"subagent_type":          "explore",
+		"description":            "Native child " + childID,
+		"prompt":                 "Run task for " + childID,
+		"status":                 status,
+		"tool_call_id":           "spawn-" + childID,
+		"parent_agent_id":        "agent-local-1",
+		"parent_conversation_id": "local-conv-1",
+	}
+}
+
+func TestLettaSubagentSnapshotEvictionHonorsRuntimeScope(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	currentRuntime := map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"}
+
+	a.HandleOutput(lettaMultiChildStateFrame(t, currentRuntime, []any{
+		lettaNativeChildPayload("child-a", "running"),
+		lettaNativeChildPayload("child-b", "running"),
+	}))
+	rowB, ok := sink.BackgroundTask("child-b")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusRunning, rowB.Status)
+
+	// Buffer child-b text and an open tool call to confirm eviction flushes both.
+	deltaB, err := json.Marshal(map[string]any{
+		"type": "stream_delta", "subagent_id": "child-b", "runtime": currentRuntime,
+		"delta": map[string]any{"message_type": "assistant_message", "content": "Buffered before eviction."},
+	})
+	require.NoError(t, err)
+	a.HandleOutput(deltaB)
+	startB, _ := lettaOutputFrame(t, "child-b", lettaOutputStart("call-evict", "run-evict"))
+	a.HandleOutput(startB)
+
+	// Mismatched runtime must NOT evict active children.
+	a.HandleOutput(lettaMultiChildStateFrame(t, map[string]any{
+		"agent_id": "agent-other", "conversation_id": "local-conv-1",
+	}, []any{}))
+	rowA, ok := sink.BackgroundTask("child-a")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, rowA.Status)
+	rowB, ok = sink.BackgroundTask("child-b")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, rowB.Status)
+
+	// Null subagents field must NOT evict active children.
+	a.HandleOutput(lettaMultiChildStateFrame(t, currentRuntime, nil))
+	rowB, ok = sink.BackgroundTask("child-b")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, rowB.Status)
+
+	// Matching runtime snapshot dropping child-b closes child-b with unknown outcome.
+	a.HandleOutput(lettaMultiChildStateFrame(t, currentRuntime, []any{
+		lettaNativeChildPayload("child-a", "running"),
+	}))
+	rowA, ok = sink.BackgroundTask("child-a")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, rowA.Status)
+	rowB, ok = sink.BackgroundTask("child-b")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, rowB.Status)
+	assert.Equal(t, []string{"letta-tool-call-evict"}, sink.Child(rowB.ChildAgentID).ClosedSpans())
+}
+
+func TestLettaClosedChildRevivesFromErrorToRunning(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+
+	a.HandleOutput(lettaChildStateFrame(t, "running"))
+	row, ok := sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+
+	a.HandleOutput(lettaChildStateFrame(t, "error"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusFailed, row.Status)
+	require.True(t, a.children[lettaTestChildID].closed)
+
+	// Restoring an interrupted child transitions error -> running.
+	a.HandleOutput(lettaChildStateFrame(t, "running"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, []string{lettaTestChildID}, sink.RevivedTasks())
+	assert.False(t, a.children[lettaTestChildID].closed)
+	assert.False(t, a.children[lettaTestChildID].reportWritten)
+
+	// Subsequent output routes to the revived child and closes cleanly on completion.
+	a.HandleOutput(lettaChildDeltaFrame(t, map[string]any{
+		"message_type": "assistant_message",
+		"content":      []any{map[string]string{"type": "text", "text": "LETTA_REVIVED_TEXT"}},
+	}))
+	a.HandleOutput(lettaChildStateFrame(t, "completed"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	var contents []string
+	for _, msg := range sink.Child(row.ChildAgentID).Messages() {
+		contents = append(contents, string(msg.Content))
+	}
+	assert.Contains(t, strings.Join(contents, "\n"), "LETTA_REVIVED_TEXT")
+}
+
+func TestLettaClosedChildRevivesWithUpdatedPromptAndToolCallID(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	currentRuntime := map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"}
+
+	job1 := func(status string) []byte {
+		return lettaMultiChildStateFrame(t, currentRuntime, []any{map[string]any{
+			"subagent_id":            lettaTestChildID,
+			"subagent_type":          "explore",
+			"description":            "Count the files",
+			"prompt":                 "Job 1 prompt",
+			"status":                 status,
+			"tool_call_id":           "call-job-1",
+			"parent_agent_id":        "agent-local-1",
+			"parent_conversation_id": "local-conv-1",
+		}})
+	}
+	job2 := func(status string) []byte {
+		return lettaMultiChildStateFrame(t, currentRuntime, []any{map[string]any{
+			"subagent_id":            lettaTestChildID,
+			"subagent_type":          "explore",
+			"description":            "Count the files",
+			"prompt":                 "Job 2 prompt",
+			"status":                 status,
+			"tool_call_id":           "call-job-2",
+			"parent_agent_id":        "agent-local-1",
+			"parent_conversation_id": "local-conv-1",
+		}})
+	}
+
+	a.HandleOutput(job1("running"))
+	row, ok := sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// A LIVE child must still reject a snapshot that changes its prompt or tool call ID.
+	a.HandleOutput(job2("running"))
+	assert.Equal(t, "Job 1 prompt", a.children[lettaTestChildID].prompt)
+	assert.Equal(t, "call-job-1", a.children[lettaTestChildID].toolCallID)
+
+	// Bind a background task receipt for job 1, then complete job 1.
+	a.HandleOutput(lettaRootDeltaFrame(t, map[string]any{
+		"message_type": "tool_return_message", "tool_call_id": "call-job-1",
+		"tool_return": "Task running in background with task ID: task_1\n",
+	}))
+	a.HandleOutput(job1("completed"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	require.True(t, a.children[lettaTestChildID].closed)
+
+	// A closed child receiving a non-finished snapshot with a new prompt and tool call ID must revive.
+	a.HandleOutput(job2("running"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "closed child must revive with updated prompt and tool call ID")
+	assert.Equal(t, []string{lettaTestChildID}, sink.RevivedTasks())
+	assert.Equal(t, "Job 2 prompt", a.children[lettaTestChildID].prompt)
+	assert.Equal(t, "call-job-2", a.children[lettaTestChildID].toolCallID)
+	assert.Empty(t, a.children[lettaTestChildID].taskID, "a new tool call ID clears the prior job's task ID")
+
+	var contents []string
+	for _, msg := range sink.Child(row.ChildAgentID).Messages() {
+		contents = append(contents, string(msg.Content))
+	}
+	assert.Contains(t, strings.Join(contents, "\n"), "Job 2 prompt")
+
+	// A new receipt and completion notification for job 2 must bind and close cleanly.
+	a.HandleOutput(lettaRootDeltaFrame(t, map[string]any{
+		"message_type": "tool_return_message", "tool_call_id": "call-job-2",
+		"tool_return": "Task running in background with task ID: task_2\n",
+	}))
+	a.HandleOutput(lettaChildTaskNotification(t, "task_2", "JOB_2_DONE"))
+	row, ok = sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }

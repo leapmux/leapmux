@@ -104,23 +104,23 @@ func (p *OIDCProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions) 
 	return p.oauth2Config.AuthCodeURL(state, codeOpts...)
 }
 
-func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) (*TokenSet, *UserClaims, error) {
+func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) (*UserClaims, error) {
 	opts := []oauth2.AuthCodeOption{
 		oauth2.VerifierOption(codeVerifier),
 	}
 	token, err := p.oauth2Config.Exchange(ctx, code, opts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("oidc exchange: %w", err)
+		return nil, fmt.Errorf("oidc exchange: %w", err)
 	}
 
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok {
-		return nil, nil, fmt.Errorf("oidc exchange: no id_token in response")
+		return nil, fmt.Errorf("oidc exchange: no id_token in response")
 	}
 
 	idToken, err := p.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return nil, nil, fmt.Errorf("oidc verify id_token: %w", err)
+		return nil, fmt.Errorf("oidc verify id_token: %w", err)
 	}
 
 	var claims struct {
@@ -129,7 +129,7 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 		Name          string `json:"name"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
-		return nil, nil, fmt.Errorf("oidc parse claims: %w", err)
+		return nil, fmt.Errorf("oidc parse claims: %w", err)
 	}
 
 	// INVARIANT: UserClaims.Email carries only an email the provider confirms
@@ -143,17 +143,11 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier string) 
 		email = claims.Email
 	}
 
-	userClaims := &UserClaims{
+	return &UserClaims{
 		Subject: idToken.Subject,
 		Email:   email,
 		Name:    claims.Name,
-	}
-
-	return TokenSetFromOAuth2Token(token), userClaims, nil
-}
-
-func (p *OIDCProvider) Refresh(ctx context.Context, refreshToken string) (*TokenSet, error) {
-	return refreshWithConfig(ctx, p.oauth2Config, refreshToken, "oidc")
+	}, nil
 }
 
 // ValidateIssuer checks that the OIDC issuer URL is reachable and returns a valid discovery document.

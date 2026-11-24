@@ -58,6 +58,10 @@ const copilotExecutionBackground = "background"
 // (ChildCapabilities).
 const copilotOptionExecutionMode = "execution-mode"
 
+// copilotReadBackgroundTasks is the offReader key for reconciling background
+// task promotions after `session.background_tasks_changed`.
+const copilotReadBackgroundTasks = "background-tasks"
+
 // copilotTaskInput is the `task` tool's argument object.
 type copilotTaskInput struct {
 	Name        string `json:"name"`
@@ -133,6 +137,11 @@ func (a *Agent) startNativeSubagent(raw []byte, event copilotEvent) {
 		a.persistNativeFrameTo(owner, raw, agent.SpanInfo{})
 		return
 	}
+	if _, status, found, lookupErr := owner.LookupBackgroundTask(event.AgentID); lookupErr != nil {
+		slog.Warn("Lookup Copilot subagent before start", "agent_id", a.AgentID(), "native_agent_id", event.AgentID, "error", lookupErr)
+	} else if found && status.IsFinished() {
+		providerkit.LogRegistryRefusal("copilot", "revive subagent", owner.ReviveBackgroundTask(event.AgentID))
+	}
 	child := &copilotNativeChild{
 		sink: owner.ChildSink(workerAgentID), owner: owner, ownerAgentID: ownerAgentID,
 		workerAgentID: workerAgentID, nativeAgentID: event.AgentID, spawnToolCallID: started.ToolCallID,
@@ -177,6 +186,9 @@ func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 		status = bgtask.StatusFailed
 	}
 	if child == nil {
+		if event.AgentID != "" {
+			providerkit.LogRegistryRefusal("copilot", "close subagent", a.sink.CloseBackgroundTask(event.AgentID, status))
+		}
 		a.persistNativeFrame(raw, agent.SpanInfo{})
 		return
 	}
@@ -220,6 +232,56 @@ func (a *Agent) markNativeChildIdle(child *copilotNativeChild) {
 	child.sink.ReportProgress(agent.ResetModelProgress())
 }
 
+// handleBackgroundTasksChanged queries Copilot's task list off the reader
+// goroutine and promotes any running sync subagent that moved to the background.
+// offReader holds sessionMu for reading, so the lock order remains sessionMu -> outputMu.
+func (a *Agent) handleBackgroundTasksChanged() {
+	raw, err := a.requestNativeSession("tasks.list", nil)
+	if err != nil {
+		slog.Warn("List Copilot background tasks", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	var list copilotTaskList
+	if err := json.Unmarshal(raw, &list); err != nil {
+		slog.Warn("Read Copilot background task list", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	type promotedChild struct {
+		sink   agent.ProviderServices
+		active bool
+		seq    uint64
+	}
+	var promoted []promotedChild
+	a.outputMu.Lock()
+	if !a.closing {
+		for _, task := range list.Tasks {
+			if task.Type != copilotTaskTypeAgent {
+				continue
+			}
+			child := a.childForSpawnToolCall(task.ToolCallID)
+			if child == nil && task.ID != "" {
+				child = a.children[task.ID]
+			}
+			if child == nil || child.background {
+				continue
+			}
+			child.background = true
+			// Allocate the turn sequence while holding outputMu so a concurrent
+			// finish/idle transition that acquires outputMu afterward always
+			// receives a strictly higher sequence and cannot be overwritten.
+			a.stateMu.Lock()
+			seq := a.turnOrder.NextTurnSeq()
+			a.stateMu.Unlock()
+			promoted = append(promoted, promotedChild{sink: child.sink, active: !child.idle, seq: seq})
+		}
+	}
+	a.outputMu.Unlock()
+	for _, item := range promoted {
+		item.sink.PersistSettingsRefresh(optionmap.Map{copilotOptionExecutionMode: copilotExecutionBackground})
+		providerkit.PublishTurnStateTo(item.sink, agent.TurnState{Active: item.active, Steerable: item.active}, item.seq)
+	}
+}
+
 // resumeNativeChild reopens the row of an idle background subagent whose next
 // turn starts.
 func (a *Agent) resumeNativeChild(child *copilotNativeChild) {
@@ -236,10 +298,14 @@ func (a *Agent) resumeNativeChild(child *copilotNativeChild) {
 // subagent waits. A running background subagent takes a steer: Copilot queues
 // the message for the turn that follows the running one.
 func (a *Agent) publishChildTurn(child *copilotNativeChild, active bool) {
+	a.publishChildTurnState(child.sink, active, active && child.background)
+}
+
+func (a *Agent) publishChildTurnState(sink agent.ProviderServices, active, steerable bool) {
 	a.stateMu.Lock()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
-	providerkit.PublishTurnStateTo(child.sink, agent.TurnState{Active: active, Steerable: active && child.background}, sequence)
+	providerkit.PublishTurnStateTo(sink, agent.TurnState{Active: active, Steerable: steerable}, sequence)
 }
 
 func (a *Agent) childForSpawnToolCall(toolCallID string) *copilotNativeChild {

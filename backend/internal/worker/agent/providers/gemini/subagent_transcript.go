@@ -20,25 +20,27 @@ import (
 const geminiChildPollInterval = 250 * time.Millisecond
 
 type geminiChildTranscript struct {
-	services          agent.ProviderServices
-	query             agent.StoredSessionQuery
-	rootSessionID     string
-	rootAgentID       string
-	clock             quartz.Clock
-	ctx               context.Context
-	cancel            context.CancelFunc
-	done              chan struct{}
-	wake              chan struct{}
-	lifecycleMu       sync.Mutex
-	started           bool
-	closed            bool
-	stopOnce          sync.Once
-	activityMu        sync.Mutex
-	activeCalls       map[string]bool
-	passMu            sync.Mutex
-	children          map[string]string
-	completedChildren map[string]struct{}
-	files             map[string]os.FileInfo
+	services            agent.ProviderServices
+	query               agent.StoredSessionQuery
+	rootSessionID       string
+	rootAgentID         string
+	clock               quartz.Clock
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	done                chan struct{}
+	wake                chan struct{}
+	lifecycleMu         sync.Mutex
+	started             bool
+	closed              bool
+	stopOnce            sync.Once
+	activityMu          sync.Mutex
+	activeCalls         map[string]bool
+	pendingMidTurnClose bool
+	midTurnStatus       bgtask.Status
+	passMu              sync.Mutex
+	children            map[string]string
+	completedChildren   map[string]struct{}
+	files               map[string]os.FileInfo
 }
 
 func newGeminiChildTranscript(ctx context.Context, clock quartz.Clock, services agent.ProviderServices, query agent.StoredSessionQuery, rootSessionID, rootAgentID string) *geminiChildTranscript {
@@ -56,29 +58,43 @@ func (transcript *geminiChildTranscript) start() {
 	transcript.lifecycleMu.Unlock()
 	go func() {
 		defer close(transcript.done)
-		transcript.flush(false, agent.MessageCompletionComplete)
+		initiallyActive := transcript.hasPendingWork()
+		transcript.flushWithStatus(false, false, bgtask.StatusUnspecified)
+		if !initiallyActive && !transcript.hasPendingWork() {
+			transcript.flushWithStatus(true, true, bgtask.StatusEndedWithUnknownOutcome)
+		}
 		for {
-			select {
-			case <-transcript.ctx.Done():
-				return
-			case <-transcript.wake:
-			}
-			transcript.flush(false, agent.MessageCompletionComplete)
-			if !transcript.active() {
-				continue
-			}
-			ticker := transcript.clock.NewTicker(geminiChildPollInterval, "gemini", "child-transcript")
-			for transcript.active() {
+			if !transcript.hasPendingWork() {
 				select {
 				case <-transcript.ctx.Done():
-					ticker.Stop()
 					return
 				case <-transcript.wake:
-				case <-ticker.C:
 				}
-				transcript.flush(false, agent.MessageCompletionComplete)
+			} else if transcript.ctx.Err() != nil {
+				return
 			}
-			ticker.Stop()
+			select {
+			case <-transcript.wake:
+			default:
+			}
+			transcript.flushWithStatus(false, false, bgtask.StatusUnspecified)
+			if transcript.active() {
+				ticker := transcript.clock.NewTicker(geminiChildPollInterval, "gemini", "child-transcript")
+				for transcript.active() {
+					select {
+					case <-transcript.ctx.Done():
+						ticker.Stop()
+						return
+					case <-transcript.wake:
+					case <-ticker.C:
+					}
+					transcript.flushWithStatus(false, false, bgtask.StatusUnspecified)
+				}
+				ticker.Stop()
+			}
+			if !transcript.waitMidTurnGraceAndClose() {
+				return
+			}
 		}
 	}()
 }
@@ -87,6 +103,73 @@ func (transcript *geminiChildTranscript) active() bool {
 	transcript.activityMu.Lock()
 	defer transcript.activityMu.Unlock()
 	return len(transcript.activeCalls) > 0
+}
+
+func (transcript *geminiChildTranscript) hasPendingWork() bool {
+	transcript.activityMu.Lock()
+	defer transcript.activityMu.Unlock()
+	return len(transcript.activeCalls) > 0 || transcript.pendingMidTurnClose
+}
+
+func (transcript *geminiChildTranscript) waitMidTurnGraceAndClose() bool {
+	transcript.activityMu.Lock()
+	shouldWait := len(transcript.activeCalls) == 0 && transcript.pendingMidTurnClose
+	transcript.activityMu.Unlock()
+	if !shouldWait {
+		return true
+	}
+	graceTimer := transcript.clock.NewTimer(geminiChildPollInterval, "gemini", "child-transcript-grace")
+	defer graceTimer.Stop()
+	for {
+		select {
+		case <-transcript.ctx.Done():
+			return false
+		case <-transcript.wake:
+			transcript.activityMu.Lock()
+			exitGrace := len(transcript.activeCalls) > 0 || !transcript.pendingMidTurnClose
+			transcript.activityMu.Unlock()
+			if exitGrace {
+				return true
+			}
+		case <-graceTimer.C:
+			transcript.activityMu.Lock()
+			if len(transcript.activeCalls) > 0 || !transcript.pendingMidTurnClose {
+				transcript.activityMu.Unlock()
+				return true
+			}
+			status := transcript.midTurnStatus
+			transcript.pendingMidTurnClose = false
+			transcript.midTurnStatus = bgtask.StatusUnspecified
+			transcript.activityMu.Unlock()
+			transcript.flushWithStatus(true, true, status)
+			return true
+		}
+	}
+}
+
+func geminiMidTurnStatus(status string) bgtask.Status {
+	switch status {
+	case "completed":
+		return bgtask.StatusSucceeded
+	case "failed":
+		return bgtask.StatusFailed
+	case "cancelled":
+		return bgtask.StatusStopped
+	default:
+		return bgtask.StatusEndedWithUnknownOutcome
+	}
+}
+
+// mergeGeminiMidTurnStatus combines outcomes across concurrent invoke_agent
+// calls in one batch. Mixed outcomes degrade to StatusEndedWithUnknownOutcome.
+func mergeGeminiMidTurnStatus(accumulated, next bgtask.Status) bgtask.Status {
+	if accumulated == bgtask.StatusUnspecified {
+		return next
+	}
+	if accumulated == next {
+		return accumulated
+	}
+	return bgtask.StatusEndedWithUnknownOutcome
 }
 
 // observe follows real root invocation phases. An idle root needs no poll timer.
@@ -105,9 +188,21 @@ func (transcript *geminiChildTranscript) observe(sessionID string, update json.R
 	transcript.activityMu.Lock()
 	switch frame.Status {
 	case "completed", "failed", "cancelled":
+		if !transcript.activeCalls[frame.ToolCallID] {
+			transcript.activityMu.Unlock()
+			return
+		}
 		delete(transcript.activeCalls, frame.ToolCallID)
+		transcript.midTurnStatus = mergeGeminiMidTurnStatus(transcript.midTurnStatus, geminiMidTurnStatus(frame.Status))
+		if len(transcript.activeCalls) == 0 {
+			transcript.pendingMidTurnClose = true
+		}
 	default:
+		if len(transcript.activeCalls) == 0 && !transcript.pendingMidTurnClose {
+			transcript.midTurnStatus = bgtask.StatusUnspecified
+		}
 		transcript.activeCalls[frame.ToolCallID] = true
+		transcript.pendingMidTurnClose = false
 	}
 	transcript.activityMu.Unlock()
 	select {
@@ -134,6 +229,14 @@ func (transcript *geminiChildTranscript) stop(completion agent.MessageCompletion
 }
 
 func (transcript *geminiChildTranscript) flush(final bool, completion agent.MessageCompletion) {
+	status := bgtask.StatusFailed
+	if completion == agent.MessageCompletionInterrupted {
+		status = bgtask.StatusInterrupted
+	}
+	transcript.flushWithStatus(final, false, status)
+}
+
+func (transcript *geminiChildTranscript) flushWithStatus(final, onlyWhenIdle bool, fallbackStatus bgtask.Status) {
 	transcript.passMu.Lock()
 	defer transcript.passMu.Unlock()
 	records, err := geminiChildRecords(transcript.query, transcript.rootSessionID)
@@ -152,20 +255,23 @@ func (transcript *geminiChildTranscript) flush(final bool, completion agent.Mess
 		}
 		transcript.files[id] = record.Info
 	}
-	if final {
-		status := bgtask.StatusFailed
-		if completion == agent.MessageCompletionInterrupted {
-			status = bgtask.StatusInterrupted
+	if !final {
+		return
+	}
+	if onlyWhenIdle && transcript.hasPendingWork() {
+		return
+	}
+	if fallbackStatus == bgtask.StatusUnspecified {
+		fallbackStatus = bgtask.StatusFailed
+	}
+	for key, childID := range transcript.children {
+		if err := transcript.services.CloseBackgroundTask(key, fallbackStatus); err != nil {
+			slog.Error("close Gemini child task", "agent_id", transcript.rootAgentID, "child_id", key, "error", err)
+			continue
 		}
-		for key, childID := range transcript.children {
-			if err := transcript.services.CloseBackgroundTask(key, status); err != nil {
-				slog.Error("close Gemini child task", "agent_id", transcript.rootAgentID, "child_id", key, "error", err)
-				continue
-			}
-			transcript.services.CleanupChildAgent(childID)
-			delete(transcript.children, key)
-			transcript.completedChildren[key] = struct{}{}
-		}
+		delete(transcript.children, key)
+		transcript.completedChildren[key] = struct{}{}
+		transcript.services.CleanupChildAgent(childID)
 	}
 }
 
@@ -202,9 +308,19 @@ func (a *Agent) finishNativeChildren(completion agent.MessageCompletion) {
 	a.childMu.Lock()
 	children := a.children
 	a.childMu.Unlock()
-	if children != nil {
-		children.flush(true, completion)
+	if children == nil {
+		return
 	}
+	children.activityMu.Lock()
+	clear(children.activeCalls)
+	children.pendingMidTurnClose = false
+	children.midTurnStatus = bgtask.StatusUnspecified
+	children.activityMu.Unlock()
+	select {
+	case children.wake <- struct{}{}:
+	default:
+	}
+	children.flush(true, completion)
 }
 
 func (a *Agent) pollNativeChildren() {
@@ -269,8 +385,8 @@ func (transcript *geminiChildTranscript) persist(session geminiSession) error {
 		if err := transcript.services.CloseBackgroundTask(session.SessionID, bgtask.StatusSucceeded); err != nil {
 			return err
 		}
-		transcript.services.CleanupChildAgent(childID)
 		delete(transcript.children, session.SessionID)
+		transcript.services.CleanupChildAgent(childID)
 		transcript.completedChildren[session.SessionID] = struct{}{}
 	}
 	return nil

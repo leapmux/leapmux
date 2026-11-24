@@ -100,8 +100,8 @@ func TestOmittedScopeDefaultsBelowTheAdminFamily(t *testing.T) {
 		defer func() { _ = approve.Body.Close() }()
 		require.Equal(t, http.StatusOK, approve.StatusCode)
 
-		row, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
-		require.NoError(t, err)
+		row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
+		require.True(t, ok)
 		assertNoAdminScope(t, row.GrantedScopes)
 	})
 
@@ -127,8 +127,8 @@ func TestOmittedScopeDefaultsBelowTheAdminFamily(t *testing.T) {
 		defer func() { _ = approve.Body.Close() }()
 		require.Equal(t, http.StatusOK, approve.StatusCode)
 
-		row, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
-		require.NoError(t, err)
+		row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
+		require.True(t, ok)
 		assert.Equal(t, "admin:read", row.GrantedScopes)
 
 		// And it reaches the stored credential, not just the grant row.

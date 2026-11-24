@@ -264,3 +264,67 @@ func TestKimiNativeTaskCompletionPreservesIndependentChildActivity(t *testing.T)
 		})
 	}
 }
+
+func TestKimiUnrecoverableNativeTaskRecoverySettlesToUnknownOutcome(t *testing.T) {
+	t.Parallel()
+	t.Run("missing native tasks on task.list", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTestRig(t, agent.Options{})
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		sendNativeKimiChildTask(t, native, "main", "agent-0", "task-missing", "running", "")
+		rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"shell-missing","kind":"shell","status":"running","detached":true,"command":"sleep 10"}`))
+		rig.fake.mu.Lock()
+		rig.fake.taskCommandFor = func(command fakeKimiTaskCommand) (int, string) {
+			if command.Type == kimiFrameTaskWatch {
+				return 40404, "task not found"
+			}
+			return 0, "success"
+		}
+		rig.fake.mu.Unlock()
+
+		rig.agent.HandleOutput([]byte(`{"type":"task.list","session_id":"session_1","agent_id":"main","tasks":[]}`))
+		waitFor(t, rig.agent.taskRecoveryWork.Idle, "missing task recovery finishes")
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		subagentRow, ok := rig.sink.BackgroundTask(kimiTaskRowKey("session_1", "main", "task-missing"))
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, subagentRow.Status)
+		shellRow, ok := rig.sink.BackgroundTask(kimiTaskRowKey("session_1", "main", "shell-missing"))
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, shellRow.Status)
+	})
+
+	t.Run("provisional discovered task", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiTestRig(t, agent.Options{})
+		native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+		rig.fake.mu.Lock()
+		rig.fake.taskCommandFor = func(command fakeKimiTaskCommand) (int, string) {
+			if command.Type == kimiFrameTaskWatch {
+				return 40404, "task not found"
+			}
+			return 0, "success"
+		}
+		rig.fake.mu.Unlock()
+
+		native.conversationFrame(t, `{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		frame := map[string]any{
+			"type": "tool_call", "item_id": "spawn", "name": "Agent", "status": "ended", "outcome": "completed",
+			"created_at": "2026-11-18T00:00:00Z", "started_at": "2026-11-18T00:00:00Z",
+			"input":      map[string]any{"description": "Reviewer", "prompt": "Review it.", "run_in_background": true},
+			"output":     "task_id: provisional-task\nstatus: running\nagent_id: agent-0\nautomatic_notification: true\n",
+			"agent_refs": []any{map[string]any{"agent_id": "agent-0", "role": "child", "task_id": "provisional-task"}},
+		}
+		raw, err := json.Marshal(map[string]any{"type": "item.ended", "turn_id": "t0", "item": frame})
+		require.NoError(t, err)
+		native.conversationFrame(t, string(raw))
+		waitFor(t, rig.agent.taskRecoveryWork.Idle, "provisional task recovery finishes")
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		identity := kimiInvocationIdentity{sessionID: "session_1", agentID: "main", turnID: "t0", toolCallID: "spawn"}
+		outcomeKey := kimiInvocationGroupKey(identity) + "/child/agent-0"
+		row, ok := rig.sink.BackgroundTask(outcomeKey)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+	})
+}

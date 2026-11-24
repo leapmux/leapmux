@@ -1,6 +1,7 @@
 package commandcode
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -91,4 +92,123 @@ func TestCommandCodeRootInterruptClosesForegroundChildAndPreservesBackgroundChil
 	a.finishStream()
 	bgRow, _ = sink.BackgroundTask(childRowKey("native-session", "bg-spawn"))
 	assert.Equal(t, bgtask.StatusFailed, bgRow.Status)
+}
+
+type failingRenameSink struct {
+	*agenttest.Sink
+	renameErr error
+}
+
+func (s *failingRenameSink) RenameBackgroundTask(oldKey, newKey string) error {
+	if s.renameErr != nil {
+		return s.renameErr
+	}
+	return s.Sink.RenameBackgroundTask(oldKey, newKey)
+}
+
+func TestBackgroundChildFailureMissingIDAndFailedRenameCloseCleanly(t *testing.T) {
+	t.Run("tool error closes background row as failed", func(t *testing.T) {
+		a, sink := testAgent(t)
+		childSpawn(t, a, true)
+		feedEvent(t, a, map[string]any{"type": "tool_errored", "toolCallId": "spawn", "toolName": "agent", "error": "launch failed"})
+		row, exists := sink.BackgroundTask(childRowKey("native-session", "spawn"))
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+		assert.Empty(t, a.children)
+	})
+
+	t.Run("tool denied closes background row as failed", func(t *testing.T) {
+		a, sink := testAgent(t)
+		childSpawn(t, a, true)
+		feedEvent(t, a, map[string]any{"type": "tool_denied", "toolCallId": "spawn", "toolName": "agent"})
+		row, exists := sink.BackgroundTask(childRowKey("native-session", "spawn"))
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+		assert.Empty(t, a.children)
+	})
+
+	t.Run("missing agent_id still marks identified and closes on stop", func(t *testing.T) {
+		a, sink := testAgent(t)
+		childSpawn(t, a, true)
+		feedEvent(t, a, map[string]any{"type": "subagent_stop", "toolCallId": "spawn", "subagentType": "general", "status": "completed"})
+		feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "spawn", "toolName": "agent", "result": []map[string]string{{"type": "text", "text": "Background agent launched without identifier."}}})
+		row, exists := sink.BackgroundTask(childRowKey("native-session", "spawn"))
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		assert.Empty(t, a.children)
+	})
+
+	t.Run("missing agent_id closes when stop arrives after tool_completed", func(t *testing.T) {
+		a, sink := testAgent(t)
+		childSpawn(t, a, true)
+		feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "spawn", "toolName": "agent", "result": []map[string]string{{"type": "text", "text": "Background agent launched without identifier."}}})
+		feedEvent(t, a, map[string]any{"type": "subagent_stop", "toolCallId": "spawn", "subagentType": "general", "status": "completed"})
+		row, exists := sink.BackgroundTask(childRowKey("native-session", "spawn"))
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		assert.Empty(t, a.children)
+	})
+
+	t.Run("failed rename still marks identified and closes under original key", func(t *testing.T) {
+		a, sink := testAgent(t)
+		failing := &failingRenameSink{Sink: sink, renameErr: errors.New("rename refused")}
+		a.sink = agent.NewModelProgressResetSink(agent.NewProviderServices(failing))
+		childSpawn(t, a, true)
+		feedEvent(t, a, map[string]any{"type": "subagent_stop", "toolCallId": "spawn", "subagentType": "general", "status": "completed"})
+		feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "spawn", "toolName": "agent", "result": []map[string]string{{"type": "text", "text": "Background agent launched.\nagent_id: native-child"}}})
+		row, exists := sink.BackgroundTask(childRowKey("native-session", "spawn"))
+		require.True(t, exists)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		assert.Empty(t, a.children)
+	})
+}
+
+func TestChildStatusMapsKilledAndAbortedToStopped(t *testing.T) {
+	assert.Equal(t, bgtask.StatusStopped, childStatus("killed"))
+	assert.Equal(t, bgtask.StatusStopped, childStatus("aborted"))
+
+	a, sink := testAgent(t)
+	childSpawn(t, a, true)
+	feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "spawn", "toolName": "agent", "result": []map[string]string{{"type": "text", "text": "agent_id: bg-killed"}}})
+	feedEvent(t, a, map[string]any{"type": "subagent_stop", "toolCallId": "spawn", "subagentType": "general", "status": "killed"})
+	row, exists := sink.BackgroundTask(childRowKey("native-session", "bg-killed"))
+	require.True(t, exists)
+	assert.Equal(t, bgtask.StatusStopped, row.Status)
+	assert.Empty(t, a.children)
+}
+
+func TestSubagentBackgroundedSetsBackgroundFlagWithoutPersistingRawRow(t *testing.T) {
+	a, sink := testAgent(t)
+	childSpawn(t, a, false)
+	beforeMessages := len(sink.Messages())
+	feedEvent(t, a, map[string]any{"type": "subagent_backgrounded", "toolCallId": "spawn"})
+	assert.Equal(t, beforeMessages, len(sink.Messages()), "subagent_backgrounded must not persist a raw transcript row")
+	a.Mu.Lock()
+	state := a.children["spawn"]
+	require.NotNil(t, state)
+	bg := state.background
+	a.Mu.Unlock()
+	assert.True(t, bg, "subagent_backgrounded promotes child state to background")
+
+	feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "spawn", "toolName": "agent", "result": []map[string]string{{"type": "text", "text": "agent_id: promoted-child"}}})
+	row, exists := sink.BackgroundTask(childRowKey("native-session", "promoted-child"))
+	require.True(t, exists)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "promoted background child stays running after launch reply")
+
+	feedEvent(t, a, map[string]any{"type": "subagent_stop", "toolCallId": "spawn", "subagentType": "general", "status": "completed"})
+	row, exists = sink.BackgroundTask(childRowKey("native-session", "promoted-child"))
+	require.True(t, exists)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.Empty(t, a.children)
+}
+
+func TestSubagentStopWithNonFinalStatusSettlesToSucceeded(t *testing.T) {
+	a, sink := testAgent(t)
+	childSpawn(t, a, true)
+	feedEvent(t, a, map[string]any{"type": "subagent_stop", "toolCallId": "spawn", "subagentType": "general", "status": "running"})
+	feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "spawn", "toolName": "agent", "result": []map[string]string{{"type": "text", "text": "agent_id: bg-nonfinal"}}})
+	row, exists := sink.BackgroundTask(childRowKey("native-session", "bg-nonfinal"))
+	require.True(t, exists)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.Empty(t, a.children)
 }

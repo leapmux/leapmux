@@ -17,7 +17,7 @@ import (
 func TestControlResponseRecordsDeliveryBeforeItsRecoveryRead(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`),
 	})

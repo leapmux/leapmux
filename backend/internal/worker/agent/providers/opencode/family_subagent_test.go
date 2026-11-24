@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -14,12 +15,13 @@ import (
 )
 
 func TestACP_SubagentFromToolCall_OpenCodeSpawnShape(t *testing.T) {
+	family := &FamilyBase{}
 	tc := acp.ToolCallEnvelope{
 		ToolCallID: "tc-1",
 		Title:      "",
 		RawInput:   json.RawMessage(`{"description":"build feature","prompt":"do the thing","subagent_type":"build"}`),
 	}
-	obs := SubagentFromToolCall(tc)
+	obs := family.subagentFromToolCall(tc)
 	if assert.NotNil(t, obs) {
 		assert.Equal(t, "tc-1", obs.RowKey)
 		assert.Equal(t, "build feature", obs.Title)
@@ -32,36 +34,40 @@ func TestACP_SubagentFromToolCall_OpenCodeSpawnShape(t *testing.T) {
 }
 
 func TestACP_SubagentFromToolCall_OpenCodeFallsBackToType(t *testing.T) {
+	family := &FamilyBase{}
 	tc := acp.ToolCallEnvelope{
 		ToolCallID: "tc-2",
 		RawInput:   json.RawMessage(`{"prompt":"x","subagent_type":"plan"}`),
 	}
-	obs := SubagentFromToolCall(tc)
+	obs := family.subagentFromToolCall(tc)
 	if assert.NotNil(t, obs) {
 		assert.Equal(t, "plan", obs.Title)
 	}
 }
 
 func TestACP_SubagentFromToolCall_NonSpawnReturnsNil(t *testing.T) {
+	family := &FamilyBase{}
 	// No prompt + no subagent_type => not a spawn.
 	tc := acp.ToolCallEnvelope{
 		ToolCallID: "tc-3",
 		RawInput:   json.RawMessage(`{"command":"ls"}`),
 	}
-	assert.Nil(t, SubagentFromToolCall(tc))
+	assert.Nil(t, family.subagentFromToolCall(tc))
 }
 
 func TestACP_SubagentFromToolCall_EmptyInputReturnsNil(t *testing.T) {
+	family := &FamilyBase{}
 	tc := acp.ToolCallEnvelope{ToolCallID: "tc-4"}
-	assert.Nil(t, SubagentFromToolCall(tc))
+	assert.Nil(t, family.subagentFromToolCall(tc))
 }
 
 func TestACP_SubagentFromToolCallUpdate_FinalStatusCloses(t *testing.T) {
+	family := &FamilyBase{}
 	tcu := acp.ToolCallUpdateEnvelope{
 		ToolCallID: "tc-1",
 		Status:     "completed",
 	}
-	obs := SubagentFromToolCallUpdate(tcu)
+	obs := family.subagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs) {
 		assert.True(t, obs.CloseRow)
 		assert.Equal(t, bgtask.StatusSucceeded, obs.Status)
@@ -69,12 +75,13 @@ func TestACP_SubagentFromToolCallUpdate_FinalStatusCloses(t *testing.T) {
 }
 
 func TestACP_SubagentFromToolCallUpdate_RekeysToSessionID(t *testing.T) {
+	family := &FamilyBase{}
 	tcu := acp.ToolCallUpdateEnvelope{
 		ToolCallID: "tc-1",
 		Status:     "completed",
 		RawOutput:  json.RawMessage(`{"metadata":{"sessionId":"child-sess-1"}}`),
 	}
-	obs := SubagentFromToolCallUpdate(tcu)
+	obs := family.subagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs) {
 		assert.Equal(t, "child-sess-1", obs.RowKey, "renamed to the child session id")
 		// The spawn row was opened under the toolCallId; RenameFrom carries it so
@@ -88,9 +95,10 @@ func TestACP_SubagentFromToolCallUpdate_RekeysToSessionID(t *testing.T) {
 
 func TestACP_OpenCodeBackgroundLaunchIsNotAReport(t *testing.T) {
 	t.Parallel()
+	family := &FamilyBase{}
 	var content []acp.ToolCallBlock
 	require.NoError(t, json.Unmarshal([]byte(`[{"type":"content","content":{"type":"text","text":"Background task started"}}]`), &content))
-	obs := SubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+	obs := family.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
 		ToolCallID: "tc-1",
 		Status:     "completed",
 		RawOutput:  json.RawMessage(`{"metadata":{"sessionId":"child-sess-1","background":true}}`),
@@ -103,10 +111,7 @@ func TestACP_OpenCodeBackgroundLaunchIsNotAReport(t *testing.T) {
 func TestACP_OpenCodeFamilyPersistsThePromptAndReportInTheChildTranscript(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.Sink{}
-	b := &acp.Base{}
-	b.SetSinkForTest(agent.NewProviderServices(sink))
-	*b.HooksForTest() = acp.Hooks{SubagentFromToolCall: SubagentFromToolCall, SubagentFromToolCallUpdate: SubagentFromToolCallUpdate}
+	b, sink := newOpenCodeChildBase(t)
 	b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"task","kind":"think","status":"pending","rawInput":{"description":"Inspect the code","prompt":"Read the entry points.","subagent_type":"explore"}}`))
 	initial, found := sink.BackgroundTask("task-call")
 	require.True(t, found)
@@ -141,11 +146,12 @@ func TestACP_OpenCodeFamilyPersistsThePromptAndReportInTheChildTranscript(t *tes
 // where the final update carries no metadata.sessionId: the close keys off
 // the spawn toolCallId directly, and RenameFrom stays empty (no rename).
 func TestACP_SubagentFromToolCallUpdate_NoSessionIDKeepsSpawnKey(t *testing.T) {
+	family := &FamilyBase{}
 	tcu := acp.ToolCallUpdateEnvelope{
 		ToolCallID: "tc-1",
 		Status:     "completed",
 	}
-	obs := SubagentFromToolCallUpdate(tcu)
+	obs := family.subagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs) {
 		assert.Equal(t, "tc-1", obs.RowKey)
 		assert.Empty(t, obs.RenameFrom, "no rename when no session id surfaced")
@@ -164,21 +170,23 @@ The report.
 }
 
 func TestACP_SubagentFromToolCallUpdate_InProgressReturnsNil(t *testing.T) {
+	family := &FamilyBase{}
 	tcu := acp.ToolCallUpdateEnvelope{
 		ToolCallID: "tc-1",
 		Status:     "in_progress",
 	}
-	assert.Nil(t, SubagentFromToolCallUpdate(tcu))
+	assert.Nil(t, family.subagentFromToolCallUpdate(tcu))
 }
 
 func TestACP_WireDecode_ToolCallParsesRawInput(t *testing.T) {
+	family := &FamilyBase{}
 	wire := `{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"task","kind":"other","status":"in_progress","rawInput":{"description":"build feature","prompt":"do the thing","subagent_type":"build"}}`
 	var tc acp.ToolCallEnvelope
 	require.NoError(t, json.Unmarshal([]byte(wire), &tc))
 	assert.Equal(t, "tc-1", tc.ToolCallID)
 	assert.NotEmpty(t, tc.RawInput, "rawInput must decode -- a tag mismatch leaves this empty")
 	// OpenCode shape should fire now that RawInput is populated.
-	obs := SubagentFromToolCall(tc)
+	obs := family.subagentFromToolCall(tc)
 	if assert.NotNil(t, obs, "OpenCode detector fires on decoded wire payload") {
 		assert.Equal(t, "tc-1", obs.RowKey)
 		assert.Equal(t, "build feature", obs.Title, "the description replaces the generic native task title")
@@ -186,12 +194,13 @@ func TestACP_WireDecode_ToolCallParsesRawInput(t *testing.T) {
 }
 
 func TestACP_WireDecode_ToolCallUpdateParsesRawOutput(t *testing.T) {
+	family := &FamilyBase{}
 	wire := `{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","rawOutput":{"metadata":{"sessionId":"child-sess-1"}}}`
 	var tcu acp.ToolCallUpdateEnvelope
 	require.NoError(t, json.Unmarshal([]byte(wire), &tcu))
 	assert.Equal(t, "tc-1", tcu.ToolCallID)
 	assert.NotEmpty(t, tcu.RawOutput, "rawOutput must decode -- a tag mismatch leaves this empty")
-	obs := SubagentFromToolCallUpdate(tcu)
+	obs := family.subagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs, "OpenCode final-update detector fires on decoded wire payload") {
 		assert.Equal(t, "child-sess-1", obs.RowKey, "re-keyed to child session id from rawOutput")
 		assert.True(t, obs.CloseRow)
@@ -204,14 +213,15 @@ func TestACP_WireDecode_ToolCallUpdateParsesRawOutput(t *testing.T) {
 // row at all, and the final update then closed a row that was never opened.
 func TestACP_OpenCodeSpawnDetectedOnTheInProgressUpdate(t *testing.T) {
 	t.Parallel()
+	family := &FamilyBase{}
 
 	// The tool_call carries nothing to detect on.
-	assert.Nil(t, SubagentFromToolCall(acp.ToolCallEnvelope{
+	assert.Nil(t, family.subagentFromToolCall(acp.ToolCallEnvelope{
 		ToolCallID: "call-1", Title: "task", RawInput: json.RawMessage(`{}`),
 	}))
 
 	// The in-progress update carries the real shape.
-	obs := SubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+	obs := family.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
 		ToolCallID: "call-1",
 		Status:     "in_progress",
 		Title:      "Run echo kilo-done",
@@ -230,21 +240,23 @@ func TestACP_OpenCodeSpawnDetectedOnTheInProgressUpdate(t *testing.T) {
 // A non-final update on a PLAIN tool must not open a subagent row.
 func TestACP_OpenCodeNonSpawnUpdateIsIgnored(t *testing.T) {
 	t.Parallel()
+	family := &FamilyBase{}
 
-	assert.Nil(t, SubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+	assert.Nil(t, family.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
 		ToolCallID: "call-1", Status: "in_progress", RawInput: json.RawMessage(`{"command":"ls"}`),
 	}))
-	assert.Nil(t, SubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+	assert.Nil(t, family.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
 		ToolCallID: "call-1", Status: "in_progress",
 	}))
 }
 
 // The final update still closes (and re-keys to the child session id), so
-// adding the spawn arm above did not swallow the close.
+// adding the spawn branch above did not swallow the close.
 func TestACP_OpenCodeFinalUpdateStillClosesAndRekeys(t *testing.T) {
 	t.Parallel()
+	family := &FamilyBase{}
 
-	obs := SubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+	obs := family.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
 		ToolCallID: "call-1",
 		Status:     "completed",
 		RawInput:   json.RawMessage(`{"description":"d","prompt":"p","subagent_type":"general"}`),
@@ -259,10 +271,7 @@ func TestACP_OpenCodeFinalUpdateStillClosesAndRekeys(t *testing.T) {
 
 func TestACP_OpenCodeFamilyTaskWithoutArgumentsOpensNoSpan(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.Sink{}
-	b := &acp.Base{}
-	b.SetSinkForTest(agent.NewProviderServices(sink))
-	*b.HooksForTest() = acp.Hooks{SubagentFromToolCall: SubagentFromToolCall, SubagentFromToolCallUpdate: SubagentFromToolCallUpdate}
+	b, sink := newOpenCodeChildBase(t)
 	// Both installed providers emit this request before their tool arguments arrive.
 	b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"task","kind":"think","status":"pending","rawInput":{}}`))
 	assert.Empty(t, sink.OpenSpans())
@@ -277,13 +286,14 @@ func TestACP_OpenCodeFamilyTaskWithoutArgumentsOpensNoSpan(t *testing.T) {
 
 func TestACP_OpenCodeTaskIdentityWithoutArguments(t *testing.T) {
 	t.Parallel()
+	family := &FamilyBase{}
 	for _, raw := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`null`)} {
-		obs := SubagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "task-call", Title: "task", Kind: "think", RawInput: raw})
+		obs := family.subagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "task-call", Title: "task", Kind: "think", RawInput: raw})
 		require.NotNil(t, obs)
 		assert.True(t, obs.Spawns)
 		assert.Equal(t, "Subagent", obs.Title)
 	}
-	assert.Nil(t, SubagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "other-call", Title: "task", Kind: "other", RawInput: json.RawMessage(`{}`)}))
+	assert.Nil(t, family.subagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "other-call", Title: "task", Kind: "other", RawInput: json.RawMessage(`{}`)}))
 }
 
 // An unrecognized title needs later arguments to identify a subagent.
@@ -291,10 +301,7 @@ func TestACP_OpenCodeTaskIdentityWithoutArguments(t *testing.T) {
 func TestACP_LateSpawnGivesItsSpanBack(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.Sink{}
-	b := &acp.Base{}
-	b.SetSinkForTest(agent.NewProviderServices(sink))
-	*b.HooksForTest() = acp.Hooks{SubagentFromToolCall: SubagentFromToolCall, SubagentFromToolCallUpdate: SubagentFromToolCallUpdate}
+	b, sink := newOpenCodeChildBase(t)
 
 	b.HandleToolCallForTest(json.RawMessage(`{"toolCallId":"call-spawn","kind":"other","title":"new_task","rawInput":{}}`))
 	require.Len(t, sink.OpenSpans(), 1, "the empty rawInput hides the spawn, so a span opens")
@@ -340,10 +347,7 @@ func TestACP_LateSpawnGivesItsSpanBack(t *testing.T) {
 func TestACP_ABackgroundShellKeepsItsSpanWithNoKindExemption(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.Sink{}
-	b := &acp.Base{}
-	b.SetSinkForTest(agent.NewProviderServices(sink))
-	*b.HooksForTest() = acp.Hooks{SubagentFromToolCall: SubagentFromToolCall, SubagentFromToolCallUpdate: SubagentFromToolCallUpdate}
+	b, sink := newOpenCodeChildBase(t)
 
 	// A real shell payload: a command, and none of the spawn discriminators.
 	shell := `"rawInput":{"command":"npm run dev"}`
@@ -366,10 +370,7 @@ func TestACP_ABackgroundShellKeepsItsSpanWithNoKindExemption(t *testing.T) {
 func TestACP_FinalToolCallSpawnStillFeedsTheRegistry(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.Sink{}
-	b := &acp.Base{}
-	b.SetSinkForTest(agent.NewProviderServices(sink))
-	*b.HooksForTest() = acp.Hooks{SubagentFromToolCall: SubagentFromToolCall}
+	b, sink := newOpenCodeChildBase(t)
 
 	b.HandleToolCallForTest(json.RawMessage(
 		`{"toolCallId":"call-spawn","kind":"other","status":"completed","title":"explore","rawInput":{"description":"explore","prompt":"go","subagent_type":"general"}}`))
@@ -387,8 +388,9 @@ func TestACP_FinalToolCallSpawnStillFeedsTheRegistry(t *testing.T) {
 
 func TestOpenCodeSubagentDetectorCarriesThePrompt(t *testing.T) {
 	t.Parallel()
+	family := &FamilyBase{}
 
-	oc := SubagentFromToolCall(acp.ToolCallEnvelope{
+	oc := family.subagentFromToolCall(acp.ToolCallEnvelope{
 		ToolCallID: "tc-2",
 		RawInput:   json.RawMessage(`{"description":"scan","prompt":"Find the bug.","subagent_type":"general"}`),
 	})
@@ -453,7 +455,8 @@ func TestOpenCodeTaskCreationRequiresParsedFreshArguments(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			t.Parallel()
-			obs := SubagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "native-call", Title: "task", Kind: "think", RawInput: scenario.raw})
+			family := &FamilyBase{}
+			obs := family.subagentFromToolCall(acp.ToolCallEnvelope{ToolCallID: "native-call", Title: "task", Kind: "think", RawInput: scenario.raw})
 			require.NotNil(t, obs)
 			assert.True(t, obs.Spawns)
 			assert.Equal(t, "native-call", obs.RowKey)
@@ -470,21 +473,33 @@ func TestOpenCodeTaskCreationRequiresParsedFreshArguments(t *testing.T) {
 func TestOpenCodeTaskReuseKeepsOneNativeChildAcrossCallIDs(t *testing.T) {
 	t.Parallel()
 	b, sink := newOpenCodeChildBase(t)
+	b.SetSessionIDForTest("session-1")
 	first := openCodeTaskRequest(t, "call-first", "", "Inspect the entry point.")
 	b.HandleToolCallForTest(first)
 	initial, found := sink.BackgroundTask("call-first")
 	require.True(t, found)
 	require.NotEmpty(t, initial.ChildAgentID)
 	child := sink.Child(initial.ChildAgentID)
-	before := child.Messages()
-	require.Len(t, before, 1)
+	require.Len(t, child.Messages(), 1)
 	b.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-first", "ses-native-child", "First native report."))
+	finished, found := sink.BackgroundTask("ses-native-child")
+	require.True(t, found)
+	require.Equal(t, bgtask.StatusSucceeded, finished.Status)
+
 	second := openCodeTaskRequest(t, "call-second", "ses-native-child", "Continue the same native task.")
 	b.HandleToolCallForTest(second)
-	pending, found := sink.BackgroundTask("call-second")
+	_, orphanFound := sink.BackgroundTask("call-second")
+	assert.False(t, orphanFound, "reusing an existing task_id must not open a separate call row")
+	revived, found := sink.BackgroundTask("ses-native-child")
 	require.True(t, found)
-	assert.Empty(t, pending.ChildAgentID, "a reuse request must wait for the actual native session")
+	assert.Equal(t, bgtask.StatusRunning, revived.Status, "reusing an existing task_id must revive its row")
+	assert.Equal(t, initial.ChildAgentID, revived.ChildAgentID)
+	assert.Equal(t, []string{"ses-native-child"}, sink.RevivedTasks())
 	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
+
+	// Live Job 2 child output must reach the revived child's transcript.
+	assert.True(t, b.FeedChildUpdate("ses-native-child", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Job 2 progress."}}`)))
+
 	completed := openCodeTaskResult(t, "call-second", "ses-native-child", "Second native report.")
 	b.HandleToolCallUpdateForTest(completed)
 	b.HandleToolCallUpdateForTest(completed)
@@ -495,7 +510,13 @@ func TestOpenCodeTaskReuseKeepsOneNativeChildAcrossCallIDs(t *testing.T) {
 	assert.Equal(t, initial.ChildAgentID, row.ChildAgentID)
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
-	assert.Equal(t, before, child.Messages())
+	var childTexts []string
+	for _, msg := range child.Messages() {
+		if _, text, _, ok := agenttest.DecodeAssembledMessage(msg.Content); ok {
+			childTexts = append(childTexts, text)
+		}
+	}
+	assert.Equal(t, []string{"Job 2 progress."}, childTexts)
 	reports := child.LeapMuxNotifications()
 	if assert.Len(t, reports, 2) {
 		assert.Equal(t, "First native report.", reports[0]["text"])
@@ -570,18 +591,19 @@ func TestOpenCodePlainFinalToolCreatesNoChild(t *testing.T) {
 // tool call. TestACP_SpawnToolCallOpensNoSpan pins what the base does with a claim.
 func TestOpenCodeSubagentDetectorsClaimOnlyTheSpawn(t *testing.T) {
 	t.Parallel()
+	family := &FamilyBase{}
 
-	spawn := SubagentFromToolCall(acp.ToolCallEnvelope{
+	spawn := family.subagentFromToolCall(acp.ToolCallEnvelope{
 		ToolCallID: "o", RawInput: json.RawMessage(`{"prompt":"go","subagent_type":"general"}`)})
 	if assert.NotNil(t, spawn, "the detector fires on its spawn payload") {
 		assert.True(t, spawn.Spawns, "the spawn observation claims the spawn")
 		assert.True(t, acp.ObservationIsSpawn(spawn), "the spawn takes no span")
 	}
-	assert.Nil(t, SubagentFromToolCall(acp.ToolCallEnvelope{
+	assert.Nil(t, family.subagentFromToolCall(acp.ToolCallEnvelope{
 		ToolCallID: "call-plain", Kind: "read", Title: "Read", RawInput: json.RawMessage(`{"filePath":"/tmp/a"}`)}), "an ordinary tool call is no subagent")
 	// A progress or closing observation describes a row that already exists.
 	for what, obs := range map[string]*acp.SubagentObservation{
-		"close": SubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
+		"close": family.subagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
 			ToolCallID: "o", Status: "completed"}),
 	} {
 		if assert.NotNil(t, obs, "%s still produces an observation", what) {
@@ -589,4 +611,494 @@ func TestOpenCodeSubagentDetectorsClaimOnlyTheSpawn(t *testing.T) {
 			assert.False(t, acp.ObservationIsSpawn(obs), "%s must not take a span", what)
 		}
 	}
+}
+
+func openCodeBackgroundLaunchResult(t *testing.T, callID, nativeSession string) json.RawMessage {
+	t.Helper()
+	frame, err := json.Marshal(map[string]any{
+		"sessionUpdate": "tool_call_update", "toolCallId": callID, "status": "completed", "title": "Inspect " + callID,
+		"rawOutput": map[string]any{"output": "Background task started", "metadata": map[string]any{"sessionId": nativeSession, "background": true}},
+		"content":   []map[string]any{{"type": "content", "content": map[string]any{"type": "text", "text": "Background task started"}}},
+	})
+	require.NoError(t, err)
+	return frame
+}
+
+func newOpenCodeFamilyBaseWithQueue(t *testing.T) (*FamilyBase, *agenttest.Sink) {
+	t.Helper()
+	sink := &agenttest.Sink{}
+	family := &FamilyBase{}
+	queue := &agent.OutputQueue{}
+	family.SetSinkForTest(agent.NewOrderedProviderServices(queue, agent.NewProviderServices(sink)))
+	family.SetSessionIDForTest("session-1")
+	*family.HooksForTest() = FamilyHooks(family)
+	return family, sink
+}
+
+func TestKiloBackgroundSubagentStaysOpenUntilDaemonFinish(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		event    string
+		expected bgtask.Status
+	}{
+		{
+			name:     "session.status idle closes succeeded",
+			event:    `{"type":"session.status","properties":{"sessionID":"ses-bg","status":{"type":"idle"}}}`,
+			expected: bgtask.StatusSucceeded,
+		},
+		{
+			name:     "session.error closes failed",
+			event:    `{"type":"session.error","properties":{"sessionID":"ses-bg","error":{"message":"boom"}}}`,
+			expected: bgtask.StatusFailed,
+		},
+		{
+			name:     "session.deleted with info.id closes stopped",
+			event:    `{"type":"session.deleted","properties":{"info":{"id":"ses-bg"}}}`,
+			expected: bgtask.StatusStopped,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			family, sink := newOpenCodeFamilyBaseWithQueue(t)
+			family.HandleToolCallForTest(openCodeTaskRequest(t, "call-bg", "", "Run in background."))
+			family.HandleToolCallUpdateForTest(openCodeBackgroundLaunchResult(t, "call-bg", "ses-bg"))
+
+			row, found := sink.BackgroundTask("ses-bg")
+			require.True(t, found)
+			assert.Equal(t, bgtask.StatusRunning, row.Status, "background launch must stay running until daemon completion")
+
+			// Daemon SSE completion must close and flush immediately without another ACP frame.
+			family.handleDaemonEvent(json.RawMessage(tc.event))
+			closed, found := sink.BackgroundTask("ses-bg")
+			require.True(t, found)
+			assert.Equal(t, tc.expected, closed.Status)
+		})
+	}
+}
+
+func TestKiloEarlyChildSSEBufferedAndStaleIdleCleared(t *testing.T) {
+	t.Parallel()
+
+	t.Run("early idle before background launch closes immediately on launch update", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-fast", "", "Fast background task."))
+		family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-fast","status":{"type":"idle"}}}`))
+
+		family.HandleToolCallUpdateForTest(openCodeBackgroundLaunchResult(t, "call-fast", "ses-fast"))
+		row, found := sink.BackgroundTask("ses-fast")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	})
+
+	t.Run("early error before background launch closes failed immediately on launch update", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-fast-err", "", "Fast failing background task."))
+		family.handleDaemonEvent(json.RawMessage(`{"type":"session.error","properties":{"sessionID":"ses-fast-err"}}`))
+		// A trailing idle event after an error must not overwrite the buffered failure.
+		family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-fast-err","status":{"type":"idle"}}}`))
+
+		family.HandleToolCallUpdateForTest(openCodeBackgroundLaunchResult(t, "call-fast-err", "ses-fast-err"))
+		row, found := sink.BackgroundTask("ses-fast-err")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+	})
+
+	t.Run("stale idle cleared by busy status does not prematurely close job 2", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+		family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-reused","status":{"type":"idle"}}}`))
+		family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-reused","status":{"type":"busy"}}}`))
+
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-bg-2", "", "Second run."))
+		family.HandleToolCallUpdateForTest(openCodeBackgroundLaunchResult(t, "call-bg-2", "ses-reused"))
+		row, found := sink.BackgroundTask("ses-reused")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
+
+	t.Run("stale idle cleared by foreground close does not close later background launch", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-fg", "", "Foreground run."))
+		family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-shared","status":{"type":"idle"}}}`))
+		family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-fg", "ses-shared", "Foreground done."))
+
+		// Job 2 launches the same session in background.
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-bg", "ses-shared", "Background run."))
+		family.HandleToolCallUpdateForTest(openCodeBackgroundLaunchResult(t, "call-bg", "ses-shared"))
+		row, found := sink.BackgroundTask("ses-shared")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
+
+	t.Run("trailing idle after foreground close cleared on task_id reuse", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Job 1."))
+		family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-shared", "Job 1 done."))
+		// Trailing idle arrives AFTER foreground close.
+		family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-shared","status":{"type":"idle"}}}`))
+
+		// Job 2 reuses ses-shared in background.
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-2", "ses-shared", "Job 2."))
+		family.HandleToolCallUpdateForTest(openCodeBackgroundLaunchResult(t, "call-2", "ses-shared"))
+		row, found := sink.BackgroundTask("ses-shared")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
+}
+
+func TestKiloLateNonFinalToolCallUpdateAfterRenameAndCloseIgnored(t *testing.T) {
+	t.Parallel()
+	family, sink := newOpenCodeFamilyBaseWithQueue(t)
+	family.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Inspect code."))
+	family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-child", "Done."))
+
+	// A late in_progress update for the finalized toolCallId must not recreate an orphan call-1 row.
+	family.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"call-1","title":"Inspect code","status":"in_progress","rawInput":{"description":"Inspect code","prompt":"Inspect code.","subagent_type":"explore"}}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "ses-child", rows[0].RowKey)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+	_, orphanFound := sink.BackgroundTask("call-1")
+	assert.False(t, orphanFound)
+}
+
+func TestKiloEmptyToolCallThenInProgressTaskIDRevivesAndRecordsJob2(t *testing.T) {
+	t.Parallel()
+	family, sink := newOpenCodeFamilyBaseWithQueue(t)
+
+	// Job 1 finishes on ses-native-child.
+	family.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"task","kind":"think","status":"pending","rawInput":{}}`))
+	family.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"call-1","title":"Job 1","status":"in_progress","rawInput":{"description":"Job 1","prompt":"Do job 1.","subagent_type":"explore"}}`))
+	initial, found := sink.BackgroundTask("call-1")
+	require.True(t, found)
+	require.NotEmpty(t, initial.ChildAgentID)
+	family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-native-child", "Job 1 report."))
+	done1, found := sink.BackgroundTask("ses-native-child")
+	require.True(t, found)
+	require.Equal(t, bgtask.StatusSucceeded, done1.Status)
+
+	// Job 2 opens with empty rawInput, then reveals task_id in an in_progress update.
+	family.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-2","title":"task","kind":"think","status":"pending","rawInput":{}}`))
+	family.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"call-2","title":"Job 2","status":"in_progress","rawInput":{"description":"Job 2","prompt":"Do job 2.","subagent_type":"explore","task_id":"ses-native-child"}}`))
+
+	_, orphanFound := sink.BackgroundTask("call-2")
+	assert.False(t, orphanFound, "call-2 must collapse into ses-native-child")
+	revived, found := sink.BackgroundTask("ses-native-child")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, revived.Status)
+	assert.Equal(t, initial.ChildAgentID, revived.ChildAgentID)
+	assert.Equal(t, []string{"ses-native-child"}, sink.RevivedTasks())
+	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
+
+	// Live child session update for Job 2 reaches the existing child transcript.
+	family.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses-native-child","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Job 2 output."}}}}`))
+
+	// Job 2 fails; ses-native-child must record StatusFailed (not stay Job 1's StatusSucceeded).
+	family.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"call-2","title":"Job 2","status":"failed","rawOutput":{"error":"Job 2 failed","metadata":{"sessionId":"ses-native-child"}},"content":[{"type":"content","content":{"type":"text","text":"Job 2 failed"}}]}`))
+
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	finalRow, found := sink.BackgroundTask("ses-native-child")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusFailed, finalRow.Status)
+	assert.Equal(t, initial.ChildAgentID, finalRow.ChildAgentID)
+	child := sink.Child(initial.ChildAgentID)
+	var childTexts []string
+	for _, msg := range child.Messages() {
+		if _, text, _, ok := agenttest.DecodeAssembledMessage(msg.Content); ok {
+			childTexts = append(childTexts, text)
+		}
+	}
+	assert.Equal(t, []string{"Job 2 output."}, childTexts)
+	reports := child.LeapMuxNotifications()
+	if assert.Len(t, reports, 2) {
+		assert.Equal(t, "Job 1 report.", reports[0]["text"])
+		assert.Equal(t, "Job 2 failed", reports[1]["text"])
+	}
+}
+
+func TestOpenCodeFinalOnArrivalToolCallHandlesSessionBackgroundStopAndReuse(t *testing.T) {
+	t.Parallel()
+
+	t.Run("final-on-arrival task call inspects rawOutput sessionId and consumes child stop", func(t *testing.T) {
+		t.Parallel()
+		family, _ := newOpenCodeFamilyBaseWithQueue(t)
+		family.recordChildStop("call-final", true)
+
+		obs := family.subagentFromToolCall(acp.ToolCallEnvelope{
+			ToolCallID: "call-final",
+			Title:      "task",
+			Kind:       "think",
+			Status:     "failed",
+			RawInput:   json.RawMessage(`{"description":"Inspect","prompt":"Check.","subagent_type":"explore"}`),
+			RawOutput:  json.RawMessage(`{"metadata":{"sessionId":"ses-final"}}`),
+		})
+		require.NotNil(t, obs)
+		assert.Equal(t, "ses-final", obs.RowKey)
+		assert.Equal(t, "ses-final", obs.ChildAgentKey)
+		assert.Equal(t, "call-final", obs.ChildSpawnSpanID)
+		assert.True(t, obs.CloseRow)
+		assert.Equal(t, bgtask.StatusInterrupted, obs.Status)
+		assert.False(t, family.takeChildStop("call-final"), "stop marker must be consumed")
+	})
+
+	t.Run("final-on-arrival background launch claims background session and handles early SSE", func(t *testing.T) {
+		t.Parallel()
+		family, _ := newOpenCodeFamilyBaseWithQueue(t)
+		family.handleDaemonEvent(json.RawMessage(`{"type":"session.error","properties":{"sessionID":"ses-bg-early"}}`))
+
+		obs := family.subagentFromToolCall(acp.ToolCallEnvelope{
+			ToolCallID: "call-bg-final",
+			Title:      "task",
+			Kind:       "think",
+			Status:     "completed",
+			RawInput:   json.RawMessage(`{"description":"BG","prompt":"Run.","subagent_type":"explore"}`),
+			RawOutput:  json.RawMessage(`{"metadata":{"sessionId":"ses-bg-early","background":true}}`),
+		})
+		require.NotNil(t, obs)
+		assert.Equal(t, "ses-bg-early", obs.RowKey)
+		assert.True(t, obs.CloseRow)
+		assert.Equal(t, bgtask.StatusFailed, obs.Status)
+	})
+
+	t.Run("final-on-arrival reused task does not leak reusedTaskCalls or attach session", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Job 1."))
+		family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-reused", "Done 1."))
+		_, attachedBefore := family.SessionOwner("ses-reused")
+		require.False(t, attachedBefore)
+
+		obs := family.subagentFromToolCall(acp.ToolCallEnvelope{
+			ToolCallID: "call-2",
+			Title:      "task",
+			Kind:       "think",
+			Status:     "completed",
+			RawInput:   json.RawMessage(`{"description":"Job 2","prompt":"Continue.","subagent_type":"explore","task_id":"ses-reused"}`),
+			RawOutput:  json.RawMessage(`{"metadata":{"sessionId":"ses-reused"}}`),
+		})
+		require.NotNil(t, obs)
+		assert.Equal(t, "ses-reused", obs.RowKey)
+		assert.True(t, obs.CloseRow)
+		assert.Equal(t, bgtask.StatusSucceeded, obs.Status)
+
+		family.childSessionsMu.Lock()
+		_, leakedReuse := family.reusedTaskCalls["call-2"]
+		family.childSessionsMu.Unlock()
+		assert.False(t, leakedReuse, "final-on-arrival reused task must not leak reusedTaskCalls")
+		_, attachedAfter := family.SessionOwner("ses-reused")
+		assert.False(t, attachedAfter, "final-on-arrival reused task must not attach a child session")
+		assert.Len(t, sink.BackgroundTasks(), 1)
+	})
+}
+
+func TestKiloStrongerEarlyChildEventOverwritesEarlierIdle(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		second   string
+		expected bgtask.Status
+	}{
+		{
+			name:     "session.error overwrites earlier idle",
+			second:   `{"type":"session.error","properties":{"sessionID":"ses-race"}}`,
+			expected: bgtask.StatusFailed,
+		},
+		{
+			name:     "session.deleted overwrites earlier idle",
+			second:   `{"type":"session.deleted","properties":{"info":{"id":"ses-race"}}}`,
+			expected: bgtask.StatusStopped,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			family, sink := newOpenCodeFamilyBaseWithQueue(t)
+			family.HandleToolCallForTest(openCodeTaskRequest(t, "call-race", "", "Run in background."))
+			family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-race","status":{"type":"idle"}}}`))
+			family.handleDaemonEvent(json.RawMessage(tc.second))
+
+			family.HandleToolCallUpdateForTest(openCodeBackgroundLaunchResult(t, "call-race", "ses-race"))
+			row, found := sink.BackgroundTask("ses-race")
+			require.True(t, found)
+			assert.Equal(t, tc.expected, row.Status)
+		})
+	}
+}
+
+func TestOpenCodeChildTrackingMapsAreCappedAndCleaned(t *testing.T) {
+	t.Parallel()
+	family, _ := newOpenCodeFamilyBaseWithQueue(t)
+
+	for i := range 600 {
+		family.handleDaemonEvent(json.RawMessage(fmt.Sprintf(`{"type":"session.status","properties":{"sessionID":"ses-%03d","status":{"type":"idle"}}}`, i)))
+		family.markTaskCallFinalized(fmt.Sprintf("call-%03d", i), "session-1")
+	}
+
+	family.childSessionsMu.Lock()
+	earlyLen := family.earlyChildEvents.Len()
+	finalizedLen := family.finalizedTaskCalls.Len()
+	family.childSessionsMu.Unlock()
+	assert.LessOrEqual(t, earlyLen, 512, "earlyChildEvents must stay capped")
+	assert.LessOrEqual(t, finalizedLen, 512, "finalizedTaskCalls must stay capped")
+
+	// Finalizing a reused task deletes its reusedTaskCalls entry.
+	family.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Job 1."))
+	family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-fg-done", "Done."))
+	family.HandleToolCallForTest(openCodeTaskRequest(t, "call-2", "ses-fg-done", "Job 2."))
+	family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-2", "ses-fg-done", "Done 2."))
+
+	family.childSessionsMu.Lock()
+	_, reuseStillPresent := family.reusedTaskCalls["call-2"]
+	family.childSessionsMu.Unlock()
+	assert.False(t, reuseStillPresent, "finalizing a reused call must delete reusedTaskCalls entry")
+
+	// Trailing daemon idle for a session already finished in foreground must not buffer into earlyChildEvents.
+	family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-fg-done","status":{"type":"idle"}}}`))
+	family.childSessionsMu.Lock()
+	bufferedAfterFG := family.earlyChildEvents.Has("ses-fg-done")
+	family.childSessionsMu.Unlock()
+	assert.False(t, bufferedAfterFG, "foreground-finished session must not buffer trailing earlyChildEvents")
+}
+
+func TestOpenCodeInlineFinalToolCallBackgroundAndReportPreservation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("inline-final background launch stays running and revives reused task", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+
+		// Job 1 runs and completes so ses-bg-reuse is finished.
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Job 1."))
+		family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-bg-reuse", "Job 1 done."))
+		row, ok := sink.BackgroundTask("ses-bg-reuse")
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+		// Job 2 arrives as an inline-final background launch tool_call reusing ses-bg-reuse.
+		raw, err := json.Marshal(map[string]any{
+			"sessionUpdate": "tool_call",
+			"toolCallId":    "call-2",
+			"title":         "task",
+			"kind":          "think",
+			"status":        "completed",
+			"rawInput": map[string]any{
+				"description":   "Job 2",
+				"prompt":        "Run in background.",
+				"subagent_type": "explore",
+				"task_id":       "ses-bg-reuse",
+			},
+			"rawOutput": map[string]any{
+				"metadata": map[string]any{
+					"sessionId":  "ses-bg-reuse",
+					"background": true,
+				},
+			},
+		})
+		require.NoError(t, err)
+		family.HandleToolCallForTest(raw)
+
+		assert.Contains(t, sink.RevivedTasks(), "ses-bg-reuse", "inline-final reused background launch must revive the finished row")
+		row, ok = sink.BackgroundTask("ses-bg-reuse")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status, "inline-final background launch must stay running until daemon SSE completes")
+	})
+
+	t.Run("inline-final foreground tool_call preserves content report text", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+		raw, err := json.Marshal(map[string]any{
+			"sessionUpdate": "tool_call",
+			"toolCallId":    "call-inline-fg",
+			"title":         "task",
+			"kind":          "think",
+			"status":        "completed",
+			"rawInput": map[string]any{
+				"description":   "Quick check",
+				"prompt":        "Check status.",
+				"subagent_type": "explore",
+			},
+			"rawOutput": map[string]any{
+				"metadata": map[string]any{
+					"sessionId": "ses-inline-fg",
+				},
+			},
+			"content": []any{
+				map[string]any{
+					"type": "content",
+					"content": map[string]any{
+						"type": "text",
+						"text": "Inline final report text.",
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		family.HandleToolCallForTest(raw)
+
+		row, ok := sink.BackgroundTask("ses-inline-fg")
+		require.True(t, ok)
+		require.NotEmpty(t, row.ChildAgentID)
+		child := sink.Child(row.ChildAgentID)
+		require.Len(t, child.LeapMuxNotifications(), 1, "inline-final foreground task must persist its report text")
+		assert.Equal(t, "Inline final report text.", child.LeapMuxNotifications()[0]["text"])
+	})
+
+	t.Run("capped tracking map stays within limit on delete and keeps re-inserted live entries", func(t *testing.T) {
+		t.Parallel()
+		family, _ := newOpenCodeFamilyBaseWithQueue(t)
+
+		// Insert target, delete it, fill to cap, re-insert target, then insert one more.
+		family.childSessionsMu.Lock()
+		family.recordEarlyChildEventLocked("ses-target", bgtask.StatusSucceeded)
+		family.earlyChildEvents.Delete("ses-target")
+		for i := range openCodeMaxTrackedEntries {
+			family.recordEarlyChildEventLocked(fmt.Sprintf("ses-pad-%04d", i), bgtask.StatusSucceeded)
+		}
+		// Re-insert ses-target so it is the NEWEST entry; it must survive the next eviction.
+		family.recordEarlyChildEventLocked("ses-target", bgtask.StatusFailed)
+		family.recordEarlyChildEventLocked("ses-after-target", bgtask.StatusSucceeded)
+		status, stillPresent := family.earlyChildEvents.Get("ses-target")
+		entryLen := family.earlyChildEvents.Len()
+		family.childSessionsMu.Unlock()
+
+		assert.True(t, stillPresent, "re-inserted live entry must not be evicted prematurely")
+		assert.Equal(t, bgtask.StatusFailed, status)
+		assert.LessOrEqual(t, entryLen, openCodeMaxTrackedEntries, "tracked map must stay within cap")
+	})
+}
+
+func TestFamilyBaseClearSessionState(t *testing.T) {
+	t.Parallel()
+	family, _ := newOpenCodeFamilyBaseWithQueue(t)
+	require.Equal(t, "session-1", family.CurrentSessionID())
+
+	family.childSessionsMu.Lock()
+	family.recordEarlyChildEventLocked("ses-early", bgtask.StatusSucceeded)
+	family.recordFinishedForegroundSessionLocked("ses-fg")
+	family.childSessionsMu.Unlock()
+	family.markTaskCallFinalized("call-s1", "session-1")
+	family.markTaskCallFinalized("call-s2", "session-2")
+
+	family.clearSessionState()
+
+	family.childSessionsMu.Lock()
+	assert.Zero(t, family.earlyChildEvents.Len())
+	assert.Zero(t, family.finishedForegroundSessions.Len())
+	assert.True(t, family.finalizedTaskCalls.Has("call-s1"), "current session finalized calls must stay")
+	assert.False(t, family.finalizedTaskCalls.Has("call-s2"), "other session finalized calls must be removed")
+	assert.Equal(t, 1, family.finalizedTaskCalls.Len())
+	family.childSessionsMu.Unlock()
+
+	family.SetSessionIDForTest("")
+	family.clearSessionState()
+
+	family.childSessionsMu.Lock()
+	assert.Zero(t, family.finalizedTaskCalls.Len(), "empty current session must reset finalizedTaskCalls")
+	family.childSessionsMu.Unlock()
 }

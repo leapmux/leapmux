@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -247,4 +249,97 @@ func TestCreateSessionReturnsAFailedStoreRead(t *testing.T) {
 	_, err := a.createSession(context.Background(), "stored")
 	require.ErrorContains(t, err, "the store is unavailable")
 	assert.Equal(t, []string{"session/projections"}, calls.methods())
+}
+
+func TestResumedSnapshotReconcilesChildrenWithoutSpuriousRevivalAndRevivesOnLiveTurn(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	sink := &agenttest.Sink{}
+	connection, opens := serveFollows(t, func(_ int, streamID string) map[string]any {
+		return map[string]any{"type": "end", "streamId": streamID}
+	})
+	a := newOfflineAgent(t, sink)
+	a.conn = connection
+
+	// Pre-existing finished child row from before resume must not be revived by historical replay.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "child-finished",
+		Kind:   bgtask.KindSubagent,
+		Title:  "Finished child",
+		Status: bgtask.StatusSucceeded,
+	}))
+
+	// Root snapshot announces both a finished child and an incomplete child.
+	rootSnap := []byte(`{"type":"item","streamId":"root","value":{"type":"snapshot","cursor":10,"records":[],"hasMore":false,"projections":{"values":{"subagentCatalog":[{"id":"child-finished","createdAt":1000,"mode":"continuable","label":"Finished child"},{"id":"child-incomplete","createdAt":1001,"mode":"continuable","label":"Incomplete child"}]}}}}`)
+	require.NoError(t, a.handleFrame(rootSnap))
+
+	streamByChild := map[string]string{}
+	for range 2 {
+		select {
+		case opened := <-opens:
+			streamByChild[opened.address.ChildSessionID] = opened.streamID
+		case <-ctx.Done():
+			t.Fatal("child follow did not open")
+		}
+	}
+	finishedStreamID := streamByChild["child-finished"]
+	incompleteStreamID := streamByChild["child-incomplete"]
+	require.NotEmpty(t, finishedStreamID)
+	require.NotEmpty(t, incompleteStreamID)
+
+	// Replay finished child's historical turn/start + turn/end(completed).
+	finishedSnap := []byte(`{"type":"item","streamId":"` + finishedStreamID + `","value":{"type":"snapshot","cursor":3,"records":[{"event":{"type":"subagent/descriptor","seq":1,"time":1000,"data":{"version":0,"mode":"continuable","label":"Finished child"}}},{"event":{"type":"turn/start","seq":2,"time":1001,"data":{"turn":1}}},{"event":{"type":"turn/end","seq":3,"time":1002,"data":{"turn":1,"reason":{"kind":"completed"}}}}],"hasMore":false,"projections":{"values":{"subagent":{"mode":"continuable","label":"Finished child","seq":1}}}}}`)
+	require.NoError(t, a.handleFrame(finishedSnap))
+
+	// Replay incomplete child's historical turn/start without turn/end.
+	incompleteSnap := []byte(`{"type":"item","streamId":"` + incompleteStreamID + `","value":{"type":"snapshot","cursor":2,"records":[{"event":{"type":"subagent/descriptor","seq":1,"time":1000,"data":{"version":0,"mode":"continuable","label":"Incomplete child"}}},{"event":{"type":"turn/start","seq":2,"time":1001,"data":{"turn":1}}}],"hasMore":false,"projections":{"values":{"subagent":{"mode":"continuable","label":"Incomplete child","seq":1}}}}}`)
+	require.NoError(t, a.handleFrame(incompleteSnap))
+
+	assert.Empty(t, sink.RevivedTasks(), "snapshot replay must never call ReviveBackgroundTask")
+	finishedRow, ok := sink.BackgroundTask("child-finished")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, finishedRow.Status)
+	assert.False(t, a.ActiveChildTurnState("child-finished").Active)
+
+	incompleteRow, ok := sink.BackgroundTask("child-incomplete")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, incompleteRow.Status, "never-ended resumed child must close as unknown outcome")
+	assert.False(t, a.ActiveChildTurnState("child-incomplete").Active)
+
+	// Only a live turn/start revives the finished continuable child.
+	liveStart := []byte(`{"type":"item","streamId":"` + finishedStreamID + `","value":{"type":"event","event":{"type":"turn/start","seq":4,"time":2000,"data":{"turn":2}}}}`)
+	require.NoError(t, a.handleFrame(liveStart))
+	assert.Equal(t, []string{"child-finished"}, sink.RevivedTasks())
+	finishedRow, ok = sink.BackgroundTask("child-finished")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, finishedRow.Status)
+	assert.True(t, a.ActiveChildTurnState("child-finished").Active)
+}
+
+func TestChildSnapshotReplaySkipsStaleJobRegisteredEvents(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.streams["child"] = &sessionStream{
+		address:         sessionAddress{Kind: "subagent", ParentSessionID: "native-root", ChildSessionID: "native-child", Mode: "continuable"},
+		sessionID:       "native-child",
+		parentSessionID: "native-root",
+		childAgentID:    "stored-child",
+		lastSeq:         -1,
+		pending:         map[string][]byte{},
+		ready:           make(chan struct{}),
+		resumed:         true,
+	}
+	snapshot := []byte(`{"type":"item","streamId":"child","value":{"type":"snapshot","cursor":4,"records":[{"event":{"type":"subagent/descriptor","seq":1,"time":1000,"data":{"version":0,"mode":"continuable","label":"Worker"}}},{"event":{"type":"turn/start","seq":2,"time":1001,"data":{"turn":1}}},{"event":{"type":"job/registered","seq":3,"time":1002,"data":{"jobId":"stale-job","command":"sleep 60"}}},{"event":{"type":"turn/end","seq":4,"time":1003,"data":{"turn":1,"reason":{"kind":"completed"}}}}],"hasMore":false,"projections":{"values":{"subagent":{"mode":"continuable","label":"Worker","seq":1}}}}}`)
+	require.NoError(t, a.handleFrame(snapshot))
+
+	_, staleFound := sink.Child("stored-child").BackgroundTask("deepseek-job:stale-job")
+	assert.False(t, staleFound, "replaying a child snapshot must not open stale StatusRunning shell rows")
+
+	// A live job/registered event after replay still opens its shell row.
+	liveJob := []byte(`{"type":"item","streamId":"child","value":{"type":"event","event":{"type":"job/registered","seq":5,"time":2000,"data":{"jobId":"live-job","command":"make test"}}}}`)
+	require.NoError(t, a.handleFrame(liveJob))
+	row, liveFound := sink.Child("stored-child").BackgroundTask("deepseek-job:live-job")
+	require.True(t, liveFound)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
 }

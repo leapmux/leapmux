@@ -7,9 +7,6 @@
 -- single registrant.
 CREATE TABLE agents (
     id               TEXT PRIMARY KEY,
-    -- Monotonic physical output ownership. Virtual children do not allocate it.
-    output_generation INTEGER NOT NULL DEFAULT 0
-        CHECK (typeof(output_generation) = 'integer') CHECK (output_generation >= 0),
     working_dir      TEXT NOT NULL DEFAULT '',
     plan_file_path           TEXT    NOT NULL DEFAULT '',
     plan_title               TEXT    NOT NULL DEFAULT '',
@@ -289,13 +286,6 @@ CREATE TABLE agent_input_queue_state (
     -- Optional AgentInputQueuePauseOwner ordinal. NULL means no pause owner.
     -- TestEnumColumnChecksMatchTheirProtoRanges checks the positive range.
     pause_owner     INTEGER CHECK (pause_owner IS NULL OR typeof(pause_owner) = 'integer') CHECK (pause_owner BETWEEN 1 AND 6),
-    -- Set while the Worker replaces this agent's process. It answers a
-    -- different question from pause_owner: not "who paused" but "is a write to
-    -- the provider safe right now". Retry and steering refuse while it is set,
-    -- because the old process is stopping and a write reaches a closed pipe.
-    -- Recovery clears it, because a Worker restart ends every restart in
-    -- flight.
-    restarting      INTEGER NOT NULL DEFAULT 0 CHECK (restarting IN (0, 1)),
     -- Backoff for the next AUTO_RETRY_SERVER_ERROR schedule. Durable state,
     -- not item state: an accepted retry leaves the queue, so item-local
     -- backoff would reset after every attempt. Doubles per consecutive
@@ -304,8 +294,6 @@ CREATE TABLE agent_input_queue_state (
     auto_retry_server_error_delay_ms INTEGER NOT NULL DEFAULT 10000
         CHECK (auto_retry_server_error_delay_ms BETWEEN 10000 AND 180000),
     active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
-    active_turn_steerable INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_steerable IN (0, 1)),
-    active_input_id TEXT NOT NULL DEFAULT '',
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- The queue is paused exactly when pause_reason is not NULL, and a pause
     -- always has an owner.
@@ -332,15 +320,11 @@ CREATE TABLE agent_input_queue_items (
     -- AgentInputState ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     state           INTEGER NOT NULL DEFAULT 1 CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 5),
     error           TEXT NOT NULL DEFAULT '',
-    edit_owner      TEXT NOT NULL DEFAULT '',
     version         INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
-    reserved_seq    INTEGER NOT NULL DEFAULT 0 CHECK (reserved_seq >= 0),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, order_index)
 );
-CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
-    ON agent_input_queue_items(agent_id) WHERE edit_owner <> '';
 -- One pending automatic retry per kind and agent. The literals are ordinals:
 -- 1 is AGENT_INPUT_STATE_QUEUED, 5 is AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
 -- and 8 is AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR. SQLite forbids a bound
@@ -386,7 +370,7 @@ BEGIN
 END;
 -- +goose StatementEnd
 
--- Pending control requests
+-- Pending non-blocking control requests (blocking requests live in memory).
 CREATE TABLE control_requests (
     agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     agent_session_id TEXT NOT NULL DEFAULT '',
@@ -397,9 +381,6 @@ CREATE TABLE control_requests (
     -- A changed payload or a new request after deletion gets a fresh token.
     -- The frontend echoes the token so the worker can deduplicate answers per instance.
     claim_token TEXT NOT NULL DEFAULT '',
-    -- 1 for a request that the agent does not wait for. A process exit keeps it.
-    -- A context clear, a tab close, and a session change remove it.
-    non_blocking INTEGER NOT NULL DEFAULT 0 CHECK (non_blocking IN (0, 1)),
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (agent_id, request_id)
 );
@@ -498,36 +479,16 @@ CREATE TABLE terminals (
     cols          INTEGER NOT NULL DEFAULT 80,
     rows          INTEGER NOT NULL DEFAULT 25,
     screen        BLOB NOT NULL DEFAULT x'',
-    exit_code     INTEGER NOT NULL DEFAULT 0,
     startup_error TEXT NOT NULL DEFAULT '',
     workspace_archived INTEGER NOT NULL DEFAULT 0,
-    -- 0 for an ordinary terminal tab. 1 for a QUAKE terminal -- the shell
-    -- behind the quake panel, which belongs to a working DIRECTORY on this
-    -- worker rather than to any one tab, so every tab that works in
-    -- working_dir reaches the same shell.
-    --
-    -- A flag rather than a second copy of the directory: working_dir above IS
-    -- the address, and a duplicate column could disagree with it.
-    is_quake      INTEGER NOT NULL DEFAULT 0,
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at     DATETIME
 );
 CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS NOT NULL;
 -- Serves the terminals branch of tab_locations, which the quake reference count
--- reads on every terminal close and every reconcile pass. The quake index below
--- covers only is_quake = 1 rows, so the TAB half of the count had no index and
--- scanned the table -- walking every closed row's 100KB screen blob to reach
--- the filter columns that sit after it.
+-- reads on every terminal close and every reconcile pass. Without this partial
+-- index, the query scanned every closed row's 100KB screen blob.
 CREATE INDEX idx_terminals_open_working_dir ON terminals(working_dir) WHERE closed_at IS NULL;
--- UNIQUE, and that is the whole guarantee that every device -- and every tab in
--- the directory -- shares one shell: a directory can have at most one OPEN
--- quake terminal, so two devices racing to open the panel cannot end up on two
--- PTYs. The loser of the insert re-reads the row and attaches to the winner's
--- terminal.
---
--- Scoped to open rows, so a directory can follow a shell the user exited.
-CREATE UNIQUE INDEX idx_terminals_quake_working_dir ON terminals(working_dir)
-  WHERE is_quake = 1 AND closed_at IS NULL;
 
 -- Links associate tabs with tracked worktrees.
 -- FILE and IMAGE tab IDs are unique only within an owner. The key must include user_id.
@@ -682,9 +643,6 @@ CREATE UNIQUE INDEX idx_agent_todos_task_id ON agent_todos(agent_id, task_id) WH
 -- and travels only over the E2EE WatchEvents channel.
 CREATE TABLE agent_background_tasks (
     owner_agent_id  TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE, -- ROOT main agent
-    -- Zero identifies unclaimed cloned history. Runtime writers supply a positive value.
-    output_generation INTEGER NOT NULL
-        CHECK (typeof(output_generation) = 'integer') CHECK (output_generation >= 0),
     row_key         TEXT NOT NULL,  -- provider linkage key (tool_use id / thread id / session id / task id)
     seq             INTEGER NOT NULL,
     kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 3), -- BackgroundTaskKind ordinal (SUBAGENT | SHELL | WORKFLOW)
@@ -700,7 +658,6 @@ CREATE TABLE agent_background_tasks (
     -- title_is_command field on the BackgroundTaskItem proto.
     title_is_command INTEGER NOT NULL DEFAULT 0,
     description     TEXT NOT NULL DEFAULT '',
-    active_form     TEXT NOT NULL DEFAULT '', -- live "what it does now" text
     -- A BackgroundTaskStatus ordinal. UNSPECIFIED (0) is outside the CHECK, so
     -- an upsert that forgot to set the status fails the write rather than
     -- storing a row no reader can classify.
@@ -712,6 +669,10 @@ CREATE TABLE agent_background_tasks (
     -- TestBackgroundTaskFinalStatusesAreTheTopOfTheRange verifies that this
     -- split agrees with bgtask.Status.IsFinished for every declared status.
     status          INTEGER NOT NULL CHECK (typeof(status) = 'integer') CHECK (status BETWEEN 1 AND 8),
+    -- Counts how many times ReviveAgentBackgroundTask reopened this row from a
+    -- final status. Report persistence uses this durable epoch to scope report
+    -- IDs across resumed runs and Worker restarts.
+    revive_count    INTEGER NOT NULL DEFAULT 0 CHECK (revive_count >= 0),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     ended_at        DATETIME,
@@ -723,6 +684,11 @@ CREATE TABLE agent_background_tasks (
 -- ChildTask=2 and ChildActivity=3 own canonical activity. The enum numbering test checks these ordinals.
 CREATE UNIQUE INDEX idx_agent_background_tasks_canonical_child ON agent_background_tasks(child_agent_id)
     WHERE child_agent_id <> '' AND role IN (2, 3);
+-- Covering indexes for active background-work queries: root lookup by owner_agent_id
+-- and recursive descendant traversal by parent_agent_id. Non-partial so queries that
+-- bind proto enum ordinals as SQL parameters seek them directly.
+CREATE INDEX idx_agent_background_tasks_owner_status ON agent_background_tasks(owner_agent_id, status);
+CREATE INDEX idx_agent_background_tasks_parent_child_status ON agent_background_tasks(parent_agent_id, child_agent_id, status);
 
 -- Every OPEN tab and the directory its git questions are answered from, as one
 -- relation.
@@ -751,20 +717,18 @@ CREATE UNIQUE INDEX idx_agent_background_tasks_canonical_child ON agent_backgrou
 -- The projection covers every payload-backed kind, FILE and IMAGE alike: the
 -- view reads tab_type from the row rather than stating a constant.
 --
--- workspace_archived and is_quake ride along so the QUAKE REFERENCE COUNT can
--- read this one relation too, rather than restating the per-type rule a fourth
--- and fifth time. is_quake is 0 on the branches whose table has no such column,
--- which is honest rather than a placeholder: only a terminal can BE a quake
--- terminal, and a reader that excludes them wants every other row.
+-- workspace_archived rides along so the QUAKE REFERENCE COUNT can read this
+-- one relation too, rather than restating the per-type rule. Quake terminals
+-- live in memory only, so every row in tab_locations is a real tab.
 CREATE VIEW tab_locations AS
 SELECT 1 AS tab_type, id AS tab_id, '' AS user_id, working_dir AS working_dir,
-       workspace_archived AS workspace_archived, 0 AS is_quake
+       workspace_archived AS workspace_archived
 FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL
 UNION ALL
-SELECT 2, id, '', working_dir, workspace_archived, is_quake
+SELECT 2, id, '', working_dir, workspace_archived
 FROM terminals WHERE closed_at IS NULL
 UNION ALL
-SELECT tab_type, tab_id, user_id, working_dir, workspace_archived, 0
+SELECT tab_type, tab_id, user_id, working_dir, workspace_archived
 FROM worker_tab_payloads;
 
 -- Pending operations protect resources until Hub publication has a known result.

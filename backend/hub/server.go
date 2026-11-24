@@ -42,12 +42,14 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
+	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
+	"github.com/leapmux/leapmux/internal/util/periodic"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/lifecycle"
@@ -228,13 +230,17 @@ type runtimeLeaseWatcher interface {
 
 // Server is a reusable Hub server instance.
 type Server struct {
-	hasher     auth.SecretHasher
-	cfg        *config.Config
-	store      store.Store
-	keystore   *keystore.Keystore
-	settings   *settings.Manager
-	idpHandler *service.IdPHandler
-	server     *http.Server
+	hasher           auth.SecretHasher
+	cfg              *config.Config
+	store            store.Store
+	keystore         *keystore.Keystore
+	settings         *settings.Manager
+	idpHandler       *service.IdPHandler
+	oauthStates      service.OAuthStateStore
+	pendingSignups   *service.PendingOAuthSignupStore
+	webauthnSessions *hubwebauthn.SessionStore
+	deviceAuths      service.DeviceAuthorizationStore
+	server           *http.Server
 	// listeners owns every TCP socket, including the one -listen gave, and
 	// rebinds them when the extra_listen_addresses setting changes.
 	listeners *listenerSet
@@ -786,11 +792,25 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	mgmtSvc := service.NewWorkerManagementService(st, hasher, wMgr, workerEffects, mailSender, mailRenderer, setMgr)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 
+	// Short-lived ceremony stores held in memory and swept periodically in Serve.
+	oauthStates := service.NewMemoryOAuthStateStore()
+	pendingSignups := service.NewPendingOAuthSignupStore()
+	webauthnSessions := hubwebauthn.NewSessionStore()
+	deviceAuths := service.NewMemoryDeviceAuthorizationStore()
+
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, authContexts)
 	// A connected worker reports its owner's username, so it follows a rename
-	// through the user-info effect.
+	// through the user-info effect. In-memory per-user ceremonies follow
+	// user-wide revocations (including replays from revocationwatcher).
 	lifecycle := auth.NewCredentialLifecycleEffects(authContexts, channelSvc, cMgr,
-		auth.WithUserInfoObserver(connectorSvc.RedeliverWorkerIdentity))
+		auth.WithUserInfoObserver(connectorSvc.RedeliverWorkerIdentity),
+		auth.WithUserRevokedObserver(func(userID string, gen int64) {
+			if uid, ok := userid.New(userID); ok {
+				webauthnSessions.DeleteByUserBeforeGeneration(uid, gen)
+				deviceAuths.ConsumeApprovedForUserBeforeGeneration(uid, gen, time.Now().UTC())
+			}
+		}),
+	)
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
 
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
@@ -798,6 +818,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		Store:         st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle, Keystore: ks,
 		Mail: mailSender, Renderer: mailRenderer, Captcha: captchaMgr,
 		Listen: listenReports, SoloGate: authContexts.SoloGate(),
+		PendingOAuthSignups: pendingSignups, WebAuthnSessions: webauthnSessions,
 	})
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	leapmuxv1connect.RegisterSystemServiceHandler(connectServer, service.NewSystemService(authSvc, setMgr))
@@ -816,7 +837,16 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 
 	// INBOUND OAuth: the hub as a client of an identity provider, at
 	// /auth/idp/*.
-	idpHandler := service.NewIdPHandler(st, hasher, cfg, setMgr, lifecycle, ks)
+	idpHandler := service.NewIdPHandler(service.IdPHandlerDeps{
+		SessionHasher:       hasher,
+		Store:               st,
+		Config:              cfg,
+		Settings:            setMgr,
+		Lifecycle:           lifecycle,
+		Keystore:            ks,
+		OAuthStates:         oauthStates,
+		PendingOAuthSignups: pendingSignups,
+	})
 	idpHandler.RegisterRoutes(mux)
 
 	// OUTBOUND OAuth: the hub as an OAuth 2.1 authorization server, at
@@ -832,9 +862,10 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		HubURL:        hubBaseURL,
 		// The three anonymous legs share the interceptor's budget table; see
 		// ratelimit.AllowHTTP.
-		Limiter:    rateLimitMgr,
-		Notices:    credentialNotices,
-		ServingCtx: servingCtx,
+		Limiter:              rateLimitMgr,
+		Notices:              credentialNotices,
+		ServingCtx:           servingCtx,
+		DeviceAuthorizations: deviceAuths,
 	})
 	oauthServer.RegisterRoutes(mux)
 
@@ -848,7 +879,17 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// UserService drives credential-rotation paths (ChangePassword) through the
 	// shared lifecycle, whose RevokeUserPreservingSession hard-closes every
 	// channel a user owns alongside the delegation-token revocation.
-	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer, ks)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:                st,
+		Config:               cfg,
+		Settings:             setMgr,
+		Lifecycle:            lifecycle,
+		Mail:                 mailSender,
+		Renderer:             mailRenderer,
+		Keystore:             ks,
+		WebAuthnSessions:     webauthnSessions,
+		DeviceAuthorizations: deviceAuths,
+	})
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 
 	// The admin services: the authenticated, online surface of hub
@@ -939,7 +980,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// and the ownership rule -- not a role -- decides what each caller sees.
 	// The two verbs that do need an administrator (a hub-wide registration and
 	// a vouch) say so in their own handlers.
-	appSvc := service.NewAppService(st, setMgr, tokenValidator, lifecycle)
+	appSvc := service.NewAppService(st, setMgr, tokenValidator, lifecycle, deviceAuths)
 	leapmuxv1connect.RegisterAppServiceHandler(connectServer, appSvc)
 
 	sectionSvc := service.NewSectionService(st)
@@ -1152,6 +1193,10 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		keystore:          ks,
 		settings:          setMgr,
 		idpHandler:        idpHandler,
+		oauthStates:       oauthStates,
+		pendingSignups:    pendingSignups,
+		webauthnSessions:  webauthnSessions,
+		deviceAuths:       deviceAuths,
 		server:            server,
 		listeners:         listeners,
 		listenerErrs:      listenerErrs,
@@ -1472,11 +1517,21 @@ func (s *Server) Serve(ctx context.Context) error {
 	// The lease is held. Closing here is what LeaseHeld's waiter reads.
 	close(s.leaseHeld)
 
-	// Start background OAuth token refresh.
-	s.backgroundLoops = append(s.backgroundLoops, s.idpHandler.StartTokenRefresh(serveCtx))
-
-	// Start periodic cleanup of soft-deleted records.
-	s.backgroundLoops = append(s.backgroundLoops, cleanup.StartLoop(serveCtx, s.store))
+	// Start periodic cleanup of soft-deleted records and expired in-memory
+	// ceremony state.
+	s.backgroundLoops = append(s.backgroundLoops,
+		cleanup.StartLoop(serveCtx, s.store),
+		periodic.Start(serveCtx, periodic.Schedule{
+			Interval:     5 * time.Minute,
+			SkipFirstRun: true,
+		}, func(context.Context) {
+			now := time.Now().UTC()
+			s.oauthStates.DeleteExpired(now)
+			s.pendingSignups.DeleteExpired(now)
+			s.webauthnSessions.DeleteExpired(now)
+			s.deviceAuths.DeleteExpired(now)
+		}),
+	)
 
 	// Report the periods in which this process did not run, so a suspended laptop
 	// explains the expired leases, ended streams, and refused credentials that

@@ -62,6 +62,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		// Only a queue overflow supplies new information here.
 		if task := a.readBackgroundTask(metadata); task.Kind == qwenBackgroundQueue {
 			a.reportStatusAfterOutput(queueOverflowText(task.Status))
+			a.reconcileBackgroundTasks()
 		}
 		return true
 	}

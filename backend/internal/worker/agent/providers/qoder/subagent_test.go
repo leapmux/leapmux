@@ -12,10 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -193,15 +195,17 @@ func TestQoderWorkflowUserCompletionKeepsMissingCanonicalArchivePending(t *testi
 	t.Parallel()
 	fixture := newQoderWorkflowFixture(t)
 	require.NoError(t, os.Remove(fixture.outputFile))
+	clock := testutil.NewQuartzMock(t)
 	sink := &agenttest.Sink{}
-	a := newOfflineAgent(t, sink)
+	a := newOfflineAgentWithRuntime(t, sink, clock, nil)
 	a.opts = agent.Options{HomeDir: fixture.homeDir, WorkingDir: fixture.workingDir}
 	a.HandleOutput([]byte(qoderWorkflowLaunch))
 	a.HandleOutput(qoderWorkflowUserNotification(t, "session-1", "wf-1", "run-workflow", fixture.outputFile, "completed"))
 	workflow, exists := sink.BackgroundTask("workflow:session-1:run-workflow")
 	require.True(t, exists)
 	assert.Equal(t, bgtask.StatusRunning, workflow.Status)
-	assert.Len(t, a.workflows, 1)
+	assert.Empty(t, a.workflows)
+	assert.Equal(t, 1, qoderArchiveJobCount(a))
 }
 
 func TestQoderWorkflowUserCompletionRequiresJournalForDeclaredOrKnownChildren(t *testing.T) {
@@ -515,4 +519,297 @@ func TestQoderUnknownChildFrameDoesNotEnterTheRoot(t *testing.T) {
 	a := newOfflineAgent(t, sink)
 	a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"unknown","message":{"role":"assistant","content":[{"type":"text","text":"stray child"}]}}`))
 	assert.Empty(t, sink.Messages(), "an unknown child frame must not become a root answer")
+}
+
+func TestQoderTaskUpdatedClosesActiveRows(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.HandleOutput([]byte(qoderChildStarted))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-2","tool_use_id":"spawn-2","task_type":"local_agent","description":"Second child","prompt":"Work."}`))
+
+	// Non-final patch leaves the child open and persists no unknown frame.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_updated","session_id":"session-1","task_id":"task-2","patch":{"status":"running"}}`))
+	second, ok := sink.BackgroundTask("spawn-2")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, second.Status)
+
+	// Top-level killed status closes the aborted background local_agent without tool_use_id.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_updated","session_id":"session-1","task_id":"task-1","status":"killed"}`))
+	first, ok := sink.BackgroundTask("spawn-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusStopped, first.Status)
+	assert.ErrorIs(t, a.InterruptChild("spawn-1", agent.StopContext{}), agent.ErrChildRouteNotReady)
+
+	// Nested patch.status closes the second child as failed.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_updated","session_id":"session-1","task_id":"task-2","patch":{"status":"failed"}}`))
+	second, ok = sink.BackgroundTask("spawn-2")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, second.Status)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestQoderBackgroundTasksChangedClosesFinalAndDroppedTasks(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.HandleOutput([]byte(qoderChildStarted))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-2","tool_use_id":"spawn-2","task_type":"local_agent","description":"Second child","prompt":"Work."}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"bash-1","task_type":"local_bash","description":"Build project"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"bash-2","task_type":"local_bash","description":"Watch logs"}`))
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"session-1","tasks":[{"task_id":"task-1","status":"completed"},{"task_id":"task-2","status":"running"},{"task_id":"bash-1","status":"failed"}]}`))
+
+	row1, ok := sink.BackgroundTask("spawn-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row1.Status)
+	row2, ok := sink.BackgroundTask("spawn-2")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row2.Status)
+	bash1, ok := sink.BackgroundTask("bash-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, bash1.Status)
+	bash2, ok := sink.BackgroundTask("bash-2")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, bash2.Status)
+
+	// Empty active list closes remaining active tracked tasks.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"session-1","tasks":[]}`))
+	row2, ok = sink.BackgroundTask("spawn-2")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row2.Status)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestQoderToollessTaskNotificationResolvesTrackedTasks(t *testing.T) {
+	t.Parallel()
+	t.Run("local_agent", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(qoderChildStarted))
+		a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","session_id":"session-1","task_id":"task-1","status":"completed"}`))
+		row, ok := sink.BackgroundTask("spawn-1")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		assert.Empty(t, sink.Messages())
+	})
+	t.Run("workflow", func(t *testing.T) {
+		t.Parallel()
+		fixture := newQoderWorkflowFixture(t)
+		writeQoderWorkflowFixtureFile(t, fixture.outputFile, `{"runId":"wf_1","taskId":"wf-1","workflowName":"native-code","status":"completed","agentCount":0}`)
+		require.NoError(t, os.Remove(fixture.journal))
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.opts = agent.Options{HomeDir: fixture.homeDir, WorkingDir: fixture.workingDir}
+		a.HandleOutput([]byte(qoderWorkflowLaunch))
+		a.HandleOutput([]byte(fmt.Sprintf(`{"type":"system","subtype":"task_notification","session_id":"session-1","task_id":"wf-1","status":"completed","output_file":%q}`, fixture.outputFile)))
+		workflow, ok := sink.BackgroundTask("workflow:session-1:run-workflow")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, workflow.Status)
+	})
+}
+
+func TestQoderLocalBashAndInProcessTeammateLifecycle(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+
+	// local_bash with empty task_id stays ignored.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","session_id":"session-1","task_type":"local_bash"}`))
+	assert.Empty(t, sink.BackgroundTasks())
+
+	// local_bash with task_id opens as KindShell and closes via task_notification.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","session_id":"session-1","task_id":"bash-1","task_type":"local_bash","description":"Run unit tests"}`))
+	shell, ok := sink.BackgroundTask("bash-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.KindShell, shell.Kind)
+	assert.Equal(t, bgtask.StatusRunning, shell.Status)
+	assert.Equal(t, "Run unit tests", shell.Title)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","session_id":"session-1","task_id":"bash-1","status":"completed"}`))
+	shell, ok = sink.BackgroundTask("bash-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, shell.Status)
+
+	// in_process_teammate with no identity is ignored.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","session_id":"session-1","task_type":"in_process_teammate","description":"No id"}`))
+	assert.Len(t, sink.BackgroundTasks(), 1)
+
+	// in_process_teammate with task_id opens as KindSubagent with a child transcript and closes cleanly.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","session_id":"session-1","task_id":"mate-1","task_type":"in_process_teammate","description":"Reviewer","prompt":"Review the patch."}`))
+	mate, ok := sink.BackgroundTask("mate-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.KindSubagent, mate.Kind)
+	assert.Equal(t, bgtask.StatusRunning, mate.Status)
+	assert.Equal(t, "Reviewer", mate.Title)
+	require.NotEmpty(t, mate.ChildAgentID)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","session_id":"session-1","task_id":"mate-1","status":"completed"}`))
+	mate, ok = sink.BackgroundTask("mate-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, mate.Status)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestQoderWorkflowReplayCompletionRetryAndFallback(t *testing.T) {
+	t.Parallel()
+	t.Run("duplicate replay wakes pending archive retry", func(t *testing.T) {
+		t.Parallel()
+		fixture := newQoderWorkflowFixture(t)
+		require.NoError(t, os.Remove(fixture.outputFile))
+		require.NoError(t, os.Remove(fixture.journal))
+		clock := testutil.NewQuartzMock(t)
+		sink := &agenttest.Sink{}
+		a := newOfflineAgentWithRuntime(t, sink, clock, nil)
+		a.opts = agent.Options{HomeDir: fixture.homeDir, WorkingDir: fixture.workingDir}
+		a.HandleOutput([]byte(qoderWorkflowLaunch))
+
+		notification := qoderWorkflowUserNotification(t, "session-1", "wf-1", "run-workflow", fixture.outputFile, "completed")
+		a.HandleOutput(notification)
+		workflow, ok := sink.BackgroundTask("workflow:session-1:run-workflow")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, workflow.Status)
+		assert.Empty(t, a.workflows)
+		assert.Equal(t, 1, qoderArchiveJobCount(a))
+
+		writeQoderWorkflowFixtureFile(t, fixture.outputFile, `{"runId":"wf_1","taskId":"wf-1","workflowName":"native-code","status":"completed","agentCount":0}`)
+		a.HandleOutput(notification)
+		workflow, ok = sink.BackgroundTask("workflow:session-1:run-workflow")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusSucceeded, workflow.Status)
+		assert.Zero(t, qoderArchiveJobCount(a))
+	})
+
+	t.Run("non-incomplete error during retry settles as unknown outcome", func(t *testing.T) {
+		t.Parallel()
+		fixture := newQoderWorkflowFixture(t)
+		require.NoError(t, os.Remove(fixture.outputFile))
+		clock := testutil.NewQuartzMock(t)
+		sink := &agenttest.Sink{}
+		closed := qoderChildCloseSignal(sink, "workflow:session-1:run-workflow")
+		a := newOfflineAgentWithRuntime(t, sink, clock, nil)
+		newTimer, stopTimer := testutil.NewTimerTraps(t, clock, qoderArchiveTimerTag)
+		ctx := testutil.DeadlineContext(t)
+		a.opts = agent.Options{HomeDir: fixture.homeDir, WorkingDir: fixture.workingDir}
+		a.HandleOutput([]byte(qoderWorkflowLaunch))
+		a.HandleOutput(qoderWorkflowUserNotification(t, "session-1", "wf-1", "run-workflow", fixture.outputFile, "completed"))
+
+		delay := testutil.WaitForTimer(t, ctx, newTimer)
+		writeQoderWorkflowFixtureFile(t, fixture.outputFile, `{"runId":"wf_1","taskId":"wf-1","workflowName":"native-code","status":"failed","agentCount":0}`)
+		testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, stopTimer)
+		awaitQoderChildClose(t, ctx, closed)
+		awaitQoderArchiveRetries(t, ctx, a)
+
+		workflow, ok := sink.BackgroundTask("workflow:session-1:run-workflow")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, workflow.Status)
+	})
+
+	t.Run("retry timeout settles as unknown outcome", func(t *testing.T) {
+		t.Parallel()
+		fixture := newQoderWorkflowFixture(t)
+		require.NoError(t, os.Remove(fixture.outputFile))
+		clock := testutil.NewQuartzMock(t)
+		sink := &agenttest.Sink{}
+		closed := qoderChildCloseSignal(sink, "workflow:session-1:run-workflow")
+		a := newOfflineAgentWithRuntime(t, sink, clock, nil)
+		newTimer, stopTimer := testutil.NewTimerTraps(t, clock, qoderArchiveTimerTag)
+		ctx := testutil.DeadlineContext(t)
+		a.opts = agent.Options{HomeDir: fixture.homeDir, WorkingDir: fixture.workingDir}
+		a.HandleOutput([]byte(qoderWorkflowLaunch))
+		a.HandleOutput(qoderWorkflowUserNotification(t, "session-1", "wf-1", "run-workflow", fixture.outputFile, "completed"))
+
+		elapsed := time.Duration(0)
+		for elapsed < qoderArchiveRetryLimit {
+			delay := testutil.WaitForTimer(t, ctx, newTimer)
+			testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, stopTimer)
+			elapsed += delay
+		}
+		awaitQoderChildClose(t, ctx, closed)
+		awaitQoderArchiveRetries(t, ctx, a)
+
+		workflow, ok := sink.BackgroundTask("workflow:session-1:run-workflow")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, workflow.Status)
+	})
+
+	t.Run("process exit settles as unknown outcome", func(t *testing.T) {
+		t.Parallel()
+		fixture := newQoderWorkflowFixture(t)
+		require.NoError(t, os.Remove(fixture.outputFile))
+		clock := testutil.NewQuartzMock(t)
+		processDone := make(chan struct{})
+		sink := &agenttest.Sink{}
+		closed := qoderChildCloseSignal(sink, "workflow:session-1:run-workflow")
+		a := newOfflineAgentWithRuntime(t, sink, clock, processDone)
+		newTimer, stopTimer := testutil.NewTimerTraps(t, clock, qoderArchiveTimerTag)
+		ctx := testutil.DeadlineContext(t)
+		a.opts = agent.Options{HomeDir: fixture.homeDir, WorkingDir: fixture.workingDir}
+		a.HandleOutput([]byte(qoderWorkflowLaunch))
+		a.HandleOutput(qoderWorkflowUserNotification(t, "session-1", "wf-1", "run-workflow", fixture.outputFile, "completed"))
+
+		assert.Equal(t, qoderArchiveRetryFirst, testutil.WaitForTimer(t, ctx, newTimer))
+		close(processDone)
+		stopTimer.MustWait(ctx).MustRelease(ctx)
+		awaitQoderChildClose(t, ctx, closed)
+		awaitQoderArchiveRetries(t, ctx, a)
+
+		workflow, ok := sink.BackgroundTask("workflow:session-1:run-workflow")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, workflow.Status)
+	})
+}
+
+func TestQoderBackgroundTasksChangedLeavesForegroundChildrenRunning(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+
+	// Start a foreground local_agent, a foreground in_process_teammate, and a
+	// background local_agent (marked via run_in_background on Agent tool_use).
+	a.HandleOutput([]byte(qoderChildStarted))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","session_id":"session-1","task_id":"mate-1","task_type":"in_process_teammate","description":"Reviewer","prompt":"Review the patch."}`))
+	a.HandleOutput([]byte(`{"type":"assistant","session_id":"session-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"spawn-bg","name":"Agent","input":{"description":"Background child","prompt":"Work in background.","run_in_background":true}}]}}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","session_id":"session-1","task_id":"task-bg","tool_use_id":"spawn-bg","task_type":"local_agent","description":"Background child","prompt":"Work in background."}`))
+
+	// An empty background_tasks_changed list omits all three tasks.
+	// Only the background child may close as unknown outcome; foreground children stay running.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"background_tasks_changed","session_id":"session-1","tasks":[]}`))
+
+	fgAgent, ok := sink.BackgroundTask("spawn-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, fgAgent.Status, "foreground local_agent must stay running when omitted from background_tasks_changed")
+
+	fgMate, ok := sink.BackgroundTask("mate-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, fgMate.Status, "foreground in_process_teammate must stay running when omitted from background_tasks_changed")
+
+	bgAgent, ok := sink.BackgroundTask("spawn-bg")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, bgAgent.Status, "background local_agent must close when omitted from background_tasks_changed")
+}
+
+func TestQoderWorkflowReplayNonIncompleteArchiveErrorClosesWorkflow(t *testing.T) {
+	t.Parallel()
+	fixture := newQoderWorkflowFixture(t)
+	writeQoderWorkflowFixtureFile(t, fixture.outputFile, `{"runId":"wf_1","taskId":"wf-1","workflowName":"native-code","status":"completed","agentCount":1}`)
+	// Journal entry with an unknown child state produces a non-incomplete archive error
+	// after canonical output.json has already confirmed completion.
+	writeQoderWorkflowFixtureFile(t, fixture.journal, `{"type":"result","agentId":"child-1","result":{"state":"corrupt","outputPath":"/tmp/child-1.output","transcriptPath":"/tmp/agent-child-1.jsonl"}}`+"\n")
+
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.opts = agent.Options{HomeDir: fixture.homeDir, WorkingDir: fixture.workingDir}
+	a.HandleOutput([]byte(qoderWorkflowLaunch))
+	a.HandleOutput(qoderWorkflowUserNotification(t, "session-1", "wf-1", "run-workflow", fixture.outputFile, "completed"))
+
+	workflow, ok := sink.BackgroundTask("workflow:session-1:run-workflow")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, workflow.Status, "non-incomplete archive error on replay must close the workflow instead of stranding it running")
+	assert.Empty(t, a.workflows)
+	assert.NotEmpty(t, sink.LeapMuxNotifications())
 }

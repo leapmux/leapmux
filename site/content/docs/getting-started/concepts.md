@@ -176,7 +176,7 @@ A Hub that only observes sees *who talks to whom* and the control-plane metadata
 
 Each Worker has a persistent static keypair. The Frontend pins that key **trust-on-first-use (TOFU)**: it records the Worker's key on first connection and rejects any later handshake whose key doesn't match. If the key changes, you get a **"Worker public key changed"** dialog showing 4-word fingerprints for the expected and actual keys, and you must explicitly **Accept** or **Reject**. Pinning detects a Hub substituting a Worker key in a channel your browser opens. It does not stop a Hub opening its own channel or serving modified Frontend code. (Closing the dialog counts as Reject — it fails closed.)
 
-For the full protocol, threat model, and trust boundaries, see [Security & Threat Model](/docs/admin/security/). For administrator-side encryption at rest (a separate keystore protecting Hub-stored secrets like OAuth tokens), see [Encryption & Data](/docs/admin/encryption-and-data/).
+For the full protocol, threat model, and trust boundaries, see [Security & Threat Model](/docs/admin/security/). For administrator-side encryption at rest (a separate keystore protecting Hub-stored secrets like OAuth provider client secrets), see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## Persistence
 

@@ -35,6 +35,10 @@ type Agent struct {
 	// nativeTasks keeps each native session link and its authoritative finished outcome.
 	// Base.Mu protects this map. ClearContext removes the old session's task identities.
 	nativeTasks map[string]cursorNativeTask
+	// backgroundTaskCalls holds normalized row keys of `task` calls whose final
+	// update carried `rawOutput.isBackground == true` before `subagent_spawned`
+	// arrived. Base.Mu protects this map, and ClearContext clears it.
+	backgroundTaskCalls map[string]bool
 
 	// transcript is the sink that configure installed, held under its own type so
 	// the extension handler can reach EnrichToolSpan. The transcript is the single

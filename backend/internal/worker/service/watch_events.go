@@ -9,7 +9,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
-	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -199,7 +198,7 @@ func (svc *Service) replayTerminalCatchUp(
 	sink *replaySink,
 	termID string,
 	afterOffset int64,
-	row db.Terminal,
+	row terminalRecord,
 ) {
 	// The frontend's after_offset tells us how far it has already
 	// processed; ScreenSnapshotSince returns an incremental delta when the

@@ -502,22 +502,29 @@ func TestInputRecoveryKeepsWorkAndControlsUntilApproval(t *testing.T) {
 						require.NoError(t, err)
 					}
 				}
-				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{AgentID: owner, RequestID: "pending", Payload: []byte(`{}`), NonBlocking: kind == "closed child question"})
+				createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{AgentID: owner, RequestID: "pending", Payload: []byte(`{}`), NonBlocking: kind == "closed child question"})
 			}
 			enqueueRecoveryInput(t, svc, id, "held-input")
+			if kind == "background task" {
+				// Automatic drain holds ordinary input behind active background
+				// work; an explicit Preempt bypasses the hold and reaches input
+				// recovery without stopping the running background task first.
+				_, err := svc.InputQueue.Preempt(t.Context(), id, "held-input")
+				require.NoError(t, err)
+			}
 			recoveryQueuedItem(t, svc, id, "held-input")
 			assert.False(t, starts.fake(0).wasStopped())
 			if kind == "background task" {
 				assert.EqualValues(t, 1, svc.Output.AgentActivitySnapshot(id, id).ActiveTasks)
 			} else {
-				controls, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), owner)
+				controls, err := svc.Output.ListControlRequests(t.Context(), owner)
 				require.NoError(t, err)
 				require.Len(t, controls, 1)
 			}
 			approveRecoveryInput(t, svc, id)
 			waitForMessageCount(t, svc, id, 1)
 			if kind != "background task" {
-				controls, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), owner)
+				controls, err := svc.Output.ListControlRequests(t.Context(), owner)
 				require.NoError(t, err)
 				if kind == "closed child question" {
 					assert.Len(t, controls, 1, "conversation-owned questions survive the same-session replacement")
@@ -572,8 +579,7 @@ func TestInputRecoveryApprovalRejectsChangedTargets(t *testing.T) {
 			case "session":
 				require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: id, AgentSessionID: "changed-thread"}))
 			case "generation":
-				_, err := svc.DB.ExecContext(t.Context(), "UPDATE agents SET output_generation = output_generation + 1 WHERE id = ?", id)
-				require.NoError(t, err)
+				newTestRootOutputSink(t, svc.Output, id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 			case "replacement":
 				unlock := svc.Agents.LockAgent(id)
 				svc.Agents.StopAndWaitAgent(id)

@@ -490,6 +490,25 @@ func TestPreservingBlanksKeepsTheWholePairForABlankKey(t *testing.T) {
 	assert.Equal(t, "Build", merged.GroupLabel)
 }
 
+func TestPreservingBlanksReviveCount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("incoming zero preserves existing revive count", func(t *testing.T) {
+		merged := Item{}.PreservingBlanksFrom(Item{ReviveCount: 3})
+		assert.Equal(t, int64(3), merged.ReviveCount)
+	})
+
+	t.Run("incoming non-zero overrides existing revive count", func(t *testing.T) {
+		merged := Item{ReviveCount: 5}.PreservingBlanksFrom(Item{ReviveCount: 3})
+		assert.Equal(t, int64(5), merged.ReviveCount)
+	})
+
+	t.Run("both zero stays zero", func(t *testing.T) {
+		merged := Item{}.PreservingBlanksFrom(Item{})
+		assert.Zero(t, merged.ReviveCount)
+	})
+}
+
 // CleanTitle touches the title pair and nothing else.
 func TestUpsertCleanLeavesEveryOtherFieldAlone(t *testing.T) {
 	u := Upsert{

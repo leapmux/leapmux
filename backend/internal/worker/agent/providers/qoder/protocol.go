@@ -26,6 +26,14 @@ const (
 	qoderSubtypeTaskProgress           = "task_progress"
 )
 
+// These task lifecycle subtypes update the background-task registry and carry
+// no transcript content. handleSystemTo routes them on the root stream instead
+// of dropping them in qoderDropsFrame.
+const (
+	qoderSubtypeTaskUpdated            = "task_updated"
+	qoderSubtypeBackgroundTasksChanged = "background_tasks_changed"
+)
+
 // These words of an mcp_status reply select the MCP servers that
 // registerMcpServersForForms registers again. A configured scope identifies
 // the source of a server: user, project and local settings, and --mcp-config

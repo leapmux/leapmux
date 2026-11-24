@@ -334,16 +334,14 @@ func (s Status) IsWorking() bool {
 // registry pipeline stays decoupled from the proto generated types. A zero
 // EndedAt means the task is still active.
 type Item struct {
-	Role Role
-	// OutputGeneration is Worker storage authority and never enters the public projection.
-	OutputGeneration int64
-	RowKey           string
-	ChildAgentID     string
-	ParentAgentID    string
-	Kind             Kind
-	GroupKey         string
-	GroupLabel       string
-	Title            string
+	Role          Role
+	RowKey        string
+	ChildAgentID  string
+	ParentAgentID string
+	Kind          Kind
+	GroupKey      string
+	GroupLabel    string
+	Title         string
 	// TitleIsCommand marks Title as a verbatim shell command rather than prose,
 	// so a client can set it as code. Only a provider that hands the command
 	// over ITSELF may set it: an ACP terminal/create carries the command and
@@ -354,6 +352,7 @@ type Item struct {
 	Description    string
 	ActiveForm     string
 	Status         Status
+	ReviveCount    int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	EndedAt        time.Time // zero == active
@@ -417,6 +416,9 @@ func (i Item) PreservingBlanksFrom(existing Item) Item {
 	}
 	if i.ActiveForm == "" {
 		i.ActiveForm = existing.ActiveForm
+	}
+	if i.ReviveCount == 0 {
+		i.ReviveCount = existing.ReviveCount
 	}
 	return i
 }

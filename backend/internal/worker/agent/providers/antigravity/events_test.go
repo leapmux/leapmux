@@ -54,7 +54,7 @@ func TestAntigravityFirstOpenIndexSkipsBackgroundSteps(t *testing.T) {
 	a.root.steps[2].status = "CORTEX_STEP_STATUS_RUNNING"
 	a.root.steps[2].consumed = false
 	a.root.steps[2].liveOutputAccepted = true
-	a.root.background[2] = backgroundTask{rowKey: "task", stepIndex: 2}
+	a.root.background["task"] = backgroundTask{rowKey: "task", stepIndex: 2}
 	assert.Equal(t, 6, a.firstOpenIndexLocked(a.root))
 	a.root.steps[3].status = "CORTEX_STEP_STATUS_RUNNING"
 	a.root.steps[3].consumed = false

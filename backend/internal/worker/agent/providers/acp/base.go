@@ -1673,6 +1673,7 @@ func (b *Base) persistPromptResponseTo(writer agentapi.TranscriptServices, resp 
 // ToolCallEnvelope holds a parsed ACP session/notification tool_call.
 // It carries these fields that the preceding parser omitted:
 //   - Title.
+//   - Content.
 //   - RawInput.
 //   - RawOutput.
 //   - Meta.
@@ -1683,6 +1684,7 @@ type ToolCallEnvelope struct {
 	Title      string          `json:"title"`
 	Kind       string          `json:"kind"`
 	Status     string          `json:"status"`
+	Content    []ToolCallBlock `json:"content"`
 	RawInput   json.RawMessage `json:"rawInput"`
 	RawOutput  json.RawMessage `json:"rawOutput"`
 	Meta       json.RawMessage `json:"_meta"`
@@ -1776,6 +1778,14 @@ type SubagentObservation struct {
 	Prompt string
 	// CloseRow gives the row its final Status after the upsert when true.
 	CloseRow bool
+	// KeepOpen reports that a final tool_call frame intentionally launches a
+	// background subagent whose row must stay open until a later completion
+	// event closes it. When true, handleToolCall does not coerce the
+	// observation to a final status or CloseRow=true.
+	KeepOpen bool
+	// ReviveRow reopens an already-finished row before applying a non-final upsert.
+	// Providers set it when a subagent or workflow resumes under the same RowKey.
+	ReviveRow bool
 	// Spawns identifies a subagent launch request, including a request with invalid arguments.
 	// It owns no span, so a long run does not move concurrent tools one column right.
 	//

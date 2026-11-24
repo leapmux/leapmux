@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
@@ -19,7 +18,7 @@ func TestPreTouchPollOAuthError_ExpiresAtBoundary(t *testing.T) {
 		sessionHasher: hubtestutil.TestSecretHasher(),
 	}
 
-	body, rejected := h.preTouchPollOAuthError(&store.DeviceAuthorization{ExpiresAt: now}, now)
+	body, rejected := h.preTouchPollOAuthError(&DeviceAuthorization{ExpiresAt: now}, now)
 
 	require.True(t, rejected)
 	assert.Equal(t, "expired_token", body.Error)
@@ -33,7 +32,7 @@ func TestPreTouchPollOAuthError_ThrottleUsesSuppliedNow(t *testing.T) {
 	h := &OAuthServerHandler{
 		sessionHasher: hubtestutil.TestSecretHasher(),
 	}
-	row := &store.DeviceAuthorization{
+	row := &DeviceAuthorization{
 		ExpiresAt:    now.Add(time.Hour),
 		LastPolledAt: &lastPoll,
 	}
@@ -79,7 +78,7 @@ func TestOAuthServerHandlerNow_UsesTheInjectedClock(t *testing.T) {
 	// the injected clock already passed must read as expired even though the
 	// real clock is nowhere near it.
 	body, rejected := h.preTouchPollOAuthError(
-		&store.DeviceAuthorization{ExpiresAt: fixed.Add(-time.Second)}, h.now())
+		&DeviceAuthorization{ExpiresAt: fixed.Add(-time.Second)}, h.now())
 	require.True(t, rejected)
 	assert.Equal(t, "expired_token", body.Error)
 }

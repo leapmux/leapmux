@@ -213,10 +213,11 @@ func (a *Agent) handleDeviceStatus(raw []byte) {
 	var frame struct {
 		Runtime runtimeScope `json:"runtime"`
 		Status  struct {
-			Mode string `json:"current_permission_mode"`
+			Mode                string                    `json:"current_permission_mode"`
+			BackgroundProcesses *[]lettaBackgroundProcess `json:"background_processes"`
 		} `json:"device_status"`
 	}
-	if json.Unmarshal(raw, &frame) != nil || !validPermissionMode(frame.Status.Mode) {
+	if json.Unmarshal(raw, &frame) != nil {
 		return
 	}
 	a.Mu.Lock()
@@ -224,15 +225,21 @@ func (a *Agent) handleDeviceStatus(raw []byte) {
 		a.Mu.Unlock()
 		return
 	}
-	changed := a.settings.permissionMode != frame.Status.Mode
-	a.settings.permissionMode = frame.Status.Mode
-	if pending := a.modePending; pending != nil && pending.scope == frame.Runtime {
-		pending.observed = true
+	var changed bool
+	if validPermissionMode(frame.Status.Mode) {
+		changed = a.settings.permissionMode != frame.Status.Mode
+		a.settings.permissionMode = frame.Status.Mode
+		if pending := a.modePending; pending != nil && pending.scope == frame.Runtime {
+			pending.observed = true
+		}
 	}
 	a.Mu.Unlock()
 	if changed {
 		a.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDPermissionMode: frame.Status.Mode})
 		a.approvalWork.Run("permissions", a.approvePendingPermissions)
+	}
+	if frame.Status.BackgroundProcesses != nil {
+		a.reconcileBackgroundProcesses(*frame.Status.BackgroundProcesses)
 	}
 }
 

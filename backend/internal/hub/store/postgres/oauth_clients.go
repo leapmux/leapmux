@@ -109,6 +109,14 @@ func (s *oauthClientStore) LockForElevation(ctx context.Context, clientID string
 	return mapErr(err)
 }
 
+func (s *oauthClientStore) LockActive(ctx context.Context, clientID string) error {
+	if !s.conn.inTx() {
+		return store.ErrLockingReadOutsideTransaction
+	}
+	_, err := s.conn.q.LockActiveOAuthClient(ctx, clientID)
+	return mapErr(err)
+}
+
 func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store.OAuthClientIcon, error) {
 	row, err := s.conn.q.GetOAuthClientIcon(ctx, clientID)
 	if err != nil {
@@ -282,9 +290,6 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 			if errors.Is(mapErr(err), store.ErrNotFound) {
 				return nil
 			}
-			return err
-		}
-		if _, err := q.DeleteEphemeralGrantsForOAuthClient(ctx, p.ClientID); err != nil {
 			return err
 		}
 		if _, err := q.DeleteAuthorizationCodesForOAuthClient(ctx, p.ClientID); err != nil {

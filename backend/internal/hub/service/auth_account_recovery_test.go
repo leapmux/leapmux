@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -29,12 +30,13 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
+	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func setupAccountRecoveryAuthService(t *testing.T, sender mail.Sender) (leapmuxv1connect.AuthServiceClient, store.Store) {
-	client, st, _ := setupAccountRecoveryAuthServiceWithClock(t, sender, nil)
+	client, st, _, _ := setupAccountRecoveryAuthServiceFull(t, sender, nil)
 	return client, st
 }
 
@@ -44,6 +46,11 @@ func setupAccountRecoveryAuthService(t *testing.T, sender mail.Sender) (leapmuxv
 // reads, so a seeded SMTP row is visible to the service under test; nil
 // leaves the defaults.
 func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, configure func(t *testing.T, set *settings.Manager)) (leapmuxv1connect.AuthServiceClient, store.Store, *service.AuthService) {
+	client, st, authSvc, _ := setupAccountRecoveryAuthServiceFull(t, sender, configure)
+	return client, st, authSvc
+}
+
+func setupAccountRecoveryAuthServiceFull(t *testing.T, sender mail.Sender, configure func(t *testing.T, set *settings.Manager)) (leapmuxv1connect.AuthServiceClient, store.Store, *service.AuthService, *hubwebauthn.SessionStore) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -56,13 +63,20 @@ func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
+	sessions := hubwebauthn.NewSessionStore()
+	lifecycle := auth.NewCredentialLifecycleEffects(sc, nil, nil, auth.WithUserRevokedObserver(func(userID string, gen int64) {
+		if uid, ok := userid.New(userID); ok {
+			sessions.DeleteByUserBeforeGeneration(uid, gen)
+		}
+	}))
 	authSvc := newInitializedAuthService(t, service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
-		Store:     st,
-		Config:    testConfig(),
-		Settings:  set,
-		Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil),
-		Mail:      sender,
-		Renderer:  mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }},
+		Store:            st,
+		Config:           testConfig(),
+		Settings:         set,
+		Lifecycle:        lifecycle,
+		Mail:             sender,
+		Renderer:         mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }},
+		WebAuthnSessions: sessions,
 	})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
@@ -71,7 +85,7 @@ func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, 
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
-	return client, st, authSvc
+	return client, st, authSvc, sessions
 }
 
 func extractAccountRecoveryToken(body string) string {
@@ -277,7 +291,7 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	t.Parallel()
 
 	sender := &mailSenderDouble{}
-	client, st := setupAccountRecoveryAuthService(t, sender)
+	client, st, _, sessions := setupAccountRecoveryAuthServiceFull(t, sender, nil)
 
 	userID := id.Generate()
 	hash, err := password.Hash("oldpass123")
@@ -297,14 +311,14 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	require.NoError(t, err)
 	ceremonyID := id.Generate()
 	now := time.Now().UTC()
-	require.NoError(t, st.WebAuthnSessions().Create(context.Background(), store.CreateWebAuthnSessionParams{
-		ID:          ceremonyID,
-		Kind:        leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_LOGIN,
-		UserID:      userID,
-		PayloadJSON: "{}",
-		SessionData: []byte("dummy-ceremony"),
-		ExpiresAt:   now.Add(5 * time.Minute),
-		CreatedAt:   now,
+	require.NoError(t, sessions.Create(hubwebauthn.CeremonySession{
+		ID:                 ceremonyID,
+		Kind:               hubwebauthn.KindLogin,
+		UserID:             uid,
+		UserAuthGeneration: 0,
+		SessionData:        &gowebauthn.SessionData{Challenge: "dummy-ceremony"},
+		ExpiresAt:          now.Add(5 * time.Minute),
+		CreatedAt:          now,
 	}))
 
 	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
@@ -329,8 +343,8 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	_, err = st.Sessions().GetByID(context.Background(), oldSession.ID, time.Now().UTC())
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
-	_, err = st.WebAuthnSessions().Get(context.Background(), ceremonyID)
-	assert.ErrorIs(t, err, store.ErrNotFound)
+	_, ok := sessions.Get(ceremonyID)
+	assert.False(t, ok)
 
 	_, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "wipeme", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)

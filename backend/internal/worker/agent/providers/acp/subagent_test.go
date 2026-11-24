@@ -522,3 +522,393 @@ func TestACP_SpawnToolCallOpensNoSpan(t *testing.T) {
 	assert.Empty(t, msgs[0].SpansOpenAtPersist)
 	assert.Equal(t, "call-spawn", msgs[0].SpanID)
 }
+
+type persistHookSink struct {
+	agent.ProviderServices
+	onPersist func(span agent.SpanInfo)
+}
+
+func (s *persistHookSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if s.onPersist != nil {
+		s.onPersist(span)
+	}
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func TestACP_AlreadyFinalToolCallClosesRowBeforePersist(t *testing.T) {
+	t.Parallel()
+	t.Run("non-final observation on already-final tool_call", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		var b *Base
+		persisted := false
+		openAtPersist := true
+		rec := &persistHookSink{
+			ProviderServices: agent.NewProviderServices(sink),
+			onPersist: func(span agent.SpanInfo) {
+				if span.SpanID != "call-final" {
+					return
+				}
+				persisted = true
+				b.openRows.mu.Lock()
+				_, openAtPersist = b.openRows.keys["call-final"]
+				b.openRows.mu.Unlock()
+			},
+		}
+		b = &Base{sink: rec, sessionID: "session-1"}
+		b.hooks.SubagentFromToolCall = func(tc ToolCallEnvelope) *SubagentObservation {
+			return &SubagentObservation{
+				RowKey: tc.ToolCallID, Title: tc.Title, Status: bgtask.StatusRunning, Spawns: true,
+			}
+		}
+		b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-final","title":"Task","status":"completed"}`))
+		assert.True(t, persisted)
+		assert.False(t, openAtPersist, "final tool_call observation must close openRows before PersistMessage")
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+	})
+
+	t.Run("nil observation on final tool_call closes previously opened row", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		var b *Base
+		persisted := false
+		openAtPersist := true
+		rec := &persistHookSink{
+			ProviderServices: agent.NewProviderServices(sink),
+			onPersist: func(span agent.SpanInfo) {
+				if span.SpanID != "call-twice" || !span.Closing {
+					return
+				}
+				persisted = true
+				b.openRows.mu.Lock()
+				_, openAtPersist = b.openRows.keys["row-call-twice"]
+				b.openRows.mu.Unlock()
+			},
+		}
+		b = &Base{sink: rec, sessionID: "session-1"}
+		b.hooks.SubagentFromToolCall = func(tc ToolCallEnvelope) *SubagentObservation {
+			if StatusIsFinal(tc.Status) {
+				return nil
+			}
+			return &SubagentObservation{
+				RowKey: "row-" + tc.ToolCallID, Title: tc.Title, Status: bgtask.StatusRunning, Spawns: true,
+			}
+		}
+		b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-twice","title":"Task","status":"pending"}`))
+		require.Equal(t, bgtask.StatusRunning, sink.BackgroundTasks()[0].Status)
+		b.openRows.mu.Lock()
+		_, openBeforeClose := b.openRows.keys["row-call-twice"]
+		b.openRows.mu.Unlock()
+		require.True(t, openBeforeClose)
+
+		b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-twice","title":"Task","status":"completed"}`))
+		assert.True(t, persisted)
+		assert.False(t, openAtPersist, "final tool_call must remove previously opened row from openRows before PersistMessage")
+		rows := sink.BackgroundTasks()
+		require.Len(t, rows, 1)
+		assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+	})
+}
+
+func TestACP_FailedRenameKeepsOriginalRowKeyForIncompleteTurnClose(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{
+		sink:      &registryProbeSink{ProviderServices: agent.NewProviderServices(sink), failRename: true},
+		sessionID: "session-1",
+	}
+	b.hooks.SubagentFromToolCall = func(tc ToolCallEnvelope) *SubagentObservation {
+		return &SubagentObservation{RowKey: tc.ToolCallID, Title: "Task", Status: bgtask.StatusRunning, Spawns: true}
+	}
+	b.hooks.SubagentFromToolCallUpdate = func(tcu ToolCallUpdateEnvelope) *SubagentObservation {
+		return &SubagentObservation{
+			RowKey: "child-1", RenameFrom: tcu.ToolCallID, Title: "Task", Status: bgtask.StatusRunning,
+		}
+	}
+	b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"Task","status":"pending"}`))
+	b.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"in_progress"}`))
+	b.finishIncompleteACPPrompt(agent.MessageCompletionInterrupted)
+	b.FlushRegistryObservations()
+
+	row, found := sink.BackgroundTask("call-1")
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusStopped, row.Status)
+}
+
+func TestACP_SubagentObservationReviveRowLifecycleAndError(t *testing.T) {
+	t.Parallel()
+	t.Run("revives finished row and accepts second outcome", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+
+		b.ApplySubagentObservation(&SubagentObservation{
+			RowKey: "child-1", ChildAgentKey: "child-1", Title: "Helper", Status: bgtask.StatusRunning, Spawns: true,
+		})
+		b.ApplySubagentObservation(&SubagentObservation{
+			RowKey: "child-1", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
+		})
+		row, found := sink.BackgroundTask("child-1")
+		require.True(t, found)
+		require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+		b.ApplySubagentObservation(&SubagentObservation{
+			RowKey: "child-1", ChildAgentKey: "child-1", Title: "Helper", Status: bgtask.StatusRunning, ReviveRow: true,
+		})
+		row, found = sink.BackgroundTask("child-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+		assert.True(t, b.FeedChildUpdate("child-1", json.RawMessage(`{"sessionUpdate":"plan","entries":[{"content":"Job 2","status":"pending"}]}`)))
+
+		b.ApplySubagentObservation(&SubagentObservation{
+			RowKey: "child-1", Status: bgtask.StatusFailed, CloseRow: true, Mode: ModeCloseOnly,
+		})
+		row, found = sink.BackgroundTask("child-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusFailed, row.Status)
+	})
+
+	t.Run("revive error skips reopen, openRows, and upsert", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+
+		b.ApplySubagentObservation(&SubagentObservation{
+			RowKey: "child-1", ChildAgentKey: "child-1", Title: "Helper", Status: bgtask.StatusRunning, Spawns: true,
+		})
+		b.ApplySubagentObservation(&SubagentObservation{
+			RowKey: "child-1", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
+		})
+		sink.ReviveErr = errors.New("revive failed")
+
+		b.ApplySubagentObservation(&SubagentObservation{
+			RowKey: "child-1", ChildAgentKey: "child-1", Title: "Helper 2", Status: bgtask.StatusRunning, ReviveRow: true,
+		})
+		row, found := sink.BackgroundTask("child-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		assert.Equal(t, "Helper", row.Title)
+		b.children.mu.Lock()
+		_, closed := b.children.closed["child-1"]
+		b.children.mu.Unlock()
+		assert.True(t, closed)
+		assert.NotContains(t, b.openRows.takeAll(), "child-1")
+	})
+}
+
+func TestACP_RegistryObservationReviveRowValidationAndFIFORetry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		obs  SubagentObservation
+	}{
+		{name: "close-only", obs: SubagentObservation{RowKey: "w1", Mode: ModeCloseOnly, CloseRow: true, Status: bgtask.StatusSucceeded, ReviveRow: true}},
+		{name: "close-row", obs: SubagentObservation{RowKey: "w1", Mode: ModeUpsert, CloseRow: true, Status: bgtask.StatusSucceeded, ReviveRow: true}},
+		{name: "finished-status", obs: SubagentObservation{RowKey: "w1", Mode: ModeUpsert, Status: bgtask.StatusFailed, ReviveRow: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Error(t, validateRegistryObservation(&tc.obs))
+		})
+	}
+
+	t.Run("transient revive error retries FIFO and withholds reopen until success", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+
+		require.NoError(t, b.ApplyRegistryObservation(&SubagentObservation{
+			RegistryOnly: true, RowKey: "wf-1", Title: "Run 1", Status: bgtask.StatusRunning,
+		}))
+		require.NoError(t, b.ApplyRegistryObservation(&SubagentObservation{
+			RegistryOnly: true, RowKey: "wf-1", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
+		}))
+		b.FlushRegistryObservations()
+		b.markChildClosed("wf-1")
+
+		sink.ReviveErr = errors.New("transient sqlite busy")
+		require.NoError(t, b.ApplyRegistryObservation(&SubagentObservation{
+			RegistryOnly: true, RowKey: "wf-1", Title: "Run 2", Status: bgtask.StatusRunning, ReviveRow: true,
+		}))
+		// openRows records admission immediately so retireSession queues a close behind it.
+		b.openRows.mu.Lock()
+		_, trackedOpen := b.openRows.keys["wf-1"]
+		b.openRows.mu.Unlock()
+		assert.True(t, trackedOpen)
+
+		b.FlushRegistryObservations()
+		row, found := sink.BackgroundTask("wf-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+		assert.Equal(t, "Run 1", row.Title, "upsert must stay blocked behind failed revive")
+		b.children.mu.Lock()
+		_, stillClosed := b.children.closed["wf-1"]
+		b.children.mu.Unlock()
+		assert.True(t, stillClosed, "reopenChildRoute must not run while revive fails")
+
+		sink.ReviveErr = nil
+		b.FlushRegistryObservations()
+		row, found = sink.BackgroundTask("wf-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+		assert.Equal(t, "Run 2", row.Title)
+		b.children.mu.Lock()
+		_, stillClosed = b.children.closed["wf-1"]
+		b.children.mu.Unlock()
+		assert.False(t, stillClosed)
+	})
+}
+
+func TestACP_RenameAndReviveFailureKeepsMemoryAlignedWithRegistry(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "provisional-1", ChildAgentKey: "provisional-1", Title: "Helper", Status: bgtask.StatusRunning, Spawns: true,
+	})
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: "session-1", SessionID: "child-session", RowKey: "provisional-1"})
+	sink.ReviveErr = errors.New("revive failed")
+
+	applied := b.ApplySubagentObservationForSession("session-1", &SubagentObservation{
+		RowKey: "stable-1", RenameFrom: "provisional-1", ChildAgentKey: "stable-1",
+		Title: "Helper", Status: bgtask.StatusRunning, ReviveRow: true,
+	})
+	assert.False(t, applied, "a refused revival reports false")
+
+	// The registry rename already committed under stable-1, so in-memory maps
+	// and openRows must follow stable-1 instead of staying under provisional-1.
+	_, oldFound := sink.BackgroundTask("provisional-1")
+	assert.False(t, oldFound)
+	_, newFound := sink.BackgroundTask("stable-1")
+	require.True(t, newFound)
+
+	assert.Equal(t, "stable-1", b.childSessionRow("child-session"))
+	b.children.mu.Lock()
+	_, oldAgent := b.children.agents["provisional-1"]
+	_, newAgent := b.children.agents["stable-1"]
+	b.children.mu.Unlock()
+	assert.False(t, oldAgent)
+	assert.True(t, newAgent)
+
+	openKeys := b.openRows.takeAll()
+	assert.NotContains(t, openKeys, "provisional-1")
+	assert.Contains(t, openKeys, "stable-1")
+}
+
+func TestACP_ApplySubagentObservationForSessionReportsRefusalAndNil(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+
+	assert.False(t, b.ApplySubagentObservationForSession("session-1", nil))
+	assert.False(t, b.ApplySubagentObservationForSession("session-1", &SubagentObservation{}))
+
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "child-1", ChildAgentKey: "child-1", Title: "Helper", Status: bgtask.StatusRunning, Spawns: true,
+	})
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "child-1", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
+	})
+	sink.ReviveErr = errors.New("revive refused")
+
+	assert.False(t, b.ApplySubagentObservationForSession("session-1", &SubagentObservation{
+		RowKey: "child-1", ChildAgentKey: "child-1", Status: bgtask.StatusRunning, ReviveRow: true,
+	}), "main session observation refusal returns false")
+
+	// Also test refusal through a child session route.
+	sink.ReviveErr = nil
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "parent-child", ChildAgentKey: "parent-child", Title: "Parent child", Status: bgtask.StatusRunning, Spawns: true,
+	})
+	b.AttachChildSession(ChildSessionTarget{RootSessionID: "session-1", SessionID: "child-session", RowKey: "parent-child"})
+	assert.False(t, b.ApplySubagentObservationForSession("child-session", nil))
+	b.refuseChild("nested-refused")
+	assert.False(t, b.ApplySubagentObservationForSession("child-session", &SubagentObservation{
+		RowKey: "nested-refused", Status: bgtask.StatusRunning,
+	}), "child session observation refusal returns false")
+}
+
+func TestACP_FinalToolCallHonorsKeepOpen(t *testing.T) {
+	t.Parallel()
+
+	t.Run("KeepOpen keeps row running and in openRows while persisting closing frame", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+		b.hooks.SubagentFromToolCall = func(tc ToolCallEnvelope) *SubagentObservation {
+			return &SubagentObservation{
+				RowKey:   "bg-1",
+				Title:    "Background task",
+				Status:   bgtask.StatusRunning,
+				KeepOpen: true,
+				Spawns:   true,
+			}
+		}
+
+		b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-bg","title":"Task","status":"completed"}`))
+
+		row, found := sink.BackgroundTask("bg-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+		b.openRows.mu.Lock()
+		_, trackedOpen := b.openRows.keys["bg-1"]
+		b.openRows.mu.Unlock()
+		assert.True(t, trackedOpen, "KeepOpen row must stay tracked in openRows")
+
+		var closingFrames []agenttest.Message
+		for _, msg := range sink.Messages() {
+			if msg.SpanID == "call-bg" && msg.Closing {
+				closingFrames = append(closingFrames, msg)
+			}
+		}
+		require.Len(t, closingFrames, 1, "completed tool_call frame must still persist as closing")
+
+		b.retireSession("session-1")
+		row, found = sink.BackgroundTask("bg-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusStopped, row.Status, "retireSession must close the open KeepOpen row")
+		assert.Empty(t, b.openRows.takeAll())
+	})
+
+	t.Run("KeepOpen combined with CloseRow or finished status still closes row", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name     string
+			closeRow bool
+		}{
+			{name: "CloseRow true with StatusFailed", closeRow: true},
+			{name: "CloseRow false with StatusFailed", closeRow: false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+				b.hooks.SubagentFromToolCall = func(env ToolCallEnvelope) *SubagentObservation {
+					return &SubagentObservation{
+						RowKey:   "bg-fail",
+						Title:    "Background task",
+						Status:   bgtask.StatusFailed,
+						KeepOpen: true,
+						CloseRow: tc.closeRow,
+						Spawns:   true,
+					}
+				}
+
+				b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-bg-fail","title":"Task","status":"completed"}`))
+
+				row, found := sink.BackgroundTask("bg-fail")
+				require.True(t, found)
+				assert.Equal(t, bgtask.StatusFailed, row.Status)
+
+				b.openRows.mu.Lock()
+				_, trackedOpen := b.openRows.keys["bg-fail"]
+				b.openRows.mu.Unlock()
+				assert.False(t, trackedOpen, "a closed row must not remain in openRows")
+			})
+		}
+	})
+}

@@ -20,9 +20,23 @@ type SubagentReport struct {
 // SubagentReportWrite identifies one report independently from its content.
 // ReportID is stable across protocol replays.
 // Each accepted identity keeps its exact bytes. A whitespace-only identity is invalid.
+// When RowKey is non-empty, PersistSubagentReport scopes ReportID to the
+// durable revival epoch of that background-task row so resumed runs do not
+// collide with earlier runs across restarts.
 type SubagentReportWrite struct {
 	ReportID string
+	RowKey   string
 	Report   SubagentReport
+}
+
+// ScopeSubagentReportID suffixes reportID with "#<reviveCount+1>" after the
+// first revival so revived subagent runs keep distinct idempotency keys while
+// remaining idempotent within each run.
+func ScopeSubagentReportID(reportID string, reviveCount int64) string {
+	if reportID == "" || reviveCount <= 0 {
+		return reportID
+	}
+	return fmt.Sprintf("%s#%d", reportID, reviveCount+1)
 }
 
 // ChildSubagentReportWrite routes one report through a required task row.

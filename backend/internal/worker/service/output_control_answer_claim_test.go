@@ -10,13 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 func TestControlResponseReservationRequiresTheCurrentRequestInstance(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "new-claim", Payload: []byte(`{"id":"request"}`),
 	})
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
@@ -47,14 +48,14 @@ func TestClaimControlResponseAnswer(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 	createClaimTestAgent(t, svc, "agent-2")
-	for _, request := range []db.StoreControlRequestParams{
+	for _, request := range []testControlRequestParams{
 		{AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA"},
 		{AgentID: "agent-1", RequestID: "req-2", ClaimToken: "tokA"},
 		{AgentID: "agent-1", RequestID: "req-3"},
 		{AgentID: "agent-2", RequestID: "req-1", ClaimToken: "tokA"},
 	} {
 		request.Payload = []byte(`{}`)
-		createTestControlRequest(t, t.Context(), svc.Queries, request)
+		createTestControlRequest(t, t.Context(), svc.Output, request)
 	}
 
 	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokA"), "the first claim wins")
@@ -68,7 +69,7 @@ func TestClaimControlResponseAnswer(t *testing.T) {
 
 	// A REUSED request id whose NEW instance carries a DIFFERENT token claims fresh, while the prior
 	// instance's token stays claimed -- so a stale duplicate of the prior instance (tokA) still loses.
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokB", Payload: []byte(`{"reissued":true}`),
 	})
 	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-1", "tokB"),
@@ -98,7 +99,7 @@ func TestClaimControlResponseAnswer_ConcurrentClaimsExactlyOneWins(t *testing.T)
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA", Payload: []byte(`{}`),
 	})
 	const n = 64
@@ -125,7 +126,7 @@ func TestClaimControlResponseAnswerRejectsDatabaseFailure(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA", Payload: []byte(`{}`),
 	})
 	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_control_reservation BEFORE INSERT ON control_response_payloads BEGIN SELECT RAISE(ABORT, 'reservation unavailable'); END`)
@@ -138,13 +139,6 @@ func TestClaimControlResponseAnswerRejectsDatabaseFailure(t *testing.T) {
 }
 
 // TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh is the id-reuse closure guard.
-// A subprocess relaunch (the per-exit ClearPendingControlRequests path) does NOT clear the durable
-// claims -- so a DUPLICATE of a pre-relaunch answer straddling the restart (carrying the PRIOR
-// instance's token) is still deduped, closing the double-persist window. Yet the genuine post-relaunch
-// answer -- to a re-issued request whose new instance minted a FRESH token -- claims a distinct key and
-// is NOT rejected as a duplicate. No release-on-reissue is involved; the two are told apart purely by
-// their echoed claim_token. Contrast the OLD release-based design, where a reused id reopened the dedup
-// window for the prior instance's lagging duplicate.
 func TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh(t *testing.T) {
 	t.Parallel()
 
@@ -152,28 +146,64 @@ func TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh(t *t
 	createClaimTestAgent(t, svc, "agent-1")
 
 	// The pre-relaunch subprocess answered Codex/ACP-style request id "2" (instance A, token "instA").
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "2", ClaimToken: "instA", Payload: []byte(`{}`),
 	})
 	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA"), "instance A's answer wins")
 	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA"),
 		"a same-instance duplicate (same token) still loses")
 
-	// The subprocess exits/relaunches: ClearPendingControlRequests deletes DB requests but does NOT
-	// drop the durable claims.
+	// The subprocess exits/relaunches: ClearPendingControlRequests drops live blocking controls
+	// without touching durable claims.
 	svc.Output.ClearPendingControlRequests("agent-1")
 	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA"),
 		"a duplicate of instance A straddling the relaunch (old token) is still deduped")
 
-	// The NEW subprocess re-issues request id "2" -- a fresh INSTANCE minting a distinct token. Its
-	// genuine answer (token "instB") claims a distinct key and persists, without any release step.
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	// The NEW subprocess re-issues request id "2" -- a fresh INSTANCE minting a distinct token.
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: "agent-1", RequestID: "2", ClaimToken: "instB", Payload: []byte(`{}`),
 	})
 	assert.True(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instB"),
 		"the reissued instance's fresh token claims fresh -- the genuine post-relaunch answer is not withheld")
 	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "2", "instA"),
 		"instance A's stale duplicate STILL loses even after instance B claimed -- the reuse window stays closed")
+}
+
+func TestClaimControlResponseAnswerAndCancelSerializeUnderRace(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+
+	for i := range 50 {
+		token := "tok-" + string(rune('A'+(i%26))) + "-" + string(rune('0'+(i/26)))
+		require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+			RequestID:  "req-race",
+			InstanceID: token,
+			Payload:    []byte(`{"id":"req-race","method":"approve"}`),
+		}))
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		var claimErr error
+		go func() {
+			defer wg.Done()
+			<-start
+			_, claimErr = svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
+				AgentID: "agent-1", RequestID: "req-race", ClaimToken: token,
+				RequestPayload: []byte(`{}`), ResponseContent: []byte(`{}`), ResolvedContent: []byte(`{}`),
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			sink.CancelControlRequest("req-race")
+		}()
+		close(start)
+		wg.Wait()
+		require.NoError(t, claimErr)
+	}
 }
 
 func claimControlResponseForTest(t *testing.T, output *OutputHandler, agentID, requestID, claimToken string) bool {

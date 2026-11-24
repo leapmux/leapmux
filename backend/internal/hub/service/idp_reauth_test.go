@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -175,12 +176,11 @@ func TestOAuthReauth_RequiresASession(t *testing.T) {
 func TestOAuthReauth_RecordsThePurposeAndTheSessionAndForcesAPrompt(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	server, st, ks := setupOAuthTestServer(t)
-	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "user@example.com", "sub-1")
-	cookie, _, sessionID := reauthSession(t, st, providerID, "sub-1")
+	env := setupOAuthTestEnv(t)
+	providerID := createTestOIDCProviderWithStubClaims(t, env.store, env.ks, "user@example.com", "sub-1")
+	cookie, _, sessionID := reauthSession(t, env.store, providerID, "sub-1")
 
-	state, nonce, authURL := beginReauth(t, server, providerID, cookie, "/oauth/authorize?state=s")
+	state, nonce, authURL := beginReauth(t, env.server, providerID, cookie, "/oauth/authorize?state=s")
 	require.NotNil(t, nonce, "the reauth leg must bind the flow to this browser, exactly as login does")
 
 	// Without prompt=login the provider silently reuses its own session, the
@@ -188,9 +188,9 @@ func TestOAuthReauth_RecordsThePurposeAndTheSessionAndForcesAPrompt(t *testing.T
 	// nothing at all.
 	assert.Equal(t, "login", authURL.Query().Get("prompt"))
 
-	row, err := st.OAuthStates().Get(ctx, state)
-	require.NoError(t, err)
-	assert.Equal(t, store.OAuthStatePurposeReauth, row.Purpose)
+	row, ok := env.states.Get(state)
+	require.True(t, ok)
+	assert.Equal(t, service.OAuthStatePurposeReauth, row.Purpose)
 	assert.Equal(t, sessionID, row.SessionID,
 		"the state specifies the session it will elevate, so the callback cannot point elsewhere")
 	assert.Equal(t, "/oauth/authorize?state=s", row.RedirectURI)
@@ -199,18 +199,17 @@ func TestOAuthReauth_RecordsThePurposeAndTheSessionAndForcesAPrompt(t *testing.T
 func TestOAuthLogin_RecordsTheLoginPurposeAndNoSession(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	server, st, ks := setupOAuthTestServer(t)
-	providerID := createTestProvider(t, st, ks)
+	env := setupOAuthTestEnv(t)
+	providerID := createTestProvider(t, env.store, env.ks)
 
-	resp, err := noRedirectClient().Get(server.URL + "/auth/idp/" + providerID + "/login")
+	resp, err := noRedirectClient().Get(env.server.URL + "/auth/idp/" + providerID + "/login")
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	state := stateFromLoginResponse(t, resp)
 
-	row, err := st.OAuthStates().Get(ctx, state)
-	require.NoError(t, err)
-	assert.Equal(t, store.OAuthStatePurposeLogin, row.Purpose)
+	row, ok := env.states.Get(state)
+	require.True(t, ok)
+	assert.Equal(t, service.OAuthStatePurposeLogin, row.Purpose)
 	assert.Empty(t, row.SessionID, "a login elevates nothing")
 
 	loc, err := resp.Location()
@@ -324,15 +323,15 @@ func TestOAuthReauth_RefusesWithoutTheBrowserBinding(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	server, st, ks := setupOAuthTestServer(t)
-	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "user@example.com", "sub-1")
-	cookie, _, sessionID := reauthSession(t, st, providerID, "sub-1")
+	env := setupOAuthTestEnv(t)
+	providerID := createTestOIDCProviderWithStubClaims(t, env.store, env.ks, "user@example.com", "sub-1")
+	cookie, _, sessionID := reauthSession(t, env.store, providerID, "sub-1")
 
-	state, _, _ := beginReauth(t, server, providerID, cookie, "")
+	state, _, _ := beginReauth(t, env.server, providerID, cookie, "")
 
 	// The callback with NO nonce cookie: a browser that never started it.
 	req, err := http.NewRequest(http.MethodGet,
-		server.URL+"/auth/idp/"+providerID+"/callback?code=test&state="+state, nil)
+		env.server.URL+"/auth/idp/"+providerID+"/callback?code=test&state="+state, nil)
 	require.NoError(t, err)
 	resp, err := noRedirectClient().Do(req)
 	require.NoError(t, err)
@@ -340,13 +339,13 @@ func TestOAuthReauth_RefusesWithoutTheBrowserBinding(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Contains(t, readBody(t, resp), "different browser")
 
-	row, err := st.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	row, err := env.store.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationExpiresAt)
 
 	// The refusal leaves the row alone, so the real browser can still finish.
-	_, err = st.OAuthStates().Get(ctx, state)
-	assert.NoError(t, err)
+	_, ok := env.states.Get(state)
+	assert.True(t, ok)
 }
 
 // The account-shape rule.
@@ -368,14 +367,14 @@ func TestOAuthReauth_RefusesAnAccountThatHoldsAPassword(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	server, st, ks := setupOAuthTestServer(t)
-	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, "user@example.com", "sub-1")
-	cookie, userID, _ := reauthSession(t, st, providerID, "sub-1")
-	require.NoError(t, st.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
+	env := setupOAuthTestEnv(t)
+	providerID := createTestOIDCProviderWithStubClaims(t, env.store, env.ks, "user@example.com", "sub-1")
+	cookie, userID, _ := reauthSession(t, env.store, providerID, "sub-1")
+	require.NoError(t, env.store.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
 		PasswordHash: "hash", ID: userID,
 	}))
 
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/auth/idp/"+providerID+"/reauth", nil)
+	req, err := http.NewRequest(http.MethodGet, env.server.URL+"/auth/idp/"+providerID+"/reauth", nil)
 	require.NoError(t, err)
 	req.AddCookie(cookie)
 	resp, err := noRedirectClient().Do(req)
@@ -386,7 +385,7 @@ func TestOAuthReauth_RefusesAnAccountThatHoldsAPassword(t *testing.T) {
 	assert.Contains(t, readBody(t, resp), "password or a passkey")
 
 	// Nothing was minted, so the browser never leaves for the provider.
-	assert.Equal(t, 0, countOAuthStates(t, st), "a refused start leg must mint no state row")
+	assert.Equal(t, 0, countOAuthStates(t, env.states), "a refused start leg must mint no state row")
 }
 
 func TestOAuthReauth_RefusesAnAccountThatHoldsAPasskey(t *testing.T) {
@@ -519,13 +518,10 @@ func TestOAuthReauth_RefusesAPasswordThatArrivedBeforeTheCallback(t *testing.T) 
 
 // countOAuthStates reports how many flow rows exist, so a test can prove a
 // refused start leg minted none.
-func countOAuthStates(t *testing.T, st store.Store) int {
+func countOAuthStates(t *testing.T, states *service.MemoryOAuthStateStore) int {
 	t.Helper()
-	// There is no listing for oauth_states, so sweep with a cutoff far in the
-	// future: the count is what the sweep deletes.
-	n, err := st.Cleanup().DeleteExpiredOAuthStates(context.Background(), time.Now().Add(24*time.Hour))
-	require.NoError(t, err)
-	return int(n)
+	// Sweep with a cutoff far in the future: the count is what the sweep deletes.
+	return int(states.DeleteExpired(time.Now().Add(24 * time.Hour)))
 }
 
 // The hub grants on the completed ROUND TRIP and reads nothing the provider

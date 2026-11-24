@@ -9,7 +9,7 @@ This chapter is for administrators who run a LeapMux **Hub** (or a solo-mode ins
 
 It covers two distinct encryption systems that are easy to confuse:
 
-- **Encryption at rest** — the Hub encrypts a small set of stored secrets (OAuth client secrets, OAuth tokens, passkey public keys, and Hub settings secrets) using a local **keystore** (the `encryption.key` file). This chapter is mostly about this.
+- **Encryption at rest** — the Hub encrypts a small set of stored secrets (OAuth client secrets, passkey public keys, and Hub settings secrets) using a local **keystore** (the `encryption.key` file). This chapter is mostly about this.
 - **End-to-end encryption (E2EE)** — Frontend-to-Worker traffic is encrypted while the Hub relays it. A Hub that only observes cannot read the content. The Hub remains trusted for identity and Frontend code. That protocol is covered in [Security & Threat Model](/docs/admin/security/); this chapter only touches the Worker key material you must back up.
 
 For where these settings live and how to set them, see [Configuration](/docs/admin/configuration/). For key rotation commands, see [Recovery](/docs/admin/recover/).
@@ -21,14 +21,13 @@ LeapMux keeps three kinds of persistent state:
 | Data | Where it lives | Encrypted at rest? |
 | --- | --- | --- |
 | Accounts, workspaces, Workers, sessions, API tokens | Hub database (`hub.db` or your SQL backend) | No (but secrets within it are hashed or encrypted — see below) |
-| OAuth provider client secrets and per-user OAuth access/refresh tokens | Hub database | **Yes** — encrypted with the keystore key |
+| OAuth provider client secrets | Hub database | **Yes** — encrypted with the keystore key |
 | Hub settings secret halves (SMTP password, captcha provider keys) | Hub database | **Yes** — encrypted with the keystore key |
-| Passkey credential public keys and WebAuthn ceremony session data | Hub database | **Yes** — encrypted with the keystore key (AAD binds each row) |
+| Passkey credential public keys | Hub database | **Yes** — encrypted with the keystore key (AAD binds each row) |
 | API-token / delegation-token secrets | Hub database | HMAC-SHA256 digest (a hash-based message authentication code, keyed by the token pepper) |
 | Session secrets | Hub database | HMAC-SHA256 digest (peppered) |
 | Worker auth tokens | Hub database | HMAC-SHA256 digest (peppered) |
 | Registration keys | Hub database | HMAC-SHA256 digest (peppered) |
-| Device codes | Hub database | HMAC-SHA256 digest (peppered) |
 | Worker public keys (pinned at registration) | Hub database | No — public material, stored in the clear |
 | Agent transcripts, terminal I/O, worktree/session state | Worker's local SQLite (`worker.db`) | No |
 | Worker E2EE private keys + Hub auth token | Worker's `state.json` | No — plain JSON, file mode `0600` |
@@ -44,22 +43,16 @@ The keystore encrypts secrets with **XChaCha20-Poly1305** (a 256-bit key, 24-byt
 Exactly these secret types are encrypted at rest in the Hub database:
 
 - `oauth_providers.client_secret` — the OAuth provider's client secret.
-- `oauth_tokens.access_token` — a user's OAuth access token.
-- `oauth_tokens.refresh_token` — a user's OAuth refresh token.
 - `hub_settings.secret` — the secret half of Hub settings rows: the SMTP password and the captcha provider keys.
 - `passkey_credentials.public_key` — the WebAuthn credential public key bytes.
-- `webauthn_sessions.session_data` — ephemeral ceremony state for sign-up, login, registration, and reauth.
-- `webauthn_sessions.payload_json` — passkey-signup draft (username, email, display name) while the ceremony is in flight. Other ceremony kinds store a small `{"rpId": …}` object.
 
-(Short-lived pending-signup OAuth tokens are also encrypted while a signup is in flight.)
-
-Each passkey and WebAuthn session row uses its own row id as **additional authenticated data**, so ciphertext cannot be swapped between rows.
+Each passkey row uses its own row id as **additional authenticated data**, so ciphertext cannot be swapped between rows.
 
 The keystore loads its versioned key ring from `encryption.key` (highest version = active) and encrypts and decrypts only the columns listed above. Everything else is stored without the key: accounts, workspaces, Workers, Worker public keys, hashed API-token secrets, and passkey metadata that is not the public key (friendly names, credential ids, sign counts). The Worker's public keys are public material and are stored in the clear.
 
 The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
 
-Session secrets, Worker auth tokens, registration keys, device codes, and API/delegation token secrets are **not** encrypted. They use HMAC-SHA256 digests keyed by a dedicated, stable pepper that is independent of the encryption key ring. The database therefore holds none of these bearer secrets in plaintext. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/using/control-cli/) for token management.
+Session secrets, Worker auth tokens, registration keys, and API/delegation token secrets are **not** encrypted. They use HMAC-SHA256 digests keyed by a dedicated, stable pepper that is independent of the encryption key ring. The database therefore holds none of these bearer secrets in plaintext. Device authorization codes are held only in Hub memory as peppered HMAC-SHA256 digests and are never written to the database. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/using/control-cli/) for token management.
 
 Account passwords are hashed with **Argon2id** using OWASP-recommended parameters; the Hub never stores or transmits the plaintext after hashing. See [Password requirements](/docs/using/accounts/#password-requirements).
 
@@ -149,7 +142,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
    # Re-encrypted 7 secrets to key version 2.
    ```
 
-   This walks every OAuth provider secret, OAuth token, Hub settings secret, and passkey credential public key still encrypted under an older version, decrypts it, and rewrites it under the active version. Rows already at the active version are skipped.
+   This walks every OAuth provider secret, Hub settings secret, and passkey credential public key still encrypted under an older version, decrypts it, and rewrites it under the active version. Rows already at the active version are skipped.
 
 4. **(Optional) Remove the retired version** once nothing references it, then restart the Hub.
 
@@ -161,9 +154,9 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
    ```
 
 {{< callout type="warning" >}}
-`remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` opens the database and **refuses** to delete a version that still encrypts OAuth provider secrets, OAuth tokens, settings secrets, or passkey credential public keys — it reports what still refers to the version and tells you to run `reencrypt` first.
+`remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` opens the database and **refuses** to delete a version that still encrypts OAuth provider secrets, settings secrets, or passkey credential public keys — it reports what still refers to the version and tells you to run `reencrypt` first.
 
-It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`. Transient rows are intentionally outside the guard: `pending_oauth_signups` and `webauthn_sessions` auto-expire, so a half-finished OAuth signup or WebAuthn ceremony simply fails and the user retries. Passkey `public_key` rows are scanned; `webauthn_sessions.session_data` is encrypted but never reencrypted because sessions expire within minutes.
+It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`.
 {{< /callout >}}
 
 ### Rotation and API tokens
@@ -323,7 +316,7 @@ A Worker that registered after the backup the database came from has no row in t
 
 ### Disaster-recovery notes
 
-- **Lost `encryption.key`, database intact:** encrypted OAuth secrets are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then have users re-link their OAuth providers and re-enter provider client secrets. A fresh file also gets a fresh token pepper. It signs out every session and invalidates every Worker auth token. API and delegation tokens become invalid too, along with live registration keys, pending device codes, and app client secrets. Follow the [pepper recovery steps](#rotation-and-api-tokens) for standalone Workers. Encrypted settings secrets (SMTP, captcha) reset to their defaults. Non-encrypted data (accounts, workspaces) is unaffected.
+- **Lost `encryption.key`, database intact:** encrypted OAuth provider client secrets, settings secrets, and passkey public keys are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then re-enter OAuth provider client secrets (existing user-to-provider links are unencrypted and remain intact). A fresh file also gets a fresh token pepper. It signs out every session and invalidates every Worker auth token. API and delegation tokens become invalid too, along with live registration keys, pending device codes, and app client secrets. Follow the [pepper recovery steps](#rotation-and-api-tokens) for standalone Workers. Encrypted settings secrets (SMTP, captcha) reset to their defaults. Non-encrypted data (accounts, workspaces) is unaffected.
 - **Lost `hub.db`, key intact:** the key alone cannot reconstruct accounts or workspaces. Restore the database from backup.
 - **Lost a Worker's `state.json`:** deregister the old Worker entry, then register again with a fresh registration key from the Hub UI. That creates a new Worker ID, which clients pin as a new Worker, so no key-change dialog appears. See [Managing Workers](/docs/admin/managing-workers/).
 - **Lost `worker.db`:** the Worker recovers as a fresh Worker; in-progress agent transcripts and terminal scrollback held only in that database are lost. The Worker's identity (`state.json`) is unaffected.

@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -3612,4 +3613,179 @@ func TestZCodeGoalTurns_KeepControlOnlyForegroundAndContinuationBackground(t *te
 	assert.Equal(t, contracts.ZCodeRecordBackgroundTurnEnd, background.Type)
 	require.NoError(t, json.Unmarshal([]byte(background.Payload.Original), &original))
 	assert.Equal(t, "goal-continuation", original.TurnID)
+}
+
+func TestZCodeBackgroundStatusExpandedVocabulary(t *testing.T) {
+	t.Parallel()
+	cases := map[string]bgtask.Status{
+		"completed":   bgtask.StatusSucceeded,
+		"complete":    bgtask.StatusSucceeded,
+		"success":     bgtask.StatusSucceeded,
+		"succeeded":   bgtask.StatusSucceeded,
+		"done":        bgtask.StatusSucceeded,
+		"failed":      bgtask.StatusFailed,
+		"failure":     bgtask.StatusFailed,
+		"error":       bgtask.StatusFailed,
+		"spawn_error": bgtask.StatusFailed,
+		"timeout":     bgtask.StatusFailed,
+		"timed_out":   bgtask.StatusFailed,
+		"lost":        bgtask.StatusFailed,
+		"cancelled":   bgtask.StatusStopped,
+		"canceled":    bgtask.StatusStopped,
+		"killed":      bgtask.StatusStopped,
+		"stopped":     bgtask.StatusStopped,
+		"terminated":  bgtask.StatusStopped,
+		"aborted":     bgtask.StatusStopped,
+		"interrupted": bgtask.StatusStopped,
+	}
+	for word, want := range cases {
+		got, final := zcodeBackgroundStatus(word)
+		assert.True(t, final, "zcodeBackgroundStatus(%q) must be final", word)
+		assert.Equal(t, want, got, "zcodeBackgroundStatus(%q)", word)
+
+		tr, ok := decodeZCodeSubagentLifecycleTransition(zcodeEventEnvelope{
+			Payload: json.RawMessage(fmt.Sprintf(`{"parentToolCallId":"spawn-1","status":%q}`, word)),
+		})
+		require.True(t, ok, "decodeZCodeSubagentLifecycleTransition(%q)", word)
+		assert.True(t, tr.final, "lifecycle status %q must be final", word)
+		assert.Equal(t, want, tr.status, "lifecycle status %q", word)
+	}
+}
+
+func TestZCodeBackgroundTaskEmptyToolCallIDResolvesExistingChild(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "by childSessionId",
+			payload: `{"taskId":"other-task","taskKind":"subagent","childSessionId":"sess_subagent_agent_1","status":"completed"}`,
+		},
+		{
+			name:    "by taskId",
+			payload: `{"taskId":"agent_1","taskKind":"subagent","status":"killed"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			calls := &zcodeChildLifecycleCalls{ProviderServices: agent.NewProviderServices(sink)}
+			a := newZCodeTestAgentWithStdin(t, calls, &zcodeRecordedStdin{})
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+			a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+
+			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, tc.payload))
+
+			row, ok := sink.BackgroundTask("sess_subagent_agent_1")
+			require.True(t, ok)
+			assert.True(t, row.Status.IsFinished(), "existing child row must close even when ToolCallID is empty")
+			assert.Contains(t, calls.snapshot(), "cleanup", "existing child must be cleaned up")
+		})
+	}
+}
+
+type zcodeFailingChildSink struct {
+	agent.ProviderServices
+	failEnsure bool
+	failRename bool
+	cleanups   []string
+}
+
+func (s *zcodeFailingChildSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
+	if s.failEnsure {
+		return "", errors.New("ensure child failed")
+	}
+	return s.ProviderServices.EnsureChildAgent(spec)
+}
+
+func (s *zcodeFailingChildSink) RenameBackgroundTask(oldKey, newKey string) error {
+	if s.failRename {
+		return errors.New("rename failed")
+	}
+	return s.ProviderServices.RenameBackgroundTask(oldKey, newKey)
+}
+
+func (s *zcodeFailingChildSink) CleanupChildAgent(childID string) {
+	s.cleanups = append(s.cleanups, childID)
+	s.ProviderServices.CleanupChildAgent(childID)
+}
+
+func TestZCodeBackgroundTaskFinalCleansUpWhenEnsureTranscriptFails(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"ensure error", "rename error"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			failing := &zcodeFailingChildSink{ProviderServices: agent.NewProviderServices(sink)}
+			a := newZCodeTestAgent(t, failing)
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+			spanID := zcodeTestSpanID(t, &sink.Sink, "spawn-1")
+			require.Len(t, sink.ChildAgentIDs(), 1)
+			childID := sink.ChildAgentIDs()[0]
+
+			if mode == "ensure error" {
+				failing.failEnsure = true
+			} else {
+				failing.failRename = true
+			}
+			a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("failed")))
+
+			assert.Equal(t, []string{childID}, failing.cleanups, "child cleanup must still run when ensureZCodeSubagentTranscript returns false")
+			assert.True(t, a.children.hasEnded(spanID))
+			for _, row := range sink.BackgroundTasks() {
+				assert.True(t, row.Status.IsFinished(), "row %q must not stay running after final event", row.RowKey)
+			}
+		})
+	}
+}
+
+func TestZCodeBackgroundTaskLateNonFinalForEndedRunCreatesNoOrphan(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
+
+	spanID := zcodeTestSpanID(t, &sink.Sink, "spawn-1")
+	require.Len(t, sink.BackgroundTasks(), 1)
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Late non-final update without childSessionId must not create an orphan running row under spanID.
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventSessionUpdated,
+		`{"taskId":"agent_1","toolCallId":"spawn-1","toolName":"Agent","taskKind":"subagent","status":"running"}`))
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1, "late non-final update must not create an orphan running row")
+	assert.Equal(t, "sess_subagent_agent_1", rows[0].RowKey)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+
+	// Late non-final update with childSessionId must not repopulate a.children.
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+	_, reopened := a.children.task(spanID)
+	assert.False(t, reopened, "late non-final update must not repopulate ended spawn state")
+}
+
+func TestZCodeBackgroundTaskNonFinalUpsertsRowWhenEnsureTranscriptFails(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	failing := &zcodeFailingChildSink{
+		ProviderServices: agent.NewProviderServices(sink),
+		failEnsure:       true,
+	}
+	a := newZCodeTestAgent(t, failing)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
+
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
+	require.True(t, ok, "non-final subagent task must still upsert its running row when EnsureChildAgent fails")
+	assert.Equal(t, bgtask.KindSubagent, row.Kind)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Empty(t, row.ChildAgentID)
 }

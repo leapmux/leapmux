@@ -2,6 +2,7 @@ package inputqueue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // eventuallyWait limits each wait for work that the manager does on a goroutine
@@ -958,7 +960,7 @@ func TestManagerRecoverStateWaitsForRecoveredDrain(t *testing.T) {
 	dispatcher := &recordingDispatcher{}
 	manager := NewManager(store, dispatcher, &recordingObserver{})
 
-	require.NoError(t, manager.RecoverState(ctx))
+	require.NoError(t, manager.RecoverState(ctx, nil))
 	assert.Never(t, func() bool { return len(dispatcher.dispatches()) > 0 }, 50*time.Millisecond, 5*time.Millisecond)
 	require.NoError(t, manager.DrainRecovered(ctx))
 	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
@@ -973,7 +975,7 @@ func TestManagerRecoveredDrainSkipsAnAgentRemovedDuringReconciliation(t *testing
 	require.NoError(t, err)
 	dispatcher := &recordingDispatcher{}
 	manager := NewManager(store, dispatcher, &recordingObserver{})
-	require.NoError(t, manager.RecoverState(ctx))
+	require.NoError(t, manager.RecoverState(ctx, nil))
 	_, err = database.ExecContext(ctx, `DELETE FROM agents WHERE id = 'agent-1'`)
 	require.NoError(t, err)
 
@@ -2168,7 +2170,7 @@ func TestManagerAdvanceRespectsLoginRecovery(t *testing.T) {
 
 		_, err := store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY)
 		require.NoError(t, err)
-		_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+		_, _, err = store.TurnStarted(t.Context(), "agent-1", true)
 		require.NoError(t, err)
 		_, err = store.Enqueue(t.Context(), NewItem{ID: "q1", AgentID: "agent-1", Text: "yes", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER})
 		require.NoError(t, err)
@@ -2550,5 +2552,614 @@ func TestManagerAdvanceRespectsAwaitingEchoHeadAndPlannedRestart(t *testing.T) {
 			return len(dispatcher.dispatches()) == 1
 		}, eventuallyWait, 10*time.Millisecond)
 		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+	})
+}
+
+func TestManagerBackgroundWorkBypassSteerPreemptAdvance(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("Steer dispatches head via Dispatch without PrepareSteer or Steer and leaves item 2 queued", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{steering: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		_, err = manager.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		// Drain loop must not auto-dispatch while background task runs.
+		c := manager.coordinator("agent-1")
+		require.Eventually(t, func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return !c.draining
+		}, eventuallyWait, 10*time.Millisecond)
+		assert.Empty(t, dispatcher.dispatches())
+
+		snap, err := manager.Steer(ctx, "agent-1", "h1")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"h2"}, queueSnapshotIDs(snap))
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+		dispatcher.mu.Lock()
+		assert.Empty(t, dispatcher.steered)
+		assert.Empty(t, dispatcher.prepared)
+		dispatcher.mu.Unlock()
+		assert.Empty(t, dispatcher.interrupts())
+	})
+
+	t.Run("Preempt dispatches head via Dispatch without Interrupt and leaves item 2 queued", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{preemption: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		_, err = manager.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		snap, err := manager.Preempt(ctx, "agent-1", "h1")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"h2"}, queueSnapshotIDs(snap))
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+		assert.Empty(t, dispatcher.interrupts())
+	})
+
+	t.Run("paused queue: Steer stays paused, Preempt refuses, Advance checks hasRecovery outside lock and resumes", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{steering: true, preemption: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.SetPaused(ctx, "agent-1", true)
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		// Preempt refuses paused queue.
+		_, err = manager.Preempt(ctx, "agent-1", "h1")
+		assert.ErrorIs(t, err, ErrPreemptionState)
+
+		// Steer dispatches while staying paused.
+		snap, err := manager.Steer(ctx, "agent-1", "h1")
+		require.NoError(t, err)
+		assert.True(t, snap.Paused)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+
+		// End turn started by h1, then test Advance on h2 with hasRecovery lock check.
+		_, err = manager.TurnEnded(ctx, "agent-1")
+		require.NoError(t, err)
+		var recoveryCalls atomic.Int32
+		snap, err = manager.Advance(ctx, "agent-1", func(agentID string) bool {
+			recoveryCalls.Add(1)
+			// Re-entering Manager proves this goroutine does not hold c.mu.
+			_, snapErr := manager.Snapshot(ctx, agentID)
+			require.NoError(t, snapErr)
+			return false
+		})
+		require.NoError(t, err)
+		assert.False(t, snap.Paused, "Advance must resume paused queue after successful background bypass")
+		assert.Equal(t, []string{"h1", "h2"}, dispatcher.dispatches())
+		assert.GreaterOrEqual(t, recoveryCalls.Load(), int32(2))
+		dispatcher.mu.Lock()
+		assert.Empty(t, dispatcher.prepared, "Advance on idle+background work must not call PrepareSteer")
+		assert.Empty(t, dispatcher.steered)
+		dispatcher.mu.Unlock()
+	})
+
+	t.Run("mid-turn Steer calls PrepareSteer outside c.mu and falls through on steerTurnEnded with active background work", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{steering: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.TurnStarted(ctx, "agent-1", true)
+		require.NoError(t, err)
+		c := manager.coordinator("agent-1")
+		require.Eventually(t, func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return !c.draining
+		}, eventuallyWait, 10*time.Millisecond)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "steer", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		dispatcher.onPrepare = func(agentID string) {
+			// Re-entering Manager from PrepareSteer proves c.mu is NOT held.
+			_, snapErr := manager.Snapshot(ctx, agentID)
+			require.NoError(t, snapErr)
+		}
+		dispatcher.onSteer = func() {
+			_, turnErr := manager.TurnEnded(ctx, "agent-1")
+			require.NoError(t, turnErr)
+		}
+		dispatcher.steerFail = ErrTurnEnded
+
+		snap, err := manager.Steer(ctx, "agent-1", "h1")
+		require.NoError(t, err)
+		assert.Empty(t, snap.Items)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches(), "steerTurnEnded with active background work must fall through to Dispatch")
+	})
+
+	t.Run("mid-turn Steer bypasses via Dispatch when turn ends during PrepareSteer while background work stays active", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{steering: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.TurnStarted(ctx, "agent-1", true)
+		require.NoError(t, err)
+		c := manager.coordinator("agent-1")
+		require.Eventually(t, func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return !c.draining
+		}, eventuallyWait, 10*time.Millisecond)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		dispatcher.onPrepare = func(string) {
+			_, turnErr := manager.TurnEnded(ctx, "agent-1")
+			require.NoError(t, turnErr)
+		}
+
+		snap, err := manager.Steer(ctx, "agent-1", "h1")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+		dispatcher.mu.Lock()
+		assert.Empty(t, dispatcher.steered)
+		assert.Equal(t, []string{"agent-1"}, dispatcher.prepared)
+		dispatcher.mu.Unlock()
+		assert.Equal(t, []string{"h2"}, queueSnapshotIDs(snap))
+	})
+
+	t.Run("Advance mid-turn steerTurnEnded falls through to bypass and resumes paused queue", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{steering: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.SetPaused(ctx, "agent-1", true)
+		require.NoError(t, err)
+		_, err = manager.TurnStarted(ctx, "agent-1", true)
+		require.NoError(t, err)
+		c := manager.coordinator("agent-1")
+		require.Eventually(t, func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return !c.draining
+		}, eventuallyWait, 10*time.Millisecond)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		dispatcher.onSteer = func() {
+			_, turnErr := manager.TurnEnded(ctx, "agent-1")
+			require.NoError(t, turnErr)
+		}
+		dispatcher.steerFail = ErrTurnEnded
+
+		snap, err := manager.Advance(ctx, "agent-1", func(string) bool { return false })
+		require.NoError(t, err)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+		assert.False(t, snap.Paused)
+		assert.Equal(t, []string{"h2"}, queueSnapshotIDs(snap))
+	})
+
+	t.Run("Advance mid-turn steerTurnEnded keeps pause on bypass failure or post-bypass recovery", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("bypass DispatchBusy keeps queue paused", func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+				leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+			dispatcher := &recordingDispatcher{
+				steering:  true,
+				steerFail: ErrTurnEnded,
+				fail:      &DeliveryError{Outcome: DispatchBusy, Err: agent.ErrAgentBusy},
+			}
+			manager := NewManager(store, dispatcher, &recordingObserver{})
+			t.Cleanup(manager.StopAndWait)
+
+			_, err := manager.SetPaused(ctx, "agent-1", true)
+			require.NoError(t, err)
+			_, err = manager.TurnStarted(ctx, "agent-1", true)
+			require.NoError(t, err)
+			c := manager.coordinator("agent-1")
+			require.Eventually(t, func() bool {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				return !c.draining
+			}, eventuallyWait, 10*time.Millisecond)
+			_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+			require.NoError(t, err)
+			_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+			require.NoError(t, err)
+
+			dispatcher.onSteer = func() {
+				_, turnErr := manager.TurnEnded(ctx, "agent-1")
+				require.NoError(t, turnErr)
+			}
+
+			snap, err := manager.Advance(ctx, "agent-1", func(string) bool { return false })
+			require.NoError(t, err)
+			assert.True(t, snap.Paused)
+			assert.Equal(t, []string{"h1", "h2"}, queueSnapshotIDs(snap))
+		})
+
+		t.Run("hasRecovery becoming true after bypass dispatch keeps queue paused", func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+				leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+			dispatcher := &recordingDispatcher{
+				steering:  true,
+				steerFail: ErrTurnEnded,
+			}
+			manager := NewManager(store, dispatcher, &recordingObserver{})
+			t.Cleanup(manager.StopAndWait)
+
+			_, err := manager.SetPaused(ctx, "agent-1", true)
+			require.NoError(t, err)
+			_, err = manager.TurnStarted(ctx, "agent-1", true)
+			require.NoError(t, err)
+			c := manager.coordinator("agent-1")
+			require.Eventually(t, func() bool {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				return !c.draining
+			}, eventuallyWait, 10*time.Millisecond)
+			_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+			require.NoError(t, err)
+			_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+			require.NoError(t, err)
+
+			dispatcher.onSteer = func() {
+				_, turnErr := manager.TurnEnded(ctx, "agent-1")
+				require.NoError(t, turnErr)
+			}
+
+			var sawPostBypass atomic.Bool
+			snap, err := manager.Advance(ctx, "agent-1", func(string) bool {
+				if len(dispatcher.dispatches()) > 0 {
+					sawPostBypass.Store(true)
+					return true
+				}
+				return false
+			})
+			require.NoError(t, err)
+			assert.True(t, sawPostBypass.Load())
+			assert.True(t, snap.Paused)
+			assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+			assert.Equal(t, []string{"h2"}, queueSnapshotIDs(snap))
+		})
+	})
+
+	t.Run("Advance on paused idle queue with active background work and supportsPreempt resumes and bypasses without Interrupt", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{preemption: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.SetPaused(ctx, "agent-1", true)
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		snap, err := manager.Advance(ctx, "agent-1", nil)
+		require.NoError(t, err)
+		assert.False(t, snap.Paused)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+		assert.Empty(t, dispatcher.interrupts())
+		assert.Equal(t, []string{"h2"}, queueSnapshotIDs(snap))
+	})
+}
+
+func TestManagerPreemptAndAdvanceDuringActiveTurnWithBackgroundWork(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("Preempt records bypass so TurnEnded dispatches head while item 2 stays held", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{preemption: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.TurnStarted(ctx, "agent-1", false)
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h2", AgentID: "agent-1", Text: "second", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		snap, err := manager.Preempt(ctx, "agent-1", "h1")
+		require.NoError(t, err)
+		assert.Equal(t, "h1", snap.BypassBackgroundWorkInputID)
+		assert.Equal(t, []string{"agent-1"}, dispatcher.interrupts())
+
+		// Ending turn while background task still runs must dispatch h1 only.
+		_, err = manager.TurnEnded(ctx, "agent-1")
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return len(dispatcher.dispatches()) == 1
+		}, eventuallyWait, 10*time.Millisecond)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+
+		// End h1's turn while background task STILL runs: h2 must remain held.
+		_, err = manager.TurnEnded(ctx, "agent-1")
+		require.NoError(t, err)
+		c := manager.coordinator("agent-1")
+		require.Eventually(t, func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return !c.draining
+		}, eventuallyWait, 10*time.Millisecond)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+		after, err := manager.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"h2"}, queueSnapshotIDs(after))
+		assert.Empty(t, after.BypassBackgroundWorkInputID)
+	})
+
+	t.Run("failed Interrupt clears recorded preempt bypass", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{preemption: true, interruptFail: assert.AnError}
+		observer := &recordingObserver{}
+		manager := NewManager(store, dispatcher, observer)
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.TurnStarted(ctx, "agent-1", false)
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		snap, err := manager.Preempt(ctx, "agent-1", "h1")
+		assert.ErrorIs(t, err, assert.AnError)
+		assert.Empty(t, snap.BypassBackgroundWorkInputID, "failed Interrupt must clear bypass_background_work_input_id")
+		after, err := manager.Snapshot(ctx, "agent-1")
+		require.NoError(t, err)
+		assert.Empty(t, after.BypassBackgroundWorkInputID)
+
+		observer.mu.Lock()
+		sawRecorded := false
+		for _, s := range observer.snapshots {
+			if s.BypassBackgroundWorkInputID == "h1" {
+				sawRecorded = true
+			}
+		}
+		lastBypass := observer.snapshots[len(observer.snapshots)-1].BypassBackgroundWorkInputID
+		observer.mu.Unlock()
+		assert.True(t, sawRecorded, "Preempt must record bypass before calling Interrupt")
+		assert.Empty(t, lastBypass, "failed Interrupt must publish cleared bypass snapshot")
+	})
+
+	t.Run("Advance during active turn with background work records bypass and dispatches on TurnEnded", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{preemption: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.SetPaused(ctx, "agent-1", true)
+		require.NoError(t, err)
+		_, err = manager.TurnStarted(ctx, "agent-1", false)
+		require.NoError(t, err)
+		_, err = store.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "first", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		// Paused -> Advance resumes then records bypass + interrupts atomically.
+		snap, err := manager.Advance(ctx, "agent-1", nil)
+		require.NoError(t, err)
+		assert.False(t, snap.Paused)
+		assert.Equal(t, "h1", snap.BypassBackgroundWorkInputID)
+		assert.Equal(t, []string{"agent-1"}, dispatcher.interrupts())
+
+		_, err = manager.TurnEnded(ctx, "agent-1")
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return len(dispatcher.dispatches()) == 1
+		}, eventuallyWait, 10*time.Millisecond)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+	})
+}
+
+func TestManagerBackgroundWorkHoldAutoDrainAndBusyRequeue(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("holds behind running background task and auto-drains on BackgroundWorkChanged", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{steering: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "wait for bg", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		c := manager.coordinator("agent-1")
+		require.Eventually(t, func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return !c.draining
+		}, eventuallyWait, 10*time.Millisecond)
+		assert.Empty(t, dispatcher.dispatches())
+
+		// Close background task and notify BackgroundWorkChanged -> drains automatically.
+		_, err = database.ExecContext(ctx, `UPDATE agent_background_tasks SET status = ? WHERE owner_agent_id = 'agent-1' AND row_key = 'task-1'`, bgtask.StatusSucceeded)
+		require.NoError(t, err)
+		_, err = manager.BackgroundWorkChanged(ctx, "agent-1")
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return len(dispatcher.dispatches()) == 1
+		}, eventuallyWait, 10*time.Millisecond)
+		assert.Equal(t, []string{"h1"}, dispatcher.dispatches())
+	})
+
+	t.Run("BackgroundWorkChangedTree wakes a queued child whose grandchild finished", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		createChildAgentRow(t, database, "child-a", "agent-1")
+		createChildAgentRow(t, database, "grandchild", "child-a")
+		insertBackgroundTaskRow(t, database, "agent-1", "child-row", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, bgtask.RoleChildTask, "child-a", "", bgtask.StatusSucceeded)
+		insertBackgroundTaskRow(t, database, "agent-1", "grand-row", 2,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, bgtask.RoleChildTask, "grandchild", "child-a", bgtask.StatusRunning)
+
+		dispatcher := &recordingDispatcher{steering: true}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.Enqueue(ctx, NewItem{ID: "c1", AgentID: "child-a", Text: "hi child", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+		c := manager.coordinator("child-a")
+		require.Eventually(t, func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return !c.draining
+		}, eventuallyWait, 10*time.Millisecond)
+		assert.Empty(t, dispatcher.dispatches())
+
+		_, err = database.ExecContext(ctx, `UPDATE agent_background_tasks SET status = ? WHERE owner_agent_id = 'agent-1' AND row_key = 'grand-row'`, bgtask.StatusSucceeded)
+		require.NoError(t, err)
+		require.NoError(t, manager.BackgroundWorkChangedTree(ctx, "agent-1"))
+		require.Eventually(t, func() bool {
+			return len(dispatcher.dispatches()) == 1
+		}, eventuallyWait, 10*time.Millisecond)
+		assert.Equal(t, []string{"c1"}, dispatcher.dispatches())
+	})
+
+	t.Run("ErrAgentBusy during bypass dispatch requeues cleanly via RequeueBusy", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		dispatcher := &recordingDispatcher{
+			steering: true,
+			fail:     &DeliveryError{Outcome: DispatchBusy, Err: agent.ErrAgentBusy},
+		}
+		manager := NewManager(store, dispatcher, &recordingObserver{})
+		t.Cleanup(manager.StopAndWait)
+
+		_, err := manager.Enqueue(ctx, NewItem{ID: "h1", AgentID: "agent-1", Text: "race wake turn", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+		require.NoError(t, err)
+
+		snap, err := manager.Steer(ctx, "agent-1", "h1")
+		require.NoError(t, err)
+		assert.False(t, snap.Paused, "busy refusal must keep the queue open")
+		require.Len(t, snap.Items, 1)
+		assert.Equal(t, "h1", snap.Items[0].ID)
+		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snap.Items[0].State)
+		assert.Empty(t, snap.Items[0].Error)
+	})
+}
+
+func TestManagerRecoverStateRunsBeforeRecoverAtomically(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("publishes post-sweep snapshot with INTERRUPTED pause and ActiveBackgroundWork false", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "in-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "waiting",
+		})
+		require.NoError(t, err)
+
+		observer := &recordingObserver{}
+		manager := NewManager(NewStore(database, nil), &recordingDispatcher{}, observer)
+		t.Cleanup(manager.StopAndWait)
+
+		require.NoError(t, manager.RecoverState(ctx, func(txCtx context.Context, tx *sql.Tx) error {
+			_, execErr := tx.ExecContext(txCtx, `UPDATE agent_background_tasks SET status = ? WHERE status IN (?, ?)`,
+				bgtask.StatusInterrupted, bgtask.StatusPending, bgtask.StatusRunning)
+			return execErr
+		}))
+
+		observer.mu.Lock()
+		snapshots := append([]Snapshot(nil), observer.snapshots...)
+		observer.mu.Unlock()
+		require.Len(t, snapshots, 1)
+		assert.True(t, snapshots[0].Paused)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshots[0].PauseReason)
+		assert.False(t, snapshots[0].ActiveBackgroundWork)
+	})
+
+	t.Run("rolls back and publishes nothing when beforeRecover fails", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		insertBackgroundTaskRow(t, database, "agent-1", "task-1", 1,
+			leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, bgtask.RoleTaskOutcome, "", "", bgtask.StatusRunning)
+		_, err := store.Enqueue(ctx, NewItem{
+			ID: "in-1", AgentID: "agent-1",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "waiting",
+		})
+		require.NoError(t, err)
+
+		observer := &recordingObserver{}
+		manager := NewManager(NewStore(database, nil), &recordingDispatcher{}, observer)
+		t.Cleanup(manager.StopAndWait)
+
+		wantErr := errors.New("sweep failed")
+		err = manager.RecoverState(ctx, func(txCtx context.Context, tx *sql.Tx) error {
+			if _, execErr := tx.ExecContext(txCtx, `UPDATE agent_background_tasks SET status = ? WHERE status IN (?, ?)`,
+				bgtask.StatusInterrupted, bgtask.StatusPending, bgtask.StatusRunning); execErr != nil {
+				return execErr
+			}
+			return wantErr
+		})
+		require.ErrorIs(t, err, wantErr)
+		observer.mu.Lock()
+		published := len(observer.snapshots)
+		observer.mu.Unlock()
+		assert.Zero(t, published)
+
+		var status bgtask.Status
+		require.NoError(t, database.QueryRowContext(ctx, `SELECT status FROM agent_background_tasks WHERE owner_agent_id = 'agent-1' AND row_key = 'task-1'`).Scan(&status))
+		assert.Equal(t, bgtask.StatusRunning, status)
 	})
 }

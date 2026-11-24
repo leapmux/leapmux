@@ -28,6 +28,8 @@ const (
 	openCodeToolStatusRunning   = "running"
 	openCodeToolStatusCompleted = "completed"
 	openCodeToolStatusError     = "error"
+	// openCodeMaxTrackedEntries caps process-local tracking maps in FIFO order.
+	openCodeMaxTrackedEntries = 512
 )
 
 // IsHiddenPrimaryAgent reports whether a primary-agent id is an internal
@@ -43,15 +45,16 @@ func IsHiddenPrimaryAgent(id string) bool {
 	}
 }
 
-// OpenCode and Kilo identify the native task before its arguments arrive.
-// Other titles require the native prompt and subagent discriminator.
-func SubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
-	return openCodeSpawnObservation(tc.ToolCallID, tc.Title, tc.RawInput, tc.Title == openCodeTaskTool && tc.Kind == "think")
+type openCodeTaskInput struct {
+	description    string
+	prompt         string
+	subagentType   string
+	subagentID     string
+	taskID         string
+	argumentsReady bool
 }
 
-// Build the registry row from a known native task or its later arguments.
-// Both event paths use the tool-call ID, so later arguments update the same row.
-func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMessage, knownTask bool) *acp.SubagentObservation {
+func parseOpenCodeTaskInput(rawInput json.RawMessage) openCodeTaskInput {
 	var input struct {
 		Description  string          `json:"description"`
 		Prompt       json.RawMessage `json:"prompt"`
@@ -68,82 +71,52 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 		taskID, taskIDParsed = providerkit.RawString(input.TaskID)
 	}
 	argumentsReady := inputParsed && promptParsed && taskIDParsed && (input.SubagentType != "" || input.SubagentID != "")
-	// An unidentified tool requires parsed task arguments.
-	if !knownTask && !argumentsReady {
-		return nil
+	return openCodeTaskInput{
+		description:    input.Description,
+		prompt:         prompt,
+		subagentType:   input.SubagentType,
+		subagentID:     input.SubagentID,
+		taskID:         taskID,
+		argumentsReady: argumentsReady,
 	}
+}
+
+type openCodeTaskOutput struct {
+	sessionID  string
+	background bool
+}
+
+func parseOpenCodeTaskOutput(rawOutput json.RawMessage) openCodeTaskOutput {
+	if len(rawOutput) == 0 {
+		return openCodeTaskOutput{}
+	}
+	var out struct {
+		Metadata struct {
+			SessionID  string `json:"sessionId"`
+			Background bool   `json:"background"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(rawOutput, &out) != nil {
+		return openCodeTaskOutput{}
+	}
+	return openCodeTaskOutput{
+		sessionID:  out.Metadata.SessionID,
+		background: out.Metadata.Background,
+	}
+}
+
+func openCodeTaskTitle(callTitle string, input openCodeTaskInput) string {
 	title := callTitle
 	if title == "" || title == openCodeTaskTool {
-		title = input.Description
+		title = input.description
 	}
 	if title == "" {
-		title = input.SubagentType
+		title = input.subagentType
 	}
 	if title == "" {
 		title = "Subagent"
 	}
-	spawnSpanID := ""
-	if argumentsReady && taskID == "" {
-		spawnSpanID = toolCallID
-	}
-	return &acp.SubagentObservation{
-		RowKey: toolCallID, Title: title, Status: bgtask.StatusRunning,
-		ChildSpawnSpanID: spawnSpanID, Prompt: prompt, Spawns: true,
-	}
-}
-
-// SubagentFromToolCallUpdate closes a final row and adopts the native child key from valid task metadata.
-// RenameFrom preserves the initial registry row. ChildSpawnSpanID preserves the native invocation identity.
-func SubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.SubagentObservation {
-	if !acp.StatusIsFinal(tcu.Status) {
-		// Kilo first supplies task arguments in an in-progress update.
-		// Its initial tool_call can contain rawInput: {}.
-		// Detect that request here so the final update closes an existing registry row.
-		//
-		// A non-final spawn update after completion recreates the tool-call row.
-		// session/load replay can then send the final update again.
-		// That update renames the recreated row to the existing native session row.
-		// RenameBackgroundTask drops the duplicate source row on this collision.
-		// The replay therefore retains one row and leaves no extra running row.
-		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput, false)
-	}
-	// The final rawOutput may carry the child session id under metadata.
-	rowKey := tcu.ToolCallID
-	renameFrom := ""
-	childKey := ""
-	spawnSpanID := ""
-	background := false
-	if len(tcu.RawOutput) > 0 {
-		var out struct {
-			Metadata struct {
-				SessionID  string `json:"sessionId"`
-				Background bool   `json:"background"`
-			} `json:"metadata"`
-		}
-		if json.Unmarshal(tcu.RawOutput, &out) == nil {
-			background = out.Metadata.Background
-			if out.Metadata.SessionID != "" {
-				rowKey = out.Metadata.SessionID
-				renameFrom = tcu.ToolCallID
-				childKey = out.Metadata.SessionID
-				spawnSpanID = tcu.ToolCallID
-			}
-		}
-	}
-	return &acp.SubagentObservation{
-		RowKey:           rowKey,
-		RenameFrom:       renameFrom,
-		ChildAgentKey:    childKey,
-		ChildSpawnSpanID: spawnSpanID,
-		Title:            tcu.Title,
-		Status:           acp.FinalStatus(tcu.Status),
-		CloseRow:         true,
-		Mode:             acp.ModeCloseOnly,
-		ReportID:         tcu.ToolCallID,
-		Report: agent.SubagentReport{
-			Text: openCodeSubagentReport(acp.ToolCallText(tcu.Content), background),
-		},
-	}
+	return title
 }
 
 func openCodeSubagentReport(text string, background bool) string {
@@ -169,6 +142,13 @@ var _ agent.ChildSteerer = (*FamilyBase)(nil)
 // already read the subagent's result.
 var errOpenCodeSubagentIdle = errors.New("the subagent finished, so it takes no message")
 
+// openCodeReusedTaskCall pairs a reuse callID with the revived task_id row key
+// and the root session that owns it.
+type openCodeReusedTaskCall struct {
+	taskID        string
+	rootSessionID string
+}
+
 // openCodeChildSession is the session of one running subagent.
 type openCodeChildSession struct {
 	id            string
@@ -178,6 +158,11 @@ type openCodeChildSession struct {
 	// loaded is true once the agent loaded the session, so it streams the
 	// session's updates and takes a prompt for it.
 	loaded bool
+	// loading is true while a followChildSession goroutine is running LoadChildSession.
+	loading bool
+	// background is true once the launch task call finished with background: true
+	// and the row stays open until daemon SSE reports completion.
+	background bool
 }
 
 func (child *openCodeChildSession) target(rowKey string) acp.ChildSessionTarget {
@@ -193,47 +178,77 @@ func (b *FamilyBase) observeTaskPart(rootSessionID string, part openCodeTaskPart
 		part.State.Status != openCodeToolStatusRunning || part.State.Metadata.SessionID == "" {
 		return
 	}
-	b.followChildSession(rootSessionID, part.CallID, part.State.Metadata.SessionID)
+	rowKey, ok := b.taskPartRowKey(rootSessionID, part.CallID, part.State.Metadata.SessionID)
+	if !ok {
+		return
+	}
+	b.followChildSession(rootSessionID, rowKey, part.State.Metadata.SessionID)
 }
 
-// followChildSession routes the updates of the child session of callID to the
+func (b *FamilyBase) taskPartRowKey(rootSessionID, callID, childSessionID string) (string, bool) {
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	if reused, ok := b.reusedTaskCalls[callID]; ok && (reused.rootSessionID == "" || reused.rootSessionID == rootSessionID) {
+		return reused.taskID, true
+	}
+	if child := b.childSessions[childSessionID]; child != nil && child.background && (child.rootSessionID == "" || child.rootSessionID == rootSessionID) {
+		return childSessionID, true
+	}
+	if owner, finalized := b.finalizedTaskCalls.Get(callID); finalized && (owner == "" || owner == rootSessionID) {
+		return "", false
+	}
+	return callID, true
+}
+
+// followChildSession routes the updates of the child session of rowKey to the
 // subagent's transcript, and loads the session into the agent. The ACP adapter
 // streams only a session that it serves, so the subagent's own messages and
 // tool calls reach LeapMux through the load alone. The load replays what the
 // session already holds, so output from before the load is not lost.
-func (b *FamilyBase) followChildSession(rootSessionID, callID, childSessionID string) {
+func (b *FamilyBase) followChildSession(rootSessionID, rowKey, childSessionID string) {
 	if rootSessionID == "" || !b.IsCurrentSession(rootSessionID) {
 		return
 	}
 	b.childSessionsMu.Lock()
-	if child := b.childSessions[callID]; child != nil && child.rootSessionID == rootSessionID {
+	child := b.childSessions[rowKey]
+	if child != nil && child.rootSessionID == rootSessionID && (child.loaded || child.loading) {
 		b.childSessionsMu.Unlock()
 		return
 	}
 	if b.childSessions == nil {
 		b.childSessions = make(map[string]*openCodeChildSession)
 	}
-	child := &openCodeChildSession{id: childSessionID, rootSessionID: rootSessionID}
-	b.childSessions[callID] = child
+	if child == nil || child.rootSessionID != rootSessionID {
+		child = &openCodeChildSession{id: childSessionID, rootSessionID: rootSessionID}
+		b.childSessions[rowKey] = child
+	}
+	child.id = childSessionID
+	child.loading = true
+	target := child.target(rowKey)
 	b.childSessionsMu.Unlock()
 	// The daemon reader must not wait for the agent's answer.
 	go func() {
-		modelID, err := b.LoadChildSession(child.target(callID))
+		modelID, err := b.LoadChildSession(target)
 		if err != nil {
 			if errors.Is(err, agent.ErrChildRouteNotReady) {
 				b.childSessionsMu.Lock()
-				if b.childSessions[callID] == child {
-					delete(b.childSessions, callID)
+				child.loading = false
+				if b.childSessions[rowKey] == child && !child.background {
+					delete(b.childSessions, rowKey)
 				}
 				b.childSessionsMu.Unlock()
 				return
 			}
-			slog.Warn("load the OpenCode subagent session", "agent_id", b.AgentID(), "call_id", callID, "session_id", childSessionID, "error", err)
+			b.childSessionsMu.Lock()
+			child.loading = false
+			b.childSessionsMu.Unlock()
+			slog.Warn("load the OpenCode subagent session", "agent_id", b.AgentID(), "call_id", rowKey, "session_id", childSessionID, "error", err)
 			return
 		}
 		_ = b.WithSessionID(func(currentRoot string) error {
 			b.childSessionsMu.Lock()
-			if currentRoot == rootSessionID && b.childSessions[callID] == child {
+			child.loading = false
+			if currentRoot == rootSessionID && (b.childSessions[rowKey] == child || b.childSessions[childSessionID] == child) {
 				child.modelID = modelID
 				child.loaded = true
 			}
@@ -241,14 +256,6 @@ func (b *FamilyBase) followChildSession(rootSessionID, callID, childSessionID st
 			return nil
 		})
 	}()
-}
-
-// forgetChildSession ends the following of the child session of callID. The
-// base drops the session's route when the subagent's row closes.
-func (b *FamilyBase) forgetChildSession(callID string) {
-	b.childSessionsMu.Lock()
-	delete(b.childSessions, callID)
-	b.childSessionsMu.Unlock()
 }
 
 // runningChildSession returns the session of the running subagent of the task
@@ -354,6 +361,24 @@ func (b *FamilyBase) InterruptChild(childKey string, _ agent.StopContext) error 
 		}
 		ctx, cancel := context.WithTimeout(b.Context(), openCodeQuestionTimeout)
 		defer cancel()
+		if target, _, running := b.childSessionTarget(childKey); running && target.SessionID != "" {
+			return b.stopChild(ctx, childKey, target.SessionID)
+		}
+		if b.hasActiveReusedTask(sessionID, childKey) {
+			return b.stopChild(ctx, childKey, childKey)
+		}
+		if sink := b.Sink(); sink != nil {
+			if identity, err := bgtask.ParseRowIdentity(childKey); err == nil {
+				if resolved, found, err := sink.LookupChildIdentity(identity); err == nil && found && resolved.ProviderChildKey != "" {
+					if _, status, ok, err := sink.LookupBackgroundTask(childKey); err == nil && ok {
+						if status.IsFinished() {
+							return nil
+						}
+						return b.stopChild(ctx, childKey, resolved.ProviderChildKey)
+					}
+				}
+			}
+		}
 		part, found, err := b.Questions.findTaskPart(ctx, sessionID, childKey)
 		if err != nil {
 			return err
@@ -418,21 +443,429 @@ func (b *FamilyBase) takeChildStop(callID string) bool {
 	return stopped && owner == rootSessionID
 }
 
-// subagentFromToolCallUpdate reads a tool update as SubagentFromToolCallUpdate
-// does, and closes the row of a subagent that the user stopped as interrupted.
-//
-// The daemon reports a cancelled child as a failed task, the same verdict as a
-// child that failed on its own. LeapMux can tell the two apart, because LeapMux
-// sent the cancel. A task that completed before the cancel took effect keeps
-// its success.
+// subagentFromToolCall inspects a task tool_call with FamilyBase's registry
+// lookup so rawInput.task_id revives an existing child row directly, and handles
+// final-on-arrival task calls completely without leaking tracking state.
+func (b *FamilyBase) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
+	rootSessionID := b.CurrentSessionID()
+	knownTask := tc.Title == openCodeTaskTool && tc.Kind == "think"
+	if !acp.StatusIsFinal(tc.Status) {
+		return b.resolveSpawnObservation(tc.ToolCallID, tc.Title, tc.RawInput, knownTask, false)
+	}
+	input := parseOpenCodeTaskInput(tc.RawInput)
+	if !knownTask && !input.argumentsReady {
+		return nil
+	}
+	reusedTaskID := b.takeReusedTaskID(tc.ToolCallID, rootSessionID)
+	if reusedTaskID == "" && input.argumentsReady && input.taskID != "" {
+		if sink := b.Sink(); sink != nil {
+			if childID, _, found, err := sink.LookupBackgroundTask(input.taskID); err == nil && found && childID != "" {
+				reusedTaskID = input.taskID
+			}
+		}
+	}
+	b.markTaskCallFinalized(tc.ToolCallID, rootSessionID)
+	title := openCodeTaskTitle(tc.Title, input)
+	freshSpawn := input.argumentsReady && input.taskID == ""
+	return b.finalizeTaskObservation(rootSessionID, tc.ToolCallID, title, tc.Status, tc.RawOutput, tc.Content, reusedTaskID, input.prompt, freshSpawn, true)
+}
+
+func (b *FamilyBase) resolveSpawnObservation(toolCallID, callTitle string, rawInput json.RawMessage, knownTask, fromUpdate bool) *acp.SubagentObservation {
+	input := parseOpenCodeTaskInput(rawInput)
+	if !knownTask && !input.argumentsReady {
+		return nil
+	}
+	title := openCodeTaskTitle(callTitle, input)
+	if input.argumentsReady && input.taskID != "" {
+		rootSessionID := b.CurrentSessionID()
+		alreadyReused := b.reusedTaskID(toolCallID, rootSessionID) == input.taskID
+		if !alreadyReused {
+			b.clearEarlyChildEvent(input.taskID)
+		}
+		var (
+			childID string
+			status  bgtask.Status
+			found   bool
+			err     error
+		)
+		if sink := b.Sink(); sink != nil {
+			childID, status, found, err = sink.LookupBackgroundTask(input.taskID)
+		}
+		if err == nil && found && childID != "" {
+			b.recordReusedTaskCall(rootSessionID, toolCallID, input.taskID, fromUpdate)
+			if rootSessionID != "" {
+				b.AttachChildSession(acp.ChildSessionTarget{
+					RootSessionID: rootSessionID,
+					SessionID:     input.taskID,
+					RowKey:        input.taskID,
+				})
+			}
+			renameFrom := ""
+			if fromUpdate && !alreadyReused && toolCallID != input.taskID {
+				renameFrom = toolCallID
+			}
+			return &acp.SubagentObservation{
+				RowKey:        input.taskID,
+				RenameFrom:    renameFrom,
+				ChildAgentKey: input.taskID,
+				Title:         title,
+				Status:        bgtask.StatusRunning,
+				ReviveRow:     !alreadyReused || status.IsFinished(),
+				Prompt:        input.prompt,
+				Spawns:        true,
+			}
+		}
+		return &acp.SubagentObservation{
+			RowKey: toolCallID,
+			Title:  title,
+			Status: bgtask.StatusRunning,
+			Prompt: input.prompt,
+			Spawns: true,
+		}
+	}
+	spawnSpanID := ""
+	if input.argumentsReady && input.taskID == "" {
+		spawnSpanID = toolCallID
+	}
+	return &acp.SubagentObservation{
+		RowKey:           toolCallID,
+		Title:            title,
+		Status:           bgtask.StatusRunning,
+		ChildSpawnSpanID: spawnSpanID,
+		Prompt:           input.prompt,
+		Spawns:           true,
+	}
+}
+
+// subagentFromToolCallUpdate reads a tool update with FamilyBase state:
+//   - Ignores late non-final updates for already finalized or renamed tool calls.
+//   - Revives existing task_id rows on Kilo's in-progress updates.
+//   - Keeps successful background launches open until daemon SSE completion (or
+//     closes immediately when an early daemon completion was already buffered).
+//   - Closes a user-stopped subagent as interrupted unless it succeeded first.
 func (b *FamilyBase) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.SubagentObservation {
-	obs := SubagentFromToolCallUpdate(tcu)
-	if obs == nil || !obs.CloseRow {
+	rootSessionID := b.CurrentSessionID()
+	if !acp.StatusIsFinal(tcu.Status) {
+		if b.isTaskCallFinalized(tcu.ToolCallID, rootSessionID) {
+			return nil
+		}
+		return b.resolveSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput, false, true)
+	}
+	reusedTaskID := b.takeReusedTaskID(tcu.ToolCallID, rootSessionID)
+	b.markTaskCallFinalized(tcu.ToolCallID, rootSessionID)
+	return b.finalizeTaskObservation(rootSessionID, tcu.ToolCallID, tcu.Title, tcu.Status, tcu.RawOutput, tcu.Content, reusedTaskID, "", false, false)
+}
+
+func (b *FamilyBase) finalizeTaskObservation(
+	rootSessionID, callID, title, rawStatus string,
+	rawOutput json.RawMessage,
+	content []acp.ToolCallBlock,
+	reusedTaskID, prompt string,
+	freshSpawn, upsertIfMissing bool,
+) *acp.SubagentObservation {
+	closeMode := acp.ModeCloseOnly
+	if upsertIfMissing {
+		closeMode = acp.ModeUpsert
+	}
+	out := parseOpenCodeTaskOutput(rawOutput)
+
+	rowKey := callID
+	renameFrom := ""
+	childKey := ""
+	spawnSpanID := ""
+	switch {
+	case out.sessionID != "":
+		rowKey = out.sessionID
+		childKey = out.sessionID
+		if reusedTaskID != "" {
+			if reusedTaskID != out.sessionID {
+				renameFrom = reusedTaskID
+			}
+		} else {
+			renameFrom = callID
+			spawnSpanID = callID
+		}
+	case reusedTaskID != "":
+		rowKey = reusedTaskID
+		childKey = reusedTaskID
+	case freshSpawn:
+		spawnSpanID = callID
+	}
+
+	obs := &acp.SubagentObservation{
+		RowKey:           rowKey,
+		RenameFrom:       renameFrom,
+		ChildAgentKey:    childKey,
+		ChildSpawnSpanID: spawnSpanID,
+		Title:            title,
+		Prompt:           prompt,
+		Spawns:           freshSpawn,
+		ReportID:         callID,
+	}
+	status := acp.FinalStatus(rawStatus)
+	if out.background && out.sessionID != "" && status == bgtask.StatusSucceeded {
+		if earlyStatus, closedEarly := b.claimBackgroundChildLaunch(rootSessionID, callID, reusedTaskID, out.sessionID); closedEarly {
+			if b.takeTaskChildStop(callID, reusedTaskID, out.sessionID) && earlyStatus != bgtask.StatusSucceeded {
+				earlyStatus = bgtask.StatusInterrupted
+			}
+			obs.Status = earlyStatus
+			obs.CloseRow = true
+			obs.Mode = closeMode
+			return obs
+		}
+		obs.Status = bgtask.StatusRunning
+		obs.CloseRow = false
+		obs.KeepOpen = true
+		obs.ReviveRow = reusedTaskID != ""
+		obs.Mode = acp.ModeUpsert
 		return obs
 	}
-	b.forgetChildSession(tcu.ToolCallID)
-	if b.takeChildStop(tcu.ToolCallID) && obs.Status != bgtask.StatusSucceeded {
-		obs.Status = bgtask.StatusInterrupted
+
+	b.finishForegroundChildTracking(callID, reusedTaskID, rowKey)
+	if b.takeTaskChildStop(callID, reusedTaskID, rowKey) && status != bgtask.StatusSucceeded {
+		status = bgtask.StatusInterrupted
+	}
+	obs.Status = status
+	obs.CloseRow = true
+	obs.Mode = closeMode
+	obs.Report = agent.SubagentReport{
+		Text: openCodeSubagentReport(acp.ToolCallText(content), out.background),
 	}
 	return obs
+}
+
+func (b *FamilyBase) handleChildDaemonEvent(sessionID, eventType string, properties json.RawMessage) {
+	switch eventType {
+	case contracts.OpenCodeEventSessionStatus:
+		var payload struct {
+			Status struct {
+				Type string `json:"type"`
+			} `json:"status"`
+		}
+		if json.Unmarshal(properties, &payload) != nil {
+			return
+		}
+		switch payload.Status.Type {
+		case openCodeStatusTypeBusy, contracts.OpenCodeStatusTypeRetry:
+			b.clearEarlyChildEvent(sessionID)
+		case openCodeStatusTypeIdle:
+			b.finishBackgroundChildSession(sessionID, bgtask.StatusSucceeded)
+		}
+	case openCodeEventSessionError:
+		b.finishBackgroundChildSession(sessionID, bgtask.StatusFailed)
+	case openCodeEventSessionDeleted:
+		b.finishBackgroundChildSession(sessionID, bgtask.StatusStopped)
+	default:
+		slog.Debug("ignore OpenCode event outside the current session", "agent_id", b.AgentID(), "type", eventType)
+	}
+}
+
+func (b *FamilyBase) finishBackgroundChildSession(sessionID string, status bgtask.Status) {
+	b.childSessionsMu.Lock()
+	child := b.childSessions[sessionID]
+	if child == nil || !child.background {
+		if b.finishedForegroundSessions.Has(sessionID) {
+			b.childSessionsMu.Unlock()
+			return
+		}
+		prev, exists := b.earlyChildEvents.Get(sessionID)
+		if !exists || (prev == bgtask.StatusSucceeded && status != bgtask.StatusSucceeded) {
+			b.recordEarlyChildEventLocked(sessionID, status)
+		}
+		b.childSessionsMu.Unlock()
+		return
+	}
+	rootSessionID := child.rootSessionID
+	delete(b.childSessions, sessionID)
+	b.earlyChildEvents.Delete(sessionID)
+	b.childSessionsMu.Unlock()
+	if b.takeChildStop(sessionID) && status != bgtask.StatusSucceeded {
+		status = bgtask.StatusInterrupted
+	}
+	if rootSessionID == "" {
+		rootSessionID = b.CurrentSessionID()
+	}
+	b.ApplySubagentObservationForSessionOffReader(rootSessionID, &acp.SubagentObservation{
+		RowKey:   sessionID,
+		Status:   status,
+		CloseRow: true,
+		Mode:     acp.ModeCloseOnly,
+	})
+}
+
+func (b *FamilyBase) claimBackgroundChildLaunch(rootSessionID, callID, reusedTaskID, sessionID string) (bgtask.Status, bool) {
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	b.finishedForegroundSessions.Delete(sessionID)
+	if earlyStatus, ok := b.earlyChildEvents.Get(sessionID); ok {
+		b.earlyChildEvents.Delete(sessionID)
+		delete(b.childSessions, callID)
+		if reusedTaskID != "" {
+			delete(b.childSessions, reusedTaskID)
+		}
+		delete(b.childSessions, sessionID)
+		return earlyStatus, true
+	}
+	oldKey := callID
+	if reusedTaskID != "" {
+		oldKey = reusedTaskID
+	}
+	child := b.childSessions[oldKey]
+	if child == nil && sessionID != oldKey {
+		child = b.childSessions[sessionID]
+	}
+	if child == nil {
+		child = &openCodeChildSession{id: sessionID, rootSessionID: rootSessionID}
+	}
+	child.id = sessionID
+	if child.rootSessionID == "" {
+		child.rootSessionID = rootSessionID
+	}
+	child.background = true
+	if b.childSessions == nil {
+		b.childSessions = make(map[string]*openCodeChildSession)
+	}
+	if oldKey != sessionID {
+		delete(b.childSessions, oldKey)
+	}
+	if callID != sessionID {
+		delete(b.childSessions, callID)
+	}
+	b.childSessions[sessionID] = child
+	return 0, false
+}
+
+func (b *FamilyBase) finishForegroundChildTracking(callID, reusedTaskID, rowKey string) {
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	delete(b.childSessions, callID)
+	if reusedTaskID != "" {
+		delete(b.childSessions, reusedTaskID)
+		b.earlyChildEvents.Delete(reusedTaskID)
+		b.recordFinishedForegroundSessionLocked(reusedTaskID)
+	}
+	if rowKey != "" {
+		delete(b.childSessions, rowKey)
+		b.earlyChildEvents.Delete(rowKey)
+		b.recordFinishedForegroundSessionLocked(rowKey)
+	}
+}
+
+func (b *FamilyBase) clearEarlyChildEvent(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	b.childSessionsMu.Lock()
+	b.earlyChildEvents.Delete(sessionID)
+	b.finishedForegroundSessions.Delete(sessionID)
+	b.childSessionsMu.Unlock()
+}
+
+func setOpenCodeCappedLocked[V any](m *providerkit.CappedMap[string, V], key string, value V) {
+	if m.Cap() == 0 {
+		*m = providerkit.NewCappedMap[string, V](openCodeMaxTrackedEntries)
+	}
+	m.Set(key, value)
+}
+
+func (b *FamilyBase) recordEarlyChildEventLocked(sessionID string, status bgtask.Status) {
+	setOpenCodeCappedLocked(&b.earlyChildEvents, sessionID, status)
+}
+
+func (b *FamilyBase) recordFinishedForegroundSessionLocked(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	setOpenCodeCappedLocked(&b.finishedForegroundSessions, sessionID, struct{}{})
+}
+
+func (b *FamilyBase) markTaskCallFinalized(callID, rootSessionID string) {
+	if callID == "" {
+		return
+	}
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	delete(b.reusedTaskCalls, callID)
+	setOpenCodeCappedLocked(&b.finalizedTaskCalls, callID, rootSessionID)
+}
+
+func (b *FamilyBase) isTaskCallFinalized(callID, rootSessionID string) bool {
+	if callID == "" {
+		return false
+	}
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	owner, finalized := b.finalizedTaskCalls.Get(callID)
+	return finalized && (owner == "" || owner == rootSessionID)
+}
+
+func (b *FamilyBase) recordReusedTaskCall(rootSessionID, callID, taskID string, rekeyChild bool) {
+	if callID == "" || taskID == "" {
+		return
+	}
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	if b.reusedTaskCalls == nil {
+		b.reusedTaskCalls = make(map[string]openCodeReusedTaskCall)
+	}
+	b.reusedTaskCalls[callID] = openCodeReusedTaskCall{taskID: taskID, rootSessionID: rootSessionID}
+	if rekeyChild && callID != taskID {
+		if child := b.childSessions[callID]; child != nil {
+			delete(b.childSessions, callID)
+			if b.childSessions[taskID] == nil {
+				b.childSessions[taskID] = child
+			}
+		}
+	}
+}
+
+func (b *FamilyBase) reusedTaskID(callID, rootSessionID string) string {
+	if callID == "" {
+		return ""
+	}
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	reused, ok := b.reusedTaskCalls[callID]
+	if !ok || (reused.rootSessionID != "" && reused.rootSessionID != rootSessionID) {
+		return ""
+	}
+	return reused.taskID
+}
+
+func (b *FamilyBase) takeReusedTaskID(callID, rootSessionID string) string {
+	if callID == "" {
+		return ""
+	}
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	reused, ok := b.reusedTaskCalls[callID]
+	delete(b.reusedTaskCalls, callID)
+	if !ok || (reused.rootSessionID != "" && reused.rootSessionID != rootSessionID) {
+		return ""
+	}
+	return reused.taskID
+}
+
+func (b *FamilyBase) hasActiveReusedTask(rootSessionID, taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	for _, reused := range b.reusedTaskCalls {
+		if reused.taskID == taskID && (reused.rootSessionID == "" || reused.rootSessionID == rootSessionID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *FamilyBase) takeTaskChildStop(keys ...string) bool {
+	stopped := false
+	for _, key := range keys {
+		if key != "" && b.takeChildStop(key) {
+			stopped = true
+		}
+	}
+	return stopped
 }

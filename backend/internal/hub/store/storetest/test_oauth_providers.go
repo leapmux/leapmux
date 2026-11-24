@@ -2,7 +2,6 @@ package storetest
 
 import (
 	"testing"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
@@ -142,23 +141,12 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
-	t.Run("delete cascades to tokens and user links", func(t *testing.T) {
+	t.Run("delete cascades to user links", func(t *testing.T) {
 		st := s.NewStore(t)
 		prov := SeedOAuthProvider(t, st, "cascade-prov")
 		user := SeedUser(t, st, "cascade-user")
 
-		err := st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID:       userid.MustNew(user.ID),
-			ProviderID:   prov.ID,
-			AccessToken:  []byte("access"),
-			RefreshToken: []byte("refresh"),
-			TokenType:    "Bearer",
-			ExpiresAt:    time.Now().Add(time.Hour),
-			KeyVersion:   1,
-		})
-		require.NoError(t, err)
-
-		err = st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+		err := st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
 			UserID:          userid.MustNew(user.ID),
 			ProviderID:      prov.ID,
 			ProviderSubject: "sub-cascade",
@@ -167,13 +155,6 @@ func (s *Suite) testOAuthProviders(t *testing.T) {
 
 		err = st.OAuthProviders().Delete(ctx, prov.ID)
 		require.NoError(t, err)
-
-		// Tokens should be gone.
-		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID:     userid.MustNew(user.ID),
-			ProviderID: prov.ID,
-		})
-		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		// User links should be gone.
 		links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))

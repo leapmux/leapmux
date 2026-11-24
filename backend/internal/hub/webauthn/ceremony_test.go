@@ -12,16 +12,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-func newMigratedWebAuthnService(t *testing.T) (*webauthn.Service, store.Store) {
+func newMigratedWebAuthnService(t *testing.T) (*webauthn.Service, store.Store, *webauthn.SessionStore) {
 	t.Helper()
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -33,13 +33,14 @@ func newMigratedWebAuthnService(t *testing.T) (*webauthn.Service, store.Store) {
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 
+	sessions := webauthn.NewSessionStore()
 	svc, err := webauthn.NewService(webauthn.RPConfig{
 		RPID:          "localhost",
 		RPDisplayName: "LeapMux",
 		RPOrigins:     []string{"http://localhost"},
-	}, st, ks)
+	}, st, ks, sessions)
 	require.NoError(t, err)
-	return svc, st
+	return svc, st, sessions
 }
 
 func seedUser(t *testing.T, st store.Store) string {
@@ -65,7 +66,7 @@ func seedUser(t *testing.T, st store.Store) string {
 // test below completes virtual registrations and an actual signed assertion.
 // The Playwright spec covers the browser ceremony end to end.
 func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, _ := newMigratedWebAuthnService(t)
 	owner := seedUser(t, st)
 	other := seedUser(t, st)
 
@@ -81,7 +82,7 @@ func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
 		sessionID, _, err := svc.BeginRegistration(context.Background(), owner, "")
 		require.NoError(t, err)
 
-		// The first call consumes the row; the attestation then fails on the
+		// The first call consumes the session; the attestation then fails on the
 		// placeholder body, which is past the point this asserts.
 		_, first := svc.VerifyRegistration(context.Background(), owner, sessionID, "{}")
 		require.Error(t, first)
@@ -101,7 +102,7 @@ func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
 // when the two halves split, so every path that stores a credential keeps
 // it. Without it a row renders as a blank entry in the settings list.
 func TestStoreCredential_DefaultsTheFriendlyName(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, _ := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	cred := webauthn.FinishedSignUpCredential{
@@ -121,7 +122,7 @@ func TestStoreCredential_DefaultsTheFriendlyName(t *testing.T) {
 }
 
 func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, _, sessions := newMigratedWebAuthnService(t)
 
 	sessionID, optionsJSON, err := svc.BeginSignUp(context.Background(), webauthn.SignupDraft{
 		Username:    "newuser",
@@ -132,17 +133,13 @@ func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {
 	assert.NotEmpty(t, sessionID)
 	assert.NotEmpty(t, optionsJSON)
 
-	row, err := st.WebAuthnSessions().Get(context.Background(), sessionID)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_SIGNUP, row.Kind)
-	assert.Empty(t, row.UserID, "signup ceremony row has no users FK yet")
-
-	var draft webauthn.SignupDraft
-	plain, err := svc.DecryptPayloadJSON(sessionID, row.PayloadJSON)
-	require.NoError(t, err)
-	require.NoError(t, json.Unmarshal([]byte(plain), &draft))
-	assert.NotEmpty(t, draft.UserID)
-	assert.NotContains(t, row.PayloadJSON, "new@example.com", "signup draft must not sit in payload_json as plaintext")
+	sess, ok := sessions.Get(sessionID)
+	require.True(t, ok)
+	assert.Equal(t, webauthn.KindSignup, sess.Kind)
+	assert.True(t, sess.UserID.IsZero(), "signup ceremony has no user id yet")
+	assert.NotEmpty(t, sess.SignupDraft.UserID)
+	assert.Equal(t, "newuser", sess.SignupDraft.Username)
+	assert.Equal(t, "new@example.com", sess.SignupDraft.Email)
 
 	// Options embed the same user id as the WebAuthn user handle (base64url of the UUID bytes).
 	var options map[string]any
@@ -158,11 +155,11 @@ func TestBeginSignUp_AllocatesStableUserID(t *testing.T) {
 		decoded, err = base64.URLEncoding.DecodeString(userIDField)
 		require.NoError(t, err)
 	}
-	assert.Equal(t, draft.UserID, string(decoded))
+	assert.Equal(t, sess.SignupDraft.UserID, string(decoded))
 }
 
 func TestBeginElevation_RejectsEmptyCredentials(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, _ := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	_, _, err := svc.BeginElevation(context.Background(), userID, "")
@@ -171,7 +168,7 @@ func TestBeginElevation_RejectsEmptyCredentials(t *testing.T) {
 }
 
 func TestBeginElevation_ReplacesPriorCeremony(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, sessions := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	credID := []byte{0x11, 0x22, 0x33, 0x44}
@@ -191,14 +188,14 @@ func TestBeginElevation_ReplacesPriorCeremony(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
-	_, err = st.WebAuthnSessions().Get(context.Background(), firstID)
-	assert.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.WebAuthnSessions().Get(context.Background(), secondID)
-	require.NoError(t, err)
+	_, ok := sessions.Get(firstID)
+	assert.False(t, ok)
+	_, ok = sessions.Get(secondID)
+	require.True(t, ok)
 }
 
 func TestBeginLogin_ReplacesPriorCeremony(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, sessions := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	credID := []byte{0x11, 0x22, 0x33, 0x44}
@@ -218,14 +215,14 @@ func TestBeginLogin_ReplacesPriorCeremony(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
-	_, err = st.WebAuthnSessions().Get(context.Background(), firstID)
-	assert.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.WebAuthnSessions().Get(context.Background(), secondID)
-	require.NoError(t, err)
+	_, ok := sessions.Get(firstID)
+	assert.False(t, ok)
+	_, ok = sessions.Get(secondID)
+	require.True(t, ok)
 }
 
 func TestBeginRegistration_ReplacesPriorCeremony(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, sessions := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	firstID, _, err := svc.BeginRegistration(context.Background(), userID, "")
@@ -234,14 +231,14 @@ func TestBeginRegistration_ReplacesPriorCeremony(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
-	_, err = st.WebAuthnSessions().Get(context.Background(), firstID)
-	assert.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.WebAuthnSessions().Get(context.Background(), secondID)
-	require.NoError(t, err)
+	_, ok := sessions.Get(firstID)
+	assert.False(t, ok)
+	_, ok = sessions.Get(secondID)
+	require.True(t, ok)
 }
 
-func TestBeginRegistration_PersistsEncryptedSession(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+func TestBeginRegistration_StoresSessionInMemory(t *testing.T) {
+	svc, st, sessions := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	sessionID, optionsJSON, err := svc.BeginRegistration(context.Background(), userID, "")
@@ -249,19 +246,17 @@ func TestBeginRegistration_PersistsEncryptedSession(t *testing.T) {
 	assert.NotEmpty(t, sessionID)
 	assert.NotEmpty(t, optionsJSON)
 
-	row, err := st.WebAuthnSessions().Get(context.Background(), sessionID)
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_REGISTER, row.Kind)
-	assert.Equal(t, userID, row.UserID)
-	assert.NotEmpty(t, row.SessionData)
-	assert.True(t, row.ExpiresAt.After(time.Now().UTC()))
-
-	// Ciphertext must not equal plaintext session JSON shape.
-	assert.NotContains(t, string(row.SessionData), `"challenge"`)
+	sess, ok := sessions.Get(sessionID)
+	require.True(t, ok)
+	assert.Equal(t, webauthn.KindRegister, sess.Kind)
+	assert.Equal(t, userID, sess.UserID.String())
+	require.NotNil(t, sess.SessionData)
+	assert.NotEmpty(t, sess.SessionData.Challenge)
+	assert.True(t, sess.ExpiresAt.After(time.Now().UTC()))
 }
 
 func TestBeginElevation_ConstrainsAllowCredentials(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, _ := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	credID := []byte{0x01, 0x02, 0x03, 0x04, 0xaa, 0xbb}
@@ -327,7 +322,7 @@ func TestRejectIfCloneWarning(t *testing.T) {
 func TestBeginSignUpAllocatesItsOwnUserID(t *testing.T) {
 	t.Parallel()
 
-	svc, _ := newMigratedWebAuthnService(t)
+	svc, _, _ := newMigratedWebAuthnService(t)
 
 	const attackerChosen = "victim-user-id"
 	_, optionsJSON, err := svc.BeginSignUp(context.Background(), webauthn.SignupDraft{
@@ -355,7 +350,7 @@ func TestBeginSignUpAllocatesItsOwnUserID(t *testing.T) {
 }
 
 func TestBeginRecoveryRegistration_IgnoresUndecryptablePasskeys(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, _ := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
@@ -380,7 +375,7 @@ func TestBeginRecoveryRegistration_IgnoresUndecryptablePasskeys(t *testing.T) {
 }
 
 func TestBeginRecoveryRegistration_RequiresTokenHash(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, _ := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	_, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "")
@@ -388,7 +383,7 @@ func TestBeginRecoveryRegistration_RequiresTokenHash(t *testing.T) {
 }
 
 func TestBeginRecoveryRegistration_ReplacesPriorCeremony(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, sessions := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	firstID, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
@@ -397,14 +392,14 @@ func TestBeginRecoveryRegistration_ReplacesPriorCeremony(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, firstID, secondID)
 
-	_, err = st.WebAuthnSessions().Get(context.Background(), firstID)
-	assert.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.WebAuthnSessions().Get(context.Background(), secondID)
-	require.NoError(t, err)
+	_, ok := sessions.Get(firstID)
+	assert.False(t, ok)
+	_, ok = sessions.Get(secondID)
+	require.True(t, ok)
 }
 
 func TestVerifyRecoveryRegistration_TokenMismatchDoesNotConsume(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, sessions := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
 	sessionID, _, err := svc.BeginRecoveryRegistration(context.Background(), userID, "", "tok-hash")
@@ -413,17 +408,17 @@ func TestVerifyRecoveryRegistration_TokenMismatchDoesNotConsume(t *testing.T) {
 	_, _, err = svc.VerifyRecoveryRegistration(context.Background(), sessionID, "{}", "other-hash")
 	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid)
 
-	_, err = st.WebAuthnSessions().Get(context.Background(), sessionID)
-	require.NoError(t, err, "a hash mismatch must leave the ceremony session in place")
+	_, ok := sessions.Get(sessionID)
+	require.True(t, ok, "a hash mismatch must leave the ceremony session in place")
 
 	_, _, err = svc.VerifyRecoveryRegistration(context.Background(), sessionID, "{}", "tok-hash")
 	require.Error(t, err)
-	_, err = st.WebAuthnSessions().Get(context.Background(), sessionID)
-	assert.ErrorIs(t, err, store.ErrNotFound, "the matching hash consumes the session even when attestation then fails")
+	_, ok = sessions.Get(sessionID)
+	assert.False(t, ok, "the matching hash consumes the session even when attestation then fails")
 }
 
 func TestFinishElevationReturnsTheExactVerifiedRegistrationIdentity(t *testing.T) {
-	svc, st := newMigratedWebAuthnService(t)
+	svc, st, _ := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 	rp := virtualwebauthn.RelyingParty{Name: "LeapMux", ID: "localhost", Origin: "http://localhost"}
 	var selectedAuthenticator virtualwebauthn.Authenticator
@@ -460,4 +455,72 @@ func TestFinishElevationReturnsTheExactVerifiedRegistrationIdentity(t *testing.T
 	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid)
 	assert.Empty(t, replay.RowID)
 	assert.Empty(t, replay.CredentialID)
+}
+
+func TestCeremonyRejectsStaleUserAuthGeneration(t *testing.T) {
+	svc, st, sessions := newMigratedWebAuthnService(t)
+	userID := seedUser(t, st)
+	rp := virtualwebauthn.RelyingParty{Name: "LeapMux", ID: "localhost", Origin: "http://localhost"}
+
+	// Register one passkey so login and elevation ceremonies can be started.
+	authenticator := virtualwebauthn.NewAuthenticator()
+	credential := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	regID, regOpts, err := svc.BeginRegistration(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	parsedReg, err := virtualwebauthn.ParseAttestationOptions(regOpts)
+	require.NoError(t, err)
+	attestation := virtualwebauthn.CreateAttestationResponse(rp, authenticator, credential, *parsedReg)
+	finished, err := svc.VerifyRegistration(t.Context(), userID, regID, attestation)
+	require.NoError(t, err)
+	_, err = svc.StoreCredential(t.Context(), st, id.Generate(), userID, finished, "Primary key")
+	require.NoError(t, err)
+	authenticator.AddCredential(credential)
+
+	// Start login, elevation, registration, and recovery ceremonies at the current auth_generation.
+	loginID, loginOpts, err := svc.BeginLogin(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	parsedLogin, err := virtualwebauthn.ParseAssertionOptions(loginOpts)
+	require.NoError(t, err)
+	loginAssertion := virtualwebauthn.CreateAssertionResponse(rp, authenticator, credential, *parsedLogin)
+
+	elevID, elevOpts, err := svc.BeginElevation(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	parsedElev, err := virtualwebauthn.ParseAssertionOptions(elevOpts)
+	require.NoError(t, err)
+	elevAssertion := virtualwebauthn.CreateAssertionResponse(rp, authenticator, credential, *parsedElev)
+
+	secondRegID, secondRegOpts, err := svc.BeginRegistration(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	parsedSecondReg, err := virtualwebauthn.ParseAttestationOptions(secondRegOpts)
+	require.NoError(t, err)
+	secondCredential := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	secondAttestation := virtualwebauthn.CreateAttestationResponse(rp, authenticator, secondCredential, *parsedSecondReg)
+
+	const recoveryTokenHash = "recovery-tok-hash"
+	recID, recOpts, err := svc.BeginRecoveryRegistration(t.Context(), userID, rp.Origin, recoveryTokenHash)
+	require.NoError(t, err)
+	parsedRec, err := virtualwebauthn.ParseAttestationOptions(recOpts)
+	require.NoError(t, err)
+	recCredential := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	recAttestation := virtualwebauthn.CreateAttestationResponse(rp, authenticator, recCredential, *parsedRec)
+
+	// Bump users.auth_generation directly in SQL without evicting the in-memory
+	// SessionStore (simulating the post-commit window or another Hub instance).
+	n, err := st.Users().RevokeUserTokens(t.Context(), userid.MustNew(userID))
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	_, _, err = svc.FinishLogin(t.Context(), loginID, loginAssertion)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid, "FinishLogin must reject a ceremony from an older auth_generation")
+
+	_, err = svc.FinishElevation(t.Context(), userID, elevID, elevAssertion)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid, "FinishElevation must reject a ceremony from an older auth_generation")
+
+	_, err = svc.VerifyRegistration(t.Context(), userID, secondRegID, secondAttestation)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid, "VerifyRegistration must reject a ceremony from an older auth_generation")
+
+	_, _, err = svc.VerifyRecoveryRegistration(t.Context(), recID, recAttestation, recoveryTokenHash)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid, "VerifyRecoveryRegistration must reject a ceremony from an older auth_generation")
+	_, ok := sessions.Get(recID)
+	assert.False(t, ok, "VerifyRecoveryRegistration must consume the stale recovery session")
 }

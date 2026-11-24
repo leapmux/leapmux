@@ -308,9 +308,8 @@ func explainPlan(t *testing.T, db *sql.DB, sqlText string, args ...any) []string
 //     predicate's SPELLING: SQLite's partial-index matcher is syntactic, so
 //     rewriting the migration's `WHERE is_admin = 1` back to bare
 //     `WHERE is_admin` silently orphans the index and this fails.
-//   - ListExpiringOAuthTokens and DeleteExpiredDelegationTokensBefore must
-//     seek their expires_at indexes with an upper limit -- the former
-//     regressed to a full scan under its old datetime() wrap.
+//   - DeleteExpiredDelegationTokensBefore must seek its expires_at index with
+//     an upper limit.
 //   - The revocation-events compaction subquery must SEEK an index rather
 //     than scan. Both sqlite_autoindex(seq) and idx_revocation_events_published
 //     are eligible now that published_at compares raw (sargable); which wins
@@ -321,11 +320,6 @@ func TestRetentionAndBootstrapScansAreSargable(t *testing.T) {
 	admin := explainPlan(t, db, loadQuerySQL(t, "users.sql", "GetFirstAdmin"))
 	assert.Contains(t, admin[0], "INDEX idx_users_is_admin",
 		"GetFirstAdmin must ride the partial admin index; plan: %v", admin)
-
-	oauth := explainPlan(t, db, loadQuerySQL(t, "oauth_tokens.sql", "ListExpiringOAuthTokens"))
-	assert.Contains(t, oauth[0], "INDEX idx_oauth_tokens_expires_at", "plan: %v", oauth)
-	assert.Contains(t, oauth[0], "expires_at<",
-		"the expiring-token scan must carry its upper limit into the seek; plan: %v", oauth)
 
 	expiry := explainPlan(t, db, loadQuerySQL(t, "delegation_tokens.sql", "DeleteExpiredDelegationTokensBefore"))
 	assert.Contains(t, expiry[0], "INDEX idx_delegation_tokens_expires_at", "plan: %v", expiry)
@@ -395,20 +389,4 @@ func TestRevokedTokenSweepsAreSargable(t *testing.T) {
 		assert.Contains(t, details[0], "revoked_at<",
 			"%s sweep must carry the UPPER limit into the index seek (the datetime() wrap loses it and scans every revoked row)", tc.table)
 	}
-}
-
-// TestWebAuthnSessionsUserKindIndexIsPartialUnique pins the index that makes
-// two concurrent Begin* calls fail at insert instead of leaving two encrypted
-// rows. persistSession is Delete then Create; without UNIQUE the race is
-// invisible to every sequential storetest. The WHERE excludes signup (NULL
-// user_id) so concurrent anonymous ceremonies can coexist.
-func TestWebAuthnSessionsUserKindIndexIsPartialUnique(t *testing.T) {
-	_, db := newSessionTestStore(t)
-	sqlText := indexSQL(t, db, "webauthn_sessions", "idx_webauthn_sessions_user_kind")
-	upper := strings.ToUpper(sqlText)
-	assert.Contains(t, upper, "UNIQUE",
-		"idx_webauthn_sessions_user_kind must be UNIQUE so two concurrent Begins cannot leave two rows of the same (user_id, kind)")
-	assert.Contains(t, upper, "(USER_ID, KIND)")
-	assert.Contains(t, upper, "WHERE USER_ID IS NOT NULL",
-		"the unique index must exclude signup rows (NULL user_id); a non-partial UNIQUE still allows multiple NULLs on SQLite but hides the intent")
 }

@@ -974,7 +974,7 @@ func (h *OutputHandler) storedChildActivity(childAgentID string) backgroundTaskA
 		}
 		return backgroundTaskActivity{}
 	}
-	return backgroundTaskActivityFor([]bgtask.Item{bgItemFromRow(row)}, childAgentID)
+	return backgroundTaskActivityFor([]bgtask.Item{h.bgItemFromRow(row.OwnerAgentID, row)}, childAgentID)
 }
 
 // backgroundTaskActivityFor keeps actual task counts separate from working activity.

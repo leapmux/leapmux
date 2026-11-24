@@ -995,6 +995,50 @@ func TestCopilotNativeEvents_ShellOutputEndsWithItsToolCall(t *testing.T) {
 	}
 }
 
+func TestCopilotNativeEvents_RootTurnEndPreservesBackgroundChildToolsAndText(t *testing.T) {
+	t.Parallel()
+
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{"turnId": "root-1"}))
+	_, child := startCopilotSubagent(t, a, sink, copilotExecutionBackground)
+
+	// Open a tool and streamed text on both root and running background child.
+	a.HandleOutput(nativeCopilotToolStart(t, "", "root-tool", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-tool", contracts.CopilotToolView))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantMessageDelta, map[string]any{
+		"messageId": "root-msg", "deltaContent": "Root partial",
+	}))
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventAssistantMessageDelta, map[string]any{
+		"messageId": "child-msg", "deltaContent": "Child partial",
+	}))
+
+	childMsgsBeforeRootIdle := len(child.Messages())
+
+	// Aborted root turn ends: only root tool and root streamed text close.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{"aborted": true}))
+
+	assert.NotContains(t, a.openTools, "root-tool")
+	assert.Contains(t, a.openTools, "child-tool", "root turn end must preserve background child open tools")
+	assert.Len(t, child.Messages(), childMsgsBeforeRootIdle, "root turn end must not flush child streamed text or tools")
+
+	// Child's streamed text survives until markNativeChildIdle flushes it;
+	// open child tools stay alive across the background pause.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}))
+	assert.Contains(t, a.openTools, "child-tool", "pausing a background child must keep its open tools alive")
+	var sawChildStreamed bool
+	for _, msg := range child.Messages()[childMsgsBeforeRootIdle:] {
+		if strings.Contains(string(msg.Content), "Child partial") {
+			sawChildStreamed = true
+			break
+		}
+	}
+	assert.True(t, sawChildStreamed, "child streamed text must flush when child goes idle")
+
+	// Final child failure closes its remaining open tool.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentFailed, map[string]any{"toolCallId": "task-1"}))
+	assert.NotContains(t, a.openTools, "child-tool")
+}
+
 func TestCopilotNativeEvents_ShellOutputRejectsInvalidFramesWithoutRetainingUnknownCalls(t *testing.T) {
 	t.Parallel()
 	a, sink := newNativeCopilotForEvents(t)

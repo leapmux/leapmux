@@ -3,7 +3,12 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,11 +19,16 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
 // seedAPIToken writes one api_tokens row for the env's user, held by the
@@ -498,17 +508,19 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 	}))
 
 	deviceCode := id.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+	userCode := id.Generate()
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode),
-		UserCode:       id.Generate(),
+		UserCode:       userCode,
 		ClientID:       oauthapp.ControlCLIClientID,
 		ExpiresAt:      time.Now().Add(10 * time.Minute),
 	}))
-	_, err := env.store.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode),
-		UserID:         uid,
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+		UserCode: userCode,
+		UserID:   uid,
 	}, time.Now().UTC())
 	require.NoError(t, err)
+	require.True(t, approved)
 
 	_, err = env.client.DisconnectApp(authedReq(ctx, &leapmuxv1.DisconnectAppRequest{
 		ClientId: oauthapp.ControlCLIClientID,
@@ -518,7 +530,253 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, time.Now().UTC())
 	assert.Error(t, err, "the outstanding authorization code must die with the disconnect")
 
-	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
-	require.NoError(t, err)
+	row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
+	require.True(t, ok)
 	assert.NotNil(t, row.ConsumedAt, "the approved-but-unpolled device grant must die with the disconnect")
+}
+
+type beforeUserAuthTxStore struct {
+	store.Store
+	before func()
+	once   sync.Once
+}
+
+func (s *beforeUserAuthTxStore) RunInUserAuthTransaction(ctx context.Context, uid userid.UserID, fn func(store.Store) error) error {
+	if s.before != nil {
+		s.once.Do(s.before)
+	}
+	return s.Store.RunInUserAuthTransaction(ctx, uid, fn)
+}
+
+func TestDisconnectApp_ConcurrentWithDeviceTokenMintLeavesNoLiveToken(t *testing.T) {
+	t.Parallel()
+
+	t.Run("concurrent race leaves no live token and revokes any committed winner", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		st := hubtestutil.OpenTestStore(t)
+		hubtestutil.CreateTestAdmin(t, st)
+		admin, err := st.Users().GetByUsername(ctx, hubtestutil.TestAdminUsername)
+		require.NoError(t, err)
+		uid := userid.MustNew(admin.ID)
+		userInfo := &auth.UserInfo{ID: uid, Username: admin.Username, IsAdmin: true}
+
+		pepper := []byte("0123456789abcdef0123456789abcdef")
+		tv, err := auth.NewTokenValidator(st, pepper)
+		require.NoError(t, err)
+		closer := &recordingBearerCloser{}
+		lifecycle := auth.NewCredentialLifecycleEffects(nil, closer, nil)
+		set := servicetest.NewSettingsManager(t, st, nil)
+		deviceAuths := service.NewMemoryDeviceAuthorizationStore()
+
+		userSvc := service.NewUserService(service.UserServiceDeps{
+			Store:                st,
+			Config:               testConfig(),
+			Settings:             set,
+			Lifecycle:            lifecycle,
+			Mail:                 mail.NewStubSender(),
+			Renderer:             mail.Renderer{},
+			DeviceAuthorizations: deviceAuths,
+		})
+		mux := http.NewServeMux()
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		newOAuthServerHandler(service.OAuthServerDeps{
+			SessionHasher:        hubtestutil.TestSecretHasher(),
+			Store:                st,
+			Validator:            tv,
+			Lifecycle:            lifecycle,
+			Settings:             set,
+			DeviceAuthorizations: deviceAuths,
+			HubURL:               func() string { return srv.URL },
+		}).RegisterRoutes(mux)
+
+		for range 20 {
+			deviceCode := id.Generate()
+			userCode := verifycode.Generate()
+			now := time.Now().UTC()
+			require.NoError(t, deviceAuths.Create(service.CreateDeviceAuthorizationParams{
+				DeviceCodeHash: tv.HashSecret(deviceCode),
+				UserCode:       userCode,
+				ClientID:       oauthapp.ControlCLIClientID,
+				DeviceName:     "racer",
+				ExpiresAt:      now.Add(10 * time.Minute),
+			}))
+			approved, err := deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+				UserCode:       userCode,
+				UserID:         uid,
+				GrantedScopes:  "workspace:read",
+				AuthGeneration: admin.AuthGeneration,
+			}, now)
+			require.NoError(t, err)
+			require.True(t, approved)
+
+			start := make(chan struct{})
+			var (
+				wg            sync.WaitGroup
+				disconnectErr error
+				tokenStatus   int
+				mintedID      string
+			)
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, disconnectErr = userSvc.DisconnectApp(auth.WithUser(ctx, userInfo), &leapmuxv1.DisconnectAppRequest{
+					ClientId: oauthapp.ControlCLIClientID,
+				})
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				resp, err := srv.Client().PostForm(srv.URL+"/oauth/token", url.Values{
+					"grant_type":  {service.GrantTypeDeviceCode},
+					"client_id":   {oauthapp.ControlCLIClientID},
+					"device_code": {deviceCode},
+				})
+				if !assert.NoError(t, err) {
+					return
+				}
+				defer func() { _ = resp.Body.Close() }()
+				tokenStatus = resp.StatusCode
+				if tokenStatus == http.StatusOK {
+					var body struct {
+						TokenID string `json:"token_id"`
+					}
+					if assert.NoError(t, json.NewDecoder(resp.Body).Decode(&body)) {
+						mintedID = body.TokenID
+					}
+				}
+			}()
+			close(start)
+			wg.Wait()
+
+			require.NoError(t, disconnectErr)
+			live, err := st.OAuthClients().ListUserTokenRefs(ctx, oauthapp.ControlCLIClientID, uid)
+			require.NoError(t, err)
+			assert.Empty(t, live, "no live api_tokens row may survive DisconnectApp")
+			if tokenStatus == http.StatusOK {
+				require.NotEmpty(t, mintedID)
+				row, err := st.APITokens().GetByID(ctx, mintedID)
+				require.NoError(t, err)
+				assert.NotNil(t, row.RevokedAt, "a token committed before DisconnectApp must be revoked")
+				assert.True(t, closer.closed(mintedID), "DisconnectApp must pass the committed winner to BearerRevokedBatch")
+			}
+		}
+	})
+
+	t.Run("token committed just before RunInUserAuthTransaction is revoked and evicted", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		st := hubtestutil.OpenTestStore(t)
+		hubtestutil.CreateTestAdmin(t, st)
+		admin, err := st.Users().GetByUsername(ctx, hubtestutil.TestAdminUsername)
+		require.NoError(t, err)
+		uid := userid.MustNew(admin.ID)
+		userInfo := &auth.UserInfo{ID: uid, Username: admin.Username, IsAdmin: true}
+
+		closer := &recordingBearerCloser{}
+		lifecycle := auth.NewCredentialLifecycleEffects(nil, closer, nil)
+		set := servicetest.NewSettingsManager(t, st, nil)
+		deviceAuths := service.NewMemoryDeviceAuthorizationStore()
+
+		lateTokenID := id.Generate()
+		wrapped := &beforeUserAuthTxStore{
+			Store: st,
+			before: func() {
+				// Simulate a concurrent /oauth/token committing just before
+				// DisconnectApp acquires the user-auth transaction lock.
+				expires := time.Now().Add(time.Hour)
+				require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
+					Issuance:         store.APITokenIssuanceDeviceCode,
+					ID:               lateTokenID,
+					UserID:           uid,
+					ClientID:         oauthapp.ControlCLIClientID,
+					InstallationName: "just-before-tx",
+					GrantedScopes:    "workspace:read",
+					SecretHash:       []byte("late-hash"),
+					ExpiresAt:        &expires,
+				}))
+			},
+		}
+		userSvc := service.NewUserService(service.UserServiceDeps{
+			Store:                wrapped,
+			Config:               testConfig(),
+			Settings:             set,
+			Lifecycle:            lifecycle,
+			Mail:                 mail.NewStubSender(),
+			Renderer:             mail.Renderer{},
+			DeviceAuthorizations: deviceAuths,
+		})
+
+		resp, err := userSvc.DisconnectApp(auth.WithUser(ctx, userInfo), &leapmuxv1.DisconnectAppRequest{
+			ClientId: oauthapp.ControlCLIClientID,
+		})
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, resp.GetRevokedCredentialCount())
+
+		row, err := st.APITokens().GetByID(ctx, lateTokenID)
+		require.NoError(t, err)
+		assert.NotNil(t, row.RevokedAt)
+		assert.True(t, closer.closed(lateTokenID), "BearerRevokedBatch must receive tokens committed just before the transaction")
+	})
+}
+
+type failUserAuthTxStore struct {
+	store.Store
+	err error
+}
+
+func (s failUserAuthTxStore) RunInUserAuthTransaction(context.Context, userid.UserID, func(store.Store) error) error {
+	return s.err
+}
+
+func TestDisconnectApp_AbortsDeviceInvalidationWhenTransactionFails(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	ctx := context.Background()
+	uid := userid.MustNew(env.userID)
+	now := time.Now().UTC()
+
+	deviceCode := id.Generate()
+	hash := hubtestutil.TestSecretHasher().Hash(deviceCode)
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
+		DeviceCodeHash: hash,
+		UserCode:       id.Generate(),
+		ClientID:       oauthapp.ControlCLIClientID,
+		ExpiresAt:      now.Add(10 * time.Minute),
+	}))
+	rowBefore, ok := env.deviceAuths.Get(hash)
+	require.True(t, ok)
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+		UserCode:      rowBefore.UserCode,
+		UserID:        uid,
+		GrantedScopes: "workspace:read",
+	}, now)
+	require.NoError(t, err)
+	require.True(t, approved)
+
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:                failUserAuthTxStore{Store: env.store, err: errors.New("forced user auth tx failure")},
+		Config:               testConfig(),
+		Settings:             servicetest.NewSettingsManager(t, env.store, nil),
+		Lifecycle:            auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:                 mail.NewStubSender(),
+		Renderer:             mail.Renderer{},
+		DeviceAuthorizations: env.deviceAuths,
+	})
+
+	_, err = userSvc.DisconnectApp(auth.WithUser(ctx, &auth.UserInfo{ID: uid, Username: "alice"}), &leapmuxv1.DisconnectAppRequest{
+		ClientId: oauthapp.ControlCLIClientID,
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+
+	row, ok := env.deviceAuths.Get(hash)
+	require.True(t, ok)
+	assert.Nil(t, row.ConsumedAt, "a rolled-back DisconnectApp must leave the approved device grant unconsumed")
+	res, reserved := env.deviceAuths.ReserveConsume(hash, now)
+	require.True(t, reserved, "AbortInvalidate must unblock ReserveConsume after a failed DisconnectApp")
+	env.deviceAuths.ReleaseConsume(res)
 }

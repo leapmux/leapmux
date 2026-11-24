@@ -85,3 +85,29 @@ func TestKimiTaskStateReadValidatesIdentityAndReleasesItsWatch(t *testing.T) {
 		})
 	}
 }
+
+func TestKimiTaskStateReadPreservesValidStateWhenUnwatchFails(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	rig.fake.mu.Lock()
+	rig.fake.taskStateFor = func(command fakeKimiTaskCommand) any {
+		return map[string]any{"task_id": command.TaskID, "kind": "shell", "status": "ended", "outcome": "completed", "detached": true}
+	}
+	rig.fake.taskCommandFor = func(command fakeKimiTaskCommand) (int, string) {
+		if command.Type == kimiFrameTaskUnwatch {
+			return 50001, "unwatch failed"
+		}
+		return 0, "success"
+	}
+	rig.fake.mu.Unlock()
+	state, err := rig.agent.stream.readTaskState(t.Context(), rig.sessionID(), kimiTaskAddress{ownerAgentID: "main", taskID: "task_1"})
+	require.NoError(t, err)
+	assert.Equal(t, "ended", state.Status)
+	assert.Equal(t, "completed", state.Outcome)
+	rig.fake.mu.Lock()
+	commands := append([]fakeKimiTaskCommand(nil), rig.fake.taskCommands...)
+	rig.fake.mu.Unlock()
+	require.Len(t, commands, 2)
+	assert.Equal(t, kimiFrameTaskWatch, commands[0].Type)
+	assert.Equal(t, kimiFrameTaskUnwatch, commands[1].Type)
+}

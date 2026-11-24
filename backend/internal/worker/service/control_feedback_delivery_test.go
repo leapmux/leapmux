@@ -33,7 +33,7 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 					"params":  map[string]any{"requestId": "request-1", "sessionId": "session-1", "toolName": tool},
 				})
 				require.NoError(t, err)
-				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+				createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 					AgentID: "agent-1", AgentSessionID: "session-1", RequestID: "request-1", ClaimToken: "claim-1", Payload: payload,
 				})
 				row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
@@ -54,8 +54,7 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 				_, err = svc.DB.ExecContext(t.Context(), fmt.Sprintf("CREATE TRIGGER fail_feedback_commit BEFORE INSERT ON %s BEGIN SELECT RAISE(ABORT, 'feedback storage failed'); END", failedTable))
 				require.NoError(t, err)
 				require.ErrorContains(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response, ClaimToken: "claim-1"}), "feedback storage failed")
-				pending, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "request-1"})
-				require.NoError(t, err)
+				pending := requireLookupControlRequest(t, t.Context(), svc.Output, "agent-1", "request-1")
 				assert.Equal(t, "claim-1", pending.ClaimToken)
 				failedQueue, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
 				require.NoError(t, err)

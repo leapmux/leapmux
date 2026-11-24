@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 var _ agent.SteerPreparer = (*FamilyBase)(nil)
@@ -52,9 +53,28 @@ type FamilyBase struct {
 	// the close of that subagent's row reads the stop. Guarded by childStopMu.
 	stoppedChildren map[string]string
 	childSessionsMu sync.Mutex
-	// childSessions holds the session of each running subagent, by the task
-	// call that started it. Guarded by childSessionsMu.
+	// childSessions holds the session of each running subagent, keyed by its
+	// current registry row key (callID, reused taskID, or background sessionID).
+	// Guarded by childSessionsMu.
 	childSessions map[string]*openCodeChildSession
+	// earlyChildEvents buffers final daemon SSE statuses for non-root child
+	// sessions that arrive before ACP marks the child as an active background
+	// run. Capped at openCodeMaxTrackedEntries in FIFO order. Guarded by childSessionsMu.
+	earlyChildEvents providerkit.CappedMap[string, bgtask.Status]
+	// finishedForegroundSessions records child session IDs that already closed
+	// in the foreground so trailing daemon idle events do not populate
+	// earlyChildEvents. Capped at openCodeMaxTrackedEntries in FIFO order.
+	// Guarded by childSessionsMu.
+	finishedForegroundSessions providerkit.CappedMap[string, struct{}]
+	// finalizedTaskCalls records toolCallIDs whose final ACP tool_call or
+	// tool_call_update has already been observed, mapped to their owning root
+	// session ID, so late non-final updates cannot recreate orphan rows.
+	// Capped at openCodeMaxTrackedEntries in FIFO order. Guarded by childSessionsMu.
+	finalizedTaskCalls providerkit.CappedMap[string, string]
+	// reusedTaskCalls maps a reuse toolCallID to the existing task_id row key
+	// it revived and its owning root session ID. Deleted when the call
+	// finalizes. Guarded by childSessionsMu.
+	reusedTaskCalls map[string]openCodeReusedTaskCall
 }
 
 func (b *FamilyBase) configureQuestions(sink agent.ControlServices) {

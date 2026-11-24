@@ -16,6 +16,7 @@ const (
 	codexPendingChildGenerationLimit = 1 << 20
 	codexPendingChildEventLimit      = 256
 	codexPendingChildEventBytesLimit = 4 << 20
+	codexSeenActivityLimit           = 256
 )
 
 type codexChildPhase uint8
@@ -23,9 +24,15 @@ type codexChildPhase uint8
 const (
 	codexChildPending codexChildPhase = iota
 	codexChildRunning
+	codexChildPaused
 	codexChildClosing
 	codexChildInactive
 )
+
+type codexActivityKey struct {
+	id   string
+	kind string
+}
 
 type codexChildTransition struct {
 	status     bgtask.Status
@@ -90,6 +97,10 @@ type codexChildState struct {
 	promptTitle            string
 	prompt                 string
 	phase                  codexChildPhase
+	sawActiveStatus        bool
+	seenActivities         providerkit.CappedMap[codexActivityKey, struct{}]
+	startedWakeItems       map[string]struct{}
+	startedAnonWakes       int
 	finalTransition        codexChildTransition
 	transcriptFinalized    bool
 	generationBuffer       providerkit.GenerationBuffer
@@ -109,6 +120,13 @@ func (s *codexChildState) displayTitle() string {
 		return codexAgentPathTitle(s.agentPath)
 	}
 	return s.promptTitle
+}
+
+func (s *codexChildState) recordSeenActivity(key codexActivityKey) {
+	if s.seenActivities.Cap() == 0 {
+		s.seenActivities = providerkit.NewCappedMap[codexActivityKey, struct{}](codexSeenActivityLimit)
+	}
+	s.seenActivities.Set(key, struct{}{})
 }
 
 type codexChildRoute struct {
@@ -164,7 +182,7 @@ func codexChildTurnTransition(params json.RawMessage) codexChildTransition {
 		} `json:"turn"`
 	}
 	if json.Unmarshal(params, &value) != nil {
-		return codexChildTransition{status: bgtask.StatusRunning}
+		return codexChildTransition{status: bgtask.StatusEndedWithUnknownOutcome, completion: agent.MessageCompletionComplete}
 	}
 	switch strings.ToLower(value.Turn.Status) {
 	case "completed":
@@ -174,7 +192,7 @@ func codexChildTurnTransition(params json.RawMessage) codexChildTransition {
 	case "cancelled", "canceled", "interrupted", "aborted":
 		return codexChildTransition{status: bgtask.StatusPaused, activity: "paused"}
 	default:
-		return codexChildTransition{status: bgtask.StatusRunning}
+		return codexChildTransition{status: bgtask.StatusEndedWithUnknownOutcome, completion: agent.MessageCompletionComplete}
 	}
 }
 
@@ -193,6 +211,12 @@ func (a *Agent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCall) {
 			continue
 		}
 		transition := codexCollabTransition(st.Status)
+		if transition.status == bgtask.StatusRunning && a.pausedCollabChild(threadID) {
+			continue
+		}
+		if transition.status == bgtask.StatusPaused {
+			a.pauseCollabChild(threadID)
+		}
 		if _, _, err := a.upsertCodexChildRegistryRow(threadID, transition); err != nil {
 			slog.Warn("codex collab registry upsert failed", "thread", threadID, "error", err)
 		}
@@ -275,7 +299,7 @@ func (a *Agent) upsertCollabChildRow(up bgtask.Upsert) error {
 // only; never persisted). The started item is the V2 spawn authority: it
 // supplies the spawn call ID, child thread ID, and canonical task path. The
 // completed item closes the run. An interrupted item pauses it. Interacted
-// keeps it active.
+// updates the activity label only when the child is already running.
 func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID string) bool {
 	var act struct {
 		Type          string `json:"type"`
@@ -297,16 +321,52 @@ func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID
 	if act.AgentPath != "" {
 		a.recordCollabChildAgentPath(act.AgentThreadID, act.AgentPath)
 	}
+	if act.ID != "" {
+		key := codexActivityKey{id: act.ID, kind: act.Kind}
+		a.Mu.Lock()
+		state := a.codexChildStateLocked(act.AgentThreadID)
+		seen := state.seenActivities.Has(key)
+		a.Mu.Unlock()
+		if seen {
+			return true
+		}
+	}
+	markActivitySeen := func() {
+		if act.ID == "" {
+			return
+		}
+		key := codexActivityKey{id: act.ID, kind: act.Kind}
+		a.Mu.Lock()
+		a.codexChildStateLocked(act.AgentThreadID).recordSeenActivity(key)
+		a.Mu.Unlock()
+	}
 	if act.Kind == "completed" {
 		a.completeCodexChildRun(act.AgentThreadID, codexChildTransition{
 			status:     bgtask.StatusSucceeded,
 			completion: agent.MessageCompletionComplete,
 		})
+		a.Mu.Lock()
+		state := a.collabChildren[act.AgentThreadID]
+		completed := state != nil && state.phase == codexChildInactive
+		a.Mu.Unlock()
+		if completed {
+			markActivitySeen()
+		}
 		return true
 	}
 	if act.Kind == "interrupted" {
+		a.pauseCollabChild(act.AgentThreadID)
+		markActivitySeen()
 		providerkit.LogRegistryRefusal("codex", "pause child",
 			a.sink.UpdateBackgroundTaskStatus(act.AgentThreadID, bgtask.StatusPaused, "paused"))
+		return true
+	}
+	if act.Kind == "interacted" {
+		markActivitySeen()
+		if a.activeCollabChild(act.AgentThreadID) {
+			providerkit.LogRegistryRefusal("codex", "update interacted child",
+				a.sink.UpdateBackgroundTaskStatus(act.AgentThreadID, bgtask.StatusRunning, "received input"))
+		}
 		return true
 	}
 
@@ -319,9 +379,6 @@ func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID
 		if !a.registerCodexV2ChildStart(act.AgentThreadID, act.ID, parentThreadID) {
 			return true
 		}
-	case "interacted":
-		transition.activity = "received input"
-		a.activateCollabChild(act.AgentThreadID)
 	default:
 		// An unknown activity still proves that the child exists. Do not infer
 		// route identity from its call ID; only started supplies that authority.
@@ -335,6 +392,7 @@ func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID
 		return true
 	}
 	if routed {
+		markActivitySeen()
 		a.replayPendingCodexChildEvents(act.AgentThreadID, route)
 		a.retryCodexChildCompletion(act.AgentThreadID)
 	}
@@ -457,7 +515,7 @@ func (a *Agent) registerCodexV2ChildStart(threadID, spawnCorrelationID, parentTh
 	}
 	a.Mu.Lock()
 	state := a.codexChildStateLocked(threadID)
-	if state.phase == codexChildInactive && state.spawnCorrelationID == spawnCorrelationID {
+	if (state.phase == codexChildInactive || state.phase == codexChildPaused) && state.spawnCorrelationID == spawnCorrelationID {
 		a.Mu.Unlock()
 		return false
 	}
@@ -475,11 +533,26 @@ func (a *Agent) registerCodexV2ChildStart(threadID, spawnCorrelationID, parentTh
 }
 
 func (a *Agent) activateCodexChildStateLocked(state *codexChildState) {
-	if state.phase == codexChildInactive || state.phase == codexChildPending {
+	if state.phase == codexChildInactive || state.phase == codexChildPaused {
+		state.sawActiveStatus = false
+	}
+	if state.phase == codexChildInactive || state.phase == codexChildPending || state.phase == codexChildPaused {
 		state.finalTransition = codexChildTransition{}
 		state.transcriptFinalized = false
 	}
 	state.phase = codexChildRunning
+}
+
+func (a *Agent) pauseCollabChild(threadID string) {
+	if threadID == "" {
+		return
+	}
+	a.Mu.Lock()
+	state := a.codexChildStateLocked(threadID)
+	if state.phase != codexChildClosing && state.phase != codexChildInactive {
+		state.phase = codexChildPaused
+	}
+	a.Mu.Unlock()
 }
 
 func (a *Agent) activeCollabChild(threadID string) bool {
@@ -532,9 +605,19 @@ func (a *Agent) completeCodexChildRun(threadID string, transition codexChildTran
 
 	route, routed := a.ensureCodexChildRoute(threadID)
 	if !routed {
-		return
+		// If the registry does not know this thread yet, completion arrived before
+		// the authoritative start; keep codexChildClosing so retryCodexChildCompletion
+		// applies this outcome once started creates the row. If a row already exists
+		// without a child route, close it now so it cannot stay Running.
+		if a.sink == nil {
+			return
+		}
+		_, _, found, err := a.sink.LookupBackgroundTask(threadID)
+		if err != nil || !found {
+			return
+		}
 	}
-	if !finalized {
+	if routed && !finalized {
 		a.flushCodexChildGeneration(threadID, transition.completion)
 		if transition.completion == agent.MessageCompletionInterrupted {
 			a.persistIncompleteCodexTools(threadID, false, transition.completion)
@@ -550,12 +633,16 @@ func (a *Agent) completeCodexChildRun(threadID string, transition codexChildTran
 		}
 		a.Mu.Unlock()
 	}
-	if err := a.sink.CloseBackgroundTask(threadID, transition.status); err != nil {
-		slog.Warn("codex child registry close failed", "thread", threadID, "error", err)
-		return
+	if a.sink != nil {
+		if err := a.sink.CloseBackgroundTask(threadID, transition.status); err != nil {
+			slog.Warn("codex child registry close failed", "thread", threadID, "error", err)
+			return
+		}
 	}
 	a.finishCollabChildRun(threadID)
-	route.parentSink.CleanupChildAgent(route.agentID)
+	if routed && route.parentSink != nil && route.agentID != "" {
+		route.parentSink.CleanupChildAgent(route.agentID)
+	}
 }
 
 func (a *Agent) retryCodexChildCompletion(threadID string) {
@@ -576,6 +663,7 @@ func (a *Agent) finishCollabChildRun(threadID string) {
 	state := a.collabChildren[threadID]
 	if state != nil {
 		state.phase = codexChildInactive
+		state.sawActiveStatus = false
 		state.finalTransition = codexChildTransition{}
 		state.transcriptFinalized = false
 		state.prompt = ""
@@ -706,6 +794,14 @@ func (a *Agent) knownCollabChild(threadID string) bool {
 	defer a.Mu.Unlock()
 	state, ok := a.collabChildren[threadID]
 	return ok && state != nil && (state.spawnCorrelationID != "" || state.childAgentID != "")
+}
+
+// pausedCollabChild reports whether a tracked collab child is currently paused.
+func (a *Agent) pausedCollabChild(threadID string) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	state := a.collabChildren[threadID]
+	return state != nil && state.phase == codexChildPaused
 }
 
 // childTurnID returns the active turn id for a child thread ("" if none).

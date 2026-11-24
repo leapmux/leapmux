@@ -2,9 +2,12 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strings"
 	"testing"
@@ -26,6 +29,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -52,6 +56,7 @@ type appEnv struct {
 	admin       string
 	userID      string
 	user        string
+	deviceAuths *service.MemoryDeviceAuthorizationStore
 }
 
 func setupAppService(t *testing.T) *appEnv {
@@ -92,9 +97,10 @@ func setupAppService(t *testing.T) *appEnv {
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	closer := &recordingCredentialCloser{}
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, closer, nil)
+	deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAppServiceHandler(connectServer,
-		service.NewAppService(st, servicetest.NewSettingsManager(t, st, nil), tv, lifecycle))
+		service.NewAppService(st, servicetest.NewSettingsManager(t, st, nil), tv, lifecycle, deviceAuths))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
@@ -113,6 +119,7 @@ func setupAppService(t *testing.T) *appEnv {
 		admin:       adminSession,
 		userID:      userID,
 		user:        userSession,
+		deviceAuths: deviceAuths,
 	}
 }
 
@@ -1398,4 +1405,354 @@ func TestSecretFieldPaths(t *testing.T) {
 			assert.Equal(t, tc.paths, secretFieldPaths(tc.msg.ProtoReflect(), secret))
 		})
 	}
+}
+
+func TestAppService_DeleteAppClearsOrPreservesDeviceGrants(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+
+	app := env.registerApp(t, env.user, "delete-grant-app", nil)
+	clientID := app.GetApp().GetClientId()
+
+	deviceCode := id.Generate()
+	deviceHash := env.validator.HashSecret(deviceCode)
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
+		DeviceCodeHash: deviceHash,
+		UserCode:       "DEL001",
+		ClientID:       clientID,
+		ExpiresAt:      time.Now().Add(10 * time.Minute),
+	}))
+
+	tokenID := id.Generate()
+	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceDeviceCode,
+		ID:               tokenID,
+		UserID:           userid.MustNew(env.userID),
+		ClientID:         clientID,
+		InstallationName: "laptop",
+		GrantedScopes:    "workspace:read",
+		SecretHash:       []byte("hash"),
+	}))
+
+	// Refused delete must preserve the pending device grant.
+	_, err := env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{ClientId: clientID}, env.user))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	_, ok := env.deviceAuths.Get(deviceHash)
+	assert.True(t, ok, "a refused DeleteApp must preserve in-memory device grants")
+
+	// An app with no credentials deletes cleanly and clears its pending device grants,
+	// without disturbing another app's grants.
+	cleanApp := env.registerApp(t, env.user, "delete-grant-clean-app", func(m *leapmuxv1.RegisterAppRequest) {
+		m.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"}
+	})
+	cleanClientID := cleanApp.GetApp().GetClientId()
+	cleanDeviceHash := hubtestutil.TestSecretHasher().Hash("delete-clean-app-device-code")
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
+		DeviceCodeHash: cleanDeviceHash,
+		UserCode:       "DEL002",
+		ClientID:       cleanClientID,
+		ExpiresAt:      time.Now().Add(10 * time.Minute),
+	}))
+
+	_, err = env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{ClientId: cleanClientID}, env.user))
+	require.NoError(t, err)
+	_, ok = env.deviceAuths.Get(cleanDeviceHash)
+	assert.False(t, ok, "a committed DeleteApp must delete in-memory device grants")
+	_, ok = env.deviceAuths.Get(deviceHash)
+	assert.True(t, ok, "deleting one app must not delete another app's device grants")
+}
+
+type txFailAppStore struct {
+	store.Store
+	err error
+}
+
+func (s txFailAppStore) RunInTransaction(context.Context, func(store.Store) error) error {
+	return s.err
+}
+
+func TestAppService_RevokeAppInvalidatesOrPreservesDeviceGrants(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+
+	app := env.registerApp(t, env.admin, "revoke-grant-app", func(m *leapmuxv1.RegisterAppRequest) {
+		m.Visibility = leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE
+		m.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"}
+	})
+	clientID := app.GetApp().GetClientId()
+
+	deviceCode := id.Generate()
+	deviceHash := env.validator.HashSecret(deviceCode)
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
+		DeviceCodeHash: deviceHash,
+		UserCode:       "REV001",
+		ClientID:       clientID,
+		ExpiresAt:      time.Now().Add(10 * time.Minute),
+	}))
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+		UserCode:      "REV001",
+		UserID:        userid.MustNew(env.adminID),
+		GrantedScopes: "workspace:read",
+	}, time.Now().UTC())
+	require.NoError(t, err)
+	require.True(t, approved)
+
+	// Failing DB transaction must abort invalidation and preserve the grant.
+	failingSvc := service.NewAppService(
+		txFailAppStore{Store: env.store, err: errors.New("forced tx failure")},
+		servicetest.NewSettingsManager(t, env.store, nil),
+		env.validator,
+		auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		env.deviceAuths,
+	)
+	adminCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(env.adminID), Username: "admin", IsAdmin: true})
+	_, err = failingSvc.RevokeApp(adminCtx, &leapmuxv1.RevokeAppRequest{ClientId: clientID})
+	require.Error(t, err)
+
+	preserved, ok := env.deviceAuths.Get(deviceHash)
+	require.True(t, ok)
+	assert.Nil(t, preserved.ConsumedAt, "a rolled-back RevokeApp must leave the grant unconsumed")
+
+	// Succeeding RevokeApp commits invalidation and rejects token exchange.
+	_, err = env.client.RevokeApp(authedReq(ctx, &leapmuxv1.RevokeAppRequest{ClientId: clientID}, env.admin))
+	require.NoError(t, err)
+
+	invalidated, ok := env.deviceAuths.Get(deviceHash)
+	require.True(t, ok)
+	assert.NotNil(t, invalidated.ConsumedAt, "a committed RevokeApp must mark the grant consumed")
+	_, reserved := env.deviceAuths.ReserveConsume(deviceHash, time.Now().UTC())
+	assert.False(t, reserved, "an invalidated device grant must refuse consumption")
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	newOAuthServerHandler(service.OAuthServerDeps{
+		SessionHasher:        hubtestutil.TestSecretHasher(),
+		Store:                env.store,
+		Validator:            env.validator,
+		Lifecycle:            auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		DeviceAuthorizations: env.deviceAuths,
+		HubURL:               func() string { return srv.URL },
+	}).RegisterRoutes(mux)
+
+	resp, err := srv.Client().PostForm(srv.URL+"/oauth/token", url.Values{
+		"grant_type":  {service.GrantTypeDeviceCode},
+		"client_id":   {clientID},
+		"device_code": {deviceCode},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "invalid_client", body["error"])
+}
+
+type hookBeforeTxAppStore struct {
+	store.Store
+	beforeTx func()
+}
+
+func (s hookBeforeTxAppStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
+	if s.beforeTx != nil {
+		s.beforeTx()
+	}
+	return s.Store.RunInTransaction(ctx, fn)
+}
+
+func TestAppService_RevokeAppEvictsTokenCommittedBeforeTransaction(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+
+	app := env.registerApp(t, env.admin, "revoke-race-app", func(m *leapmuxv1.RegisterAppRequest) {
+		m.Visibility = leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE
+		m.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"}
+	})
+	clientID := app.GetApp().GetClientId()
+
+	var lateTokenID string
+	var hooked bool
+	wrappedStore := hookBeforeTxAppStore{
+		Store: env.store,
+		beforeTx: func() {
+			if hooked {
+				return
+			}
+			hooked = true
+			// Simulate a concurrent token mint committing right before RevokeApp's transaction.
+			lateTokenID = id.Generate()
+			require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
+				Issuance:         store.APITokenIssuanceDeviceCode,
+				ID:               lateTokenID,
+				UserID:           userid.MustNew(env.adminID),
+				ClientID:         clientID,
+				InstallationName: "late-mint",
+				GrantedScopes:    "workspace:read",
+				SecretHash:       []byte("late-hash"),
+			}))
+		},
+	}
+
+	closer := &recordingCredentialCloser{}
+	svc := service.NewAppService(
+		wrappedStore,
+		servicetest.NewSettingsManager(t, env.store, nil),
+		env.validator,
+		auth.NewCredentialLifecycleEffects(nil, closer, nil),
+		env.deviceAuths,
+	)
+	adminCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(env.adminID), Username: "admin", IsAdmin: true})
+	resp, err := svc.RevokeApp(adminCtx, &leapmuxv1.RevokeAppRequest{ClientId: clientID})
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, resp.GetRevokedCredentialCount())
+	closedIDs := make([]string, 0, len(closer.closedBearers()))
+	for _, ref := range closer.closedBearers() {
+		closedIDs = append(closedIDs, ref.TokenID())
+	}
+	assert.Contains(t, closedIDs, lateTokenID,
+		"RevokeApp must list token refs inside its transaction so tokens committed right before revoke still receive BearerRevokedBatch")
+}
+
+type deleteOverrideAppStore struct {
+	store.Store
+	rows int64
+	err  error
+}
+
+func (s deleteOverrideAppStore) OAuthClients() store.OAuthClientStore {
+	return deleteOverrideOAuthClientStore{
+		OAuthClientStore: s.Store.OAuthClients(),
+		rows:             s.rows,
+		err:              s.err,
+	}
+}
+
+type deleteOverrideOAuthClientStore struct {
+	store.OAuthClientStore
+	rows int64
+	err  error
+}
+
+func (s deleteOverrideOAuthClientStore) Delete(context.Context, store.OAuthClientOwnershipParams) (int64, error) {
+	return s.rows, s.err
+}
+
+func TestAppService_DeleteAppAbortsDeviceInvalidationOnStoreFailureOrMissingRow(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		rows     int64
+		err      error
+		wantCode connect.Code
+	}{
+		{
+			name:     "forced delete error",
+			rows:     0,
+			err:      errors.New("forced delete error"),
+			wantCode: connect.CodeInternal,
+		},
+		{
+			name:     "zero rows deleted",
+			rows:     0,
+			err:      nil,
+			wantCode: connect.CodeNotFound,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := setupAppService(t)
+			ctx := context.Background()
+
+			app := env.registerApp(t, env.user, "delete-abort-"+tc.name, func(m *leapmuxv1.RegisterAppRequest) {
+				m.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"}
+			})
+			clientID := app.GetApp().GetClientId()
+
+			now := time.Now().UTC()
+			hash := env.validator.HashSecret(id.Generate())
+			require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
+				DeviceCodeHash: hash,
+				UserCode:       "DELAB1",
+				ClientID:       clientID,
+				ExpiresAt:      now.Add(10 * time.Minute),
+			}))
+			approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+				UserCode:      "DELAB1",
+				UserID:        userid.MustNew(env.userID),
+				GrantedScopes: "workspace:read",
+			}, now)
+			require.NoError(t, err)
+			require.True(t, approved)
+
+			svc := service.NewAppService(
+				deleteOverrideAppStore{Store: env.store, rows: tc.rows, err: tc.err},
+				servicetest.NewSettingsManager(t, env.store, nil),
+				env.validator,
+				auth.NewCredentialLifecycleEffects(nil, nil, nil),
+				env.deviceAuths,
+			)
+			userCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(env.userID), Username: "plain"})
+			_, err = svc.DeleteApp(userCtx, &leapmuxv1.DeleteAppRequest{ClientId: clientID})
+			require.Error(t, err)
+			assert.Equal(t, tc.wantCode, connect.CodeOf(err))
+
+			_, ok := env.deviceAuths.Get(hash)
+			assert.True(t, ok, "a failed DeleteApp must keep the device grant")
+			res, reserved := env.deviceAuths.ReserveConsume(hash, now)
+			require.True(t, reserved, "AbortInvalidate must unblock ReserveConsume after a failed DeleteApp")
+			env.deviceAuths.ReleaseConsume(res)
+		})
+	}
+}
+
+func TestAppService_RevokeAppUnderDoubleRunClosesBearerOnce(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	ctx := context.Background()
+
+	app := env.registerApp(t, env.admin, "revoke-double-run", func(m *leapmuxv1.RegisterAppRequest) {
+		m.Visibility = leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE
+	})
+	clientID := app.GetApp().GetClientId()
+
+	tokenID := id.Generate()
+	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{
+		Issuance:         store.APITokenIssuanceAuthorizationCode,
+		ID:               tokenID,
+		UserID:           userid.MustNew(env.adminID),
+		ClientID:         clientID,
+		InstallationName: "laptop",
+		GrantedScopes:    "workspace:read",
+		SecretHash:       []byte("hash"),
+	}))
+
+	closer := &recordingCredentialCloser{}
+	svc := service.NewAppService(
+		storetest.DoubleRunStore{Store: env.store},
+		servicetest.NewSettingsManager(t, env.store, nil),
+		env.validator,
+		auth.NewCredentialLifecycleEffects(nil, closer, nil),
+		env.deviceAuths,
+	)
+	adminCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(env.adminID), Username: "admin", IsAdmin: true})
+	resp, err := svc.RevokeApp(adminCtx, &leapmuxv1.RevokeAppRequest{ClientId: clientID})
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, resp.GetRevokedCredentialCount())
+
+	closed := closer.closedBearers()
+	closedIDs := make([]string, 0, len(closed))
+	for _, ref := range closed {
+		closedIDs = append(closedIDs, ref.TokenID())
+	}
+	assert.Equal(t, []string{tokenID}, closedIDs,
+		"RevokeApp under transaction retry must close each revoked bearer exactly once")
 }

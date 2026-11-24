@@ -410,15 +410,10 @@ func (a *Agent) handleGooseSessionUpdate(params json.RawMessage) bool {
 		// running notice while the child runs, and the completed or failed
 		// notice at its end. A completed notice without a summary states a
 		// single child, whose final output only the session export carries.
-		if obs := gooseSubagentNotice(update.Status.Message); obs != nil {
-			if obs.CloseRow {
-				a.Mu.Lock()
-				delete(a.activeDelegations, obs.RowKey)
-				a.Mu.Unlock()
-			}
+		if obs := a.observeGooseSubagentNotice(update.Status.Message); obs != nil {
 			a.ApplySubagentObservation(obs)
 			if obs.Status == bgtask.StatusSucceeded && obs.Report.Text == "" {
-				a.fetchGooseSubagentReport(obs.RowKey)
+				a.fetchGooseSubagentReport(obs.RowKey, obs.ReportID)
 			}
 		}
 		return true
@@ -486,6 +481,9 @@ func (a *Agent) clearGooseState() {
 	clear(a.gooseChildRenames)
 	clear(a.gooseOutput)
 	clear(a.activeDelegations)
+	clear(a.resumedCalls)
+	clear(a.pendingResumeNotices)
+	clear(a.pendingResumeAcks)
 	a.promptOutput = goosePromptOutputState{}
 	a.Mu.Unlock()
 }
@@ -502,15 +500,15 @@ func (a *Agent) takeActiveDelegationsLocked() []string {
 	return cancelled
 }
 
-func (a *Agent) closeCancelledDelegations(cancelled []string) {
-	if len(cancelled) == 0 {
+func (a *Agent) closeActiveDelegations(keys []string, status bgtask.Status) {
+	if len(keys) == 0 {
 		return
 	}
-	slices.Sort(cancelled)
-	for _, id := range cancelled {
+	slices.Sort(keys)
+	for _, id := range keys {
 		a.ApplySubagentObservation(&acp.SubagentObservation{
 			RowKey:   id,
-			Status:   bgtask.StatusInterrupted,
+			Status:   status,
 			CloseRow: true,
 			Mode:     acp.ModeCloseOnly,
 		})
@@ -521,21 +519,27 @@ func (a *Agent) cancelActiveDelegations() {
 	a.Mu.Lock()
 	cancelled := a.takeActiveDelegationsLocked()
 	a.Mu.Unlock()
-	a.closeCancelledDelegations(cancelled)
+	a.closeActiveDelegations(cancelled, bgtask.StatusInterrupted)
 }
 
-// finishGoosePrompt consumes one prompt's message, goal and compaction observations.
+// finishGoosePrompt consumes one prompt's message, goal, subagent, and compaction observations.
 func (a *Agent) finishGoosePrompt(err error, stopped bool) acp.PromptEnding {
 	a.Mu.Lock()
 	output := a.promptOutput
 	// Later chunks need a new buffer because this snapshot is read after unlock.
 	a.promptOutput = goosePromptOutputState{}
-	var cancelledDelegations []string
-	if stopped {
-		cancelledDelegations = a.takeActiveDelegationsLocked()
+	var closingDelegations []string
+	if stopped || err != nil {
+		closingDelegations = a.takeActiveDelegationsLocked()
 	}
 	a.Mu.Unlock()
-	a.closeCancelledDelegations(cancelledDelegations)
+	if len(closingDelegations) > 0 {
+		closeStatus := bgtask.StatusInterrupted
+		if err != nil && !stopped {
+			closeStatus = bgtask.StatusFailed
+		}
+		a.closeActiveDelegations(closingDelegations, closeStatus)
+	}
 	ending := a.finishGooseGoalPrompt(output, err, stopped)
 	if !stopped && goosePromptFailureWasDisplayed(output, err) {
 		ending.NoteWritten = true

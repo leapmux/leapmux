@@ -63,6 +63,11 @@ func TestStoredBearerSecrets_RegistrationKeys(t *testing.T) {
 func TestStoredBearerSecrets_DeviceAuthorizations(t *testing.T) {
 	env := setupAPIAuth(t)
 	deviceCode, userCode := startDeviceAuthorization(t, env, url.Values{})
-	assertStoredText(t, env.store, "device_authorizations", strings.ReplaceAll(userCode, "-", ""), true)
-	assertStoredText(t, env.store, "device_authorizations", deviceCode, false)
+	row, ok := env.deviceAuths.GetByUserCode(strings.ReplaceAll(userCode, "-", ""))
+	require.True(t, ok)
+	assert.Len(t, row.DeviceCodeHash, 32)
+	assert.Equal(t, env.validator.HashSecret(deviceCode), row.DeviceCodeHash)
+	assert.NotContains(t, string(row.DeviceCodeHash), deviceCode)
+	assert.NotContains(t, row.UserCode, deviceCode)
+	assert.NotContains(t, row.DeviceName, deviceCode)
 }

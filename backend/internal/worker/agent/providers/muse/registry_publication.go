@@ -19,16 +19,18 @@ type registryPublication struct {
 	queuedRevision             int64
 	queuedHeadRevision         int64
 	workflowPublications       map[string]workflowChildPublication
+	subagentRestarts           map[string]int64
 }
 
 type nativeRegistryRow struct {
-	upsert     bgtask.Upsert
-	revive     bool
-	revived    bool
-	closeKey   string
-	childID    string
-	attempt    int64
-	hasAttempt bool
+	upsert          bgtask.Upsert
+	revive          bool
+	revived         bool
+	closeKey        string
+	childID         string
+	attempt         int64
+	hasAttempt      bool
+	subagentRestart bool
 }
 
 type nativeRegistryPlan struct {
@@ -82,6 +84,14 @@ func (batch *nativeRegistryBatch) run() error {
 			publication.workflowPublications[row.childID] = receipt
 			publication.mu.Unlock()
 		}
+		if row.subagentRestart && batch.publication != nil {
+			publication := batch.publication
+			publication.mu.Lock()
+			if pending, ok := publication.subagentRestarts[row.upsert.RowKey]; ok && pending <= batch.revision {
+				delete(publication.subagentRestarts, row.upsert.RowKey)
+			}
+			publication.mu.Unlock()
+		}
 		batch.next++
 	}
 	if publication := batch.publication; publication != nil {
@@ -107,7 +117,10 @@ func (batch *nativeRegistryBatch) run() error {
 // The caller holds stateMu. Receipt locks never acquire provider locks.
 func (item *itemState) registryState() *registryPublication {
 	if item.registry == nil {
-		item.registry = &registryPublication{workflowPublications: make(map[string]workflowChildPublication)}
+		item.registry = &registryPublication{
+			workflowPublications: make(map[string]workflowChildPublication),
+			subagentRestarts:     make(map[string]int64),
+		}
 	}
 	return item.registry
 }

@@ -81,6 +81,22 @@ func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObser
 	if fieldString(fields, contracts.KiroMetaKind) != contracts.KiroKindAgentSubtask {
 		return nil
 	}
+	var input kiroSpawnInput
+	_ = json.Unmarshal(tc.RawInput, &input)
+	obs := spawnObservation(tc.ToolCallID, input, true)
+	if acp.StatusIsFinal(tc.Status) {
+		obs.Status = acp.FinalStatus(tc.Status)
+		obs.CloseRow = true
+		var report string
+		if json.Unmarshal(tc.RawOutput, &report) == nil {
+			report = strings.TrimSpace(report)
+		}
+		if report != "" {
+			obs.ReportID = tc.ToolCallID
+			obs.Report = agent.SubagentReport{Text: report}
+		}
+		return obs
+	}
 	subtask := fieldString(fields, contracts.KiroMetaAgentSubtaskId)
 	a.stateMu.Lock()
 	if a.children.rowBySubtask == nil {
@@ -92,9 +108,7 @@ func (a *Agent) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObser
 	}
 	a.children.subtaskBySpawn[tc.ToolCallID] = subtask
 	a.stateMu.Unlock()
-	var input kiroSpawnInput
-	_ = json.Unmarshal(tc.RawInput, &input)
-	return spawnObservation(tc.ToolCallID, input, true)
+	return obs
 }
 
 // subagentFromToolCallUpdate follows a spawn through its later frames. A frame

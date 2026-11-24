@@ -71,7 +71,8 @@ type apiAuthEnv struct {
 	// set is the hub's own settings, wired exactly as production wires them.
 	// secure_cookies is the one key the handler reads from it, and it decides
 	// which session-cookie spelling the consent legs accept.
-	set *settings.Manager
+	set         *settings.Manager
+	deviceAuths *service.MemoryDeviceAuthorizationStore
 }
 
 type recordingBearerCloser struct {
@@ -198,13 +199,15 @@ func setupAPIAuthWithStoreAndSessionResolver(
 	now := func() time.Time { return time.Now().Add(clock.Now().Sub(base)) }
 	advance := func(d time.Duration) { clock.Advance(d).MustWait(t.Context()) }
 	set := servicetest.NewSettingsManager(t, st, nil)
+	deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
-		Store:         st,
-		Validator:     tv,
-		Lifecycle:     auth.NewCredentialLifecycleEffects(sc, closer, closer),
-		Settings:      set,
-		HubURL:        func() string { return srv.URL },
-		IssuesSession: issuesSession,
+		Store:                st,
+		Validator:            tv,
+		Lifecycle:            auth.NewCredentialLifecycleEffects(sc, closer, closer),
+		Settings:             set,
+		DeviceAuthorizations: deviceAuths,
+		HubURL:               func() string { return srv.URL },
+		IssuesSession:        issuesSession,
 	})
 	h.Now = now
 	h.RegisterRoutes(mux)
@@ -214,15 +217,16 @@ func setupAPIAuthWithStoreAndSessionResolver(
 
 	return &apiAuthEnv{
 		probe: probe, reads: reads,
-		store:     st,
-		validator: tv,
-		cache:     sc,
-		closer:    closer,
-		server:    srv,
-		userID:    u.ID,
-		now:       now,
-		advance:   advance,
-		set:       set,
+		store:       st,
+		validator:   tv,
+		cache:       sc,
+		closer:      closer,
+		server:      srv,
+		userID:      u.ID,
+		now:         now,
+		advance:     advance,
+		set:         set,
+		deviceAuths: deviceAuths,
 	}
 }
 
@@ -750,7 +754,7 @@ func TestAPIAuth_DeviceCode_ExpiredToken(t *testing.T) {
 	// have to wait DeviceCodeTTL in the test.
 	dc := id.Generate()
 	uc := verifycode.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
 		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(dc),
 		UserCode:       uc,
@@ -775,7 +779,7 @@ func TestAPIAuth_DeviceCode_AccessDenied(t *testing.T) {
 
 	dc := id.Generate()
 	uc := verifycode.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
 		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(dc),
 		UserCode:       uc,
@@ -783,8 +787,7 @@ func TestAPIAuth_DeviceCode_AccessDenied(t *testing.T) {
 	}))
 
 	// Mark the row DENIED through the store.
-	_, err := env.store.DeviceAuthorizations().DenyByUserCode(context.Background(), uc)
-	require.NoError(t, err)
+	require.True(t, env.deviceAuths.DenyByUserCode(uc))
 
 	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
@@ -1404,81 +1407,24 @@ type userLookupFailStore struct {
 	users store.UserStore
 }
 
-type deviceAuthorizationOverrideStore struct {
-	store.Store
-	device store.DeviceAuthorizationStore
-}
-
-func (s deviceAuthorizationOverrideStore) DeviceAuthorizations() store.DeviceAuthorizationStore {
-	return s.device
-}
-
-func (s deviceAuthorizationOverrideStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
-	return s.Store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
-		return fn(s.rebind(tx))
-	})
-}
-
-// RunInTransaction re-binds the overrides to the TRANSACTION store, exactly as
-// RunInUserAuthTransaction does. The approval leg writes through this
-// boundary, so an override that stopped at it would silently not apply to the
-// write the test means to fail.
-func (s deviceAuthorizationOverrideStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
-	return s.Store.RunInTransaction(ctx, func(tx store.Store) error {
-		return fn(s.rebind(tx))
-	})
-}
-
-// rebind carries the override functions onto another store, so the same fault
-// applies inside and outside a transaction.
-func (s deviceAuthorizationOverrideStore) rebind(tx store.Store) deviceAuthorizationOverrideStore {
-	override := s.device.(deviceAuthorizationOverride)
-	override.DeviceAuthorizationStore = tx.DeviceAuthorizations()
-	return deviceAuthorizationOverrideStore{Store: tx, device: override}
-}
-
 type deviceAuthorizationOverride struct {
-	store.DeviceAuthorizationStore
-	create        func(context.Context, store.CreateDeviceAuthorizationParams) error
-	get           func(context.Context, []byte) (*store.DeviceAuthorization, error)
-	getByUserCode func(context.Context, string) (*store.DeviceAuthorization, error)
-	touchPoll     func(context.Context, []byte, time.Time) error
-	consume       func(context.Context, []byte) (int64, error)
+	service.DeviceAuthorizationStore
+	create         func(service.CreateDeviceAuthorizationParams) error
+	reserveConsume func([]byte, time.Time) (service.DeviceGrantReservation, bool)
 }
 
-func (s deviceAuthorizationOverride) Create(ctx context.Context, p store.CreateDeviceAuthorizationParams) error {
+func (s deviceAuthorizationOverride) Create(p service.CreateDeviceAuthorizationParams) error {
 	if s.create != nil {
-		return s.create(ctx, p)
+		return s.create(p)
 	}
-	return s.DeviceAuthorizationStore.Create(ctx, p)
+	return s.DeviceAuthorizationStore.Create(p)
 }
 
-func (s deviceAuthorizationOverride) Get(ctx context.Context, hash []byte) (*store.DeviceAuthorization, error) {
-	if s.get != nil {
-		return s.get(ctx, hash)
+func (s deviceAuthorizationOverride) ReserveConsume(hash []byte, now time.Time) (service.DeviceGrantReservation, bool) {
+	if s.reserveConsume != nil {
+		return s.reserveConsume(hash, now)
 	}
-	return s.DeviceAuthorizationStore.Get(ctx, hash)
-}
-
-func (s deviceAuthorizationOverride) GetByUserCode(ctx context.Context, code string) (*store.DeviceAuthorization, error) {
-	if s.getByUserCode != nil {
-		return s.getByUserCode(ctx, code)
-	}
-	return s.DeviceAuthorizationStore.GetByUserCode(ctx, code)
-}
-
-func (s deviceAuthorizationOverride) TouchPoll(ctx context.Context, hash []byte, now time.Time) error {
-	if s.touchPoll != nil {
-		return s.touchPoll(ctx, hash, now)
-	}
-	return s.DeviceAuthorizationStore.TouchPoll(ctx, hash, now)
-}
-
-func (s deviceAuthorizationOverride) Consume(ctx context.Context, hash []byte, now time.Time) (int64, error) {
-	if s.consume != nil {
-		return s.consume(ctx, hash)
-	}
-	return s.DeviceAuthorizationStore.Consume(ctx, hash, now)
+	return s.DeviceAuthorizationStore.ReserveConsume(hash, now)
 }
 
 func (s userLookupFailStore) Users() store.UserStore { return s.users }
@@ -1574,19 +1520,20 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+	userCode := verifycode.Generate()
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: verifycode.Generate(), DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: userCode, DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
 	}))
-	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserID: userid.MustNew(env.userID),
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+		UserCode: userCode, UserID: userid.MustNew(env.userID),
 	}, env.now().UTC())
 	require.NoError(t, err)
-	require.Equal(t, int64(1), rows)
+	require.True(t, approved)
 
 	failing := userLookupFailStore{Store: env.store, users: getByIDFailUsers{UserStore: env.store.Users()}}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), DeviceAuthorizations: env.deviceAuths, HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1599,9 +1546,9 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.Equal(t, "internal server error\n", rec.Body.String())
 
-	// The failed issuance rolled back Consume, so the grant is still
+	// The failed issuance released the reservation, so the grant is still
 	// unconsumed and exchangeable. Its poll was recorded regardless
-	// (TouchPoll now runs outside the issuance transaction), so an
+	// (TouchPoll runs outside the issuance transaction), so an
 	// immediate retry is correctly throttled with slow_down; step past
 	// the interval, then confirm a clean retry succeeds -- proving the
 	// grant stayed retryable. The retry goes to env.server, whose handler
@@ -1613,79 +1560,26 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 	assert.Equal(t, http.StatusOK, retry.StatusCode, "failed issuance must leave the device grant retryable")
 }
 
-func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
-	t.Parallel()
-
-	env := setupAPIAuth(t)
-	deviceCode := id.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
-	}))
-	forcedErr := errors.New("sensitive poll failure")
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), touchPoll: func(context.Context, []byte, time.Time) error {
-		return forcedErr
-	}}
-	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
-	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
-	form := url.Values{
-		"grant_type":  {service.GrantTypeDeviceCode},
-		"client_id":   {oauthapp.ControlCLIClientID},
-		"device_code": {deviceCode},
-	}
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-	assert.Equal(t, "internal server error\n", rec.Body.String())
-	assert.NotContains(t, rec.Body.String(), forcedErr.Error())
-}
-
-func TestAPIAuth_DeviceCode_LookupFailureIsInternal(t *testing.T) {
-	t.Parallel()
-
-	env := setupAPIAuth(t)
-	forcedErr := errors.New("sensitive device lookup failure")
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), get: func(context.Context, []byte) (*store.DeviceAuthorization, error) {
-		return nil, forcedErr
-	}}
-	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
-	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
-	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {"test-device-code"}}
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-	assert.Equal(t, "internal server error\n", rec.Body.String())
-	assert.NotContains(t, rec.Body.String(), forcedErr.Error())
-}
-
 func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 	t.Parallel()
 
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+	userCode := verifycode.Generate()
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: userCode, ExpiresAt: time.Now().Add(time.Minute),
 	}))
-	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserID: userid.MustNew(env.userID),
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+		UserCode: userCode, UserID: userid.MustNew(env.userID),
 	}, env.now().UTC())
 	require.NoError(t, err)
-	require.Equal(t, int64(1), rows)
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, []byte) (int64, error) {
-		return 0, nil
+	require.True(t, approved)
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.deviceAuths, reserveConsume: func([]byte, time.Time) (service.DeviceGrantReservation, bool) {
+		return service.DeviceGrantReservation{}, false
 	}}
-	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: env.store, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), DeviceAuthorizations: device, HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1714,25 +1608,24 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
+	userCode := verifycode.Generate()
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: userCode, ExpiresAt: time.Now().Add(time.Minute),
 	}))
-	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserID: userid.MustNew(env.userID),
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+		UserCode: userCode, UserID: userid.MustNew(env.userID),
 	}, env.now().UTC())
 	require.NoError(t, err)
-	require.Equal(t, int64(1), rows)
+	require.True(t, approved)
 
 	// Inject a transient (non-final) store error inside the issuance
-	// transaction so token creation rolls back. Consume runs inside the
-	// transaction; TouchPoll runs outside it, so last_polled_at must survive.
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, []byte) (int64, error) {
-		return 0, errors.New("transient consume failure")
-	}}
-	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
+	// transaction so token creation rolls back and releases the consume
+	// reservation; TouchPoll ran outside the transaction, so last_polled_at
+	// must survive.
+	failing := userLookupFailStore{Store: env.store, users: getByIDFailUsers{UserStore: env.store.Users()}}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), DeviceAuthorizations: env.deviceAuths, HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1747,8 +1640,8 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	mux.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 
-	afterRow, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
-	require.NoError(t, err)
+	afterRow, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
+	require.True(t, ok)
 	require.NotNil(t, afterRow.LastPolledAt, "failed issuance must still advance last_polled_at")
 	require.Nil(t, afterRow.ConsumedAt, "rolled-back issuance must leave the grant retryable")
 
@@ -2368,77 +2261,22 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 // checkbox, for a step-up grant that widens nothing -- and the POST beside it
 // resolved a scope, approved the grant, and skipped the elevation the approval
 // exists to write.
-func TestAPIAuth_Activate_GrantLookupFailureIsInternal(t *testing.T) {
-	t.Parallel()
-
-	env := setupAPIAuth(t)
-	ctx := context.Background()
-	userCode := verifycode.Generate()
-	deviceCode := id.Generate()
-	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: userCode, DeviceName: "laptop", ExpiresAt: time.Now().Add(time.Hour),
-	}))
-	forcedErr := errors.New("sensitive grant lookup failure")
-	wrapped := deviceAuthorizationOverrideStore{
-		Store: env.store,
-		device: deviceAuthorizationOverride{
-			DeviceAuthorizationStore: env.store.DeviceAuthorizations(),
-			getByUserCode: func(context.Context, string) (*store.DeviceAuthorization, error) {
-				return nil, forcedErr
-			},
-		},
-	}
-	mux := http.NewServeMux()
-	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
-		Store:     wrapped,
-		Validator: env.validator,
-		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
-		HubURL:    func() string { return env.server.URL },
-	})
-	h.Now = env.now
-	h.RegisterRoutes(mux)
-	cookie := env.elevatedAdminCookie(t)
-
-	get := httptest.NewRequest(http.MethodGet, "/oauth/device?user_code="+verifycode.Format(userCode), nil)
-	get.AddCookie(cookie)
-	getRec := httptest.NewRecorder()
-	mux.ServeHTTP(getRec, get)
-	assert.Equal(t, http.StatusInternalServerError, getRec.Code)
-	assert.NotContains(t, getRec.Body.String(), forcedErr.Error())
-	assert.NotContains(t, getRec.Body.String(), "Authorize CLI device",
-		"a grant the hub could not read must not render as an issuance")
-
-	post := httptest.NewRequest(http.MethodPost, "/oauth/device",
-		strings.NewReader(url.Values{"user_code": {verifycode.Format(userCode)}, "decision": {"allow"}}.Encode()))
-	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	post.AddCookie(cookie)
-	postRec := httptest.NewRecorder()
-	mux.ServeHTTP(postRec, post)
-	assert.Equal(t, http.StatusInternalServerError, postRec.Code)
-	assert.NotContains(t, postRec.Body.String(), forcedErr.Error())
-
-	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
-	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State, "a lookup the hub could not perform must approve nothing")
-}
-
 // conflictingDeviceAuthorizations fails the first `remaining` inserts with the
 // uniqueness conflict a user-code collision raises, and records every code the
 // handler drew.
 type conflictingDeviceAuthorizations struct {
-	store.DeviceAuthorizationStore
+	service.DeviceAuthorizationStore
 	remaining *int
 	drawn     *[]string
 }
 
-func (s conflictingDeviceAuthorizations) Create(ctx context.Context, p store.CreateDeviceAuthorizationParams) error {
+func (s conflictingDeviceAuthorizations) Create(p service.CreateDeviceAuthorizationParams) error {
 	*s.drawn = append(*s.drawn, p.UserCode)
 	if *s.remaining > 0 {
 		*s.remaining--
 		return fmt.Errorf("%w: device_authorizations.user_code", store.ErrConflict)
 	}
-	return s.DeviceAuthorizationStore.Create(ctx, p)
+	return s.DeviceAuthorizationStore.Create(p)
 }
 
 // A user code is six characters from a 31-symbol alphabet, and the column is
@@ -2472,23 +2310,21 @@ func TestAPIAuth_DeviceCode_CollidingUserCodeIsRedrawn(t *testing.T) {
 			env := setupAPIAuth(t)
 			remaining := tc.collisions
 			var drawn []string
-			wrapped := deviceAuthorizationOverrideStore{
-				Store: env.store,
-				device: deviceAuthorizationOverride{
-					DeviceAuthorizationStore: env.store.DeviceAuthorizations(),
-					create: conflictingDeviceAuthorizations{
-						DeviceAuthorizationStore: env.store.DeviceAuthorizations(),
-						remaining:                &remaining,
-						drawn:                    &drawn,
-					}.Create,
-				},
+			device := deviceAuthorizationOverride{
+				DeviceAuthorizationStore: env.deviceAuths,
+				create: conflictingDeviceAuthorizations{
+					DeviceAuthorizationStore: env.deviceAuths,
+					remaining:                &remaining,
+					drawn:                    &drawn,
+				}.Create,
 			}
 			mux := http.NewServeMux()
 			h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
-				Store:     wrapped,
-				Validator: env.validator,
-				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
-				HubURL:    func() string { return env.server.URL },
+				Store:                env.store,
+				Validator:            env.validator,
+				Lifecycle:            auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
+				DeviceAuthorizations: device,
+				HubURL:               func() string { return env.server.URL },
 			})
 			h.Now = env.now
 			h.RegisterRoutes(mux)
@@ -2513,8 +2349,8 @@ func TestAPIAuth_DeviceCode_CollidingUserCodeIsRedrawn(t *testing.T) {
 			require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 			assert.Equal(t, verifycode.Format(drawn[len(drawn)-1]), body["user_code"],
 				"the response must report the code that was actually stored")
-			row, err := env.store.DeviceAuthorizations().GetByUserCode(context.Background(), drawn[len(drawn)-1])
-			require.NoError(t, err)
+			row, ok := env.deviceAuths.GetByUserCode(drawn[len(drawn)-1])
+			require.True(t, ok)
 			deviceCode, ok := body["device_code"].(string)
 			require.True(t, ok)
 			require.NotEmpty(t, deviceCode)
@@ -2553,8 +2389,8 @@ func TestAPIAuth_DeviceCode_ASecondApprovalChangesNothing(t *testing.T) {
 	defer func() { _ = second.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, second.StatusCode, "an approved grant cannot be approved again")
 
-	row, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
-	require.NoError(t, err)
+	row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
+	require.True(t, ok)
 	assert.Equal(t, "workspace:read", row.GrantedScopes,
 		"the refused submit must not change what the first approval bound")
 
@@ -3675,4 +3511,250 @@ func TestConsent_SixMinutesAfterTheSignInBouncesToElevate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/elevate", loc.Path,
 		"an expired sign-in window is exactly what the elevate step exists to restore")
+}
+
+func TestAPIAuth_DeviceCode_AuthGenerationMismatchRejectsExchange(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	ctx := context.Background()
+	cookie := env.elevatedAdminCookie(t)
+
+	deviceCode, userCode := startDeviceAuthorization(t, env, url.Values{"installation_name": {"gen-check"}})
+	approveResp, err := postForm(env.server.URL+"/oauth/device", url.Values{
+		"user_code": {userCode}, "decision": {"allow"},
+	}, cookie)
+	require.NoError(t, err)
+	defer func() { _ = approveResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, approveResp.StatusCode)
+
+	// Increment users.auth_generation directly without calling UserRevoked.
+	newGen, err := env.store.Users().RevokeUserTokens(ctx, userid.MustNew(env.userID))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), newGen)
+
+	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":  {service.GrantTypeDeviceCode},
+		"client_id":   {oauthapp.ControlCLIClientID},
+		"device_code": {deviceCode},
+	})
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "invalid_grant", body["error"])
+
+	tokens, err := env.store.APITokens().ListByUser(ctx, store.ListAPITokensByUserParams{
+		UserID: userid.MustNew(env.userID), PageParams: store.PageParams{Limit: 50},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, tokens.Rows, "auth_generation mismatch must insert zero api_tokens rows")
+}
+
+func TestAPIAuth_DeviceCode_InTransactionClientRevokedOrUserDeletedRejectsExchange(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []string{"client revoked", "client deleted", "user deleted"} {
+		t.Run(tc, func(t *testing.T) {
+			t.Parallel()
+			env := setupAPIAuth(t)
+			ctx := context.Background()
+
+			clientID := oauthapp.ControlCLIClientID
+			targetUserID := env.userID
+			if tc == "client revoked" || tc == "client deleted" {
+				clientID = seedTestApp(t, env, store.CreateOAuthClientParams{
+					ClientName:   "Transient Device App",
+					RedirectURIs: "https://app.example.com/callback",
+					GrantTypes:   "urn:ietf:params:oauth:grant-type:device_code refresh_token",
+				})
+			} else {
+				targetUserID = hubtestutil.CreateTestUser(t, env.store, "doomeduser", "doomedpass123")
+			}
+
+			deviceCode := id.Generate()
+			userCode := verifycode.Generate()
+			require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
+				ClientID:       clientID,
+				DeviceCodeHash: env.validator.HashSecret(deviceCode),
+				UserCode:       userCode,
+				DeviceName:     "tx-race",
+				ExpiresAt:      env.now().Add(10 * time.Minute),
+			}))
+			approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+				UserCode:      userCode,
+				UserID:        userid.MustNew(targetUserID),
+				GrantedScopes: "workspace:read",
+			}, env.now().UTC())
+			require.NoError(t, err)
+			require.True(t, approved)
+
+			// Mutate SQL immediately before issueAPIToken enters
+			// RunInUserAuthTransaction (after authenticateClient succeeded and
+			// while in-memory IsInvalidated is still false).
+			wrapped := &beforeUserAuthTxStore{
+				Store: env.store,
+				before: func() {
+					switch tc {
+					case "client revoked":
+						rows, err := env.store.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
+							ClientID:      clientID,
+							CallerUserID:  userid.MustNew(env.userID),
+							CallerIsAdmin: true,
+						})
+						require.NoError(t, err)
+						require.EqualValues(t, 1, rows)
+					case "client deleted":
+						rows, err := env.store.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
+							ClientID:      clientID,
+							CallerUserID:  userid.MustNew(env.userID),
+							CallerIsAdmin: true,
+						})
+						require.NoError(t, err)
+						require.EqualValues(t, 1, rows)
+					case "user deleted":
+						require.NoError(t, env.store.Users().Delete(ctx, targetUserID))
+					}
+				},
+			}
+			mux := http.NewServeMux()
+			h := newOAuthServerHandler(service.OAuthServerDeps{
+				SessionHasher:        hubtestutil.TestSecretHasher(),
+				Store:                wrapped,
+				Validator:            env.validator,
+				Lifecycle:            auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
+				DeviceAuthorizations: env.deviceAuths,
+				HubURL:               func() string { return env.server.URL },
+			})
+			h.Now = env.now
+			h.RegisterRoutes(mux)
+
+			form := url.Values{
+				"grant_type":  {service.GrantTypeDeviceCode},
+				"client_id":   {clientID},
+				"device_code": {deviceCode},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+			assert.Equal(t, "invalid_grant", body["error"])
+
+			tokens, err := env.store.APITokens().ListByUser(ctx, store.ListAPITokensByUserParams{
+				UserID: userid.MustNew(targetUserID), PageParams: store.PageParams{Limit: 50},
+			})
+			require.NoError(t, err)
+			assert.Empty(t, tokens.Rows, "refused exchange must insert zero api_tokens rows")
+		})
+	}
+}
+
+type lockActiveFailOnceStore struct {
+	store.Store
+	failNextTx *atomic.Bool
+	err        error
+}
+
+func (s lockActiveFailOnceStore) RunInUserAuthTransaction(ctx context.Context, uid userid.UserID, fn func(store.Store) error) error {
+	// Decide once per outer transaction call so DoubleRunStore's rehearsal and
+	// real attempt observe the same injected fault.
+	fail := s.failNextTx.CompareAndSwap(true, false)
+	return s.Store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+		return fn(lockActiveFailTxStore{Store: tx, fail: fail, err: s.err})
+	})
+}
+
+type lockActiveFailTxStore struct {
+	store.Store
+	fail bool
+	err  error
+}
+
+func (s lockActiveFailTxStore) OAuthClients() store.OAuthClientStore {
+	return lockActiveFailClients{
+		OAuthClientStore: s.Store.OAuthClients(),
+		fail:             s.fail,
+		err:              s.err,
+	}
+}
+
+type lockActiveFailClients struct {
+	store.OAuthClientStore
+	fail bool
+	err  error
+}
+
+func (s lockActiveFailClients) LockActive(ctx context.Context, clientID string) error {
+	if s.fail {
+		return s.err
+	}
+	return s.OAuthClientStore.LockActive(ctx, clientID)
+}
+
+func TestAPIAuth_DeviceCode_TransientLockActiveErrorLeavesGrantRetryable(t *testing.T) {
+	t.Parallel()
+
+	const forcedErrMsg = "forced-lock-active-sentinel-error"
+	var failNextTx atomic.Bool
+	env := setupAPIAuthWithStore(t, func(st store.Store) store.Store {
+		return lockActiveFailOnceStore{
+			Store:      st,
+			failNextTx: &failNextTx,
+			err:        errors.New(forcedErrMsg),
+		}
+	})
+	ctx := context.Background()
+	cookie := env.elevatedAdminCookie(t)
+
+	deviceCode, userCode := startDeviceAuthorization(t, env, url.Values{"installation_name": {"lock-retry"}})
+	approveResp, err := postForm(env.server.URL+"/oauth/device", url.Values{
+		"user_code": {userCode}, "decision": {"allow"},
+	}, cookie)
+	require.NoError(t, err)
+	defer func() { _ = approveResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, approveResp.StatusCode)
+
+	failNextTx.Store(true)
+	firstResp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":  {service.GrantTypeDeviceCode},
+		"client_id":   {oauthapp.ControlCLIClientID},
+		"device_code": {deviceCode},
+	})
+	require.NoError(t, err)
+	defer func() { _ = firstResp.Body.Close() }()
+	firstBodyBytes, err := io.ReadAll(firstResp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, firstResp.StatusCode)
+	assert.NotContains(t, string(firstBodyBytes), forcedErrMsg,
+		"internal store error details must not leak in the HTTP response body")
+
+	tokens, err := env.store.APITokens().ListByUser(ctx, store.ListAPITokensByUserParams{
+		UserID: userid.MustNew(env.userID), PageParams: store.PageParams{Limit: 50},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, tokens.Rows, "a failed LockActive must create zero api_tokens rows")
+
+	row, ok := env.deviceAuths.Get(env.validator.HashSecret(deviceCode))
+	require.True(t, ok)
+	assert.Nil(t, row.ConsumedAt, "a transient LockActive failure must release the consume reservation")
+
+	env.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
+	retryResp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
+		"grant_type":  {service.GrantTypeDeviceCode},
+		"client_id":   {oauthapp.ControlCLIClientID},
+		"device_code": {deviceCode},
+	})
+	require.NoError(t, err)
+	defer func() { _ = retryResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, retryResp.StatusCode)
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(retryResp.Body).Decode(&body))
+	accessToken, _ := body["access_token"].(string)
+	assert.True(t, strings.HasPrefix(accessToken, "lmx_"))
 }

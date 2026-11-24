@@ -297,7 +297,10 @@ func TestBackgroundTaskFinalStatusActivityUpdatePreservesItsEndStamp(t *testing.
 					"an existing end stamp is a legitimate idempotent stamp no-op")
 				after := storedRow(t, svc, ownerID, "finished")
 				assert.Equal(t, leapmuxv1.BackgroundTaskStatus(final), after.Status)
-				assert.Equal(t, "A later final native detail", after.ActiveForm)
+				items, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)
+				require.NoError(t, err)
+				require.Len(t, items, 1)
+				assert.Equal(t, "A later final native detail", items[0].ActiveForm)
 				assert.Equal(t, before.EndedAt, after.EndedAt)
 				assert.Equal(t, before.CreatedAt, after.CreatedAt)
 			})
@@ -310,12 +313,16 @@ func TestBackgroundTaskFinalStatusActivityUpdatePreservesItsEndStamp(t *testing.
 type failedOutputSourceStore struct {
 	db.DBTX
 	agentID string
+	errMsg  string
 	failed  atomic.Bool
 }
 
 func (store *failedOutputSourceStore) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	source := strings.HasPrefix(query, "-- name: GetAgentByID :one") || strings.HasPrefix(query, "-- name: AllocateAgentOutputGeneration :one")
+	source := strings.HasPrefix(query, "-- name: GetAgentByID :one") || strings.HasPrefix(query, "-- name: GetRootAgentSessionID :one")
 	if source && len(args) == 1 && args[0] == store.agentID && store.failed.CompareAndSwap(false, true) {
+		if store.errMsg != "" {
+			return store.DBTX.QueryRowContext(ctx, "SELECT ["+store.errMsg+"]")
+		}
 		return store.DBTX.QueryRowContext(ctx, "SELECT missing_output_source_column")
 	}
 	return store.DBTX.QueryRowContext(ctx, query, args...)
@@ -422,7 +429,7 @@ func TestBackgroundTaskUnchangedObservationClaimsItsPhysicalWriter(t *testing.T)
 			case "collision winner":
 				require.NoError(t, replacement.RenameBackgroundTask("provisional", "shared"))
 			}
-			before.OutputGeneration = requireRootOutputSink(t, svc.Output, "unchanged-generation").outputGeneration
+			assert.Equal(t, requireRootOutputSink(t, svc.Output, "unchanged-generation").outputGeneration, svc.Output.bgTaskEphemeral("unchanged-generation").rowGeneration("shared"))
 			assert.Equal(t, before, storedRow(t, svc, "unchanged-generation", "shared"), "claiming unchanged work must preserve every visible field and timestamp")
 			release()
 			require.NoError(t, queue.Flush())
@@ -445,36 +452,6 @@ func TestBackgroundTaskQueuedExitCannotCloseReclaimedSameKey(t *testing.T) {
 	release()
 	require.NoError(t, queue.Flush())
 	assert.Equal(t, before, storedRow(t, svc, "reclaimed-generation", "shared"))
-}
-
-func TestBackgroundTaskClaimStorageFailureRetainsItsImmutableWrite(t *testing.T) {
-	t.Parallel()
-	clock := testutil.NewQuartzMock(t)
-	svc, original := setupRootSink(t, "claim-storage-generation", withClock(clock))
-	task := bgtask.Upsert{RowKey: "shared", Kind: bgtask.KindWorkflow, Title: "Unchanged workflow", Status: bgtask.StatusRunning}
-	require.NoError(t, original.UpsertBackgroundTask(task))
-	before := storedRow(t, svc, "claim-storage-generation", "shared")
-	replacement := newTestRootOutputSink(t, svc.Output, "claim-storage-generation", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_generation_claim BEFORE UPDATE OF output_generation ON agent_background_tasks
-WHEN NEW.owner_agent_id = 'claim-storage-generation' BEGIN SELECT RAISE(ABORT, 'generation claim refused'); END`)
-	require.NoError(t, err)
-	queue := agent.OutputQueueFor(replacement)
-	timer := clock.Trap().NewTimer(agent.OutputRetryTimerTag)
-	t.Cleanup(timer.Close)
-	queue.Append(agent.OutputWrite{Label: "claim an unchanged native workflow", Run: func() error { return replacement.UpsertBackgroundTask(task) }})
-	require.ErrorContains(t, queue.Flush(), "generation claim refused")
-	require.True(t, queue.HasPending())
-	assert.Equal(t, before, storedRow(t, svc, "claim-storage-generation", "shared"))
-	ctx := testutil.DeadlineContext(t)
-	delay := testutil.WaitForTimer(t, ctx, timer)
-	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER refuse_generation_claim")
-	require.NoError(t, err)
-	clock.Advance(delay).MustWait(ctx)
-	testutil.RequireEventually(t, func() bool { return !queue.HasPending() })
-	before.OutputGeneration = requireRootOutputSink(t, svc.Output, "claim-storage-generation").outputGeneration
-	assert.Equal(t, before, storedRow(t, svc, "claim-storage-generation", "shared"))
-	require.NoError(t, original.CloseBackgroundTask("shared", bgtask.StatusFailed))
-	assert.Equal(t, before, storedRow(t, svc, "claim-storage-generation", "shared"))
 }
 
 func TestBackgroundTaskWorkingSeedFailurePreservesTheCache(t *testing.T) {
@@ -560,6 +537,10 @@ func TestBackgroundTaskRejectedSQLRestoresClaimAndDisplayAdmission(t *testing.T)
 			replacement := newTestRootOutputSink(t, svc.Output, "rollback-generation", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			before, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), "rollback-generation")
 			require.NoError(t, err)
+			meta := svc.Output.bgTaskEphemeral("rollback-generation")
+			retainedGenBefore := meta.rowGeneration("retained")
+			retainedFormBefore := meta.activeFormOf("retained")
+			require.NotZero(t, retainedGenBefore)
 			cache := svc.Output.bgTaskCache("rollback-generation")
 			cache.Mu.Lock()
 			mirror := cache.mirrorLocked()
@@ -570,8 +551,10 @@ WHEN NEW.owner_agent_id = 'rollback-generation' AND NEW.row_key = 'retained' BEG
 			if operation == "status" {
 				require.NoError(t, replacement.UpdateBackgroundTaskStatus("retained", bgtask.StatusFailed, "Rejected final activity"))
 			} else {
-				require.NoError(t, replacement.UpsertBackgroundTask(bgtask.Upsert{RowKey: "retained", Kind: bgtask.KindSubagent, Title: "Rejected final title", Status: bgtask.StatusFailed}))
+				require.NoError(t, replacement.UpsertBackgroundTask(bgtask.Upsert{RowKey: "retained", Kind: bgtask.KindSubagent, Title: "Rejected final title", ActiveForm: "Rejected final activity", Status: bgtask.StatusFailed}))
 			}
+			assert.Equal(t, retainedGenBefore, meta.rowGeneration("retained"), "rollback must restore the retained row generation")
+			assert.Equal(t, retainedFormBefore, meta.activeFormOf("retained"), "rollback must restore the retained active form")
 			after, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), "rollback-generation")
 			require.NoError(t, err)
 			assert.Equal(t, before, after, "a zero-row mutation must roll back its claim, eviction, and resequence")

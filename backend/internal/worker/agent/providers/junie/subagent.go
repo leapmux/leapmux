@@ -3,6 +3,7 @@ package junie
 import (
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -45,6 +46,17 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		return true
 	}
 	if updateType == junieSubagentSpawnedUpdate {
+		a.childTailMu.Lock()
+		if _, finished := a.finishedChildren[childID]; finished {
+			a.childTailMu.Unlock()
+			return true
+		}
+		if a.openChildren == nil {
+			a.openChildren = make(map[string]struct{})
+		}
+		a.openChildren[childID] = struct{}{}
+		a.childTailMu.Unlock()
+
 		title := strings.TrimSpace(event.Name)
 		if title == "" {
 			title = "Subagent"
@@ -67,6 +79,55 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		RowKey: childID, Status: status, CloseRow: true, Mode: acp.ModeCloseOnly,
 	})
 	return true
+}
+
+func (a *Agent) finishOpenChildren(err error, stopped bool) acp.PromptEnding {
+	a.childTailMu.Lock()
+	open := a.openChildren
+	tails := a.childTails
+	a.openChildren = nil
+	a.childTails = nil
+	if len(open) > 0 || len(tails) > 0 {
+		if a.finishedChildren == nil {
+			a.finishedChildren = make(map[string]struct{}, len(open)+len(tails))
+		}
+		for childID := range open {
+			a.finishedChildren[childID] = struct{}{}
+		}
+		for childID := range tails {
+			a.finishedChildren[childID] = struct{}{}
+		}
+	}
+	a.childTailMu.Unlock()
+
+	for _, tail := range tails {
+		tail.stop()
+		tail.poll()
+	}
+	status := bgtask.StatusEndedWithUnknownOutcome
+	switch {
+	case stopped:
+		status = bgtask.StatusStopped
+	case err != nil:
+		status = bgtask.StatusFailed
+	}
+	childIDs := make([]string, 0, len(open)+len(tails))
+	for childID := range open {
+		childIDs = append(childIDs, childID)
+	}
+	for childID := range tails {
+		if _, alreadyListed := open[childID]; alreadyListed {
+			continue
+		}
+		childIDs = append(childIDs, childID)
+	}
+	slices.Sort(childIDs)
+	for _, childID := range childIDs {
+		a.ApplySubagentObservation(&acp.SubagentObservation{
+			RowKey: childID, Status: status, CloseRow: true, Mode: acp.ModeCloseOnly,
+		})
+	}
+	return acp.PromptEnding{}
 }
 
 func junieSubagentFinalStatus(state string) (bgtask.Status, bool) {

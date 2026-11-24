@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // Agent is one Amp session. It SUPERVISES a sequence of `amp` processes rather
@@ -57,6 +58,10 @@ type Agent struct {
 	stderrFn func(proc *ampProcess) string
 	// exportFn supplies native history in tests. Production runs the export command.
 	exportFn func(context.Context, string) ([]byte, error)
+	// inspectProcessFn inspects local PID liveness and start token for background
+	// shell commands. Production leaves it nil, which calls
+	// procutil.InspectLiveProcess; tests inject a deterministic probe.
+	inspectProcessFn func(int) procutil.LiveProcessInfo
 
 	// userEnvMu guards the three fields below. The first process start that
 	// reads the user's shell settles them.
@@ -98,17 +103,19 @@ type Agent struct {
 	// tools holds the tool calls that started and did not end, by tool-use id.
 	tools       map[string]*openTool
 	closedSpans providerkit.ClosedSpanSet
-	// shells holds the registry row of each background command of the running
-	// process, by PID. See subagent.go.
-	shells    map[int]string
-	nextOrder uint64
+	// shells holds the registry row and opaque process start token of each
+	// background command of the running process, by PID. See subagent.go.
+	shells             map[int]trackedShell
+	shellPollerRunning bool
+	nextOrder          uint64
 	// contextUsage is the last context-usage broadcast, so an unchanged reading
 	// is not broadcast again.
 	contextUsage map[string]any
 	// lastStderr is the stderr of the last process that exited.
 	lastStderr string
 
-	discard atomic.Bool
+	shellPollerWG sync.WaitGroup
+	discard       atomic.Bool
 	// done closes when Stop finishes.
 	done     chan struct{}
 	stopOnce sync.Once
@@ -553,6 +560,7 @@ func (a *Agent) stop() {
 		completion = proc.ProcessExitCompletion()
 		shellStatus = processShellExitStatus(proc)
 	}
+	a.shellPollerWG.Wait()
 	var message string
 	if proc != nil && completion == agent.MessageCompletionError {
 		message = exitMessage(proc, threadID, a.exitStderr(proc))

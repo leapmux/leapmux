@@ -42,6 +42,26 @@ func (a *Agent) finishConversationChildTurn(run *kimiRun, turn *kimiConversation
 	}
 }
 
+func (a *Agent) finishWithdrawnConversationTurn(run *kimiRun, turnID string) {
+	if run.conversation.activeTurnID != turnID {
+		return
+	}
+	a.finishConversationActivity(run, turnID)
+	if run.agentID == kimiMainAgentID {
+		return
+	}
+	a.Mu.Lock()
+	run.userTurn = false
+	a.Mu.Unlock()
+	child, linked := a.children.get(run.agentID)
+	if !linked {
+		return
+	}
+	if agent.OutputRetained(a.closeSubagentRegistryRow(run.agentID, child, bgtask.StatusEndedWithUnknownOutcome)) {
+		a.queueChildCleanup(run)
+	}
+}
+
 func (a *Agent) reviveNativeChildRow(run *kimiRun) bool {
 	child, linked := a.children.get(run.agentID)
 	if !linked || run.childLifetime == nil {

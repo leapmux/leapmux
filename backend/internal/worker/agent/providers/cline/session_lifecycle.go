@@ -391,6 +391,12 @@ func (a *Agent) rebuildSession(settings clineSettings) error {
 	if _, err := a.hub.command(ctx, commandSessionDetach, sessionID, map[string]any{"sessionId": sessionID}); err != nil {
 		return fmt.Errorf("detach the session to rebuild: %w", err)
 	}
+	a.dispatchMu.Lock()
+	a.closeTeamRuns(bgtask.StatusStopped)
+	a.Mu.Lock()
+	a.team = teamState{}
+	a.Mu.Unlock()
+	a.dispatchMu.Unlock()
 	spec := sessionSpec{sessionID: sessionID, messages: messages, compaction: compaction}
 	if _, err := a.createSession(ctx, settings, spec); err != nil {
 		if _, restoreErr := a.createSession(ctx, have, spec); restoreErr != nil {

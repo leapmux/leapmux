@@ -19,6 +19,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallID, title, prompt string) {
+	piApplySubagentEndState(sink, piSubagentEndInput{
+		Result:     result,
+		ToolCallID: toolCallID,
+		RowKey:     toolCallID,
+		Title:      title,
+		Prompt:     prompt,
+	})
+}
+
+func piApplySubagentNotification(sink subagentServices, raw []byte) {
+	piApplySubagentNotificationTracked(sink, raw, nil, nil)
+}
+
 func TestPi_ExtractDescription(t *testing.T) {
 	assert.Equal(t, "build it", piExtractDescription(json.RawMessage(`{"description":"build it","prompt":"long"}`), "tool"))
 	assert.Equal(t, "first line", piExtractDescription(json.RawMessage(`{"prompt":"first line\nsecond"}`), "tool"))
@@ -106,13 +120,13 @@ func TestPi_ApplySubagentEnd_UnrecognizedStatusStaysRunning(t *testing.T) {
 
 func TestPi_ApplySubagentEnd_FallbackRegex(t *testing.T) {
 	sink := &agenttest.Sink{}
-	// A standalone "Agent ID: X" line matches the anchored regex. The row keys
-	// off the deterministic toolCallID (not the captured prose) so a later
-	// final event can close it. The input is a JSON-encoded string.
+	// A standalone "Agent ID: X" line matches the anchored regex and renames the
+	// row to the captured agent ID so later notifications target the same row.
 	piApplySubagentEnd(sink, json.RawMessage(`"Agent ID: regex-1\n"`), "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, "tc-1", tasks[0].RowKey, "row keyed off toolCallID, not the captured prose")
+	assert.Equal(t, "regex-1", tasks[0].RowKey, "regex fallback renames toolCallID to the captured agent ID")
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
 }
 
 // Free-form prose that mentions "Agent ID:" mid-sentence must NOT match the
@@ -438,4 +452,294 @@ func TestPiApplySubagentEndKeepsTheToolCallRowWhenTheBackgroundRenameFails(t *te
 	assert.Equal(t, []string{"tc-1"}, agenttest.RowKeys(sink), "a row that kept its key must not gain a second row")
 	assert.Equal(t, []string{"child-of-tc-1"}, sink.ChildAgentIDs(),
 		"the child remains linked to the original row when the rename fails")
+}
+
+func TestPi_AgentToolEndWithoutDetailsStatusClosesRow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		isError bool
+		want    bgtask.Status
+	}{
+		{name: "failed tool closes as failed", isError: true, want: bgtask.StatusFailed},
+		{name: "non-error result without details status closes with unknown outcome", isError: false, want: bgtask.StatusEndedWithUnknownOutcome},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+			handlePiOutput(a, providerkit.ParseLine([]byte(
+				`{"type":"tool_execution_start","toolCallId":"tc-err","toolName":"Agent","args":{"description":"Inspect","prompt":"Check files"}}`)))
+			endLine := `{"type":"tool_execution_end","toolCallId":"tc-err","toolName":"Agent","result":{"content":[{"type":"text","text":"operation aborted"}]},"isError":` + strconv.FormatBool(tc.isError) + `}`
+			handlePiOutput(a, providerkit.ParseLine([]byte(endLine)))
+
+			tasks := sink.BackgroundTasks()
+			require.Len(t, tasks, 1)
+			assert.Equal(t, "tc-err", tasks[0].RowKey)
+			assert.Equal(t, tc.want, tasks[0].Status)
+		})
+	}
+}
+
+func TestPi_PersistIncompletePiToolsClosesInFlightAgentRowsOnly(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		completion agent.MessageCompletion
+		want       bgtask.Status
+	}{
+		{name: "error closes as failed", completion: agent.MessageCompletionError, want: bgtask.StatusFailed},
+		{name: "interrupt closes as stopped", completion: agent.MessageCompletionInterrupted, want: bgtask.StatusStopped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+			// Start and background one Agent row first; ordinary agent_end must preserve it.
+			handlePiOutput(a, providerkit.ParseLine([]byte(
+				`{"type":"tool_execution_start","toolCallId":"tc-bg","toolName":"Agent","args":{"description":"Background","prompt":"Run in bg"}}`)))
+			handlePiOutput(a, providerkit.ParseLine([]byte(
+				`{"type":"tool_execution_end","toolCallId":"tc-bg","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"bg-1"}},"isError":false}`)))
+			// Start an in-flight Agent row that never finishes.
+			handlePiOutput(a, providerkit.ParseLine([]byte(
+				`{"type":"tool_execution_start","toolCallId":"tc-live","toolName":"Agent","args":{"description":"Live","prompt":"Still running"}}`)))
+
+			a.persistIncompletePiTools(tc.completion)
+
+			liveRow, ok := sink.BackgroundTask("tc-live")
+			require.True(t, ok)
+			assert.Equal(t, tc.want, liveRow.Status, "in-flight Agent row closes on incomplete tool cleanup")
+			bgRow, ok := sink.BackgroundTask("bg-1")
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusRunning, bgRow.Status, "already-backgrounded row stays running across ordinary turn end")
+		})
+	}
+}
+
+func TestPi_ClearContextStopAndWaitCloseOpenBackgroundTasks(t *testing.T) {
+	t.Parallel()
+
+	openBackgroundRows := func(a *Agent) {
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-bg","toolName":"Agent","args":{"description":"Bg agent","prompt":"Work"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-bg","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"bg-agent"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-wf","toolName":"SubagentWorkflow","args":{"script":"return 0;"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-wf","toolName":"SubagentWorkflow","result":{"content":[],"details":{"taskId":"wf-1"}},"isError":false}`)))
+	}
+
+	t.Run("ClearContext", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		rig := newPiTestRig(t, agent.NewProviderServices(sink))
+		rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+			switch req.Type {
+			case CommandNewSession:
+				return json.RawMessage(`{"cancelled":false}`), true, ""
+			case CommandGetState:
+				return json.RawMessage(`{"sessionId":"s2","sessionFile":"/tmp/s2.jsonl"}`), true, ""
+			}
+			return nil, true, ""
+		})
+		openBackgroundRows(rig.agent)
+		_, err := rig.agent.ClearContext()
+		require.NoError(t, err)
+
+		for _, key := range []string{"bg-agent", "wf-1"} {
+			row, ok := sink.BackgroundTask(key)
+			require.True(t, ok, "row %s exists", key)
+			assert.Equal(t, bgtask.StatusStopped, row.Status, "ClearContext closes %s", key)
+		}
+	})
+
+	t.Run("Stop", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		rig := newPiTestRig(t, agent.NewProviderServices(sink))
+		openBackgroundRows(rig.agent)
+		rig.agent.SimulateExitForTest()
+		rig.agent.Stop()
+
+		for _, key := range []string{"bg-agent", "wf-1"} {
+			row, ok := sink.BackgroundTask(key)
+			require.True(t, ok, "row %s exists", key)
+			assert.True(t, row.Status.IsFinished(), "Stop closes %s", key)
+		}
+	})
+
+	t.Run("Wait", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		rig := newPiTestRig(t, agent.NewProviderServices(sink))
+		openBackgroundRows(rig.agent)
+		rig.agent.SimulateExitForTest()
+		_ = rig.agent.Wait()
+
+		for _, key := range []string{"bg-agent", "wf-1"} {
+			row, ok := sink.BackgroundTask(key)
+			require.True(t, ok, "row %s exists", key)
+			assert.True(t, row.Status.IsFinished(), "Wait closes %s", key)
+		}
+	})
+}
+
+func TestPi_GetSubagentResultClosesBackgroundRowAndKeepsSpan(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"tc-spawn","toolName":"Agent","args":{"description":"Inspect","prompt":"Run checks"}}`)))
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_end","toolCallId":"tc-spawn","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"bg-1"}},"isError":false}`)))
+	row, ok := sink.BackgroundTask("bg-1")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+	childID := row.ChildAgentID
+
+	// Polling while still running must not close the row.
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"tc-poll-1","toolName":"get_subagent_result","args":{"agentId":"bg-1"}}`)))
+	assert.Len(t, sink.OpenSpans(), 1, "get_subagent_result keeps its normal tool span")
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_end","toolCallId":"tc-poll-1","toolName":"get_subagent_result","result":{"content":[{"type":"text","text":"still running"}],"details":{"agentId":"bg-1","status":"running"}},"isError":false}`)))
+	row, _ = sink.BackgroundTask("bg-1")
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "non-final get_subagent_result keeps the row running")
+
+	// Final result closes the background row and persists its report.
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"tc-poll-2","toolName":"get_subagent_result","args":{"agentId":"bg-1"}}`)))
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_end","toolCallId":"tc-poll-2","toolName":"get_subagent_result","result":{"content":[{"type":"text","text":"All checks green."}],"details":{"status":"completed"}},"isError":false}`)))
+
+	row, _ = sink.BackgroundTask("bg-1")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.Len(t, sink.OpenSpans(), 2, "both get_subagent_result calls opened normal tool spans")
+	assert.Contains(t, sink.ClosedSpans(), "tc-poll-1")
+	assert.Contains(t, sink.ClosedSpans(), "tc-poll-2")
+	reports := sink.Child(childID).LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "All checks green.", reports[0]["text"])
+}
+
+func TestPi_AgentResumeRevivesExistingRowWithoutSecondChild(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newPiAgentWithSink(agent.NewProviderServices(sink))
+
+	// Job 1 spawns and completes under agent-1.
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"tc-1","toolName":"Agent","args":{"description":"Review","prompt":"First pass."}}`)))
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_end","toolCallId":"tc-1","toolName":"Agent","result":{"content":[{"type":"text","text":"First report."}],"details":{"status":"completed","agentId":"agent-1"}},"isError":false}`)))
+
+	row1, ok := sink.BackgroundTask("agent-1")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row1.Status)
+	childID := row1.ChildAgentID
+	require.NotEmpty(t, childID)
+
+	// Job 2 resumes agent-1 with a follow-up prompt.
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"tc-2","toolName":"Agent","args":{"resume":"agent-1","description":"Follow up","prompt":"Second pass."}}`)))
+
+	assert.Equal(t, []string{"agent-1"}, agenttest.RowKeys(sink), "resume must not create a second row under tc-2")
+	assert.Equal(t, []string{childID}, sink.ChildAgentIDs(), "resume must not create a second ChildAgentID")
+	assert.Equal(t, []string{"agent-1"}, sink.RevivedTasks(), "resume must revive the finished row")
+	rowMid, _ := sink.BackgroundTask("agent-1")
+	assert.Equal(t, bgtask.StatusRunning, rowMid.Status)
+
+	// Follow-up prompt is appended to the existing child transcript.
+	childMsgs := sink.Child(childID).Messages()
+	require.Len(t, childMsgs, 2)
+	assert.JSONEq(t, `{"content":"First pass."}`, string(childMsgs[0].Content))
+	assert.JSONEq(t, `{"content":"Second pass."}`, string(childMsgs[1].Content))
+
+	// Job 2 finishes and stores its report under toolCallID so it is not deduplicated against Job 1.
+	handlePiOutput(a, providerkit.ParseLine([]byte(
+		`{"type":"tool_execution_end","toolCallId":"tc-2","toolName":"Agent","result":{"content":[{"type":"text","text":"Second report."}],"details":{"status":"completed","agentId":"agent-1"}},"isError":false}`)))
+
+	assert.Equal(t, []string{"agent-1"}, agenttest.RowKeys(sink))
+	row2, _ := sink.BackgroundTask("agent-1")
+	assert.Equal(t, bgtask.StatusSucceeded, row2.Status)
+	reports := sink.Child(childID).LeapMuxNotifications()
+	require.Len(t, reports, 2, "Job 2 report must not be deduplicated against Job 1")
+	assert.Equal(t, "First report.", reports[0]["text"])
+	assert.Equal(t, "Second report.", reports[1]["text"])
+}
+
+func TestPi_ResumedBackgroundSubagentPersistsDistinctReportsAcrossGetResultAndNotification(t *testing.T) {
+	t.Parallel()
+
+	t.Run("get_subagent_result persists Job 2 report under a distinct ReportID", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+
+		// Job 1 runs in the background and completes via get_subagent_result.
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-1","toolName":"Agent","args":{"description":"Review","prompt":"Pass 1"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-1","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-bg"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"poll-1","toolName":"get_subagent_result","args":{"agentId":"agent-bg"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"poll-1","toolName":"get_subagent_result","result":{"content":[{"type":"text","text":"Job 1 poll report."}],"details":{"status":"completed"}},"isError":false}`)))
+
+		row, ok := sink.BackgroundTask("agent-bg")
+		require.True(t, ok)
+		childID := row.ChildAgentID
+		require.NotEmpty(t, childID)
+		require.Len(t, sink.Child(childID).LeapMuxNotifications(), 1)
+
+		// Job 2 resumes agent-bg in the background and completes via get_subagent_result.
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-2","toolName":"Agent","args":{"resume":"agent-bg","prompt":"Pass 2"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-2","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-bg"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"poll-2","toolName":"get_subagent_result","args":{"agentId":"agent-bg"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"poll-2","toolName":"get_subagent_result","result":{"content":[{"type":"text","text":"Job 2 poll report."}],"details":{"status":"completed"}},"isError":false}`)))
+
+		reports := sink.Child(childID).LeapMuxNotifications()
+		require.Len(t, reports, 2, "Job 2 get_subagent_result report must use a distinct ReportID")
+		assert.Equal(t, "Job 1 poll report.", reports[0]["text"])
+		assert.Equal(t, "Job 2 poll report.", reports[1]["text"])
+	})
+
+	t.Run("subagent-notification persists Job 2 report under a distinct ReportID", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+
+		// Job 1 runs in the background and completes via subagent-notification.
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-1","toolName":"Agent","args":{"description":"Review","prompt":"Pass 1"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-1","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-notif"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"Done 1","details":{"id":"agent-notif","description":"Review","status":"completed","resultPreview":"Job 1 notif report."}}}`)))
+
+		row, ok := sink.BackgroundTask("agent-notif")
+		require.True(t, ok)
+		childID := row.ChildAgentID
+		require.NotEmpty(t, childID)
+		require.Len(t, sink.Child(childID).LeapMuxNotifications(), 1)
+
+		// Job 2 resumes agent-notif in the background and completes via subagent-notification.
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_start","toolCallId":"tc-2","toolName":"Agent","args":{"resume":"agent-notif","prompt":"Pass 2"}}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"tool_execution_end","toolCallId":"tc-2","toolName":"Agent","result":{"content":[],"details":{"status":"background","agentId":"agent-notif"}},"isError":false}`)))
+		handlePiOutput(a, providerkit.ParseLine([]byte(
+			`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"Done 2","details":{"id":"agent-notif","description":"Review","status":"completed","resultPreview":"Job 2 notif report."}}}`)))
+
+		reports := sink.Child(childID).LeapMuxNotifications()
+		require.Len(t, reports, 2, "Job 2 subagent-notification report must use a distinct ReportID")
+		assert.Equal(t, "Job 1 notif report.", reports[0]["text"])
+		assert.Equal(t, "Job 2 notif report.", reports[1]["text"])
+	})
 }

@@ -385,3 +385,116 @@ func TestKimiUnlinkedConversationCannotAllocateAChildRun(t *testing.T) {
 	assert.NotEqual(t, activity.ChildAgentID, inner.ChildAgentID)
 	assert.Equal(t, nativeChild, rig.agent.run("agent-1").childParentAgentID)
 }
+
+func TestKimiConversationChildOlderOrEndedTurnDoesNotReviveFinishedRow(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-child","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
+	child, linked := rig.agent.children.get("agent-0")
+	require.True(t, linked)
+	frame := func(raw string) {
+		rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", raw))
+	}
+	userPrompt := `{"type":"user_message","item_id":"p1","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:01Z","prompt_ids":[],"placement":"opener","origin":{"kind":"user"},"text":"Run check.","attachments":[],"skills":[]}`
+	frame(`{"type":"turn.started","turn":{"turn_id":"t1","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:01Z","steps":[]}}`)
+	frame(`{"type":"item.ended","turn_id":"t1","item":` + userPrompt + `}`)
+	frame(`{"type":"turn.ended","turn":{"turn_id":"t1","ordinal":1,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:01Z","steps":[]}}`)
+	awaitKimiTestOutput(t, rig.agent.sink)
+	row, ok := rig.sink.BackgroundTask(child.rowKey)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+	beforeRevives := len(rig.sink.RevivedTasks())
+
+	// An unseen older-ordinal running turn must not revive the finished child row.
+	frame(`{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+	awaitKimiTestOutput(t, rig.agent.sink)
+	assert.Len(t, rig.sink.RevivedTasks(), beforeRevives, "older-ordinal child turn must not call ReviveBackgroundTask")
+	row, _ = rig.sink.BackgroundTask(child.rowKey)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// An unseen already-ended newer turn must not revive the finished child row to Running.
+	frame(`{"type":"turn.ended","turn":{"turn_id":"t2","ordinal":2,"kind":"agent","status":"ended","outcome":"completed","started_at":"2026-11-18T00:00:02Z","steps":[]}}`)
+	awaitKimiTestOutput(t, rig.agent.sink)
+	assert.Len(t, rig.sink.RevivedTasks(), beforeRevives, "already-ended child turn must not call ReviveBackgroundTask")
+	row, _ = rig.sink.BackgroundTask(child.rowKey)
+	assert.True(t, row.Status.IsFinished(), "finished child row must stay finished")
+}
+
+func TestKimiConversationChildWithdrawnTurnClosesRowAndQueuesCleanup(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		frame string
+	}{
+		{name: "turns omission", frame: `{"type":"turns","has_more":false,"turns":[]}`},
+		{name: "turns.removed", frame: `{"type":"turns.removed","turn_ids":["child-turn"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiConversationRig(t)
+			trace := &kimiChildResetLifecycleSink{ProviderServices: rig.agent.sink, registry: rig.sink}
+			rig.agent.sink = trace
+			rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-child","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
+			child, linked := rig.agent.children.get("agent-0")
+			require.True(t, linked)
+			frame := func(raw string) {
+				rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", raw))
+			}
+			userPrompt := `{"type":"user_message","item_id":"p0","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","prompt_ids":[],"placement":"opener","origin":{"kind":"user"},"text":"Check it.","attachments":[],"skills":[]}`
+			frame(`{"type":"turn.started","turn":{"turn_id":"child-turn","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+			frame(`{"type":"item.ended","turn_id":"child-turn","item":` + userPrompt + `}`)
+			run := rig.agent.run("agent-0")
+			lifetime := run.childLifetime
+			require.NotNil(t, lifetime)
+			rig.agent.Mu.Lock()
+			require.True(t, run.userTurn)
+			rig.agent.Mu.Unlock()
+
+			frame(tc.frame)
+			awaitKimiTestOutput(t, rig.agent.sink)
+			require.NoError(t, agent.FlushPendingOutput(lifetime.writer))
+
+			rig.agent.Mu.Lock()
+			userTurn := run.userTurn
+			turnActive := run.turnActive
+			rig.agent.Mu.Unlock()
+			assert.False(t, userTurn, "withdrawing the active turn must clear run.userTurn")
+			assert.False(t, turnActive)
+			assert.False(t, rig.agent.ActiveChildTurnState(child.rowKey).Active)
+			row, ok := rig.sink.BackgroundTask(child.rowKey)
+			require.True(t, ok)
+			assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+			assert.True(t, lifetime.retiring)
+			trace.mu.Lock()
+			cleanupCount := 0
+			for _, event := range trace.events {
+				if event.kind == "cleanup" && event.childID == child.childAgentID {
+					cleanupCount++
+					assert.True(t, event.registryFinal, "registry close must precede child cleanup")
+				}
+			}
+			trace.mu.Unlock()
+			assert.Equal(t, 1, cleanupCount)
+		})
+	}
+
+	t.Run("turns advancing to a newer running turn keeps row running", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiConversationRig(t)
+		rig.agent.HandleOutput([]byte(`{"type":"task","session_id":"session_1","agent_id":"main","task_id":"task-child","kind":"subagent","status":"running","detached":false,"child_agent_id":"agent-0"}`))
+		child, linked := rig.agent.children.get("agent-0")
+		require.True(t, linked)
+		frame := func(raw string) {
+			rig.agent.HandleOutput(kimiConversationTestFrame(t, rig.sessionID(), "agent-0", raw))
+		}
+		frame(`{"type":"turn.started","turn":{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[]}}`)
+		frame(`{"type":"turns","has_more":false,"turns":[{"turn_id":"t1","ordinal":1,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:01Z","steps":[],"items":[]}]}`)
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		row, ok := rig.sink.BackgroundTask(child.rowKey)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+		assert.True(t, rig.agent.ActiveChildTurnState(child.rowKey).Active)
+		assert.False(t, rig.agent.run("agent-0").childLifetime.retiring)
+	})
+}

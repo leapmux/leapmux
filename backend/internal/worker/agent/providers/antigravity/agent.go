@@ -80,7 +80,7 @@ type cascadeState struct {
 	steps        map[int]*stepState
 	turnSteps    map[int]struct{}
 	childKeys    map[string]*childKey
-	background   map[int]backgroundTask
+	background   map[string]backgroundTask
 	// Removed tasks stay owned until their close enters the Worker output queue.
 	closingBackground map[string]backgroundTask
 	controls          map[int]*antigravityControl
@@ -179,7 +179,7 @@ func newCascadeState(id string, sink agent.ProviderServices, generation uint64, 
 	return &cascadeState{
 		id: id, sink: sink, generation: generation, stored: stored,
 		steps: map[int]*stepState{}, turnSteps: map[int]struct{}{}, childKeys: map[string]*childKey{},
-		background: map[int]backgroundTask{}, closingBackground: map[string]backgroundTask{}, controls: map[int]*antigravityControl{},
+		background: map[string]backgroundTask{}, closingBackground: map[string]backgroundTask{}, controls: map[int]*antigravityControl{},
 		connected: make(chan struct{}),
 	}
 }
@@ -412,7 +412,8 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 			state.steps[index] = previous
 		}
 		a.Mu.Unlock()
-		if isNew {
+		step, err := decodeStep(raw)
+		if isNew && (state.parent == nil || (update.Status != "" && update.Status != cascadeStatusIdle) || (update.Status == "" && err == nil && isOpenStepStatus(step.Status))) {
 			a.beginTurn(state)
 		}
 		if !a.acceptsCascadeUpdate(state) {
@@ -421,7 +422,6 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 		a.Mu.Lock()
 		state.turnSteps[index] = struct{}{}
 		a.Mu.Unlock()
-		step, err := decodeStep(raw)
 		if err != nil {
 			slog.Warn("antigravity decode step failed; persisting raw step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
 			if err := a.persistUnknownStep(state, index, raw); err != nil {
@@ -453,6 +453,9 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 		if err := a.endTurn(state, agent.MessageCompletionComplete); err != nil {
 			return err
 		}
+		if err := a.closeIdleChildOnUpdate(state); err != nil {
+			return err
+		}
 	}
 	a.ensureChildren(state)
 	a.Mu.Lock()
@@ -472,7 +475,7 @@ func (a *Agent) firstOpenIndexLocked(state *cascadeState) int {
 		if step.consumed {
 			continue
 		}
-		if _, background := state.background[index]; background && isOpenStepStatus(step.status) && step.liveOutputAccepted {
+		if hasBackgroundForStepLocked(state, index) && isOpenStepStatus(step.status) && step.liveOutputAccepted {
 			continue
 		}
 		return index

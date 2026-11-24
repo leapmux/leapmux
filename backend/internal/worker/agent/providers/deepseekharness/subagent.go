@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -34,16 +35,22 @@ func (a *Agent) beginChild(stream *sessionStream, raw []byte) error {
 	if err := json.Unmarshal(raw, &descriptor); err != nil || descriptor.ID == "" {
 		return fmt.Errorf("DeepSeek Harness child catalog has no identity")
 	}
-	return a.beginOwnedChild(stream, descriptor)
+	return a.beginOwnedChild(stream, descriptor, false)
 }
 
-func (a *Agent) beginOwnedChild(stream *sessionStream, descriptor nativeChildDescriptor) error {
-	if descriptor.Mode != "continuable" && descriptor.Mode != "one-shot" {
+func (a *Agent) beginOwnedChild(stream *sessionStream, descriptor nativeChildDescriptor, fromSnapshot bool) error {
+	switch descriptor.Mode {
+	case "continuable", "one-shot":
+	case "external", "unknown":
+		slog.Debug("DeepSeek Harness ignoring non-owned subagent mode", "agent_id", a.AgentID(), "child_id", descriptor.ID, "mode", descriptor.Mode)
+		return nil
+	default:
 		return fmt.Errorf("DeepSeek Harness child catalog has an invalid mode")
 	}
 	descriptor.Parent = stream.sessionID
 	a.Mu.Lock()
 	old, exists := a.childCatalog[descriptor.ID]
+	pendingWorkflow, hasPendingWorkflow := a.pendingWorkflowChildren[descriptor.ID]
 	a.Mu.Unlock()
 	if exists {
 		if old != descriptor {
@@ -53,24 +60,34 @@ func (a *Agent) beginOwnedChild(stream *sessionStream, descriptor nativeChildDes
 	}
 	sink := a.streamSink(stream)
 	spawnID := ""
+	title := descriptor.Label
+	if hasPendingWorkflow && pendingWorkflow.Label != "" {
+		title = pendingWorkflow.Label
+	}
 	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
 		RegistryRole: bgtask.RoleChildTask,
-		SpawnSpanID:  spawnID, ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
+		SpawnSpanID:  spawnID, ProviderChildKey: descriptor.ID, Title: title, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
 	if err != nil {
 		return err
 	}
 	childSink := sink.ChildSink(virtualID)
 	childSink.UpdateSessionID(descriptor.ID)
 	child := &nativeChild{descriptor: descriptor, agentID: virtualID, spawnID: spawnID}
-	if err := sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: descriptor.ID, Kind: bgtask.KindSubagent, ChildAgentID: virtualID, Title: descriptor.Label, Status: bgtask.StatusRunning}); err != nil {
+	upsert := bgtask.Upsert{RowKey: descriptor.ID, Kind: bgtask.KindSubagent, ChildAgentID: virtualID, Title: title, Status: bgtask.StatusRunning}
+	if hasPendingWorkflow {
+		upsert.GroupKey = pendingWorkflow.GroupKey
+		upsert.GroupLabel = pendingWorkflow.GroupLabel
+	}
+	if err := sink.UpsertBackgroundTask(upsert); err != nil {
 		return err
 	}
-	if err := a.followSession(sessionAddress{Kind: "subagent", ParentSessionID: descriptor.Parent, ChildSessionID: descriptor.ID, Mode: descriptor.Mode}, virtualID); err != nil {
+	if err := a.followSessionWithMode(sessionAddress{Kind: "subagent", ParentSessionID: descriptor.Parent, ChildSessionID: descriptor.ID, Mode: descriptor.Mode}, virtualID, fromSnapshot); err != nil {
 		return err
 	}
 	a.Mu.Lock()
 	a.childCatalog[descriptor.ID] = descriptor
 	a.children[descriptor.ID] = child
+	delete(a.pendingWorkflowChildren, descriptor.ID)
 	a.Mu.Unlock()
 	return nil
 }
@@ -109,13 +126,53 @@ func (a *Agent) bindChildResult(stream *sessionStream, callID string, raw []byte
 	if !strings.HasPrefix(text, prefix) {
 		return nil
 	}
-	childID := strings.TrimPrefix(text, prefix)
+	target := strings.TrimSpace(strings.TrimPrefix(text, prefix))
 	a.Mu.Lock()
+	childID := target
 	descriptor, known := a.childCatalog[childID]
 	child := a.children[childID]
+	if !known && target != "" {
+		// v3 subagent results can report "started subagent <name>" where <name>
+		// is the child's label rather than its childId. Match a unique unbound
+		// continuable child owned by this stream.
+		var matchID string
+		var matchDesc nativeChildDescriptor
+		var matchChild *nativeChild
+		matches := 0
+		for id, candidate := range a.childCatalog {
+			if candidate.Parent != stream.sessionID || candidate.Mode != "continuable" || candidate.Label != target {
+				continue
+			}
+			c := a.children[id]
+			if c == nil || c.descriptor != candidate {
+				continue
+			}
+			if c.spawnID == callID {
+				matchID = id
+				matchDesc = candidate
+				matchChild = c
+				matches = 1
+				break
+			}
+			if c.spawnID != "" {
+				continue
+			}
+			matchID = id
+			matchDesc = candidate
+			matchChild = c
+			matches++
+		}
+		if matches == 1 {
+			childID = matchID
+			descriptor = matchDesc
+			child = matchChild
+			known = true
+		}
+	}
 	a.Mu.Unlock()
 	if !known || descriptor.Parent != stream.sessionID || descriptor.Mode != "continuable" || child == nil || child.descriptor != descriptor {
-		return fmt.Errorf("DeepSeek Harness child result has no matching native catalog entry")
+		slog.Warn("DeepSeek Harness child result did not match a continuable catalog entry", "agent_id", a.AgentID(), "call_id", callID, "target", target)
+		return nil
 	}
 	if child.spawnID != "" && child.spawnID != callID {
 		return fmt.Errorf("DeepSeek Harness child result changes its first spawn span")
@@ -133,6 +190,14 @@ func (a *Agent) bindChildResult(stream *sessionStream, callID string, raw []byte
 	child.spawnID = callID
 	a.Mu.Unlock()
 	return nil
+}
+
+func (a *Agent) setChildActive(id string, active bool) {
+	a.Mu.Lock()
+	if child := a.children[id]; child != nil {
+		child.active = active
+	}
+	a.Mu.Unlock()
 }
 
 func (a *Agent) childTurnState(id string, active bool, completion agent.MessageCompletion) error {

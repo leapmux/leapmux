@@ -68,12 +68,12 @@ func (svc *Service) loadControlResponseRequestMetadata(agentID, requestID string
 	if requestID == "" {
 		return meta, nil
 	}
-	request, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: agentID, RequestID: requestID})
-	if errors.Is(err, sql.ErrNoRows) {
-		return meta, nil
-	}
+	request, found, err := svc.Output.LookupControlRequest(bgCtx(), agentID, requestID)
 	if err != nil {
 		return meta, err
+	}
+	if !found {
+		return meta, nil
 	}
 	meta.Payload = request.Payload
 	meta.ClaimToken = request.ClaimToken

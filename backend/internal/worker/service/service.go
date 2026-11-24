@@ -148,6 +148,9 @@ type Service struct {
 	AgentStartup    *startupRegistry[leapmuxv1.AgentStatus]
 	TerminalStartup *startupRegistry[leapmuxv1.TerminalStatus]
 
+	// QuakeTerminals holds active quake terminals strictly in memory.
+	QuakeTerminals *QuakeTerminalStore
+
 	// PrivateEvents is the worker-local pub/sub for E2EE-only events
 	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked). Always
 	// non-nil after New.
@@ -671,6 +674,7 @@ func New(cfg Config) *Service {
 		Output:          output,
 		AgentStartup:    newAgentStartupRegistry(cfg.Clock),
 		TerminalStartup: newTerminalStartupRegistry(cfg.Clock),
+		QuakeTerminals:  NewQuakeTerminalStore(),
 		PrivateEvents:   NewPrivateEventsBus(),
 		lastBellAt:      make(map[string]time.Time),
 	}
@@ -687,6 +691,11 @@ func New(cfg Config) *Service {
 	svc.Output.SetInputProcessStateFunc(func(agentID string) {
 		if _, err := svc.InputQueue.RefreshSnapshot(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 			slog.Warn("refresh agent input metadata after process state changed failed", "agent_id", agentID, "error", err)
+		}
+	})
+	svc.Output.SetBackgroundWorkFunc(func(rootAgentID string) {
+		if err := svc.InputQueue.BackgroundWorkChangedTree(bgCtx(), rootAgentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+			slog.Warn("reconcile agent input queue tree after background work changed failed", "root_agent_id", rootAgentID, "error", err)
 		}
 	})
 	// The one turn flag every provider publishes. A queue that already closed
@@ -956,27 +965,27 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 // runtime state (HasAgent/HasTerminal), not from the DB, so there is no
 // stale row to clear at startup.
 func (svc *Service) RestoreState() {
-	if err := svc.InputQueue.RecoverState(bgCtx()); err != nil {
-		slog.Warn("recover agent input queues failed", "error", err)
-	}
-	// Mark every still-active background-task row
-	// 'interrupted': the previous worker process was cut off (crash/restart),
-	// so a row left 'pending'/'running' is genuinely not making progress. Pure
-	// DB -- caches do not exist yet at boot. Logs the affected-row count so a
-	// surprising number surfaces.
+	ctx := bgCtx()
+	// Record every open agent whose queued input was waiting on active
+	// Sweep still-active background tasks and recover input queues inside one
+	// SQLite transaction so Store.Recover identifies agents held by active
+	// background work, marks those tasks interrupted, and snapshots the
+	// post-sweep queues atomically (ActiveBackgroundWork == false).
 	// One boot-time instant for ended_at/updated_at so every swept row carries
-	// the same stamp (the in-memory caches do not exist yet at boot, so there is
-	// no cache/DB drift to guard here -- this is purely for uniform labeling).
+	// the same stamp (in-memory caches do not exist yet at boot).
 	bootNow := nowMillis()
-	// The sweep updates registry status without changing native transcripts.
-	endedCount, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
-		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted),
-		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
-		EndedAt:        sqltime.SQLiteNullTimeOf(bootNow),
-		UpdatedAt:      sqltime.NewSQLiteTime(bootNow),
-	})
-	if err != nil {
-		slog.Warn("mark active background tasks interrupted failed", "error", err)
+	var endedCount int64
+	if err := svc.InputQueue.RecoverState(ctx, func(txCtx context.Context, tx *sql.Tx) error {
+		var sweepErr error
+		endedCount, sweepErr = svc.Queries.WithTx(tx).MarkAllActiveAgentBackgroundTasksInterrupted(txCtx, db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
+			Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted),
+			MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+			EndedAt:        sqltime.SQLiteNullTimeOf(bootNow),
+			UpdatedAt:      sqltime.NewSQLiteTime(bootNow),
+		})
+		return sweepErr
+	}); err != nil {
+		slog.Warn("recover agent input queues and background tasks failed", "error", err)
 	} else if endedCount > 0 {
 		slog.Info("marked background tasks interrupted on boot", "count", endedCount)
 	}
@@ -1341,9 +1350,12 @@ func (svc *Service) broadcastTerminalsDisconnected(notified map[string]struct{})
 		if _, done := notified[tid]; done {
 			continue
 		}
+		if svc.QuakeTerminals.Has(tid) {
+			continue
+		}
 		// Already-exited terminals were persisted with their real exit
-		// code by makeTerminalExitFn; don't clobber it with the shutdown
-		// sentinel.
+		// notice by makeTerminalExitFn; don't clobber it with the shutdown
+		// notice.
 		if svc.Terminals.IsExited(tid) {
 			continue
 		}
@@ -1352,14 +1364,6 @@ func (svc *Service) broadcastTerminalsDisconnected(notified map[string]struct{})
 		}
 	}
 }
-
-// exitCodeUnknown is the sentinel used when the worker never observed
-// the child's exit (forced Shutdown: the worker is tearing the child
-// down without waiting for its exit code). Renders as the "Worker
-// disconnected" wording rather than a literal "?" because in this path
-// we *know* the worker killed the child — the exit code is unobserved,
-// not unknown.
-const exitCodeUnknown = -1
 
 // terminalHangUpGrace is the escalation grace Shutdown gives each terminal's
 // shell: about the time a shell needs to notice the hang-up and exit, and
@@ -1396,17 +1400,23 @@ func formatTerminalExitedNotice(exitCode int) []byte {
 // Native status values do not select shutdown behavior. The shutdown sweep
 // uses persistTerminalDisconnected and preserves an already-saved exit.
 func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
+	if svc.QuakeTerminals.Has(tid) {
+		return false
+	}
 	snapshot, ok := svc.captureTerminalExit(tid)
 	if !ok {
 		return false
 	}
 	svc.appendTerminalNotice(tid, &snapshot, formatTerminalExitedNotice(exitCode))
-	return svc.saveTerminalExit(tid, exitCode, snapshot)
+	return svc.saveTerminalExit(tid, snapshot)
 }
 
 // persistTerminalDisconnected records a shutdown notice while preserving an
 // exit that another handler already saved. It does not classify native codes.
 func (svc *Service) persistTerminalDisconnected(tid string) bool {
+	if svc.QuakeTerminals.Has(tid) {
+		return false
+	}
 	snapshot, ok := svc.captureTerminalExit(tid)
 	if !ok {
 		return false
@@ -1415,18 +1425,11 @@ func (svc *Service) persistTerminalDisconnected(tid string) bool {
 		return true
 	}
 	svc.appendTerminalNotice(tid, &snapshot, []byte(terminalDisconnectedNotice))
-	return svc.saveTerminalExit(tid, exitCodeUnknown, snapshot)
+	return svc.saveTerminalExit(tid, snapshot)
 }
 
 func (svc *Service) appendTerminalNotice(tid string, snapshot *terminalExitSnapshot, notice []byte) {
-	// A QUAKE terminal gets NO exit notice, and the reason is that the notice
-	// offers an action the quake terminal refuses. "Press Enter to restart"
-	// reaches an open quake panel as ordinary terminal data -- AppendOutput is
-	// the PTY reader's own handler, so every FULL watcher receives it -- and
-	// both the browser and RestartTerminal then decline the Enter it invites,
-	// because a quake terminal's exit IS its end. Suppressing the text is what
-	// lets the panel retract on a clean screen rather than on a dead offer.
-	if snapshot.isQuake || bytes.HasSuffix(snapshot.screen, terminalExitedNoticeSuffix) {
+	if bytes.HasSuffix(snapshot.screen, terminalExitedNoticeSuffix) {
 		return
 	}
 	_ = svc.Terminals.AppendOutput(tid, notice)
@@ -1439,18 +1442,17 @@ type terminalExitSnapshot struct {
 	terminal.TerminalMeta
 	screen        []byte
 	previousTitle string
-	isQuake       bool
 }
 
 func (svc *Service) captureTerminalExit(tid string) (terminalExitSnapshot, bool) {
-	stored, err := svc.Queries.GetTerminalExitState(bgCtx(), tid)
+	storedTitle, err := svc.Queries.GetTerminalTitle(bgCtx(), tid)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			slog.Warn("failed to read terminal state before persisting exit", "terminal_id", tid, "error", err)
 		}
 		return terminalExitSnapshot{}, false
 	}
-	snapshot := terminalExitSnapshot{previousTitle: stored.Title, isQuake: stored.IsQuake}
+	snapshot := terminalExitSnapshot{previousTitle: storedTitle}
 	if live, ok := svc.Terminals.SnapshotTerminal(tid); ok {
 		snapshot.TerminalMeta, snapshot.screen = live.TerminalMeta, live.Screen
 	} else if meta, ok := svc.Terminals.GetMeta(tid); ok {
@@ -1461,16 +1463,16 @@ func (svc *Service) captureTerminalExit(tid string) (terminalExitSnapshot, bool)
 	return snapshot, true
 }
 
-func (svc *Service) saveTerminalExit(tid string, exitCode int, snapshot terminalExitSnapshot) bool {
+func (svc *Service) saveTerminalExit(tid string, snapshot terminalExitSnapshot) bool {
 	// The screen column is NOT NULL. The metadata-only fallback leaves it nil
-	// when no notice was appended, including every quake exit on that path.
-	// Store an empty buffer so the row still receives its exit code.
+	// when no notice was appended. Store an empty buffer so the row still
+	// receives its dimensions and title.
 	if snapshot.screen == nil {
 		snapshot.screen = []byte{}
 	}
 	// A concurrent close and a renamed title remain authoritative.
 	params := db.SaveTerminalExitParams{
-		ID: tid, Cols: int64(snapshot.Cols), Rows: int64(snapshot.Rows), Screen: snapshot.screen, ExitCode: int64(exitCode),
+		ID: tid, Cols: int64(snapshot.Cols), Rows: int64(snapshot.Rows), Screen: snapshot.screen,
 		Title: snapshot.Title, PreviousTitle: snapshot.previousTitle,
 	}
 	if err := svc.Queries.SaveTerminalExit(bgCtx(), params); err != nil {

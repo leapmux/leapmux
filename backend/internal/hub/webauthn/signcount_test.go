@@ -33,7 +33,7 @@ func newSignCountTestService(t *testing.T) (*Service, store.Store, string, strin
 		RPID:          "localhost",
 		RPDisplayName: "LeapMux",
 		RPOrigins:     []string{"http://localhost"},
-	}, st, ks)
+	}, st, ks, NewSessionStore())
 	require.NoError(t, err)
 
 	userID := id.Generate()

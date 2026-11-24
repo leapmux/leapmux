@@ -110,128 +110,103 @@ func (store *recoverySubtreeReadFault) QueryContext(ctx context.Context, query s
 }
 
 func TestInputRecoveryRetainsInputWhenControlCleanupFails(t *testing.T) {
-	for _, failure := range []string{"subtree read", "blocking delete"} {
-		t.Run(failure, func(t *testing.T) {
-			t.Parallel()
-			svc, starts := newInputRecoveryService(t, staleFirstInputPreparation)
-			const root = "recovery-cleanup-root"
-			const child = "recovery-cleanup-child"
-			seedRecoveryAgent(t, svc, root, "saved-thread")
-			enqueueRecoveryInput(t, svc, root, "held-input")
-			recoveryQueuedItem(t, svc, root, "held-input")
-			require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{
-				ID: child, ParentAgentID: sql.NullString{String: root, Valid: true}, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-			}))
-			for _, owner := range []string{root, child} {
-				for _, nonblocking := range []bool{false, true} {
-					requestID := "old-blocking"
-					if nonblocking {
-						requestID = "conversation-question"
-					}
-					createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-						AgentID: owner, RequestID: requestID, Payload: []byte(`{}`), NonBlocking: nonblocking,
-					})
-				}
+	t.Parallel()
+	svc, starts := newInputRecoveryService(t, staleFirstInputPreparation)
+	const root = "recovery-cleanup-root"
+	const child = "recovery-cleanup-child"
+	seedRecoveryAgent(t, svc, root, "saved-thread")
+	enqueueRecoveryInput(t, svc, root, "held-input")
+	recoveryQueuedItem(t, svc, root, "held-input")
+	require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{
+		ID: child, ParentAgentID: sql.NullString{String: root, Valid: true}, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	for _, owner := range []string{root, child} {
+		for _, nonblocking := range []bool{false, true} {
+			requestID := "old-blocking"
+			if nonblocking {
+				requestID = "conversation-question"
 			}
-			svc.Output.WaitActivityRefreshes()
-			originalQueries := svc.Queries
-			fault := &recoverySubtreeReadFault{DBTX: svc.DB}
-			if failure == "subtree read" {
-				fault.enabled.Store(true)
-				svc.Queries = db.New(fault)
-			} else {
-				_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_recovery_control_cleanup BEFORE DELETE ON control_requests
-WHEN OLD.non_blocking = 0 BEGIN SELECT RAISE(ABORT, 'the recovery control delete failed'); END`)
-				require.NoError(t, err)
-			}
-			t.Cleanup(func() {
-				fault.enabled.Store(false)
-				svc.Queries = originalQueries
-				_, _ = svc.DB.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS fail_recovery_control_cleanup")
+			createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
+				AgentID: owner, RequestID: requestID, Payload: []byte(`{}`), NonBlocking: nonblocking,
 			})
-			err := svc.recoverAgentInputProcess(root, svc.inputProcessRecovery(root))
-			require.Error(t, err, "a cleanup fault cannot report recovery success")
-			assert.Equal(t, 1, starts.count(), "no replacement can start with old process controls")
-			snapshot, err := svc.InputQueue.Snapshot(t.Context(), root)
-			require.NoError(t, err)
-			assert.True(t, snapshot.Paused)
-			require.Len(t, snapshot.Items, 1)
-			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
-			fault.enabled.Store(false)
-			svc.Queries = originalQueries
-			_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER IF EXISTS fail_recovery_control_cleanup")
-			require.NoError(t, err)
-			workingStart := svc.startAgentFn
-			svc.startAgentFn = func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (map[string]string, error) {
-				for _, owner := range []string{root, child} {
-					controls, readErr := originalQueries.ListControlRequestsByAgentID(ctx, owner)
-					require.NoError(t, readErr)
-					require.Len(t, controls, 1, "old blocking controls must retire before startup")
-					assert.True(t, controls[0].NonBlocking)
-				}
-				confirmed, startErr := workingStart(ctx, options, sink)
-				if startErr == nil {
-					createTestControlRequest(t, ctx, originalQueries, db.StoreControlRequestParams{AgentID: root, RequestID: "fresh-blocking", Payload: []byte(`{}`)})
-				}
-				return confirmed, startErr
-			}
-			if approved := svc.inputProcessRecovery(root); approved != nil {
-				require.NoError(t, svc.recoverAgentInputProcess(root, approved))
-			} else {
-				_, err = svc.InputQueue.SetPaused(t.Context(), root, false)
-				require.NoError(t, err)
-			}
-			waitForMessageCount(t, svc, root, 1)
-			_, err = originalQueries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: root, RequestID: "fresh-blocking"})
-			require.NoError(t, err, "cleanup cannot delete a replacement's controls")
-		})
+		}
 	}
+	svc.Output.WaitActivityRefreshes()
+	originalQueries := svc.Queries
+	fault := &recoverySubtreeReadFault{DBTX: svc.DB}
+	fault.enabled.Store(true)
+	svc.Queries = db.New(fault)
+	t.Cleanup(func() {
+		fault.enabled.Store(false)
+		svc.Queries = originalQueries
+	})
+	err := svc.recoverAgentInputProcess(root, svc.inputProcessRecovery(root))
+	require.Error(t, err, "a cleanup fault cannot report recovery success")
+	assert.Equal(t, 1, starts.count(), "no replacement can start with old process controls")
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), root)
+	require.NoError(t, err)
+	assert.True(t, snapshot.Paused)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	fault.enabled.Store(false)
+	svc.Queries = originalQueries
+	workingStart := svc.startAgentFn
+	svc.startAgentFn = func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (map[string]string, error) {
+		for _, owner := range []string{root, child} {
+			controls, readErr := svc.Output.ListControlRequests(ctx, owner)
+			require.NoError(t, readErr)
+			require.Len(t, controls, 1, "old blocking controls must retire before startup")
+			assert.True(t, controls[0].NonBlocking)
+		}
+		confirmed, startErr := workingStart(ctx, options, sink)
+		if startErr == nil {
+			createTestControlRequest(t, ctx, svc.Output, testControlRequestParams{AgentID: root, RequestID: "fresh-blocking", Payload: []byte(`{}`)})
+		}
+		return confirmed, startErr
+	}
+	if approved := svc.inputProcessRecovery(root); approved != nil {
+		require.NoError(t, svc.recoverAgentInputProcess(root, approved))
+	} else {
+		_, err = svc.InputQueue.SetPaused(t.Context(), root, false)
+		require.NoError(t, err)
+	}
+	waitForMessageCount(t, svc, root, 1)
+	requireLookupControlRequest(t, t.Context(), svc.Output, root, "fresh-blocking")
 }
 
 func TestInputRecoveryCleanupFailureCannotBeBypassedByASettingsRestart(t *testing.T) {
-	for _, failure := range []string{"subtree read", "blocking delete"} {
-		t.Run(failure, func(t *testing.T) {
-			t.Parallel()
-			svc, starts := newInputRecoveryService(t, staleFirstInputPreparation)
-			const id = "recovery-settings-cleanup"
-			seedRecoveryAgent(t, svc, id, "saved-thread")
-			enqueueRecoveryInput(t, svc, id, "held-input")
-			recoveryQueuedItem(t, svc, id, "held-input")
-			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-				AgentID: id, RequestID: "old-blocking", Payload: []byte(`{}`),
-			})
-			svc.Output.WaitActivityRefreshes()
-			originalQueries := svc.Queries
-			fault := &recoverySubtreeReadFault{DBTX: svc.DB}
-			if failure == "subtree read" {
-				fault.enabled.Store(true)
-				svc.Queries = db.New(fault)
-			} else {
-				_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_recovery_settings_cleanup BEFORE DELETE ON control_requests
-WHEN OLD.non_blocking = 0 BEGIN SELECT RAISE(ABORT, 'the recovery control delete failed'); END`)
-				require.NoError(t, err)
-			}
-			t.Cleanup(func() {
-				fault.enabled.Store(false)
-				svc.Queries = originalQueries
-				_, _ = svc.DB.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS fail_recovery_settings_cleanup")
-			})
-			require.Error(t, svc.recoverAgentInputProcess(id, svc.inputProcessRecovery(id)))
-			require.True(t, starts.fake(0).wasStopped())
-			require.Equal(t, 1, starts.count())
-			row, err := originalQueries.GetAgentByID(t.Context(), id)
-			require.NoError(t, err)
-			// A settings request can pass its running-process check before
-			// recovery stops that process, then reach this restart afterward.
-			_, err = svc.restartAgentPreservingSession(row, storedRestartOptions, settingsRestartMessages, restartTurnEndPending, nil)
-			assert.Error(t, err, "a direct restart must enforce the same control cleanup")
-			assert.Equal(t, 1, starts.count(), "cleanup failure must prevent every replacement launch")
-			after, err := originalQueries.GetAgentByID(t.Context(), id)
-			require.NoError(t, err)
-			assert.Equal(t, "saved-thread", after.AgentSessionID, "a pre-start cleanup refusal cannot invalidate the saved conversation")
-			assert.EqualValues(t, 1, after.Resumed)
-		})
-	}
+	t.Parallel()
+	svc, starts := newInputRecoveryService(t, staleFirstInputPreparation)
+	const id = "recovery-settings-cleanup"
+	seedRecoveryAgent(t, svc, id, "saved-thread")
+	enqueueRecoveryInput(t, svc, id, "held-input")
+	recoveryQueuedItem(t, svc, id, "held-input")
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
+		AgentID: id, RequestID: "old-blocking", Payload: []byte(`{}`),
+	})
+	svc.Output.WaitActivityRefreshes()
+	originalQueries := svc.Queries
+	fault := &recoverySubtreeReadFault{DBTX: svc.DB}
+	fault.enabled.Store(true)
+	svc.Queries = db.New(fault)
+	t.Cleanup(func() {
+		fault.enabled.Store(false)
+		svc.Queries = originalQueries
+	})
+	require.Error(t, svc.recoverAgentInputProcess(id, svc.inputProcessRecovery(id)))
+	require.True(t, starts.fake(0).wasStopped())
+	require.Equal(t, 1, starts.count())
+	row, err := originalQueries.GetAgentByID(t.Context(), id)
+	require.NoError(t, err)
+	// A settings request can pass its running-process check before
+	// recovery stops that process, then reach this restart afterward.
+	_, err = svc.restartAgentPreservingSession(row, storedRestartOptions, settingsRestartMessages, restartTurnEndPending, nil)
+	assert.Error(t, err, "a direct restart must enforce the same control cleanup")
+	assert.Equal(t, 1, starts.count(), "cleanup failure must prevent every replacement launch")
+	after, err := originalQueries.GetAgentByID(t.Context(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "saved-thread", after.AgentSessionID, "a pre-start cleanup refusal cannot invalidate the saved conversation")
+	assert.EqualValues(t, 1, after.Resumed)
 }
 
 func TestInputRecoveryControlCleanupRefusesARegisteredProcess(t *testing.T) {
@@ -240,13 +215,12 @@ func TestInputRecoveryControlCleanupRefusesARegisteredProcess(t *testing.T) {
 	const id = "recovery-live-control-owner"
 	seedRecoveryAgent(t, svc, id, "saved-thread")
 	require.ErrorIs(t, svc.ensureAgentReadyForInput(id), agent.ErrInputProcessRestartRequired)
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+	createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{
 		AgentID: id, RequestID: "live-blocking", Payload: []byte(`{}`),
 	})
 	err := svc.retireStoppedProcessControls(id)
 	require.ErrorIs(t, err, inputqueue.ErrConflict)
-	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: id, RequestID: "live-blocking"})
-	require.NoError(t, err, "startup cleanup cannot delete a live process's control")
+	requireLookupControlRequest(t, t.Context(), svc.Output, id, "live-blocking")
 	assert.False(t, starts.fake(0).wasStopped())
 	assert.Equal(t, 1, starts.count())
 }

@@ -137,7 +137,7 @@ func newAgent(opts agent.Options, sink agent.ProviderServices, config launchConf
 		modeLocked:     opts.ResumeSessionID != "",
 		permissionMode: launchPermissionMode(opts),
 		tools:          make(map[string]*openTool),
-		shells:         make(map[int]string),
+		shells:         make(map[int]trackedShell),
 		done:           make(chan struct{}),
 	}
 	if opts.ResumeSessionID != "" {

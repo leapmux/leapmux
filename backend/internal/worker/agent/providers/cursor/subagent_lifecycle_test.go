@@ -3,11 +3,13 @@
 package cursor
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -251,4 +253,78 @@ func TestCursorNativeSubagentStoreMirrorDoesNotDuplicateLiveContent(t *testing.T
 	a.noteCursorTaskExtension("native-task")
 	a.captureCursorTaskRecordObserver()("native-task", cursorToolRecord{content: json.RawMessage(`{"toolName":"task","result":"ONE_NATIVE_CHILD_REPORT"}`)})
 	assert.Equal(t, before, child.Messages())
+}
+
+func TestCursorNativeSubagentLateSpawnAfterEarlyBackgroundUpdate(t *testing.T) {
+	sink := &agenttest.Sink{}
+	a := startCursorNativeLifecycleTestAgent(t, sink)
+	cursorNativeTaskStart(a)
+	childID := cursorNativeTaskChildID(t, sink, "native-task")
+
+	// Early background tool_call_update closes the task row before subagent_spawned arrives.
+	a.HandleOutput(cursorNativeSessionFrame("cursor-new", map[string]any{
+		"sessionUpdate": "tool_call_update", "toolCallId": "native-task", "status": "completed",
+		"rawOutput": map[string]any{"isBackground": true},
+	}))
+	row, ok := sink.BackgroundTask("native-task")
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+	// Late subagent_spawned revives the row and attaches the child session.
+	a.HandleOutput(cursorNativeSessionFrame("cursor-new", cursorNativeLifecycleFrame("subagent_spawned", "native-child-session", "native-task", "")))
+	row, ok = sink.BackgroundTask("native-task")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, []string{"native-task"}, sink.RevivedTasks())
+
+	a.HandleOutput(cursorNativeSessionFrame("native-child-session", map[string]any{
+		"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "LATE_NATIVE_BG_DELTA"},
+	}))
+	child := sink.Child(childID)
+	assert.Contains(t, child.ProgressUpdates(), agent.ModelTextProgress("acp:agent_message_chunk", "LATE_NATIVE_BG_DELTA"))
+
+	a.HandleOutput(cursorNativeSessionFrame("cursor-new", cursorNativeLifecycleFrame("subagent_state_update", "native-child-session", "native-task", "completed")))
+	row, ok = sink.BackgroundTask("native-task")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	var text strings.Builder
+	for _, msg := range child.Messages() {
+		text.Write(msg.Content)
+	}
+	assert.Contains(t, text.String(), "LATE_NATIVE_BG_DELTA")
+}
+
+func TestCursorSessionLoadSkipsReplayedSubagentLifecycleUpdates(t *testing.T) {
+	home := t.TempDir()
+	writeCursorACPPolicyFixture(t, home, "cursor-resume", `{"agentId":"cursor-resume","isRunEverything":false}`)
+	installFakeCursorCLI(t, "load-replay")
+
+	sink := &agenttest.Sink{}
+	provider, err := Start(context.Background(), agent.Options{
+		AgentID:         "cursor-load-replay",
+		HomeDir:         home,
+		WorkingDir:      t.TempDir(),
+		ResumeSessionID: "cursor-resume",
+		Shell:           testutil.TestShell(),
+		LoginShell:      false,
+		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+	}, agent.NewProviderServices(sink))
+	require.NoError(t, err)
+	a := provider.(*Agent)
+	t.Cleanup(func() { a.Stop(); _ = a.Wait() })
+
+	// Replayed subagent_spawned and subagent_state_update before session/load reply must not open rows.
+	assert.Empty(t, sink.BackgroundTasks(), "replayed subagent lifecycle frames must be skipped")
+	assert.Empty(t, sink.ChildAgentIDs(), "replayed subagent lifecycle frames must not create child agents")
+
+	require.NotNil(t, a.HooksForTest().IsReplayUpdate, "Cursor must wire Hooks.IsReplayUpdate")
+	assert.True(t, a.HooksForTest().IsReplayUpdate("subagent_spawned"))
+	assert.True(t, a.HooksForTest().IsReplayUpdate("subagent_state_update"))
+	assert.False(t, a.HooksForTest().IsReplayUpdate("current_mode_update"))
+
+	// Live subagent_spawned after session/load still works normally.
+	a.HandleOutput(cursorNativeSessionFrame("cursor-resume", cursorNativeLifecycleFrame("subagent_spawned", "live-child-session", "live-task", "")))
+	row, ok := sink.BackgroundTask("live-task")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
 }

@@ -286,7 +286,7 @@ func TestAntigravityFatalCascadeClosesOpenToolStepsAndResetsSpans(t *testing.T) 
 		cmd := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"cmd-root-bg"}},"runCommand":{"command":"sleep 30"}}`)
 		feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{cmd}))
 		a.Mu.Lock()
-		a.root.background[0] = backgroundTask{rowKey: "bg-shell", title: "sleep 30", stepIndex: 0}
+		a.root.background["bg-shell"] = backgroundTask{rowKey: "bg-shell", title: "sleep 30", stepIndex: 0}
 		a.Mu.Unlock()
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "bg-shell", Kind: bgtask.KindShell, Title: "sleep 30", Status: bgtask.StatusRunning}))
 		require.Equal(t, cascadeTurnActive, a.root.turnPhase)

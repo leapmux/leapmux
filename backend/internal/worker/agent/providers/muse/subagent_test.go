@@ -148,7 +148,7 @@ func TestReadySubagentResultsSettleTheCurrentTask(t *testing.T) {
 		{name: "failed", result: `{"summary":"Failed","errorKind":"native_failure","evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusFailed},
 		{name: "empty failure kind", result: `{"summary":"Failed","errorKind":"","evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusFailed},
 		{name: "explicit item failure", status: "failed", result: `{"summary":"Done","evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusFailed},
-		{name: "null error kind", result: `{"summary":"Done","errorKind":null,"evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusRunning},
+		{name: "null error kind", result: `{"summary":"Done","errorKind":null,"evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusSucceeded},
 		{name: "null reference", result: `{"summary":"Done","evidenceRefs":[null],"artifactRefs":[]}`, want: bgtask.StatusRunning},
 		{name: "null result", result: `null`, want: bgtask.StatusRunning},
 		{name: "scalar result", result: `"Done"`, want: bgtask.StatusRunning},
@@ -553,4 +553,138 @@ func TestChildViewGapKeepsTheUnresolvedInitialPrefix(t *testing.T) {
 	assert.Equal(t, "child-turn", state.turnID)
 	assert.Equal(t, childViewPrefixReady, state.childViewPrefix)
 	assert.Equal(t, []bool{true}, sink.TurnActiveCalls)
+}
+
+func TestResolvedChildStatusSettlesClosingAndClosedWithResult(t *testing.T) {
+	t.Parallel()
+	for _, control := range []string{"resultReady", "closing", "closed"} {
+		for _, tc := range []struct {
+			name, result string
+			want         bgtask.Status
+		}{
+			{name: "successful", result: `{"summary":"Done","evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusSucceeded},
+			{name: "null error kind", result: `{"summary":"Done","errorKind":null,"evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusSucceeded},
+			{name: "cancelled", result: `{"summary":"","errorKind":"generated_child_cancelled","evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusStopped},
+			{name: "failed", result: `{"summary":"Failed","errorKind":"native_failure","evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusFailed},
+			{name: "non-string error kind stays running", result: `{"summary":"Done","errorKind":0,"evidenceRefs":[],"artifactRefs":[]}`, want: bgtask.StatusRunning},
+			{name: "absent result stays running", result: ``, want: bgtask.StatusRunning},
+		} {
+			t.Run(control+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				resultField := ""
+				if tc.result != "" {
+					resultField = `,"result":` + tc.result
+				}
+				var item nativeItem
+				require.NoError(t, json.Unmarshal([]byte(`{"kind":"subagent","status":"inProgress","controlStatus":"`+control+`"`+resultField+`}`), &item))
+				assert.Equal(t, tc.want, resolvedChildStatus(item))
+			})
+		}
+	}
+}
+
+func TestLiveSubagentFollowupRevivesFinishedRow(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	a.viewWork.CloseAndWait()
+	key := museChildRowKey("session", "sub-1")
+
+	feed(t, a, contracts.MuseMethodItemStarted, itemParams{
+		SessionID: "session",
+		Item: nativeItem{
+			ID: "item-sub-1", Kind: museItemSubagent, Revision: 1,
+			Status: contracts.MuseItemStatusInProgress, ControlStatus: "running",
+			SubagentID: "sub-1", ChildSessionID: "child-session-1", Objective: "Job 1",
+		},
+	})
+	row, found := sink.BackgroundTask(key)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Empty(t, sink.RevivedTasks())
+
+	feed(t, a, contracts.MuseMethodItemUpdated, itemParams{
+		SessionID: "session",
+		Item: nativeItem{
+			ID: "item-sub-1", Kind: museItemSubagent, Revision: 2,
+			Status: contracts.MuseItemStatusInProgress, ControlStatus: "resultReady",
+			SubagentID: "sub-1", ChildSessionID: "child-session-1", Objective: "Job 1",
+			Result: json.RawMessage(`{"summary":"Done","errorKind":null,"evidenceRefs":[],"artifactRefs":[]}`),
+		},
+	})
+	row, found = sink.BackgroundTask(key)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.False(t, row.EndedAt.IsZero())
+
+	// Live subagent/followup transitions resultReady -> running (head == false).
+	feed(t, a, contracts.MuseMethodItemUpdated, itemParams{
+		SessionID: "session",
+		Item: nativeItem{
+			ID: "item-sub-1", Kind: museItemSubagent, Revision: 3,
+			Status: contracts.MuseItemStatusInProgress, ControlStatus: "running",
+			SubagentID: "sub-1", ChildSessionID: "child-session-1", Objective: "Job 1",
+		},
+	})
+	row, found = sink.BackgroundTask(key)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.True(t, row.EndedAt.IsZero())
+	assert.Equal(t, []string{key}, sink.RevivedTasks())
+
+	// A follow-up running update after revival commits does not revive a second time.
+	feed(t, a, contracts.MuseMethodItemUpdated, itemParams{
+		SessionID: "session",
+		Item: nativeItem{
+			ID: "item-sub-1", Kind: museItemSubagent, Revision: 4,
+			Status: contracts.MuseItemStatusInProgress, ControlStatus: "running",
+			SubagentID: "sub-1", ChildSessionID: "child-session-1", Objective: "Job 1 updated",
+		},
+	})
+	row, found = sink.BackgroundTask(key)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, []string{key}, sink.RevivedTasks())
+}
+
+func TestLiveSubagentFollowupRevivalSurvivesRegistryRetry(t *testing.T) {
+	t.Parallel()
+	h := newRegistryRetryHarness(t)
+	key := museChildRowKey("session", "sub-retry")
+
+	feed(t, h.agent, contracts.MuseMethodItemStarted, itemParams{
+		SessionID: "session",
+		Item: nativeItem{
+			ID: "item-sub-retry", Kind: museItemSubagent, Revision: 1,
+			Status: contracts.MuseItemStatusInProgress, ControlStatus: "running",
+			SubagentID: "sub-retry", ChildSessionID: "child-session-retry", Objective: "Job 1",
+		},
+	})
+	feed(t, h.agent, contracts.MuseMethodItemUpdated, itemParams{
+		SessionID: "session",
+		Item: nativeItem{
+			ID: "item-sub-retry", Kind: museItemSubagent, Revision: 2,
+			Status: contracts.MuseItemStatusInProgress, ControlStatus: "resultReady",
+			SubagentID: "sub-retry", ChildSessionID: "child-session-retry", Objective: "Job 1",
+			Result: json.RawMessage(`{"summary":"Done","errorKind":null,"evidenceRefs":[],"artifactRefs":[]}`),
+		},
+	})
+	requireRegistryStatus(t, h, key, bgtask.StatusSucceeded)
+
+	h.sink.block("revive", key)
+	feed(t, h.agent, contracts.MuseMethodItemUpdated, itemParams{
+		SessionID: "session",
+		Item: nativeItem{
+			ID: "item-sub-retry", Kind: museItemSubagent, Revision: 3,
+			Status: contracts.MuseItemStatusInProgress, ControlStatus: "running",
+			SubagentID: "sub-retry", ChildSessionID: "child-session-retry", Objective: "Job 1",
+		},
+	})
+	require.True(t, h.queue.HasPending())
+	assert.Empty(t, h.base.RevivedTasks())
+
+	h.sink.allow("revive", key)
+	h.recoverOneRetry(t)
+	row := requireRegistryStatus(t, h, key, bgtask.StatusRunning)
+	assert.True(t, row.EndedAt.IsZero())
+	assert.Equal(t, []string{key}, h.base.RevivedTasks())
 }

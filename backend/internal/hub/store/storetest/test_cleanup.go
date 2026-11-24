@@ -305,56 +305,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.Equal(t, int64(2), n, "both previously-blocked users are reaped once their references drain")
 	})
 
-	t.Run("delete expired oauth states", func(t *testing.T) {
-		st := s.NewStore(t)
-		state := id.Generate()
-		prov := SeedOAuthProvider(t, st, "cleanup-oauth-state-prov")
-
-		err := st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
-			State:        state,
-			ProviderID:   prov.ID,
-			PkceVerifier: "v",
-			RedirectURI:  "https://example.com/cb",
-			Purpose:      store.OAuthStatePurposeLogin,
-			ExpiresAt:    time.Now().Add(-1 * time.Hour),
-		})
-		require.NoError(t, err)
-
-		_, err = st.Cleanup().DeleteExpiredOAuthStates(ctx, time.Now().UTC())
-		require.NoError(t, err)
-
-		_, err = st.OAuthStates().Get(ctx, state)
-		assert.ErrorIs(t, err, store.ErrNotFound)
-	})
-
-	t.Run("delete expired pending oauth signups", func(t *testing.T) {
-		st := s.NewStore(t)
-		token := id.Generate()
-		prov := SeedOAuthProvider(t, st, "cleanup-pending-signup-prov")
-
-		err := st.PendingOAuthSignups().Create(ctx, store.CreatePendingOAuthSignupParams{
-			Token:           token,
-			ProviderID:      prov.ID,
-			ProviderSubject: "sub",
-			Email:           "expired@example.com",
-			DisplayName:     "Exp",
-			AccessToken:     []byte("a"),
-			RefreshToken:    []byte("r"),
-			TokenType:       "Bearer",
-			TokenExpiresAt:  time.Now().Add(-2 * time.Hour),
-			KeyVersion:      1,
-			RedirectURI:     "https://example.com/cb",
-			ExpiresAt:       time.Now().Add(-1 * time.Hour),
-		})
-		require.NoError(t, err)
-
-		_, err = st.Cleanup().DeleteExpiredPendingOAuthSignups(ctx, time.Now().UTC())
-		require.NoError(t, err)
-
-		_, err = st.PendingOAuthSignups().Get(ctx, token)
-		assert.ErrorIs(t, err, store.ErrNotFound)
-	})
-
 	t.Run("cleanup empty tables", func(t *testing.T) {
 		st := s.NewStore(t)
 		cutoff := time.Now()
@@ -581,11 +531,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 			Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT,
 		}))
 		prov := SeedOAuthProvider(t, st, "cleanup-user-cascade-prov")
-		require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
-			UserID: userid.MustNew(user.ID), ProviderID: prov.ID,
-			AccessToken: []byte("a"), RefreshToken: []byte("r"),
-			TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), KeyVersion: 1,
-		}))
 		require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
 			UserID: userid.MustNew(user.ID), ProviderID: prov.ID, ProviderSubject: "user-cascade-sub",
 		}))
@@ -602,11 +547,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		sections, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Empty(t, sections)
-
-		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
-			UserID: userid.MustNew(user.ID), ProviderID: prov.ID,
-		})
-		assert.ErrorIs(t, err, store.ErrNotFound)
 
 		links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)

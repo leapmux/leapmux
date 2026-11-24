@@ -74,8 +74,6 @@ func TestResumeCopiesNestedChildTranscriptsAndRegistry(t *testing.T) {
 	}
 	child := byKey["first"]
 	grandchild := byKey["second"]
-	assert.Zero(t, child.OutputGeneration, "cloned registry history is explicitly unclaimed")
-	assert.Zero(t, grandchild.OutputGeneration)
 	require.NotEmpty(t, child.ChildAgentID)
 	require.NotEmpty(t, grandchild.ChildAgentID)
 	assert.NotEqual(t, "old-child", child.ChildAgentID)
@@ -93,7 +91,6 @@ func TestResumeCopiesNestedChildTranscriptsAndRegistry(t *testing.T) {
 		newChild, getErr := svc.Queries.GetAgentByID(t.Context(), pair.newID)
 		require.NoError(t, getErr)
 		assert.False(t, newChild.ClosedAt.Valid)
-		assert.Zero(t, newChild.OutputGeneration, "virtual child clones allocate no physical output source")
 		assert.Equal(t, pair.parentID, newChild.ParentAgentID.String)
 		assert.Equal(t, pair.rowKey+"-span", newChild.SpawnSpanID)
 		assert.Equal(t, pair.rowKey+" title", newChild.Title)

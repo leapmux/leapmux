@@ -659,3 +659,109 @@ func TestClineChildCompactionEndsWithItsSpawn(t *testing.T) {
 	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notices[0][contracts.NotificationFieldType])
 	assert.Equal(t, contracts.CompactionEndOutcomeFailed, notices[0][contracts.NotificationFieldOutcome])
 }
+
+func TestThreeParallelTaggedSpawnsRouteWithoutAmbiguity(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+
+	leadAgent := map[string]any{"agentId": "lead-root", "kind": agentKindLead}
+	spawns := []struct {
+		callID  string
+		agentID string
+		task    string
+		toolID  string
+		text    string
+		notice  string
+		tokens  int64
+	}{
+		{"spawn_1", "sub_1", "Task one.", "call_sub_1", "Answer one.", "Notice one.", 111},
+		{"spawn_2", "sub_2", "Task two.", "call_sub_2", "Answer two.", "Notice two.", 222},
+		{"spawn_3", "sub_3", "Task three.", "call_sub_3", "Answer three.", "Notice three.", 333},
+	}
+
+	for _, sp := range spawns {
+		payload := spawnStart(sp.callID, sp.task)
+		payload["agent"] = leadAgent
+		r.feed(t, contracts.ClineEventToolStarted, payload)
+	}
+
+	// Interleave iteration, reasoning, tool, notice, usage, and text events across all three children.
+	for _, sp := range spawns {
+		tag := map[string]any{"agentId": sp.agentID, "parentAgentId": "lead-root", "kind": "subagent"}
+		r.feed(t, eventIterationStarted, map[string]any{"iteration": 1, "agent": tag})
+	}
+	for _, sp := range spawns {
+		tag := map[string]any{"agentId": sp.agentID, "parentAgentId": "lead-root", "kind": "subagent"}
+		r.feed(t, eventReasoningDelta, map[string]any{"text": "Think " + sp.agentID, "agent": tag})
+		r.feed(t, contracts.ClineEventToolStarted, map[string]any{
+			"toolCallId": sp.toolID,
+			"toolName":   "run_commands",
+			"input":      map[string]any{"commands": []string{"echo " + sp.agentID}},
+			"agent":      tag,
+		})
+	}
+	for _, sp := range spawns {
+		tag := map[string]any{"agentId": sp.agentID, "parentAgentId": "lead-root", "kind": "subagent"}
+		r.feed(t, contracts.ClineEventToolFinished, map[string]any{
+			"toolCallId": sp.toolID,
+			"toolName":   "run_commands",
+			"output":     []any{},
+			"agent":      tag,
+		})
+		r.feed(t, contracts.ClineEventSessionNotice, map[string]any{
+			"message": sp.notice,
+			"agent":   tag,
+		})
+		r.feed(t, eventUsageUpdated, map[string]any{
+			"delta": map[string]any{"inputTokens": sp.tokens, "outputTokens": 5},
+			"agent": tag,
+		})
+		r.feed(t, eventAssistantDelta, map[string]any{"text": sp.text, "agent": tag})
+		r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": sp.text, "agent": tag})
+		r.feed(t, eventIterationFinished, map[string]any{"iteration": 1, "agent": tag})
+	}
+
+	// Lead-tagged usage updates the lead context readout even while tagged spawns run.
+	r.feed(t, eventUsageUpdated, map[string]any{
+		"delta": map[string]any{"inputTokens": 999, "outputTokens": 10},
+		"agent": leadAgent,
+	})
+
+	for _, sp := range spawns {
+		r.feed(t, contracts.ClineEventToolFinished, spawnFinish(sp.callID, sp.text, "completed"))
+	}
+
+	assert.Equal(t, []string{
+		contracts.ClineEventToolStarted, contracts.ClineEventToolStarted, contracts.ClineEventToolStarted,
+		contracts.ClineEventToolFinished, contracts.ClineEventToolFinished, contracts.ClineEventToolFinished,
+	}, rowEvents(t, &r.sink.Sink), "lead receives only its own three spawn calls")
+	assert.Zero(t, r.sink.NotificationCount(), "child notices do not land on the lead")
+	leadUsageVal, ok := r.sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+	require.True(t, ok, "lead receives its own tagged usage")
+	assert.EqualValues(t, 999, leadUsageVal.(map[string]any)[contracts.ContextUsageFieldContextTokens])
+
+	for _, sp := range spawns {
+		item, exists := r.sink.BackgroundTask(sp.callID)
+		require.True(t, exists, "row %s must exist", sp.callID)
+		assert.Equal(t, bgtask.StatusSucceeded, item.Status, "row %s closes immediately without backfill", sp.callID)
+		child := r.childSink(t, sp.callID)
+		assert.Equal(t, []string{
+			contracts.ClineEventReasoningFinished,
+			contracts.ClineEventToolStarted,
+			contracts.ClineEventToolFinished,
+			contracts.ClineEventAssistantFinished,
+		}, rowEvents(t, child), "child %s receives its exact events", sp.callID)
+		require.Len(t, child.PersistedNotifications(), 2, "child %s receives its notice and final report", sp.callID)
+		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, child.PersistedNotifications()[0].Source)
+		assert.Contains(t, string(child.PersistedNotifications()[0].Content), sp.notice)
+		reports := child.LeapMuxNotifications()
+		require.Len(t, reports, 1, "child %s receives its subagent report", sp.callID)
+		assert.Equal(t, sp.text, reports[0][contracts.NotificationFieldText])
+		childUsageVal, hasUsage := child.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+		require.True(t, hasUsage, "child %s receives its usage", sp.callID)
+		assert.EqualValues(t, sp.tokens, childUsageVal.(map[string]any)[contracts.ContextUsageFieldContextTokens])
+	}
+	assert.False(t, r.agent.spawnRuns())
+	assert.Empty(t, r.hub.commandsNamed(commandSessionList), "tagged parallel spawns need no store backfill")
+}

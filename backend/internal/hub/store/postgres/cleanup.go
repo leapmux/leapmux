@@ -48,22 +48,6 @@ func (s *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.Ti
 	return rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, pgtime.NullOf(cutoff)))
 }
 
-func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx, pgtime.New(now)))
-}
-
-func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx, pgtime.New(now)))
-}
-
-func (s *cleanupStore) DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredWebAuthnSessions(ctx, pgtime.New(now)))
-}
-
-func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error) {
-	return s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, pgtime.New(now))
-}
-
 func (s *cleanupStore) DeleteExpiredOAuthAuthorizationCodes(ctx context.Context, now time.Time) (int64, error) {
 	return s.conn.q.DeleteExpiredOAuthAuthorizationCodes(ctx, pgtime.New(now))
 }

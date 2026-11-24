@@ -1010,6 +1010,16 @@ func (s *Sink) PersistLeapMuxNotification(info map[string]interface{}) {
 }
 
 func (s *Sink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
+	if write.RowKey != "" {
+		r := s.registry()
+		r.bgTasksMu.Lock()
+		item, ok := r.bgTasks[bgtask.NormalizeRowKey(write.RowKey)]
+		r.bgTasksMu.Unlock()
+		if ok {
+			write.ReportID = agent.ScopeSubagentReportID(write.ReportID, item.ReviveCount)
+		}
+		write.RowKey = ""
+	}
 	captured, present, err := agent.CaptureSubagentReport(s, write)
 	if err != nil || !present {
 		return false, err
@@ -1030,7 +1040,14 @@ func (s *Sink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) 
 	if !found || childID == "" {
 		return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
 	}
-	return s.ChildSink(childID).PersistSubagentReport(write.Write)
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	item := r.bgTasks[bgtask.NormalizeRowKey(write.RowKey)]
+	r.bgTasksMu.Unlock()
+	reportWrite := write.Write
+	reportWrite.ReportID = agent.ScopeSubagentReportID(reportWrite.ReportID, item.ReviveCount)
+	reportWrite.RowKey = ""
+	return s.ChildSink(childID).PersistSubagentReport(reportWrite)
 }
 func (s *Sink) StorePlanModeToolUse(toolUseID, targetMode string) {
 	s.planModeToolUses.Store(toolUseID, targetMode)
@@ -1519,13 +1536,6 @@ func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	if task.RowKey == "" {
 		return fmt.Errorf("background task upsert has no row key")
 	}
-	// The parent agent id is the sink that owns THIS call, as production sets
-	// it: the root for a root upsert, the child for a grandchild spawn. The
-	// registry stays physically shared while BackgroundTasks projects each
-	// owner's own rows.
-	if task.ParentAgentID == "" {
-		task.ParentAgentID = s.childAgentID()
-	}
 	r := s.registry()
 	r.bgTasksMu.Lock()
 	defer r.bgTasksMu.Unlock()
@@ -1545,6 +1555,11 @@ func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	task.RowKey = bgtask.NormalizeRowKey(task.RowKey)
 	existing := r.bgTasks[task.RowKey]
 	item := task.Clean().ToItem().PreservingBlanksFrom(existing)
+	// Default ParentAgentID AFTER PreservingBlanksFrom so a root-sink update
+	// without ParentAgentID keeps a grandchild's stored parent.
+	if item.ParentAgentID == "" {
+		item.ParentAgentID = s.childAgentID()
+	}
 	if err := item.ValidateRole(); err != nil {
 		return err
 	}
@@ -1705,11 +1720,13 @@ func (s *Sink) ReviveBackgroundTask(rowKey string) error {
 	r := s.registry()
 	r.bgTasksMu.Lock()
 	defer r.bgTasksMu.Unlock()
-	item, ok := r.bgTasks[rowKey]
+	normalized := bgtask.NormalizeRowKey(rowKey)
+	item, ok := r.bgTasks[normalized]
 	if !ok || !item.Status.IsFinished() {
 		return nil
 	}
 	item.Status = bgtask.StatusRunning
+	item.ReviveCount++
 	// ReviveAgentBackgroundTask clears both ActiveForm and Description.
 	// These fields describe the finished run's activity and output file.
 	// The test sink must clear both fields also.
@@ -1717,9 +1734,9 @@ func (s *Sink) ReviveBackgroundTask(rowKey string) error {
 	item.ActiveForm = ""
 	item.Description = ""
 	item.EndedAt = time.Time{}
-	r.bgTasks[rowKey] = item
-	r.recordBgTaskStatusLocked(rowKey, item.Status)
-	r.revivedTasks = append(r.revivedTasks, rowKey)
+	r.bgTasks[normalized] = item
+	r.recordBgTaskStatusLocked(normalized, item.Status)
+	r.revivedTasks = append(r.revivedTasks, normalized)
 	return nil
 }
 

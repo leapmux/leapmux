@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // harness holds one agent under test: a recording sink, a real permission
@@ -77,6 +78,9 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		home:          t.TempDir(),
 	}, bridge, dir, clock)
 	h.agent.startFn = h.start
+	h.agent.inspectProcessFn = func(int) procutil.LiveProcessInfo {
+		return procutil.LiveProcessInfo{Alive: true}
+	}
 	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
 		return json.Marshal(map[string]any{"id": threadID, "messages": []any{}})
 	}

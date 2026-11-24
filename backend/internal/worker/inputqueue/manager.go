@@ -293,7 +293,8 @@ func canDrainAutomatically(snapshot Snapshot) bool {
 	if snapshot.Paused {
 		return canSteerAutomatically(snapshot)
 	}
-	return !snapshot.ActiveTurn || snapshot.Items[head].requiresContextReplacement() || canSteerAutomatically(snapshot)
+	backgroundBlocked := blockedByBackgroundWork(snapshot.ActiveBackgroundWork, snapshot.BypassBackgroundWorkInputID, snapshot.Items[head].OrderingMetadata)
+	return (!snapshot.ActiveTurn && !backgroundBlocked) || snapshot.Items[head].requiresContextReplacement() || canSteerAutomatically(snapshot)
 }
 
 func canSteerAutomatically(snapshot Snapshot) bool {
@@ -684,6 +685,35 @@ func (m *Manager) TurnStarted(ctx context.Context, agentID string, steerable boo
 	})
 }
 
+// BackgroundWorkChanged refreshes queued metadata and drains once active
+// background work finishes and unblocks automatic dispatch.
+func (m *Manager) BackgroundWorkChanged(ctx context.Context, agentID string) (Snapshot, error) {
+	return m.mutateAndDrain(agentID, func() (Snapshot, bool, error) {
+		return m.store.RefreshForBackgroundWork(ctx, agentID)
+	})
+}
+
+// BackgroundWorkChangedTree reconciles every agent in rootAgentID's tree that
+// currently holds queued input. ListQueuedAgentIDsInTree runs outside any
+// coordinator lock so lock order stays acyclic.
+func (m *Manager) BackgroundWorkChangedTree(ctx context.Context, rootAgentID string) error {
+	if !m.beginActivity() {
+		return ErrManagerStopped
+	}
+	defer m.endActivity()
+	agentIDs, err := m.store.ListQueuedAgentIDsInTree(ctx, rootAgentID)
+	if err != nil {
+		return err
+	}
+	var errs error
+	for _, agentID := range agentIDs {
+		if _, err := m.BackgroundWorkChanged(ctx, agentID); err != nil && !errors.Is(err, ErrManagerStopped) {
+			errs = errors.Join(errs, err)
+		}
+	}
+	return errs
+}
+
 func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUncertain bool) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
@@ -737,6 +767,63 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	return snapshot, nil
 }
 
+// dispatchPreparedBypassLocked dispatches an already-prepared background-work
+// bypass item via Dispatcher.Dispatch. The caller must hold c.mu on entry, and
+// c.mu remains held on return so callers can apply atomic post-accept
+// transitions before publishing and draining.
+func (m *Manager) dispatchPreparedBypassLocked(
+	c *coordinator,
+	ctx context.Context,
+	agentID string,
+	prepared PreparedDispatch,
+	snapshot Snapshot,
+	hasRecovery func(string) bool,
+) (Snapshot, bool, bool, error) {
+	m.enqueueSnapshotLocked(c, snapshot)
+	m.unlockAndPublish(c)
+
+	result, dispatchErr := m.dispatcher.Dispatch(prepared.Item)
+	recoveryAfter := hasRecovery != nil && hasRecovery(agentID)
+
+	c.mu.Lock()
+	if dispatchErr != nil {
+		failedSnapshot, storeErr := m.recordDispatchFailure(c, ctx, prepared, dispatchErr)
+		if storeErr != nil {
+			return failedSnapshot, false, recoveryAfter, storeErr
+		}
+		return failedSnapshot, false, recoveryAfter, nil
+	}
+	acceptedSnapshot, persisted, acceptErr := m.acceptDispatch(c, ctx, prepared, result)
+	if acceptErr != nil {
+		return Snapshot{}, false, recoveryAfter, acceptErr
+	}
+	return acceptedSnapshot, persisted, recoveryAfter, nil
+}
+
+// finishPreparedBypassLocked finishes an already-prepared background-work
+// bypass dispatch, releases c.mu, publishes queued snapshots, and schedules
+// the follow-up drain. The caller must hold c.mu on entry; c.mu is released
+// on every return path.
+func (m *Manager) finishPreparedBypassLocked(
+	c *coordinator,
+	ctx context.Context,
+	agentID string,
+	prepared PreparedDispatch,
+	snapshot Snapshot,
+	alwaysDrain bool,
+) (Snapshot, error) {
+	finished, _, _, err := m.dispatchPreparedBypassLocked(c, ctx, agentID, prepared, snapshot, nil)
+	m.unlockAndPublish(c)
+	if err == nil {
+		if alwaysDrain {
+			m.scheduleDrain(agentID)
+		} else {
+			m.drainIfReleased(agentID, finished)
+		}
+	}
+	return finished, err
+}
+
 // Steer prepares output ordering, delivers one input, and applies the provider's echo policy.
 func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot, error) {
 	if !m.beginActivity() {
@@ -748,9 +835,19 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		return Snapshot{}, ErrSteeringUnsupported
 	}
 	policy := m.dispatcher.SteerPolicy(agentID)
-	m.dispatcher.PrepareSteer(agentID)
 	c.mu.Lock()
-	c.steerPolicy = policy
+	peek, err := m.store.Snapshot(ctx, agentID)
+	if err != nil {
+		c.mu.Unlock()
+		return Snapshot{}, err
+	}
+	if peek.ActiveTurn {
+		// PrepareSteer may flush output sinks that re-enter Manager, so keep
+		// c.mu unlocked across it.
+		c.mu.Unlock()
+		m.dispatcher.PrepareSteer(agentID)
+		c.mu.Lock()
+	}
 	prepared, snapshot, err := m.store.PrepareSteer(ctx, agentID, inputID, policy.RowAtEcho)
 	if err != nil {
 		m.unlockAndPublish(c)
@@ -762,6 +859,10 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		m.unlockAndPublish(c)
 		return snapshot, ErrSteeringState
 	}
+	if !prepared.Steering {
+		return m.finishPreparedBypassLocked(c, ctx, agentID, *prepared, snapshot, false)
+	}
+	c.steerPolicy = policy
 	var echo *pendingEchoSteer
 	if policy.RowAtEcho {
 		echo = &pendingEchoSteer{inputID: inputID}
@@ -770,8 +871,24 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	m.enqueueSnapshotLocked(c, snapshot)
 	m.unlockAndPublish(c)
 
-	result, err := m.dispatcher.Steer(prepared.Item)
-	return m.finishSteer(c, ctx, *prepared, result, err, echo, policy)
+	result, steerErr := m.dispatcher.Steer(prepared.Item)
+	c.mu.Lock()
+	finished, outcome, postDrain, retErr := m.finishSteerLocked(c, ctx, *prepared, result, steerErr, echo, policy)
+	if retErr == nil && outcome == steerTurnEnded && !finished.ActiveTurn && finished.ActiveBackgroundWork {
+		bypassPrepared, bypassSnap, bypassErr := m.store.prepareBypass(ctx, agentID, inputID, dispatchBypassSteer)
+		if bypassErr == nil {
+			return m.finishPreparedBypassLocked(c, ctx, agentID, *bypassPrepared, bypassSnap, false)
+		}
+		if !errors.Is(bypassErr, ErrSteeringState) {
+			m.unlockAndPublish(c)
+			return Snapshot{}, bypassErr
+		}
+	}
+	m.unlockAndPublish(c)
+	if retErr == nil || errors.Is(retErr, ErrSteeringUnsupported) {
+		m.runSteerPostDrain(agentID, finished, postDrain)
+	}
+	return finished, retErr
 }
 
 type steerOutcome uint8
@@ -1031,34 +1148,44 @@ func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapsho
 	}
 	c := m.coordinator(agentID)
 	c.mu.Lock()
-	snapshot, err := m.store.Snapshot(ctx, agentID)
-	if err != nil {
-		c.mu.Unlock()
-		return Snapshot{}, err
-	}
-	// CanPreempt already answers everything the state guard needs -- head, queued,
-	// unedited, and the active turn to cancel. The id is a
-	// separate question, so it gets its own sentinel: a caller that addressed an
-	// item which is no longer the head asked for something different from a caller
-	// whose head cannot be pre-empted, and one message cannot be true for both.
-	head := snapshot.HeadIndex()
-	switch {
-	case head < 0:
-		c.mu.Unlock()
-		return snapshot, ErrPreemptionState
-	case snapshot.Items[head].ID != inputID:
-		c.mu.Unlock()
-		return snapshot, ErrNotHead
-	case !snapshot.Items[head].CanPreempt:
-		c.mu.Unlock()
-		return snapshot, ErrPreemptionState
-	}
-	c.mu.Unlock()
-
-	return m.finishPreemptInterrupt(ctx, agentID, c, snapshot, false)
+	return m.preemptWithBypassLocked(c, ctx, agentID, inputID, false)
 }
 
-func (m *Manager) finishPreemptInterrupt(ctx context.Context, agentID string, c *coordinator, fallback Snapshot, alwaysDrain bool) (Snapshot, error) {
+// preemptWithBypassLocked atomically validates preemption and either dispatches
+// inputID directly (when idle with active background work) or records the
+// preemption bypass and interrupts the active turn. The caller must hold c.mu
+// on entry; c.mu is released on every return path.
+func (m *Manager) preemptWithBypassLocked(
+	c *coordinator,
+	ctx context.Context,
+	agentID, inputID string,
+	alwaysDrain bool,
+) (Snapshot, error) {
+	prepared, snapshot, err := m.store.PreparePreempt(ctx, agentID, inputID)
+	if err != nil {
+		m.unlockAndPublish(c)
+		return snapshot, err
+	}
+	return m.finishPreparedPreemptLocked(c, ctx, agentID, inputID, prepared, snapshot, alwaysDrain)
+}
+
+func (m *Manager) finishPreparedPreemptLocked(
+	c *coordinator,
+	ctx context.Context,
+	agentID, inputID string,
+	prepared *PreparedDispatch,
+	snapshot Snapshot,
+	alwaysDrain bool,
+) (Snapshot, error) {
+	if prepared != nil {
+		return m.finishPreparedBypassLocked(c, ctx, agentID, *prepared, snapshot, alwaysDrain)
+	}
+	m.enqueueSnapshotLocked(c, snapshot)
+	m.unlockAndPublish(c)
+	return m.finishPreemptInterrupt(ctx, agentID, c, snapshot, alwaysDrain, inputID)
+}
+
+func (m *Manager) finishPreemptInterrupt(ctx context.Context, agentID string, c *coordinator, fallback Snapshot, alwaysDrain bool, bypassInputID string) (Snapshot, error) {
 	interruptErr := m.dispatcher.Interrupt(agentID)
 
 	// Whatever the cancel did, the queue's own drain owns the delivery: a
@@ -1066,8 +1193,22 @@ func (m *Manager) finishPreemptInterrupt(ctx context.Context, agentID string, c 
 	// still settling is reported by the provider's turn-end publish. The
 	// answer must reflect the world AFTER the interrupt, not before it.
 	c.mu.Lock()
+	if interruptErr != nil && bypassInputID != "" {
+		cleared, clearErr := m.store.ClearPreemptBypass(ctx, agentID, bypassInputID)
+		if clearErr == nil {
+			m.enqueueSnapshotLocked(c, cleared)
+			m.unlockAndPublish(c)
+			if alwaysDrain {
+				m.scheduleDrain(agentID)
+			} else {
+				m.drainIfReleased(agentID, cleared)
+			}
+			return cleared, interruptErr
+		}
+		m.enqueueFailureLocked(c, "agent input queue clear preempt bypass failed", "agent_id", agentID, "input_id", bypassInputID, "error", clearErr)
+	}
 	current, snapshotErr := m.store.Snapshot(ctx, agentID)
-	c.mu.Unlock()
+	m.unlockAndPublish(c)
 	if snapshotErr != nil {
 		return fallback, interruptErr
 	}
@@ -1141,6 +1282,45 @@ func (m *Manager) Advance(ctx context.Context, agentID string, hasRecovery func(
 	return m.advanceClaimed(ctx, agentID, c, hasRecovery)
 }
 
+type advancePauseState struct {
+	paused          bool
+	reason          leapmuxv1.AgentInputQueuePauseReason
+	pauseEvents     uint64
+	recoveryAtStart bool
+}
+
+// resumeAfterAdvanceLocked resumes a paused queue under c.mu when an Advance
+// steer or background-work bypass succeeded without any intervening pause,
+// restart, retirement, or login-recovery proposal.
+func (m *Manager) resumeAfterAdvanceLocked(
+	c *coordinator,
+	ctx context.Context,
+	agentID string,
+	before advancePauseState,
+	finished Snapshot,
+	eligible bool,
+	recoveryAfter bool,
+) (Snapshot, bool, error) {
+	shouldResume := before.paused &&
+		!before.recoveryAtStart &&
+		!recoveryAfter &&
+		eligible &&
+		!c.retired &&
+		c.plannedRestarts == 0 &&
+		c.pauseEvents == before.pauseEvents &&
+		finished.Paused &&
+		finished.PauseReason == before.reason
+	if !shouldResume {
+		return finished, false, nil
+	}
+	resumed, err := m.store.resumeWithNoRestart(ctx, agentID)
+	if err != nil {
+		return finished, false, err
+	}
+	m.enqueueSnapshotLocked(c, resumed)
+	return resumed, true, nil
+}
+
 func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordinator, hasRecovery func(string) bool) (Snapshot, error) {
 	supportsSteer := m.dispatcher != nil && m.dispatcher.SupportsSteering(agentID)
 	supportsPreempt := !supportsSteer && m.dispatcher != nil && m.dispatcher.SupportsPreemption(agentID)
@@ -1159,7 +1339,7 @@ func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordin
 		if err != nil {
 			return Snapshot{}, err
 		}
-		if !skipPeek && !hasDispatchingItem(peek) && headCanSteer(peek, peek.HeadIndex(), supportsSteer, recoveryAtStart) {
+		if !skipPeek && !hasDispatchingItem(peek) && peek.ActiveTurn && headCanSteer(peek, peek.HeadIndex(), supportsSteer, recoveryAtStart) {
 			m.dispatcher.PrepareSteer(agentID)
 			recoveryAtStart = hasRecovery != nil && hasRecovery(agentID)
 		}
@@ -1180,10 +1360,12 @@ func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordin
 	head := snapshot.HeadIndex()
 	if headCanSteer(snapshot, head, supportsSteer, recoveryAtStart) {
 		headID := snapshot.Items[head].ID
-		pausedAtStart := snapshot.Paused
-		reasonAtStart := snapshot.PauseReason
-		pauseEventsAtStart := c.pauseEvents
-		c.steerPolicy = steerPolicy
+		pauseBefore := advancePauseState{
+			paused:          snapshot.Paused,
+			reason:          snapshot.PauseReason,
+			pauseEvents:     c.pauseEvents,
+			recoveryAtStart: recoveryAtStart,
+		}
 		prepared, prepSnapshot, prepErr := m.store.PrepareSteer(ctx, agentID, headID, steerPolicy.RowAtEcho)
 		if prepErr != nil {
 			m.unlockAndPublish(c)
@@ -1193,6 +1375,21 @@ func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordin
 			m.unlockAndPublish(c)
 			return prepSnapshot, ErrSteeringState
 		}
+		if !prepared.Steering {
+			finished, accepted, recoveryAfter, retErr := m.dispatchPreparedBypassLocked(c, ctx, agentID, *prepared, prepSnapshot, hasRecovery)
+			var resumed bool
+			if retErr == nil {
+				finished, resumed, retErr = m.resumeAfterAdvanceLocked(c, ctx, agentID, pauseBefore, finished, accepted, recoveryAfter)
+			}
+			m.unlockAndPublish(c)
+			if resumed && retErr == nil {
+				m.scheduleDrain(agentID)
+			} else if retErr == nil {
+				m.drainIfReleased(agentID, finished)
+			}
+			return finished, retErr
+		}
+		c.steerPolicy = steerPolicy
 		var echo *pendingEchoSteer
 		if steerPolicy.RowAtEcho {
 			echo = &pendingEchoSteer{inputID: headID}
@@ -1206,27 +1403,34 @@ func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordin
 
 		c.mu.Lock()
 		finished, outcome, postDrain, retErr := m.finishSteerLocked(c, ctx, *prepared, result, steerErr, echo, steerPolicy)
-		shouldResume := retErr == nil &&
-			pausedAtStart &&
-			!recoveryAtStart &&
-			!recoveryAfterSteer &&
-			(outcome == steerAccepted || outcome == steerTurnEnded) &&
-			!c.retired &&
-			c.plannedRestarts == 0 &&
-			c.pauseEvents == pauseEventsAtStart &&
-			finished.Paused &&
-			finished.PauseReason == reasonAtStart
-		if shouldResume {
-			resumed, resumeErr := m.store.resumeWithNoRestart(ctx, agentID)
-			if resumeErr != nil {
-				retErr = resumeErr
-			} else {
-				finished = resumed
-				m.enqueueSnapshotLocked(c, finished)
+		if retErr == nil && outcome == steerTurnEnded && !finished.ActiveTurn && finished.ActiveBackgroundWork {
+			bypassPrepared, bypassSnap, bypassErr := m.store.prepareBypass(ctx, agentID, headID, dispatchBypassSteer)
+			switch {
+			case bypassErr == nil:
+				var accepted, recoveryAfterBypass bool
+				finished, accepted, recoveryAfterBypass, retErr = m.dispatchPreparedBypassLocked(c, ctx, agentID, *bypassPrepared, bypassSnap, hasRecovery)
+				recoveryAfterSteer = recoveryAfterSteer || recoveryAfterBypass
+				if accepted {
+					outcome = steerAccepted
+					postDrain = steerDrainAlways
+				} else {
+					outcome = steerFailed
+					postDrain = steerDrainIfIdle
+				}
+			case errors.Is(bypassErr, ErrSteeringState):
+				// Background work ended before bypass preparation; fall through
+				// to resumeAfterAdvanceLocked and runSteerPostDrain.
+			default:
+				retErr = bypassErr
 			}
 		}
+		var resumed bool
+		if retErr == nil {
+			eligible := outcome == steerAccepted || outcome == steerTurnEnded
+			finished, resumed, retErr = m.resumeAfterAdvanceLocked(c, ctx, agentID, pauseBefore, finished, eligible, recoveryAfterSteer)
+		}
 		m.unlockAndPublish(c)
-		if shouldResume && retErr == nil {
+		if resumed && retErr == nil {
 			m.scheduleDrain(agentID)
 		} else if retErr == nil || errors.Is(retErr, ErrSteeringUnsupported) {
 			m.runSteerPostDrain(agentID, finished, postDrain)
@@ -1235,8 +1439,8 @@ func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordin
 	}
 
 	if headCanPreempt(snapshot, head, supportsPreempt, recoveryAtStart) {
-		c.mu.Unlock()
-		return m.finishPreemptInterrupt(ctx, agentID, c, snapshot, false)
+		headID := snapshot.Items[head].ID
+		return m.preemptWithBypassLocked(c, ctx, agentID, headID, false)
 	}
 
 	if recoveryAtStart || !snapshot.Paused {
@@ -1262,12 +1466,21 @@ func (m *Manager) advanceClaimed(ctx context.Context, agentID string, c *coordin
 			shouldPreempt = true
 		}
 	}
-	m.unlockAndPublish(c)
 	if !shouldPreempt {
+		m.unlockAndPublish(c)
 		m.scheduleDrain(agentID)
 		return resumed, nil
 	}
-	return m.finishPreemptInterrupt(ctx, agentID, c, resumed, true)
+	prepared, prepSnap, prepErr := m.store.PreparePreempt(ctx, agentID, headAtKeypress)
+	if prepErr != nil {
+		m.unlockAndPublish(c)
+		m.scheduleDrain(agentID)
+		if errors.Is(prepErr, ErrPreemptionState) || errors.Is(prepErr, ErrNotHead) {
+			return resumed, nil
+		}
+		return resumed, prepErr
+	}
+	return m.finishPreparedPreemptLocked(c, ctx, agentID, headAtKeypress, prepared, prepSnap, true)
 }
 
 // BeginPlannedRestart pauses automatic dispatch before a provider replacement.
@@ -1388,7 +1601,7 @@ func (r *PlannedRestart) finish(mutate func() (Snapshot, bool, error)) error {
 }
 
 func (m *Manager) Recover(ctx context.Context) error {
-	if err := m.RecoverState(ctx); err != nil {
+	if err := m.RecoverState(ctx, nil); err != nil {
 		return err
 	}
 	return m.DrainRecovered(ctx)
@@ -1416,6 +1629,7 @@ func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
 	c.pauseEvents++
 	stopMaturityLocked(c)
 	snapshot, changed, err := m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
+	m.store.ClearEphemeralState(agentID)
 	if err == nil && changed {
 		m.enqueueSnapshotLocked(c, snapshot)
 	}
@@ -1424,13 +1638,15 @@ func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
 }
 
 // RecoverState reconciles interrupted persisted state without dispatching
-// queued input. Bootstrap uses it before the Worker receives its owner.
-func (m *Manager) RecoverState(ctx context.Context) error {
+// queued input. Bootstrap uses it before the Worker receives its owner and
+// supplies beforeRecover to sweep active background tasks inside the same
+// SQLite write transaction.
+func (m *Manager) RecoverState(ctx context.Context, beforeRecover func(context.Context, *sql.Tx) error) error {
 	if !m.beginActivity() {
 		return ErrManagerStopped
 	}
 	defer m.endActivity()
-	snapshots, err := m.store.Recover(ctx)
+	snapshots, err := m.store.Recover(ctx, beforeRecover)
 	if err != nil {
 		return err
 	}
