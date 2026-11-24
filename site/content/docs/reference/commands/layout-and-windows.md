@@ -9,7 +9,17 @@ weight: 4
      go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden
      in backend/. -->
 
-Every command on this page also takes the [flags of every command](/docs/reference/commands/#flags-of-every-command). See [Control CLI](/docs/using/control-cli/) for target selection, output formatting, and authentication.
+Every command on this page also takes the [flags of every command](/docs/reference/commands/#flags-of-every-command). See [CLI Guide](/docs/using/cli-guide/) for target selection, output formatting, and authentication.
+
+## Common arguments and flags
+
+These selectors and flags repeat across commands on this page.
+
+| Selector / Flag | Description |
+|---|---|
+| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
+| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
 
 ## `leapmux tile`
 
@@ -19,7 +29,7 @@ Split, close and arrange the tiles of a workspace.
 
 Split a tile in two; its tabs stay in the first half.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tile split <tile> [flags]
@@ -27,7 +37,7 @@ leapmux tile split <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -45,9 +55,7 @@ leapmux tile split ab12cd34 --direction horizontal
 
 Close a tile and give its space to its neighbour.
 
-Aliases: `rm`.
-
-This command changes state.
+_Aliases: `rm` · Mutates state._
 
 ```text
 leapmux tile close <tile> [flags]
@@ -55,13 +63,13 @@ leapmux tile close <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
 | `--with-tabs string` | what happens to the tabs on the tile: "close" closes them; "move" moves them to the neighbouring tile; required when the tile has tabs (one of: close, move) |
 | `--recursive` | close a split or a grid with every tile in it |
-| `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
+| `--allow-busy` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--allow-self` | close the tile even when this tab sits on it, which ends this command's own process |
 
 ```sh
@@ -75,7 +83,7 @@ leapmux tile close ab12cd34 --with-tabs move
 
 Turn a tile into a grid of rows and columns.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tile make-grid <tile> [flags]
@@ -83,7 +91,7 @@ leapmux tile make-grid <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -98,7 +106,7 @@ leapmux tile make-grid ab12cd34 --rows 2 --cols 2
 
 Remove a grid and every tile in it.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tile remove-grid <tile> [flags]
@@ -106,12 +114,12 @@ leapmux tile remove-grid <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
 | `--with-tabs string` | what happens to the tabs in the grid: "close" closes them; "move" turns the grid into one tile that holds them; required when the grid has tabs (one of: close, move) |
-| `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
+| `--allow-busy` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--allow-self` | remove the grid even when this tab sits in it, which ends this command's own process |
 
 ```sh
@@ -123,7 +131,7 @@ leapmux tile remove-grid ab12cd34 --with-tabs move
 
 Set the sizes of the parts of a split.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tile set-ratios <tile> [flags]
@@ -131,7 +139,7 @@ leapmux tile set-ratios <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -145,7 +153,7 @@ leapmux tile set-ratios ab12cd34 --ratios 0.3,0.7
 
 Set the sizes of the rows or the columns of a grid.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tile set-grid-ratios <tile> [flags]
@@ -153,7 +161,7 @@ leapmux tile set-grid-ratios <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -168,7 +176,7 @@ leapmux tile set-grid-ratios ab12cd34 --row-ratios 0.6,0.4
 
 Resize a tile inside its parent split to a target ratio (0 &lt; ratio &lt; 1).
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tile resize <tile> [flags]
@@ -176,7 +184,7 @@ leapmux tile resize <tile> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tile>` | A tile id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, or "self" for the tile of the tab that runs this command. |
+| `<tile>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -191,7 +199,7 @@ leapmux tile resize ab12cd34 --ratio 0.3
 
 Swap the positions of two tiles in the same workspace.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tile swap <tile-a> <tile-b> [flags]
@@ -217,7 +225,7 @@ Aliases: `win`.
 
 List live floating windows (default: all workspaces).
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux window list [workspace] [flags]
@@ -225,7 +233,7 @@ leapmux window list [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux window list
@@ -236,7 +244,7 @@ leapmux window list self
 
 Create a floating window in a workspace.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux window create <workspace> [flags]
@@ -244,7 +252,7 @@ leapmux window create <workspace> [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -262,9 +270,7 @@ leapmux window create self --x 120 --y 80 --width 640 --height 420
 
 Move a floating window to new coordinates or another workspace.
 
-Aliases: `mv`.
-
-This command changes state.
+_Aliases: `mv` · Mutates state._
 
 ```text
 leapmux window move <window> [flags]
@@ -285,7 +291,7 @@ leapmux window move 7aB1c2d3 --workspace "Release 1.4"
 
 Resize a floating window.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux window resize <window> [flags]
@@ -304,7 +310,7 @@ leapmux window resize 7aB1c2d3 --width 800 --height 600
 
 Set the opacity of a floating window (0.0 to 1.0).
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux window set-opacity <window> <opacity> [flags]
@@ -318,9 +324,7 @@ leapmux window set-opacity 7aB1c2d3 0.85
 
 Close a floating window and its inner tiles.
 
-Aliases: `rm`.
-
-This command changes state.
+_Aliases: `rm` · Mutates state._
 
 ```text
 leapmux window close <window> [flags]
@@ -328,7 +332,7 @@ leapmux window close <window> [flags]
 
 | Flag | Description |
 |---|---|
-| `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
+| `--allow-busy` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--allow-self` | close the window even when this tab lives in it |
 
 ```sh
@@ -349,7 +353,7 @@ leapmux layout get [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 # Save a layout, and restore it later.
@@ -358,12 +362,9 @@ leapmux layout get --json > layout.json
 
 ### `leapmux layout set`
 
-Replace the main tile tree of a workspace. Main-tree tabs move to the new first
-tile, and tabs inside floating windows stay in place. The file is "-" or absent
-for stdin. It holds a tree as "layout get" prints it: the whole --json
-envelope, its data, or the tree alone.
+Replace the main tile tree of a workspace. Main-tree tabs move to the new first tile, and tabs inside floating windows stay in place. The file is "-" or absent for stdin. It holds a tree as "layout get" prints it: the whole --json envelope, its data, or the tree alone.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux layout set <workspace> [file] [flags]
@@ -371,7 +372,7 @@ leapmux layout set <workspace> [file] [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux layout set self layout.json
@@ -380,12 +381,9 @@ leapmux layout get --json | leapmux layout set 9f3kQ2aB -
 
 ### `leapmux layout watch`
 
-Print every change of your layouts as it happens: the CRDT operations, the
-presence of other clients, and the creation, renaming and deletion of
-workspaces. The first event is the snapshot. Without a workspace, it watches
-every workspace.
+Print every change of your layouts as it happens: the CRDT operations, the presence of other clients, and the creation, renaming and deletion of workspaces. The first event is the snapshot. Without a workspace, it watches every workspace.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux layout watch [workspace] [flags]
@@ -393,7 +391,7 @@ leapmux layout watch [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux layout watch --json

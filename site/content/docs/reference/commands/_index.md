@@ -11,7 +11,22 @@ sidebar:
      go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden
      in backend/. -->
 
-This section lists every control command of `leapmux` with its arguments, its flags, and its examples, grouped by topic. The binary prints the same text with `--help`, and `leapmux commands --json` prints it for a program. [Control CLI](/docs/using/control-cli/) explains how a command selects its target, what it prints, how it fails, and how it signs in.
+This section lists every control command of `leapmux` with its arguments, flags, and examples, generated directly from the binary. The binary prints the same help with `--help`, and `leapmux commands <prefix> --json` prints it for a program. See [CLI Guide](/docs/using/cli-guide/) for targeting rules, output formats, exit codes, and authentication.
+
+## Common tasks
+
+| Task | Command |
+|---|---|
+| Open an agent in a new worktree | `leapmux agent open --provider claude --worktree feat/name --base main --dir .` |
+| Send a prompt and wait for the reply | `leapmux agent send <agent> "..." --wait` |
+| Request structured JSON from an agent | `leapmux agent send <agent> "..." --wait --output-schema schema.json` |
+| Wait for any of several agents to finish | `leapmux agent wait <a1> <a2> --any` |
+| Answer a pending permission or question prompt | `leapmux agent request answer <agent> <request-id> ...` |
+| Run a command in a terminal and wait for exit | `leapmux terminal open --dir . --command "make test; exit" --wait --exit` |
+| Inspect git status and diffs on a Worker | `leapmux git status --dir .` |
+| Stream workspace and agent events with checkpoints | `leapmux events --checkpoint <name>` |
+| Forward a TCP port to a remote Worker | `leapmux tunnel forward 8888:127.0.0.1:8888 --worker name:<worker>` |
+| Rotate an OAuth/OIDC provider client secret | `leapmux admin idp rotate-secret <idp> --client-secret <secret>` |
 
 ## Flags of every command
 

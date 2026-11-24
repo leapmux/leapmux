@@ -9,7 +9,17 @@ weight: 3
      go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden
      in backend/. -->
 
-Every command on this page also takes the [flags of every command](/docs/reference/commands/#flags-of-every-command). See [Control CLI](/docs/using/control-cli/) for target selection, output formatting, and authentication.
+Every command on this page also takes the [flags of every command](/docs/reference/commands/#flags-of-every-command). See [CLI Guide](/docs/using/cli-guide/) for target selection, output formatting, and authentication.
+
+## Common arguments and flags
+
+These selectors and flags repeat across commands on this page.
+
+| Selector / Flag | Description |
+|---|---|
+| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
 
 ## `leapmux workspace`
 
@@ -21,7 +31,7 @@ Aliases: `ws`.
 
 List your workspaces.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux workspace list [flags]
@@ -51,7 +61,7 @@ leapmux workspace get [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux workspace get
@@ -62,7 +72,7 @@ leapmux workspace get "title:Release 1.4"
 
 Create a workspace.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux workspace create <title> [flags]
@@ -77,7 +87,7 @@ W=$(leapmux workspace create "Release 1.4" -q)
 
 Rename a workspace.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux workspace rename <workspace> <title> [flags]
@@ -85,7 +95,7 @@ leapmux workspace rename <workspace> <title> [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux workspace rename self "Release 1.5"
@@ -95,7 +105,7 @@ leapmux workspace rename self "Release 1.5"
 
 Archive a workspace (moves it to the Archived section and pauses its tabs).
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux workspace archive <workspace> [flags]
@@ -103,7 +113,7 @@ leapmux workspace archive <workspace> [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux workspace archive 9f3kQ2aB
@@ -113,7 +123,7 @@ leapmux workspace archive 9f3kQ2aB
 
 Restore an archived workspace back to an active section.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux workspace unarchive <workspace> [flags]
@@ -121,7 +131,7 @@ leapmux workspace unarchive <workspace> [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -136,9 +146,7 @@ leapmux workspace unarchive 9f3kQ2aB --section "In progress"
 
 Move a workspace to another sidebar section or reorder it within a section.
 
-Aliases: `mv`.
-
-This command changes state.
+_Aliases: `mv` · Mutates state._
 
 ```text
 leapmux workspace move <workspace> [flags]
@@ -146,7 +154,7 @@ leapmux workspace move <workspace> [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -165,9 +173,7 @@ leapmux workspace move 9f3kQ2aB --section "In progress" --first
 
 Delete a workspace and close every tab in it.
 
-Aliases: `rm`.
-
-This command changes state.
+_Aliases: `rm` · Mutates state._
 
 ```text
 leapmux workspace delete <workspace> [flags]
@@ -175,7 +181,7 @@ leapmux workspace delete <workspace> [flags]
 
 | Argument | Description |
 |---|---|
-| `<workspace>` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `<workspace>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -188,11 +194,9 @@ leapmux workspace delete 9f3kQ2aB
 
 ### `leapmux workspace export`
 
-Export a workspace's main tile tree, floating windows, and live tab definitions
-(agents with provider/model/options/working_dir, terminals, and file viewers)
-into a declarative YAML or JSON template that "workspace apply" can reproduce.
+Export a workspace's main tile tree, floating windows, and live tab definitions (agents with provider/model/options/working_dir, terminals, and file viewers) into a declarative YAML or JSON template that "workspace apply" can reproduce.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux workspace export [workspace] [flags]
@@ -200,7 +204,7 @@ leapmux workspace export [workspace] [flags]
 
 | Argument | Description |
 |---|---|
-| `[workspace]` | A workspace id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the workspace of the tab that runs this command. |
+| `[workspace]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -215,14 +219,11 @@ leapmux workspace export 9f3kQ2aB --style json
 
 ### `leapmux workspace apply`
 
-Apply a declarative workspace template produced by "workspace export" (or
-written by hand). Reads YAML or JSON from &lt;file&gt; ("-" reads stdin).
+Apply a declarative workspace template produced by "workspace export" (or written by hand). Reads YAML or JSON from &lt;file&gt; ("-" reads stdin).
 
-Creates a new workspace unless --workspace targets an existing one, applies the
-main tile layout and any floating windows, and opens each declared agent,
-terminal, and file tab in its mapped tile.
+Creates a new workspace unless --workspace targets an existing one, applies the main tile layout and any floating windows, and opens each declared agent, terminal, and file tab in its mapped tile.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux workspace apply <file> [flags]
@@ -249,7 +250,7 @@ List, create, rename, move, and delete sidebar sections.
 
 List your sidebar sections and how many workspaces each holds.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux section list [flags]
@@ -264,7 +265,7 @@ leapmux section list --json
 
 Create a custom workspace section.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux section create <name> [flags]
@@ -283,7 +284,7 @@ leapmux section create "Monitoring" --sidebar right
 
 Rename a custom section.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux section rename <section> <name> [flags]
@@ -297,9 +298,7 @@ leapmux section rename "Client Work" "Active Clients"
 
 Move a section to another sidebar or reorder it.
 
-Aliases: `mv`.
-
-This command changes state.
+_Aliases: `mv` · Mutates state._
 
 ```text
 leapmux section move <section> [flags]
@@ -322,9 +321,7 @@ leapmux section move "Client Work" --sidebar right --last
 
 Delete a custom section (moves its workspaces to In progress).
 
-Aliases: `rm`.
-
-This command changes state.
+_Aliases: `rm` · Mutates state._
 
 ```text
 leapmux section delete <section> [flags]
@@ -342,7 +339,7 @@ List, close, rename, move and reveal tabs of every type, and set their status.
 
 List your tabs with their titles and states.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux tab list [flags]
@@ -372,11 +369,11 @@ leapmux tab get [tab] [flags]
 
 | Argument | Description |
 |---|---|
-| `[tab]` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `[tab]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
-| `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
+| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux tab get
@@ -387,9 +384,7 @@ leapmux tab get 87a19d5f
 
 Close one or more tabs and stop what runs in them.
 
-Aliases: `rm`.
-
-This command changes state.
+_Aliases: `rm` · Mutates state._
 
 ```text
 leapmux tab close <tab>... [flags]
@@ -397,14 +392,14 @@ leapmux tab close <tab>... [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>...` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `<tab>...` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
 | `--worktree string` | what happens to the git worktree when this is its last tab; required in that case (one of: keep, push, discard) |
 | `--allow-busy` | close even if work is in progress or the Worker cannot verify the tab's activity |
 | `--allow-self` | close the tab even when it is this tab, which ends this command's own process |
-| `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
+| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux tab close 87a19d5f
@@ -417,7 +412,7 @@ leapmux tab close 87a19d5f --worktree keep
 
 Rename an agent or terminal tab.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tab rename <tab> <title> [flags]
@@ -425,11 +420,11 @@ leapmux tab rename <tab> <title> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
-| `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
+| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux tab rename self "Release notes"
@@ -439,9 +434,7 @@ leapmux tab rename self "Release notes"
 
 Move a tab to another tile or workspace, or reorder it.
 
-Aliases: `mv`.
-
-This command changes state.
+_Aliases: `mv` · Mutates state._
 
 ```text
 leapmux tab move <tab> [flags]
@@ -449,7 +442,7 @@ leapmux tab move <tab> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -470,15 +463,11 @@ leapmux tab move 87a19d5f --before 4cbb3f34
 
 ### `leapmux tab reveal`
 
-Show a tab in every LeapMux window that you have open: each window switches
-to the tab's workspace, and the tab becomes the active tab of its tile, as a
-click on the tab in the sidebar does.
+Show a tab in every LeapMux window that you have open: each window switches to the tab's workspace, and the tab becomes the active tab of its tile, as a click on the tab in the sidebar does.
 
-Nothing stores the reveal. Which tab a window shows stays the window's own
-state, so a window that you open later shows what it showed before, and a
-window that does not know the tab yet ignores the command.
+Nothing stores the reveal. Which tab a window shows stays the window's own state, so a window that you open later shows what it showed before, and a window that does not know the tab yet ignores the command.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tab reveal <tab> [flags]
@@ -486,11 +475,11 @@ leapmux tab reveal <tab> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
-| `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
+| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux tab reveal 87a19d5f
@@ -503,7 +492,7 @@ leapmux tab reveal self
 
 Open an image from an agent message in its own tab.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tab open-image <agent> <seq> [flags]
@@ -540,22 +529,15 @@ Report and inspect status entries on a tab.
 
 #### `leapmux tab status set`
 
-Show a short status beside a tab's title, in the tab bar and in the sidebar of
-every LeapMux window that you have open. A window that you open later shows it
-too. The most recently set status is visible.
+Show a short status beside a tab's title, in the tab bar and in the sidebar of every LeapMux window that you have open. A window that you open later shows it too. The most recently set status is visible.
 
-Give each reporter a --key to keep its status separate. Setting a key again
-replaces its previous status. Without --key, the command uses "default".
+Give each reporter a --key to keep its status separate. Setting a key again replaces its previous status. Without --key, the command uses "default".
 
---progress adds a progress ring, from 0 to 100. Without it, the status shows
-no progress. --tone colors the status: neutral (the default), success,
-warning or error.
+--progress adds a progress ring, from 0 to 100. Without it, the status shows no progress. --tone colors the status: neutral (the default), success, warning or error.
 
-The status stays until "tab status clear" removes its key, the tab closes, or
-the tab's Worker stops. Use "tab status list" to see all keys. The Worker
-reports its limits on the status text and keys when it refuses a request.
+The status stays until "tab status clear" removes its key, the tab closes, or the tab's Worker stops. Use "tab status list" to see all keys. The Worker reports its limits on the status text and keys when it refuses a request.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tab status set <tab> <text> [flags]
@@ -563,7 +545,7 @@ leapmux tab status set <tab> <text> [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
 | `<text>` | A short text, such as "Running the tests", or "-" to read it from standard input. |
 
 | Flag | Description |
@@ -571,7 +553,7 @@ leapmux tab status set <tab> <text> [flags]
 | `--key string` | which status entry to change (default: default) |
 | `--progress int` | how far the work is, from 0 to 100 (default: no progress) |
 | `--tone string` | the color of the status (one of: neutral, success, warning, error; default: neutral) |
-| `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
+| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux tab status set self "Running the tests"
@@ -587,7 +569,7 @@ leapmux tab status set self "Tests failed" --tone error
 
 Remove one or more status entries from a tab.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux tab status clear <tab> [key]... [flags]
@@ -595,14 +577,14 @@ leapmux tab status clear <tab> [key]... [flags]
 
 | Argument | Description |
 |---|---|
-| `<tab>` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `<tab>` | See [common arguments and flags](#common-arguments-and-flags). |
 | `[key]...` | One or more status keys to clear (default: the default key, or --all for every key). |
 
 | Flag | Description |
 |---|---|
 | `--key string` | which status entry to change (default: default) |
 | `--all` | remove every status entry on the tab |
-| `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
+| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux tab status clear self
@@ -616,7 +598,7 @@ leapmux tab status clear self --all
 
 List a tab's status entries, with the visible one first (default: this tab).
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux tab status list [tab] [flags]
@@ -624,11 +606,11 @@ leapmux tab status list [tab] [flags]
 
 | Argument | Description |
 |---|---|
-| `[tab]` | A tab id, a unique prefix of 4 or more characters of one, "id:&lt;id&gt;" for a literal id, "title:&lt;title&gt;" or a bare case-insensitive title, or "self" for the tab that runs this command. |
+| `[tab]` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
-| `--workspace string` | narrow target lookup to this workspace (an id, a prefix, "title:&lt;title&gt;" or "self") |
+| `--workspace string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux tab status list
@@ -639,7 +621,7 @@ leapmux tab status list 87a19d5f
 
 Show a hierarchical overview of sections, workspaces, tiles, agents, terminals and files.
 
-Aliases: `overview`, `ps`.
+_Aliases: `overview`, `ps`._
 
 ```text
 leapmux tree [flags]

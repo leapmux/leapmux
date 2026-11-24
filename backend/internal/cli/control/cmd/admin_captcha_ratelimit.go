@@ -531,7 +531,7 @@ func newAdminRateLimitSet() *cobra.Command {
 			{Command: "leapmux admin rate-limit set elevation --max-attempts 5 --window 900"},
 		},
 		Flags: func(fs *pflag.FlagSet) {
-			fs.Int64Var(&maxAttempts, "max-attempts", 0, "failed attempts allowed per window (1-1000); 0 restores the default")
+			fs.Int64Var(&maxAttempts, "max-attempts", 0, "allowed failed attempts (or admitted requests for anonymous/setup limits) per window (1-1000); 0 restores the default")
 			fs.Int64Var(&window, "window", 0, "window seconds (60-86400); 0 restores the default")
 		},
 		Complete: completeRateLimitOperations,

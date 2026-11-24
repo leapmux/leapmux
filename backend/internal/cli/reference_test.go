@@ -21,7 +21,7 @@ func TestWriteReference(t *testing.T) {
 
 	assert.Contains(t, page, "### `tool workspace get`\n\nA leaf.\n\n```text\ntool workspace get [workspace] [flags]\n```\n\n")
 	assert.Contains(t, page, "| `[workspace]` | A workspace id. |\n")
-	assert.Contains(t, page, "### `tool workspace rename`\n\nA leaf.\n\nThis command changes state.\n\n")
+	assert.Contains(t, page, "### `tool workspace rename`\n\nA leaf.\n\n_Mutates state._\n\n")
 	assert.NotContains(t, page, "tool worker", "only the commands under the path print")
 	assert.NotContains(t, page, "| `--hub string` | hub URL |\n| `--hub", "a global flag prints once")
 
@@ -85,4 +85,10 @@ func TestSharedGlobalFlagsAndWriteReferenceForGroups(t *testing.T) {
 func TestEscapeCell(t *testing.T) {
 	assert.Equal(t, `one of: keep\|push, &lt;tab&gt; &amp; more`, escapeCell("one of: keep|push, <tab> & more"))
 	assert.Equal(t, "two lines", escapeCell("two\nlines"))
+}
+
+func TestFormatProse(t *testing.T) {
+	wrapped := "First line wrapped at\ncolumn 78 for terminal.\n\n- bullet one\n  continued\n- bullet two\nParagraph right after bullet."
+	got := formatProse(wrapped)
+	assert.Equal(t, "First line wrapped at column 78 for terminal.\n\n- bullet one continued\n- bullet two\n\nParagraph right after bullet.", got)
 }

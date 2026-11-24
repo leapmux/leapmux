@@ -9,7 +9,16 @@ weight: 7
      go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden
      in backend/. -->
 
-Every command on this page also takes the [flags of every command](/docs/reference/commands/#flags-of-every-command). See [Control CLI](/docs/using/control-cli/) for target selection, output formatting, and authentication.
+Online commands on this page also take the [flags of every command](/docs/reference/commands/#flags-of-every-command); offline commands (`guide`, `context show`, `context clear`) do not contact a Hub and reject `--hub`. See [CLI Guide](/docs/using/cli-guide/) for target selection, output formatting, and authentication.
+
+## Common arguments and flags
+
+These selectors and flags repeat across commands on this page.
+
+| Selector / Flag | Description |
+|---|---|
+| `--scope string` | local install scope: user (home directory) or project (current working directory) (one of: user, project; default: user) |
+| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
 
 ## `leapmux auth`
 
@@ -19,9 +28,7 @@ Sign this CLI in to a hub, and manage its credentials.
 
 Sign this CLI in to a hub through a browser.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux auth login [flags]
@@ -44,9 +51,7 @@ leapmux auth login --hub https://hub.example.com --device-code
 
 Revoke this CLI's credential for a hub and delete it.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux auth logout [flags]
@@ -60,7 +65,7 @@ leapmux auth logout --hub https://hub.example.com
 
 List the hubs that this machine holds a credential for.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux auth list [flags]
@@ -74,9 +79,7 @@ leapmux auth list
 
 Choose the hub that a command uses without --hub.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux auth use <hub> [flags]
@@ -90,7 +93,7 @@ leapmux auth use https://hub.example.com
 
 Show the user, the expiry and the permissions of the hub's credential.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux auth status [flags]
@@ -116,7 +119,7 @@ leapmux auth credentials
 
 Change your account password on the hub (prompts securely when --password is omitted).
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux auth change-password [flags]
@@ -141,7 +144,7 @@ Aliases: `ctx`.
 
 Show the saved CLI defaults.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux context show [flags]
@@ -155,9 +158,7 @@ leapmux context show
 
 Save default hub, worker, workspace, or provider for commands outside a tab.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux context use [flags]
@@ -181,9 +182,7 @@ leapmux context use --provider ""
 
 Remove saved CLI defaults (all by default, or specific fields with --field).
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux context clear [flags]
@@ -210,7 +209,7 @@ Aliases: `pref`, `prefs`.
 
 List your account settings with their effective values.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux settings list [flags]
@@ -236,7 +235,7 @@ leapmux settings get appearance
 
 Update an account setting from JSON or a bare value.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux settings set <key> <value> [flags]
@@ -250,7 +249,7 @@ leapmux settings set appearance '{"theme":"dark"}'
 
 Reset an account setting back to its default value.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux settings reset <key> [flags]
@@ -264,7 +263,7 @@ leapmux settings reset appearance
 
 Show the identity and tab context that this CLI acts as.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux whoami [flags]
@@ -281,7 +280,7 @@ leapmux whoami --json | jq -r .data.tab_id
 
 Check local daemons, Hub connectivity, auth, pins, and online Workers.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux doctor [flags]
@@ -304,7 +303,7 @@ Aliases: `skills`.
 
 List bundled LeapMux agent skills and their install state.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux skill list [flags]
@@ -313,8 +312,8 @@ leapmux skill list [flags]
 | Flag | Description |
 |---|---|
 | `--target string` | target directory: agents (~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt; (default: agents) |
-| `--scope string` | local install scope: user (home directory) or project (current working directory) (one of: user, project; default: user) |
-| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux skill list
@@ -365,8 +364,8 @@ leapmux skill status [flags]
 | Flag | Description |
 |---|---|
 | `--target string` | target directory: agents (~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt; (default: agents) |
-| `--scope string` | local install scope: user (home directory) or project (current working directory) (one of: user, project; default: user) |
-| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux skill status
@@ -375,26 +374,15 @@ leapmux skill status --worker name:build-box --json
 
 ### `leapmux skill install`
 
-Install bundled LeapMux SKILL.md playbooks (plus companion references and
-Codex metadata) into standard coding-agent skill directories so agents (Claude
-Code, Codex, OpenCode, Gemini CLI, Antigravity, Cursor, and others) can invoke
-them directly.
+Install bundled LeapMux SKILL.md playbooks (plus companion references and Codex metadata) into standard coding-agent skill directories so agents (Claude Code, Codex, OpenCode, Gemini CLI, Antigravity, Cursor, and others) can invoke them directly.
 
-By default, installs into ~/.agents/skills (universal user scope discovered by
-Codex, OpenCode, Gemini CLI, Antigravity, and Cursor). Pass --target
-claude|codex|cursor|gemini|dir:&lt;path&gt; or --scope project to target another
-location. Pass --worker &lt;worker&gt; to enable and sync skills on a remote Worker
-over E2EE (with optional --auto-sync to keep them updated on Worker startup).
+By default, installs into ~/.agents/skills (universal user scope discovered by Codex, OpenCode, Gemini CLI, Antigravity, and Cursor). Pass --target claude|codex|cursor|gemini|dir:&lt;path&gt; or --scope project to target another location. Pass --worker &lt;worker&gt; to enable and sync skills on a remote Worker over E2EE (with optional --auto-sync to keep them updated on Worker startup).
 
-Installing via the leapmux CLI always matches the installed binary offline;
-installing via "npx skills add leapmux/leapmux" tracks the main branch.
+Installing via the leapmux CLI always matches the installed binary offline; installing via "npx skills add leapmux/leapmux" tracks the main branch.
 
-Locally edited or unmanaged skill files are never overwritten unless --force
-is passed.
+Locally edited or unmanaged skill files are never overwritten unless --force is passed.
 
-Aliases: `add`.
-
-This command changes state.
+_Aliases: `add` · Mutates state._
 
 ```text
 leapmux skill install [skill]... [flags]
@@ -407,8 +395,8 @@ leapmux skill install [skill]... [flags]
 | Flag | Description |
 |---|---|
 | `--target string` | install target: agents (default, ~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
-| `--scope string` | local install scope: user (home directory) or project (current working directory) (one of: user, project; default: user) |
-| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--all` | select every bundled skill |
 | `--force` | overwrite locally modified or unmanaged skill files |
 | `--auto-sync` | with --worker, keep enabled skills refreshed automatically on Worker startup |
@@ -429,9 +417,7 @@ leapmux skill install --all --worker name:build-box --auto-sync
 
 Remove LeapMux-managed agent skills locally or from a Worker.
 
-Aliases: `rm`, `remove`.
-
-This command changes state.
+_Aliases: `rm`, `remove` · Mutates state._
 
 ```text
 leapmux skill uninstall [skill]... [flags]
@@ -444,8 +430,8 @@ leapmux skill uninstall [skill]... [flags]
 | Flag | Description |
 |---|---|
 | `--target string` | install target: agents (default, ~/.agents/skills), claude, codex, cursor, gemini, or dir:&lt;path&gt;; repeat for multiple (repeatable) |
-| `--scope string` | local install scope: user (home directory) or project (current working directory) (one of: user, project; default: user) |
-| `--worker string` | worker: an id, a unique id prefix, "name:&lt;name&gt;" or "self" (default: $LEAPMUX_CONTROL_WORKER_ID) |
+| `--scope string` | See [common arguments and flags](#common-arguments-and-flags). |
+| `--worker string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--all` | select every bundled skill |
 | `--force` | also remove locally modified or unmanaged skill files |
 
@@ -480,7 +466,7 @@ leapmux guide targets
 
 Print the version of this CLI, and of the hub and worker when connected.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux version [flags]
@@ -493,51 +479,36 @@ leapmux version --hub https://hub.example.com
 
 ## `leapmux rpc`
 
-Call one procedure of the hub or of a Worker, and print its response. Use it
-for a call that no other command makes.
+Call one procedure of the hub or of a Worker, and print its response. Use it for a call that no other command makes.
 
-The request is protobuf JSON: the second argument, "-" to read it from
-standard input, or {} when the command line omits it. The command refuses a
-field that the request type does not declare, before it sends anything. The
-response prints as protobuf JSON with the field names of the .proto files,
-indented. --json prints it as the data of one envelope instead. A field that
-holds its default value does not print, as protobuf JSON states.
+The request is protobuf JSON: the second argument, "-" to read it from standard input, or {} when the command line omits it. The command refuses a field that the request type does not declare, before it sends anything. The response prints as protobuf JSON with the field names of the .proto files, indented. --json prints it as the data of one envelope instead. A field that holds its default value does not print, as protobuf JSON states.
 
-The command passes the request directly to the Hub or Worker. The receiving
-service applies its own authorization and validation. Check what the
-procedure does before calling one that changes state.
+The command passes the request directly to the Hub or Worker. The receiving service applies its own authorization and validation. Check what the procedure does before calling one that changes state.
 
-The procedures are the methods of the services in proto/leapmux/v1. A
-procedure of a hub service runs on the hub. A procedure of a Worker service
-needs --worker, the Worker that serves the call. A procedure that streams
-does not run here. "leapmux events" prints the events of agents and
-terminals, and "leapmux agent messages --follow" prints the messages
-of an agent.
+The procedures are the methods of the services in proto/leapmux/v1. A procedure of a hub service runs on the hub. A procedure of a Worker service needs --worker, the Worker that serves the call. A procedure that streams does not run here. "leapmux events" prints the events of agents and terminals, and "leapmux agent messages --follow" prints the messages of an agent.
 
-Inside a LeapMux tab, the socket of the tab relays these hub procedures
-alone:
-  - leapmux.v1.SystemService/GetSystemInfo
-  - leapmux.v1.UserCRDT/GetMaterialized
-  - leapmux.v1.UserCRDT/SubmitOps
-  - leapmux.v1.UserCRDT/UpdatePresence
-  - leapmux.v1.WorkerManagementService/GetWorker
-  - leapmux.v1.WorkerManagementService/GetWorkerEnrollmentRevision
-  - leapmux.v1.WorkerManagementService/ListWorkers
-  - leapmux.v1.WorkspaceService/CreateWorkspace
-  - leapmux.v1.WorkspaceService/DeleteWorkspace
-  - leapmux.v1.WorkspaceService/GetWorkspace
-  - leapmux.v1.WorkspaceService/ListTabs
-  - leapmux.v1.WorkspaceService/ListWorkspaces
-  - leapmux.v1.WorkspaceService/LocateTab
-  - leapmux.v1.WorkspaceService/LocateTile
-  - leapmux.v1.WorkspaceService/ReadLayoutEvents
-  - leapmux.v1.WorkspaceService/RenameWorkspace
+Inside a LeapMux tab, the socket of the tab relays these hub procedures alone:
+
+- leapmux.v1.SystemService/GetSystemInfo
+- leapmux.v1.UserCRDT/GetMaterialized
+- leapmux.v1.UserCRDT/SubmitOps
+- leapmux.v1.UserCRDT/UpdatePresence
+- leapmux.v1.WorkerManagementService/GetWorker
+- leapmux.v1.WorkerManagementService/GetWorkerEnrollmentRevision
+- leapmux.v1.WorkerManagementService/ListWorkers
+- leapmux.v1.WorkspaceService/CreateWorkspace
+- leapmux.v1.WorkspaceService/DeleteWorkspace
+- leapmux.v1.WorkspaceService/GetWorkspace
+- leapmux.v1.WorkspaceService/ListTabs
+- leapmux.v1.WorkspaceService/ListWorkspaces
+- leapmux.v1.WorkspaceService/LocateTab
+- leapmux.v1.WorkspaceService/LocateTile
+- leapmux.v1.WorkspaceService/ReadLayoutEvents
+- leapmux.v1.WorkspaceService/RenameWorkspace
 
 Pass --hub &lt;url&gt; to call another hub procedure with your own login.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux rpc <procedure> [request] [flags]

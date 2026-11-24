@@ -91,6 +91,11 @@ func WriteReferenceForGroups(w io.Writer, tree CommandTree, topLevelNames []stri
 		selected = append(selected, cmds...)
 	}
 	rw := &referenceWriter{w: w}
+	common := collectCommonEntries(selected, flagNameSet(globalFlags))
+	if len(common.ordered) > 0 {
+		rw.commonEntries(common.ordered)
+	}
+	rw.common = common.lookup
 	rw.commands(selected, flagNameSet(globalFlags))
 	return rw.err
 }
@@ -196,9 +201,103 @@ func commandOf(c CommandInfo) string {
 	return c.Usage
 }
 
+type commonEntry struct {
+	label string
+	help  string
+}
+
+type commonEntrySet struct {
+	ordered []commonEntry
+	lookup  map[string]string // "arg:<name>" or "flag:<names>" -> exact help string lifted
+}
+
+const (
+	commonMinOccurrences = 3
+	commonMinHelpLen     = 60
+	commonSeeRef         = "See [common arguments and flags](#common-arguments-and-flags)."
+)
+
+// collectCommonEntries lifts long argument and flag descriptions that repeat
+// verbatim at least commonMinOccurrences times on one reference page into a
+// single shared table at the top of that page.
+func collectCommonEntries(cmds []CommandInfo, globalNames map[string]bool) commonEntrySet {
+	type countKey struct {
+		slot string
+		help string
+	}
+	counts := map[countKey]int{}
+	labels := map[countKey]string{}
+	var order []countKey
+
+	record := func(slot, label, help string) {
+		if len(help) < commonMinHelpLen {
+			return
+		}
+		k := countKey{slot: slot, help: help}
+		if counts[k] == 0 {
+			order = append(order, k)
+			labels[k] = label
+		}
+		counts[k]++
+	}
+
+	for _, c := range cmds {
+		if c.Group {
+			continue
+		}
+		for _, a := range c.Args {
+			if a.Help != "" {
+				record("arg:"+a.Name, "<"+a.Name+">", a.Help)
+			}
+		}
+		for _, f := range c.Flags {
+			if f.Global && globalNames[f.Name] {
+				continue
+			}
+			record("flag:"+f.Names(), f.Names(), f.Text())
+		}
+	}
+
+	// Only lift one canonical help per slot (the most frequent qualifying text).
+	bestForSlot := map[string]countKey{}
+	for _, k := range order {
+		if counts[k] < commonMinOccurrences {
+			continue
+		}
+		prev, exists := bestForSlot[k.slot]
+		if !exists || counts[k] > counts[prev] {
+			bestForSlot[k.slot] = k
+		}
+	}
+
+	out := commonEntrySet{lookup: map[string]string{}}
+	seenSlot := map[string]bool{}
+	for _, k := range order {
+		best, ok := bestForSlot[k.slot]
+		if !ok || seenSlot[k.slot] || best != k {
+			continue
+		}
+		seenSlot[k.slot] = true
+		out.ordered = append(out.ordered, commonEntry{label: labels[k], help: k.help})
+		out.lookup[k.slot] = k.help
+	}
+	return out
+}
+
 type referenceWriter struct {
-	w   io.Writer
-	err error
+	w      io.Writer
+	err    error
+	common map[string]string
+}
+
+func (rw *referenceWriter) commonEntries(entries []commonEntry) {
+	rw.printf("## Common arguments and flags\n\n")
+	rw.printf("These selectors and flags repeat across commands on this page.\n\n")
+	rw.printf("| Selector / Flag | Description |\n|---|---|\n")
+	for _, e := range entries {
+		rw.printf("| `%s` | %s |\n", e.label, escapeCell(e.help))
+	}
+	rw.printf("\n")
 }
 
 func (rw *referenceWriter) printf(format string, args ...any) {
@@ -246,15 +345,19 @@ func (rw *referenceWriter) leaf(c CommandInfo, globalNames map[string]bool) {
 	if c.Description != "" {
 		text = c.Description
 	}
-	rw.printf("%s\n\n", escapeProse(strings.TrimSpace(text)))
+	rw.printf("%s\n\n", formatProse(text))
+	var meta []string
 	if len(c.Aliases) > 0 {
-		rw.printf("Aliases: %s.\n\n", formatCodeList(c.Aliases))
+		meta = append(meta, "Aliases: "+formatCodeList(c.Aliases))
 	}
 	if c.Mutates {
-		rw.printf("This command changes state.\n\n")
+		meta = append(meta, "Mutates state")
 	}
 	if c.QuietUnsupported {
-		rw.printf("Does not support `-q` / `--quiet`.\n\n")
+		meta = append(meta, "Does not support `-q` / `--quiet`")
+	}
+	if len(meta) > 0 {
+		rw.printf("_%s._\n\n", strings.Join(meta, " · "))
 	}
 	rw.printf("```text\n%s\n```\n\n", c.Usage)
 	var described []ArgSpec
@@ -273,7 +376,11 @@ func (rw *referenceWriter) leaf(c CommandInfo, globalNames map[string]bool) {
 			if a.Variadic {
 				name += "..."
 			}
-			rw.printf("| `%s` | %s |\n", name, escapeCell(a.Help))
+			desc := escapeCell(a.Help)
+			if rw.common["arg:"+a.Name] == a.Help {
+				desc = commonSeeRef
+			}
+			rw.printf("| `%s` | %s |\n", name, desc)
 		}
 		rw.printf("\n")
 	}
@@ -325,9 +432,72 @@ func (rw *referenceWriter) commands(cmds []CommandInfo, globalNames map[string]b
 func (rw *referenceWriter) flagTable(flags []FlagInfo) {
 	rw.printf("| Flag | Description |\n|---|---|\n")
 	for _, f := range flags {
-		rw.printf("| `%s` | %s |\n", f.Names(), escapeCell(f.Text()))
+		names := f.Names()
+		text := f.Text()
+		desc := escapeCell(text)
+		if rw.common["flag:"+names] == text {
+			desc = commonSeeRef
+		}
+		rw.printf("| `%s` | %s |\n", names, desc)
 	}
 	rw.printf("\n")
+}
+
+// formatProse reflows terminal-wrapped --help descriptions into clean Markdown:
+// consecutive plain prose lines join into one paragraph, bullet lists keep one
+// item per line, and a plain paragraph immediately following a bullet item gets
+// a separating blank line so CommonMark does not fold it into the last bullet.
+func formatProse(s string) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\r\n", "\n")
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	var blocks []string
+	var cur []string
+	inBullets := false
+
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		if inBullets {
+			blocks = append(blocks, strings.Join(cur, "\n"))
+		} else {
+			blocks = append(blocks, strings.Join(cur, " "))
+		}
+		cur = nil
+		inBullets = false
+	}
+
+	for _, raw := range lines {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			flush()
+			continue
+		}
+		isBullet := strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ")
+		isIndented := strings.HasPrefix(raw, "  ") || strings.HasPrefix(raw, "\t")
+		switch {
+		case isBullet:
+			if !inBullets {
+				flush()
+				inBullets = true
+			}
+			cur = append(cur, trimmed)
+		case inBullets && isIndented:
+			cur[len(cur)-1] += " " + trimmed
+		case inBullets:
+			// Separate a non-indented prose line after bullets so CommonMark
+			// does not treat it as a lazy continuation of the final bullet.
+			flush()
+			cur = append(cur, trimmed)
+		default:
+			cur = append(cur, trimmed)
+		}
+	}
+	flush()
+	return escapeProse(strings.Join(blocks, "\n\n"))
 }
 
 // escapeProse escapes the characters that a Markdown renderer with raw HTML

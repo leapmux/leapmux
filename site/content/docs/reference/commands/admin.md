@@ -9,7 +9,18 @@ weight: 8
      go test ./cmd/leapmux -run TestControlReference_IsCurrent -update-golden
      in backend/. -->
 
-Every command on this page also takes the [flags of every command](/docs/reference/commands/#flags-of-every-command). See [Control CLI](/docs/using/control-cli/) for target selection, output formatting, and authentication.
+Every command on this page also takes the [flags of every command](/docs/reference/commands/#flags-of-every-command). See [CLI Guide](/docs/using/cli-guide/) for target selection, output formatting, and authentication.
+
+## Common arguments and flags
+
+These selectors and flags repeat across commands on this page.
+
+| Selector / Flag | Description |
+|---|---|
+| `--user string` | filter by user: a username, "id:&lt;id&gt;", or "username:&lt;name&gt;" (empty = all users) |
+| `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
+| `<idp>` | A sign-in provider id or unique prefix, as "leapmux admin idp list" prints it. |
+| `<operation>` | One of: elevation, email_change, login_anonymous, oauth_anonymous, solo_password_setup. |
 
 ## `leapmux admin`
 
@@ -23,7 +34,7 @@ Read and change the hub's settings: sign-in policy, SMTP, timeouts, limits.
 
 List every setting with its effective value.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin settings list [flags]
@@ -53,7 +64,7 @@ leapmux admin settings get session_duration_seconds
 
 Set the public value of a setting from JSON or a bare value.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin settings set <key> <value> [flags]
@@ -75,7 +86,7 @@ leapmux admin settings set smtp '{"host":"smtp.example.com","port":587}'
 
 Set the secret fields of a setting; the hub stores them encrypted.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin settings set-secret <key> <json> [flags]
@@ -94,7 +105,7 @@ leapmux admin settings set-secret smtp '{"password":"..."}'
 
 Restore the default value of a setting.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin settings reset <key> [flags]
@@ -116,7 +127,7 @@ Manage users.
 
 List users.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin user list [flags]
@@ -158,7 +169,7 @@ leapmux admin user get id:Ab3dE9
 
 Create a user.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin user create <username> [flags]
@@ -180,7 +191,7 @@ leapmux admin user create alice --email alice@example.com
 
 Change a user's name, email or verification.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin user update <user> [flags]
@@ -205,11 +216,7 @@ leapmux admin user update alice --display-name "Alice Kim"
 
 Delete a user.
 
-Aliases: `rm`.
-
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Aliases: `rm` · Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin user delete <user> [flags]
@@ -231,7 +238,7 @@ leapmux admin user delete alice
 
 Make a user an administrator.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin user grant-admin <user> [flags]
@@ -249,7 +256,7 @@ leapmux admin user grant-admin alice
 
 Take a user's administrator access away.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin user revoke-admin <user> [flags]
@@ -271,7 +278,7 @@ leapmux admin user revoke-admin alice
 
 Set a user's password and revoke every credential they hold.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin user reset-password <user> [flags]
@@ -298,7 +305,7 @@ List and revoke sign-in sessions.
 
 List active sessions, optionally filtered to one user.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin session list [flags]
@@ -308,7 +315,7 @@ leapmux admin session list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--user string` | filter by user: a username, "id:&lt;id&gt;", or "username:&lt;name&gt;" (empty = all users) |
+| `--user string` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin session list
@@ -321,7 +328,7 @@ leapmux admin session list --user alice
 
 Revoke a session.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin session revoke <session> [flags]
@@ -339,9 +346,7 @@ leapmux admin session revoke 4f1aC2
 
 Revoke every session of a user.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin session revoke-user <user> [flags]
@@ -359,9 +364,7 @@ leapmux admin session revoke-user alice
 
 Delete every expired session.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin session purge-expired [flags]
@@ -379,7 +382,7 @@ Manage the workers of every user.
 
 List the workers of every user.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin worker list [flags]
@@ -389,7 +392,7 @@ leapmux admin worker list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--user string` | filter by user: a username, "id:&lt;id&gt;", or "username:&lt;name&gt;" (empty = all users) |
+| `--user string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--status string` | worker status filter (one of: active, deregistering, deleted, all; default: active) |
 
 ```sh
@@ -419,7 +422,7 @@ leapmux admin worker get 5f2c9a1d
 
 Deregister a worker of any user.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin worker deregister <worker> [flags]
@@ -441,7 +444,7 @@ Manage worker registration keys.
 
 List worker registration keys.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin worker reg-key list [flags]
@@ -461,7 +464,7 @@ leapmux admin worker reg-key list
 
 Revoke a worker registration key.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin worker reg-key revoke <reg-key> [flags]
@@ -479,9 +482,7 @@ leapmux admin worker reg-key revoke 9Zt4Kp
 
 Delete every expired or revoked registration key.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin worker reg-key purge-expired [flags]
@@ -499,7 +500,7 @@ Manage app registrations: what a consent screen authorizes.
 
 List app registrations.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin app list [flags]
@@ -519,7 +520,7 @@ leapmux admin app list
 
 Register an app; the hub shows its secret once.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin app register <name> [flags]
@@ -543,7 +544,7 @@ leapmux admin app register "Release bot" --scope "workspace:read" --redirect-uri
 
 Change the editable fields of an app.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin app update <app> [flags]
@@ -551,7 +552,7 @@ leapmux admin app update <app> [flags]
 
 | Argument | Description |
 |---|---|
-| `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
+| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -569,7 +570,7 @@ leapmux admin app update lmx_app_x1y2 --name "Release bot 2"
 
 Vouch for an app, so that its consent screen stops warning.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin app verify <app> [flags]
@@ -577,7 +578,7 @@ leapmux admin app verify <app> [flags]
 
 | Argument | Description |
 |---|---|
-| `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
+| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin app verify lmx_app_x1y2
@@ -587,7 +588,7 @@ leapmux admin app verify lmx_app_x1y2
 
 Withdraw a vouch for an app.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin app unverify <app> [flags]
@@ -595,7 +596,7 @@ leapmux admin app unverify <app> [flags]
 
 | Argument | Description |
 |---|---|
-| `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
+| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin app unverify lmx_app_x1y2
@@ -605,7 +606,7 @@ leapmux admin app unverify lmx_app_x1y2
 
 Let an app ask a user to prove a factor again.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin app allow-elevation <app> [flags]
@@ -613,7 +614,7 @@ leapmux admin app allow-elevation <app> [flags]
 
 | Argument | Description |
 |---|---|
-| `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
+| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin app allow-elevation lmx_app_x1y2
@@ -623,7 +624,7 @@ leapmux admin app allow-elevation lmx_app_x1y2
 
 Take that permission away; every open elevation ends at the next call.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin app deny-elevation <app> [flags]
@@ -631,7 +632,7 @@ leapmux admin app deny-elevation <app> [flags]
 
 | Argument | Description |
 |---|---|
-| `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
+| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin app deny-elevation lmx_app_x1y2
@@ -641,7 +642,7 @@ leapmux admin app deny-elevation lmx_app_x1y2
 
 Retire an app and revoke every credential it holds.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin app revoke <app> [flags]
@@ -649,7 +650,7 @@ leapmux admin app revoke <app> [flags]
 
 | Argument | Description |
 |---|---|
-| `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
+| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin app revoke lmx_app_x1y2
@@ -659,9 +660,7 @@ leapmux admin app revoke lmx_app_x1y2
 
 Delete an app that never held a credential.
 
-Aliases: `rm`.
-
-This command changes state.
+_Aliases: `rm` · Mutates state._
 
 ```text
 leapmux admin app delete <app> [flags]
@@ -669,7 +668,7 @@ leapmux admin app delete <app> [flags]
 
 | Argument | Description |
 |---|---|
-| `<app>` | An app's client id or unique prefix, as "leapmux admin app list" prints it. |
+| `<app>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin app delete lmx_app_x1y2
@@ -683,7 +682,7 @@ Manage the OAuth and OIDC providers that users sign in with.
 
 Add an OAuth or OIDC sign-in provider.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin idp add [flags]
@@ -707,7 +706,7 @@ leapmux admin idp add --type github --client-id Iv1.abc --client-secret s3cr3t
 
 List the sign-in providers.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin idp list [flags]
@@ -721,9 +720,7 @@ leapmux admin idp list
 
 Remove a sign-in provider.
 
-Aliases: `rm`.
-
-This command changes state.
+_Aliases: `rm` · Mutates state._
 
 ```text
 leapmux admin idp remove <idp> [flags]
@@ -731,7 +728,7 @@ leapmux admin idp remove <idp> [flags]
 
 | Argument | Description |
 |---|---|
-| `<idp>` | A sign-in provider id or unique prefix, as "leapmux admin idp list" prints it. |
+| `<idp>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
@@ -745,7 +742,7 @@ leapmux admin idp remove 3hKd9s
 
 Enable a sign-in provider.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin idp enable <idp> [flags]
@@ -753,7 +750,7 @@ leapmux admin idp enable <idp> [flags]
 
 | Argument | Description |
 |---|---|
-| `<idp>` | A sign-in provider id or unique prefix, as "leapmux admin idp list" prints it. |
+| `<idp>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin idp enable 3hKd9s
@@ -763,7 +760,7 @@ leapmux admin idp enable 3hKd9s
 
 Disable a sign-in provider.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin idp disable <idp> [flags]
@@ -771,10 +768,32 @@ leapmux admin idp disable <idp> [flags]
 
 | Argument | Description |
 |---|---|
-| `<idp>` | A sign-in provider id or unique prefix, as "leapmux admin idp list" prints it. |
+| `<idp>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin idp disable 3hKd9s
+```
+
+#### `leapmux admin idp rotate-secret`
+
+Replace a sign-in provider's client secret without removing linked users.
+
+_Mutates state._
+
+```text
+leapmux admin idp rotate-secret <idp> [flags]
+```
+
+| Argument | Description |
+|---|---|
+| `<idp>` | See [common arguments and flags](#common-arguments-and-flags). |
+
+| Flag | Description |
+|---|---|
+| `--client-secret string` | new OAuth client secret (required) |
+
+```sh
+leapmux admin idp rotate-secret 3hKd9s --client-secret new-s3cr3t
 ```
 
 ### `leapmux admin captcha`
@@ -785,7 +804,7 @@ Manage the bot protection: ALTCHA, reCAPTCHA v3 or Turnstile (a solo hub never a
 
 Show the captcha configuration in effect.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin captcha get [flags]
@@ -799,9 +818,7 @@ leapmux admin captcha get
 
 Change the captcha settings, or switch the provider.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin captcha set [flags]
@@ -827,9 +844,7 @@ leapmux admin captcha set --provider turnstile --site-key 0x4AAA --secret s3cr3t
 
 Turn captcha verification on.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin captcha enable [flags]
@@ -843,9 +858,7 @@ leapmux admin captcha enable
 
 Turn captcha verification off; the honeypot check stays.
 
-This command changes state.
-
-Does not support `-q` / `--quiet`.
+_Mutates state · Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin captcha disable [flags]
@@ -859,7 +872,7 @@ leapmux admin captcha disable
 
 Restore the captcha defaults of every provider, or of one.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin captcha reset [flags]
@@ -884,7 +897,7 @@ Manage the rate limit of each user operation.
 
 List the rate limits of every operation.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin rate-limit list [flags]
@@ -898,7 +911,7 @@ leapmux admin rate-limit list
 
 Change the rate limit of an operation.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin rate-limit set <operation> [flags]
@@ -906,11 +919,11 @@ leapmux admin rate-limit set <operation> [flags]
 
 | Argument | Description |
 |---|---|
-| `<operation>` | One of: elevation, email_change, login_anonymous, oauth_anonymous, solo_password_setup. |
+| `<operation>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 | Flag | Description |
 |---|---|
-| `--max-attempts int` | failed attempts allowed per window (1-1000); 0 restores the default |
+| `--max-attempts int` | allowed failed attempts (or admitted requests for anonymous/setup limits) per window (1-1000); 0 restores the default |
 | `--window int` | window seconds (60-86400); 0 restores the default |
 
 ```sh
@@ -921,7 +934,7 @@ leapmux admin rate-limit set elevation --max-attempts 5 --window 900
 
 Turn on the rate limit of an operation.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin rate-limit enable <operation> [flags]
@@ -929,7 +942,7 @@ leapmux admin rate-limit enable <operation> [flags]
 
 | Argument | Description |
 |---|---|
-| `<operation>` | One of: elevation, email_change, login_anonymous, oauth_anonymous, solo_password_setup. |
+| `<operation>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin rate-limit enable elevation
@@ -939,7 +952,7 @@ leapmux admin rate-limit enable elevation
 
 Turn off the rate limit of an operation.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin rate-limit disable <operation> [flags]
@@ -947,7 +960,7 @@ leapmux admin rate-limit disable <operation> [flags]
 
 | Argument | Description |
 |---|---|
-| `<operation>` | One of: elevation, email_change, login_anonymous, oauth_anonymous, solo_password_setup. |
+| `<operation>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin rate-limit disable elevation
@@ -957,7 +970,7 @@ leapmux admin rate-limit disable elevation
 
 Restore the default rate limit of an operation.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin rate-limit reset <operation> [flags]
@@ -965,7 +978,7 @@ leapmux admin rate-limit reset <operation> [flags]
 
 | Argument | Description |
 |---|---|
-| `<operation>` | One of: elevation, email_change, login_anonymous, oauth_anonymous, solo_password_setup. |
+| `<operation>` | See [common arguments and flags](#common-arguments-and-flags). |
 
 ```sh
 leapmux admin rate-limit reset elevation
@@ -979,7 +992,7 @@ Manage durable API tokens for scripts and integrations.
 
 List API tokens.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin api-token list [flags]
@@ -989,7 +1002,7 @@ leapmux admin api-token list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--user string` | filter by user: a username, "id:&lt;id&gt;", or "username:&lt;name&gt;" (empty = all users) |
+| `--user string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--client-id string` | filter by app (empty = all apps) |
 | `--include-revoked` | include revoked tokens (forensics; default lists live tokens only) |
 
@@ -1004,7 +1017,7 @@ leapmux admin api-token list --user alice
 
 Issue an API token that &lt;user&gt; owns.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin api-token issue <user> [flags]
@@ -1029,7 +1042,7 @@ leapmux admin api-token issue ci-bot --installation-name ci-runner-3 --scope "wo
 
 Revoke an API token.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin api-token revoke <token> [flags]
@@ -1051,7 +1064,7 @@ Manage the delegation tokens that workers mint.
 
 List the delegation tokens that workers minted.
 
-Aliases: `ls`.
+_Aliases: `ls`._
 
 ```text
 leapmux admin delegation-token list [flags]
@@ -1061,7 +1074,7 @@ leapmux admin delegation-token list [flags]
 |---|---|
 | `--limit int` | page size (default: 50) |
 | `--cursor string` | the cursor that the previous page printed |
-| `--user string` | filter by user: a username, "id:&lt;id&gt;", or "username:&lt;name&gt;" (empty = all users) |
+| `--user string` | See [common arguments and flags](#common-arguments-and-flags). |
 | `--include-revoked` | include revoked tokens (forensics; default lists live tokens only) |
 
 ```sh
@@ -1072,7 +1085,7 @@ leapmux admin delegation-token list
 
 Revoke a delegation token.
 
-This command changes state.
+_Mutates state._
 
 ```text
 leapmux admin delegation-token revoke <token> [flags]
@@ -1094,7 +1107,7 @@ Inspect the Hub's live TCP listeners, IPC sockets, and host network interfaces.
 
 Show the Hub's live TCP listeners, local IPC endpoints, and machine interfaces.
 
-Does not support `-q` / `--quiet`.
+_Does not support `-q` / `--quiet`._
 
 ```text
 leapmux admin network status [flags]
