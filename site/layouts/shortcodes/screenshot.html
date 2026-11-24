@@ -14,7 +14,8 @@
 {{- $height := .Get "height" -}}
 {{- $eager := eq (printf "%v" (.Get "eager")) "true" -}}
 {{- $loading := cond $eager "eager" "lazy" -}}
-<figure class="doc-screenshot">
+{{- $sized := and $width $height -}}
+<figure class="doc-screenshot{{ if $sized }} doc-screenshot--sized{{ end }}"{{ if $sized }} style="{{ printf "--doc-screenshot-w: %s; --doc-screenshot-h: %s;" $width $height | safeCSS }}"{{ end }}>
   <div class="doc-screenshot-frame">
     <img
       class="doc-screenshot-light"

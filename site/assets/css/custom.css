@@ -371,6 +371,24 @@
     0 1px 2px rgb(34 31 29 / 0.04);
 }
 
+/*
+  Never upscale narrow screenshots above their natural UI scale, and cap tall
+  portrait captures inside documentation articles, so UI text inside
+  screenshots stays smaller than the document body font size.
+*/
+.doc-screenshot--sized .doc-screenshot-frame {
+  max-width: min(100%, calc(var(--doc-screenshot-w) * 0.85px));
+  margin-inline: auto;
+}
+
+.content .doc-screenshot--sized .doc-screenshot-frame {
+  max-width: min(
+    100%,
+    calc(var(--doc-screenshot-w) * 0.85px),
+    calc(var(--doc-screenshot-w) / var(--doc-screenshot-h) * 660px)
+  );
+}
+
 .dark .doc-screenshot-frame {
   border-color: var(--hx-color-gray-800);
   background: var(--hx-color-gray-900);
