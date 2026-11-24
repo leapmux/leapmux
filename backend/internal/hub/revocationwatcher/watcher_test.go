@@ -42,7 +42,7 @@ func newBearerAuthHub(
 	mux := http.NewServeMux()
 	interceptor, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: validator})
 	t.Cleanup(cache.Stop)
-	authService := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(cache, nil, nil)))
+	authService := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(cache, nil, nil)))
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authService)
 	connecthttp.Mount(mux, connectServer)

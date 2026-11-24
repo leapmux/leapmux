@@ -2,12 +2,13 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -18,14 +19,32 @@ var _ store.TestHelper = (*sqliteTestHelper)(nil)
 // testableSQLiteStore extends sqliteStore with test helper operations.
 type testableSQLiteStore struct {
 	*sqliteStore
+	borrowed bool
+}
+
+func (s *testableSQLiteStore) Close() error {
+	if s.borrowed {
+		return nil
+	}
+	return s.sqliteStore.Close()
 }
 
 var _ store.TestableStore = (*testableSQLiteStore)(nil)
 
-// OpenTestable opens a SQLite store that also implements store.TestableStore.
-// This is intended for use in tests only.
+// OpenTestable opens a SQLite store with a fresh random keystore that also
+// implements store.TestableStore. This is intended for use in tests only.
 func OpenTestable(path string) (store.TestableStore, error) {
-	st, err := Open(path, sqlitedb.Config{})
+	ks, err := keystore.NewRandom()
+	if err != nil {
+		return nil, err
+	}
+	return OpenTestableWithKeystore(path, ks)
+}
+
+// OpenTestableWithKeystore opens a SQLite store using ks that also implements
+// store.TestableStore. This is intended for use in tests only.
+func OpenTestableWithKeystore(path string, ks *keystore.Keystore) (store.TestableStore, error) {
+	st, err := Open(path, sqlitedb.Config{}, ks)
 	if err != nil {
 		return nil, err
 	}
@@ -33,15 +52,15 @@ func OpenTestable(path string) (store.TestableStore, error) {
 }
 
 func (s *testableSQLiteStore) TestHelper() store.TestHelper {
-	return &sqliteTestHelper{db: s.conn.shared.db}
+	return &sqliteTestHelper{shared: s.conn.shared}
 }
 
 type sqliteTestHelper struct {
-	db *sql.DB
+	shared *sqliteShared
 }
 
 func (h *sqliteTestHelper) exec(ctx context.Context, query string, args ...any) error {
-	_, err := h.db.ExecContext(ctx, query, args...)
+	_, err := h.shared.db.ExecContext(ctx, query, args...)
 	return err
 }
 
@@ -62,7 +81,7 @@ func (h *sqliteTestHelper) SetDeregisteringAt(ctx context.Context, workerID stri
 }
 
 func (h *sqliteTestHelper) ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error {
-	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, workerID)
+	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.DialectSQLite, workerID)
 }
 
 // setEntityTime binds t as a SQLiteTime and writes it to a fixed column on a
@@ -84,7 +103,7 @@ func (h *sqliteTestHelper) setEntityTime(ctx context.Context, entity store.TestE
 // raw-string deleted_at cleanup cutoffs). The column is a hardcoded literal,
 // never caller input.
 func (h *sqliteTestHelper) setEntityColumn(ctx context.Context, entity store.TestEntity, column, id string, value any) error {
-	return sqlutil.SetEntityColumnValue(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, entity, column, id, value)
+	return sqlutil.SetEntityColumnValue(ctx, h.exec, sqlutil.DialectSQLite, entity, column, id, value)
 }
 
 // CheckCanonicalTimestamps asserts every DATETIME column of every table
@@ -138,25 +157,54 @@ func CheckCanonicalTimestamps(ctx context.Context, st store.TestableStore) error
 // ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
 // store.TestHelper.ListAllOwnedTabs for why this is test-only.
 func (h *sqliteTestHelper) ListAllOwnedTabs(ctx context.Context) ([]store.WorkspaceTabRow, error) {
-	return sqlutil.ListAllOwnedTabs(ctx, h.db)
+	return sqlutil.ListAllOwnedTabs(ctx, h.shared.db)
 }
 
 func (h *sqliteTestHelper) TruncateAll(ctx context.Context) error {
-	if _, err := h.db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+	if _, err := h.shared.db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
 		return err
 	}
-	defer func() { _, _ = h.db.ExecContext(ctx, "PRAGMA foreign_keys = ON") }()
+	defer func() { _, _ = h.shared.db.ExecContext(ctx, "PRAGMA foreign_keys = ON") }()
 	for _, t := range sqlutil.SQLTruncateTableOrder {
-		if _, err := h.db.ExecContext(ctx, sqlutil.TruncateStatement(t)); err != nil {
+		if _, err := h.shared.db.ExecContext(ctx, sqlutil.TruncateStatement(t)); err != nil {
 			return fmt.Errorf("truncate %s: %w", t, err)
 		}
 	}
-	if _, err := h.db.ExecContext(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
+	if _, err := h.shared.db.ExecContext(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
 		return fmt.Errorf("reset revocation_event_sequence: %w", err)
 	}
 	return nil
 }
 
 func (h *sqliteTestHelper) TableHoldsText(ctx context.Context, table, text string) (bool, error) {
-	return sqlutil.TableHoldsText(ctx, h.db, table, text)
+	return sqlutil.TableHoldsText(ctx, h.shared.db, table, text)
+}
+
+func (h *sqliteTestHelper) WithKeystore(ks *keystore.Keystore) store.TestableStore {
+	if ks == nil {
+		panic("sqlite: WithKeystore requires a non-nil keystore")
+	}
+	return &testableSQLiteStore{
+		sqliteStore: &sqliteStore{
+			conn: &sqliteConn{
+				shared: h.shared,
+				ks:     ks,
+				exec:   h.shared.db,
+				q:      gendb.New(h.shared.db),
+			},
+		},
+		borrowed: true,
+	}
+}
+
+func (h *sqliteTestHelper) CopyWorkspaceTitleCiphertext(ctx context.Context, srcWorkspaceID, dstWorkspaceID string) error {
+	return sqlutil.CopyWorkspaceTitleCiphertext(ctx, h.shared.db, h.exec, sqlutil.DialectSQLite, srcWorkspaceID, dstWorkspaceID)
+}
+
+func (h *sqliteTestHelper) SetSettingSecretRaw(ctx context.Context, key string, raw []byte) error {
+	return sqlutil.SetSettingSecretRaw(ctx, h.exec, sqlutil.DialectSQLite, key, raw)
+}
+
+func (h *sqliteTestHelper) CopySettingSecretCiphertext(ctx context.Context, srcKey, dstKey string) error {
+	return sqlutil.CopySettingSecretCiphertext(ctx, h.shared.db, h.exec, sqlutil.DialectSQLite, srcKey, dstKey)
 }

@@ -706,7 +706,7 @@ func (v *TokenValidator) validateRow(ctx context.Context, f validateRowFields, s
 }
 
 func (v *TokenValidator) loadUser(ctx context.Context, userID string) (*UserInfo, error) {
-	u, err := v.store.Users().GetByID(ctx, userID)
+	u, err := v.store.Users().GetAuthIdentity(ctx, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeUnauthenticated, "user not found")
@@ -795,7 +795,7 @@ func (v *TokenValidator) ValidateAPIRefresh(ctx context.Context, refresh string)
 }
 
 func (v *TokenValidator) validateCredentialGeneration(ctx context.Context, userID string, credentialGeneration int64) error {
-	u, err := v.store.Users().GetByID(ctx, userID)
+	u, err := v.store.Users().GetAuthIdentity(ctx, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return ErrTokenRevoked

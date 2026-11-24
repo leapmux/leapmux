@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
@@ -14,64 +15,66 @@ type oauthProviderStore struct {
 
 var _ store.OAuthProviderStore = (*oauthProviderStore)(nil)
 
-func fromDBOAuthProvider(p gendb.OauthProvider) *store.OAuthProvider {
+func (c *sqliteConn) fromDBOAuthProvider(p gendb.OauthProvider) (*store.OAuthProvider, error) {
+	sum, err := sqlutil.OpenOAuthProviderSummary(c.ks, p.ID, p.Name, p.IssuerUrl, p.ClientID, p.Scopes)
+	if err != nil {
+		return nil, err
+	}
+	clientSecret, err := c.ks.OpenBytes(p.ClientSecret, sqlutil.OAuthProviderClientSecretAAD(p.ID))
+	if err != nil {
+		return nil, err
+	}
 	return &store.OAuthProvider{
 		OAuthProviderSummary: store.OAuthProviderSummary{
 			ID:           p.ID,
 			ProviderType: p.ProviderType,
-			Name:         p.Name,
-			IssuerURL:    p.IssuerUrl,
-			ClientID:     p.ClientID,
-			Scopes:       p.Scopes,
+			Name:         sum.Name,
+			IssuerURL:    sum.IssuerURL,
+			ClientID:     sum.ClientID,
+			Scopes:       sum.Scopes,
 			TrustEmail:   ptrconv.Int64ToBool(p.TrustEmail),
 			Enabled:      ptrconv.Int64ToBool(p.Enabled),
 			CreatedAt:    p.CreatedAt.Time,
 		},
-		ClientSecret: p.ClientSecret,
+		ClientSecret: clientSecret,
+	}, nil
+}
+
+func (c *sqliteConn) fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuthProvidersRow) (store.OAuthProviderSummary, error) {
+	sum, err := sqlutil.OpenOAuthProviderSummary(c.ks, r.ID, r.Name, r.IssuerUrl, r.ClientID, r.Scopes)
+	if err != nil {
+		return store.OAuthProviderSummary{}, err
 	}
-}
-
-func fromDBOAuthProviders(rows []gendb.OauthProvider) []store.OAuthProvider {
-	return store.MapSlice(rows, func(r gendb.OauthProvider) store.OAuthProvider { return *fromDBOAuthProvider(r) })
-}
-
-func fromDBListEnabledOAuthProvidersRow(r gendb.ListEnabledOAuthProvidersRow) store.OAuthProviderSummary {
 	return store.OAuthProviderSummary{
 		ID:           r.ID,
 		ProviderType: r.ProviderType,
-		Name:         r.Name,
-		IssuerURL:    r.IssuerUrl,
-		ClientID:     r.ClientID,
-		Scopes:       r.Scopes,
+		Name:         sum.Name,
+		IssuerURL:    sum.IssuerURL,
+		ClientID:     sum.ClientID,
+		Scopes:       sum.Scopes,
 		TrustEmail:   ptrconv.Int64ToBool(r.TrustEmail),
 		Enabled:      ptrconv.Int64ToBool(r.Enabled),
 		CreatedAt:    r.CreatedAt.Time,
-	}
+	}, nil
 }
 
-func fromDBListAllOAuthProvidersRow(r gendb.ListAllOAuthProvidersRow) store.OAuthProviderSummary {
-	return store.OAuthProviderSummary{
-		ID:           r.ID,
-		ProviderType: r.ProviderType,
-		Name:         r.Name,
-		IssuerURL:    r.IssuerUrl,
-		ClientID:     r.ClientID,
-		Scopes:       r.Scopes,
-		TrustEmail:   ptrconv.Int64ToBool(r.TrustEmail),
-		Enabled:      ptrconv.Int64ToBool(r.Enabled),
-		CreatedAt:    r.CreatedAt.Time,
-	}
+func (c *sqliteConn) fromDBListAllOAuthProvidersRow(r gendb.ListAllOAuthProvidersRow) (store.OAuthProviderSummary, error) {
+	return c.fromDBListEnabledOAuthProvidersRow(gendb.ListEnabledOAuthProvidersRow(r))
 }
 
 func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProviderParams) error {
+	sealed, err := sqlutil.SealOAuthProvider(s.conn.ks, p)
+	if err != nil {
+		return err
+	}
 	return s.conn.queryError(s.conn.q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
 		ID:           p.ID,
 		ProviderType: p.ProviderType,
-		Name:         p.Name,
-		IssuerUrl:    p.IssuerURL,
-		ClientID:     p.ClientID,
-		ClientSecret: p.ClientSecret,
-		Scopes:       p.Scopes,
+		Name:         sealed.Name,
+		IssuerUrl:    sealed.IssuerURL,
+		ClientID:     sealed.ClientID,
+		ClientSecret: sealed.ClientSecret,
+		Scopes:       sealed.Scopes,
 		TrustEmail:   ptrconv.BoolToInt64(p.TrustEmail),
 		Enabled:      ptrconv.BoolToInt64(p.Enabled),
 	}))
@@ -82,7 +85,7 @@ func (s *oauthProviderStore) GetByID(ctx context.Context, id string) (*store.OAu
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	return fromDBOAuthProvider(p), nil
+	return s.conn.fromDBOAuthProvider(p)
 }
 
 func (s *oauthProviderStore) ListEnabled(ctx context.Context) ([]store.OAuthProviderSummary, error) {
@@ -90,7 +93,7 @@ func (s *oauthProviderStore) ListEnabled(ctx context.Context) ([]store.OAuthProv
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	return store.MapSlice(rows, fromDBListEnabledOAuthProvidersRow), nil
+	return store.MapSliceErr(rows, s.conn.fromDBListEnabledOAuthProvidersRow)
 }
 
 func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProviderSummary, error) {
@@ -98,28 +101,13 @@ func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProvider
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	return store.MapSlice(rows, fromDBListAllOAuthProvidersRow), nil
-}
-
-func (s *oauthProviderStore) ListAllWithSecrets(ctx context.Context) ([]store.OAuthProvider, error) {
-	rows, err := s.conn.q.ListAllOAuthProvidersWithSecrets(ctx)
-	if err != nil {
-		return nil, s.conn.queryError(err)
-	}
-	return fromDBOAuthProviders(rows), nil
+	return store.MapSliceErr(rows, s.conn.fromDBListAllOAuthProvidersRow)
 }
 
 func (s *oauthProviderStore) UpdateEnabled(ctx context.Context, p store.UpdateOAuthProviderEnabledParams) error {
 	return s.conn.queryError(s.conn.q.UpdateOAuthProviderEnabled(ctx, gendb.UpdateOAuthProviderEnabledParams{
 		ID:      p.ID,
 		Enabled: ptrconv.BoolToInt64(p.Enabled),
-	}))
-}
-
-func (s *oauthProviderStore) UpdateClientSecret(ctx context.Context, id string, clientSecret []byte) error {
-	return s.conn.queryError(s.conn.q.UpdateOAuthProviderClientSecret(ctx, gendb.UpdateOAuthProviderClientSecretParams{
-		ClientSecret: clientSecret,
-		ID:           id,
 	}))
 }
 

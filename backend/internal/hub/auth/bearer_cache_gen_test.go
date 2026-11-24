@@ -186,7 +186,17 @@ type staticUserStore struct {
 	row *store.User
 }
 
-func (s staticUserStore) GetByID(context.Context, string) (*store.User, error) { return s.row, nil }
+func (s staticUserStore) GetAuthIdentity(context.Context, string) (*store.UserAuthIdentity, error) {
+	return &store.UserAuthIdentity{
+		ID:             s.row.ID,
+		Username:       s.row.Username,
+		Email:          s.row.Email,
+		EmailVerified:  s.row.EmailVerified,
+		IsAdmin:        s.row.IsAdmin,
+		AuthGeneration: s.row.AuthGeneration,
+		DeletedAt:      s.row.DeletedAt,
+	}, nil
+}
 
 func TestAPITokenEffectiveDeadline_CacheAndLease(t *testing.T) {
 	created := time.Now().UTC().Truncate(time.Millisecond)

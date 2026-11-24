@@ -1,13 +1,22 @@
 -- name: CreateUser :exec
-INSERT INTO users (id, username, password_hash, display_name, display_name_folded, email, email_verified, first_credential_exempt, is_admin, prefs)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}');
+INSERT INTO users (id, username, password_hash, display_name, display_name_folded, email, email_verified, first_credential_exempt, is_admin)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
 
--- Current live-user projection for locked mutations.
+-- Plaintext identity projection for bearer-token validation and refresh
+-- generation checks. Omits password_hash, prefs, and pending_email_token so
+-- bearer cache misses perform zero AEAD decryptions and never read prefs blobs.
+-- name: GetUserAuthIdentity :one
+SELECT id, username, email, email_verified, is_admin, auth_generation, deleted_at
+FROM users WHERE id = ? AND deleted_at IS NULL;
+
+-- Current live-user projection for locked mutations. Projects only the four
+-- plaintext columns cached in UserInfo so mutations avoid decrypting encrypted
+-- columns and remain usable even if an encrypted column cannot decrypt.
 -- name: GetLiveUserForUpdate :one
-SELECT * FROM users WHERE id = ? AND deleted_at IS NULL FOR UPDATE;
+SELECT username, email, email_verified, is_admin FROM users WHERE id = ? AND deleted_at IS NULL FOR UPDATE;
 
 -- name: LockOtherAdministrator :one
 SELECT id FROM users WHERE is_admin = TRUE AND deleted_at IS NULL AND id <> ? LIMIT 1 FOR UPDATE;
@@ -53,7 +62,10 @@ SELECT EXISTS(
 ) AS exists_flag;
 
 -- name: ListAllUsers :many
-SELECT * FROM users WHERE deleted_at IS NULL
+SELECT id, username, password_hash, display_name, email, email_verified,
+       pending_email, first_credential_exempt, is_admin, created_at, updated_at,
+       auth_generation, deleted_at
+FROM users WHERE deleted_at IS NULL
   AND (sqlc.narg(cursor_time) IS NULL OR created_at < sqlc.narg(cursor_time) OR (created_at = sqlc.narg(cursor_time) AND id < sqlc.narg(cursor_id)))
 ORDER BY created_at DESC, id DESC LIMIT ?;
 
@@ -62,7 +74,10 @@ ORDER BY created_at DESC, id DESC LIMIT ?;
 -- display_name_folded column matches case-insensitively -- identically to
 -- SQLite/Postgres, which fold the same way in Go rather than in the DB's collation.
 -- name: SearchUsers :many
-SELECT * FROM users
+SELECT id, username, password_hash, display_name, email, email_verified,
+       pending_email, first_credential_exempt, is_admin, created_at, updated_at,
+       auth_generation, deleted_at
+FROM users
 WHERE deleted_at IS NULL
 -- The query arg arrives as a complete LIKE prefix pattern built by
 -- store.SearchLikePattern (folded + backslash-escaped + trailing '%');
@@ -92,7 +107,7 @@ UPDATE users SET username = sqlc.arg(username), display_name = sqlc.arg(display_
 WHERE id = sqlc.arg(id);
 
 -- name: UpdateUserEmail :execresult
-UPDATE users SET email = sqlc.arg(email), email_verified = sqlc.arg(email_verified), pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = sqlc.arg(updated_at)
+UPDATE users SET email = sqlc.arg(email), email_verified = sqlc.arg(email_verified), pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id);
 
 -- name: UpdateUserEmailVerified :execresult
@@ -183,24 +198,23 @@ WHERE id = sqlc.arg(id)
 
 -- name: ClearPendingEmailCode :exec
 -- ClearPendingEmailCode drops an undelivered code and KEEPS the pending
--- address. An empty token is the "no live code, address still pending"
+-- address. A NULL token is the "no live code, address still pending"
 -- state: ConsumeVerificationAttempt and ClearStalePendingEmails both
--- filter pending_email_token != '', so neither acts on it. The clear
+-- filter pending_email_token IS NOT NULL, so neither acts on it. The clear
 -- writes the caller's unblocked_at -- the failure window a refused send
 -- leaves -- so the gate and the reported countdown agree that the retry a
 -- failed send invites waits out that window instead of landing at request
 -- speed; a NULL (the zero instant the caller binds) leaves no blockade at
--- all. Unconditional on purpose: it undoes a mint that the relay
--- refused.
-UPDATE users SET pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = sqlc.narg(unblocked_at), pending_email_attempts = 0, updated_at = NOW(3)
+-- all. Unconditional on purpose: it undoes a mint that the relay refused.
+UPDATE users SET pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = sqlc.narg(unblocked_at), pending_email_attempts = 0, updated_at = NOW(3)
 WHERE id = ?;
 
 -- name: ClearPendingEmail :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
+UPDATE users SET pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
 WHERE id = ?;
 
 -- name: PromotePendingEmail :execresult
-UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = sqlc.arg(updated_at)
+UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND pending_email != '';
 
 -- ConsumeVerificationAttempt atomically charges one attempt against
@@ -217,22 +231,22 @@ SET pending_email_expires_at = CASE
         ELSE pending_email_expires_at END,
     pending_email_attempts = pending_email_attempts + 1,
     updated_at = NOW(3)
-WHERE id = ? AND pending_email_token != '';
+WHERE id = ? AND pending_email_token IS NOT NULL;
 
 -- name: ClearCompetingPendingEmails :exec
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
+UPDATE users SET pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
 WHERE pending_email = ? AND id != ?;
 
 -- name: ClearStalePendingEmails :execresult
--- The second arm reaps a codeless row: a send the relay refused leaves the
+-- The second branch reaps a codeless row: a send the relay refused leaves the
 -- ADDRESS with no token and no expiry (ClearPendingEmailCode), so the
 -- expiry compare can never see it and an abandoned address would otherwise
 -- outlive the database. updated_at is the only instant such a row carries,
 -- and ClearPendingEmailCode stamps it.
-UPDATE users SET pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
+UPDATE users SET pending_email = '', pending_email_token = NULL, pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW(3)
 WHERE pending_email != ''
-  AND ((pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
-    OR (pending_email_token = '' AND updated_at < sqlc.arg(codeless_cutoff)));
+  AND ((pending_email_token IS NOT NULL AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
+    OR (pending_email_token IS NULL AND updated_at < sqlc.arg(codeless_cutoff)));
 
 -- The auth-generation lock/update pair has no deleted_at guard, so it
 -- would act on a soft-deleted row -- but neither revocation caller can

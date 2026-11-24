@@ -723,9 +723,12 @@ func (h *OutputHandler) hasBlockingControlsOrActiveMutation(agentID string) bool
 // took over.
 func (h *OutputHandler) clearBlockingControlsForCleanup(agentID, rootID string, retiredSink *agentOutputSink) {
 	if !h.hasBlockingControlsOrActiveMutation(agentID) {
+		if current := h.sinkForAgent(agentID); current == nil || current == retiredSink {
+			h.ForgetActivity(agentID)
+		}
 		return
 	}
-	_, _, release := h.lockControlMutation(agentID, rootID)
+	st, _, release := h.lockControlMutation(agentID, rootID)
 	publication := controlPublication{}
 	current := h.sinkForAgent(agentID)
 	var drained []blockingControlRecord
@@ -742,7 +745,7 @@ func (h *OutputHandler) clearBlockingControlsForCleanup(agentID, rootID string, 
 	if current == nil || current == retiredSink {
 		publication.activityChanged = h.recordControlRequestsRemoved(agentID, rootID) || publication.activityChanged
 	}
-	h.finishControlPublication(agentID, rootID, publication, release)
+	h.finishControlPublication(st, agentID, rootID, publication, release)
 	if current := h.sinkForAgent(agentID); current == nil || current == retiredSink {
 		h.ForgetActivity(agentID)
 	}
@@ -899,15 +902,24 @@ func (h *OutputHandler) enqueueControlCancel(agentID, requestID, claimToken stri
 }
 
 // finishControlPublication releases the mutation before logging, external reads, or watcher delivery.
-func (h *OutputHandler) finishControlPublication(agentID, rootAgentID string, publication controlPublication, release func()) {
+// It refreshes activity against st rather than calling activityFor, so a concurrent
+// ForgetActivity after release cannot be undone by re-minting a deleted entry.
+func (h *OutputHandler) finishControlPublication(st *agentActivity, agentID, rootAgentID string, publication controlPublication, release func()) {
 	release()
 	for _, failure := range publication.failures {
 		slog.Error(failure.message, failure.attributes...)
 	}
 	if publication.activityChanged {
-		h.refreshActivity(agentID, rootAgentID)
+		h.refreshActivityForEntry(st, agentID, rootAgentID)
 	}
 	h.watcher.DrainAgentEvents(agentID)
+}
+
+func (s *agentOutputSink) finishControlPublication(st *agentActivity, publication controlPublication, release func()) {
+	s.h.finishControlPublication(st, s.agentID, s.rootAgentID, publication, release)
+	if s.retired.Load() && s.h.sinkForAgent(s.agentID) == nil {
+		s.h.ForgetActivity(s.agentID)
+	}
 }
 
 // clearControlRequests runs one delete over the agent's control request rows and
@@ -928,9 +940,9 @@ func (h *OutputHandler) clearControlRequests(agentID, failureMessage string, age
 	if agentKeepsRunning {
 		lock = h.lockControlMutationRetainingEntry
 	}
-	_, _, release := lock(agentID, "")
+	st, _, release := lock(agentID, "")
 	publication := controlPublication{}
-	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
+	defer func() { h.finishControlPublication(st, agentID, "", publication, release) }()
 	deleted, err := deleteRequests(bgCtx())
 	if err != nil {
 		publication.recordFailure(failureMessage, "agent_id", agentID, "error", err)
@@ -968,9 +980,9 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 }
 
 func (h *OutputHandler) clearPendingControlRequests(agentID string) error {
-	_, _, release := h.lockControlMutation(agentID, "")
+	st, _, release := h.lockControlMutation(agentID, "")
 	publication := controlPublication{}
-	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
+	defer func() { h.finishControlPublication(st, agentID, "", publication, release) }()
 	for _, request := range h.controls.drainBlocking(agentID) {
 		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
 	}
@@ -1000,7 +1012,7 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
 func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
-	_, _, release := h.lockControlMutation(agentID, "")
+	st, _, release := h.lockControlMutation(agentID, "")
 	publication := controlPublication{}
 	for _, request := range h.controls.drainBlocking(agentID) {
 		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
@@ -1013,7 +1025,7 @@ func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
 		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
 	}
 	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
-	h.finishControlPublication(agentID, "", publication, release)
+	h.finishControlPublication(st, agentID, "", publication, release)
 	// Blocking controls were already drained under lockControlMutation above;
 	// retire the remaining agent state without re-clearing controls published
 	// by callbacks after finishControlPublication released the lock.
@@ -1655,7 +1667,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	}
 	st, scope, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
 	publication := controlPublication{}
-	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
+	defer func() { s.finishControlPublication(st, publication, release) }()
 	st.mu.Lock()
 	// A stop suppresses the blocking requests of its scope: the process no longer
 	// waits for them. A non-blocking request is a question that outlives the stop,
@@ -1854,9 +1866,12 @@ func (s *agentOutputSink) CancelControlRequestInstance(requestID, instanceID str
 }
 
 func (s *agentOutputSink) cancelControlRequest(requestID, instanceID string) {
-	_, _, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
+	if !s.ownsControlPublisher() {
+		return
+	}
+	st, _, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
 	publication := controlPublication{}
-	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
+	defer func() { s.finishControlPublication(st, publication, release) }()
 	if !s.ownsControlPublisher() {
 		return
 	}

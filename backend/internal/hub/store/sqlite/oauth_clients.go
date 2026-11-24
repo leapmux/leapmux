@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -19,53 +21,76 @@ var _ store.OAuthClientStore = (*oauthClientStore)(nil)
 // Get and List project icon length instead of its bytes. Their generated row
 // types have identical fields and support explicit conversion.
 // Create returns icon bytes, so its mapper derives HasIcon from the blob.
-func fromGetOAuthClientRow(c gendb.GetOAuthClientRow) store.OAuthClient {
-	return store.OAuthClient{
-		ClientID:           c.ClientID,
-		OwnerUserID:        c.OwnerUserID.String,
-		SecretHash:         c.SecretHash,
-		ClientName:         c.ClientName,
-		HasIcon:            sqlutil.CoerceInt64(c.IconBytes) > 0,
-		ClientURI:          c.ClientUri,
-		RedirectURIs:       c.RedirectUris,
-		Scopes:             c.Scopes,
-		GrantTypes:         c.GrantTypes,
-		ElevationAllowed:   c.ElevationAllowed,
-		RegistrationSource: c.RegistrationSource,
-		VerifiedAt:         c.VerifiedAt.Ptr(),
-		VerifiedBy:         c.VerifiedByUserID.String,
-		CreatedAt:          c.CreatedAt.Time,
-		UpdatedAt:          c.UpdatedAt.Time,
-		RevokedAt:          c.RevokedAt.Ptr(),
+func (c *sqliteConn) fromOAuthClientFields(
+	clientID string,
+	ownerUserID sql.NullString,
+	secretHash []byte,
+	clientNameCt, clientURICt, redirectURIsCt, scopesCt, grantTypesCt keystore.Ciphertext,
+	hasIcon bool,
+	elevationAllowed bool,
+	registrationSource leapmuxv1.AppRegistrationSource,
+	verifiedAt sqltime.SQLiteNullTime,
+	verifiedByUserID sql.NullString,
+	createdAt, updatedAt sqltime.SQLiteTime,
+	revokedAt sqltime.SQLiteNullTime,
+) (store.OAuthClient, error) {
+	opened, err := sqlutil.OpenOAuthClientFields(c.ks, clientID, clientNameCt, clientURICt, redirectURIsCt, scopesCt, grantTypesCt)
+	if err != nil {
+		return store.OAuthClient{}, err
 	}
+	return store.OAuthClient{
+		ClientID:           clientID,
+		OwnerUserID:        ownerUserID.String,
+		SecretHash:         secretHash,
+		ClientName:         opened.ClientName,
+		HasIcon:            hasIcon,
+		ClientURI:          opened.ClientURI,
+		RedirectURIs:       opened.RedirectURIs,
+		Scopes:             opened.Scopes,
+		GrantTypes:         opened.GrantTypes,
+		ElevationAllowed:   elevationAllowed,
+		RegistrationSource: registrationSource,
+		VerifiedAt:         verifiedAt.Ptr(),
+		VerifiedBy:         verifiedByUserID.String,
+		CreatedAt:          createdAt.Time,
+		UpdatedAt:          updatedAt.Time,
+		RevokedAt:          revokedAt.Ptr(),
+	}, nil
 }
 
-func fromCreateRow(c gendb.CreateOAuthClientRow) store.OAuthClient {
-	return store.OAuthClient{
-		ClientID:           c.ClientID,
-		OwnerUserID:        c.OwnerUserID.String,
-		SecretHash:         c.SecretHash,
-		ClientName:         c.ClientName,
-		HasIcon:            len(c.IconBlob) > 0,
-		ClientURI:          c.ClientUri,
-		RedirectURIs:       c.RedirectUris,
-		Scopes:             c.Scopes,
-		GrantTypes:         c.GrantTypes,
-		ElevationAllowed:   c.ElevationAllowed,
-		RegistrationSource: c.RegistrationSource,
-		VerifiedAt:         c.VerifiedAt.Ptr(),
-		VerifiedBy:         c.VerifiedByUserID.String,
-		CreatedAt:          c.CreatedAt.Time,
-		UpdatedAt:          c.UpdatedAt.Time,
-		RevokedAt:          c.RevokedAt.Ptr(),
-	}
+func (c *sqliteConn) fromGetOAuthClientRow(r gendb.GetOAuthClientRow) (store.OAuthClient, error) {
+	return c.fromOAuthClientFields(
+		r.ClientID, r.OwnerUserID, r.SecretHash,
+		r.ClientName, r.ClientUri, r.RedirectUris, r.Scopes, r.GrantTypes,
+		sqlutil.CoerceInt64(r.IconBytes) > 0,
+		r.ElevationAllowed, r.RegistrationSource,
+		r.VerifiedAt, r.VerifiedByUserID, r.CreatedAt, r.UpdatedAt, r.RevokedAt,
+	)
 }
 
-func fromListRow(c gendb.ListOAuthClientsRow) store.OAuthClient {
-	return fromGetOAuthClientRow(gendb.GetOAuthClientRow(c))
+func (c *sqliteConn) fromCreateRow(r gendb.CreateOAuthClientRow) (store.OAuthClient, error) {
+	return c.fromOAuthClientFields(
+		r.ClientID, r.OwnerUserID, r.SecretHash,
+		r.ClientName, r.ClientUri, r.RedirectUris, r.Scopes, r.GrantTypes,
+		r.IconBlob.Valid(),
+		r.ElevationAllowed, r.RegistrationSource,
+		r.VerifiedAt, r.VerifiedByUserID, r.CreatedAt, r.UpdatedAt, r.RevokedAt,
+	)
+}
+
+func (c *sqliteConn) fromListRow(r gendb.ListOAuthClientsRow) (store.OAuthClient, error) {
+	return c.fromGetOAuthClientRow(gendb.GetOAuthClientRow(r))
 }
 
 func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClientParams) (*store.OAuthClient, error) {
+	sealed, err := sqlutil.SealOAuthClientFields(s.conn.ks, p.ClientID, p.ClientName, p.ClientURI, p.RedirectURIs, p.Scopes, p.GrantTypes)
+	if err != nil {
+		return nil, err
+	}
+	iconBlob, iconMediaType, err := sqlutil.SealOAuthClientIcon(s.conn.ks, p.ClientID, p.IconBlob, p.IconMediaType)
+	if err != nil {
+		return nil, err
+	}
 	row, err := s.conn.q.CreateOAuthClient(ctx, gendb.CreateOAuthClientParams{
 		ClientID: p.ClientID,
 		// An EMPTY owner is SQL NULL, which is what makes the app hub-wide.
@@ -73,13 +98,13 @@ func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClient
 		// because no users.id is ever empty.
 		OwnerUserID:        sqlutil.NullNonEmpty(p.OwnerUserID),
 		SecretHash:         p.SecretHash,
-		ClientName:         p.ClientName,
-		IconBlob:           p.IconBlob,
-		IconMediaType:      p.IconMediaType,
-		ClientUri:          p.ClientURI,
-		RedirectUris:       p.RedirectURIs,
-		Scopes:             p.Scopes,
-		GrantTypes:         p.GrantTypes,
+		ClientName:         sealed.ClientName,
+		IconBlob:           iconBlob,
+		IconMediaType:      iconMediaType,
+		ClientUri:          sealed.ClientURI,
+		RedirectUris:       sealed.RedirectURIs,
+		Scopes:             sealed.Scopes,
+		GrantTypes:         sealed.GrantTypes,
 		ElevationAllowed:   p.ElevationAllowed,
 		RegistrationSource: p.RegistrationSource,
 		VerifiedAt:         sqltime.NewSQLiteNullTime(p.VerifiedAt),
@@ -88,7 +113,10 @@ func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClient
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	out := fromCreateRow(row)
+	out, err := s.conn.fromCreateRow(row)
+	if err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -97,7 +125,10 @@ func (s *oauthClientStore) Get(ctx context.Context, clientID string) (*store.OAu
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	out := fromGetOAuthClientRow(row)
+	out, err := s.conn.fromGetOAuthClientRow(row)
+	if err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -122,9 +153,13 @@ func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
+	iconBlob, iconMediaType, err := sqlutil.OpenOAuthClientIcon(s.conn.ks, clientID, row.IconBlob, row.IconMediaType)
+	if err != nil {
+		return nil, err
+	}
 	return &store.OAuthClientIcon{
-		IconBlob:           row.IconBlob,
-		IconMediaType:      row.IconMediaType,
+		IconBlob:           iconBlob,
+		IconMediaType:      iconMediaType,
 		VerifiedAt:         row.VerifiedAt.Ptr(),
 		RegistrationSource: row.RegistrationSource,
 		RevokedAt:          row.RevokedAt.Ptr(),
@@ -132,13 +167,17 @@ func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store
 }
 
 func (s *oauthClientStore) UpsertBuiltIn(ctx context.Context, p store.UpsertBuiltInClientParams) error {
+	sealed, err := sqlutil.SealOAuthClientFields(s.conn.ks, p.ClientID, p.ClientName, p.ClientURI, p.RedirectURIs, p.Scopes, p.GrantTypes)
+	if err != nil {
+		return err
+	}
 	return s.conn.queryError(s.conn.q.UpsertBuiltInOAuthClient(ctx, gendb.UpsertBuiltInOAuthClientParams{
 		ClientID:           p.ClientID,
-		ClientName:         p.ClientName,
-		ClientUri:          p.ClientURI,
-		RedirectUris:       p.RedirectURIs,
-		Scopes:             p.Scopes,
-		GrantTypes:         p.GrantTypes,
+		ClientName:         sealed.ClientName,
+		ClientUri:          sealed.ClientURI,
+		RedirectUris:       sealed.RedirectURIs,
+		Scopes:             sealed.Scopes,
+		GrantTypes:         sealed.GrantTypes,
 		ElevationAllowed:   p.ElevationAllowed,
 		RegistrationSource: p.RegistrationSource,
 		CreatedAt:          sqltime.NewSQLiteTime(p.CreatedAt),
@@ -154,11 +193,11 @@ func (s *oauthClientStore) List(ctx context.Context, p store.ListOAuthClientsPar
 		// "what may THIS user see", and there is no such user.
 		return store.Page[store.OAuthClient]{}, nil
 	}
-	return store.QueryPage(ctx, p.Limit,
+	return store.QueryPageErr(ctx, p.Limit,
 		func() (gendb.ListOAuthClientsParams, error) {
 			return listOAuthClientsParams(owner, p)
 		},
-		s.conn.q.ListOAuthClients, fromListRow, s.conn.queryError)
+		s.conn.q.ListOAuthClients, s.conn.fromListRow, s.conn.queryError)
 }
 
 func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClientParams) (int64, error) {
@@ -171,20 +210,20 @@ func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClient
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
+	sealed, err := sqlutil.SealOAuthClientFields(s.conn.ks, p.ClientID, p.ClientName, p.ClientURI, p.RedirectURIs, p.Scopes, p.GrantTypes)
+	if err != nil {
+		return 0, err
+	}
 	return s.conn.rowsAffected(s.conn.q.UpdateOAuthClient(ctx, gendb.UpdateOAuthClientParams{
 		BuiltinSource: store.OAuthClientSourceBuiltin,
 		ClientID:      p.ClientID,
-		ClientName:    p.ClientName,
-		ClientUri:     p.ClientURI,
-		RedirectUris:  p.RedirectURIs,
-		Scopes:        p.Scopes,
-		GrantTypes:    p.GrantTypes,
+		ClientName:    sealed.ClientName,
+		ClientUri:     sealed.ClientURI,
+		RedirectUris:  sealed.RedirectURIs,
+		Scopes:        sealed.Scopes,
+		GrantTypes:    sealed.GrantTypes,
 		CallerIsAdmin: p.CallerIsAdmin,
-		// An unminted caller matches no OWNED row, because no users.id is ever
-		// empty -- so the hub-wide arm (which needs CallerIsAdmin) is the only
-		// one such a caller could satisfy, and only if the service really did
-		// resolve an administrator.
-		CallerUserID: sql.NullString{String: owner, Valid: true},
+		CallerUserID:  sql.NullString{String: owner, Valid: true},
 	}))
 }
 
@@ -216,11 +255,15 @@ func (s *oauthClientStore) SetIcon(ctx context.Context, p store.SetOAuthClientIc
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
+	iconBlob, iconMediaType, err := sqlutil.SealOAuthClientIcon(s.conn.ks, p.ClientID, p.IconBlob, p.IconMediaType)
+	if err != nil {
+		return 0, err
+	}
 	return s.conn.rowsAffected(s.conn.q.SetOAuthClientIcon(ctx, gendb.SetOAuthClientIconParams{
 		BuiltinSource: store.OAuthClientSourceBuiltin,
 		ClientID:      p.ClientID,
-		IconBlob:      p.IconBlob,
-		IconMediaType: p.IconMediaType,
+		IconBlob:      iconBlob,
+		IconMediaType: iconMediaType,
 		CallerIsAdmin: p.CallerIsAdmin,
 		CallerUserID:  sql.NullString{String: owner, Valid: true},
 	}))
@@ -314,23 +357,15 @@ func (s *oauthClientStore) ListUserTokenRefs(ctx context.Context, clientID strin
 	if user.IsZero() {
 		return nil, store.ErrInvalidArgument
 	}
-	return s.conn.userTokenRefsOf(s.conn.q.ListUserAPITokenIDsForOAuthClient(ctx, gendb.ListUserAPITokenIDsForOAuthClientParams{
+	rows, err := s.conn.q.ListUserAPITokenIDsForOAuthClient(ctx, gendb.ListUserAPITokenIDsForOAuthClientParams{
 		ClientID: clientID,
 		UserID:   user.String(),
-	}))
-}
-
-// userTokenRefsOf maps the per-user query rows. Individual generated token
-// rows support explicit conversion, but their slice types do not.
-func (c *sqliteConn) userTokenRefsOf(rows []gendb.ListUserAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
-	if err != nil {
-		return nil, c.queryError(err)
+	})
+	converted := make([]gendb.ListAPITokenIDsForOAuthClientRow, len(rows))
+	for i, r := range rows {
+		converted[i] = gendb.ListAPITokenIDsForOAuthClientRow(r)
 	}
-	out := make([]store.APITokenRef, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, store.APITokenRef{ID: r.ID, UserID: r.UserID, GrantedScopes: r.GrantedScopes})
-	}
-	return out, nil
+	return s.conn.tokenRefsOf(converted, err)
 }
 
 func (s *oauthClientStore) RevokeTokens(ctx context.Context, clientID string) (int64, error) {
@@ -355,7 +390,11 @@ func (c *sqliteConn) tokenRefsOf(rows []gendb.ListAPITokenIDsForOAuthClientRow, 
 	}
 	out := make([]store.APITokenRef, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, store.APITokenRef{ID: r.ID, UserID: r.UserID, GrantedScopes: r.GrantedScopes})
+		grantedScopes, err := c.ks.OpenString(r.GrantedScopes, sqlutil.APITokenGrantedScopesAAD(r.ID))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, store.APITokenRef{ID: r.ID, UserID: r.UserID, GrantedScopes: grantedScopes})
 	}
 	return out, nil
 }

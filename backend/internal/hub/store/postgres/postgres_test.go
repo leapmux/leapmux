@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
@@ -38,6 +39,21 @@ func startPostgresContainer(t *testing.T) string {
 	}.Start(t)
 
 	return dsn(host, port)
+}
+
+func TestOpenRejectsNilKeystore(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.PostgresConfig{DSN: "postgres://test:test@127.0.0.1:5432/leapmux_test?sslmode=disable"}
+
+	st, err := postgres.Open(ctx, cfg, nil)
+	require.Error(t, err)
+	assert.Nil(t, st)
+	assert.Contains(t, err.Error(), "keystore")
+
+	st, err = postgres.OpenWithoutMigrate(ctx, cfg, nil)
+	require.Error(t, err)
+	assert.Nil(t, st)
+	assert.Contains(t, err.Error(), "keystore")
 }
 
 func TestPostgresStore(t *testing.T) {
@@ -86,10 +102,11 @@ func TestPostgresStore(t *testing.T) {
 // id column can silently omit it; information_schema reports collation_name
 // only when it differs from the database default, so asserting the literal
 // 'C' catches an omitted clause even in a C-locale test database.
-// Point-lookup secrets that never tiebreak a cursor (device_code, user_code,
-// code, state, token, auth_token, provider_subject) also carry COLLATE "C"
-// for byte-wise equality, but fall outside the name shape and are not
-// enumerated here.
+// Point-lookup TEXT identifiers that never tiebreak a cursor (state, token,
+// auth_token) also carry COLLATE "C" for byte-wise equality, but fall outside
+// the name shape and are not enumerated here; hashed bearer codes
+// (device_code_hash, user_code_hash, code_hash) are BYTEA columns and carry no
+// collation.
 // Live twin of mysql's TestMySQLBinaryCollationLive; sqlite needs no
 // counterpart because its TEXT comparison is BINARY unless a collation is
 // declared. YugabyteDB inherits this pin via the shared migration.

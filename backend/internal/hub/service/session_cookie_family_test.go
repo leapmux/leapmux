@@ -45,7 +45,7 @@ func TestSessionCookieFamilyPolicyTransition(t *testing.T) {
 					require.NoError(t, st.Users().Create(t.Context(), store.CreateUserParams{
 						ID: id.Generate(), Username: nextUsername, PasswordHash: admin.PasswordHash, FirstCredentialExempt: true,
 					}))
-					set := servicetest.NewSettingsManager(t, st, nil)
+					set := servicetest.NewSettingsManager(t, st)
 					require.NoError(t, settings.KeySecureCookies.Set(t.Context(), set, transition.initial))
 					if transition.trusted {
 						require.NoError(t, set.Update(t.Context(), requestsource.KeyTrustedProxyRanges, json.RawMessage(`["127.0.0.1/32","::1/128"]`)))

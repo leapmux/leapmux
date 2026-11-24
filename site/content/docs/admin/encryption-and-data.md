@@ -9,7 +9,7 @@ This chapter is for administrators who run a LeapMux **Hub** (or a solo-mode ins
 
 It covers two distinct encryption systems that are easy to confuse:
 
-- **Encryption at rest** — the Hub encrypts a small set of stored secrets (OAuth client secrets, passkey public keys, and Hub settings secrets) using a local **keystore** (the `encryption.key` file). This chapter is mostly about this.
+- **Encryption at rest** — the Hub encrypts all eligible sensitive and user-data columns across 15 database tables (14 persistent tables and 1 short-lived transient table) using a local **keystore** (the `encryption.key` file). This chapter is mostly about this.
 - **End-to-end encryption (E2EE)** — Frontend-to-Worker traffic is encrypted while the Hub relays it. A Hub that only observes cannot read the content. The Hub remains trusted for identity and Frontend code. That protocol is covered in [Security & Threat Model](/docs/admin/security/); this chapter only touches the Worker key material you must back up.
 
 For where these settings live and how to set them, see [Configuration](/docs/admin/configuration/). For key rotation commands, see [Recovery](/docs/admin/recover/).
@@ -20,14 +20,14 @@ LeapMux keeps three kinds of persistent state:
 
 | Data | Where it lives | Encrypted at rest? |
 | --- | --- | --- |
-| Accounts, workspaces, Workers, sessions, API tokens | Hub database (`hub.db` or your SQL backend) | No (but secrets within it are hashed or encrypted — see below) |
-| OAuth provider client secrets | Hub database | **Yes** — encrypted with the keystore key |
-| Hub settings secret halves (SMTP password, captcha provider keys) | Hub database | **Yes** — encrypted with the keystore key |
-| Passkey credential public keys | Hub database | **Yes** — encrypted with the keystore key (AAD binds each row) |
-| API-token / delegation-token secrets | Hub database | HMAC-SHA256 digest (a hash-based message authentication code, keyed by the token pepper) |
+| Encrypted Hub columns (37 columns across 15 tables — 14 persistent, 1 transient; see list below) | Hub database (`hub.db` or your SQL backend) | **Yes** — XChaCha20-Poly1305 with the keystore key and per-column AAD |
+| Indexed routing and lookup columns (user IDs, usernames, emails, display names, timestamps, foreign keys) | Hub database | No — needed for SQL lookups, joins, sorting, and unique constraints |
+| API-token and delegation-token secrets | Hub database | HMAC-SHA256 digest (a hash-based message authentication code, keyed by the token pepper) |
+| Confidential app client secrets | Hub database | HMAC-SHA256 digest (peppered) |
 | Session secrets | Hub database | HMAC-SHA256 digest (peppered) |
 | Worker auth tokens | Hub database | HMAC-SHA256 digest (peppered) |
 | Registration keys | Hub database | HMAC-SHA256 digest (peppered) |
+| OAuth authorization codes | Hub database | HMAC-SHA256 digest (peppered) |
 | Worker public keys (pinned at registration) | Hub database | No — public material, stored in the clear |
 | Agent transcripts, terminal I/O, worktree/session state | Worker's local SQLite (`worker.db`) | No |
 | Worker E2EE private keys + Hub auth token | Worker's `state.json` | No — plain JSON, file mode `0600` |
@@ -38,23 +38,38 @@ A Hub that only observes cannot read agent transcripts, tool calls, terminal out
 
 ### Encryption at rest details
 
-The keystore encrypts secrets with **XChaCha20-Poly1305** (a 256-bit key, 24-byte random nonce per ciphertext). Each ciphertext records which key version produced it, so the Hub can pick the right key to decrypt as long as that key version is still in the ring.
+The keystore encrypts every eligible Hub column with **XChaCha20-Poly1305** (a 256-bit key and a 24-byte random nonce per ciphertext). Each ciphertext carries a 4-byte key-version prefix, so the Hub picks the right key to decrypt as long as that key version stays in the ring. Each ciphertext also binds its table name, column name, and row key as **additional authenticated data (AAD)**, so ciphertext cannot be swapped between rows or columns.
 
-Exactly these secret types are encrypted at rest in the Hub database:
+The Hub encrypts 37 columns across 15 tables at the storage boundary:
 
-- `oauth_providers.client_secret` — the OAuth provider's client secret.
-- `hub_settings.secret` — the secret half of Hub settings rows: the SMTP password and the captcha provider keys.
-- `passkey_credentials.public_key` — the WebAuthn credential public key bytes.
+**Persistent encrypted tables (14 tables, 33 columns — covered by `reencrypt` and `remove`):**
 
-Each passkey row uses its own row id as **additional authenticated data**, so ciphertext cannot be swapped between rows.
+- `users`: `password_hash`, `prefs`, `pending_email_token`
+- `user_sessions`: `user_agent`, `ip_address`
+- `workspaces`: `title`
+- `workspace_sections`: `name`
+- `user_state`: `state_payload`
+- `user_op_batches`: `batch_payload`, `transitions_payload`
+- `lifecycle_outbox`: `payload`
+- `worker_tab_publications`: `response_payload`
+- `oauth_clients`: `client_name`, `icon_blob`, `icon_media_type`, `client_uri`, `redirect_uris`, `scopes`, `grant_types`
+- `api_tokens`: `installation_name`, `granted_scopes`
+- `delegation_tokens`: `granted_scopes`
+- `oauth_providers`: `name`, `issuer_url`, `client_id`, `client_secret`, `scopes`
+- `passkey_credentials`: `public_key`, `aaguid`, `transports`, `friendly_name`
+- `hub_settings`: `value`, `secret`
 
-The keystore loads its versioned key ring from `encryption.key` (highest version = active) and encrypts and decrypts only the columns listed above. Everything else is stored without the key: accounts, workspaces, Workers, Worker public keys, hashed API-token secrets, and passkey metadata that is not the public key (friendly names, credential ids, sign counts). The Worker's public keys are public material and are stored in the clear.
+**Short-lived transient encrypted table (1 table, 4 columns — auto-expiring, excluded from `reencrypt` and `remove`):**
 
-The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
+- `oauth_authorization_codes`: `code_challenge`, `redirect_uri`, `granted_scopes`, `installation_name`
 
-Session secrets, Worker auth tokens, registration keys, and API/delegation token secrets are **not** encrypted. They use HMAC-SHA256 digests keyed by a dedicated, stable pepper that is independent of the encryption key ring. The database therefore holds none of these bearer secrets in plaintext. Device authorization codes are held only in Hub memory as peppered HMAC-SHA256 digests and are never written to the database. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/using/control-cli/) for token management.
+The remaining columns stay unencrypted because SQL uses them for lookups, routing, sorting, uniqueness checks, or foreign keys: primary keys, foreign keys, `users.username`, `users.email`, `users.display_name`, `users.display_name_folded`, timestamps, status ordinals, counters, passkey `credential_id` and `sign_count`, and Worker public keys (which are public material).
 
-Account passwords are hashed with **Argon2id** using OWASP-recommended parameters; the Hub never stores or transmits the plaintext after hashing. See [Password requirements](/docs/using/accounts/#password-requirements).
+The key lives in a separate file from the database, so a copy of the database alone leaves all 37 encrypted columns readable only as ciphertext — which is why the two must be backed up together.
+
+Session secrets, Worker auth tokens, registration keys, OAuth authorization codes, API/delegation token secrets, and confidential app client secrets are **not** encrypted. They use HMAC-SHA256 digests keyed by a dedicated, stable pepper that is independent of the encryption key ring. The database therefore holds none of these bearer secrets in plaintext. Device authorization codes are held only in Hub memory as peppered HMAC-SHA256 digests and are never written to the database. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/using/control-cli/) for token management.
+
+Account passwords are hashed with **Argon2id** using OWASP-recommended parameters, and the resulting `users.password_hash` column is also encrypted at rest; the Hub never stores or transmits the plaintext password after hashing. See [Password requirements](/docs/using/accounts/#password-requirements).
 
 ## The encryption key file (`encryption.key`)
 
@@ -77,10 +92,10 @@ A key file looks like this:
 pepper:cGVwcGVyIGlzIGEgc2VwYXJhdGUgc3RhYmxlIHNlY3JldA==
 ```
 
-The **highest version number is the active key** — it encrypts all new secrets. Older versions stay in the file only to decrypt data written before a rotation.
+The **highest version number is the active key** — it encrypts all newly written protected columns across the 15 encrypted Hub tables. Older versions stay in the file only to decrypt data written before a rotation.
 
 {{< callout type="warning" >}}
-Treat `encryption.key` as a top-grade secret. There is no master-password or HSM wrapping around it — the file contains the raw keys. Anyone who has both this file and a copy of the database can decrypt every stored OAuth secret. Conversely, **losing this file makes all encrypted columns permanently unreadable** (see [Backup & restore](#backup--restore)).
+Treat `encryption.key` as a top-grade secret. There is no master-password or HSM wrapping around it — the file contains the raw keys. Anyone who has both this file and a copy of the database can decrypt all 37 encrypted Hub columns across 15 tables. Conversely, **losing this file makes all encrypted columns permanently unreadable** (see [Backup & restore](#backup--restore)).
 {{< /callout >}}
 
 There is nothing to configure to turn encryption on. Running the Hub once is enough:
@@ -99,9 +114,9 @@ Rotation generates a new active key version. Existing ciphertext stays readable 
 | Command | Summary |
 | --- | --- |
 | `leapmux recover encryption-key rotate` | Generate and add a new encryption key version |
-| `leapmux recover encryption-key reencrypt` | Re-encrypt all secrets with the active key |
+| `leapmux recover encryption-key reencrypt` | Re-encrypt all persistent encrypted columns with the active key |
 | `leapmux recover encryption-key remove --version <N>` | Remove an old encryption key version |
-| `leapmux recover encryption-key rotate-pepper --yes` | Regenerate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app client secrets, registration keys, and device codes |
+| `leapmux recover encryption-key rotate-pepper --yes` | Regenerate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app client secrets, registration keys, device codes, and OAuth authorization codes |
 
 These commands do **not** all take the same flags, because they touch different things:
 
@@ -112,11 +127,11 @@ These commands do **not** all take the same flags, because they touch different 
 | `remove` | `--data-dir`, `--config`, `--version` (required) | The local key file **and** the Hub database |
 | `reencrypt` | `--data-dir`, `--config` | The local key file **and** the Hub database |
 
-`reencrypt` and `remove` open the database, so both accept `--config` (point it at the same config file the Hub uses, so they target the same backend). `remove` reads the database to check whether any ciphertext still depends on the version being removed (see the runbook warning below). `rotate` and `rotate-pepper` work purely on the local key file and accept `--data-dir` only — passing `--config` to either makes the command fail flag parsing. Like any store-opening command, `reencrypt` and `remove` run pending migrations first. See [Recovery](/docs/admin/recover/) for the full flag reference.
+`reencrypt` and `remove` open the database without running schema migrations, so both accept `--config` (point it at the same config file the Hub uses, so they target the same backend). All four commands require an existing `encryption.key` file and never create one. `remove` reads the database to check ciphertext headers across all 14 persistent encrypted tables before deleting a version (see the runbook warning below). `rotate` and `rotate-pepper` work purely on the local key file and accept `--data-dir` only — passing `--config` to either makes the command fail flag parsing. See [Recovery](/docs/admin/recover/) for the full flag reference.
 
 ### Rotation runbook
 
-Follow these steps in order. The `remove` step is guarded — it refuses to delete a version that still encrypts data — so skipping `reencrypt` fails loudly instead of destroying data.
+Follow these steps in order. The `remove` step is guarded — it refuses to delete a version that still encrypts persistent data — so skipping `reencrypt` fails loudly instead of destroying data.
 
 1. **Add a new key version.**
 
@@ -135,16 +150,16 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
    sudo systemctl restart leapmux-hub
    ```
 
-3. **Re-encrypt existing secrets to the new version.**
+3. **Re-encrypt existing persistent rows to the new version.**
 
    ```bash
    leapmux recover encryption-key reencrypt
-   # Re-encrypted 7 secrets to key version 2.
+   # Re-encrypted 18 encrypted rows to key version 2.
    ```
 
-   This walks every OAuth provider secret, Hub settings secret, and passkey credential public key still encrypted under an older version, decrypts it, and rewrites it under the active version. Rows already at the active version are skipped.
+   This walks all 14 persistent encrypted tables (33 columns), checks each ciphertext's 4-byte key-version header, decrypts every column still encrypted under an older version, and rewrites it under the active version inside a transaction. Rows already at the active version are skipped.
 
-4. **(Optional) Remove the retired version** once nothing references it, then restart the Hub.
+4. **(Optional) Remove the retired version** once nothing refers to it, then restart the Hub.
 
    ```bash
    leapmux recover encryption-key remove --version 1
@@ -154,9 +169,9 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
    ```
 
 {{< callout type="warning" >}}
-`remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` opens the database and **refuses** to delete a version that still encrypts OAuth provider secrets, settings secrets, or passkey credential public keys — it reports what still refers to the version and tells you to run `reencrypt` first.
+`remove` permanently destroys a key version, so any ciphertext still encrypted under it would become undecryptable. As a guardrail, `remove` inspects ciphertext headers across all 14 persistent encrypted tables and **refuses** to delete a version that still encrypts any persistent row — it lists each affected table and row count and tells you to run `reencrypt` first.
 
-It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`.
+It also refuses to delete the **active** version (`cannot remove active key version N`) and fails if the version is not in the ring (`keystore: key version N not in ring`). `--version` is required and must be `>= 1`. The short-lived transient table (`oauth_authorization_codes`) is intentionally outside `reencrypt` and `remove`: its rows expire within minutes, so an in-flight authorization simply fails and the user retries.
 {{< /callout >}}
 
 ### Rotation and API tokens
@@ -178,7 +193,7 @@ The command requires `--yes` and takes effect on the next Hub restart. Rotating 
 - Signs out every session
 - Invalidates every Worker auth token
 - Invalidates API and delegation tokens and confidential app client secrets
-- Invalidates live registration keys and pending device codes
+- Invalidates live registration keys, pending device codes, and pending OAuth authorization codes
 
 Account-recovery links do not use the pepper. Pepper rotation does not invalidate them. Their existing expiry, attempt limits, and consumption checks still apply.
 
@@ -222,11 +237,11 @@ Each Worker keeps its **own** separate SQLite database at `{data_dir}/worker.db`
 
 ## Migrations
 
-LeapMux uses **goose** for schema migrations, and migrations are applied **automatically every time the database is opened** — at Hub startup, and whenever a store-opening admin command runs. In normal operation you never have to run migrations by hand; starting the Hub brings the schema up to date.
+LeapMux uses **goose** for schema migrations, and migrations are applied **automatically at Hub startup** and during `leapmux recover bootstrap create-admin`. In normal operation you never have to run migrations by hand; starting the Hub brings the schema up to date.
 
 Each backend embeds its own migrations. The current schema is a single initial migration, so the latest version is `1`.
 
-The `leapmux recover db` commands let you inspect and (where supported) control migrations:
+The `leapmux recover db` commands let you inspect and (where supported) control migrations. Both `db version` and `db migrate` require an existing `encryption.key` file and open the database without auto-migrating first:
 
 | Command | Summary | Notes |
 | --- | --- | --- |
@@ -235,7 +250,7 @@ The `leapmux recover db` commands let you inspect and (where supported) control 
 {{< callout type="info" >}}
 `db path` prints the default SQLite location only. Point `db version` or `db migrate` at a custom backend with `--config`.
 {{< /callout >}}
-| `leapmux recover db version` | Show current schema version | Opens the store (which applies pending migrations), then prints current and latest versions. |
+| `leapmux recover db version` | Show current schema version | Opens the store without auto-migrating, then prints current and latest versions. |
 | `leapmux recover db migrate` | Run schema migrations | `--version <int64>` selects a target (default `-1` = latest). |
 
 Example:
@@ -251,7 +266,7 @@ leapmux recover db migrate
 # Already at latest version.
 ```
 
-Because opening the store already migrates up to the latest version, an explicit `migrate` to the latest is mostly a confirmation. Supplying an explicit `--version` lower than the current schema attempts a **down**-migration to that version (where the backend's migrations support it). Targeting a specific version reports the version it migrates to, and then the new current version.
+Supplying an explicit `--version` lower than the current schema attempts a **down**-migration to that version (where the backend's migrations support it). Targeting a specific version reports the version it migrates to, and then the new current version.
 
 ```bash
 # Target a specific version (down-migration support depends on the backend)
@@ -263,7 +278,7 @@ Like `encryption-key reencrypt`, both `recover db version` and `recover db migra
 ## Backup & restore
 
 {{< callout type="warning" >}}
-The Hub database and the `encryption.key` file are a **matched pair**. Back them up together and restore them together. With the database but no key file, every encrypted OAuth secret is permanently unreadable. With the key file but no database, you have nothing to decrypt.
+The Hub database and the `encryption.key` file are a **matched pair**. Back them up together and restore them together. With the database but no key file, all 37 encrypted Hub columns across 15 tables are permanently unreadable. With the key file but no database, you have nothing to decrypt.
 {{< /callout >}}
 
 **On-disk data to back up (Hub host vs. each Worker host):**
@@ -308,7 +323,7 @@ A correct, restorable backup of a single-machine Hub is: a consistent copy of `h
 2. Restore the database into place (copy the SQLite file back, or load your SQL dump into the target server).
 3. Restore `encryption.key` to its original path (or set `encryption_key_path` to wherever you placed it).
 4. Restore each Worker's `state.json` to its data dir.
-5. Start the Hub. It will apply any pending migrations automatically on open, then load the keystore.
+5. Start the Hub. It loads the keystore first, then opens the store and applies any pending migrations automatically.
 
 You can restore a whole data directory at another path, as the same operating-system account. The first command at the new path adopts it; see [Move an instance to another directory](/docs/admin/starting-and-stopping/#move-an-instance-to-another-directory).
 
@@ -316,7 +331,7 @@ A Worker that registered after the backup the database came from has no row in t
 
 ### Disaster-recovery notes
 
-- **Lost `encryption.key`, database intact:** encrypted OAuth provider client secrets, settings secrets, and passkey public keys are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then re-enter OAuth provider client secrets (existing user-to-provider links are unencrypted and remain intact). A fresh file also gets a fresh token pepper. It signs out every session and invalidates every Worker auth token. API and delegation tokens become invalid too, along with live registration keys, pending device codes, and app client secrets. Follow the [pepper recovery steps](#rotation-and-api-tokens) for standalone Workers. Encrypted settings secrets (SMTP, captcha) reset to their defaults. Non-encrypted data (accounts, workspaces) is unaffected.
+- **Lost `encryption.key`, database intact:** all 37 encrypted columns across 15 Hub tables are permanently unrecoverable — including password hashes, user preferences, workspace titles, workspace section names, CRDT user state and op batches, lifecycle outbox payloads, tab publications, OAuth clients and providers, API/delegation token scopes and names, passkeys, and Hub settings. If a `captcha.altcha` settings row exists and cannot decrypt, Hub startup aborts until you restore `encryption.key`. A new key file also carries a new token pepper, which signs out every session and invalidates every Worker auth token, API/delegation token, confidential app client secret, live registration key, pending device code, and pending OAuth authorization code. Restore the database and matching `encryption.key` from backup together, or re-initialize the Hub and follow the [pepper recovery steps](#rotation-and-api-tokens) for standalone Workers.
 - **Lost `hub.db`, key intact:** the key alone cannot reconstruct accounts or workspaces. Restore the database from backup.
 - **Lost a Worker's `state.json`:** deregister the old Worker entry, then register again with a fresh registration key from the Hub UI. That creates a new Worker ID, which clients pin as a new Worker, so no key-change dialog appears. See [Managing Workers](/docs/admin/managing-workers/).
 - **Lost `worker.db`:** the Worker recovers as a fresh Worker; in-progress agent transcripts and terminal scrollback held only in that database are lost. The Worker's identity (`state.json`) is unaffected.

@@ -1332,6 +1332,156 @@ func TestCleanupWaitsForInFlightBlockingControlPublishAndClearsIt(t *testing.T) 
 	assert.False(t, leakedActivity, "cleanup must not leak an activity entry after waiting for control mutation")
 }
 
+func TestClearBlockingControlsForCleanup_ForgetsActivityAfterRetiredPublishExitsEarly(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var enteredOnce sync.Once
+	svc.Output.WaitActivityRefreshes()
+	svc.Output.queries = db.New(observedControlQuery{
+		DBTX: svc.DB,
+		onQuery: func(query string) {
+			if strings.Contains(query, "-- name: GetControlRequest :one") {
+				enteredOnce.Do(func() {
+					close(entered)
+					<-release
+				})
+			}
+		},
+	})
+	publishDone := make(chan error, 1)
+	go func() {
+		publishDone <- sink.PublishControlRequest(agent.ControlRequest{
+			RequestID: "req-early-exit", Payload: []byte(`{"id":1,"method":"approve"}`),
+		})
+	}()
+	<-entered
+
+	// Retire the sink while PublishControlRequest holds controlMutations > 0, so
+	// retireAgentState leaves the activity entry for clearBlockingControlsForCleanup.
+	rootID, retiredIDs, retiredSink, retired := svc.Output.retireAgentState("agent-1")
+	require.True(t, retired)
+	_, retained := svc.Output.activity.Load("agent-1")
+	require.True(t, retained, "retireAgentState must leave the activity entry while a control mutation is active")
+
+	// Let PublishControlRequest observe retirement, skip inserting a blocking
+	// control, and decrement controlMutations to 0 before clearBlockingControlsForCleanup runs.
+	close(release)
+	require.NoError(t, <-publishDone)
+
+	svc.Output.clearBlockingControlsForCleanup("agent-1", rootID, retiredSink)
+	svc.Output.finishAgentCleanup("agent-1", retiredIDs)
+
+	_, leaked := svc.Output.activity.Load("agent-1")
+	assert.False(t, leaked, "clearBlockingControlsForCleanup must forget a retained activity entry even after the retired publish exited without writing a control")
+}
+
+func TestFinishControlPublication_DoesNotRemintForgottenActivity(t *testing.T) {
+	t.Parallel()
+	svc, _, _, _ := stopOwnershipFixture(t)
+	st, _, release := svc.Output.lockControlMutation("agent-1", "agent-1")
+	svc.Output.finishControlPublication(st, "agent-1", "agent-1", controlPublication{activityChanged: true}, func() {
+		release()
+		svc.Output.ForgetActivity("agent-1")
+		_, present := svc.Output.activity.Load("agent-1")
+		require.False(t, present, "ForgetActivity must remove the entry once release decrements controlMutations")
+	})
+
+	_, leaked := svc.Output.activity.Load("agent-1")
+	assert.False(t, leaked, "finishControlPublication must not re-mint an activity entry removed after release")
+}
+
+func TestClearBlockingControlsForCleanup_FastPathPreservesReplacementSinkActivity(t *testing.T) {
+	t.Parallel()
+	svc, _, _, _ := stopOwnershipFixture(t)
+	oldSinkImpl := requireRootOutputSink(t, svc.Output, "agent-1")
+
+	// Install a replacement sink with a live activity entry and no blocking controls
+	// so clearBlockingControlsForCleanup takes its fast path (!hasBlockingControlsOrActiveMutation).
+	newSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc.Output.NoteAgentProcessStarted("agent-1")
+	newSink.SetTurnState(agent.TurnState{Active: true}, 1)
+	require.False(t, svc.Output.hasBlockingControlsOrActiveMutation("agent-1"))
+	_, loadedBefore := svc.Output.activity.Load("agent-1")
+	require.True(t, loadedBefore)
+
+	svc.Output.clearBlockingControlsForCleanup("agent-1", "agent-1", oldSinkImpl)
+
+	_, loadedAfter := svc.Output.activity.Load("agent-1")
+	assert.True(t, loadedAfter, "fast-path cleanup for a retired sink must preserve the replacement sink's activity entry")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+}
+
+func TestLockControlMutation_DecrementsCountBeforeUnlockingControlMu(t *testing.T) {
+	t.Parallel()
+	svc, _, _, _ := stopOwnershipFixture(t)
+
+	st, _, releaseFirst := svc.Output.lockControlMutation("agent-1", "agent-1")
+	acquiredSecond := make(chan int, 1)
+	go func() {
+		st2, _, releaseSecond := svc.Output.lockControlMutation("agent-1", "agent-1")
+		defer releaseSecond()
+		st2.mu.Lock()
+		count := st2.controlMutations
+		st2.mu.Unlock()
+		acquiredSecond <- count
+	}()
+
+	require.Eventually(t, func() bool {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return st.controlMutations == 2
+	}, 5*time.Second, time.Millisecond)
+
+	releaseFirst()
+
+	assert.Equal(t, 1, <-acquiredSecond,
+		"the previous holder must decrement controlMutations before unlocking controlMu so cleanup never skips ForgetActivity")
+}
+
+func TestRetiredSinkControlCancelAndFinish_ActivityCleanup(t *testing.T) {
+	t.Parallel()
+
+	t.Run("retired sink without replacement does not leak activity", func(t *testing.T) {
+		t.Parallel()
+		svc, _, _, _ := stopOwnershipFixture(t)
+		sinkImpl := requireRootOutputSink(t, svc.Output, "agent-1")
+		svc.Output.CleanupAgent("agent-1")
+		_, present := svc.Output.activity.Load("agent-1")
+		require.False(t, present)
+
+		// Direct cancelControlRequest skips lockControlMutation when retired.
+		sinkImpl.cancelControlRequest("req-retired", "")
+		_, present = svc.Output.activity.Load("agent-1")
+		assert.False(t, present, "retired cancelControlRequest must not mint an activity entry")
+
+		// Even if a retired sink passed the initial ownsControlPublisher check
+		// before CleanupAgent ran and then acquired lockControlMutation, its
+		// finishControlPublication forgets the minted entry when no live sink exists.
+		st, _, release := svc.Output.lockControlMutation("agent-1", "agent-1")
+		sinkImpl.finishControlPublication(st, controlPublication{}, release)
+		_, present = svc.Output.activity.Load("agent-1")
+		assert.False(t, present, "retired sink finishControlPublication must forget an activity entry when no replacement sink exists")
+	})
+
+	t.Run("retired sink finishControlPublication preserves replacement sink activity", func(t *testing.T) {
+		t.Parallel()
+		svc, _, _, _ := stopOwnershipFixture(t)
+		oldSinkImpl := requireRootOutputSink(t, svc.Output, "agent-1")
+		oldSinkImpl.retireRegisteredTree()
+
+		newSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+		svc.Output.NoteAgentProcessStarted("agent-1")
+		newSink.SetTurnState(agent.TurnState{Active: true}, 1)
+
+		st, _, release := svc.Output.lockControlMutation("agent-1", "agent-1")
+		oldSinkImpl.finishControlPublication(st, controlPublication{}, release)
+		_, present := svc.Output.activity.Load("agent-1")
+		assert.True(t, present, "retired sink finishControlPublication must not forget a replacement sink's activity entry")
+	})
+}
+
 func TestRetiredSinkBlockingPublishPreservesLiveNonBlockingQuestion(t *testing.T) {
 	t.Parallel()
 	svc, _, oldSink, _ := stopOwnershipFixture(t)

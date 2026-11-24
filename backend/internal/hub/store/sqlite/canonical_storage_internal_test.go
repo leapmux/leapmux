@@ -135,16 +135,17 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.EqualValues(t, 1, retired)
 
 	// cli_authorization_codes: expires_at on Create, consumed_at on Consume.
+	canonCodeHash := storetest.FixtureSecretHash("canon-code")
 	require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 		ClientID:      oauthapp.ControlCLIClientID,
 		GrantedScopes: authscope.NonAdminGrant().String(),
-		Code:          "canon-code",
+		CodeHash:      canonCodeHash,
 		UserID:        userid.MustNew(user.ID),
 		CodeChallenge: "challenge",
 		ExpiresAt:     future,
 		Redemption:    store.RedemptionKindToken,
 	}))
-	err = st.OAuthAuthorizationCodes().Consume(ctx, "canon-code", time.Now().UTC())
+	err = st.OAuthAuthorizationCodes().Consume(ctx, canonCodeHash, time.Now().UTC())
 	require.NoError(t, err)
 
 	// lifecycle_outbox.consumed_at.
@@ -279,7 +280,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		SignCount:    0,
 		Transports:   "[]",
 		FriendlyName: "Canon Passkey",
-		KeyVersion:   1,
 		CreatedAt:    now.UTC(),
 	}))
 	require.NoError(t, st.PasskeyCredentials().UpdateSignCount(ctx, store.UpdatePasskeySignCountParams{

@@ -19,7 +19,7 @@ func TestOrdinaryUserRemovalDoesNotAccessTheLifecycleTable(t *testing.T) {
 	for _, operation := range []string{"delete", "demote"} {
 		for _, nested := range []bool{false, true} {
 			t.Run(operation+map[bool]string{false: "/direct", true: "/nested"}[nested], func(t *testing.T) {
-				st, err := Open(filepath.Join(t.TempDir(), "hub.db"), sqlitedb.Config{})
+				st, err := Open(filepath.Join(t.TempDir(), "hub.db"), sqlitedb.Config{}, testKeystore(t))
 				require.NoError(t, err)
 				t.Cleanup(func() { require.NoError(t, st.Close()) })
 				admin := storetest.SeedUser(t, st, "administrator")
@@ -69,7 +69,7 @@ func TestOrdinaryUserRemovalDoesNotAccessTheLifecycleTable(t *testing.T) {
 
 func openAdministratorRemovalTestStore(t *testing.T) (*sqliteStore, [2]string) {
 	t.Helper()
-	st, err := Open(":memory:", sqlitedb.Config{})
+	st, err := Open(":memory:", sqlitedb.Config{}, testKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, st.Close()) })
 	var ids [2]string

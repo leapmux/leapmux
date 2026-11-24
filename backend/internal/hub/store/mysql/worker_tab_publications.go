@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -25,14 +26,23 @@ func (s *workerTabPublicationStore) Get(ctx context.Context, key store.WorkerTab
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	return &store.WorkerTabPublication{RequestHash: row.RequestHash, ResponsePayload: row.ResponsePayload}, nil
+	responsePayload, err := s.conn.ks.OpenBytes(row.ResponsePayload, sqlutil.WorkerTabPublicationResponseAAD(owner, key.WorkerID, key.TabID))
+	if err != nil {
+		return nil, err
+	}
+	return &store.WorkerTabPublication{RequestHash: row.RequestHash, ResponsePayload: responsePayload}, nil
 }
 
 func (s *workerTabPublicationStore) Insert(ctx context.Context, p store.InsertWorkerTabPublicationParams) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	err := s.conn.q.InsertWorkerTabPublication(ctx, gendb.InsertWorkerTabPublicationParams{UserID: p.UserID.String(), WorkerID: p.WorkerID, TabID: p.TabID, RequestHash: p.RequestHash, ResponsePayload: p.ResponsePayload})
+	userID := p.UserID.String()
+	responsePayload, err := s.conn.ks.SealBytes(p.ResponsePayload, sqlutil.WorkerTabPublicationResponseAAD(userID, p.WorkerID, p.TabID))
+	if err != nil {
+		return err
+	}
+	err = s.conn.q.InsertWorkerTabPublication(ctx, gendb.InsertWorkerTabPublicationParams{UserID: userID, WorkerID: p.WorkerID, TabID: p.TabID, RequestHash: p.RequestHash, ResponsePayload: responsePayload})
 	return s.conn.queryError(err)
 }
 
@@ -45,7 +55,11 @@ func (s *workerTabPublicationStore) Replace(ctx context.Context, p store.InsertW
 	if !ownerOK {
 		return store.ErrInvalidArgument
 	}
-	changed, err := s.conn.q.ReplaceWorkerTabPublication(ctx, gendb.ReplaceWorkerTabPublicationParams{UserID: owner, WorkerID: p.WorkerID, TabID: p.TabID, RequestHash: p.RequestHash, ResponsePayload: p.ResponsePayload})
+	responsePayload, err := s.conn.ks.SealBytes(p.ResponsePayload, sqlutil.WorkerTabPublicationResponseAAD(owner, p.WorkerID, p.TabID))
+	if err != nil {
+		return err
+	}
+	changed, err := s.conn.q.ReplaceWorkerTabPublication(ctx, gendb.ReplaceWorkerTabPublicationParams{UserID: owner, WorkerID: p.WorkerID, TabID: p.TabID, RequestHash: p.RequestHash, ResponsePayload: responsePayload})
 	if err != nil {
 		return s.conn.queryError(err)
 	}

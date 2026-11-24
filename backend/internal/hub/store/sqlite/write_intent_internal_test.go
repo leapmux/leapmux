@@ -26,7 +26,7 @@ func TestRunInTransaction_HoldsWriteIntentBeforeItsReads(t *testing.T) {
 	// A FILE, not `:memory:`: an in-memory database is one connection with one
 	// isolated instance, so two writers cannot contend inside it at all.
 	path := filepath.Join(t.TempDir(), "hub.db")
-	st, err := Open(path, sqlitedb.Config{})
+	st, err := Open(path, sqlitedb.Config{}, testKeystore(t))
 	require.NoError(t, err)
 	defer func() { _ = st.Close() }()
 

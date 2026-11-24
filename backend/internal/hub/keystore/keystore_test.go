@@ -360,16 +360,3 @@ func newTestKeystore(t *testing.T) *Keystore {
 	require.NoError(t, err)
 	return ks
 }
-
-func TestPasskeyPublicKeyAAD(t *testing.T) {
-	aad := PasskeyPublicKeyAAD("cred-row-1")
-	assert.Equal(t, []byte("passkey_public_key:cred-row-1"), aad)
-}
-
-func TestPasskeyAADBindingRejectsSwap(t *testing.T) {
-	ks := newTestKeystore(t)
-	ct, err := ks.Encrypt([]byte("cose-key"), PasskeyPublicKeyAAD("row-a"))
-	require.NoError(t, err)
-	_, err = ks.Decrypt(ct, PasskeyPublicKeyAAD("row-b"))
-	assert.Error(t, err)
-}

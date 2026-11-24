@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -15,26 +16,37 @@ type passkeyCredentialStore struct {
 
 var _ store.PasskeyCredentialStore = (*passkeyCredentialStore)(nil)
 
-func fromDBPasskeyCredential(c gendb.PasskeyCredential) store.PasskeyCredential {
-	return store.PasskeyCredential{
-		ID:             c.ID,
-		UserID:         c.UserID,
-		CredentialID:   c.CredentialID,
-		PublicKey:      c.PublicKey,
-		SignCount:      c.SignCount,
-		AAGUID:         c.Aaguid,
-		BackupEligible: c.BackupEligible,
-		BackupState:    c.BackupState,
-		Transports:     c.Transports,
-		FriendlyName:   c.FriendlyName,
-		KeyVersion:     c.KeyVersion,
-		CreatedAt:      c.CreatedAt.Time,
-		LastUsedAt:     c.LastUsedAt.Ptr(),
+func (c *mysqlConn) fromDBPasskeyCredential(r gendb.PasskeyCredential) (store.PasskeyCredential, error) {
+	publicKey, err := c.ks.OpenBytes(r.PublicKey, sqlutil.PasskeyPublicKeyAAD(r.ID))
+	if err != nil {
+		return store.PasskeyCredential{}, err
 	}
-}
-
-func fromDBPasskeyCredentials(rows []gendb.PasskeyCredential) []store.PasskeyCredential {
-	return store.MapSlice(rows, fromDBPasskeyCredential)
+	aaguid, err := c.ks.OpenOptionalBytes(r.Aaguid, sqlutil.PasskeyAAGUIDAAD(r.ID))
+	if err != nil {
+		return store.PasskeyCredential{}, err
+	}
+	transports, err := c.ks.OpenString(r.Transports, sqlutil.PasskeyTransportsAAD(r.ID))
+	if err != nil {
+		return store.PasskeyCredential{}, err
+	}
+	friendlyName, err := c.ks.OpenString(r.FriendlyName, sqlutil.PasskeyFriendlyNameAAD(r.ID))
+	if err != nil {
+		return store.PasskeyCredential{}, err
+	}
+	return store.PasskeyCredential{
+		ID:             r.ID,
+		UserID:         r.UserID,
+		CredentialID:   r.CredentialID,
+		PublicKey:      publicKey,
+		SignCount:      r.SignCount,
+		AAGUID:         aaguid,
+		BackupEligible: r.BackupEligible,
+		BackupState:    r.BackupState,
+		Transports:     transports,
+		FriendlyName:   friendlyName,
+		CreatedAt:      r.CreatedAt.Time,
+		LastUsedAt:     r.LastUsedAt.Ptr(),
+	}, nil
 }
 
 func (s *passkeyCredentialStore) Create(ctx context.Context, p store.CreatePasskeyCredentialParams) error {
@@ -42,18 +54,33 @@ func (s *passkeyCredentialStore) Create(ctx context.Context, p store.CreatePassk
 	if !ok {
 		return store.ErrInvalidArgument
 	}
+	publicKey, err := s.conn.ks.SealBytes(p.PublicKey, sqlutil.PasskeyPublicKeyAAD(p.ID))
+	if err != nil {
+		return err
+	}
+	aaguid, err := s.conn.ks.SealNonEmptyBytes(p.AAGUID, sqlutil.PasskeyAAGUIDAAD(p.ID))
+	if err != nil {
+		return err
+	}
+	transports, err := s.conn.ks.SealString(p.Transports, sqlutil.PasskeyTransportsAAD(p.ID))
+	if err != nil {
+		return err
+	}
+	friendlyName, err := s.conn.ks.SealString(p.FriendlyName, sqlutil.PasskeyFriendlyNameAAD(p.ID))
+	if err != nil {
+		return err
+	}
 	return s.conn.queryError(s.conn.q.CreatePasskeyCredential(ctx, gendb.CreatePasskeyCredentialParams{
 		ID:             p.ID,
 		UserID:         owner.String(),
 		CredentialID:   p.CredentialID,
-		PublicKey:      p.PublicKey,
+		PublicKey:      publicKey,
 		SignCount:      p.SignCount,
-		Aaguid:         p.AAGUID,
+		Aaguid:         aaguid,
 		BackupEligible: p.BackupEligible,
 		BackupState:    p.BackupState,
-		Transports:     p.Transports,
-		FriendlyName:   p.FriendlyName,
-		KeyVersion:     p.KeyVersion,
+		Transports:     transports,
+		FriendlyName:   friendlyName,
 		CreatedAt:      sqltime.NewMySQLTime(p.CreatedAt),
 		LastUsedAt:     sqltime.NewMySQLNullTime(p.LastUsedAt),
 	}))
@@ -64,7 +91,10 @@ func (s *passkeyCredentialStore) GetByID(ctx context.Context, id string) (*store
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	out := fromDBPasskeyCredential(row)
+	out, err := s.conn.fromDBPasskeyCredential(row)
+	if err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -73,7 +103,10 @@ func (s *passkeyCredentialStore) GetByCredentialID(ctx context.Context, credenti
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	out := fromDBPasskeyCredential(row)
+	out, err := s.conn.fromDBPasskeyCredential(row)
+	if err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -86,7 +119,7 @@ func (s *passkeyCredentialStore) ListByUser(ctx context.Context, userID string) 
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	return fromDBPasskeyCredentials(rows), nil
+	return store.MapSliceErr(rows, s.conn.fromDBPasskeyCredential)
 }
 
 func (s *passkeyCredentialStore) CountByUser(ctx context.Context, userID string) (int64, error) {
@@ -126,23 +159,14 @@ func (s *passkeyCredentialStore) UpdateFriendlyName(ctx context.Context, id, use
 	if !ok {
 		return store.ErrInvalidArgument
 	}
+	sealedName, err := s.conn.ks.SealString(friendlyName, sqlutil.PasskeyFriendlyNameAAD(id))
+	if err != nil {
+		return err
+	}
 	return s.conn.queryError(s.conn.q.UpdatePasskeyFriendlyName(ctx, gendb.UpdatePasskeyFriendlyNameParams{
-		FriendlyName: friendlyName,
+		FriendlyName: sealedName,
 		ID:           id,
 		UserID:       owner.String(),
-	}))
-}
-
-func (s *passkeyCredentialStore) UpdatePublicKey(ctx context.Context, p store.UpdatePasskeyPublicKeyParams) error {
-	owner, ok := userid.New(p.UserID)
-	if !ok {
-		return store.ErrInvalidArgument
-	}
-	return s.conn.queryError(s.conn.q.UpdatePasskeyPublicKey(ctx, gendb.UpdatePasskeyPublicKeyParams{
-		PublicKey:  p.PublicKey,
-		KeyVersion: p.KeyVersion,
-		ID:         p.ID,
-		UserID:     owner.String(),
 	}))
 }
 
@@ -163,20 +187,4 @@ func (s *passkeyCredentialStore) DeleteAllByUser(ctx context.Context, userID str
 		return store.ErrInvalidArgument
 	}
 	return s.conn.queryError(s.conn.q.DeleteAllPasskeyCredentialsByUser(ctx, owner.String()))
-}
-
-func (s *passkeyCredentialStore) ListByKeyVersion(ctx context.Context, keyVersion int64) ([]store.PasskeyCredential, error) {
-	rows, err := s.conn.q.ListPasskeyCredentialsByKeyVersion(ctx, keyVersion)
-	if err != nil {
-		return nil, s.conn.queryError(err)
-	}
-	return fromDBPasskeyCredentials(rows), nil
-}
-
-func (s *passkeyCredentialStore) CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error) {
-	count, err := s.conn.q.CountPasskeyCredentialsByKeyVersion(ctx, keyVersion)
-	if err != nil {
-		return 0, s.conn.queryError(err)
-	}
-	return count, nil
 }

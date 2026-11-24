@@ -3,9 +3,9 @@ package postgres
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 )
 
@@ -15,20 +15,8 @@ type settingsStore struct {
 
 var _ store.SettingsStore = (*settingsStore)(nil)
 
-func textToPtr(t pgtype.Text) *string {
-	if t.Valid {
-		return &t.String
-	}
-	return nil
-}
-
-func fromDBSetting(r gendb.HubSetting) store.SettingRow {
-	return store.SettingRow{
-		Key:       r.Key,
-		Value:     textToPtr(r.Value),
-		Secret:    r.Secret,
-		UpdatedAt: r.UpdatedAt.Time,
-	}
+func (c *pgConn) fromDBSetting(r gendb.HubSetting) store.SettingRow {
+	return sqlutil.OpenSettingRow(c.ks, r.Key, r.Value, r.Secret, r.UpdatedAt.Time)
 }
 
 func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) {
@@ -36,7 +24,7 @@ func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, fromDBSetting), nil
+	return store.MapSlice(rows, s.conn.fromDBSetting), nil
 }
 
 // See store.ErrLockingReadOutsideTransaction for the rule and its reason.
@@ -48,7 +36,7 @@ func (s *settingsStore) GetAllForUpdate(ctx context.Context) ([]store.SettingRow
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, fromDBSetting), nil
+	return store.MapSlice(rows, s.conn.fromDBSetting), nil
 }
 
 func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow, error) {
@@ -56,23 +44,31 @@ func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow,
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	row := fromDBSetting(r)
+	row := s.conn.fromDBSetting(r)
 	return &row, nil
 }
 
 func (s *settingsStore) Upsert(ctx context.Context, p store.UpsertSettingParams) error {
+	valCt, secCt, err := sqlutil.SealSetting(s.conn.ks, p)
+	if err != nil {
+		return err
+	}
 	return mapErr(s.conn.q.UpsertSetting(ctx, gendb.UpsertSettingParams{
 		Key:    p.Key,
-		Value:  ptrToText(p.Value),
-		Secret: p.Secret,
+		Value:  valCt,
+		Secret: secCt,
 	}))
 }
 
 func (s *settingsStore) InsertIfAbsent(ctx context.Context, p store.UpsertSettingParams) (bool, error) {
+	valCt, secCt, err := sqlutil.SealSetting(s.conn.ks, p)
+	if err != nil {
+		return false, err
+	}
 	n, err := s.conn.q.InsertSettingIfAbsent(ctx, gendb.InsertSettingIfAbsentParams{
 		Key:    p.Key,
-		Value:  ptrToText(p.Value),
-		Secret: p.Secret,
+		Value:  valCt,
+		Secret: secCt,
 	})
 	return n > 0, mapErr(err)
 }

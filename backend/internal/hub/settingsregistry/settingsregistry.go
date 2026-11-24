@@ -9,7 +9,6 @@ package settingsregistry
 
 import (
 	"github.com/leapmux/leapmux/internal/hub/captcha"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/requestsource"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -22,12 +21,12 @@ import (
 // via EmailVerificationEffective — there is no separate verification toggle.
 // Extra options — test TTLs and clock overrides — apply after the registry
 // defaults, so callers never restate the registry itself.
-func NewManager(st store.Store, ks *keystore.Keystore, opts ...settings.Option) *settings.Manager {
+func NewManager(st store.Store, opts ...settings.Option) *settings.Manager {
 	descs := append(settings.CoreDescriptors(), captcha.SettingsDescriptors()...)
 	descs = append(descs, ratelimit.SettingsDescriptors()...)
 	descs = append(descs, requestsource.SettingsDescriptors()...)
 	opts = append([]settings.Option{
 		settings.WithCrossValidation(captcha.SelectedConfigured),
 	}, opts...)
-	return settings.NewManager(st, ks, descs, opts...)
+	return settings.NewManager(st, descs, opts...)
 }

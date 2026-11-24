@@ -496,8 +496,9 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 	uid := userid.MustNew(env.userID)
 
 	code := id.Generate()
+	codeHash := hubtestutil.TestSecretHasher().Hash(code)
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-		Code:          code,
+		CodeHash:      codeHash,
 		UserID:        uid,
 		ClientID:      oauthapp.ControlCLIClientID,
 		CodeChallenge: "challenge",
@@ -527,7 +528,7 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, time.Now().UTC())
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, codeHash, time.Now().UTC())
 	assert.Error(t, err, "the outstanding authorization code must die with the disconnect")
 
 	row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
@@ -566,7 +567,7 @@ func TestDisconnectApp_ConcurrentWithDeviceTokenMintLeavesNoLiveToken(t *testing
 		require.NoError(t, err)
 		closer := &recordingBearerCloser{}
 		lifecycle := auth.NewCredentialLifecycleEffects(nil, closer, nil)
-		set := servicetest.NewSettingsManager(t, st, nil)
+		set := servicetest.NewSettingsManager(t, st)
 		deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 
 		userSvc := service.NewUserService(service.UserServiceDeps{
@@ -677,7 +678,7 @@ func TestDisconnectApp_ConcurrentWithDeviceTokenMintLeavesNoLiveToken(t *testing
 
 		closer := &recordingBearerCloser{}
 		lifecycle := auth.NewCredentialLifecycleEffects(nil, closer, nil)
-		set := servicetest.NewSettingsManager(t, st, nil)
+		set := servicetest.NewSettingsManager(t, st)
 		deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 
 		lateTokenID := id.Generate()
@@ -760,7 +761,7 @@ func TestDisconnectApp_AbortsDeviceInvalidationWhenTransactionFails(t *testing.T
 	userSvc := service.NewUserService(service.UserServiceDeps{
 		Store:                failUserAuthTxStore{Store: env.store, err: errors.New("forced user auth tx failure")},
 		Config:               testConfig(),
-		Settings:             servicetest.NewSettingsManager(t, env.store, nil),
+		Settings:             servicetest.NewSettingsManager(t, env.store),
 		Lifecycle:            auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Mail:                 mail.NewStubSender(),
 		Renderer:             mail.Renderer{},

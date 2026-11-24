@@ -65,7 +65,7 @@ type channelTestEnv struct {
 func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	t.Helper()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
@@ -75,7 +75,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	hubtestutil.CreateTestAdmin(t, st)
 
 	cfg := testConfig()
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	clock := testutil.NewQuartzMock(t)
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(0)

@@ -456,34 +456,40 @@ A callback the Hub refuses leaves the flow open, so the browser that started the
 
 ## At-rest encryption (separate from E2EE)
 
-Distinct from the channel E2EE above, the Hub encrypts a small set of stored secrets **at rest** using a versioned XChaCha20-Poly1305 key ring kept in an `encryption.key` file (mode `0600`, default `<DataDir>/encryption.key`, auto-generated on first run). Exactly these are encrypted:
+Distinct from the channel E2EE above, the Hub encrypts all 37 eligible columns across 15 database tables (14 persistent tables and 1 short-lived transient table) **at rest** using a versioned XChaCha20-Poly1305 key ring kept in an `encryption.key` file (mode `0600`, default `<DataDir>/encryption.key`, auto-generated on first run). Each ciphertext binds its table name, column name, and row key as additional authenticated data (AAD), so ciphertext cannot be swapped between rows or columns.
 
-- OAuth provider client secrets.
-- Hub settings secret halves — the SMTP password and captcha provider keys.
-- **Passkey credential public keys** (each row's ciphertext is bound to that row's id as additional authenticated data).
+The encrypted columns cover:
 
-If the Hub's database is exfiltrated without the key file, those fields stay unreadable.
+- Account credentials and profile data: `users` (`password_hash`, `prefs`, `pending_email_token`) and `user_sessions` (`user_agent`, `ip_address`)
+- Workspaces and layout state: `workspaces` (`title`), `workspace_sections` (`name`), `user_state` (`state_payload`), `user_op_batches` (`batch_payload`, `transitions_payload`), `lifecycle_outbox` (`payload`), and `worker_tab_publications` (`response_payload`)
+- OAuth apps, providers, and token scopes: `oauth_clients`, `api_tokens`, `delegation_tokens`, and `oauth_providers`
+- Passkeys and Hub settings: `passkey_credentials` (`public_key`, `aaguid`, `transports`, `friendly_name`) and `hub_settings` (`value`, `secret`)
+- Short-lived authorization payloads: `oauth_authorization_codes` (`code_challenge`, `redirect_uri`, `granted_scopes`, `installation_name`)
 
-Be clear on what this does **not** cover, since "encrypted at rest" invites over-reading. It does not cover Frontend↔Worker channel keys or agent and terminal content, which the Hub relays as ciphertext. Passwords use Argon2id hashes. These secrets use HMAC-SHA256 digests, a hash-based message authentication code keyed by the token pepper:
+If the Hub's database is exfiltrated without the key file, all 37 encrypted columns stay unreadable. Columns required for SQL lookups, joins, sorting, or uniqueness constraints — such as primary keys, `users.username`, `users.email`, `users.display_name`, timestamps, status ordinals, and Worker public keys — stay unencrypted.
+
+Be clear on what this does **not** cover, since "encrypted at rest" invites over-reading. It does not cover Frontend↔Worker channel keys or agent and terminal content, which the Hub relays as ciphertext. Passwords use Argon2id hashes (and the stored hash is also encrypted at rest). These bearer secrets use HMAC-SHA256 digests, a hash-based message authentication code keyed by the token pepper:
 
 - Session secrets
 - Worker auth tokens
 - Registration keys
+- OAuth authorization codes
 - API and delegation token secrets
+- Confidential app client secrets
 
-A copy of the database therefore holds none of those secrets in plaintext. OAuth authorization codes remain plaintext in the database; they are short-lived, and each requires a PKCE verifier that the database does not hold. Pending OAuth sign-ups, OAuth flow states, WebAuthn ceremony sessions, and device authorizations (stored as peppered HMAC-SHA256 digests) live only in Hub memory and are never written to the database.
+A copy of the database therefore holds none of those bearer secrets in plaintext. Pending OAuth sign-ups, OAuth flow states, WebAuthn ceremony sessions, and device authorizations (stored as peppered HMAC-SHA256 digests) live only in Hub memory and are never written to the database.
 
-The key ring is managed with `leapmux recover encryption-key rotate | remove | reencrypt | rotate-pepper`. The full keystore, key-rotation runbook, database backends, and backup/restore guidance live in [Encryption & Data](/docs/admin/encryption-and-data/).
+The key ring is managed with `leapmux recover encryption-key rotate | remove | reencrypt | rotate-pepper`. The full 15-table column list, key-rotation runbook, database backends, and backup/restore guidance live in [Encryption & Data](/docs/admin/encryption-and-data/).
 
 {{< callout type="warning" >}}
-The `encryption.key` file holds more than the encryption key ring. It also carries the **token pepper**, which protects the credential classes listed below. Back up the file and database together: without the key file, the encrypted columns are permanently undecryptable.
+The `encryption.key` file holds both the encryption key ring and the **token pepper**. Back up the file and database together: without the key file, all encrypted Hub columns are permanently undecryptable, and an undecryptable `captcha.altcha` row aborts Hub startup until you restore `encryption.key`.
 
 `rotate-pepper` takes effect on the next Hub restart, because a running Hub keeps its startup pepper in memory. Rotating the pepper, or losing the key file, has these effects:
 
 - Signs out every session
 - Invalidates every Worker auth token
-- Invalidates API and delegation tokens and app client secrets
-- Invalidates live registration keys and pending device codes
+- Invalidates API and delegation tokens and confidential app client secrets
+- Invalidates live registration keys, pending device codes, and pending OAuth authorization codes
 
 Account-recovery links do not use the pepper. Pepper rotation does not invalidate them. Their existing expiry, attempt limits, and consumption checks still apply.
 
@@ -515,9 +521,9 @@ If you run a Hub for a team, the security of the deployment rests largely on the
 
 1. **Protect the Hub host.** It can read all control-plane data — accounts, workspace records, layout, Worker registration metadata — and it sees transport metadata for every channel (traffic analysis is in scope). Treat it as a sensitive service: minimal access, patched OS, monitored.
 2. **Terminate TLS in front of the Hub.** The Frontend↔Hub and Worker↔Hub legs are not E2EE; they rely on transport TLS. Put the Hub behind a reverse proxy with valid certificates. See [Reverse Proxy](/docs/admin/reverse-proxy/).
-3. **Protect the `encryption.key` file as a credential.** It contains base64 key material in a plain text file at mode `0600`. No master password, key management service, or hardware security module wraps that material. Filesystem permissions provide its only protection. It holds the encryption key ring and the token pepper for the credential classes listed below. Anyone who reads it can decrypt the protected columns and compute digests for bearer secrets. Back it up with the database. Encrypt both backups. Restrict access.
+3. **Protect the `encryption.key` file as a credential.** It contains base64 key material in a plain text file at mode `0600`. No master password, key management service, or hardware security module wraps that material. Filesystem permissions provide its only protection. It holds the encryption key ring for all 15 encrypted Hub tables and the token pepper for bearer digests. Anyone who reads it can decrypt every protected Hub column and compute digests for bearer secrets. Back it up with the database. Encrypt both backups. Restrict access.
 
-   Pepper rotation or a lost key file signs out every session and invalidates Worker tokens. It also invalidates API and delegation tokens, live registration keys, pending device codes, and app client secrets. Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
+   Losing the key file makes all encrypted Hub columns unrecoverable and aborts Hub startup if `captcha.altcha` cannot decrypt. Pepper rotation or a lost key file also signs out every session and invalidates Worker tokens, API and delegation tokens, confidential app client secrets, live registration keys, and pending OAuth authorization codes. Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
 
    1. Remove it in the Hub's Worker list.
    2. Stop it.

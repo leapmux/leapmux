@@ -69,7 +69,7 @@ func newSoloRungFixtureForTransport(t *testing.T, localIPC bool) soloRungFixture
 		Store: st, SoloUser: soloUser, SoloGate: gate, TokenValidator: tv,
 	})
 	svc := service.NewAdminSettingsService(
-		servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true}, st)
+		servicetest.NewSettingsManager(t, st), &config.Config{SoloMode: true}, st)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, svc)
 	mux := http.NewServeMux()

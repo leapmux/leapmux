@@ -6,7 +6,6 @@ import (
 
 	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -26,12 +25,11 @@ import (
 // discovery document; presets (github/google/apple) skip it.
 type AdminIdPService struct {
 	store store.Store
-	ks    *keystore.Keystore
 	// cache drops the built instances of a provider this service removes or
 	// disables. loadEnabledProvider refuses a deleted row with 404 and a
 	// disabled row with 403 BEFORE it rebuilds, so the login handler's own
 	// eviction can never reach such an entry -- and the entry holds the
-	// client secret the keystore decrypted. The dependency is an interface
+	// client secret decrypted by the store. The dependency is an interface
 	// so the admin verbs need the eviction and not the login handler.
 	cache providerCacheInvalidator
 	// clockSeam supplies the instant the elevation gate and its slide read.
@@ -45,11 +43,11 @@ type providerCacheInvalidator interface {
 	InvalidateProvider(providerID string)
 }
 
-func NewAdminIdPService(st store.Store, ks *keystore.Keystore, cache providerCacheInvalidator) *AdminIdPService {
+func NewAdminIdPService(st store.Store, cache providerCacheInvalidator) *AdminIdPService {
 	if cache == nil {
 		panic("admin idp service requires a provider cache invalidator")
 	}
-	return &AdminIdPService{store: st, ks: ks, cache: cache}
+	return &AdminIdPService{store: st, cache: cache}
 }
 
 func adminOAuthProviderToProto(p store.OAuthProviderSummary) *leapmuxv1.AdminOAuthProvider {
@@ -121,14 +119,7 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.A
 		}
 	}
 
-	if s.ks == nil {
-		return nil, connect.NewError(connect.CodeInternal, "keystore is not configured")
-	}
 	providerID := id.Generate()
-	encryptedSecret, err := s.ks.Encrypt([]byte(msg.GetClientSecret()), keystore.ProviderAAD(providerID))
-	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("encrypt client secret: %w", err))
-	}
 	if err := writeUnderElevation(ctx, s.store, s.now, func(tx store.Store) error {
 		if err := tx.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 			ID:           providerID,
@@ -136,7 +127,7 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.A
 			Name:         displayName,
 			IssuerURL:    issuer,
 			ClientID:     msg.GetClientId(),
-			ClientSecret: encryptedSecret,
+			ClientSecret: []byte(msg.GetClientSecret()),
 			Scopes:       scopes,
 			TrustEmail:   *trustEmail,
 			Enabled:      true,

@@ -5,10 +5,10 @@
 
 -- name: CreateOAuthAuthorizationCode :exec
 INSERT INTO oauth_authorization_codes (
-    code, user_id, auth_generation, client_id, code_challenge, redirect_uri, granted_scopes,
+    code_hash, user_id, auth_generation, client_id, code_challenge, redirect_uri, granted_scopes,
     installation_name, expires_at, step_up_kind, step_up_ref_id, redemption_kind
 ) VALUES (
-    sqlc.arg(code),
+    sqlc.arg(code_hash),
     sqlc.arg(user_id),
     sqlc.arg(auth_generation),
     sqlc.arg(client_id),
@@ -27,7 +27,7 @@ INSERT INTO oauth_authorization_codes (
 -- the kind, so a replay can revoke the exact credential without a second copy.
 UPDATE oauth_authorization_codes
 SET minted_ref_id = sqlc.arg(minted_ref_id)
-WHERE code = sqlc.arg(code)
+WHERE code_hash = sqlc.arg(code_hash)
   AND consumed_at IS NOT NULL
   AND step_up_kind IS NULL
   AND minted_ref_id = ''
@@ -35,19 +35,19 @@ WHERE code = sqlc.arg(code)
 
 -- name: GetActiveOAuthAuthorizationCode :one
 SELECT * FROM oauth_authorization_codes
-WHERE code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
+WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: ConsumeOAuthAuthorizationCode :execresult
 UPDATE oauth_authorization_codes
 SET consumed_at = NOW(3)
-WHERE code = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
+WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: GetOAuthAuthorizationCode :one
 -- The row WHATEVER its state, revoked and consumed included. MySQL has no
 -- RETURNING, so Consume reads through here -- and the REPLAY path needs the
 -- same shape: a consumed code must still name the credential it minted so
 -- the replay can revoke it.
-SELECT * FROM oauth_authorization_codes WHERE code = ?;
+SELECT * FROM oauth_authorization_codes WHERE code_hash = ?;
 
 -- name: DeleteExpiredOAuthAuthorizationCodes :execresult
 DELETE FROM oauth_authorization_codes

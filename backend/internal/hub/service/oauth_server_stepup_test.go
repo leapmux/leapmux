@@ -1013,7 +1013,7 @@ func TestConsentForm_CarriesStepUpForward(t *testing.T) {
 	require.NoError(t, err)
 	code := dest.Query().Get("code")
 	require.NotEmpty(t, code)
-	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, env.validator.HashSecret(code))
 	require.NoError(t, err)
 	assert.Equal(t, store.CredentialRef{Kind: store.CredentialRefKindSession, ID: sess.ID}, row.StepUp)
 	assert.Zero(t, row.Redemption, "a step-up redeems into an elevation, so the row records no redemption kind")
@@ -1188,7 +1188,7 @@ func TestStepUpCodeExchange_NoRowRollsBackConsumption(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.JSONEq(t, `{"error":"invalid_grant","error_description":"that credential is no longer available"}`, bodyOf(t, resp))
 
-	_, err := env.store.OAuthAuthorizationCodes().GetActive(ctx, code, env.now().UTC())
+	_, err := env.store.OAuthAuthorizationCodes().GetActive(ctx, env.validator.HashSecret(code), env.now().UTC())
 	require.NoError(t, err, "the missing session must roll back consumption")
 }
 
@@ -1286,7 +1286,7 @@ func TestStepUpCodeExchange_ASessionStampStoreFailureAnswersInternalError(t *tes
 	code := id.Generate()
 	verifier, challenge := pkceVerifierAndChallenge()
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-		Code:             code,
+		CodeHash:         env.validator.HashSecret(code),
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.DesktopClientID,
 		CodeChallenge:    challenge,
@@ -1317,7 +1317,7 @@ func TestStepUpCodeExchange_AGrantStampStoreFailureAnswersInternalError(t *testi
 	code := id.Generate()
 	verifier, challenge := pkceVerifierAndChallenge()
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-		Code:             code,
+		CodeHash:         env.validator.HashSecret(code),
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
 		CodeChallenge:    challenge,
@@ -1348,7 +1348,7 @@ func TestStepUpCodeExchange_AGrantNoRowAnswersInvalidGrant(t *testing.T) {
 	code := id.Generate()
 	verifier, challenge := pkceVerifierAndChallenge()
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-		Code:             code,
+		CodeHash:         env.validator.HashSecret(code),
 		UserID:           userid.MustNew(env.userID),
 		ClientID:         oauthapp.ControlCLIClientID,
 		CodeChallenge:    challenge,
@@ -1375,7 +1375,7 @@ func seedStepUpCodeForOwner(t *testing.T, env *apiAuthEnv, owner userid.UserID, 
 	code = id.Generate()
 	verifier, challenge := pkceVerifierAndChallenge()
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(context.Background(), store.CreateOAuthAuthorizationCodeParams{
-		Code:             code,
+		CodeHash:         env.validator.HashSecret(code),
 		UserID:           owner,
 		ClientID:         clientID,
 		CodeChallenge:    challenge,
@@ -1593,7 +1593,7 @@ func TestStepUpCodeExchange_DesktopLosesElevationAllowedBeforeLock(t *testing.T)
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationProvenAt)
 	assert.Nil(t, row.ElevationExpiresAt)
-	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, env.now().UTC())
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, env.validator.HashSecret(code), env.now().UTC())
 	require.NoError(t, err, "a refusal must leave the code unconsumed")
 }
 
@@ -1621,7 +1621,7 @@ func TestStepUpCodeExchange_OwnerDisappearsBeforeLock(t *testing.T) {
 
 	_, err := env.store.Users().GetByID(ctx, owner)
 	require.ErrorIs(t, err, store.ErrNotFound, "the user must be gone at lock acquisition")
-	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, env.now().UTC())
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, env.validator.HashSecret(code), env.now().UTC())
 	require.NoError(t, err, "a refusal must leave the code unconsumed")
 }
 

@@ -53,7 +53,7 @@ func soloUserService(t *testing.T) (*service.UserService, store.Store, *auth.Sol
 	svc := service.NewUserService(service.UserServiceDeps{
 		Store:     st,
 		Config:    &config.Config{SoloMode: true},
-		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Settings:  servicetest.NewSettingsManager(t, st),
 		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Renderer:  mail.Renderer{},
 	})
@@ -90,7 +90,7 @@ func TestGetCurrentUser_ReportsTheSoloAccountsPasswordFromTheHash(t *testing.T) 
 	ctx := auth.WithUser(context.Background(), soloUser)
 
 	deps := servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true, Listen: []string{"127.0.0.1:4327"}},
-		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
+		servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	deps.SoloGate = gate
 	authSvc := service.NewAuthService(deps)
 
@@ -139,7 +139,7 @@ func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 	svc := service.NewUserService(service.UserServiceDeps{
 		Store:     st,
 		Config:    &config.Config{},
-		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Settings:  servicetest.NewSettingsManager(t, st),
 		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		Renderer:  mail.Renderer{},
 	})

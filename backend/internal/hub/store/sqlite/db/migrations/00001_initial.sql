@@ -15,7 +15,7 @@
 CREATE TABLE users (
     id             TEXT PRIMARY KEY CHECK (id <> ''),
     username       TEXT NOT NULL,
-    password_hash  TEXT NOT NULL,
+    password_hash  BLOB NOT NULL,
     display_name   TEXT NOT NULL DEFAULT '',
     -- Unicode-casefolded (Go strings.ToLower) copy of display_name, maintained on
     -- every write, so admin SearchUsers matches non-ASCII names case-insensitively
@@ -26,11 +26,9 @@ CREATE TABLE users (
     email                    TEXT NOT NULL DEFAULT '',
     email_verified           INTEGER NOT NULL DEFAULT 0,
     pending_email            TEXT NOT NULL DEFAULT '',
-    -- Stored verification code in raw 6-char form (no hyphen), drawn
-    -- from verifycode.Charset. Empty when no verification is pending.
-    -- (SQLite does not enforce VARCHAR width but we declare it for
-    -- schema-doc symmetry with postgres/mysql.)
-    pending_email_token      VARCHAR(16) NOT NULL DEFAULT '',
+    -- Keystore-encrypted verification code (6-char form, no hyphen, drawn
+    -- from verifycode.Charset). NULL when no verification is pending.
+    pending_email_token      BLOB,
     pending_email_expires_at DATETIME,
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
@@ -58,7 +56,7 @@ CREATE TABLE users (
     -- question, answered by store.User.HasUsablePassword() from the stored hash.
     first_credential_exempt             INTEGER NOT NULL DEFAULT 1,
     is_admin                 INTEGER NOT NULL DEFAULT 0,
-    prefs          TEXT NOT NULL DEFAULT '{}',
+    prefs          BLOB,
     created_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- Monotonic credential epoch. Sessions and bearer rows copy this
@@ -110,8 +108,8 @@ CREATE TABLE user_sessions (
     -- elevation_expires_at to elevation_proven_at + the maximum total window.
     elevation_proven_at     DATETIME,
     elevation_expires_at  DATETIME,
-    user_agent      TEXT NOT NULL DEFAULT '',
-    ip_address      TEXT NOT NULL DEFAULT '',
+    user_agent      BLOB NOT NULL,
+    ip_address      BLOB NOT NULL,
     -- The built-in app that this session was issued to through the browser
     -- handoff. NULL for a session that signed in on the Hub's own page. No
     -- foreign key: only the token exchange of a built-in app writes it.
@@ -251,7 +249,7 @@ CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys
 CREATE TABLE workspace_sections (
     id           TEXT PRIMARY KEY,
     user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name         TEXT NOT NULL,
+    name         BLOB NOT NULL,
     position     TEXT NOT NULL,
     -- SectionType and Sidebar ordinals (proto/leapmux/v1/section.proto).
     -- DEFAULT 1 is SECTION_TYPE_WORKSPACES_CUSTOM and SIDEBAR_LEFT.
@@ -279,7 +277,7 @@ CREATE UNIQUE INDEX idx_workspace_sections_user_default_type
 CREATE TABLE workspaces (
     id            TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL REFERENCES users(id),
-    title         TEXT NOT NULL DEFAULT '',
+    title         BLOB NOT NULL,
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     deleted_at    DATETIME,
     -- The parent key of the composite foreign keys that tie a placement and a
@@ -486,18 +484,18 @@ CREATE TABLE oauth_clients (
     -- NULL is a PUBLIC client and non-NULL is a CONFIDENTIAL one. There is no
     -- second column, so "public client with a secret" is unsayable.
     secret_hash           BLOB,
-    client_name           TEXT NOT NULL,
+    client_name           BLOB NOT NULL,
     -- Stored at registration and served from /oauth/apps/<id>/icon, same
     -- origin. A REMOTE logo URL would be a beacon: it tells the app operator
     -- when the consent page rendered and from which IP, and its bytes are
     -- chosen by the registrant, so nothing would stop an unverified app
     -- serving a well-known icon.
     icon_blob             BLOB,
-    icon_media_type       TEXT NOT NULL DEFAULT '',
-    client_uri            TEXT NOT NULL DEFAULT '',
+    icon_media_type       BLOB,
+    client_uri            BLOB NOT NULL,
     -- Newline-delimited exact-match list. A URI cannot contain a raw newline,
     -- so the delimiter is unambiguous by the grammar of the values.
-    redirect_uris         TEXT NOT NULL DEFAULT '',
+    redirect_uris         BLOB NOT NULL,
     -- Space-delimited, the RFC 6749 section 3.3 wire format: the ceiling on
     -- what this app may reach.
     --
@@ -511,8 +509,8 @@ CREATE TABLE oauth_clients (
     -- It only ever NARROWS: the stored granted_scopes is the other half of the
     -- intersection, so putting a permission back does not hand it to a
     -- credential whose owner never consented to it.
-    scopes                TEXT NOT NULL DEFAULT '',
-    grant_types           TEXT NOT NULL DEFAULT 'authorization_code refresh_token',
+    scopes                BLOB NOT NULL,
+    grant_types           BLOB NOT NULL,
     -- Whether this app may run the step-up leg. NOT a trust tier and NOT a
     -- scope: the elevation window is orthogonal to the scope set and
     -- MULTIPLIES it, so no grant field could express it and mean anything.
@@ -589,13 +587,13 @@ CREATE TABLE api_tokens (
     -- copy of it ("trustin's MacBook"). It was client_name, which fused the
     -- two facts into one column that the consent page then had to trust the
     -- caller for.
-    installation_name             TEXT NOT NULL,
+    installation_name             BLOB NOT NULL,
     -- The canonical RFC 6749 section 3.3 scope string the consent granted.
     -- NO DEFAULT, deliberately: an INSERT that omits it fails at the schema
     -- rather than storing a silent empty grant that nobody notices until an
     -- app stops working. The empty string is a legitimate value (a credential
     -- that reaches nothing) and a caller must state it.
-    granted_scopes                TEXT NOT NULL,
+    granted_scopes                BLOB NOT NULL,
     -- WHICH CEREMONY issued this credential: an ApiTokenIssuance ordinal
     -- (proto/leapmux/v1/storage.proto), 1 authorization code, 2 device code,
     -- 3 administrator. No DEFAULT: every mint states it.
@@ -673,7 +671,7 @@ CREATE TABLE delegation_tokens (
     -- What the minting worker delegated, already narrowed to the delegation
     -- ceiling. NO DEFAULT, for the same reason api_tokens.granted_scopes has
     -- none: an unstated grant must fail the INSERT, not authenticate.
-    granted_scopes                TEXT NOT NULL,
+    granted_scopes                BLOB NOT NULL,
     secret_hash                   BLOB NOT NULL,
     created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
@@ -698,7 +696,7 @@ CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at) W
 -- One-shot RFC 6749 section 4.1 authorization codes. Each row is consumed
 -- exactly once during the /oauth/token exchange.
 CREATE TABLE oauth_authorization_codes (
-    code                  TEXT PRIMARY KEY,
+    code_hash             BLOB PRIMARY KEY CHECK (typeof(code_hash) = 'blob' AND length(code_hash) = 32),
     user_id               TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     -- The credential epoch that approved the grant. Redemption compares it
     -- under the user-auth lock, so a credential reset spends outstanding codes.
@@ -707,16 +705,16 @@ CREATE TABLE oauth_authorization_codes (
     -- token leg to refuse a code presented by a different client, and there
     -- was no such check while every code belonged to the CLI.
     client_id             TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
-    code_challenge        TEXT NOT NULL,
+    code_challenge        BLOB NOT NULL,
     -- The redirect_uri the authorization used. RFC 6749 section 4.1.3 requires
     -- the token leg to COMPARE it, so a code intercepted at one registered
     -- redirect cannot be redeemed as though it came from another.
-    redirect_uri          TEXT NOT NULL DEFAULT '',
+    redirect_uri          BLOB NOT NULL,
     -- What the consent granted, canonical RFC 6749 section 3.3 form. It binds
     -- HERE: read from the exchange form instead, any holder of a code could
     -- upgrade what the user consented to.
-    granted_scopes        TEXT NOT NULL DEFAULT '',
-    installation_name     TEXT NOT NULL DEFAULT '',
+    granted_scopes        BLOB NOT NULL,
+    installation_name     BLOB NOT NULL,
     created_at            DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     expires_at            DATETIME NOT NULL,
     consumed_at           DATETIME,
@@ -756,11 +754,11 @@ CREATE TABLE oauth_providers (
     -- the preset an administrator picked. The four presets (github, google,
     -- apple, oidc) map onto these two protocols.
     provider_type   INTEGER NOT NULL CHECK (typeof(provider_type) = 'integer') CHECK (provider_type BETWEEN 1 AND 2),
-    name            TEXT NOT NULL,  -- display name
-    issuer_url      TEXT NOT NULL DEFAULT '',  -- OIDC issuer (empty for GitHub)
-    client_id       TEXT NOT NULL,
-    client_secret   BLOB NOT NULL,  -- encrypted with encryption key, AAD: 'oauth_provider:' || id
-    scopes          TEXT NOT NULL DEFAULT 'openid profile email',
+    name            BLOB NOT NULL,  -- encrypted display name
+    issuer_url      BLOB NOT NULL,  -- encrypted OIDC issuer (empty for GitHub)
+    client_id       BLOB NOT NULL,
+    client_secret   BLOB NOT NULL,  -- keystore-encrypted client secret
+    scopes          BLOB NOT NULL,
     trust_email     INTEGER NOT NULL DEFAULT 1,  -- trust provider-reported email as verified
     enabled         INTEGER NOT NULL DEFAULT 1,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -781,32 +779,30 @@ CREATE TABLE passkey_credentials (
     id              TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     credential_id   BLOB NOT NULL,   -- plaintext: login lookup + unique index
-    public_key      BLOB NOT NULL,   -- keystore-encrypted COSE public key, AAD: 'passkey_public_key:' || id
+    public_key      BLOB NOT NULL,   -- keystore-encrypted COSE public key
     sign_count      BIGINT NOT NULL DEFAULT 0,
     aaguid          BLOB,
     backup_eligible INTEGER NOT NULL DEFAULT 0,
     backup_state    INTEGER NOT NULL DEFAULT 0,
-    transports      TEXT NOT NULL DEFAULT '[]',
-    friendly_name   TEXT NOT NULL DEFAULT '',
-    key_version     INTEGER NOT NULL DEFAULT 1,
+    transports      BLOB NOT NULL,
+    friendly_name   BLOB NOT NULL,
     created_at      DATETIME NOT NULL,
     last_used_at    DATETIME
 );
 CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials(credential_id);
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
-CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
 
--- Instance-level hub settings: one row per setting key. `value` is a JSON
--- document whose shape is defined by the owning package's typed key handle
--- (internal/hub/settings); secret-bearing keys keep the secret half in the
--- keystore-encrypted column (AAD bound to the key name). An absent row means
--- the code default, so adding, removing, or reshaping a setting is a Go
--- change only -- never a migration. This table is the single home for all
--- runtime-changeable configuration (auth policy, SMTP, timeouts, limits,
--- captcha providers, rate-limit overrides).
+-- Instance-level hub settings: one row per setting key. `value` is a
+-- keystore-encrypted JSON document whose shape is defined by the owning
+-- package's typed key handle (internal/hub/settings); secret-bearing keys
+-- keep the secret half in the keystore-encrypted `secret` column (both AAD-bound
+-- to the key name). An absent row means the code default, so adding, removing,
+-- or reshaping a setting is a Go change only -- never a migration. This table
+-- is the single home for all runtime-changeable configuration (auth policy,
+-- SMTP, timeouts, limits, captcha providers, rate-limit overrides).
 CREATE TABLE hub_settings (
     key        TEXT PRIMARY KEY,
-    value      TEXT,    -- JSON document, public half
+    value      BLOB,    -- keystore-encrypted JSON, public half
     secret     BLOB,    -- keystore-encrypted JSON, secret half
     updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     CHECK (value IS NOT NULL OR secret IS NOT NULL)
@@ -829,7 +825,9 @@ CREATE TABLE worker_tab_publications (
     worker_id TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     tab_id TEXT NOT NULL,
     request_hash BLOB NOT NULL CHECK (length(request_hash) = 32),
-    response_payload BLOB NOT NULL CHECK (length(response_payload) > 0),
+    -- Encrypted payload carries 44 bytes of XChaCha20-Poly1305 envelope overhead
+    -- (4-byte version + 24-byte nonce + 16-byte tag), so > 44 rejects empty plaintext.
+    response_payload BLOB NOT NULL CHECK (length(response_payload) > 44),
     PRIMARY KEY (user_id, worker_id, tab_id)
 );
 

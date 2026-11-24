@@ -18,7 +18,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -50,7 +49,6 @@ type IdPHandler struct {
 	// elevates a session, so this process re-reads the new deadline instead
 	// of serving the old one for the rest of the auth cache's life.
 	lifecycle      *auth.CredentialLifecycleEffects
-	keystore       *keystore.Keystore
 	states         OAuthStateStore
 	pendingSignups *PendingOAuthSignupStore
 
@@ -124,7 +122,6 @@ type IdPHandlerDeps struct {
 	Config        *config.Config
 	Settings      *settings.Manager
 	Lifecycle     *auth.CredentialLifecycleEffects
-	Keystore      *keystore.Keystore
 	// OAuthStates holds short-lived inbound OAuth authorization states in
 	// memory. Nil defaults to a fresh MemoryOAuthStateStore.
 	OAuthStates OAuthStateStore
@@ -155,7 +152,6 @@ func NewIdPHandler(deps IdPHandlerDeps) *IdPHandler {
 		cfg:            deps.Config,
 		set:            deps.Settings,
 		lifecycle:      deps.Lifecycle,
-		keystore:       deps.Keystore,
 		states:         states,
 		pendingSignups: pendingSignups,
 		providers:      make(map[providerCacheKey]huboauth.Provider),
@@ -1071,11 +1067,7 @@ func (h *IdPHandler) newProvider(
 	dbProvider *store.OAuthProvider,
 	key providerCacheKey,
 ) (huboauth.Provider, error) {
-	clientSecret, err := h.keystore.Decrypt(dbProvider.ClientSecret, keystore.ProviderAAD(dbProvider.ID))
-	if err != nil {
-		return nil, fmt.Errorf("decrypt client secret: %w", err)
-	}
-
+	clientSecret := string(dbProvider.ClientSecret)
 	scopes := strings.Fields(dbProvider.Scopes)
 
 	switch dbProvider.ProviderType {
@@ -1089,9 +1081,9 @@ func (h *IdPHandler) newProvider(
 		// handler for the process's life.
 		discoverCtx, cancel := context.WithTimeout(ctx, settings.KeyTimeouts.Of(snap).APITimeout())
 		defer cancel()
-		return huboauth.NewOIDCProvider(discoverCtx, dbProvider.IssuerURL, dbProvider.ClientID, string(clientSecret), key.redirectURL, scopes)
+		return huboauth.NewOIDCProvider(discoverCtx, dbProvider.IssuerURL, dbProvider.ClientID, clientSecret, key.redirectURL, scopes)
 	case huboauth.ProviderTypeGitHub:
-		return huboauth.NewGitHubProvider(dbProvider.ClientID, string(clientSecret), key.redirectURL, scopes), nil
+		return huboauth.NewGitHubProvider(dbProvider.ClientID, clientSecret, key.redirectURL, scopes), nil
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", dbProvider.ProviderType)
 	}

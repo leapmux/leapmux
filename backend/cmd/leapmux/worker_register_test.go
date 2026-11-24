@@ -185,7 +185,8 @@ func mintRegistrationFixtureKey(t *testing.T, st store.Store) string {
 func TestWorkerRegisterRecoversAfterClientAndHubRestart(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	path := filepath.Join(t.TempDir(), "hub.db")
-	st, err := sqlite.OpenTestable(path)
+	ks := hubtestutil.TestKeystore(t)
+	st, err := sqlite.OpenTestableWithKeystore(path, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	hubtestutil.CreateTestAdmin(t, st)
@@ -236,7 +237,7 @@ func TestWorkerRegisterRecoversAfterClientAndHubRestart(t *testing.T) {
 	address, hubURL := env.server.Listener.Addr().String(), env.url
 	env.stop()
 	require.NoError(t, st.Close())
-	reopened, err := sqlite.OpenTestable(path)
+	reopened, err := sqlite.OpenTestableWithKeystore(path, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = reopened.Close() })
 	restarted := serveRegisterEnv(t, reopened, address)

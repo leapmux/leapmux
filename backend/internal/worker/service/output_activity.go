@@ -1017,6 +1017,23 @@ func (h *OutputHandler) refreshActivity(agentID, rootAgentID string) {
 	h.refreshActivityFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleHeld)
 }
 
+// refreshActivityForEntry recomputes activity against an entry the caller
+// already resolved without minting a replacement entry if ForgetActivity
+// removed st from h.activity.
+func (h *OutputHandler) refreshActivityForEntry(st *agentActivity, agentID, rootAgentID string) {
+	if agentID == "" || st == nil {
+		return
+	}
+	if rootAgentID == "" {
+		st.mu.Lock()
+		rootAgentID = st.rootAgentID
+		st.mu.Unlock()
+	}
+	rootAgentID = h.resolveRoot(agentID, rootAgentID)
+	seq := h.activitySeq.Add(1)
+	h.refreshActivityIn(st, agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleHeld)
+}
+
 // refreshActivityFrom is refreshActivity against a root the caller already
 // resolved, registry rows it already holds, and the ticket it took before
 // reading them.

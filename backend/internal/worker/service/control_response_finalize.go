@@ -67,11 +67,11 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		write = &prepared
 	}
 	ctx := bgCtx()
-	_, _, release := svc.Output.lockControlMutation(agentID, "")
+	st, _, release := svc.Output.lockControlMutation(agentID, "")
 	publication := controlPublication{}
 	defer func() {
 		if release != nil {
-			svc.Output.finishControlPublication(agentID, "", publication, release)
+			svc.Output.finishControlPublication(st, agentID, "", publication, release)
 		}
 	}()
 	var seq int64
@@ -146,7 +146,7 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 	}
 	unlock := release
 	release = nil
-	svc.Output.finishControlPublication(agentID, "", publication, unlock)
+	svc.Output.finishControlPublication(st, agentID, "", publication, unlock)
 	if answer.InputID != "" {
 		svc.InputQueue.NotifyDependencyReady(agentID)
 	}

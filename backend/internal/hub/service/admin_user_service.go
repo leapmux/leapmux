@@ -83,23 +83,42 @@ func NewAdminUserService(deps AdminUserServiceDeps) *AdminUserService {
 
 // adminUserToProto maps a user row. Password material never crosses.
 func adminUserToProto(u *store.User) *leapmuxv1.AdminUser {
-	out := &leapmuxv1.AdminUser{
-		Id:            u.ID,
-		Username:      u.Username,
-		DisplayName:   u.DisplayName,
-		Email:         u.Email,
-		EmailVerified: u.EmailVerified,
-		PendingEmail:  u.PendingEmail,
+	return buildAdminUserProto(
+		u.ID, u.Username, u.DisplayName, u.Email, u.EmailVerified, u.PendingEmail,
+		u.HasUsablePassword(), u.IsAdmin, u.CreatedAt, u.UpdatedAt,
+	)
+}
+
+func adminUserListItemToProto(u *store.UserListItem) *leapmuxv1.AdminUser {
+	return buildAdminUserProto(
+		u.ID, u.Username, u.DisplayName, u.Email, u.EmailVerified, u.PendingEmail,
+		u.HasUsablePassword(), u.IsAdmin, u.CreatedAt, u.UpdatedAt,
+	)
+}
+
+func buildAdminUserProto(
+	id, username, displayName, email string,
+	emailVerified bool,
+	pendingEmail string,
+	passwordSet, isAdmin bool,
+	createdAt, updatedAt time.Time,
+) *leapmuxv1.AdminUser {
+	return &leapmuxv1.AdminUser{
+		Id:            id,
+		Username:      username,
+		DisplayName:   displayName,
+		Email:         email,
+		EmailVerified: emailVerified,
+		PendingEmail:  pendingEmail,
 		// The hash, for the reason userToProto states: the column is a claim,
 		// and the solo bootstrap makes it with an empty hash. An operator who
 		// lists that account reads "password_set true" for an account no
 		// password signs in to.
-		PasswordSet: u.HasUsablePassword(),
-		IsAdmin:     u.IsAdmin,
-		CreatedAt:   timestamppb.New(u.CreatedAt),
-		UpdatedAt:   timestamppb.New(u.UpdatedAt),
+		PasswordSet: passwordSet,
+		IsAdmin:     isAdmin,
+		CreatedAt:   timestamppb.New(createdAt),
+		UpdatedAt:   timestamppb.New(updatedAt),
 	}
-	return out
 }
 
 // resolveAdminUser resolves the selector of a request that addresses one user
@@ -241,7 +260,7 @@ func (s *AdminUserService) ListUsers(ctx context.Context, req *leapmuxv1.ListUse
 	params := store.ListAllUsersParams{
 		PageParams: pageParams(req.GetPage()),
 	}
-	var page store.Page[store.User]
+	var page store.Page[store.UserListItem]
 	var err error
 	if q := req.GetQuery(); q != "" {
 		page, err = s.store.Users().Search(ctx, store.SearchUsersParams{
@@ -256,7 +275,7 @@ func (s *AdminUserService) ListUsers(ctx context.Context, req *leapmuxv1.ListUse
 	}
 	users := make([]*leapmuxv1.AdminUser, 0, len(page.Rows))
 	for _, u := range page.Rows {
-		users = append(users, adminUserToProto(&u))
+		users = append(users, adminUserListItemToProto(&u))
 	}
 	return &leapmuxv1.ListUsersResponse{Users: users, Page: pageResponse(page.NextCursor)}, nil
 }

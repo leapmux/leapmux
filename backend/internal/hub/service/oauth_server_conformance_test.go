@@ -56,7 +56,7 @@ func seedCode(t *testing.T, env *apiAuthEnv, clientID, redirectURI, challenge, s
 	code := id.Generate()
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(context.Background(),
 		store.CreateOAuthAuthorizationCodeParams{
-			Code: code, UserID: userid.MustNew(env.userID), ClientID: clientID,
+			CodeHash: env.validator.HashSecret(code), UserID: userid.MustNew(env.userID), ClientID: clientID,
 			CodeChallenge: challenge, RedirectURI: redirectURI, GrantedScopes: scopes,
 			InstallationName: "laptop", ExpiresAt: time.Now().Add(time.Minute),
 			Redemption: store.RedemptionKindToken,

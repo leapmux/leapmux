@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
@@ -55,13 +56,10 @@ func newTestManager(t *testing.T, solo bool, opts ...Option) *testEnv {
 
 func newTestManagerPublishedAt(t *testing.T, publicURL string, solo bool, opts ...Option) *testEnv {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	ks := hubtestutil.TestKeystore(t)
+	st, err := sqlite.OpenTestableWithKeystore(":memory:", ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-
-	key := [32]byte{}
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 	return newTestManagerOver(t, st, ks, publicURL, solo, opts...)
 }
 
@@ -69,9 +67,9 @@ func newTestManagerPublishedAt(t *testing.T, publicURL string, solo bool, opts .
 // The gate reads two CORE keys, so this helper registers them beside the
 // captcha ones -- a test configures the hub the way an operator does, and
 // NewManager refuses a manager that registers neither.
-func newSettingsManager(t *testing.T, st store.Store, ks *keystore.Keystore) *settings.Manager {
+func newSettingsManager(t *testing.T, st store.Store) *settings.Manager {
 	t.Helper()
-	set := settings.NewManager(st, ks, append(SettingsDescriptors(), settings.KeyPublicURL, settings.KeySecureCookies))
+	set := settings.NewManager(st, append(SettingsDescriptors(), settings.KeyPublicURL, settings.KeySecureCookies))
 	require.NoError(t, set.Load(context.Background()))
 	return set
 }
@@ -81,7 +79,7 @@ func newSettingsManager(t *testing.T, st store.Store, ks *keystore.Keystore) *se
 // through the same store the test observes.
 func newTestManagerOver(t *testing.T, st store.Store, ks *keystore.Keystore, publicURL string, solo bool, opts ...Option) *testEnv {
 	t.Helper()
-	set := newSettingsManager(t, st, ks)
+	set := newSettingsManager(t, st)
 	if publicURL != "" {
 		require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, publicURL))
 	}
@@ -511,12 +509,10 @@ func TestTuningBeforeFirstUseGetsItsSigningKeyFilled(t *testing.T) {
 // a payload that one manager (one hub instance, or the same hub after a
 // restart) already consumed.
 func TestReplayRejectedAcrossManagerInstances(t *testing.T) {
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	ks := hubtestutil.TestKeystore(t)
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-	key := [32]byte{}
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 
 	first := newTestManagerOver(t, st, ks, testPublicURL, false)
 	_, err = first.m.AltchaChallengeJSON(context.Background()) // provisions
@@ -666,19 +662,17 @@ func TestSecretAADIsProviderScoped(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, turnstileRow.Secret)
 
-	// The ciphertext is bound to the turnstile key's AAD: it must not
-	// decrypt under the altcha key name.
-	_, err = e.ks.Decrypt(turnstileRow.Secret, keystore.SettingsSecretAAD(AltchaKey.Name()))
-	require.Error(t, err, "ciphertext pasted into another key's row must not decrypt")
-
-	// Move it into the altcha row's secret half (direct SQL, outside the
-	// write path) and switch the selection back.
+	// Copy the actual persisted Turnstile secret ciphertext into the altcha
+	// row's secret column (direct SQL via TestHelper, keeping the public value
+	// readable) and switch the selection back. Because the ciphertext was sealed
+	// under Turnstile's key-scoped AAD, decrypting it under AltchaKey.Name()
+	// must fail.
 	empty := "{}"
 	require.NoError(t, e.st.Settings().Upsert(ctx, store.UpsertSettingParams{
-		Key:    AltchaKey.Name(),
-		Value:  &empty,
-		Secret: turnstileRow.Secret,
+		Key:   AltchaKey.Name(),
+		Value: &empty,
 	}))
+	require.NoError(t, e.st.(store.TestableStore).TestHelper().CopySettingSecretCiphertext(ctx, TurnstileKey.Name(), AltchaKey.Name()))
 	require.NoError(t, CaptchaSelectedKey.Set(ctx, e.set, ProviderAlias(ProviderAltcha)))
 
 	// Reload through a fresh manager: the pasted secret fails decryption
@@ -699,7 +693,7 @@ func TestSecretAADIsProviderScoped(t *testing.T) {
 // store holds.
 func rawSnapshot(t *testing.T, rows map[string]string) *settings.Snapshot {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
@@ -707,7 +701,7 @@ func rawSnapshot(t *testing.T, rows map[string]string) *settings.Snapshot {
 		v := value
 		require.NoError(t, st.Settings().Upsert(ctx, store.UpsertSettingParams{Key: key, Value: &v}))
 	}
-	set := settings.NewManager(st, nil, SettingsDescriptors())
+	set := settings.NewManager(st, SettingsDescriptors())
 	require.NoError(t, set.Load(ctx))
 	return set.Snapshot(ctx)
 }
@@ -821,6 +815,40 @@ func TestEffectiveFallsBackOnInvalidRow(t *testing.T) {
 	cfg, reason = Effective(rawSnapshot(t, nil))
 	assert.Equal(t, DefaultConfig(), cfg)
 	assert.Empty(t, reason)
+}
+
+func TestEnsureProvisionedFailsOnUndecryptableAltchaValue(t *testing.T) {
+	ctx := context.Background()
+	ksA := hubtestutil.TestKeystore(t)
+	ksB := hubtestutil.TestKeystore(t)
+	stB, err := sqlite.OpenTestableWithKeystore(":memory:", ksB)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stB.Close() })
+
+	// Seed captcha.altcha under key A with custom tuning and a provisioned secret.
+	stA := stB.TestHelper().WithKeystore(ksA)
+	envA := newTestManagerOver(t, stA, ksA, testPublicURL, false)
+	applyTestAltchaSettings(t, envA, cheapAltchaSettings)
+	beforeRow := AltchaKey.Of(envA.set.Snapshot(ctx))
+	require.Equal(t, "SHA-256", beforeRow.Algorithm)
+	require.EqualValues(t, 1000, beforeRow.Cost)
+	require.NotEmpty(t, beforeRow.HMACKey)
+
+	// Load settings.Manager and captcha.Manager over key B, which cannot decrypt
+	// the captcha.altcha row written under key A.
+	envB := newTestManagerOver(t, stB, ksB, testPublicURL, false)
+	var undecryptable *settings.SettingUndecryptableError
+	err = envB.m.EnsureProvisioned(ctx)
+	require.ErrorAs(t, err, &undecryptable, "EnsureProvisioned must fail loudly when captcha.altcha cannot decrypt")
+
+	// The stored captcha.altcha row must not be overwritten: key A still reads
+	// back the original custom tuning and signing key.
+	require.NoError(t, envA.set.Load(ctx))
+	afterRow := AltchaKey.Of(envA.set.Snapshot(ctx))
+	assert.Equal(t, beforeRow.Algorithm, afterRow.Algorithm)
+	assert.Equal(t, beforeRow.Cost, afterRow.Cost)
+	assert.Equal(t, beforeRow.ChallengeExpirySeconds, afterRow.ChallengeExpirySeconds)
+	assert.Equal(t, beforeRow.HMACKey, afterRow.HMACKey)
 }
 
 func fmtSettings(t *testing.T, s AltchaSettings, expiry int64) string {
@@ -1053,14 +1081,14 @@ func (s *countingSettingsStore) Settings() store.SettingsStore {
 
 // newColdManagerOver builds a captcha manager whose settings snapshot is
 // NOT loaded yet, over a caller-supplied store.
-func newColdManagerOver(t *testing.T, st store.Store, ks *keystore.Keystore) *Manager {
+func newColdManagerOver(t *testing.T, st store.Store) *Manager {
 	t.Helper()
 	// Through newSettingsManager, so the two CORE keys the gate reads are
 	// registered here too. NewManager panics without them. Both callers
 	// wrap a store that newTestManager already published testPublicURL
 	// into, so this manager reads an ALTCHA-enabled hub without writing
 	// the key again.
-	return NewManager(st, newSettingsManager(t, st, ks), false)
+	return NewManager(st, newSettingsManager(t, st), false)
 }
 
 // TestResolveCoalescesConcurrentColdLoads pins the singleflight: a burst
@@ -1073,7 +1101,7 @@ func TestResolveCoalescesConcurrentColdLoads(t *testing.T) {
 	require.NoError(t, inner.m.EnsureProvisioned(context.Background()))
 
 	wrapped := &countingSettingsStore{Store: inner.st}
-	m := newColdManagerOver(t, wrapped, inner.ks)
+	m := newColdManagerOver(t, wrapped)
 
 	const burst = 8
 	var wg sync.WaitGroup
@@ -1105,7 +1133,7 @@ func TestResolveCoalescesConcurrentColdLoads(t *testing.T) {
 func TestDescribeCoalescesConcurrentColdLoads(t *testing.T) {
 	inner := newTestManager(t, false)
 	wrapped := &countingSettingsStore{Store: inner.st}
-	m := newColdManagerOver(t, wrapped, inner.ks)
+	m := newColdManagerOver(t, wrapped)
 
 	const burst = 8
 	var wg sync.WaitGroup

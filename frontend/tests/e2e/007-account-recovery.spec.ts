@@ -8,13 +8,11 @@ import {
   listPasskeysViaAPI,
   loginViaAPI,
   logoutViaAPI,
-  readPendingEmailToken,
   signUpViaAPI,
   verifyEmailViaAPI,
 } from './helpers/api'
 import { solveCaptchaViaUI } from './helpers/captcha'
-import { extractAccountRecoveryToken, withCaptureSmtp } from './helpers/mail'
-import { hubDataDir } from './helpers/server'
+import { extractAccountRecoveryToken, extractEmailVerificationCode, withCaptureSmtp } from './helpers/mail'
 import { loginViaUI, logoutViaUI, openAppAs } from './helpers/ui'
 import {
   addPasskeyViaAPIInBrowser,
@@ -30,8 +28,9 @@ test.describe('Account recovery', () => {
 
       const username = `recover-${Date.now()}`
       const email = `${username}@test.local`
+      const verifyEmail = smtp.waitForMessage()
       const passkeyCookie = await signUpWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username, email)
-      const verifyToken = await readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username)
+      const verifyToken = extractEmailVerificationCode(await verifyEmail)
       await verifyEmailViaAPI(leapmuxServer.hubUrl, passkeyCookie, verifyToken)
       const verifiedCookie = await loginWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username)
       await openAppAs(page, verifiedCookie)
@@ -98,8 +97,9 @@ test.describe('Account recovery', () => {
       const username = `recover-passkey-${Date.now()}`
       const email = `${username}@test.local`
       const password = 'oldpass123'
+      const verifyEmail = smtp.waitForMessage()
       const cookie = await signUpViaAPI(leapmuxServer.hubUrl, username, password, '', email)
-      const verifyToken = await readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username)
+      const verifyToken = extractEmailVerificationCode(await verifyEmail)
       await verifyEmailViaAPI(leapmuxServer.hubUrl, cookie, verifyToken)
       await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
       expect((await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)).length).toBeGreaterThan(0)

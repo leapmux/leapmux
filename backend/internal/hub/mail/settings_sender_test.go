@@ -5,10 +5,10 @@ import (
 	"net"
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,16 +21,11 @@ import (
 // username is set).
 func newSettingsSender(t *testing.T, smtpDoc string) mail.Sender {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-
-	m := settings.NewManager(st, ks, settings.CoreDescriptors())
+	m := settings.NewManager(st, settings.CoreDescriptors())
 	require.NoError(t, m.Load(context.Background()))
 	if smtpDoc != "" {
 		require.NoError(t, m.Update(context.Background(), settings.KeySMTP, []byte(smtpDoc)))

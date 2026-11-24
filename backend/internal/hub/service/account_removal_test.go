@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/stretchr/testify/assert"
@@ -24,7 +25,7 @@ import (
 func openAccountRemovalTestStore(t *testing.T) (store.Store, func()) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hub.db")
-	st, err := sqlite.Open(path, sqlitedb.Config{})
+	st, err := sqlite.Open(path, sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, st.Close()) })
 	db, err := sqlite.OpenDB(path, sqlitedb.Config{})

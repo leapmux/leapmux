@@ -16,6 +16,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	sqlitest "github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -436,12 +437,15 @@ func TestSoloStart_WaitsOutAnOrphanedLease(t *testing.T) {
 	dataDir := t.TempDir()
 
 	// The orphaned row: a holder that is gone, with a 1-second TTL.
-	hubDB := filepath.Join(dataDir, "hub", "hub.db")
-	require.NoError(t, os.MkdirAll(filepath.Dir(hubDB), 0o750))
+	hubDir := filepath.Join(dataDir, "hub")
+	hubDB := filepath.Join(hubDir, "hub.db")
+	require.NoError(t, os.MkdirAll(hubDir, 0o750))
+	ks, err := keystore.LoadOrGenerate(filepath.Join(hubDir, "encryption.key"))
+	require.NoError(t, err)
 	sqlDB, err := sqlitest.OpenDB(hubDB, sqlitedb.Config{})
 	require.NoError(t, err)
 	require.NoError(t, sqlitest.MigrateDB(sqlDB))
-	hubStore, err := sqlitest.Open(hubDB, sqlitedb.Config{})
+	hubStore, err := sqlitest.Open(hubDB, sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	require.NoError(t, sqlDB.Close())
 	_, err = hubStore.RevocationEvents().AcquireHubRuntimeLease(context.Background(), store.AcquireHubRuntimeLeaseParams{

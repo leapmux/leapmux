@@ -456,7 +456,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		require.Error(t, err)
 		_, err = st.OAuthClients().Get(ctx, clientID)
 		require.NoError(t, err)
-		_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
+		_, err = st.OAuthAuthorizationCodes().Get(ctx, FixtureSecretHash(authorizationCode))
 		require.NoError(t, err, "a failed deletion must restore the authorization code")
 		_, err = st.APITokens().GetByID(ctx, tokenID)
 		require.NoError(t, err)
@@ -472,7 +472,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		// RESTRICT key as a credential, but is not history.
 		authorizationCode := id.Generate()
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-			Code: authorizationCode, UserID: owner, ClientID: clientID,
+			CodeHash: FixtureSecretHash(authorizationCode), UserID: owner, ClientID: clientID,
 			CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
 			GrantedScopes: "workspace:read", InstallationName: "laptop",
 			ExpiresAt:  time.Now().Add(time.Minute),
@@ -487,7 +487,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		_, err = st.OAuthClients().Get(ctx, clientID)
 		RequireNotFound(t, err)
-		_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
+		_, err = st.OAuthAuthorizationCodes().Get(ctx, FixtureSecretHash(authorizationCode))
 		RequireNotFound(t, err)
 	})
 
@@ -527,7 +527,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				require.NoError(t, err)
 				_, err = st.OAuthClients().Get(ctx, clientID)
 				require.NoError(t, err)
-				_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
+				_, err = st.OAuthAuthorizationCodes().Get(ctx, FixtureSecretHash(authorizationCode))
 				assert.NoError(t, err, "a refused app deletion must preserve the authorization code")
 			})
 		}
@@ -783,7 +783,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				clientID := seedApp(t, st, "stepup-both-app", alice.ID, store.OAuthClientSourceUser)
 
 				err := st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-					Code:             id.Generate(),
+					CodeHash:         FixtureSecretHash(id.Generate()),
 					UserID:           owner,
 					ClientID:         clientID,
 					CodeChallenge:    "challenge",
@@ -826,7 +826,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				clientID := seedApp(t, st, "stepup-xor-app", alice.ID, store.OAuthClientSourceUser)
 
 				err := st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-					Code:             id.Generate(),
+					CodeHash:         FixtureSecretHash(id.Generate()),
 					UserID:           owner,
 					ClientID:         clientID,
 					CodeChallenge:    "challenge",
@@ -870,9 +870,9 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				owner := userid.MustNew(alice.ID)
 				clientID := seedApp(t, st, "stepup-one-app", alice.ID, store.OAuthClientSourceUser)
 
-				code := id.Generate()
+				codeHash := FixtureSecretHash(id.Generate())
 				params := store.CreateOAuthAuthorizationCodeParams{
-					Code:             code,
+					CodeHash:         codeHash,
 					UserID:           owner,
 					ClientID:         clientID,
 					CodeChallenge:    "challenge",
@@ -885,12 +885,12 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				tc.set(&params)
 				require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, params))
 
-				row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
+				row, err := st.OAuthAuthorizationCodes().Get(ctx, codeHash)
 				require.NoError(t, err)
 				assert.Equal(t, tc.expected, row.StepUp, "the reference must round-trip as exactly one kind and one id")
-				err = st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
+				err = st.OAuthAuthorizationCodes().Consume(ctx, codeHash, time.Now().UTC())
 				require.NoError(t, err)
-				assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code,
+				assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, codeHash,
 					store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "must-not-mint"}),
 					store.ErrNotFound, "a step-up code cannot record a minted credential")
 			})
@@ -903,9 +903,9 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		owner := userid.MustNew(alice.ID)
 		clientID := seedApp(t, st, "mark-minted-sess-app", alice.ID, store.OAuthClientSourceUser)
 
-		code := id.Generate()
+		codeHash := FixtureSecretHash(id.Generate())
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-			Code:             code,
+			CodeHash:         codeHash,
 			UserID:           owner,
 			AuthGeneration:   42,
 			ClientID:         clientID,
@@ -917,10 +917,10 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			Redemption:       store.RedemptionKindSession,
 		}))
 		minted := store.CredentialRef{Kind: store.CredentialRefKindSession, ID: "session-abc"}
-		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted), store.ErrNotFound,
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, codeHash, minted), store.ErrNotFound,
 			"an active code cannot record a credential before consumption")
 
-		err := st.OAuthAuthorizationCodes().Consume(ctx, code, time.Now().UTC())
+		err := st.OAuthAuthorizationCodes().Consume(ctx, codeHash, time.Now().UTC())
 		require.NoError(t, err)
 
 		for _, ref := range []store.CredentialRef{
@@ -928,20 +928,20 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 			{ID: "session-abc"},
 			{ID: " "},
 		} {
-			assert.Errorf(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, ref),
+			assert.Errorf(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, codeHash, ref),
 				"the minted reference CHECK must refuse a half-written reference: %#v", ref)
 		}
 
 		wrongKind := store.CredentialRef{Kind: store.CredentialRefKindToken, ID: "token-abc"}
-		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, wrongKind), store.ErrNotFound,
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, codeHash, wrongKind), store.ErrNotFound,
 			"the minted credential kind must match the consented redemption kind")
 
-		require.NoError(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted))
-		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, code, minted), store.ErrNotFound,
+		require.NoError(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, codeHash, minted))
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, codeHash, minted), store.ErrNotFound,
 			"a consumed issuance accepts exactly one minted credential")
-		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, "missing-code", minted), store.ErrNotFound)
+		assert.ErrorIs(t, st.OAuthAuthorizationCodes().MarkMinted(ctx, FixtureSecretHash("missing-code"), minted), store.ErrNotFound)
 
-		row, err := st.OAuthAuthorizationCodes().Get(ctx, code)
+		row, err := st.OAuthAuthorizationCodes().Get(ctx, codeHash)
 		require.NoError(t, err)
 		assert.Equal(t, int64(42), row.AuthGeneration)
 		assert.Equal(t, minted, row.Minted, "the minted reference must read back on the consumed code")
@@ -953,7 +953,7 @@ func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.U
 	authorizationCode = id.Generate()
 	ctx := context.Background()
 	require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-		Code: authorizationCode, UserID: owner, ClientID: clientID,
+		CodeHash: FixtureSecretHash(authorizationCode), UserID: owner, ClientID: clientID,
 		CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
 		GrantedScopes: "workspace:read", InstallationName: "laptop",
 		ExpiresAt: time.Now().Add(time.Minute),

@@ -12,33 +12,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-func newMigratedWebAuthnService(t *testing.T) (*webauthn.Service, store.Store, *webauthn.SessionStore) {
+func newMigratedWebAuthnService(t *testing.T) (*webauthn.Service, store.TestableStore, *webauthn.SessionStore) {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.OpenTestable(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
-
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 
 	sessions := webauthn.NewSessionStore()
 	svc, err := webauthn.NewService(webauthn.RPConfig{
 		RPID:          "localhost",
 		RPDisplayName: "LeapMux",
 		RPOrigins:     []string{"http://localhost"},
-	}, st, ks, sessions)
+	}, st, sessions)
 	require.NoError(t, err)
 	return svc, st, sessions
 }
@@ -173,13 +167,11 @@ func TestBeginElevation_ReplacesPriorCeremony(t *testing.T) {
 
 	credID := []byte{0x11, 0x22, 0x33, 0x44}
 	rowID := id.Generate()
-	enc, version, err := svc.EncryptPublicKey(rowID, []byte("cose-public-key"))
-	require.NoError(t, err)
 	now := time.Now().UTC()
 	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
-		ID: rowID, UserID: userID, CredentialID: credID, PublicKey: enc,
+		ID: rowID, UserID: userID, CredentialID: credID, PublicKey: []byte("cose-public-key"),
 		SignCount: 1, Transports: `["internal"]`, FriendlyName: "Phone",
-		KeyVersion: version, CreatedAt: now,
+		CreatedAt: now,
 	}))
 
 	firstID, _, err := svc.BeginElevation(context.Background(), userID, "")
@@ -200,13 +192,11 @@ func TestBeginLogin_ReplacesPriorCeremony(t *testing.T) {
 
 	credID := []byte{0x11, 0x22, 0x33, 0x44}
 	rowID := id.Generate()
-	enc, version, err := svc.EncryptPublicKey(rowID, []byte("cose-public-key"))
-	require.NoError(t, err)
 	now := time.Now().UTC()
 	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
-		ID: rowID, UserID: userID, CredentialID: credID, PublicKey: enc,
+		ID: rowID, UserID: userID, CredentialID: credID, PublicKey: []byte("cose-public-key"),
 		SignCount: 1, Transports: `["internal"]`, FriendlyName: "Phone",
-		KeyVersion: version, CreatedAt: now,
+		CreatedAt: now,
 	}))
 
 	firstID, _, err := svc.BeginLogin(context.Background(), userID, "")
@@ -261,18 +251,15 @@ func TestBeginElevation_ConstrainsAllowCredentials(t *testing.T) {
 
 	credID := []byte{0x01, 0x02, 0x03, 0x04, 0xaa, 0xbb}
 	rowID := id.Generate()
-	enc, version, err := svc.EncryptPublicKey(rowID, []byte("cose-public-key"))
-	require.NoError(t, err)
 	now := time.Now().UTC()
 	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
 		ID:           rowID,
 		UserID:       userID,
 		CredentialID: credID,
-		PublicKey:    enc,
+		PublicKey:    []byte("cose-public-key"),
 		SignCount:    3,
 		Transports:   `["internal"]`,
 		FriendlyName: "Phone",
-		KeyVersion:   version,
 		CreatedAt:    now,
 	}))
 
@@ -353,15 +340,17 @@ func TestBeginRecoveryRegistration_IgnoresUndecryptablePasskeys(t *testing.T) {
 	svc, st, _ := newMigratedWebAuthnService(t)
 	userID := seedUser(t, st)
 
-	require.NoError(t, st.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
+	// Seed the passkey row under a different keystore so the users row remains
+	// readable under the active keystore while passkeys fail decryption.
+	stOtherKey := st.TestHelper().WithKeystore(hubtestutil.TestKeystore(t))
+	require.NoError(t, stOtherKey.PasskeyCredentials().Create(context.Background(), store.CreatePasskeyCredentialParams{
 		ID:           id.Generate(),
 		UserID:       userID,
 		CredentialID: []byte{0x01, 0x02, 0x03, 0x04},
-		PublicKey:    []byte("not-ciphertext"),
+		PublicKey:    []byte("lost-key-public-key"),
 		SignCount:    0,
 		Transports:   "[]",
 		FriendlyName: "Lost",
-		KeyVersion:   1,
 		CreatedAt:    time.Now().UTC(),
 	}))
 

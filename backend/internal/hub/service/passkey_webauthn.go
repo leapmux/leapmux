@@ -9,23 +9,21 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubwebauthn "github.com/leapmux/leapmux/internal/hub/webauthn"
 )
 
 // ErrPasskeysUnavailable reports a hub configuration state in which passkey
-// ceremonies cannot run: no keystore, or no usable browser origin (desktop
-// local-only mode). Handlers map it to CodeFailedPrecondition once, so every
-// passkey surface answers the same state the same way instead of mixing
-// Internal, FailedPrecondition, and silently empty lists.
+// ceremonies cannot run: no usable browser origin (desktop local-only mode).
+// Handlers map it to CodeFailedPrecondition once, so every passkey surface
+// answers the same state the same way instead of mixing Internal,
+// FailedPrecondition, and silently empty lists.
 var ErrPasskeysUnavailable = errors.New("passkeys are not configured on this hub")
 
 // passkeyRPConfig resolves the relying-party parameters for this request, or
-// reports why the hub can run no ceremony at all. Both configuration failures
-// (no keystore, no hub URL) return ErrPasskeysUnavailable wrapped with the
-// remediation.
+// reports why the hub can run no ceremony at all. A missing hub URL returns
+// ErrPasskeysUnavailable wrapped with the remediation.
 //
 // It is separate from newWebAuthnService because one caller wants the ANSWER
 // and not the engine: passkeysRunnableForOrigin asks whether a browser at an
@@ -33,10 +31,7 @@ var ErrPasskeysUnavailable = errors.New("passkeys are not configured on this hub
 //
 // The RP config derives from the current settings snapshot, so a public_url
 // change applies without a restart.
-func passkeyRPConfig(ctx context.Context, set *settings.Manager, cfg *config.Config, ks *keystore.Keystore) (hubwebauthn.RPConfig, error) {
-	if ks == nil {
-		return hubwebauthn.RPConfig{}, fmt.Errorf("%w: passkey support is not configured", ErrPasskeysUnavailable)
-	}
+func passkeyRPConfig(ctx context.Context, set *settings.Manager, cfg *config.Config) (hubwebauthn.RPConfig, error) {
 	rp, err := hubwebauthn.RPConfigFromSettings(set.Snapshot(ctx), cfg.PrimaryTCPListen())
 	if err != nil {
 		return hubwebauthn.RPConfig{}, fmt.Errorf("%w: %s", ErrPasskeysUnavailable, err.Error())
@@ -47,24 +42,24 @@ func passkeyRPConfig(ctx context.Context, set *settings.Manager, cfg *config.Con
 // newWebAuthnService builds the per-request WebAuthn service shared by the
 // auth and user services. Call it when a CEREMONY runs; a caller that only
 // needs the relying-party answer takes passkeyRPConfig above.
-func newWebAuthnService(ctx context.Context, set *settings.Manager, cfg *config.Config, ks *keystore.Keystore, st store.Store, sessions *hubwebauthn.SessionStore) (*hubwebauthn.Service, error) {
-	rp, err := passkeyRPConfig(ctx, set, cfg, ks)
+func newWebAuthnService(ctx context.Context, set *settings.Manager, cfg *config.Config, st store.Store, sessions *hubwebauthn.SessionStore) (*hubwebauthn.Service, error) {
+	rp, err := passkeyRPConfig(ctx, set, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return hubwebauthn.NewService(rp, st, ks, sessions)
+	return hubwebauthn.NewService(rp, st, sessions)
 }
 
 func (s *UserService) webauthnService(ctx context.Context) (*hubwebauthn.Service, error) {
-	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, s.store, s.webauthnSessions)
+	return newWebAuthnService(ctx, s.set, s.cfg, s.store, s.webauthnSessions)
 }
 
 func (s *UserService) webauthnServiceWithStore(ctx context.Context, st store.Store) (*hubwebauthn.Service, error) {
-	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, st, s.webauthnSessions)
+	return newWebAuthnService(ctx, s.set, s.cfg, st, s.webauthnSessions)
 }
 
 func (s *AuthService) webauthnService(ctx context.Context) (*hubwebauthn.Service, error) {
-	return newWebAuthnService(ctx, s.set, s.cfg, s.keystore, s.store, s.webauthnSessions)
+	return newWebAuthnService(ctx, s.set, s.cfg, s.store, s.webauthnSessions)
 }
 
 // passkeysRunnableForOrigin reports whether passkey ceremonies can run for a
@@ -72,12 +67,12 @@ func (s *AuthService) webauthnService(ctx context.Context) (*hubwebauthn.Service
 // GetSystemInfo.
 //
 // TWO conditions, and the second is what a hub-wide answer could not carry.
-// The hub must be configured for passkeys (a keystore, and a usable hub URL),
-// and the request origin must be one the hub serves. A hub reached by an
-// address it does not publish runs no ceremony there: every Begin answers
-// ErrOriginNotAllowed. The hub-wide answer stayed true in that state, so the
-// sign-in form offered a Passkey option that could only fail, and the account
-// panel offered an Add passkey button that could only fail.
+// The hub must have a usable hub URL, and the request origin must be one the
+// hub serves. A hub reached by an address it does not publish runs no ceremony
+// there: every Begin answers ErrOriginNotAllowed. The hub-wide answer stayed
+// true in that state, so the sign-in form offered a Passkey option that could
+// only fail, and the account panel offered an Add passkey button that could
+// only fail.
 //
 // Clients show every passkey affordance only when this ONE flag is true, so
 // the flag must answer the question those clients really ask: can THIS page
@@ -109,7 +104,7 @@ func (s *AuthService) passkeysRunnableForOrigin(ctx context.Context, origin stri
 	if s.cfg.SoloMode {
 		return false
 	}
-	rp, err := passkeyRPConfig(ctx, s.set, s.cfg, s.keystore)
+	rp, err := passkeyRPConfig(ctx, s.set, s.cfg)
 	if err != nil {
 		return false
 	}

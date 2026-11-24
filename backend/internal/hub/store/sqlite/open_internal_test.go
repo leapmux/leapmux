@@ -5,12 +5,20 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func testKeystore(t *testing.T) *keystore.Keystore {
+	t.Helper()
+	ks, err := keystore.NewRandom()
+	require.NoError(t, err)
+	return ks
+}
 
 func TestOpenDB_InMemory(t *testing.T) {
 	sqlDB, err := OpenDB(":memory:", sqlitedb.Config{})
@@ -69,9 +77,10 @@ func TestMigrateDB_Idempotent(t *testing.T) {
 // the old migration-seeded rows could never recover from.
 func TestOpen_SecondBootReseedsTheBuiltIns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hub.db")
+	ks := testKeystore(t)
 
 	// First boot: migrates and seeds.
-	first, err := Open(path, sqlitedb.Config{})
+	first, err := Open(path, sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	require.NoError(t, first.Close())
 
@@ -80,12 +89,15 @@ func TestOpen_SecondBootReseedsTheBuiltIns(t *testing.T) {
 	// is the point of those refusals.
 	raw, err := OpenDB(path, sqlitedb.Config{})
 	require.NoError(t, err)
-	_, err = raw.Exec("DELETE FROM oauth_clients WHERE registration_source = 'builtin'")
+	res, err := raw.Exec("DELETE FROM oauth_clients WHERE registration_source = ?", int64(store.OAuthClientSourceBuiltin))
 	require.NoError(t, err)
+	deleted, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(len(oauthapp.BuiltInClientIDs())), deleted, "fixture must actually delete all built-in rows before second boot")
 	require.NoError(t, raw.Close())
 
 	// Second boot: migration is a no-op, and the seed must restore the rows.
-	second, err := Open(path, sqlitedb.Config{})
+	second, err := Open(path, sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	defer func() { _ = second.Close() }()
 
@@ -94,4 +106,18 @@ func TestOpen_SecondBootReseedsTheBuiltIns(t *testing.T) {
 		require.NoErrorf(t, err, "the second boot must reseed %s", clientID)
 		assert.Equal(t, store.OAuthClientSourceBuiltin, app.RegistrationSource)
 	}
+}
+
+func TestOpenRejectsNilKeystore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.db")
+
+	st, err := Open(path, sqlitedb.Config{}, nil)
+	require.Error(t, err)
+	assert.Nil(t, st)
+	assert.Contains(t, err.Error(), "keystore")
+
+	st, err = OpenWithoutMigrate(path, sqlitedb.Config{}, nil)
+	require.Error(t, err)
+	assert.Nil(t, st)
+	assert.Contains(t, err.Error(), "keystore")
 }

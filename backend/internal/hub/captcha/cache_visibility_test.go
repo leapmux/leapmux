@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,13 +20,9 @@ import (
 // (the admin CLI stand-in), and aging the first manager's snapshot out.
 func TestResolveRefreshesAfterTTL(t *testing.T) {
 	ctx := context.Background()
-	st, err := sqlite.Open(t.TempDir()+"/hub.db", sqlitedb.Config{})
+	st, err := sqlite.Open(t.TempDir()+"/hub.db", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-
-	key := [32]byte{}
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	const ttl = time.Second
@@ -36,7 +32,7 @@ func TestResolveRefreshesAfterTTL(t *testing.T) {
 	// only the algorithm, so it kept passing while covering a path it never
 	// meant to take.
 	descs := append(SettingsDescriptors(), settings.KeyPublicURL, settings.KeySecureCookies)
-	set := settings.NewManager(st, ks, descs,
+	set := settings.NewManager(st, descs,
 		settings.WithTTL(ttl), settings.WithNow(func() time.Time { return now }))
 	require.NoError(t, set.Load(ctx))
 	require.NoError(t, settings.KeyPublicURL.Set(ctx, set, testPublicURL))
@@ -51,7 +47,7 @@ func TestResolveRefreshesAfterTTL(t *testing.T) {
 
 	// A second manager (the admin CLI stand-in) swaps the settings. The
 	// settings-only update never touches the provisioned secret.
-	admin := settings.NewManager(st, ks, descs)
+	admin := settings.NewManager(st, descs)
 	require.NoError(t, admin.Load(ctx))
 	require.NoError(t, admin.Update(ctx, AltchaKey, json.RawMessage(cheapAltchaSettings)))
 

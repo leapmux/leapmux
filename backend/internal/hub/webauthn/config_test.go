@@ -15,7 +15,7 @@ import (
 
 func TestRPConfigFromSettings_UsesPublicURL(t *testing.T) {
 	st := testutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	ctx := context.Background()
 	require.NoError(t, settings.KeyPublicURL.Set(ctx, set, "https://hub.example.com"))
 
@@ -27,7 +27,7 @@ func TestRPConfigFromSettings_UsesPublicURL(t *testing.T) {
 
 func TestRPConfigFromSettings_RejectsOriginlessListen(t *testing.T) {
 	st := testutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	ctx := context.Background()
 
 	// Desktop local-only mode: no TCP listener, no public URL. Passkeys are
@@ -48,7 +48,7 @@ func TestRPConfigFromSettings_RejectsOriginlessListen(t *testing.T) {
 // passkeysRunnableForOrigin report them honestly.
 func TestRPConfigFromSettings_LoopbackCollapsesToLocalhost(t *testing.T) {
 	st := testutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	ctx := context.Background()
 
 	cfg, err := webauthn.RPConfigFromSettings(set.Snapshot(ctx), "127.0.0.1:8080")
@@ -69,7 +69,7 @@ func TestRPConfigFromSettings_LoopbackCollapsesToLocalhost(t *testing.T) {
 
 func TestRPConfigFromSettings_WildcardListenServesLoopback(t *testing.T) {
 	st := testutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	ctx := context.Background()
 
 	cfg, err := webauthn.RPConfigFromSettings(set.Snapshot(ctx), "0.0.0.0:9999")
@@ -84,7 +84,7 @@ func TestRPConfigFromSettings_WildcardListenServesLoopback(t *testing.T) {
 // every passkey call down with an opaque configuration error.
 func TestRPConfigFromSettings_RejectsBareIPPublicURL(t *testing.T) {
 	st := testutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	ctx := context.Background()
 	require.NoError(t, settings.KeyPublicURL.Set(ctx, set, "http://192.168.1.5:4327"))
 
@@ -96,7 +96,7 @@ func TestRPConfigFromSettings_RejectsBareIPPublicURL(t *testing.T) {
 
 func TestRPConfigFromSettings_AllowsOriginOnlyAllowsConfiguredOrigins(t *testing.T) {
 	st := testutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	ctx := context.Background()
 	require.NoError(t, settings.KeyPublicURL.Set(ctx, set, "http://localhost:4327"))
 

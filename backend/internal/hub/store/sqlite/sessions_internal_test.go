@@ -20,7 +20,7 @@ import (
 
 func newSessionTestStore(t *testing.T) (*sqliteStore, *sql.DB) {
 	t.Helper()
-	opened, err := Open(":memory:", sqlitedb.Config{})
+	opened, err := Open(":memory:", sqlitedb.Config{}, testKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, opened.Close()) })
 	st := opened.(*sqliteStore)

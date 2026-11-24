@@ -89,10 +89,6 @@ type User struct {
 	DeletedAt             *time.Time
 }
 
-// PageCursor returns the keyset position for user listings (ListAll/Search),
-// which order by (created_at DESC, id DESC).
-func (u User) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
-
 // HasUsablePassword reports whether a password can actually sign this account
 // in, which is a question about the stored HASH and not about
 // FirstCredentialExempt.
@@ -101,6 +97,48 @@ func (u User) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
 // `password_set` on the wire, and what the solo gate asks; the exempt flag
 // answers a different question and reads differently on the bootstrap account.
 func (u User) HasUsablePassword() bool { return password.IsUsable(u.PasswordHash) }
+
+// UserAuthIdentity is the plaintext identity projection read by bearer-token
+// validation and refresh generation checks. Projecting only plaintext columns
+// avoids decrypting password_hash, prefs, and pending_email_token on bearer
+// cache misses and keeps bearer auth working even if an encrypted column cannot
+// decrypt.
+type UserAuthIdentity struct {
+	ID             string
+	Username       string
+	Email          string
+	EmailVerified  bool
+	IsAdmin        bool
+	AuthGeneration int64
+	DeletedAt      *time.Time
+}
+
+// UserListItem is the admin-listing projection returned by UserStore.ListAll
+// and UserStore.Search. It omits encrypted prefs (up to 256 KiB per row) and
+// pending_email_token, decrypting only password_hash so callers can report
+// HasUsablePassword.
+type UserListItem struct {
+	ID                    string
+	Username              string
+	PasswordHash          string
+	DisplayName           string
+	Email                 string
+	EmailVerified         bool
+	PendingEmail          string
+	FirstCredentialExempt bool
+	IsAdmin               bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	AuthGeneration        int64
+	DeletedAt             *time.Time
+}
+
+// PageCursor returns the keyset position for user listings (ListAll/Search),
+// which order by (created_at DESC, id DESC).
+func (u UserListItem) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
+
+// HasUsablePassword reports whether a password can sign this account in.
+func (u UserListItem) HasUsablePassword() bool { return password.IsUsable(u.PasswordHash) }
 
 // UserSession represents an authenticated session.
 //
@@ -392,7 +430,7 @@ type WorkspaceSectionItem struct {
 	Position    string
 }
 
-// OAuthProviderSummary holds all OAuth provider fields except the encrypted secret.
+// OAuthProviderSummary holds all OAuth provider fields except the client secret.
 type OAuthProviderSummary struct {
 	ID           string
 	ProviderType leapmuxv1.IdentityProviderType
@@ -405,20 +443,25 @@ type OAuthProviderSummary struct {
 	CreatedAt    time.Time
 }
 
-// OAuthProvider extends OAuthProviderSummary with the encrypted client secret.
+// OAuthProvider extends OAuthProviderSummary with the decrypted client secret.
 type OAuthProvider struct {
 	OAuthProviderSummary
 	ClientSecret []byte
 }
 
 // SettingRow is one hub_settings row: a setting key's stored halves.
-// Value is the public JSON document; Secret is the keystore-encrypted
-// JSON secret half. Either half may be nil (stored NULL), never both.
+// Both columns are encrypted at rest by the store; Value and Secret carry the
+// decrypted plaintext JSON halves. Either half may be nil (stored NULL), never
+// both. If a column fails decryption, the corresponding *DecryptErr field holds
+// the error so settings.Manager can degrade unreadable keys without aborting
+// GetAll.
 type SettingRow struct {
-	Key       string
-	Value     *string
-	Secret    []byte
-	UpdatedAt time.Time
+	Key              string
+	Value            *string
+	Secret           []byte
+	ValueDecryptErr  error
+	SecretDecryptErr error
+	UpdatedAt        time.Time
 }
 
 // UpsertSettingParams rewrites one setting key's row. A nil half clears
@@ -430,8 +473,9 @@ type UpsertSettingParams struct {
 	Secret []byte
 }
 
-// PasskeyCredential stores one WebAuthn credential for a user. PublicKey is
-// keystore-encrypted at the service layer before persistence.
+// PasskeyCredential stores one WebAuthn credential for a user. Encrypted
+// columns (PublicKey, AAGUID, Transports, FriendlyName) are sealed and opened
+// transparently at the store boundary.
 type PasskeyCredential struct {
 	ID             string
 	UserID         string
@@ -443,7 +487,6 @@ type PasskeyCredential struct {
 	BackupState    bool
 	Transports     string
 	FriendlyName   string
-	KeyVersion     int64
 	CreatedAt      time.Time
 	LastUsedAt     *time.Time
 }
@@ -1255,7 +1298,6 @@ type CreatePasskeyCredentialParams struct {
 	BackupState    bool
 	Transports     string
 	FriendlyName   string
-	KeyVersion     int64
 	CreatedAt      time.Time
 	LastUsedAt     *time.Time
 }
@@ -1265,13 +1307,6 @@ type UpdatePasskeySignCountParams struct {
 	UserID       string
 	SignCount    int64
 	LastUsedAt   time.Time
-}
-
-type UpdatePasskeyPublicKeyParams struct {
-	ID         string
-	UserID     string
-	PublicKey  []byte
-	KeyVersion int64
 }
 
 type SetPendingRecoveryParams struct {
@@ -1847,7 +1882,7 @@ func (k RedemptionKind) NullableKind() *leapmuxv1.RedemptionKind {
 
 // OAuthAuthorizationCode is a one-shot RFC 6749 section 4.1 code.
 type OAuthAuthorizationCode struct {
-	Code           string
+	CodeHash       []byte
 	UserID         string
 	AuthGeneration int64
 	// ClientID is the app the code was issued TO. The token stage refuses a
@@ -1995,7 +2030,7 @@ type CreateDelegationTokenParams struct {
 }
 
 type CreateOAuthAuthorizationCodeParams struct {
-	Code             string
+	CodeHash         []byte
 	UserID           userid.UserID
 	AuthGeneration   int64
 	ClientID         string
@@ -2012,6 +2047,20 @@ type CreateOAuthAuthorizationCodeParams struct {
 	// page showed. RedemptionKindNone means a step-up code; the row's tie
 	// CHECK holds it exactly when StepUp identifies a credential.
 	Redemption RedemptionKind
+}
+
+// KeyVersionRefCount reports how many rows in a persistent encrypted table
+// still contain at least one ciphertext encrypted under a specific key version.
+type KeyVersionRefCount struct {
+	Table string
+	Label string
+	Count int64
+}
+
+// ReencryptResult summarizes one KeyMaintenanceStore.ReencryptAll run.
+type ReencryptResult struct {
+	RowsUpdated   int64
+	ActiveVersion uint32
 }
 
 // GetWorkerOwnedTabStateParams scopes a point read to one owner's hosting Worker.

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -59,6 +60,56 @@ import (
 	"github.com/leapmux/leapmux/util/errwrap"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// loadOrInitKeystore loads the Hub's encryption key ring, or generates a fresh
+// key ring only when the target database contains no existing encrypted data.
+// Refusing to auto-generate a key file against an existing database prevents a
+// missing encryption.key from silently creating a mismatched key file on disk.
+func loadOrInitKeystore(ctx context.Context, cfg *config.Config) (*keystore.Keystore, error) {
+	keyPath := cfg.EncryptionKeyFilePath()
+	_, err := keystore.LoadFromFile(keyPath)
+	if err == nil {
+		// Existing file found. LoadOrGenerate handles read-only rings and
+		// upgrades legacy pre-pepper key files in place.
+		return keystore.LoadOrGenerate(keyPath)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := ensureDatabaseHasNoEncryptedData(ctx, cfg, keyPath); err != nil {
+		return nil, err
+	}
+	return keystore.LoadOrGenerate(keyPath)
+}
+
+func ensureDatabaseHasNoEncryptedData(ctx context.Context, cfg *config.Config, keyPath string) error {
+	if cfg.Storage.Type == "" || cfg.Storage.Type == config.StorageTypeSQLite {
+		if _, err := os.Stat(cfg.SQLiteDBPath()); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+	}
+	probeKS, err := keystore.NewRandom()
+	if err != nil {
+		return fmt.Errorf("create probe keystore: %w", err)
+	}
+	probeStore, err := storeopen.OpenWithoutMigrate(ctx, cfg, probeKS)
+	if err != nil {
+		return fmt.Errorf("probe database before generating %s: %w", keyPath, err)
+	}
+	defer func() { _ = probeStore.Close() }()
+
+	curVer, err := probeStore.Migrator().CurrentVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("check schema version before generating %s: %w", keyPath, err)
+	}
+	if curVer == 0 {
+		return nil
+	}
+	if err := probeStore.KeyMaintenance().VerifyKeyring(ctx); err != nil {
+		return fmt.Errorf("encryption key file %s is missing, but the database already contains encrypted data; restore %s before starting: %w", keyPath, keyPath, err)
+	}
+	return nil
+}
 
 // crdtShutdownTimeout caps the CRDT registry's drain, both on a construction
 // failure and on runtime shutdown -- one constant so the two paths cannot drift.
@@ -462,19 +513,19 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// never as part of the TCP merge input.
 	listenReports := listenReporter{set: listeners, configured: tcpEntries, local: localListenURLs}
 
-	st, err := storeopen.Open(context.Background(), cfg)
-	if err != nil {
-		return nil, acquired.close(
-			fmt.Errorf("open store: %w", err))
-	}
-	acquired.store = st
-
-	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
+	ks, err := loadOrInitKeystore(context.Background(), cfg)
 	if err != nil {
 		return nil, acquired.close(
 			fmt.Errorf("load encryption keystore: %w", err))
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
+
+	st, err := storeopen.Open(context.Background(), cfg, ks)
+	if err != nil {
+		return nil, acquired.close(
+			fmt.Errorf("open store: %w", err))
+	}
+	acquired.store = st
 
 	// The settings manager is the hub's runtime configuration authority:
 	// every DB-backed setting (auth policy, SMTP, timeouts, limits,
@@ -483,7 +534,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// budgets, max message size) are fixed for the process's life. Loaded
 	// synchronously so a broken store fails startup, before the hub constructs
 	// any pool from a value it must never see change.
-	setMgr := settingsregistry.NewManager(st, ks)
+	setMgr := settingsregistry.NewManager(st)
 	if err := setMgr.Load(context.Background()); err != nil {
 		return nil, acquired.close(fmt.Errorf("load settings: %w", err))
 	}
@@ -815,7 +866,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
 		SessionHasher: hasher,
-		Store:         st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle, Keystore: ks,
+		Store:         st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle,
 		Mail: mailSender, Renderer: mailRenderer, Captcha: captchaMgr,
 		Listen: listenReports, SoloGate: authContexts.SoloGate(),
 		PendingOAuthSignups: pendingSignups, WebAuthnSessions: webauthnSessions,
@@ -843,7 +894,6 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		Config:              cfg,
 		Settings:            setMgr,
 		Lifecycle:           lifecycle,
-		Keystore:            ks,
 		OAuthStates:         oauthStates,
 		PendingOAuthSignups: pendingSignups,
 	})
@@ -886,7 +936,6 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		Lifecycle:            lifecycle,
 		Mail:                 mailSender,
 		Renderer:             mailRenderer,
-		Keystore:             ks,
 		WebAuthnSessions:     webauthnSessions,
 		DeviceAuthorizations: deviceAuths,
 	})
@@ -972,7 +1021,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	adminWorkerSvc := service.NewAdminWorkerService(st, wMgr, workerEffects)
 	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer, adminWorkerSvc)
 
-	adminIdPSvc := service.NewAdminIdPService(st, ks, idpHandler)
+	adminIdPSvc := service.NewAdminIdPService(st, idpHandler)
 	leapmuxv1connect.RegisterAdminIdPServiceHandler(connectServer, adminIdPSvc)
 
 	// AppService is the app REGISTRATION surface, and it is deliberately NOT an

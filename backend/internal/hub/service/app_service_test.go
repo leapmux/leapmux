@@ -63,7 +63,7 @@ func setupAppService(t *testing.T) *appEnv {
 	t.Helper()
 	ctx := context.Background()
 
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(ctx))
@@ -100,7 +100,7 @@ func setupAppService(t *testing.T) *appEnv {
 	deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAppServiceHandler(connectServer,
-		service.NewAppService(st, servicetest.NewSettingsManager(t, st, nil), tv, lifecycle, deviceAuths))
+		service.NewAppService(st, servicetest.NewSettingsManager(t, st), tv, lifecycle, deviceAuths))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
@@ -1505,7 +1505,7 @@ func TestAppService_RevokeAppInvalidatesOrPreservesDeviceGrants(t *testing.T) {
 	// Failing DB transaction must abort invalidation and preserve the grant.
 	failingSvc := service.NewAppService(
 		txFailAppStore{Store: env.store, err: errors.New("forced tx failure")},
-		servicetest.NewSettingsManager(t, env.store, nil),
+		servicetest.NewSettingsManager(t, env.store),
 		env.validator,
 		auth.NewCredentialLifecycleEffects(nil, nil, nil),
 		env.deviceAuths,
@@ -1603,7 +1603,7 @@ func TestAppService_RevokeAppEvictsTokenCommittedBeforeTransaction(t *testing.T)
 	closer := &recordingCredentialCloser{}
 	svc := service.NewAppService(
 		wrappedStore,
-		servicetest.NewSettingsManager(t, env.store, nil),
+		servicetest.NewSettingsManager(t, env.store),
 		env.validator,
 		auth.NewCredentialLifecycleEffects(nil, closer, nil),
 		env.deviceAuths,
@@ -1694,7 +1694,7 @@ func TestAppService_DeleteAppAbortsDeviceInvalidationOnStoreFailureOrMissingRow(
 
 			svc := service.NewAppService(
 				deleteOverrideAppStore{Store: env.store, rows: tc.rows, err: tc.err},
-				servicetest.NewSettingsManager(t, env.store, nil),
+				servicetest.NewSettingsManager(t, env.store),
 				env.validator,
 				auth.NewCredentialLifecycleEffects(nil, nil, nil),
 				env.deviceAuths,
@@ -1738,7 +1738,7 @@ func TestAppService_RevokeAppUnderDoubleRunClosesBearerOnce(t *testing.T) {
 	closer := &recordingCredentialCloser{}
 	svc := service.NewAppService(
 		storetest.DoubleRunStore{Store: env.store},
-		servicetest.NewSettingsManager(t, env.store, nil),
+		servicetest.NewSettingsManager(t, env.store),
 		env.validator,
 		auth.NewCredentialLifecycleEffects(nil, closer, nil),
 		env.deviceAuths,

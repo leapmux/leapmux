@@ -14,7 +14,7 @@ INSERT INTO oauth_clients (
     sqlc.narg(secret_hash),
     sqlc.arg(client_name),
     sqlc.narg(icon_blob),
-    sqlc.arg(icon_media_type),
+    sqlc.narg(icon_media_type),
     sqlc.arg(client_uri),
     sqlc.arg(redirect_uris),
     sqlc.arg(scopes),
@@ -144,7 +144,7 @@ WHERE client_id = sqlc.arg(client_id)
 -- name: SetOAuthClientIcon :execresult
 UPDATE oauth_clients
 SET icon_blob = sqlc.narg(icon_blob),
-    icon_media_type = sqlc.arg(icon_media_type),
+    icon_media_type = sqlc.narg(icon_media_type),
     updated_at = CURRENT_TIMESTAMP(3)
 WHERE client_id = sqlc.arg(client_id)
   AND revoked_at IS NULL

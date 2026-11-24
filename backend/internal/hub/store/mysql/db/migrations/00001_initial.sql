@@ -39,7 +39,7 @@ SET NAMES utf8mb4 COLLATE utf8mb4_bin;
 CREATE TABLE users (
     id             VARCHAR(255) PRIMARY KEY CHECK (id <> ''),
     username       VARCHAR(255) NOT NULL,
-    password_hash  TEXT NOT NULL,
+    password_hash  BLOB NOT NULL,
     display_name   TEXT NOT NULL,
     -- Unicode-casefolded (Go strings.ToLower) copy of display_name, maintained on
     -- every write, so admin SearchUsers matches non-ASCII names case-insensitively
@@ -49,9 +49,9 @@ CREATE TABLE users (
     email                    VARCHAR(255) NOT NULL DEFAULT '',
     email_verified           BOOLEAN NOT NULL DEFAULT FALSE,
     pending_email            VARCHAR(255) NOT NULL DEFAULT '',
-    -- Stored verification code in raw 6-char form (no hyphen), drawn from
-    -- verifycode.Charset. Empty when no verification is pending.
-    pending_email_token      VARCHAR(16) NOT NULL DEFAULT '',
+    -- Keystore-encrypted verification code (6-char form, no hyphen, drawn from
+    -- verifycode.Charset). NULL when no verification is pending.
+    pending_email_token      BLOB,
     pending_email_expires_at DATETIME(3),
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
@@ -79,7 +79,7 @@ CREATE TABLE users (
     -- question, answered by store.User.HasUsablePassword() from the stored hash.
     first_credential_exempt             BOOLEAN NOT NULL DEFAULT TRUE,
     is_admin                 BOOLEAN NOT NULL DEFAULT FALSE,
-    prefs          MEDIUMTEXT NOT NULL,
+    prefs          MEDIUMBLOB,
     created_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     -- Monotonic credential epoch. Sessions and bearer rows copy this
@@ -133,8 +133,8 @@ CREATE TABLE user_sessions (
     -- elevation_expires_at to elevation_proven_at + the maximum total window.
     elevation_proven_at     DATETIME(3),
     elevation_expires_at  DATETIME(3),
-    user_agent      TEXT NOT NULL,
-    ip_address      VARCHAR(255) NOT NULL DEFAULT '',
+    user_agent      BLOB NOT NULL,
+    ip_address      BLOB NOT NULL,
     -- The built-in app that this session was issued to through the browser
     -- handoff. NULL for a session that signed in on the Hub's own page. No
     -- foreign key: only the token exchange of a built-in app writes it.
@@ -259,7 +259,7 @@ CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys
 CREATE TABLE workspace_sections (
     id           VARCHAR(255) PRIMARY KEY,
     user_id      VARCHAR(255) NOT NULL,
-    name         TEXT NOT NULL,
+    name         BLOB NOT NULL,
     position     TEXT NOT NULL,
     -- SectionType and Sidebar ordinals (proto/leapmux/v1/section.proto).
     -- DEFAULT 1 is SECTION_TYPE_WORKSPACES_CUSTOM and SIDEBAR_LEFT.
@@ -295,7 +295,7 @@ CREATE UNIQUE INDEX idx_workspace_sections_user_default_type
 CREATE TABLE workspaces (
     id            VARCHAR(255) PRIMARY KEY,
     owner_user_id VARCHAR(255) NOT NULL,
-    title         TEXT NOT NULL,
+    title         BLOB NOT NULL,
     created_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     deleted_at    DATETIME(3),
     -- The parent key of the composite foreign keys that tie a placement and a
@@ -480,17 +480,17 @@ CREATE TABLE oauth_clients (
     owner_user_id         VARCHAR(255),
     -- NULL is a PUBLIC client and non-NULL is a CONFIDENTIAL one.
     secret_hash           VARBINARY(64),
-    client_name           VARCHAR(255) NOT NULL,
-    icon_blob             BLOB,
-    icon_media_type       VARCHAR(255) NOT NULL DEFAULT '',
-    client_uri            VARCHAR(2048) NOT NULL DEFAULT '',
+    client_name           BLOB NOT NULL,
+    icon_blob             MEDIUMBLOB,
+    icon_media_type       BLOB,
+    client_uri            BLOB NOT NULL,
     -- Newline-delimited exact-match list.
-    redirect_uris         TEXT NOT NULL,
+    redirect_uris         BLOB NOT NULL,
     -- Space-delimited RFC 6749 section 3.3: the ceiling on what this app may
     -- reach. LIVE rather than consent-time, and narrowing only; see the sqlite
     -- twin.
-    scopes                TEXT NOT NULL,
-    grant_types           VARCHAR(512) NOT NULL DEFAULT 'authorization_code refresh_token',
+    scopes                BLOB NOT NULL,
+    grant_types           BLOB NOT NULL,
     elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
     -- Whether an authorization for this app mints a Hub session rather than
     -- an app credential. A constant of the build; see the sqlite twin.
@@ -529,9 +529,9 @@ CREATE TABLE api_tokens (
     -- RESTRICT, not CASCADE: deleting an app with live credentials is refused;
     -- the surface offers revoke, which cascades with lifecycle effects.
     client_id                     VARCHAR(255) NOT NULL,
-    installation_name             VARCHAR(255) NOT NULL,
+    installation_name             BLOB NOT NULL,
     -- No DEFAULT: an INSERT that omits the grant must fail at the schema.
-    granted_scopes                TEXT NOT NULL,
+    granted_scopes                BLOB NOT NULL,
     -- WHICH CEREMONY issued this credential: an ApiTokenIssuance ordinal
     -- (proto/leapmux/v1/storage.proto), 1 authorization code, 2 device code,
     -- 3 administrator. No DEFAULT: every mint states it.
@@ -595,7 +595,7 @@ CREATE TABLE delegation_tokens (
     worker_id                     VARCHAR(255) NOT NULL,
     -- What the minting worker delegated, already narrowed to the delegation
     -- ceiling. No DEFAULT, as on api_tokens.
-    granted_scopes                TEXT NOT NULL,
+    granted_scopes                BLOB NOT NULL,
     secret_hash                   VARBINARY(64) NOT NULL,
     created_at                    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
@@ -623,14 +623,14 @@ CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at);
 
 -- One-shot RFC 6749 section 4.1 authorization codes; see the sqlite migration.
 CREATE TABLE oauth_authorization_codes (
-    code                  VARCHAR(255) PRIMARY KEY,
+    code_hash             VARBINARY(32) PRIMARY KEY CHECK (OCTET_LENGTH(code_hash) = 32),
     user_id               VARCHAR(255) NOT NULL,
     auth_generation       BIGINT NOT NULL,
     client_id             VARCHAR(255) NOT NULL,
-    code_challenge        VARCHAR(255) NOT NULL,
-    redirect_uri          VARCHAR(2048) NOT NULL DEFAULT '',
-    granted_scopes        TEXT NOT NULL,
-    installation_name     VARCHAR(255) NOT NULL DEFAULT '',
+    code_challenge        BLOB NOT NULL,
+    redirect_uri          BLOB NOT NULL,
+    granted_scopes        BLOB NOT NULL,
+    installation_name     BLOB NOT NULL,
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at            DATETIME(3) NOT NULL,
     consumed_at           DATETIME(3),
@@ -662,11 +662,11 @@ CREATE TABLE oauth_providers (
     -- the preset an administrator picked. The four presets (github, google,
     -- apple, oidc) map onto these two protocols.
     provider_type   SMALLINT NOT NULL CHECK (provider_type BETWEEN 1 AND 2),
-    name            VARCHAR(255) NOT NULL,
-    issuer_url      TEXT NOT NULL,
-    client_id       VARCHAR(255) NOT NULL,
+    name            BLOB NOT NULL,
+    issuer_url      BLOB NOT NULL,
+    client_id       BLOB NOT NULL,
     client_secret   BLOB NOT NULL,
-    scopes          TEXT NOT NULL,
+    scopes          BLOB NOT NULL,
     trust_email     BOOLEAN NOT NULL DEFAULT TRUE,
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
@@ -689,34 +689,32 @@ CREATE TABLE passkey_credentials (
     id              VARCHAR(255) PRIMARY KEY,
     user_id         VARCHAR(255) NOT NULL,
     credential_id   VARBINARY(1023) NOT NULL,   -- plaintext: login lookup + unique index (WebAuthn max 1023 bytes; not BLOB -- MySQL/TiDB reject unique indexes on TEXT/BLOB)
-    public_key      BLOB NOT NULL,   -- keystore-encrypted COSE public key, AAD: 'passkey_public_key:' || id
+    public_key      BLOB NOT NULL,   -- keystore-encrypted COSE public key
     sign_count      BIGINT NOT NULL DEFAULT 0,
     aaguid          BLOB,
     backup_eligible BOOLEAN NOT NULL DEFAULT FALSE,
     backup_state    BOOLEAN NOT NULL DEFAULT FALSE,
-    transports      TEXT NOT NULL,
-    friendly_name   TEXT NOT NULL,
-    key_version     BIGINT NOT NULL DEFAULT 1,  -- active keystore version at write; for reencrypt scans
+    transports      BLOB NOT NULL,
+    friendly_name   BLOB NOT NULL,
     created_at      DATETIME(3) NOT NULL,
     last_used_at    DATETIME(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials(credential_id);
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
-CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
 
--- Instance-level hub settings: one row per setting key. `value` is a JSON
--- document whose shape is defined by the owning package's typed key handle
--- (internal/hub/settings); secret-bearing keys keep the secret half in the
--- keystore-encrypted column (AAD bound to the key name). An absent row means
--- the code default, so adding, removing, or reshaping a setting is a Go
--- change only -- never a migration. This table is the single home for all
--- runtime-changeable configuration (auth policy, SMTP, timeouts, limits,
--- captcha providers, rate-limit overrides).
+-- Instance-level hub settings: one row per setting key. `value` is a
+-- keystore-encrypted JSON document whose shape is defined by the owning
+-- package's typed key handle (internal/hub/settings); secret-bearing keys
+-- keep the secret half in the keystore-encrypted `secret` column (both AAD-bound
+-- to the key name). An absent row means the code default, so adding, removing,
+-- or reshaping a setting is a Go change only -- never a migration. This table
+-- is the single home for all runtime-changeable configuration (auth policy,
+-- SMTP, timeouts, limits, captcha providers, rate-limit overrides).
 CREATE TABLE hub_settings (
     `key`      VARCHAR(255) PRIMARY KEY,
-    value      TEXT,    -- JSON document, public half
-    secret     BLOB,    -- keystore-encrypted JSON, secret half
+    value      MEDIUMBLOB,    -- keystore-encrypted JSON, public half
+    secret     MEDIUMBLOB,    -- keystore-encrypted JSON, secret half
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     CHECK (value IS NOT NULL OR secret IS NOT NULL)
 ) COLLATE=utf8mb4_bin;

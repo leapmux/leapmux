@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -14,28 +15,36 @@ type delegationTokenStore struct{ conn *pgConn }
 
 var _ store.DelegationTokenStore = (*delegationTokenStore)(nil)
 
-func fromDBDelegationToken(t gendb.DelegationToken) store.DelegationToken {
+func (c *pgConn) fromDBDelegationToken(t gendb.DelegationToken) (store.DelegationToken, error) {
+	grantedScopes, err := c.ks.OpenString(t.GrantedScopes, sqlutil.DelegationTokenGrantedScopesAAD(t.ID))
+	if err != nil {
+		return store.DelegationToken{}, err
+	}
 	return store.DelegationToken{
 		ID:             t.ID,
 		UserID:         t.UserID,
 		WorkerID:       t.WorkerID,
-		GrantedScopes:  t.GrantedScopes,
+		GrantedScopes:  grantedScopes,
 		SecretHash:     t.SecretHash,
 		CreatedAt:      t.CreatedAt.Time,
 		AuthGeneration: t.AuthGeneration,
 		LastUsedAt:     t.LastUsedAt.Ptr(),
 		ExpiresAt:      t.ExpiresAt.Time,
 		RevokedAt:      t.RevokedAt.Ptr(),
-	}
+	}, nil
 }
 
 func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegationTokenParams) error {
+	grantedScopes, err := s.conn.ks.SealString(p.GrantedScopes, sqlutil.DelegationTokenGrantedScopesAAD(p.ID))
+	if err != nil {
+		return err
+	}
 	return (&pgStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		return mapErr(tx.(*pgStore).conn.q.CreateDelegationToken(ctx, gendb.CreateDelegationTokenParams{
 			ID:            p.ID,
 			UserID:        p.UserID.String(),
 			WorkerID:      p.WorkerID,
-			GrantedScopes: p.GrantedScopes,
+			GrantedScopes: grantedScopes,
 			SecretHash:    p.SecretHash,
 			ExpiresAt:     pgtime.New(p.ExpiresAt),
 		}))
@@ -47,7 +56,10 @@ func (s *delegationTokenStore) GetByID(ctx context.Context, id string) (*store.D
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	out := fromDBDelegationToken(t)
+	out, err := s.conn.fromDBDelegationToken(t)
+	if err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
@@ -55,8 +67,12 @@ func (s *delegationTokenStore) GetByID(ctx context.Context, id string) (*store.D
 // ListAll and ListAllByUser query twins (mirroring workerWithOwner), so a
 // field addition to DelegationTokenWithOwner edits one site instead of one
 // closure per query.
-func delegationTokenWithOwner(t gendb.DelegationToken, ownerUsername string, ownerDeleted bool) store.DelegationTokenWithOwner {
-	return store.DelegationTokenWithOwner{DelegationToken: fromDBDelegationToken(t), OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}
+func (c *pgConn) delegationTokenWithOwner(t gendb.DelegationToken, ownerUsername string, ownerDeleted bool) (store.DelegationTokenWithOwner, error) {
+	tok, err := c.fromDBDelegationToken(t)
+	if err != nil {
+		return store.DelegationTokenWithOwner{}, err
+	}
+	return store.DelegationTokenWithOwner{DelegationToken: tok, OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}, nil
 }
 
 func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDelegationTokensParams) (store.Page[store.DelegationTokenWithOwner], error) {
@@ -70,40 +86,40 @@ func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDeleg
 	// have no matching index -- see delegation_tokens.sql.
 	switch {
 	case p.UserID != nil && p.IncludeRevoked:
-		return queryPage(ctx, p.Limit,
+		return queryPageErr(ctx, p.Limit,
 			func() (gendb.ListAllDelegationTokensByUserIncludingRevokedParams, error) {
 				return listAllDelegationTokensByUserIncludingRevokedParams(*p.UserID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllDelegationTokensByUserIncludingRevoked,
-			func(r gendb.ListAllDelegationTokensByUserIncludingRevokedRow) store.DelegationTokenWithOwner {
-				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			func(r gendb.ListAllDelegationTokensByUserIncludingRevokedRow) (store.DelegationTokenWithOwner, error) {
+				return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
 			})
 	case p.UserID != nil:
-		return queryPage(ctx, p.Limit,
+		return queryPageErr(ctx, p.Limit,
 			func() (gendb.ListAllDelegationTokensByUserParams, error) {
 				return listAllDelegationTokensByUserParams(*p.UserID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllDelegationTokensByUser,
-			func(r gendb.ListAllDelegationTokensByUserRow) store.DelegationTokenWithOwner {
-				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			func(r gendb.ListAllDelegationTokensByUserRow) (store.DelegationTokenWithOwner, error) {
+				return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
 			})
 	case p.IncludeRevoked:
-		return queryPage(ctx, p.Limit,
+		return queryPageErr(ctx, p.Limit,
 			func() (gendb.ListAllDelegationTokensIncludingRevokedParams, error) {
 				return listAllDelegationTokensIncludingRevokedParams(p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllDelegationTokensIncludingRevoked,
-			func(r gendb.ListAllDelegationTokensIncludingRevokedRow) store.DelegationTokenWithOwner {
-				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			func(r gendb.ListAllDelegationTokensIncludingRevokedRow) (store.DelegationTokenWithOwner, error) {
+				return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
 			})
 	default:
-		return queryPage(ctx, p.Limit,
+		return queryPageErr(ctx, p.Limit,
 			func() (gendb.ListAllDelegationTokensParams, error) {
 				return listAllDelegationTokensParams(p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllDelegationTokens,
-			func(r gendb.ListAllDelegationTokensRow) store.DelegationTokenWithOwner {
-				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
+			func(r gendb.ListAllDelegationTokensRow) (store.DelegationTokenWithOwner, error) {
+				return s.conn.delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
 			})
 	}
 }
@@ -122,7 +138,7 @@ func (s *delegationTokenStore) ListActiveByUser(ctx context.Context, userID user
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, fromDBDelegationToken), nil
+	return store.MapSliceErr(rows, s.conn.fromDBDelegationToken)
 }
 
 func (s *delegationTokenStore) Touch(ctx context.Context, id string) error {

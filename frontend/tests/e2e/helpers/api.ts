@@ -681,15 +681,7 @@ export async function expirePendingEmailCooldown(hubDataDir: string, username: s
   await runHubSql(hubDataDir, `UPDATE users SET pending_email_unblocked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 minutes') WHERE username = ${sqliteTextLiteral(username)} AND deleted_at IS NULL;`)
 }
 
-/** Read the pending email verification code of `username`. An absent code throws. */
-export async function readPendingEmailToken(hubDataDir: string, username: string): Promise<string> {
-  const token = (await runHubSql(hubDataDir, `SELECT pending_email_token FROM users WHERE username = ${sqliteTextLiteral(username)} AND deleted_at IS NULL;`)).trim()
-  if (!token)
-    throw new Error(`no pending_email_token for username ${username}`)
-  return token
-}
-
-/** Verify the session user's pending email with a code from the DB or inbox. */
+/** Verify the session user's pending email with a code from the captured inbox. */
 export async function verifyEmailViaAPI(hubUrl: string, cookie: string, verificationToken: string): Promise<void> {
   const captcha = await solveCaptchaViaAPI(hubUrl)
   await callHub(hubUrl, 'UserService/VerifyEmail', {

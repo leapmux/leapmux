@@ -42,7 +42,7 @@ func setBudget(t *testing.T, set *settings.Manager, max int64, window time.Durat
 // window elapses by moving time instead of reaching into the budget map.
 func newLimiter(t *testing.T, sink Sender, max int64, window time.Duration) (Sender, *settings.Manager, *time.Time) {
 	t.Helper()
-	set := settings.NewManager(testutil.OpenTestStore(t), nil, settings.CoreDescriptors())
+	set := settings.NewManager(testutil.OpenTestStore(t), settings.CoreDescriptors())
 	setBudget(t, set, max, window)
 	clock := time.Date(2026, 8, 31, 9, 0, 0, 0, time.UTC)
 	now := &clock

@@ -198,7 +198,7 @@ func setupAPIAuthWithStoreAndSessionResolver(
 	base := clock.Now()
 	now := func() time.Time { return time.Now().Add(clock.Now().Sub(base)) }
 	advance := func(d time.Duration) { clock.Advance(d).MustWait(t.Context()) }
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:                st,
@@ -499,7 +499,7 @@ func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(context.Background(), store.CreateOAuthAuthorizationCodeParams{
 		ClientID:      oauthapp.ControlCLIClientID,
 		GrantedScopes: authscope.NonAdminGrant().String(),
-		Code:          code, UserID: userid.MustNew(env.userID), CodeChallenge: challenge, InstallationName: "test", ExpiresAt: time.Now().Add(time.Minute),
+		CodeHash:      env.validator.HashSecret(code), UserID: userid.MustNew(env.userID), CodeChallenge: challenge, InstallationName: "test", ExpiresAt: time.Now().Add(time.Minute),
 		RedirectURI: "http://127.0.0.1:54321/callback",
 		Redemption:  store.RedemptionKindToken,
 	}))
@@ -594,7 +594,7 @@ func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(context.Background(), store.CreateOAuthAuthorizationCodeParams{
 		ClientID:         oauthapp.ControlCLIClientID,
 		GrantedScopes:    authscope.NonAdminGrant().String(),
-		Code:             retryCode,
+		CodeHash:         env.validator.HashSecret(retryCode),
 		UserID:           userid.MustNew(env.userID),
 		CodeChallenge:    challenge,
 		InstallationName: "test",
@@ -756,7 +756,7 @@ func TestAPIAuth_DeviceCode_ExpiredToken(t *testing.T) {
 	uc := verifycode.Generate()
 	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(dc),
+		DeviceCodeHash: env.validator.HashSecret(dc),
 		UserCode:       uc,
 		ExpiresAt:      time.Now().Add(-time.Minute),
 	}))
@@ -781,7 +781,7 @@ func TestAPIAuth_DeviceCode_AccessDenied(t *testing.T) {
 	uc := verifycode.Generate()
 	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		ClientID:       oauthapp.ControlCLIClientID,
-		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(dc),
+		DeviceCodeHash: env.validator.HashSecret(dc),
 		UserCode:       uc,
 		ExpiresAt:      time.Now().Add(time.Hour),
 	}))
@@ -1475,7 +1475,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 	require.NoError(t, env.store.OAuthAuthorizationCodes().Create(context.Background(), store.CreateOAuthAuthorizationCodeParams{
 		ClientID:         oauthapp.ControlCLIClientID,
 		GrantedScopes:    authscope.NonAdminGrant().String(),
-		Code:             code,
+		CodeHash:         env.validator.HashSecret(code),
 		UserID:           userid.MustNew(env.userID),
 		CodeChallenge:    challenge,
 		InstallationName: "test",
@@ -2185,9 +2185,9 @@ type blankGrantCodes struct {
 	code    atomic.Value
 }
 
-func (s *blankGrantCodes) GetActive(_ context.Context, code string, _ time.Time) (*store.OAuthAuthorizationCode, error) {
+func (s *blankGrantCodes) GetActive(_ context.Context, codeHash []byte, _ time.Time) (*store.OAuthAuthorizationCode, error) {
 	s.lookups.Add(1)
-	s.code.Store(code)
+	s.code.Store(codeHash)
 	return s.row, nil
 }
 
@@ -2218,7 +2218,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 		codes: &blankGrantCodes{
 			OAuthAuthorizationCodeStore: st.OAuthAuthorizationCodes(),
 			row: &store.OAuthAuthorizationCode{
-				Code: "grant-code", UserID: "", CodeChallenge: challenge,
+				CodeHash: tv.HashSecret("grant-code"), UserID: "", CodeChallenge: challenge,
 				ClientID: oauthapp.ControlCLIClientID, RedirectURI: redirectURI, GrantedScopes: "account:read",
 				InstallationName: "laptop", ExpiresAt: time.Now().Add(time.Hour),
 			},
@@ -2250,7 +2250,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 	assert.Equal(t, "code expired or already consumed", body["error_description"])
 	spy := wrapped.codes.(*blankGrantCodes)
 	assert.EqualValues(t, 1, spy.lookups.Load())
-	assert.Equal(t, "grant-code", spy.code.Load())
+	assert.Equal(t, tv.HashSecret("grant-code"), spy.code.Load())
 }
 
 // A store read failure on the activation leg must answer 500. It must NOT
@@ -2347,7 +2347,9 @@ func TestAPIAuth_DeviceCode_CollidingUserCodeIsRedrawn(t *testing.T) {
 			}
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
-			assert.Equal(t, verifycode.Format(drawn[len(drawn)-1]), body["user_code"],
+			returnedUserCode, ok := body["user_code"].(string)
+			require.True(t, ok)
+			assert.Equal(t, drawn[len(drawn)-1], verifycode.Normalize(returnedUserCode),
 				"the response must report the code that was actually stored")
 			row, ok := env.deviceAuths.GetByUserCode(drawn[len(drawn)-1])
 			require.True(t, ok)
@@ -2572,7 +2574,7 @@ func TestAPIAuth_TheRevokeLegCarriesTheAnonymousBudget(t *testing.T) {
 
 	env := setupAPIAuth(t)
 
-	set := servicetest.NewSettingsManager(t, env.store, nil)
+	set := servicetest.NewSettingsManager(t, env.store)
 	key, ok := ratelimit.LimitKey(ratelimit.OpOAuthAnonymous)
 	require.True(t, ok)
 	require.NoError(t, key.Set(context.Background(), set, ratelimit.LimitValue{
@@ -2630,9 +2632,9 @@ type markMintedSpyCodes struct {
 	contextErrs chan error
 }
 
-func (c markMintedSpyCodes) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
+func (c markMintedSpyCodes) MarkMinted(ctx context.Context, codeHash []byte, minted store.CredentialRef) error {
 	c.contextErrs <- ctx.Err()
-	return c.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, minted)
+	return c.OAuthAuthorizationCodeStore.MarkMinted(ctx, codeHash, minted)
 }
 
 // issueLocalRedirectCode runs the consent that yields a one-shot code for the
@@ -2758,14 +2760,14 @@ type authorizationLinkCodes struct {
 	beforeLink func()
 }
 
-func (s authorizationLinkCodes) MarkMinted(ctx context.Context, code string, minted store.CredentialRef) error {
+func (s authorizationLinkCodes) MarkMinted(ctx context.Context, codeHash []byte, minted store.CredentialRef) error {
 	if s.beforeLink != nil {
 		s.beforeLink()
 	}
 	if s.linkErr != nil {
 		return s.linkErr
 	}
-	return s.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, minted)
+	return s.OAuthAuthorizationCodeStore.MarkMinted(ctx, codeHash, minted)
 }
 
 func codeExchangeServer(t *testing.T, env *apiAuthEnv, st store.Store) *httptest.Server {
@@ -2802,7 +2804,7 @@ func TestAPIAuth_CodeLinkFailureRollsBackIssuance(t *testing.T) {
 	after, err := env.store.OAuthClients().CountTokens(t.Context(), oauthapp.ControlCLIClientID)
 	require.NoError(t, err)
 	assert.Equal(t, before, after, "failed linking must not leave a credential")
-	_, err = env.store.OAuthAuthorizationCodes().GetActive(t.Context(), code, time.Now())
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(t.Context(), env.validator.HashSecret(code), time.Now())
 	require.NoError(t, err, "failed linking must leave the code redeemable")
 	retry, err := exchangeAuthorizationCode(env.server.URL, code, verifier)
 	require.NoError(t, err)
@@ -2812,7 +2814,7 @@ func TestAPIAuth_CodeLinkFailureRollsBackIssuance(t *testing.T) {
 		TokenID string `json:"token_id"`
 	}
 	require.NoError(t, json.NewDecoder(retry.Body).Decode(&token))
-	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), code)
+	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), env.validator.HashSecret(code))
 	require.NoError(t, err)
 	assert.Equal(t, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: token.TokenID}, row.Minted)
 }
@@ -2868,7 +2870,7 @@ func TestAPIAuth_ConcurrentValidatedReuseRevokesTheWinner(t *testing.T) {
 		TokenID string `json:"token_id"`
 	}
 	require.NoError(t, json.NewDecoder(winner.Body).Decode(&token))
-	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), code)
+	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), env.validator.HashSecret(code))
 	require.NoError(t, err)
 	require.Equal(t, store.CredentialRef{Kind: store.CredentialRefKindToken, ID: token.TokenID}, row.Minted)
 	releaseOnce()
@@ -2906,7 +2908,7 @@ func TestAPIAuth_RequestCancellationDuringLinkRollsBackIssuance(t *testing.T) {
 	after, err := env.store.OAuthClients().CountTokens(t.Context(), oauthapp.ControlCLIClientID)
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
-	_, err = env.store.OAuthAuthorizationCodes().GetActive(t.Context(), code, time.Now())
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(t.Context(), env.validator.HashSecret(code), time.Now())
 	require.NoError(t, err, "request cancellation must roll back consumption")
 	retry, err := exchangeAuthorizationCode(env.server.URL, code, verifier)
 	require.NoError(t, err)
@@ -3064,7 +3066,7 @@ func TestSessionCodeExchange_IssuesSession(t *testing.T) {
 	assert.JSONEq(t, `{"signed_in":true}`, bodyOf(t, resp))
 	cookie := issuedSessionCookie(t, resp)
 
-	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, env.validator.HashSecret(code))
 	require.NoError(t, err)
 	assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind)
 	assert.Equal(t, hubtestutil.SessionIDFromCookie(t, cookie.Value), row.Minted.ID,
@@ -3093,7 +3095,7 @@ func TestSessionCodeExchange_EmptyInstallationNameLeavesTheAppAlone(t *testing.T
 	resp := exchangeSessionCode(t, env, code, verifier)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, true, sessionCodeExchangeBody(t, resp)["signed_in"])
-	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, env.validator.HashSecret(code))
 	require.NoError(t, err)
 	sess, err := env.store.Sessions().GetByID(ctx, row.Minted.ID, env.now().UTC())
 	require.NoError(t, err)
@@ -3195,7 +3197,7 @@ func TestSessionCodeExchange_ReplayRevokesTheIssuedSession(t *testing.T) {
 	assert.Equal(t, true, sessionCodeExchangeBody(t, first)["signed_in"])
 	issued := issuedSessionCookie(t, first)
 
-	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, env.validator.HashSecret(code))
 	require.NoError(t, err)
 	require.Equal(t, hubtestutil.SessionIDFromCookie(t, issued.Value), row.Minted.ID,
 		"the exchange must record the session it minted")
@@ -3357,7 +3359,7 @@ func TestSessionCodeExchange_ConcurrentExchangesIssueOneSession(t *testing.T) {
 	}
 	require.ElementsMatch(t, []int{http.StatusOK, http.StatusBadRequest}, statuses)
 
-	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, env.validator.HashSecret(code))
 	require.NoError(t, err)
 	require.Equal(t, store.CredentialRefKindSession, row.Minted.Kind,
 		"the winner must have minted a session")
@@ -3382,7 +3384,7 @@ func TestSessionCodeExchange_WrongVerifierIssuesNoSession(t *testing.T) {
 	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, resp)["error"])
 	assertNoCallbackSession(t, resp)
 
-	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+	row, err := env.store.OAuthAuthorizationCodes().Get(ctx, env.validator.HashSecret(code))
 	require.NoError(t, err)
 	assert.Zero(t, row.Minted, "a failed proof must mint no session")
 }
@@ -3404,7 +3406,7 @@ func TestSessionCodeExchange_RefusesApprovalFromAnOlderCredentialGeneration(t *t
 	assert.Equal(t, "invalid_grant", sessionCodeExchangeBody(t, resp)["error"])
 	assertNoCallbackSession(t, resp)
 
-	row, err := env.store.OAuthAuthorizationCodes().GetActive(ctx, code, time.Now().UTC())
+	row, err := env.store.OAuthAuthorizationCodes().GetActive(ctx, env.validator.HashSecret(code), time.Now().UTC())
 	require.NoError(t, err)
 	assert.Zero(t, row.Minted)
 }
@@ -3433,7 +3435,7 @@ func TestSessionCodeExchange_TheConsentDecidesTheForkNotTheRegistration(t *testi
 		assert.Equal(t, true, sessionCodeExchangeBody(t, resp)["signed_in"],
 			"the code must still redeem along the consented path")
 
-		row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+		row, err := env.store.OAuthAuthorizationCodes().Get(ctx, env.validator.HashSecret(code))
 		require.NoError(t, err)
 		assert.Equal(t, store.RedemptionKindSession, row.Redemption)
 		assert.Equal(t, store.CredentialRefKindSession, row.Minted.Kind)
@@ -3460,7 +3462,7 @@ func TestSessionCodeExchange_TheConsentDecidesTheForkNotTheRegistration(t *testi
 		assert.NotContains(t, body, "signed_in", "a token redemption signs nobody in")
 		assert.Contains(t, body, "token_id", "the code must mint an app credential")
 
-		row, err := env.store.OAuthAuthorizationCodes().Get(ctx, code)
+		row, err := env.store.OAuthAuthorizationCodes().Get(ctx, env.validator.HashSecret(code))
 		require.NoError(t, err)
 		assert.Equal(t, store.RedemptionKindToken, row.Redemption)
 		assert.Equal(t, store.CredentialRefKindToken, row.Minted.Kind)

@@ -15,7 +15,7 @@
 CREATE TABLE users (
     id             TEXT COLLATE "C" PRIMARY KEY CHECK (id <> ''),
     username       TEXT NOT NULL,
-    password_hash  TEXT NOT NULL,
+    password_hash  BYTEA NOT NULL,
     display_name   TEXT NOT NULL DEFAULT '',
     -- Unicode-casefolded (Go strings.ToLower) copy of display_name, maintained on
     -- every write, so admin SearchUsers matches non-ASCII names case-insensitively
@@ -25,9 +25,9 @@ CREATE TABLE users (
     email                    TEXT NOT NULL DEFAULT '',
     email_verified           BOOLEAN NOT NULL DEFAULT FALSE,
     pending_email            TEXT NOT NULL DEFAULT '',
-    -- Stored verification code in raw 6-char form (no hyphen), drawn from
-    -- verifycode.Charset. Empty when no verification is pending.
-    pending_email_token      VARCHAR(16) NOT NULL DEFAULT '',
+    -- Keystore-encrypted verification code (6-char form, no hyphen, drawn from
+    -- verifycode.Charset). NULL when no verification is pending.
+    pending_email_token      BYTEA,
     pending_email_expires_at TIMESTAMPTZ,
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
@@ -55,7 +55,7 @@ CREATE TABLE users (
     -- question, answered by store.User.HasUsablePassword() from the stored hash.
     first_credential_exempt             BOOLEAN NOT NULL DEFAULT TRUE,
     is_admin                 BOOLEAN NOT NULL DEFAULT FALSE,
-    prefs          TEXT NOT NULL DEFAULT '{}',
+    prefs          BYTEA,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- Monotonic credential epoch. Sessions and bearer rows copy this
@@ -104,8 +104,8 @@ CREATE TABLE user_sessions (
     -- elevation_expires_at to elevation_proven_at + the maximum total window.
     elevation_proven_at     TIMESTAMPTZ,
     elevation_expires_at  TIMESTAMPTZ,
-    user_agent      TEXT NOT NULL DEFAULT '',
-    ip_address      TEXT NOT NULL DEFAULT '',
+    user_agent      BYTEA NOT NULL,
+    ip_address      BYTEA NOT NULL,
     -- The built-in app that this session was issued to through the browser
     -- handoff. NULL for a session that signed in on the Hub's own page. No
     -- foreign key: only the token exchange of a built-in app writes it.
@@ -231,7 +231,7 @@ CREATE INDEX idx_worker_registration_keys_created_at ON worker_registration_keys
 CREATE TABLE workspace_sections (
     id           TEXT COLLATE "C" PRIMARY KEY,
     user_id      TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name         TEXT NOT NULL,
+    name         BYTEA NOT NULL,
     -- COLLATE "C" on every position column: ORDER BY position must sort byte-wise to match the Go/TS lexorank comparator regardless of alphabet.
     position     TEXT COLLATE "C" NOT NULL,
     -- SectionType and Sidebar ordinals (proto/leapmux/v1/section.proto).
@@ -260,7 +260,7 @@ CREATE UNIQUE INDEX idx_workspace_sections_user_default_type
 CREATE TABLE workspaces (
     id            TEXT COLLATE "C" PRIMARY KEY,
     owner_user_id TEXT COLLATE "C" NOT NULL REFERENCES users(id),
-    title         TEXT NOT NULL DEFAULT '',
+    title         BYTEA NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at    TIMESTAMPTZ,
     -- The parent key of the composite foreign keys that tie a placement and a
@@ -425,17 +425,17 @@ CREATE TABLE oauth_clients (
     owner_user_id         TEXT COLLATE "C" REFERENCES users(id) ON DELETE CASCADE,
     -- NULL is a PUBLIC client and non-NULL is a CONFIDENTIAL one.
     secret_hash           BYTEA,
-    client_name           TEXT NOT NULL,
+    client_name           BYTEA NOT NULL,
     icon_blob             BYTEA,
-    icon_media_type       TEXT NOT NULL DEFAULT '',
-    client_uri            TEXT NOT NULL DEFAULT '',
+    icon_media_type       BYTEA,
+    client_uri            BYTEA NOT NULL,
     -- Newline-delimited exact-match list.
-    redirect_uris         TEXT NOT NULL DEFAULT '',
+    redirect_uris         BYTEA NOT NULL,
     -- Space-delimited RFC 6749 section 3.3: the ceiling on what this app may
     -- reach. LIVE rather than consent-time, and narrowing only; see the sqlite
     -- twin.
-    scopes                TEXT NOT NULL DEFAULT '',
-    grant_types           TEXT NOT NULL DEFAULT 'authorization_code refresh_token',
+    scopes                BYTEA NOT NULL,
+    grant_types           BYTEA NOT NULL,
     elevation_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
     -- Whether an authorization for this app mints a Hub session rather than
     -- an app credential. A constant of the build; see the sqlite twin.
@@ -474,9 +474,9 @@ CREATE TABLE api_tokens (
     -- RESTRICT, not CASCADE: deleting an app with live credentials is refused;
     -- the surface offers revoke, which cascades with lifecycle effects.
     client_id                     TEXT COLLATE "C" NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
-    installation_name             TEXT NOT NULL,
+    installation_name             BYTEA NOT NULL,
     -- No DEFAULT: an INSERT that omits the grant must fail at the schema.
-    granted_scopes                TEXT NOT NULL,
+    granted_scopes                BYTEA NOT NULL,
     -- WHICH CEREMONY issued this credential: an ApiTokenIssuance ordinal
     -- (proto/leapmux/v1/storage.proto), 1 authorization code, 2 device code,
     -- 3 administrator. No DEFAULT: every mint states it.
@@ -537,7 +537,7 @@ CREATE TABLE delegation_tokens (
     worker_id                     TEXT COLLATE "C" NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     -- What the minting worker delegated, already narrowed to the delegation
     -- ceiling. No DEFAULT, as on api_tokens.
-    granted_scopes                TEXT NOT NULL,
+    granted_scopes                BYTEA NOT NULL,
     secret_hash                   BYTEA NOT NULL,
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
@@ -561,14 +561,14 @@ CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at) W
 
 -- One-shot RFC 6749 section 4.1 authorization codes; see the sqlite migration.
 CREATE TABLE oauth_authorization_codes (
-    code                  TEXT COLLATE "C" PRIMARY KEY,
+    code_hash             BYTEA PRIMARY KEY CHECK (octet_length(code_hash) = 32),
     user_id               TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     auth_generation       BIGINT NOT NULL,
     client_id             TEXT COLLATE "C" NOT NULL REFERENCES oauth_clients(client_id) ON DELETE RESTRICT,
-    code_challenge        TEXT NOT NULL,
-    redirect_uri          TEXT NOT NULL DEFAULT '',
-    granted_scopes        TEXT NOT NULL DEFAULT '',
-    installation_name     TEXT NOT NULL DEFAULT '',
+    code_challenge        BYTEA NOT NULL,
+    redirect_uri          BYTEA NOT NULL,
+    granted_scopes        BYTEA NOT NULL,
+    installation_name     BYTEA NOT NULL,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at            TIMESTAMPTZ NOT NULL,
     consumed_at           TIMESTAMPTZ,
@@ -598,11 +598,11 @@ CREATE TABLE oauth_providers (
     -- the preset an administrator picked. The four presets (github, google,
     -- apple, oidc) map onto these two protocols.
     provider_type   SMALLINT NOT NULL CHECK (provider_type BETWEEN 1 AND 2),
-    name            TEXT NOT NULL,
-    issuer_url      TEXT NOT NULL DEFAULT '',
-    client_id       TEXT COLLATE "C" NOT NULL,
+    name            BYTEA NOT NULL,
+    issuer_url      BYTEA NOT NULL,
+    client_id       BYTEA NOT NULL,
     client_secret   BYTEA NOT NULL,
-    scopes          TEXT NOT NULL DEFAULT 'openid profile email',
+    scopes          BYTEA NOT NULL,
     trust_email     BOOLEAN NOT NULL DEFAULT TRUE,
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -623,32 +623,30 @@ CREATE TABLE passkey_credentials (
     id              TEXT COLLATE "C" PRIMARY KEY,
     user_id         TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     credential_id   BYTEA NOT NULL,   -- plaintext: login lookup + unique index
-    public_key      BYTEA NOT NULL,   -- keystore-encrypted COSE public key, AAD: 'passkey_public_key:' || id
+    public_key      BYTEA NOT NULL,   -- keystore-encrypted COSE public key
     sign_count      BIGINT NOT NULL DEFAULT 0,
     aaguid          BYTEA,
     backup_eligible BOOLEAN NOT NULL DEFAULT FALSE,
     backup_state    BOOLEAN NOT NULL DEFAULT FALSE,
-    transports      TEXT NOT NULL DEFAULT '[]',
-    friendly_name   TEXT NOT NULL DEFAULT '',
-    key_version     BIGINT NOT NULL DEFAULT 1,  -- active keystore version at write; for reencrypt scans
+    transports      BYTEA NOT NULL,
+    friendly_name   BYTEA NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL,
     last_used_at    TIMESTAMPTZ
 );
 CREATE UNIQUE INDEX idx_passkey_credentials_credential_id ON passkey_credentials(credential_id);
 CREATE INDEX idx_passkey_credentials_user_id ON passkey_credentials(user_id);
-CREATE INDEX idx_passkey_credentials_key_version ON passkey_credentials(key_version);
 
--- Instance-level hub settings: one row per setting key. `value` is a JSON
--- document whose shape is defined by the owning package's typed key handle
--- (internal/hub/settings); secret-bearing keys keep the secret half in the
--- keystore-encrypted column (AAD bound to the key name). An absent row means
--- the code default, so adding, removing, or reshaping a setting is a Go
--- change only -- never a migration. This table is the single home for all
--- runtime-changeable configuration (auth policy, SMTP, timeouts, limits,
--- captcha providers, rate-limit overrides).
+-- Instance-level hub settings: one row per setting key. `value` is a
+-- keystore-encrypted JSON document whose shape is defined by the owning
+-- package's typed key handle (internal/hub/settings); secret-bearing keys
+-- keep the secret half in the keystore-encrypted `secret` column (both AAD-bound
+-- to the key name). An absent row means the code default, so adding, removing,
+-- or reshaping a setting is a Go change only -- never a migration. This table
+-- is the single home for all runtime-changeable configuration (auth policy,
+-- SMTP, timeouts, limits, captcha providers, rate-limit overrides).
 CREATE TABLE hub_settings (
     key        TEXT COLLATE "C" PRIMARY KEY,
-    value      TEXT,      -- JSON document, public half
+    value      BYTEA,     -- keystore-encrypted JSON, public half
     secret     BYTEA,     -- keystore-encrypted JSON, secret half
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CHECK (value IS NOT NULL OR secret IS NOT NULL)
@@ -671,7 +669,9 @@ CREATE TABLE worker_tab_publications (
     worker_id TEXT COLLATE "C" NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     tab_id TEXT COLLATE "C" NOT NULL,
     request_hash BYTEA NOT NULL CHECK (octet_length(request_hash) = 32),
-    response_payload BYTEA NOT NULL CHECK (octet_length(response_payload) > 0),
+    -- Encrypted payload carries 44 bytes of XChaCha20-Poly1305 envelope overhead
+    -- (4-byte version + 24-byte nonce + 16-byte tag), so > 44 rejects empty plaintext.
+    response_payload BYTEA NOT NULL CHECK (octet_length(response_payload) > 44),
     PRIMARY KEY (user_id, worker_id, tab_id)
 );
 

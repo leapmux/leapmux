@@ -19,21 +19,18 @@ import (
 
 func newSignCountTestService(t *testing.T) (*Service, store.Store, string, string, []byte) {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	ks, err := keystore.NewRandom()
+	require.NoError(t, err)
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
-
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 
 	svc, err := NewService(RPConfig{
 		RPID:          "localhost",
 		RPDisplayName: "LeapMux",
 		RPOrigins:     []string{"http://localhost"},
-	}, st, ks, NewSessionStore())
+	}, st, NewSessionStore())
 	require.NoError(t, err)
 
 	userID := id.Generate()
@@ -55,7 +52,6 @@ func newSignCountTestService(t *testing.T) (*Service, store.Store, string, strin
 		SignCount:    10,
 		Transports:   "[]",
 		FriendlyName: "Key",
-		KeyVersion:   1,
 		CreatedAt:    now,
 	}))
 	return svc, st, userID, rowID, credID

@@ -61,10 +61,10 @@ func setupAdminGateServer(t *testing.T) *adminGateFixture {
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	connectServer := connect.NewServer(interceptor)
 
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 
-	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{}, st)
+	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st), &config.Config{}, st)
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)
 
 	adminUserSvc := service.NewAdminUserService(service.AdminUserServiceDeps{
@@ -498,7 +498,7 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 	connectServer := connect.NewServer(interceptor)
-	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true}, st)
+	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st), &config.Config{SoloMode: true}, st)
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)
 	connecthttp.Mount(mux, connectServer)
 

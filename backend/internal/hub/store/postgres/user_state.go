@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -30,9 +31,13 @@ func (s *userStateStore) Get(ctx context.Context, userID userid.UserID) (*store.
 		}
 		return nil, mapErr(err)
 	}
+	payload, err := s.conn.ks.OpenBytes(row.StatePayload, sqlutil.UserStatePayloadAAD(row.UserID))
+	if err != nil {
+		return nil, err
+	}
 	return &store.UserStateRow{
 		UserID:       row.UserID,
-		StatePayload: row.StatePayload,
+		StatePayload: payload,
 	}, nil
 }
 
@@ -41,9 +46,13 @@ func (s *userStateStore) Upsert(ctx context.Context, p store.UpsertUserStatePara
 	if !ok {
 		return store.ErrInvalidArgument
 	}
+	payload, err := s.conn.ks.SealBytes(p.StatePayload(), sqlutil.UserStatePayloadAAD(owner))
+	if err != nil {
+		return err
+	}
 	return mapErr(s.conn.q.UpsertUserState(ctx, gendb.UpsertUserStateParams{
 		UserID:               owner,
-		StatePayload:         p.StatePayload(),
+		StatePayload:         payload,
 		CompactionPhysicalMs: p.CompactionPhysicalMs(),
 	}))
 }

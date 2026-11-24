@@ -90,6 +90,18 @@ func queryPage[P any, R any, I store.PageCursorer](
 	return store.QueryPage(ctx, limit, build, query, mapRow, mapErr)
 }
 
+// queryPageErr forwards to store.QueryPageErr with this dialect's mapErr bound
+// for listings whose row mapper can fail (such as ciphertext decryption).
+func queryPageErr[P any, R any, I store.PageCursorer](
+	ctx context.Context,
+	limit int64,
+	build func() (P, error),
+	query func(context.Context, P) ([]R, error),
+	mapRow func(R) (I, error),
+) (store.Page[I], error) {
+	return store.QueryPageErr(ctx, limit, build, query, mapRow, mapErr)
+}
+
 func listAllUsersParams(cursor string, limit int64) (gendb.ListAllUsersParams, error) {
 	return withCursor(cursor, limit, func(ct pgtime.NullTime, cid pgtype.Text, fl int32) gendb.ListAllUsersParams {
 		return gendb.ListAllUsersParams{CursorTime: ct, CursorID: cid, Limit: fl}

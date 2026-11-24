@@ -14,7 +14,7 @@
 import type { CaptureSmtpServer } from './mail'
 import { connect, Server } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { extractAccountRecoveryToken, startCaptureSmtpServer } from './mail'
+import { extractAccountRecoveryToken, extractEmailVerificationCode, startCaptureSmtpServer } from './mail'
 
 /** The width of `id.Generate()`, which mints the emailed recovery token. */
 const TOKEN_LENGTH = 48
@@ -97,6 +97,46 @@ describe('extractAccountRecoveryToken', () => {
 
   it('rejects an empty body rather than returning an empty token', () => {
     expect(() => extractAccountRecoveryToken('')).toThrow(/token not found in captured email/)
+  })
+})
+
+/** The verification email as `Renderer.VerificationEmail` renders it. */
+function verificationEmailBody(code: string, hubURL = 'http://127.0.0.1:8080'): string {
+  return [
+    'Use this code to verify your email address:',
+    '',
+    `    ${code}`,
+    '',
+    'Or click the link below:',
+    '',
+    `    ${hubURL}/verify-email?code=${code}`,
+    '',
+    'The code expires in 30 minutes.',
+    '',
+    '-- ',
+    `This is an automated message from your LeapMux hub at ${hubURL}.`,
+    'Please do not reply.',
+  ].join('\r\n')
+}
+
+describe('extractEmailVerificationCode', () => {
+  it('returns the formatted code from a rendered verification email', () => {
+    expect(extractEmailVerificationCode(verificationEmailBody('7XC-8DZ'))).toBe('7XC-8DZ')
+  })
+
+  it('stops at trailing punctuation outside the code', () => {
+    const body = 'Verify here: http://h/verify-email?code=234-XYZ. Ignore if not you.'
+    expect(extractEmailVerificationCode(body)).toBe('234-XYZ')
+  })
+
+  it('throws when the body has no verification link', () => {
+    expect(() => extractEmailVerificationCode('nothing here')).toThrow(/verification code not found in captured email[\s\S]*nothing here/)
+  })
+
+  it('rejects codes containing excluded characters or extra characters', () => {
+    expect(() => extractEmailVerificationCode(verificationEmailBody('0O1-IL2'))).toThrow(/verification code not found/)
+    expect(() => extractEmailVerificationCode(verificationEmailBody('7XC-8DZZ'))).toThrow(/verification code not found/)
+    expect(() => extractEmailVerificationCode('')).toThrow(/verification code not found/)
   })
 })
 

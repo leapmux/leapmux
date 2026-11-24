@@ -38,14 +38,14 @@ func TestMintAuthority(t *testing.T) {
 
 	t.Run("a consumed consent grant permits the mint", func(t *testing.T) {
 		t.Parallel()
-		require.NoError(t, mintedByConsentGrant("code-1").assert(now))
+		require.NoError(t, mintedByConsentGrant([]byte("code-1")).assert(now))
 	})
 
 	// /oauth/token carries no session at all, so the grant row IS the
 	// proof -- but only a caller that actually loaded one can pass it.
 	t.Run("an absent grant with no actor is refused", func(t *testing.T) {
 		t.Parallel()
-		err := mintedByConsentGrant("").assert(now)
+		err := mintedByConsentGrant(nil).assert(now)
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 	})
@@ -149,7 +149,7 @@ func TestMintAuthorityClampTreatsSoloAsProven(t *testing.T) {
 // actor class to its side of the clamp so a new class cannot land on the
 // wrong one silently.
 func TestAuthorityKindClassifiesEveryActor(t *testing.T) {
-	require.Equal(t, consentGrantAuthority, mintedByConsentGrant("g1").kind())
+	require.Equal(t, consentGrantAuthority, mintedByConsentGrant([]byte("g1")).kind())
 	require.Equal(t, missingAuthority, mintAuthority{}.kind())
 	require.Equal(t, sessionActorAuthority, mintedByActor(&auth.UserInfo{
 		Solo:       true,

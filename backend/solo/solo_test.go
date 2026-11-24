@@ -23,6 +23,7 @@ import (
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	sqlitest "github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/logging"
@@ -1827,13 +1828,16 @@ func heldLeaseFixture(t *testing.T, socketPrefix string) (Config, string, store.
 	listen := locallistentest.UniqueListenURL(t, socketPrefix)
 	dataDir := filepath.Join(sandbox, "data")
 	cfg := Config{NoTCP: true, Args: []string{"--listen=" + listen, "--data-dir=" + dataDir}}
-	hubDB := filepath.Join(dataDir, "hub", "hub.db")
-	require.NoError(t, os.MkdirAll(filepath.Dir(hubDB), 0o750))
+	hubDir := filepath.Join(dataDir, "hub")
+	hubDB := filepath.Join(hubDir, "hub.db")
+	require.NoError(t, os.MkdirAll(hubDir, 0o750))
+	ks, err := keystore.LoadOrGenerate(filepath.Join(hubDir, "encryption.key"))
+	require.NoError(t, err)
 	sqlDB, err := sqlitest.OpenDB(hubDB, sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	require.NoError(t, sqlitest.MigrateDB(sqlDB))
-	hubStore, err := sqlitest.Open(hubDB, sqlitedb.Config{})
+	hubStore, err := sqlitest.Open(hubDB, sqlitedb.Config{}, ks)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = hubStore.Close() })
 	require.NoError(t, sqlDB.Close())

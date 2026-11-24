@@ -7,6 +7,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -16,23 +17,31 @@ type workspaceSectionStore struct {
 
 var _ store.WorkspaceSectionStore = (*workspaceSectionStore)(nil)
 
-func fromDBWorkspaceSection(s gendb.WorkspaceSection) *store.WorkspaceSection {
-	return &store.WorkspaceSection{
+func (c *pgConn) fromDBWorkspaceSection(s gendb.WorkspaceSection) (store.WorkspaceSection, error) {
+	name, err := c.ks.OpenString(s.Name, sqlutil.WorkspaceSectionNameAAD(s.ID))
+	if err != nil {
+		return store.WorkspaceSection{}, err
+	}
+	return store.WorkspaceSection{
 		ID:          s.ID,
 		UserID:      s.UserID,
-		Name:        s.Name,
+		Name:        name,
 		Position:    s.Position,
 		SectionType: s.SectionType,
 		Sidebar:     s.Sidebar,
 		CreatedAt:   s.CreatedAt.Time,
-	}
+	}, nil
 }
 
 func (s *workspaceSectionStore) Create(ctx context.Context, p store.CreateWorkspaceSectionParams) error {
+	name, err := s.conn.ks.SealString(p.Name, sqlutil.WorkspaceSectionNameAAD(p.ID))
+	if err != nil {
+		return err
+	}
 	return mapErr(s.conn.q.CreateWorkspaceSection(ctx, gendb.CreateWorkspaceSectionParams{
 		ID:          p.ID,
 		UserID:      p.UserID.String(),
-		Name:        p.Name,
+		Name:        name,
 		Position:    p.Position,
 		SectionType: p.SectionType,
 		Sidebar:     p.Sidebar,
@@ -44,7 +53,11 @@ func (s *workspaceSectionStore) GetByID(ctx context.Context, id string) (*store.
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return fromDBWorkspaceSection(sec), nil
+	out, err := s.conn.fromDBWorkspaceSection(sec)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (s *workspaceSectionStore) ListByUserID(ctx context.Context, userID userid.UserID) ([]store.WorkspaceSection, error) {
@@ -58,7 +71,7 @@ func (s *workspaceSectionStore) ListByUserID(ctx context.Context, userID userid.
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, func(sec gendb.WorkspaceSection) store.WorkspaceSection { return *fromDBWorkspaceSection(sec) }), nil
+	return store.MapSliceErr(rows, s.conn.fromDBWorkspaceSection)
 }
 
 func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorkspaceSectionParams) (int64, error) {
@@ -68,8 +81,12 @@ func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorksp
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
+	name, err := s.conn.ks.SealString(p.Name, sqlutil.WorkspaceSectionNameAAD(p.ID))
+	if err != nil {
+		return 0, err
+	}
 	return rowsAffected(s.conn.q.RenameWorkspaceSection(ctx, gendb.RenameWorkspaceSectionParams{
-		Name:   p.Name,
+		Name:   name,
 		ID:     p.ID,
 		UserID: owner,
 		// A built-in section has a fixed name, so the query matches custom

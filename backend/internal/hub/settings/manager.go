@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -86,7 +85,6 @@ func (s *Snapshot) At() time.Time { return s.at }
 // read snapshots through their Key handles and never touch the store.
 type Manager struct {
 	st  store.Store
-	ks  *keystore.Keystore
 	now func() time.Time
 	ttl time.Duration
 
@@ -208,13 +206,11 @@ func WithAfterReset(name string, fn func(context.Context) error) Option {
 	}
 }
 
-// NewManager creates a settings manager over the store. The keystore
-// encrypts secret halves; a nil keystore makes every secret-bearing key
-// degrade to its default (tests that do not exercise secrets).
-func NewManager(st store.Store, ks *keystore.Keystore, descs []Descriptor, opts ...Option) *Manager {
+// NewManager creates a settings manager over the store. The store encrypts and
+// decrypts both the public value and secret columns transparently.
+func NewManager(st store.Store, descs []Descriptor, opts ...Option) *Manager {
 	m := &Manager{
 		st:         st,
-		ks:         ks,
 		now:        time.Now,
 		ttl:        cacheTTL,
 		byName:     make(map[string]Descriptor, len(descs)),
@@ -452,8 +448,9 @@ func (m *Manager) fireSubs(prev, s *Snapshot, subs []func(*Snapshot)) {
 	}
 }
 
-// refresh reads every row, decrypts secrets, decodes each registered key
-// onto its default, and degrades bad rows to defaults with a warning.
+// refresh reads every row (already decrypted at the store boundary), decodes
+// each registered key onto its default, and degrades bad rows to defaults with
+// a warning.
 func (m *Manager) refresh(ctx context.Context) (*Snapshot, error) {
 	rows, err := m.st.Settings().GetAll(ctx)
 	if err != nil {
@@ -497,22 +494,26 @@ func (m *Manager) buildSnapshotWith(rows []store.SettingRow, overrides map[strin
 		if has {
 			s.customized[name] = true
 			s.updatedAt[name] = row.UpdatedAt
-			if row.Value != nil {
+			if row.ValueDecryptErr != nil {
+				// A public half that no longer decrypts (key removed from the
+				// ring) must not abort snapshot loading: leave the public half
+				// at its default and keep any decryptable secret half intact.
+				m.warnOnce("value:"+name,
+					"settings value failed to decrypt; using default for the public half",
+					"key", name, "error", row.ValueDecryptErr)
+			} else if row.Value != nil {
 				decoded.Value = json.RawMessage(*row.Value)
 				s.stored[name] = decoded.Value
 			}
-			if len(row.Secret) > 0 && m.ks != nil {
-				plain, err := m.ks.Decrypt(row.Secret, keystore.SettingsSecretAAD(name))
-				if err != nil {
-					// A secret that no longer decrypts (key removed from
-					// the ring) must not brick the whole key: decode the
-					// public half and leave the secret at its default.
-					m.warnOnce("secret:"+name,
-						"settings secret failed to decrypt; using default for the secret half",
-						"key", name, "error", err)
-				} else {
-					decoded.Secret = plain
-				}
+			if row.SecretDecryptErr != nil {
+				// A secret that no longer decrypts (key removed from
+				// the ring) must not brick the whole key: decode the
+				// public half and leave the secret at its default.
+				m.warnOnce("secret:"+name,
+					"settings secret failed to decrypt; using default for the secret half",
+					"key", name, "error", row.SecretDecryptErr)
+			} else if len(row.Secret) > 0 {
+				decoded.Secret = row.Secret
 			}
 		}
 		v, err := desc.Decode(decoded)
@@ -527,11 +528,16 @@ func (m *Manager) buildSnapshotWith(rows []store.SettingRow, overrides map[strin
 			m.warnOnce("invalid:"+name, "settings row invalid; using default", "key", name, "error", err)
 			v = desc.Default()
 		} else {
-			// Healthy: clear this key's warning tags so a row that goes
-			// bad again warns again — a once-per-process tag would hide
-			// the second regression, which is exactly the one an operator
-			// did not already investigate.
-			m.clearWarned("secret:" + name)
+			// Healthy: clear warning tags only for halves that actually
+			// decrypted cleanly, so a row that stays undecryptable warns once
+			// instead of on every refresh, while a recovered row warns again
+			// if it regresses later.
+			if !has || row.ValueDecryptErr == nil {
+				m.clearWarned("value:" + name)
+			}
+			if !has || row.SecretDecryptErr == nil {
+				m.clearWarned("secret:" + name)
+			}
 			m.clearWarned("decode:" + name)
 			m.clearWarned("invalid:" + name)
 		}
@@ -944,7 +950,8 @@ func completeWrite(desc Descriptor, v any) pendingWrite {
 
 // prepareRows is the write tail every path shares: each key's merge, then
 // the key's own rules, then ONE cross-key validation over the whole
-// candidate snapshot, then the split and the encryption of every row.
+// candidate snapshot, then splitting every row into its public and secret
+// halves (encrypted at the store boundary on write).
 //
 // The cross-key rules run ONCE over every candidate at once. That is what
 // makes a multi-key write checkable: a rule that spans keys has to see the
@@ -975,7 +982,7 @@ func (m *Manager) prepareRows(pending []pendingWrite, locked lockedRows) ([]stor
 		if err != nil {
 			return nil, err
 		}
-		row, err := m.rowParams(w.desc, public, secret)
+		row, err := rowParams(w.desc, public, secret)
 		if err != nil {
 			return nil, err
 		}
@@ -1014,32 +1021,38 @@ func insertRowsIfAbsent(ctx context.Context, tx store.Store, params []store.Upse
 // from a second query. That lock is what makes the read-modify-write merge
 // safe, and taking it once per transaction is what keeps the lock order
 // acyclic.
-func (m *Manager) mergeForUpdate(row Row, w KeyWrite) (any, error) {
+func (m *Manager) mergeForUpdate(stored store.SettingRow, w KeyWrite) (any, error) {
 	desc := w.Desc
-	if len(row.Secret) > 0 && m.ks != nil {
-		plain, derr := m.ks.Decrypt(row.Secret, keystore.SettingsSecretAAD(desc.Name()))
-		if derr != nil {
-			// An explicit rotation (a document that supplies new secret
-			// fields, such as the altcha self-heal's fresh signing key) may
-			// replace a secret the keystore can no longer read. Anything
-			// else must STOP rather than upsert a re-encrypted default over
-			// the only copy of an operator-entered secret: restoring the
-			// key version, or re-encrypting under the active one, is the
-			// recovery path.
-			//
-			// BOTH halves are tested. Update sends its whole document in
-			// Public, so reading Secret alone would refuse the rotation
-			// that arrives through that verb.
-			if partialNamesSecret(desc, w.Public) || partialNamesSecret(desc, w.Secret) {
-				row.Secret = nil
-			} else {
-				return nil, secretUndecryptablef("settings key %q stores a secret the current keystore cannot decrypt; restore the key version, run `leapmux recover encryption-key reencrypt`, or supply the secret fields explicitly: %w", desc.Name(), derr)
-			}
+	if stored.ValueDecryptErr != nil {
+		// A partial write merges onto the stored public half, so proceeding
+		// when value cannot decrypt would silently overwrite every omitted
+		// public field with its code default. Refuse until the key is
+		// restored, re-encrypted, or replaced/reset as a whole key.
+		return nil, settingUndecryptablef("settings key %q stores a value the current keystore cannot decrypt; restore the key version, run `leapmux recover encryption-key reencrypt`, or replace or reset the key: %w", desc.Name(), stored.ValueDecryptErr)
+	}
+	var row Row
+	if stored.Value != nil {
+		row.Value = json.RawMessage(*stored.Value)
+	}
+	if stored.SecretDecryptErr != nil {
+		// An explicit rotation (a document that supplies new secret
+		// fields, such as the altcha self-heal's fresh signing key) may
+		// replace a secret the keystore can no longer read. Anything
+		// else must STOP rather than upsert a re-encrypted default over
+		// the only copy of an operator-entered secret: restoring the
+		// key version, or re-encrypting under the active one, is the
+		// recovery path.
+		//
+		// BOTH halves are tested. Update sends its whole document in
+		// Public, so reading Secret alone would refuse the rotation
+		// that arrives through that verb.
+		if partialNamesSecret(desc, w.Public) || partialNamesSecret(desc, w.Secret) {
+			row.Secret = nil
 		} else {
-			row.Secret = json.RawMessage(plain)
+			return nil, settingUndecryptablef("settings key %q stores a secret the current keystore cannot decrypt; restore the key version, run `leapmux recover encryption-key reencrypt`, or supply the secret fields explicitly: %w", desc.Name(), stored.SecretDecryptErr)
 		}
-	} else {
-		row.Secret = nil
+	} else if len(stored.Secret) > 0 {
+		row.Secret = json.RawMessage(stored.Secret)
 	}
 	merged, err := desc.Decode(row)
 	if err != nil {
@@ -1076,49 +1089,23 @@ func (m *Manager) mergeForUpdate(row Row, w KeyWrite) (any, error) {
 	return merged, nil
 }
 
-// rowParams encrypts the secret half and assembles one row write, refusing
-// a write whose two halves are both empty (the table's CHECK refuses it
-// anyway, with a message that says nothing about the key). prepareRows is
-// the one caller, so the refusal covers every write path.
-func (m *Manager) rowParams(desc Descriptor, public, secret json.RawMessage) (store.UpsertSettingParams, error) {
-	encrypted, err := m.encryptSecret(desc, secret)
-	if err != nil {
-		return store.UpsertSettingParams{}, err
-	}
-	p := paramsFromHalves(desc, public, encrypted)
-	if p.Value == nil && p.Secret == nil {
-		return store.UpsertSettingParams{}, Invalidf("settings key %q would write an empty row", desc.Name())
-	}
-	return p, nil
-}
-
-// encryptSecret encrypts the secret half under the key-name-bound AAD. A
-// secret-bearing key with no keystore refuses rather than storing the
-// secret in the clear: the missing keystore is a bug in the caller's
-// wiring.
-func (m *Manager) encryptSecret(desc Descriptor, secret json.RawMessage) ([]byte, error) {
-	if len(secret) == 0 {
-		return nil, nil
-	}
-	if m.ks == nil {
-		return nil, fmt.Errorf("settings key %q carries a secret but no keystore is configured", desc.Name())
-	}
-	enc, err := m.ks.Encrypt(secret, keystore.SettingsSecretAAD(desc.Name()))
-	if err != nil {
-		return nil, fmt.Errorf("encrypt secret half of %q: %w", desc.Name(), err)
-	}
-	return enc, nil
-}
-
-// paramsFromHalves assembles the row write from the split halves. At least
-// one half must be non-empty to satisfy the table's CHECK.
-func paramsFromHalves(desc Descriptor, public json.RawMessage, encrypted []byte) store.UpsertSettingParams {
-	p := store.UpsertSettingParams{Key: desc.Name(), Secret: encrypted}
+// rowParams assembles one row write from the split halves, refusing a write
+// whose two halves are both empty (the table's CHECK refuses it anyway, with
+// a message that says nothing about the key). prepareRows is the one caller,
+// so the refusal covers every write path.
+func rowParams(desc Descriptor, public, secret json.RawMessage) (store.UpsertSettingParams, error) {
+	p := store.UpsertSettingParams{Key: desc.Name()}
 	if len(public) > 0 {
 		s := string(public)
 		p.Value = &s
 	}
-	return p
+	if len(secret) > 0 {
+		p.Secret = []byte(secret)
+	}
+	if p.Value == nil && p.Secret == nil {
+		return store.UpsertSettingParams{}, Invalidf("settings key %q would write an empty row", desc.Name())
+	}
+	return p, nil
 }
 
 // buildSnapshotFromStore refreshes from the store and is best-effort: the
@@ -1191,12 +1178,12 @@ func partialNamesSecret(desc Descriptor, partial json.RawMessage) bool {
 // per-key merge.
 type lockedRows struct {
 	all   []store.SettingRow
-	byKey map[string]Row
+	byKey map[string]store.SettingRow
 }
 
-// row returns one key's stored halves. A key with no row is an empty Row —
-// the code default applies, which is not an error.
-func (l lockedRows) row(name string) Row { return l.byKey[name] }
+// row returns one key's stored row. A key with no row returns a zero SettingRow
+// — the code default applies, which is not an error.
+func (l lockedRows) row(name string) store.SettingRow { return l.byKey[name] }
 
 // lockAll takes the settings table's writer lock and reads every row.
 //
@@ -1226,14 +1213,9 @@ func lockAll(ctx context.Context, tx store.Store) (lockedRows, error) {
 	if err != nil {
 		return lockedRows{}, fmt.Errorf("load settings for update: %w", err)
 	}
-	out := lockedRows{all: rows, byKey: make(map[string]Row, len(rows))}
+	out := lockedRows{all: rows, byKey: make(map[string]store.SettingRow, len(rows))}
 	for _, r := range rows {
-		var row Row
-		if r.Value != nil {
-			row.Value = json.RawMessage(*r.Value)
-		}
-		row.Secret = r.Secret
-		out.byKey[r.Key] = row
+		out.byKey[r.Key] = r
 	}
 	return out, nil
 }

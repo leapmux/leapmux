@@ -14,7 +14,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
@@ -89,12 +88,8 @@ func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender
 // real store at an account-creation boundary without replacing its SQL writes.
 func setupEmptyPasskeyAuthTestServerWithStore(t *testing.T, st store.Store, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
 	t.Helper()
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
 
-	set := servicetest.NewSettingsManager(t, st, ks)
+	set := servicetest.NewSettingsManager(t, st)
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, passkeyTestOrigin))
 	if seed != nil {
 		seed(t, set)
@@ -114,7 +109,6 @@ func setupEmptyPasskeyAuthTestServerWithStore(t *testing.T, st store.Store, seed
 		Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil),
 		Mail:      mailSender,
 		Renderer:  mail.Renderer{},
-		Keystore:  ks,
 	})
 	connectServer := connect.NewServer(interceptor)
 	mountAuthAndSystem(t, connectServer, authSvc, set)

@@ -112,7 +112,7 @@ func TestTruncateAll_PreservesSessionForeignKeyEnforcement(t *testing.T) {
 			db.SetMaxOpenConns(1)
 			db.SetMaxIdleConns(1)
 			t.Cleanup(func() { _ = db.Close() })
-			helper := &mysqlTestHelper{db: db}
+			helper := &mysqlTestHelper{shared: &mysqlShared{db: db}}
 			err := helper.TruncateAll(ctx)
 			switch mode {
 			case "success":

@@ -26,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -39,10 +40,10 @@ var fakeNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // its caller `Solo: true` rather than by building a different manager.
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-	set := settings.NewManager(st, nil, SettingsDescriptors())
+	set := settings.NewManager(st, SettingsDescriptors())
 	require.NoError(t, set.Load(context.Background()))
 	m := NewManager(set)
 	m.now = func() time.Time { return fakeNow }

@@ -26,7 +26,7 @@ func TestNewSystemServiceRequiresBothDependencies(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	authSvc := newInitializedAuthService(t,
 		servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 
@@ -45,7 +45,7 @@ func TestSystemService_GetTimeouts(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	require.NoError(t, set.Update(context.Background(), settings.KeyTimeouts, json.RawMessage(`{"api_seconds":11}`)))
 	svc := service.NewSystemService(newInitializedAuthService(t,
 		servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
@@ -103,7 +103,7 @@ func TestSystemService_GetTimeoutsReportsTheDefaultWhenUnset(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	svc := service.NewSystemService(newInitializedAuthService(t, servicetest.AuthServiceDeps(
 		st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
 
@@ -134,7 +134,7 @@ func TestSystemService_GetSystemInfoLogsAFailedProviderRead(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	set := servicetest.NewSettingsManager(t, st, nil)
+	set := servicetest.NewSettingsManager(t, st)
 	svc := service.NewSystemService(newInitializedAuthService(t, servicetest.AuthServiceDeps(
 		failingProviderListStore{st}, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
 

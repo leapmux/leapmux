@@ -216,7 +216,7 @@ func TestKeyTrustedProxyRanges_StaysWritableAfterAnUnexpandableRow(t *testing.T)
 	t.Parallel()
 	ctx := context.Background()
 	st := hubtestutil.OpenTestStore(t)
-	manager := settings.NewManager(st, nil, requestsource.SettingsDescriptors())
+	manager := settings.NewManager(st, requestsource.SettingsDescriptors())
 
 	// Written straight to the TABLE, which is how a row the current rules
 	// refuse gets there: direct SQL, or an older hub whose bundled provider

@@ -50,7 +50,7 @@ func TestSecretHasher(t *testing.T) {
 
 func newTestStore(t *testing.T) store.Store {
 	t.Helper()
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{}, hubtestutil.TestKeystore(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	return st
@@ -518,7 +518,7 @@ type userLookupFailUsers struct {
 	err error
 }
 
-func (s userLookupFailUsers) GetByID(context.Context, string) (*store.User, error) {
+func (s userLookupFailUsers) GetAuthIdentity(context.Context, string) (*store.UserAuthIdentity, error) {
 	return nil, s.err
 }
 

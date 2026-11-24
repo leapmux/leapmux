@@ -11,6 +11,7 @@ import (
 
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
@@ -68,8 +69,8 @@ var recoverTree = cmdGroup{
 			Commands: []cmdLeaf{
 				{Name: "rotate", Summary: "Generate and add a new encryption key version", Run: runRotateEncryptionKey},
 				{Name: "remove", Summary: "Remove an old encryption key version", Run: runRemoveEncryptionKey},
-				{Name: "reencrypt", Summary: "Re-encrypt all secrets with the active key", Run: runReencryptSecrets},
-				{Name: "rotate-pepper", Summary: "Rotate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app secrets, registration keys and device codes", Run: runRotatePepper},
+				{Name: "reencrypt", Summary: "Re-encrypt all encrypted rows with the active key", Run: runReencryptSecrets},
+				{Name: "rotate-pepper", Summary: "Rotate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app secrets, registration keys, device codes, and authorization codes", Run: runRotatePepper},
 			},
 		},
 		{
@@ -280,11 +281,7 @@ func printJSON(v any) error {
 	return enc.Encode(v)
 }
 
-// withRecoverStore creates a flag set with --data-dir and --config, parses
-// args, opens the store, and calls fn. The store is closed after fn returns.
-// When --config is provided, the hub config file is loaded to obtain storage
-// settings. Otherwise, a minimal config is constructed from --data-dir.
-func withRecoverStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store) error) error {
+func parseRecoverStoreConfig(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet)) (*config.Config, error) {
 	fs := flag.NewFlagSet("leapmux "+cmd.Path, flag.ContinueOnError)
 	dataDir := fs.String("data-dir", "", "data directory")
 	configFile := fs.String("config", "", "path to hub config file (loads storage settings)")
@@ -292,7 +289,7 @@ func withRecoverStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), f
 		setup(fs)
 	}
 	if err := internalconfig.ConfigureAndParse(fs, args, cmd.Description, nil, nil); err != nil {
-		return err
+		return nil, err
 	}
 
 	var cfg *config.Config
@@ -300,7 +297,7 @@ func withRecoverStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), f
 		var err error
 		cfg, _, err = config.LoadWithOptions([]string{"--config", *configFile}, config.LoadOptions{})
 		if err != nil {
-			return fmt.Errorf("load config from %s: %w", *configFile, err)
+			return nil, fmt.Errorf("load config from %s: %w", *configFile, err)
 		}
 		if *dataDir != "" {
 			cfg.DataDir = *dataDir
@@ -314,16 +311,71 @@ func withRecoverStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), f
 	// out-of-the-box behavior (Validate is MkdirAll + storage checks,
 	// exactly what NewServer runs).
 	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("validate config: %w", err)
+		return nil, fmt.Errorf("validate config: %w", err)
+	}
+	return cfg, nil
+}
+
+// withRecoverStore creates a flag set with --data-dir and --config, parses
+// args, loads or generates encryption.key, opens and migrates the store (with
+// built-in seeding), and calls fn. Use this solely for first-run bootstrap
+// (`recover bootstrap create-admin`).
+func withRecoverStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store) error) error {
+	cfg, err := parseRecoverStoreConfig(cmd, args, setup)
+	if err != nil {
+		return err
 	}
 
-	st, err := storeopen.Open(context.Background(), cfg)
+	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
+	if err != nil {
+		return fmt.Errorf("load encryption keystore: %w", err)
+	}
+
+	st, err := storeopen.Open(context.Background(), cfg, ks)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = st.Close() }()
 
 	return fn(context.Background(), cfg, st)
+}
+
+// loadExistingKeystore loads an existing encryption.key file, reporting a
+// clear operator-facing hint when the file is missing while preserving parse
+// and permission errors verbatim.
+func loadExistingKeystore(keyPath string) (*keystore.Keystore, error) {
+	ks, err := keystore.LoadFromFile(keyPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", keyPath)
+		}
+		return nil, fmt.Errorf("load encryption key from %s: %w", keyPath, err)
+	}
+	return ks, nil
+}
+
+// withRecoverExistingStore opens an existing Hub store without running
+// migrations or seeding built-in rows, and loads encryption.key via
+// loadExistingKeystore so a missing key file fails loudly instead of generating
+// a new key that cannot decrypt existing rows.
+func withRecoverExistingStore(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store, ks *keystore.Keystore) error) error {
+	cfg, err := parseRecoverStoreConfig(cmd, args, setup)
+	if err != nil {
+		return err
+	}
+
+	ks, err := loadExistingKeystore(cfg.EncryptionKeyFilePath())
+	if err != nil {
+		return err
+	}
+
+	st, err := storeopen.OpenWithoutMigrate(context.Background(), cfg, ks)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	return fn(context.Background(), cfg, st, ks)
 }
 
 // recoverConfig returns a minimal Config with DataDir set. When dataDir is

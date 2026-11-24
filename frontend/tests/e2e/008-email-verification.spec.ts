@@ -7,25 +7,23 @@ import {
   expirePendingEmailCooldown,
   hubRefusal,
   logoutViaAPI,
-  readPendingEmailToken,
   signUpViaAPI,
   waitForEmailEnabled,
 } from './helpers/api'
-import { withCaptureSmtp } from './helpers/mail'
+import { extractEmailVerificationCode, withCaptureSmtp } from './helpers/mail'
 import { openPreferencesAs } from './helpers/preferences'
-import { retryUntilPass } from './helpers/retryUntilPass'
 import { hubDataDir } from './helpers/server'
 import { readSessionCookie, signUpViaUI, submitLoginForm } from './helpers/ui'
 
 test.describe('Email verification', () => {
   test('signup with SMTP configured routes to verify-email and accepts the code', async ({ page, leapmuxServer }) => {
-    await withCaptureSmtp(leapmuxServer, async () => {
+    await withCaptureSmtp(leapmuxServer, async (smtp) => {
       const username = `verify-${Date.now()}`
+      const verifyEmail = smtp.waitForMessage()
       await signUpViaUI(page, username, 'password123', 'Verify User', `${username}@test.local`)
       await expect(page).toHaveURL(/\/verify-email/)
 
-      // The read throws while the Hub stores no code yet, so the wait retries it.
-      const token = await retryUntilPass(() => readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username))
+      const token = extractEmailVerificationCode(await verifyEmail)
       await page.getByTestId('verify-email-code-input').fill(token)
       await page.getByTestId('verify-email-submit').click()
       await expect(page).toHaveURL(/\/$/)

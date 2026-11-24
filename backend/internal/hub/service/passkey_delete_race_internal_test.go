@@ -49,7 +49,6 @@ func seedRacePasskey(t *testing.T, st store.Store, userID, friendlyName string) 
 		PublicKey:    []byte("pubkey"),
 		Transports:   "[]",
 		FriendlyName: friendlyName,
-		KeyVersion:   1,
 		CreatedAt:    time.Now().UTC(),
 	}))
 	return pkID

@@ -5,7 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 )
 
@@ -15,13 +15,8 @@ type settingsStore struct {
 
 var _ store.SettingsStore = (*settingsStore)(nil)
 
-func fromDBSetting(r gendb.HubSetting) store.SettingRow {
-	return store.SettingRow{
-		Key:       r.Key,
-		Value:     ptrconv.NullStringToPtr(r.Value),
-		Secret:    r.Secret,
-		UpdatedAt: r.UpdatedAt.Time,
-	}
+func (c *sqliteConn) fromDBSetting(r gendb.HubSetting) store.SettingRow {
+	return sqlutil.OpenSettingRow(c.ks, r.Key, r.Value, r.Secret, r.UpdatedAt.Time)
 }
 
 func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) {
@@ -29,7 +24,7 @@ func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	return store.MapSlice(rows, fromDBSetting), nil
+	return store.MapSlice(rows, s.conn.fromDBSetting), nil
 }
 
 // GetAllForUpdate takes the database writer lock with a no-op write
@@ -52,23 +47,31 @@ func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow,
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
-	row := fromDBSetting(r)
+	row := s.conn.fromDBSetting(r)
 	return &row, nil
 }
 
 func (s *settingsStore) Upsert(ctx context.Context, p store.UpsertSettingParams) error {
+	valCt, secCt, err := sqlutil.SealSetting(s.conn.ks, p)
+	if err != nil {
+		return err
+	}
 	return s.conn.queryError(s.conn.q.UpsertSetting(ctx, gendb.UpsertSettingParams{
 		Key:    p.Key,
-		Value:  ptrconv.PtrToNullString(p.Value),
-		Secret: p.Secret,
+		Value:  valCt,
+		Secret: secCt,
 	}))
 }
 
 func (s *settingsStore) InsertIfAbsent(ctx context.Context, p store.UpsertSettingParams) (bool, error) {
+	valCt, secCt, err := sqlutil.SealSetting(s.conn.ks, p)
+	if err != nil {
+		return false, err
+	}
 	n, err := s.conn.q.InsertSettingIfAbsent(ctx, gendb.InsertSettingIfAbsentParams{
 		Key:    p.Key,
-		Value:  ptrconv.PtrToNullString(p.Value),
-		Secret: p.Secret,
+		Value:  valCt,
+		Secret: secCt,
 	})
 	return n > 0, s.conn.queryError(err)
 }

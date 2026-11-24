@@ -17,42 +17,111 @@ type DBQuery interface {
 }
 
 // SetDeletedAt backdates the deleted_at timestamp for a record. The exec
-// closure and parameter style let every dialect delegate here rather than
-// hand-rolling the UPDATE with its own placeholder convention (`?` vs `$n`).
-func SetDeletedAt(ctx context.Context, exec func(context.Context, string, ...any) error, style ParameterStyle, entity store.TestEntity, id string, deletedAt time.Time) error {
-	return SetEntityColumnValue(ctx, exec, style, entity, "deleted_at", id, deletedAt)
+// closure and dialect let every backend delegate here rather than hand-rolling
+// the UPDATE with its own placeholder convention (`?` vs `$n`).
+func SetDeletedAt(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, entity store.TestEntity, id string, deletedAt time.Time) error {
+	return SetEntityColumnValue(ctx, exec, dialect, entity, "deleted_at", id, deletedAt)
 }
 
 // SetCreatedAt backdates the created_at timestamp for a record. See SetDeletedAt
-// for the exec/style contract.
-func SetCreatedAt(ctx context.Context, exec func(context.Context, string, ...any) error, style ParameterStyle, entity store.TestEntity, id string, createdAt time.Time) error {
-	return SetEntityColumnValue(ctx, exec, style, entity, "created_at", id, createdAt)
+// for the exec/dialect contract.
+func SetCreatedAt(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, entity store.TestEntity, id string, createdAt time.Time) error {
+	return SetEntityColumnValue(ctx, exec, dialect, entity, "created_at", id, createdAt)
 }
 
 // SetLastActiveAt writes an exact last_active_at timestamp for a session row.
 // Only the user_sessions table carries this column, so the table is pinned
 // here rather than caller-supplied -- passing a table without the column
 // would only fail at the database with an obscure "no such column" error.
-// See SetDeletedAt for the exec/style contract.
-func SetLastActiveAt(ctx context.Context, exec func(context.Context, string, ...any) error, style ParameterStyle, id string, lastActiveAt time.Time) error {
-	return SetEntityColumnValue(ctx, exec, style, store.EntitySessions, "last_active_at", id, lastActiveAt)
+// See SetDeletedAt for the exec/dialect contract.
+func SetLastActiveAt(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, id string, lastActiveAt time.Time) error {
+	return SetEntityColumnValue(ctx, exec, dialect, store.EntitySessions, "last_active_at", id, lastActiveAt)
 }
 
 // SetDeregisteringAt writes an exact deregistering_at timestamp for a worker
 // row, pinned to the workers table as SetLastActiveAt is to user_sessions. See
-// SetDeletedAt for the exec/style contract.
-func SetDeregisteringAt(ctx context.Context, exec func(context.Context, string, ...any) error, style ParameterStyle, workerID string, deregisteringAt time.Time) error {
-	return SetEntityColumnValue(ctx, exec, style, store.EntityWorkers, "deregistering_at", workerID, deregisteringAt)
+// SetDeletedAt for the exec/dialect contract.
+func SetDeregisteringAt(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, workerID string, deregisteringAt time.Time) error {
+	return SetEntityColumnValue(ctx, exec, dialect, store.EntityWorkers, "deregistering_at", workerID, deregisteringAt)
 }
 
 // ClearWorkerDeregisteringAt restores only a live test worker. The identifiers
-// are fixed, and the worker ID remains a parameter in both placeholder styles.
-func ClearWorkerDeregisteringAt(ctx context.Context, exec func(context.Context, string, ...any) error, style ParameterStyle, workerID string) error {
-	first, _, err := placeholders(style)
+// are fixed, and the worker ID remains a parameter in every dialect.
+func ClearWorkerDeregisteringAt(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, workerID string) error {
+	if err := validateDialect(dialect); err != nil {
+		return err
+	}
+	return exec(ctx, fmt.Sprintf("UPDATE workers SET deregistering_at = NULL WHERE id = %s AND deleted_at IS NULL", paramPlaceholder(dialect, 1)), workerID)
+}
+
+// CopyWorkspaceTitleCiphertext copies the raw encrypted workspaces.title bytes
+// from srcWorkspaceID to dstWorkspaceID to verify AAD tampering detection.
+// Uses two separate queries and closes *sql.Rows before calling exec so
+// SQLite's SetMaxOpenConns(1) cannot deadlock and MySQL 8 avoids Error 1093
+// on self-referencing UPDATE subqueries.
+func CopyWorkspaceTitleCiphertext(ctx context.Context, db DBQuery, exec func(context.Context, string, ...any) error, dialect Dialect, srcWorkspaceID, dstWorkspaceID string) error {
+	if err := validateDialect(dialect); err != nil {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT title FROM workspaces WHERE id = %s", paramPlaceholder(dialect, 1)), srcWorkspaceID)
 	if err != nil {
 		return err
 	}
-	return exec(ctx, fmt.Sprintf("UPDATE workers SET deregistering_at = NULL WHERE id = %s AND deleted_at IS NULL", first), workerID)
+	var raw []byte
+	found := false
+	if rows.Next() {
+		if scanErr := rows.Scan(&raw); scanErr != nil {
+			_ = rows.Close()
+			return scanErr
+		}
+		found = true
+	}
+	if err := closeRows(rows); err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("CopyWorkspaceTitleCiphertext: source workspace %q not found", srcWorkspaceID)
+	}
+	return exec(ctx, fmt.Sprintf("UPDATE workspaces SET title = %s WHERE id = %s", paramPlaceholder(dialect, 1), paramPlaceholder(dialect, 2)), raw, dstWorkspaceID)
+}
+
+// SetSettingSecretRaw overwrites hub_settings.secret with raw ciphertext bytes
+// for a single key, used by tests simulating partial-column key skew.
+func SetSettingSecretRaw(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, key string, raw []byte) error {
+	if err := validateDialect(dialect); err != nil {
+		return err
+	}
+	return exec(ctx, fmt.Sprintf("UPDATE hub_settings SET secret = %s WHERE %s = %s", paramPlaceholder(dialect, 1), quoteIdent(dialect, "key"), paramPlaceholder(dialect, 2)), raw, key)
+}
+
+// CopySettingSecretCiphertext copies the raw persisted hub_settings.secret
+// ciphertext from srcKey to dstKey so tests can verify key-scoped AAD
+// rejection without synthesizing ciphertext in Go.
+func CopySettingSecretCiphertext(ctx context.Context, db DBQuery, exec func(context.Context, string, ...any) error, dialect Dialect, srcKey, dstKey string) error {
+	if err := validateDialect(dialect); err != nil {
+		return err
+	}
+	keyCol := quoteIdent(dialect, "key")
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT secret FROM hub_settings WHERE %s = %s", keyCol, paramPlaceholder(dialect, 1)), srcKey)
+	if err != nil {
+		return err
+	}
+	var raw []byte
+	found := false
+	if rows.Next() {
+		if scanErr := rows.Scan(&raw); scanErr != nil {
+			_ = rows.Close()
+			return scanErr
+		}
+		found = true
+	}
+	if err := closeRows(rows); err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("CopySettingSecretCiphertext: source setting %q not found", srcKey)
+	}
+	return SetSettingSecretRaw(ctx, exec, dialect, dstKey, raw)
 }
 
 // SetEntityColumnValue backdates one fixed column (deleted_at/created_at/
@@ -64,21 +133,20 @@ func ClearWorkerDeregisteringAt(ctx context.Context, exec func(context.Context, 
 // pre-formatted strftime string that byte-matches
 // production rows while the driver-serialized dialects pass a time.Time; the
 // exported typed wrappers above keep every call site's value strongly typed.
-func SetEntityColumnValue(ctx context.Context, exec func(context.Context, string, ...any) error, style ParameterStyle, entity store.TestEntity, column, id string, value any) error {
+func SetEntityColumnValue(ctx context.Context, exec func(context.Context, string, ...any) error, dialect Dialect, entity store.TestEntity, column, id string, value any) error {
 	if err := store.ValidateEntity(entity); err != nil {
 		return err
 	}
 	if err := validateEntityColumn(column); err != nil {
 		return err
 	}
-	first, second, err := placeholders(style)
-	if err != nil {
+	if err := validateDialect(dialect); err != nil {
 		return err
 	}
 	// entity and column are validated against closed allowlists above, so the
 	// table and column interpolated here are always known literals, never
 	// caller input.
-	query := fmt.Sprintf("UPDATE %s SET %s = %s WHERE id = %s", string(entity), column, first, second)
+	query := fmt.Sprintf("UPDATE %s SET %s = %s WHERE id = %s", string(entity), column, paramPlaceholder(dialect, 1), paramPlaceholder(dialect, 2))
 	return exec(ctx, query, value, id)
 }
 
@@ -101,28 +169,10 @@ func validateEntityColumn(column string) error {
 	return nil
 }
 
-type ParameterStyle uint8
-
-const (
-	ParameterStyleQuestionMark ParameterStyle = iota + 1
-	ParameterStyleDollar
-)
-
-func placeholders(style ParameterStyle) (string, string, error) {
-	switch style {
-	case ParameterStyleQuestionMark:
-		return "?", "?", nil
-	case ParameterStyleDollar:
-		return "$1", "$2", nil
-	default:
-		return "", "", fmt.Errorf("unknown parameter style %d", style)
-	}
-}
-
 // ListAllOwnedTabsSQL is the owner-blind workspace_tab_owned read behind
 // store.TestHelper.ListAllOwnedTabs, shared by the two database/sql dialects
 // (sqlite, mysql); postgres runs the same statement through pgx. The statement
-// takes no parameters, so it needs no ParameterStyle.
+// takes no parameters, so it needs no Dialect.
 //
 // Test-only: see the TestHelper.ListAllOwnedTabs doc for why no production read
 // of this table may omit user_id.

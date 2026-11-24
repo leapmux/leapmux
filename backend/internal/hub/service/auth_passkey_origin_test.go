@@ -75,17 +75,3 @@ func TestGetSystemInfo_PasskeyEnabledWithoutAnOriginHeader(t *testing.T) {
 	assert.True(t, systemInfoFromOrigin(t, env, "").GetPasskeyEnabled(),
 		"a caller with no Origin header gets the hub-wide answer")
 }
-
-func TestGetSystemInfo_PasskeyDisabledWithoutAKeystore(t *testing.T) {
-	t.Parallel()
-
-	// No keystore: the hub runs no ceremony from any origin, so the allowed
-	// origin must not report otherwise.
-	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
-	ctx, info := connect.NewClientContext(context.Background())
-	info.RequestHeader().Set("Origin", passkeyTestOrigin)
-	resp, err := client.GetSystemInfo(ctx, &leapmuxv1.GetSystemInfoRequest{})
-	require.NoError(t, err)
-	assert.False(t, resp.GetPasskeyEnabled(),
-		"a hub with no keystore runs no ceremony, whatever the origin")
-}

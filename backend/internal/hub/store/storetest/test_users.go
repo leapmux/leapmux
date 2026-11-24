@@ -1127,7 +1127,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, tiedA.ID, tie))
 		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, tiedB.ID, tie))
 
-		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.User], error) {
+		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.UserListItem], error) {
 			return st.Users().ListAll(ctx, store.ListAllUsersParams{PageParams: store.PageParams{Cursor: cursor, Limit: 1}})
 		})
 		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
@@ -1332,7 +1332,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityUsers, tiedB.ID, tie))
 
 		q := "srtie"
-		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.User], error) {
+		seen := pageThroughByOne(t, func(cursor string) (store.Page[store.UserListItem], error) {
 			return st.Users().Search(ctx, store.SearchUsersParams{Query: &q, PageParams: store.PageParams{Cursor: cursor, Limit: 1}})
 		})
 		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,

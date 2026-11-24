@@ -16,7 +16,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -62,7 +61,6 @@ type AuthServiceDeps struct {
 	Config        *config.Config
 	Settings      *settings.Manager
 	Lifecycle     *auth.CredentialLifecycleEffects
-	Keystore      *keystore.Keystore
 	Mail          mail.Sender
 	Renderer      mail.Renderer
 	Captcha       CaptchaService // nil reports captcha as disabled
@@ -92,7 +90,6 @@ type AuthService struct {
 	cfg              *config.Config
 	set              *settings.Manager
 	lifecycle        *auth.CredentialLifecycleEffects
-	keystore         *keystore.Keystore
 	mail             mail.Sender
 	renderer         mail.Renderer
 	captcha          CaptchaService
@@ -145,7 +142,6 @@ func NewAuthService(deps AuthServiceDeps) *AuthService {
 		cfg:              deps.Config,
 		set:              deps.Settings,
 		lifecycle:        deps.Lifecycle,
-		keystore:         deps.Keystore,
 		mail:             deps.Mail,
 		renderer:         deps.Renderer,
 		captcha:          captchaSvc,

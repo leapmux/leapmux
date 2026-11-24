@@ -727,19 +727,19 @@ The Hub's state lives in its data dir (SQLite DB at `<data_dir>/hub.db`, encrypt
 - **Upgrades:** pull a newer image/binary and recreate against the **same** data dir/volume. Migrations run automatically on startup; no manual migration command is needed.
 
 {{< callout type="warning" >}}
-Back up the Hub's `encryption.key` together with its database. Losing the file makes encrypted secrets unrecoverable. Its token pepper also becomes unavailable, signing out every session and invalidating every Worker auth token. See [Encryption & Data](/docs/admin/encryption-and-data/).
+Back up the Hub's `encryption.key` together with its database. Losing the file makes all encrypted Hub columns across 15 tables unrecoverable and aborts Hub startup if `captcha.altcha` cannot decrypt. Its token pepper also becomes unavailable, signing out every session and invalidating Worker auth tokens, API and delegation tokens, confidential app client secrets, live registration keys, and pending OAuth authorization codes. See [Encryption & Data](/docs/admin/encryption-and-data/).
 {{< /callout >}}
 
 ### Encryption-key errors after restoring a backup
 
 **Symptom**
-After restoring the database, OAuth or token-backed features fail to decrypt. Users may also be signed out, and the Hub may refuse Worker tokens.
+After restoring the database, Hub startup fails with an undecryptable `captcha.altcha` setting error, or account, workspace, OAuth, passkey, and token reads fail to decrypt. Users may also be signed out, and the Hub may refuse Worker tokens.
 
 **Cause**
-You restored `hub.db` but not the matching `encryption.key`, or restored a key from a different point in time. The two must be in sync.
+You restored `hub.db` (or your SQL dump) without the matching `encryption.key`, or restored a key file from a different point in time. The database and key file must match because 37 columns across 15 Hub tables are encrypted with `encryption.key`.
 
 **Fix**
-Restore the `encryption.key` from the same backup as the database. If the matching file is lost, the new pepper invalidates every session and Worker token. Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
+Restore the `encryption.key` from the same backup as the database. Without the matching key file, encrypted Hub columns (including password hashes, workspace titles, CRDT state, settings, OAuth data, and passkeys) cannot be recovered, and an undecryptable `captcha.altcha` row prevents the Hub from starting. If you re-initialize the Hub with a new key file, every session and Worker token is also invalidated; solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
 
 1. Remove it in the Hub's Worker list.
 2. Stop it.

@@ -26,7 +26,6 @@ func (s *Suite) testPasskeys(t *testing.T) {
 			SignCount:    1,
 			Transports:   `["usb"]`,
 			FriendlyName: "YubiKey",
-			KeyVersion:   1,
 			CreatedAt:    now,
 		}))
 
@@ -86,19 +85,6 @@ func (s *Suite) testPasskeys(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "Renamed", got.FriendlyName)
 
-		require.NoError(t, st.PasskeyCredentials().UpdatePublicKey(ctx, store.UpdatePasskeyPublicKeyParams{
-			ID:         pkID,
-			UserID:     user.ID,
-			PublicKey:  []byte("reencrypted"),
-			KeyVersion: 2,
-		}))
-		byVersion, err := st.PasskeyCredentials().ListByKeyVersion(ctx, 2)
-		require.NoError(t, err)
-		require.Len(t, byVersion, 1)
-		versionCount, err := st.PasskeyCredentials().CountByKeyVersion(ctx, 2)
-		require.NoError(t, err)
-		assert.EqualValues(t, 1, versionCount)
-
 		require.NoError(t, st.PasskeyCredentials().Delete(ctx, pkID, user.ID))
 		_, err = st.PasskeyCredentials().GetByID(ctx, pkID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
@@ -117,7 +103,6 @@ func (s *Suite) testPasskeys(t *testing.T) {
 				PublicKey:    []byte("pk"),
 				Transports:   "[]",
 				FriendlyName: "pk",
-				KeyVersion:   1,
 				CreatedAt:    now,
 			}))
 		}

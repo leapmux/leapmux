@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -14,21 +15,29 @@ type workspaceStore struct {
 
 var _ store.WorkspaceStore = (*workspaceStore)(nil)
 
-func fromDBWorkspace(w gendb.Workspace) *store.Workspace {
-	return &store.Workspace{
+func (c *pgConn) fromDBWorkspace(w gendb.Workspace) (store.Workspace, error) {
+	title, err := c.ks.OpenString(w.Title, sqlutil.WorkspaceTitleAAD(w.ID))
+	if err != nil {
+		return store.Workspace{}, err
+	}
+	return store.Workspace{
 		ID:          w.ID,
 		OwnerUserID: w.OwnerUserID,
-		Title:       w.Title,
+		Title:       title,
 		CreatedAt:   w.CreatedAt.Time,
 		DeletedAt:   w.DeletedAt.Ptr(),
-	}
+	}, nil
 }
 
 func (s *workspaceStore) Create(ctx context.Context, p store.CreateWorkspaceParams) error {
+	title, err := s.conn.ks.SealString(p.Title, sqlutil.WorkspaceTitleAAD(p.ID))
+	if err != nil {
+		return err
+	}
 	return mapErr(s.conn.q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
 		ID:          p.ID,
 		OwnerUserID: p.OwnerUserID.String(),
-		Title:       p.Title,
+		Title:       title,
 	}))
 }
 
@@ -37,7 +46,11 @@ func (s *workspaceStore) GetByID(ctx context.Context, id string) (*store.Workspa
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return fromDBWorkspace(w), nil
+	out, err := s.conn.fromDBWorkspace(w)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (s *workspaceStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.Workspace, error) {
@@ -45,7 +58,11 @@ func (s *workspaceStore) GetByIDIncludeDeleted(ctx context.Context, id string) (
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return fromDBWorkspace(w), nil
+	out, err := s.conn.fromDBWorkspace(w)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (s *workspaceStore) ListByIDs(ctx context.Context, ids []string) ([]store.Workspace, error) {
@@ -56,7 +73,7 @@ func (s *workspaceStore) ListByIDs(ctx context.Context, ids []string) ([]store.W
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
+	return store.MapSliceErr(rows, s.conn.fromDBWorkspace)
 }
 
 func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessibleWorkspacesParams) ([]store.Workspace, error) {
@@ -70,7 +87,7 @@ func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessi
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
+	return store.MapSliceErr(rows, s.conn.fromDBWorkspace)
 }
 
 func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspaceParams) (int64, error) {
@@ -80,8 +97,12 @@ func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspacePara
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
+	title, err := s.conn.ks.SealString(p.Title, sqlutil.WorkspaceTitleAAD(p.ID))
+	if err != nil {
+		return 0, err
+	}
 	return rowsAffected(s.conn.q.RenameWorkspace(ctx, gendb.RenameWorkspaceParams{
-		Title:       p.Title,
+		Title:       title,
 		ID:          p.ID,
 		OwnerUserID: owner,
 	}))

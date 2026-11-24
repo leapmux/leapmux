@@ -21,7 +21,7 @@ import (
 // session cookies with no Secure attribute.
 func TestSecureCookiesFor(t *testing.T) {
 	t.Parallel()
-	manager := settings.NewManager(hubtestutil.OpenTestStore(t), nil, settings.CoreDescriptors())
+	manager := settings.NewManager(hubtestutil.OpenTestStore(t), settings.CoreDescriptors())
 	require.NoError(t, manager.Load(context.Background()))
 	snap := manager.Snapshot(context.Background())
 
@@ -44,7 +44,7 @@ func TestSecureCookiesFor(t *testing.T) {
 // browser really uses keeps that answer whatever a proxy reports.
 func TestBaseURLFor(t *testing.T) {
 	t.Parallel()
-	manager := settings.NewManager(hubtestutil.OpenTestStore(t), nil, settings.CoreDescriptors())
+	manager := settings.NewManager(hubtestutil.OpenTestStore(t), settings.CoreDescriptors())
 	require.NoError(t, manager.Load(context.Background()))
 	snap := manager.Snapshot(context.Background())
 
