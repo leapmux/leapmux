@@ -88,11 +88,11 @@ func (h *OutputHandler) lockControlMutationLease(agentID, rootAgentID string, re
 		st.mu.Unlock()
 		st.controlMu.Lock()
 		return st, scope, func() {
-			st.controlMu.Unlock()
 			st.mu.Lock()
 			st.controlMutations--
 			retire := retireEntryOnRelease && rootAgentID != agentID && st.hasPublished && st.published != leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING && st.retirableLocked()
 			st.mu.Unlock()
+			st.controlMu.Unlock()
 			if retire {
 				h.retireActivity(agentID, st)
 			}
@@ -186,7 +186,7 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 	}
 	st, _, release := r.h.lockControlMutation(r.agentID, r.rootAgentID)
 	publication := controlPublication{}
-	defer func() { r.h.finishControlPublication(r.agentID, r.rootAgentID, publication, release) }()
+	defer func() { r.h.finishControlPublication(st, r.agentID, r.rootAgentID, publication, release) }()
 	r.activity.mu.Lock()
 	if r.attempt.disposition == stopIgnored || r.attempt.disposition == stopFailed {
 		r.activity.mu.Unlock()
