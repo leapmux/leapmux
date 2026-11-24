@@ -18,7 +18,8 @@ const abortWait = 2 * time.Second
 
 // Interrupt aborts the running turn. Cline cancels the turn's pending approvals
 // and questions, stops the run, and ends it with run.aborted, which ends the
-// turn as an interruption. It does nothing when no turn runs.
+// turn as an interruption. When no turn runs, it settles any open spawns,
+// closes any open tool calls as interrupted, and resets spans and progress.
 //
 // Three turns have no run to abort yet:
 //   - A turn whose message left and whose run did not start. Cline finds no
@@ -55,6 +56,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		lead := a.out.lead
 		a.Mu.Unlock()
 		if stillIdle {
+			a.settleSpawns(agent.MessageCompletionInterrupted)
 			a.closeOpenTools(lead, agent.MessageCompletionInterrupted)
 			providerkit.ResetSpansAndProgress(a.sink)
 		}

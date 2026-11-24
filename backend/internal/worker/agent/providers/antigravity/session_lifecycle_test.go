@@ -596,4 +596,35 @@ func TestAntigravityIdleInterruptDoesNotLatchInterruptedFlagAndRollbackUsesGen(t
 		assert.True(t, interrupted, "stale failed cancel must preserve root.interrupted set by a newer concurrent cancel")
 		assert.Equal(t, uint64(2), gen)
 	})
+
+	t.Run("concurrent idle interrupt and stream update serialize without racing or duplicate rows", func(t *testing.T) {
+		t.Parallel()
+		rpc, _ := fakeAntigravityRPC(t)
+		a, sink := testAgent(t)
+		a.rpc = rpc
+		cmd := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"cmd-race-0"}},"runCommand":{"command":"sleep 30"}}`)
+		feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{cmd}))
+		feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
+
+		doneStep := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_DONE","metadata":{"toolCall":{"id":"cmd-race-0"}},"runCommand":{"command":"sleep 30"}}`)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, a.Interrupt(agent.StopContext{}))
+		}()
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, a.applyUpdate(a.root, updateWithSteps(cascadeStatusIdle, []int{0}, []json.RawMessage{doneStep}), false))
+		}()
+		wg.Wait()
+
+		closingCount := 0
+		for _, msg := range sink.Messages() {
+			if msg.SpanID == "cmd-race-0" && msg.Closing {
+				closingCount++
+			}
+		}
+		assert.Equal(t, 1, closingCount, "concurrent idle interrupt and step completion must persist exactly one closing row")
+	})
 }

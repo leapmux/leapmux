@@ -207,7 +207,7 @@ describe('zcode resultDivider', () => {
     expect(plugin.transcript.extractDivider(event(ZCODE_EVENT.TurnCompleted, {
       resultType: 'success',
       duration: 2100,
-    }), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (2.1s)', interrupted: true })
+    }), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (2.1s)' })
   })
   // Every provider states a turn end in one shared vocabulary. ZCode said "Took 1.5s"
   // where the Agent Client Protocol providers said "Turn ended".
@@ -229,7 +229,7 @@ describe('zcode resultDivider', () => {
     expect(plugin?.transcript.extractDivider!(event(ZCODE_EVENT.TurnCompleted, {
       resultType: 'cancelled',
       duration: 900,
-    }))).toEqual({ label: 'Turn interrupted (900ms)', interrupted: true })
+    }))).toEqual({ label: 'Turn interrupted (900ms)' })
   })
 
   it('states the code and the message of a failed turn', () => {
@@ -634,7 +634,7 @@ describe('zcode retained background outcomes', () => {
     const original = event(ZCODE_EVENT.TurnFailed, {
       error: { code: 'cancelled', message: 'Cancelled' },
     })
-    expect(plugin.transcript.extractDivider(original, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', interrupted: true })
+    expect(plugin.transcript.extractDivider(original, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
   })
 
   it.each([undefined, null, -1, 1.5, 99, '1'])('rejects an invalid completion %s', (completion) => {

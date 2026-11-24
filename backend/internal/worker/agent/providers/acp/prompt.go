@@ -117,11 +117,24 @@ func acpResponseStopReason(response json.RawMessage) string {
 	}
 	var payload struct {
 		StopReason string `json:"stopReason"`
+		Content    struct {
+			StopReason string `json:"stopReason"`
+		} `json:"content"`
 	}
 	if json.Unmarshal(response, &payload) != nil {
 		return ""
 	}
-	return payload.StopReason
+	if payload.StopReason != "" {
+		return payload.StopReason
+	}
+	return payload.Content.StopReason
+}
+
+func (b *Base) isCancelledTurnEnd(frame json.RawMessage) bool {
+	if acpResponseStopReason(frame) == "cancelled" {
+		return true
+	}
+	return b.hooks.IsCancelledTurnEnd != nil && b.hooks.IsCancelledTurnEnd(frame)
 }
 
 func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, response json.RawMessage, err error) {
@@ -145,14 +158,9 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 		b.sessionUpdates.mu.Unlock()
 		return
 	}
-	stopped := b.StoppedLocked() || b.interruptRequested || acpResponseStopReason(response) == "cancelled"
+	stopped := b.StoppedLocked() || b.interruptRequested || b.isCancelledTurnEnd(response)
 	b.Mu.Unlock()
-	var turn acpTurnSnapshot
-	if stopped {
-		turn, _ = b.drainPromptTurnLocked()
-	} else {
-		turn, _ = b.drainPromptTurnKeepingToolsLocked()
-	}
+	turn, _ := b.drainPromptTurnLocked(!stopped)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()

@@ -17,8 +17,6 @@ export interface TurnEnd {
   label: string
   /** Draw in the danger colour: the turn failed or was aborted. */
   isError?: boolean
-  /** True when the turn ended because of interruption or cancellation. */
-  interrupted?: boolean
   /**
    * A multi-line detail block below the label. Omit it (undefined), never pass the
    * empty string. A provider that shows its detail INLINE -- Codex writes

@@ -57,6 +57,7 @@ type Agent struct {
 	sessionSwitching bool
 	root             *cascadeState
 	cascades         map[string]*cascadeState
+	fatalStreamErr   error
 	catalog          antigravityCatalog
 	model            string
 	effort           string
@@ -65,6 +66,8 @@ type Agent struct {
 }
 
 type cascadeState struct {
+	// updateMu serializes applyUpdate against idle interrupt cleanup. Take it before Agent.Mu.
+	updateMu     sync.Mutex
 	id           string
 	sink         agent.ProviderServices
 	parent       *cascadeState
@@ -335,6 +338,8 @@ func (a *Agent) runCascadeStreamFrom(ctx context.Context, state *cascadeState, i
 }
 
 func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstOnAttempt bool) error {
+	state.updateMu.Lock()
+	defer state.updateMu.Unlock()
 	queue := a.sink.OutputQueue()
 	a.Mu.Lock()
 	if a.IsDiscardingOutput() || a.cascades[state.id] != state || state.generation != a.generation || state.closed {

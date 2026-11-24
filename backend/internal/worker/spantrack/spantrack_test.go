@@ -1234,19 +1234,72 @@ func TestSpanTrackerEdgeTransitions(t *testing.T) {
 	t.Parallel()
 
 	tracker := &SpanTracker{}
-	assert.False(t, tracker.ResetChanged(), "empty reset is not a transition")
-	assert.False(t, tracker.CloseSpanChanged("missing"), "closing while empty is not a transition")
+	assert.False(t, tracker.Reset(), "empty reset is not a transition")
+	assert.False(t, tracker.CloseSpan("missing"), "closing while empty is not a transition")
 
-	assert.True(t, tracker.OpenSpanChanged("s1", ""), "0 -> 1 must report change")
-	assert.False(t, tracker.OpenSpanChanged("s2", ""), "1 -> 2 must not report change")
-	assert.False(t, tracker.OpenSpanChanged("s2", ""), "duplicate open while non-empty must not report change")
+	assert.True(t, tracker.OpenSpan("s1", ""), "0 -> 1 must report change")
+	assert.False(t, tracker.OpenSpan("s2", ""), "1 -> 2 must not report change")
+	assert.False(t, tracker.OpenSpan("s2", ""), "duplicate open while non-empty must not report change")
 
-	assert.False(t, tracker.CloseSpanChanged("missing"), "closing unknown span while active must not report change")
-	assert.False(t, tracker.CloseSpanChanged("s1"), "2 -> 1 must not report change")
-	assert.True(t, tracker.CloseSpanChanged("s2"), "1 -> 0 must report change")
-	assert.False(t, tracker.CloseSpanChanged("s2"), "duplicate close while empty must not report change")
+	assert.False(t, tracker.CloseSpan("missing"), "closing unknown span while active must not report change")
+	assert.False(t, tracker.CloseSpan("s1"), "2 -> 1 must not report change")
+	assert.True(t, tracker.CloseSpan("s2"), "1 -> 0 must report change")
+	assert.False(t, tracker.CloseSpan("s2"), "duplicate close while empty must not report change")
 
-	assert.True(t, tracker.OpenSpanChanged("s3", ""), "0 -> 1 after close must report change")
-	assert.True(t, tracker.ResetChanged(), ">0 -> 0 via ResetChanged must report change")
-	assert.False(t, tracker.ResetChanged(), "second ResetChanged must not report change")
+	assert.True(t, tracker.OpenSpan("s3", ""), "0 -> 1 after close must report change")
+	assert.True(t, tracker.Reset(), ">0 -> 0 via Reset must report change")
+	assert.False(t, tracker.Reset(), "second Reset must not report change")
+}
+
+func TestSpanTrackerCapsParentMapWhileActiveSpanRemainsOpen(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("bg-root", "")
+	tracker.OpenSpan("bg-mid", "bg-root")
+	tracker.OpenSpan("bg-leaf", "bg-mid")
+	tracker.CloseSpan("bg-root")
+	tracker.CloseSpan("bg-mid")
+
+	const totalClosed = 1500
+	for i := 0; i < totalClosed; i++ {
+		id := fmt.Sprintf("turn-span-%d", i)
+		tracker.OpenSpan(id, "")
+		tracker.CloseSpan(id)
+	}
+
+	assert.LessOrEqual(t, len(tracker.parentMap), maxClosedParentEntries+3,
+		"parentMap must stay capped across closed spans while one span remains open")
+	assert.Equal(t, "bg-mid", tracker.ParentOf("bg-leaf"))
+	assert.Equal(t, "bg-root", tracker.ParentOf("bg-mid"))
+	depth, _, _ := tracker.Snapshot("bg-leaf", "", false)
+	assert.Equal(t, int32(3), depth, "active ancestor chain depth must survive pruning")
+}
+
+func TestSpanTrackerCapsSetSpanTypeOnlyEntries(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.SetSpanType("active-1", "Bash")
+	tracker.OpenSpan("active-1", "")
+	tracker.SetSpanType("active-2", "Read")
+	tracker.OpenSpan("active-2", "")
+
+	const totalNoSpan = 1500
+	for i := 0; i < totalNoSpan; i++ {
+		tracker.SetSpanType(fmt.Sprintf("nospan-%d", i), "Glob")
+	}
+
+	assert.Equal(t, "Bash", tracker.GetSpanType("active-1"))
+	assert.Equal(t, "Read", tracker.GetSpanType("active-2"))
+
+	evictBoundary := totalNoSpan - maxClosedSpanTypes
+	for i := 0; i < evictBoundary; i++ {
+		assert.Empty(t, tracker.GetSpanType(fmt.Sprintf("nospan-%d", i)), "oldest SetSpanType-only entry %d must evict", i)
+	}
+	for i := evictBoundary; i < totalNoSpan; i++ {
+		assert.Equal(t, "Glob", tracker.GetSpanType(fmt.Sprintf("nospan-%d", i)), "recent SetSpanType-only entry %d must survive", i)
+	}
+	assert.LessOrEqual(t, len(tracker.spanTypes), maxClosedSpanTypes+2)
+	assert.LessOrEqual(t, len(tracker.closedSpanTypes), maxClosedSpanTypes)
 }

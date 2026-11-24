@@ -6,6 +6,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 const defaultClosedSpanCap = 256
@@ -14,25 +15,8 @@ const defaultClosedSpanCap = 256
 // so late native updates and completion frames cannot revive progress or write
 // duplicate closing rows. Callers must synchronize access.
 type ClosedSpanSet struct {
-	limit int
 	set   map[string]struct{}
 	order []string
-}
-
-// NewClosedSpanSet returns a ClosedSpanSet capped at limit entries.
-// Non-positive limits default to defaultClosedSpanCap.
-func NewClosedSpanSet(limit int) ClosedSpanSet {
-	if limit <= 0 {
-		limit = defaultClosedSpanCap
-	}
-	return ClosedSpanSet{limit: limit}
-}
-
-func (s *ClosedSpanSet) effectiveLimit() int {
-	if s.limit <= 0 {
-		return defaultClosedSpanCap
-	}
-	return s.limit
 }
 
 // MarkClosed records spanID as closed, evicting the oldest ID past the cap.
@@ -48,11 +32,10 @@ func (s *ClosedSpanSet) MarkClosed(spanID string) {
 	}
 	s.set[spanID] = struct{}{}
 	s.order = append(s.order, spanID)
-	limit := s.effectiveLimit()
-	if len(s.order) <= limit {
+	if len(s.order) <= defaultClosedSpanCap {
 		return
 	}
-	excess := len(s.order) - limit
+	excess := len(s.order) - defaultClosedSpanCap
 	for _, evictID := range s.order[:excess] {
 		delete(s.set, evictID)
 	}
@@ -139,20 +122,19 @@ func (l *ToolSpanLedger[T]) Get(spanID string) (OpenToolEntry[T], bool) {
 	return entry, ok
 }
 
-// Update mutates the stored data for an open spanID in place.
-func (l *ToolSpanLedger[T]) Update(spanID string, fn func(*T)) bool {
-	if spanID == "" || len(l.entries) == 0 {
-		return false
+// WasClosed reports whether spanID is recorded as force-closed.
+func (l *ToolSpanLedger[T]) WasClosed(spanID string) bool {
+	return l.closed.WasClosed(spanID)
+}
+
+// Delete removes spanID from the open set without recording it in the closed
+// set. Use it when another owner takes over the span so its later native
+// completion still persists normally.
+func (l *ToolSpanLedger[T]) Delete(spanID string) {
+	if spanID == "" {
+		return
 	}
-	entry, ok := l.entries[spanID]
-	if !ok {
-		return false
-	}
-	if fn != nil {
-		fn(&entry.Data)
-		l.entries[spanID] = entry
-	}
-	return true
+	delete(l.entries, spanID)
 }
 
 // CompleteNative removes an open entry on native completion or reports whether
@@ -169,16 +151,6 @@ func (l *ToolSpanLedger[T]) CompleteNative(spanID string) (entry OpenToolEntry[T
 		return OpenToolEntry[T]{}, false, true
 	}
 	return OpenToolEntry[T]{}, false, false
-}
-
-// MarkNativeClosed records spanID as closed without requiring a prior open entry.
-// If spanID is currently open, it is removed from the open set as well.
-func (l *ToolSpanLedger[T]) MarkNativeClosed(spanID string) {
-	if spanID == "" {
-		return
-	}
-	delete(l.entries, spanID)
-	l.closed.MarkClosed(spanID)
 }
 
 // DrainAll removes all open entries in deterministic (Order, SpanID) order and
@@ -211,33 +183,19 @@ func (l *ToolSpanLedger[T]) DrainMatching(match func(OpenToolEntry[T]) bool) []O
 	return drained
 }
 
-// HasOpen reports whether at least one tool entry is open.
-func (l *ToolSpanLedger[T]) HasOpen() bool {
-	return len(l.entries) > 0
-}
-
-// Reset clears both open entries and the closed-span deduplication set.
-func (l *ToolSpanLedger[T]) Reset() {
-	clear(l.entries)
-	l.closed.Reset()
-}
-
 // CloseToolSpans persists each closing row built with ok == true, closes its
 // span when !entry.NoSpan, and completes its output progress. CloseSpan and
 // CompleteOutputProgress still run when build returns ok == false or when
-// PersistMessage returns an error. When resetSpans is true, sink.ResetSpans is
-// called after all entries close.
+// PersistMessage returns an error.
 func CloseToolSpans[T any](
 	sink ToolLifecycleServices,
 	entries []OpenToolEntry[T],
 	completion agent.MessageCompletion,
 	build func(OpenToolEntry[T]) (agent.MessageContent, agent.SpanInfo, bool),
-	resetSpans bool,
-) int {
+) {
 	if sink == nil {
-		return 0
+		return
 	}
-	closed := 0
 	for _, entry := range entries {
 		if build != nil {
 			if content, span, ok := build(entry); ok {
@@ -259,12 +217,7 @@ func CloseToolSpans[T any](
 			sink.CloseSpan(entry.SpanID)
 		}
 		sink.ReportProgress(agent.CompleteOutputProgress(entry.SpanID))
-		closed++
 	}
-	if resetSpans {
-		sink.ResetSpans()
-	}
-	return closed
 }
 
 // ResetSpansAndProgress resets span geometry and all generation progress on sink.
@@ -274,4 +227,19 @@ func ResetSpansAndProgress(sink ToolLifecycleServices) {
 	}
 	sink.ResetSpans()
 	sink.ReportProgress(agent.ResetProgress())
+}
+
+// ChildCompletion maps a child background task's final status to the
+// MessageCompletion used when closing its remaining unfinished output and tools.
+func ChildCompletion(status bgtask.Status) agent.MessageCompletion {
+	switch status {
+	case bgtask.StatusStopped, bgtask.StatusInterrupted:
+		return agent.MessageCompletionInterrupted
+	case bgtask.StatusFailed:
+		return agent.MessageCompletionError
+	case bgtask.StatusEndedWithUnknownOutcome:
+		return agent.MessageCompletionFinished
+	default:
+		return agent.MessageCompletionComplete
+	}
 }

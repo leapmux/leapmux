@@ -21,7 +21,7 @@ import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/com
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, MODEL_API_RETRY_FIELD, MODEL_API_RETRY_PHASE, PROMPT_SUGGESTION_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
-import { AgentStatus, ControlResponseState, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { AGENT_SETTLED_EVENT } from '~/lib/agentSettledEvent'
@@ -505,18 +505,13 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   }
 }
 
-function isInterruptedResultDivider(msg: AgentChatMessage, parsed: ParsedMessageContent): boolean {
-  if (msg.completion === MessageCompletion.INTERRUPTED)
-    return true
-  const resolved = resolveMessageForRendering(parsed, msg.agentProvider)
-  const payload = resolved.parentObject ?? resolved.topLevel
-  return providerFor(msg.agentProvider)?.transcript.extractDivider?.(payload, msg.completion)?.interrupted === true
-}
-
 /**
  * Handle a row that the provider plugin classifies as result_divider.
- * Clear live per-turn model indicators on every live divider, and clear running
- * tool progress and output bytes only when the divider reports an interrupted turn.
+ * Clear turn-scoped model state (`thinkingTokens`, `turnRetryOffer`, and
+ * `promptSuggestion`) on every live divider.
+ * Leave tool progress and output bytes to worker `ProgressReset`
+ * (`running_tool: null` with zeroed progress), agent inactivity (`INACTIVE`),
+ * context clear, and disconnect.
  * Restore scalar result metadata through the exact delivery receipt during live delivery and replay.
  * The worker's activity transition controls the alert and badge through handleAgentSettled.
  * A separate divider alert would notify twice or report completion while a subagent still runs.
@@ -533,17 +528,14 @@ export function handleResultDivider(
     return
   const { agentSessionStore, view } = stores
   const delivery = messageMetadataDelivery(msg, catchUpPhase, replayId)
-  // A live interrupted divider clears all per-turn state including running tool progress.
-  // Normal and non-interrupted error dividers clear only model-turn state so cross-turn
-  // running tools keep their live output tails, permission checks, and output bytes.
+  // A live divider clears only turn-scoped model state so cross-turn running
+  // tools keep their live output tails, permission checks, and output bytes.
+  // Worker ProgressReset, agent inactivity, context clear, and disconnect
+  // clear remaining tool progress and output bytes.
   // A live compaction can outlive this turn and keeps its indicator.
   // Historical dividers retain the replacement turn's indicators.
-  if (catchUpPhase === 'live') {
-    if (isInterruptedResultDivider(msg, parsed))
-      clearPerTurnLiveState(agentId, stores)
-    else
-      clearTurnModelState(agentId, stores)
-  }
+  if (catchUpPhase === 'live')
+    clearTurnModelState(agentId, stores)
   // Use the confirmed catalog model to resolve the context-window hint.
   // An optimistic model value can still identify the default sentinel or a model whose relaunch did not occur.
   // That value could select the wrong context window for the completed turn.
@@ -576,10 +568,11 @@ export function handleResultDivider(
  * This keeps provider parsing at the browser's extraction boundary.
  *
  * Clear progress even when the loaded window excludes or removed the result row.
- * These events remove any remaining progress:
- * - Turn completion.
- * - INACTIVE status.
- * - A context clear.
+ * Only these events clear remaining tool progress and output bytes:
+ * - Worker `ProgressReset` (`running_tool: null` with zeroed progress)
+ * - Agent inactivity (`INACTIVE` status)
+ * - A context clear
+ * - A disconnect
  */
 export function dropFinishedToolProgress(
   agentId: string,
@@ -595,10 +588,10 @@ export function dropFinishedToolProgress(
 }
 
 /**
- * Drop live model-turn state at a non-interrupted turn boundary while keeping
+ * Drop live turn-scoped model state at a turn boundary while keeping
  * still-running cross-turn tool progress and output bytes intact.
  */
-export function clearTurnModelState(
+function clearTurnModelState(
   agentId: string,
   stores: Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'>,
 ): void {
@@ -608,7 +601,7 @@ export function clearTurnModelState(
 }
 
 /**
- * Drop all live per-turn state after an interrupted turn, a lifecycle event, or a lost connection.
+ * Drop all live per-turn state after a lifecycle event or a lost connection.
  * The Worker normally sends explicit counter clears. This cleanup also handles
  * a connection that ends before those clears arrive.
  * A compaction can outlive its turn. Only process or connection cleanup clears that state.

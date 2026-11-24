@@ -474,9 +474,10 @@ func TestFastagentInterruptedAndDiscardedTurnResetSpans(t *testing.T) {
 		a.rootArchiveWG.Wait()
 
 		a.rootMu.Lock()
-		remaining := len(a.openRootSpans)
+		remaining := append([]fastagentOpenSpan(nil), a.openRootSpans...)
 		a.rootMu.Unlock()
-		assert.Zero(t, remaining)
+		require.Len(t, remaining, 1, "interrupted turn must preserve still-open tool bg-live in openRootSpans")
+		assert.Equal(t, "bg-live", remaining[0].spanID)
 		assert.Equal(t, bg1ClosedBefore+1, countClosedSpan(sink.ClosedSpans(), "bg-1"),
 			"interrupted EOF cleanup must close drained mirrored span bg-1 on sink")
 		assert.Equal(t, liveClosedBefore, countClosedSpan(sink.ClosedSpans(), "bg-live"),
@@ -485,7 +486,7 @@ func TestFastagentInterruptedAndDiscardedTurnResetSpans(t *testing.T) {
 			"interrupted EOF cleanup must not call unconditional ResetSpans on sink")
 	})
 
-	t.Run("discarded turn clears openRootSpans and mirrored spans without clobbering still-open tools", func(t *testing.T) {
+	t.Run("discarded turn clears drained openRootSpans while preserving still-open tools", func(t *testing.T) {
 		a, sink := newFastagentRootSubject(t)
 		root1 := openRootFixture(t, a)
 		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-2","kind":"execute","title":"Run"}`))
@@ -508,9 +509,10 @@ func TestFastagentInterruptedAndDiscardedTurnResetSpans(t *testing.T) {
 		a.rootArchiveWG.Wait()
 
 		a.rootMu.Lock()
-		remaining := len(a.openRootSpans)
+		remaining := append([]fastagentOpenSpan(nil), a.openRootSpans...)
 		a.rootMu.Unlock()
-		assert.Zero(t, remaining)
+		require.Len(t, remaining, 1, "discarded turn must preserve still-open tool bg-keep in openRootSpans")
+		assert.Equal(t, "bg-keep", remaining[0].spanID)
 		assert.Equal(t, bg2ClosedBefore+1, countClosedSpan(sink.ClosedSpans(), "bg-2"),
 			"discarded turn must close drained mirrored span bg-2 on sink")
 		assert.Equal(t, keepClosedBefore, countClosedSpan(sink.ClosedSpans(), "bg-keep"),
@@ -533,4 +535,119 @@ func TestFastagentInterruptedAndDiscardedTurnResetSpans(t *testing.T) {
 		assert.Zero(t, remaining)
 		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
 	})
+}
+
+func TestFastagentTurn2SeedingPrunesStaleOpenRootSpans(t *testing.T) {
+	a, sink := newFastagentRootSubject(t)
+	root1 := openRootFixture(t, a)
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-stale","kind":"execute","title":"Run"}`))
+	pos1 := root1.Reserve()
+	require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"open"}`)}, agent.SpanInfo{SpanID: "bg-stale", SpanType: "execute"}))
+	pos1.Complete()
+	finishRootFixture(t, a, root1)
+
+	// Tool completes off-turn between Turn 1 and Turn 2 without touching a.openRootSpans.
+	a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"bg-stale","status":"completed"}`))
+	require.False(t, a.HasOpenRootTool("bg-stale"))
+
+	root2 := openRootFixture(t, a)
+	pos2 := root2.Reserve()
+	require.NoError(t, pos2.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"turn2":"plain"}`)}, agent.SpanInfo{}))
+	pos2.Complete()
+	finishRootFixture(t, a, root2)
+
+	var turn2Msg agenttest.Message
+	for _, msg := range sink.Messages() {
+		if strings.Contains(string(msg.Content), `"turn2":"plain"`) {
+			turn2Msg = msg
+			break
+		}
+	}
+	require.NotEmpty(t, turn2Msg.Content)
+	assert.Empty(t, turn2Msg.SpansOpenAtPersist, "Turn 2 scope must not seed a tool that already closed off-turn")
+	a.rootMu.Lock()
+	remaining := len(a.openRootSpans)
+	a.rootMu.Unlock()
+	assert.Zero(t, remaining)
+}
+
+func TestFastagentNormalTurnsDoNotDuplicateDelegateOpenSpans(t *testing.T) {
+	a, sink := newFastagentRootSubject(t)
+	root1 := openRootFixture(t, a)
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-once","kind":"execute","title":"Run"}`))
+	pos1 := root1.Reserve()
+	require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"open"}`)}, agent.SpanInfo{SpanID: "bg-once", SpanType: "execute"}))
+	require.NoError(t, pos1.Writer().PersistTurnEnd(agent.MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, agent.SpanInfo{}))
+	pos1.Complete()
+	finishRootFixture(t, a, root1)
+
+	root2 := openRootFixture(t, a)
+	pos2 := root2.Reserve()
+	require.NoError(t, pos2.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"turn2":"still-open"}`)}, agent.SpanInfo{}))
+	require.NoError(t, pos2.Writer().PersistTurnEnd(agent.MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, agent.SpanInfo{}))
+	pos2.Complete()
+	finishRootFixture(t, a, root2)
+
+	// Persist directly through the root sink to inspect active spans on delegate.
+	require.NoError(t, a.Sink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"direct":"probe"}`)}, agent.SpanInfo{}))
+	var probe agenttest.Message
+	for _, msg := range sink.Messages() {
+		if strings.Contains(string(msg.Content), `"direct":"probe"`) {
+			probe = msg
+			break
+		}
+	}
+	require.NotEmpty(t, probe.Content)
+	assert.Len(t, probe.SpansOpenAtPersist, 1, "delegate must keep exactly one active span across multiple normal turns")
+	assert.Equal(t, "bg-once", probe.SpansOpenAtPersist[0].SpanID)
+}
+
+func TestFastagentAsyncStreamEOFAfterClearProviderStateDoesNotMutateNewSession(t *testing.T) {
+	a, sink := newFastagentRootSubject(t)
+	// Hold a prior captured batch so root1's PrepareStream blocks until we release it after clearProviderState.
+	gate, err := agent.ReserveCapturedTranscriptBatch(a.Sink())
+	require.NoError(t, err)
+
+	root1 := openRootFixture(t, a)
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-old","kind":"execute","title":"Old"}`))
+	pos1 := root1.Reserve()
+	require.NoError(t, pos1.Writer().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"tool":"old"}`)}, agent.SpanInfo{SpanID: "bg-old", SpanType: "execute"}))
+	pos1.Complete()
+	require.NoError(t, root1.Finish(acp.RootTranscriptCompletion{Reason: acp.RootTranscriptPromptEnded, Completion: agent.MessageCompletionComplete}))
+
+	// Clear provider state and start a new session with its own open span while root1's async stream is still pending.
+	a.clearProviderState()
+	a.SetSessionIDForTest("session-2")
+	require.NoError(t, a.initializeRootArchive(false))
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"bg-new","kind":"execute","title":"New"}`))
+	a.rootMu.Lock()
+	a.openRootSpans = []fastagentOpenSpan{{spanID: "bg-new", spanType: "execute"}}
+	a.rootMu.Unlock()
+	closedBefore := len(sink.ClosedSpans())
+	openedBefore := len(sink.OpenSpans())
+
+	gate.Discard()
+	a.rootArchiveWG.Wait()
+
+	a.rootMu.Lock()
+	remaining := append([]fastagentOpenSpan(nil), a.openRootSpans...)
+	a.rootMu.Unlock()
+	require.Len(t, remaining, 1, "stale async EOF must not overwrite the new session's openRootSpans")
+	assert.Equal(t, "bg-new", remaining[0].spanID)
+	assert.Equal(t, closedBefore, len(sink.ClosedSpans()), "stale async EOF must not close spans on delegate after clearProviderState")
+	assert.Equal(t, openedBefore, len(sink.OpenSpans()), "stale async EOF must not open spans on delegate after clearProviderState")
+}
+
+func TestFastagentIdleInterruptClearsOpenRootSpansWithoutIncompleteTools(t *testing.T) {
+	a, _ := newFastagentRootSubject(t)
+	a.rootMu.Lock()
+	a.openRootSpans = []fastagentOpenSpan{{spanID: "bg-lingering", spanType: "execute"}}
+	a.rootMu.Unlock()
+
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+
+	a.rootMu.Lock()
+	remaining := len(a.openRootSpans)
+	a.rootMu.Unlock()
+	assert.Zero(t, remaining, "idle Interrupt must clear openRootSpans even when no incompleteTools are open")
 }

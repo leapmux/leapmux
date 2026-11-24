@@ -159,7 +159,7 @@ describe('copilot provider', () => {
 
   it('labels the turn end and states an interruption', () => {
     expect(plugin?.transcript.extractDivider!(frame(COPILOT_EVENT.SessionIdle))).toEqual({ label: 'Turn ended' })
-    expect(plugin?.transcript.extractDivider!(frame(COPILOT_EVENT.SessionIdle, { aborted: true }))).toEqual({ label: 'Turn interrupted', interrupted: true })
+    expect(plugin?.transcript.extractDivider!(frame(COPILOT_EVENT.SessionIdle, { aborted: true }))).toEqual({ label: 'Turn interrupted' })
   })
 
   it('quotes the assistant text a row carries', () => {

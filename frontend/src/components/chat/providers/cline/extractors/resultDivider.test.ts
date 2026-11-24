@@ -34,14 +34,14 @@ describe('clineResultDivider', () => {
   })
 
   it('reads a run that was aborted, or that the reader stopped, as interrupted', () => {
-    expect(clineResultDivider(end('run.aborted', { reason: 'aborted' }))).toEqual({ label: 'Turn interrupted', interrupted: true })
-    expect(clineResultDivider(end('run.failed', { reason: 'error', error: 'aborted' }), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', interrupted: true })
+    expect(clineResultDivider(end('run.aborted', { reason: 'aborted' }))).toEqual({ label: 'Turn interrupted' })
+    expect(clineResultDivider(end('run.failed', { reason: 'error', error: 'aborted' }), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
   })
 
   // Each of the three signals is enough alone: the event, the reason, or the completion.
   it('reads an abort reason on another end event as interrupted', () => {
-    expect(clineResultDivider(end('run.completed', { reason: 'aborted' }, { duration_ms: 1500 }))).toEqual({ label: 'Turn interrupted (1.5s)', interrupted: true })
-    expect(clineResultDivider(end('run.aborted', {}))).toEqual({ label: 'Turn interrupted', interrupted: true })
+    expect(clineResultDivider(end('run.completed', { reason: 'aborted' }, { duration_ms: 1500 }))).toEqual({ label: 'Turn interrupted (1.5s)' })
+    expect(clineResultDivider(end('run.aborted', {}))).toEqual({ label: 'Turn interrupted' })
   })
 
   it('reads a failed run that states no words as a plain failure', () => {

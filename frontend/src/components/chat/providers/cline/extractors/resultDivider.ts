@@ -38,7 +38,6 @@ export function clineResultDivider(parsed: unknown, completion?: MessageCompleti
   if (completion === MessageCompletion.INTERRUPTED || envelope.event === CLINE_EVENT.RunAborted || reason === CLINE_RUN_REASON.Aborted) {
     return {
       label: turnEndLabel('interrupted', { durationMs }),
-      interrupted: true,
     }
   }
   if (envelope.event === CLINE_EVENT.RunFailed || completion === MessageCompletion.ERROR) {

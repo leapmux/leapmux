@@ -168,7 +168,7 @@ func rememberCommandForStop(t *testing.T, a *Agent, threadID, turnID, itemID, it
 	a.rememberCodexIncompleteTool(itemID, itemType, childID, params)
 }
 
-func TestCodexInterruptStopsOnlyCommandsFromItsTurn(t *testing.T) {
+func TestCodexInterruptStopsOpenCommandsAcrossTurns(t *testing.T) {
 	t.Parallel()
 	a, _, captured := newCommandStopAgent(t, func(request capturedCodexStopRequest) agenttest.RPCReply {
 		switch request.Method {
@@ -249,6 +249,55 @@ func TestCodexIdleInterruptTerminatesAndClosesOnlySnapshottedItems(t *testing.T)
 	a.Mu.Unlock()
 	assert.False(t, oldStillOpen)
 	assert.True(t, newStillOpen)
+}
+
+func TestCodexIdleInterruptChildClosesToolsRawExecAndResetsSpans(t *testing.T) {
+	t.Parallel()
+	a, sink, captured := newCommandStopAgent(t, func(request capturedCodexStopRequest) agenttest.RPCReply {
+		switch request.Method {
+		case codexListCommandProcessesMethod:
+			return agenttest.RPCReply{Result: json.RawMessage(`{"data":[{"itemId":"child-cmd","processId":"91"}]}`)}
+		case codexTerminateCommandProcessMethod:
+			return agenttest.RPCReply{Result: json.RawMessage(`{"terminated":true}`)}
+		default:
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		}
+	})
+	feedCodexLines(a,
+		`{"method":"item/started","params":{"threadId":"root-thread","turnId":"current-turn","item":{"type":"subAgentActivity","id":"spawn-child","kind":"started","agentThreadId":"child-thread","agentPath":"/root/child"}}}`,
+		`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn-1"}}}`,
+		`{"method":"item/started","params":{"threadId":"child-thread","turnId":"child-turn-1","item":{"type":"commandExecution","id":"child-cmd","command":"sleep 30"}}}`,
+	)
+	feedYieldedCodexCell(t, a, "child-thread", "child-turn-1", "child-cell")
+	childSink := sink.Child("child-of-spawn-child")
+	require.NotNil(t, childSink)
+	childSink.ReportProgress(agent.OutputTotalProgress("child-cmd", 128, false))
+	feedCodexLines(a,
+		`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn-1","status":"completed"}}}`,
+	)
+	require.Empty(t, a.childTurnID("child-thread"))
+	require.NotContains(t, childSink.ClosedSpans(), "child-cmd")
+
+	require.NoError(t, a.InterruptChild("child-thread", agent.StopContext{}))
+
+	requests := captured()
+	require.Len(t, requests, 2, "idle child interrupt stops open child commands without sending turn/interrupt")
+	assert.Equal(t, codexListCommandProcessesMethod, requests[0].Method)
+	assert.Equal(t, codexTerminateCommandProcessMethod, requests[1].Method)
+	assert.JSONEq(t, `{"threadId":"child-thread","processId":"91"}`, string(requests[1].Params))
+	assert.Contains(t, childSink.ClosedSpans(), "child-cmd")
+	var cmdClosing []agenttest.Message
+	for _, row := range childSink.Messages() {
+		if row.SpanID == "child-cmd" && row.Closing {
+			cmdClosing = append(cmdClosing, row)
+		}
+	}
+	require.Len(t, cmdClosing, 1)
+	assert.Equal(t, agent.MessageCompletionInterrupted, cmdClosing[0].Completion)
+	assertRetainedCodexCell(t, childSink, "child-cell", agent.MessageCompletionInterrupted)
+	assert.GreaterOrEqual(t, childSink.ResetSpanCount(), 1)
+	assert.Equal(t, agent.ProgressSnapshot{}, childSink.ProgressSnapshot())
+	assert.Zero(t, sink.ResetSpanCount(), "interrupting an idle child must not reset root spans")
 }
 
 func TestCodexIdleInterruptSkipsWhenTurnHeldAndStillClosesSpansOnStopError(t *testing.T) {

@@ -31,6 +31,7 @@ type kimiConversationOutput struct {
 	activeTurnID  string
 	latestOrdinal int64
 	snapshotReady bool
+	// TODO(https://github.com/leapmux/leapmux/issues/699): Seed live span geometry in TranscriptScopeFor so Fast-Agent and Kimi keep cross-turn colors without shadow open-span slices.
 	openLiveSpans []kimiOpenLiveSpan
 }
 
@@ -679,6 +680,11 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 			contents[index] = kimiWithContextUsage(contents[index], usage)
 		}
 	}
+	if selection.endTurn && !publication.completed && !publication.historical && turn.header.Outcome == contracts.KimiConversationOutcomeInterrupted {
+		if !a.closeOpenConversationToolsAcrossTurnsExcluding(run, turn.header.TurnID, agent.MessageCompletionInterrupted, false) {
+			return false
+		}
+	}
 	batch, err := agent.ReserveCapturedTranscriptBatch(publication.writer)
 	if err != nil {
 		slog.Warn("reserve the Kimi conversation records", "error", err)
@@ -686,6 +692,31 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 	}
 	operations := make([]agent.CapturedTranscriptOperation, 0, len(projections))
 	var mediaReads []kimiMediaSupplementRead
+	type kimiScopeSpanChange struct {
+		spanID        string
+		spanType      string
+		prevSpanType  string
+		closing       bool
+		noSpan        bool
+		alreadyClosed bool
+	}
+	var spanChanges []kimiScopeSpanChange
+	rollbackScope := func() {
+		for i := len(spanChanges) - 1; i >= 0; i-- {
+			change := spanChanges[i]
+			if change.noSpan || change.alreadyClosed {
+				continue
+			}
+			if change.closing {
+				publication.scope.OpenSpan(change.spanID, "")
+				if change.prevSpanType != "" {
+					publication.scope.SetSpanType(change.spanID, change.prevSpanType)
+				}
+			} else {
+				publication.scope.CloseSpan(change.spanID)
+			}
+		}
+	}
 	for index, projection := range projections {
 		if a.api != nil && selection.localCompletion == "" {
 			plan, mediaErr := prepareKimiConversationMedia(projection.record, len(contents[index].Original))
@@ -704,6 +735,7 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 		}
 		capture, captureErr := publication.scope.CaptureTranscript(contents[index], span)
 		if captureErr != nil {
+			rollbackScope()
 			batch.Discard()
 			slog.Warn("capture the Kimi conversation record", "error", captureErr)
 			return false
@@ -713,35 +745,59 @@ func (a *Agent) persistConversationItems(run *kimiRun, turn *kimiConversationTur
 		} else {
 			operations = append(operations, capture.MessageOperation(projection.source))
 		}
-		if span.SpanID != "" && !span.NoSpan {
-			if span.Closing {
-				if !projection.alreadyClosed {
-					publication.scope.CloseSpan(span.SpanID)
-					if !publication.historical {
-						run.conversation.removeOpenLiveSpan(span.SpanID)
-						if run.agentID == kimiMainAgentID && a.sink != nil {
-							a.sink.CloseSpan(span.SpanID)
-						}
+		if span.SpanID != "" {
+			change := kimiScopeSpanChange{
+				spanID:        span.SpanID,
+				spanType:      span.SpanType,
+				closing:       span.Closing,
+				noSpan:        span.NoSpan,
+				alreadyClosed: projection.alreadyClosed,
+			}
+			if !span.NoSpan {
+				if span.Closing {
+					if !projection.alreadyClosed {
+						change.prevSpanType = publication.scope.GetSpanType(span.SpanID)
+						publication.scope.CloseSpan(span.SpanID)
 					}
-				}
-			} else {
-				publication.scope.OpenSpan(span.SpanID, "")
-				publication.scope.SetSpanType(span.SpanID, span.SpanType)
-				if !publication.historical {
-					run.conversation.recordOpenLiveSpan(span.SpanID, "", span.SpanType)
-					if run.agentID == kimiMainAgentID && a.sink != nil {
-						a.sink.OpenSpan(span.SpanID, "")
-						a.sink.SetSpanType(span.SpanID, span.SpanType)
-					}
+				} else {
+					publication.scope.OpenSpan(span.SpanID, "")
+					publication.scope.SetSpanType(span.SpanID, span.SpanType)
 				}
 			}
+			spanChanges = append(spanChanges, change)
 		}
 	}
 	if !a.retainMediaBatch(run, publication.writer, frame.SessionID, run.agentID, batch, operations, mediaReads) {
 		err = batch.Prepare(func() []agent.CapturedTranscriptOperation { return operations })
 		if !agent.OutputRetained(err) {
+			rollbackScope()
 			slog.Warn("retain the Kimi conversation records", "error", err)
 			return false
+		}
+	}
+	if !publication.historical {
+		for _, change := range spanChanges {
+			if change.closing {
+				if change.alreadyClosed {
+					continue
+				}
+				if !change.noSpan {
+					run.conversation.removeOpenLiveSpan(change.spanID)
+					if run.agentID == kimiMainAgentID && publication.sessionCurrent() {
+						publication.writer.CloseSpan(change.spanID)
+					}
+				}
+				if publication.progress != nil {
+					publication.reportProgressUpdate(agent.CompleteOutputProgress(change.spanID))
+					publication.reportProgressUpdate(agent.CompleteModelProgress(change.spanID))
+				}
+			} else if !change.noSpan {
+				run.conversation.recordOpenLiveSpan(change.spanID, "", change.spanType)
+				if run.agentID == kimiMainAgentID && publication.sessionCurrent() {
+					publication.writer.OpenSpan(change.spanID, "")
+					publication.writer.SetSpanType(change.spanID, change.spanType)
+				}
+			}
 		}
 	}
 	for _, id := range requested {
@@ -830,9 +886,13 @@ func (a *Agent) finishConversationActivity(run *kimiRun, turnID string) {
 // (regardless of turn status) for any opened tool call that has not closed yet,
 // closes each with completion, completes its progress counters, and resets
 // affected turn scopes plus root/child spans and progress.
-func (a *Agent) closeOpenConversationToolsAcrossTurns(run *kimiRun, completion agent.MessageCompletion, resetProgress bool) {
+func (a *Agent) closeOpenConversationToolsAcrossTurns(run *kimiRun, completion agent.MessageCompletion, resetProgress bool) bool {
+	return a.closeOpenConversationToolsAcrossTurnsExcluding(run, "", completion, resetProgress)
+}
+
+func (a *Agent) closeOpenConversationToolsAcrossTurnsExcluding(run *kimiRun, excludeTurnID string, completion agent.MessageCompletion, resetProgress bool) bool {
 	if run == nil || run.conversation == nil {
-		return
+		return true
 	}
 	output := run.conversation
 	discarding := a.IsDiscardingOutput()
@@ -840,7 +900,12 @@ func (a *Agent) closeOpenConversationToolsAcrossTurns(run *kimiRun, completion a
 	slices.SortFunc(turns, func(left, right *kimiConversationTurnState) int {
 		return cmp.Compare(*left.header.Ordinal, *right.header.Ordinal)
 	})
+	allClosed := true
+	var closedSpanIDs []string
 	for _, turn := range turns {
+		if excludeTurnID != "" && turn.header.TurnID == excludeTurnID {
+			continue
+		}
 		publication := output.turns[turn.header.TurnID]
 		if publication == nil {
 			continue
@@ -861,18 +926,33 @@ func (a *Agent) closeOpenConversationToolsAcrossTurns(run *kimiRun, completion a
 		}
 		if len(openIDs) > 0 {
 			if !discarding {
-				a.persistConversationItems(run, turn, publication, frame, kimiConversationSelection{items: openIDs, localCompletion: completion})
+				if !a.persistConversationItems(run, turn, publication, frame, kimiConversationSelection{items: openIDs, localCompletion: completion}) {
+					allClosed = false
+					continue
+				}
 			}
 			for _, itemID := range openIDs {
 				publication.results[itemID] = struct{}{}
-				if publication.progress != nil {
-					scopeID := kimiConversationProgressID(frame, itemID, contracts.KimiConversationItemKindToolCall)
+				scopeID := kimiConversationProgressID(frame, itemID, contracts.KimiConversationItemKindToolCall)
+				closedSpanIDs = append(closedSpanIDs, scopeID)
+				if discarding && publication.progress != nil {
 					publication.reportProgressUpdate(agent.CompleteOutputProgress(scopeID))
 					publication.reportProgressUpdate(agent.CompleteModelProgress(scopeID))
 				}
 			}
 		}
 		publication.scope.ResetSpans()
+	}
+	if excludeTurnID != "" {
+		if excluded := output.turns[excludeTurnID]; excluded != nil {
+			for _, spanID := range closedSpanIDs {
+				excluded.scope.CloseSpan(spanID)
+			}
+		}
+		return allClosed
+	}
+	if !allClosed {
+		return false
 	}
 	output.openLiveSpans = nil
 	if resetProgress {
@@ -884,4 +964,5 @@ func (a *Agent) closeOpenConversationToolsAcrossTurns(run *kimiRun, completion a
 			providerkit.ResetSpansAndProgress(sink)
 		}
 	}
+	return true
 }

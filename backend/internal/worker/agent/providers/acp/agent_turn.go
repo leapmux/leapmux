@@ -36,7 +36,8 @@ func (b *Base) PrepareSteer() {
 //
 // The output that the agent streams while its turn waits belongs to the agent
 // turn, so the prompt's output ends here: the prompt's text is persisted now,
-// and the prompt's end closes only the tool calls that are open now.
+// and only an interrupted or stopped prompt end closes the tool calls that are
+// open now.
 //
 // COMPROMISE: rows of the waiting agent turn that persist before the prompt's
 // end (a tool call row, a text segment that a tool call ends) appear above the
@@ -232,19 +233,14 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 	}
 	active := b.agentTurnActive
 	sessionID := b.sessionID
-	stopped := b.StoppedLocked() || b.interruptRequested || acpResponseStopReason(frame) == "cancelled"
+	stopped := b.StoppedLocked() || b.interruptRequested || b.isCancelledTurnEnd(frame)
 	b.agentTurnActive = false
 	b.Mu.Unlock()
 	if !active {
 		b.turnMu.Unlock()
 		return
 	}
-	var turn acpTurnSnapshot
-	if stopped {
-		turn, _ = b.drainPromptTurnLocked()
-	} else {
-		turn, _ = b.drainPromptTurnKeepingToolsLocked()
-	}
+	turn, _ := b.drainPromptTurnLocked(!stopped)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()
@@ -286,11 +282,7 @@ func (b *Base) EndAgentTurnWithoutRow() {
 		drained := !b.dropPromptBoundaryLocked()
 		var turn acpTurnSnapshot
 		if drained {
-			if stopped {
-				turn = b.drainTurnLocked()
-			} else {
-				turn = b.drainTurnKeepingToolsLocked()
-			}
+			turn = b.drainTurnLocked(!stopped)
 			b.Mu.Lock()
 			b.captureRootSnapshotLocked(&turn, false)
 			b.Mu.Unlock()
@@ -310,12 +302,7 @@ func (b *Base) EndAgentTurnWithoutRow() {
 		b.turnMu.Unlock()
 		return
 	}
-	var turn acpTurnSnapshot
-	if stopped {
-		turn = b.drainTurnLocked()
-	} else {
-		turn = b.drainTurnKeepingToolsLocked()
-	}
+	turn := b.drainTurnLocked(!stopped)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()

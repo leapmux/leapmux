@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -228,5 +230,122 @@ func TestPiIdleInterruptAndStopWaitClearContextResetSpansAndProgress(t *testing.
 		rowsBefore := sink.MessageCount()
 		rig.agent.HandleOutput([]byte(`{"type":"tool_execution_end","toolCallId":"tc-clear","toolName":"bash","result":{"content":[{"type":"text","text":"new session"}]}}`))
 		assert.Equal(t, rowsBefore+1, sink.MessageCount())
+	})
+}
+
+type piBlockingCloseSink struct {
+	agent.ProviderServices
+	entered    chan struct{}
+	release    chan struct{}
+	once       sync.Once
+	inCloseOld atomic.Bool
+	overlapped atomic.Bool
+}
+
+func (s *piBlockingCloseSink) CloseSpan(spanID string) {
+	if spanID == "tc-old" {
+		s.inCloseOld.Store(true)
+		defer s.inCloseOld.Store(false)
+		s.once.Do(func() { close(s.entered) })
+		<-s.release
+	}
+	s.ProviderServices.CloseSpan(spanID)
+}
+
+func (s *piBlockingCloseSink) OpenSpan(spanID, parentSpanID string) {
+	if spanID == "tc-new" && s.inCloseOld.Load() {
+		s.overlapped.Store(true)
+	}
+	s.ProviderServices.OpenSpan(spanID, parentSpanID)
+}
+
+func TestPiIdleInterruptSerializedWithHandleOutput(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt cleanup cannot wipe a newly arriving turn", func(t *testing.T) {
+		t.Parallel()
+		for range 5 {
+			base := &agenttest.ControlSink{}
+			gate := &piBlockingCloseSink{
+				ProviderServices: agent.NewProviderServices(base),
+				entered:          make(chan struct{}),
+				release:          make(chan struct{}),
+			}
+			a := newPiAgentWithSink(gate)
+			a.HandleOutput([]byte(`{"type":"agent_start"}`))
+			a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-old","toolName":"bash","args":{"command":"sleep 30"}}`))
+			a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop"}]}`))
+			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+
+			interruptDone := make(chan error, 1)
+			go func() { interruptDone <- a.Interrupt(agent.StopContext{}) }()
+			awaitPiWrite(t, gate.entered)
+
+			handled := make(chan struct{})
+			go func() {
+				defer close(handled)
+				a.HandleOutput([]byte(`{"type":"agent_start"}`))
+				a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-new","toolName":"bash","args":{"command":"sleep 10"}}`))
+			}()
+
+			// Wait until HandleOutput has entered dispatch (blocking on output serialization)
+			// or finished without waiting (the unserialized bug).
+			ctx := testutil.DeadlineContext(t)
+			for {
+				select {
+				case <-handled:
+					goto releaseGate
+				case <-ctx.Done():
+					t.Fatal("timed out waiting for HandleOutput to reach dispatch")
+				default:
+				}
+				a.interruptOutput.mu.Lock()
+				handling := a.interruptOutput.handling
+				a.interruptOutput.mu.Unlock()
+				if handling {
+					for range 64 {
+						runtime.Gosched()
+					}
+					break
+				}
+				runtime.Gosched()
+			}
+
+		releaseGate:
+			close(gate.release)
+			require.NoError(t, awaitPiInterrupt(t, interruptDone))
+			awaitPiWrite(t, handled)
+
+			assert.False(t, gate.overlapped.Load(), "HandleOutput must not open tc-new while idle interrupt cleanup is running")
+			assert.Contains(t, base.ClosedSpans(), "tc-old")
+			assert.NotContains(t, base.ClosedSpans(), "tc-new", "idle interrupt must not close a tool from the next turn")
+			assert.Equal(t, "bash", base.GetSpanType("tc-new"), "idle interrupt ResetSpansAndProgress must not wipe the next turn's live span tracker")
+		}
+	})
+
+	t.Run("concurrent idle interrupt handle output and stop have no race or deadlock", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				a.HandleOutput([]byte(`{"type":"agent_start"}`))
+				a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-race","toolName":"bash","args":{"command":"echo hi"}}`))
+				a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop"}]}`))
+				a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				_ = a.Interrupt(agent.StopContext{})
+			}
+		}()
+		wg.Wait()
+		a.SimulateExitForTest()
+		a.Stop()
 	})
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"time"
@@ -419,14 +418,6 @@ func (a *Agent) flushBackgroundTaskWrites(queue *agent.OutputQueue) {
 func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	a.Mu.Lock()
 	state := a.cascades[childKey]
-	if state == nil || state.closed {
-		a.Mu.Unlock()
-		return nil
-	}
-	state.interrupted = true
 	a.Mu.Unlock()
-	if err := a.rpc.cancel(a.Context(), childKey); err != nil {
-		return fmt.Errorf("cancel the Antigravity subagent: %w", err)
-	}
-	return nil
+	return a.interruptCascade(state, stop, "Antigravity subagent")
 }

@@ -2577,3 +2577,74 @@ func TestNewRootSinkIsolatesProcessRestartSpans(t *testing.T) {
 	oldSink.ResetSpans()
 	assert.True(t, svc.Output.hasOpenRootSpans("codex-restart"), "retired ResetSpans must not clear replacement tracker")
 }
+
+func TestSpanActivitySkipsRefreshWhileTurnActive(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "span-skip-active-turn")
+	svc.Output.processRunning = func(string) bool { return true }
+	svc.Output.NoteAgentProcessStarted("span-skip-active-turn")
+	svc.Output.WaitActivityRefreshes()
+
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	svc.Output.WaitActivityRefreshes()
+	seqBefore := svc.Output.activitySeq.Load()
+
+	for i := range 10 {
+		id := "tool-" + strconv.Itoa(i)
+		sink.OpenSpan(id, "")
+		sink.CloseSpan(id)
+	}
+	svc.Output.WaitActivityRefreshes()
+
+	assert.Equal(t, seqBefore, svc.Output.activitySeq.Load(),
+		"0<->1 span transitions while turnActive is true must not spawn activity refreshes")
+}
+
+func TestSpanActivityConcurrentOpenCloseVsTurnEnd(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "span-race-turn-end")
+	settles := holdSettles(t, svc.Output)
+	svc.Output.processRunning = func(string) bool { return true }
+	svc.Output.NoteAgentProcessStarted("span-race-turn-end")
+	svc.Output.WaitActivityRefreshes()
+
+	var turnSeq uint64
+	for i := range 30 {
+		turnSeq++
+		sink.SetTurnState(agent.TurnState{Active: true}, turnSeq)
+		spanID := "race-span-" + strconv.Itoa(i)
+		turnSeq++
+		endSeq := turnSeq
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			sink.OpenSpan(spanID, "")
+		}()
+		go func() {
+			defer wg.Done()
+			sink.SetTurnState(agent.TurnState{Active: false}, endSeq)
+		}()
+		wg.Wait()
+		svc.Output.WaitActivityRefreshes()
+
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+			svc.Output.AgentActivitySnapshot("span-race-turn-end", "span-race-turn-end").State)
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+			svc.Output.AgentActivityPublished("span-race-turn-end", "span-race-turn-end"))
+
+		beforeWindows := len(settles.openWindows())
+		sink.CloseSpan(spanID)
+		testutil.RequireEventually(t, func() bool { return len(settles.openWindows()) == beforeWindows+1 })
+		require.Equal(t, beforeWindows+1, settles.close())
+		svc.Output.WaitActivityRefreshes()
+
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+			svc.Output.AgentActivitySnapshot("span-race-turn-end", "span-race-turn-end").State)
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+			svc.Output.AgentActivityPublished("span-race-turn-end", "span-race-turn-end"))
+	}
+}

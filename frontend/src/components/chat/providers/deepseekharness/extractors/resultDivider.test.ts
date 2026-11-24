@@ -70,8 +70,8 @@ describe('deepseekHarnessResultDivider', () => {
     expect(deepseekHarnessResultDivider(turnEnd({
       kind: 'aborted',
       reason: { kind: 'user' },
-    }, 1500))).toEqual({ label: 'Turn interrupted (1.5s)', interrupted: true })
-    expect(deepseekHarnessResultDivider(turnEnd({ kind: 'completed' }, 1500), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (1.5s)', interrupted: true })
+    }, 1500))).toEqual({ label: 'Turn interrupted (1.5s)' })
+    expect(deepseekHarnessResultDivider(turnEnd({ kind: 'completed' }, 1500), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (1.5s)' })
   })
 
   it('states the duration and the native error of a failed turn', () => {

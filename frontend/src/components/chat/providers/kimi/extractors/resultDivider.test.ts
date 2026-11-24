@@ -8,28 +8,12 @@ function end(fields: Record<string, unknown>) {
 
 describe('kimiResultDivider', () => {
   it.each([
-    [
-      'completed',
-      undefined,
-      { label: 'Turn ended' },
-    ],
-    [
-      'completed',
-      2100,
-      { label: 'Turn ended (2.1s)' },
-    ],
-    [
-      'interrupted',
-      undefined,
-      { label: 'Turn interrupted', interrupted: true },
-    ],
-    [
-      'interrupted',
-      2100,
-      { label: 'Turn interrupted (2.1s)', interrupted: true },
-    ],
-  ])('words a native %s turn with duration %s', (outcome, durationMs, expected) => {
-    expect(end({ status: 'ended', outcome, duration_ms: durationMs })).toStrictEqual(expected)
+    ['completed', undefined, 'Turn ended'],
+    ['completed', 2100, 'Turn ended (2.1s)'],
+    ['interrupted', undefined, 'Turn interrupted'],
+    ['interrupted', 2100, 'Turn interrupted (2.1s)'],
+  ])('words a native %s turn with duration %s', (outcome, durationMs, label) => {
+    expect(end({ status: 'ended', outcome, duration_ms: durationMs })).toStrictEqual({ label })
   })
 
   it('reads the native failure message without requiring a duration', () => {

@@ -119,6 +119,8 @@ func (a *Agent) handleLine(proc *ampProcess, line *providerkit.ParsedLine) {
 	if a.discarding() || line == nil {
 		return
 	}
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	switch line.Type {
 	case contracts.AmpLineTypeSystem:
 		a.handleSystemLine(proc, line.Raw)
@@ -496,9 +498,9 @@ func (a *Agent) endTurn(closeOnTeardown bool, decide func(turn turnState) (agent
 	usage := maps.Clone(a.contextUsage)
 	a.mu.Unlock()
 
-	// A permission request outlives no turn: every tool of the turn ended.
-	a.bridge.cancelAll(errTurnEnded)
 	if closeOpen {
+		// Pending permission prompts cannot outlive tools that this turn end or teardown closes.
+		a.bridge.cancelAll(errTurnEnded)
 		a.closeIncompleteTools(open, completion)
 	}
 	if resultLine == nil {
@@ -525,6 +527,16 @@ func (a *Agent) endTurn(closeOnTeardown bool, decide func(turn turnState) (agent
 		providerkit.ResetSpansAndProgress(a.sink)
 	}
 	a.PublishTurnActive()
+}
+
+// drainAndResetOpenTools closes every remaining open tool call with completion
+// and resets spans and progress. The caller holds outputMu.
+func (a *Agent) drainAndResetOpenTools(completion agent.MessageCompletion) {
+	a.mu.Lock()
+	open := a.takeOpenToolsLocked()
+	a.mu.Unlock()
+	a.closeIncompleteTools(open, completion)
+	providerkit.ResetSpansAndProgress(a.sink)
 }
 
 // takeOpenToolsLocked removes every open tool call, in the order they started.

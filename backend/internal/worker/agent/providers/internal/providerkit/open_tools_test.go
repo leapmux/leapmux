@@ -7,6 +7,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -63,8 +64,7 @@ func (f *fakeToolLifecycleSink) ReserveSpanColor(string, string) int32 { return 
 func TestClosedSpanSet_CapReopenAndReset(t *testing.T) {
 	t.Parallel()
 
-	set := NewClosedSpanSet(0)
-	assert.Equal(t, defaultClosedSpanCap, set.effectiveLimit())
+	var set ClosedSpanSet
 
 	for i := 0; i < defaultClosedSpanCap+50; i++ {
 		set.MarkClosed(fmt.Sprintf("span-%d", i))
@@ -100,31 +100,33 @@ func TestClosedSpanSet_ZeroValueAndEmptyID(t *testing.T) {
 	assert.Len(t, set.order, 1)
 }
 
-func TestToolSpanLedger_OpenUpdateDrainAndDeduplicate(t *testing.T) {
+func TestToolSpanLedger_OpenDeleteDrainAndDeduplicate(t *testing.T) {
 	t.Parallel()
 
 	var ledger ToolSpanLedger[string]
-	assert.False(t, ledger.HasOpen())
 	assert.Nil(t, ledger.DrainAll())
 	assert.False(t, ledger.Open("", "Bash", false, "ignored"))
+	assert.False(t, ledger.WasClosed(""))
+	ledger.Delete("")
 
 	// Open with out-of-order IDs to confirm insertion order, not lexicographical order.
 	require.True(t, ledger.Open("z-first", "Bash", false, "v1"))
 	assert.False(t, ledger.Open("z-first", "Bash", false, "dup"))
 	require.True(t, ledger.Open("a-second", "Read", true, "v2"))
 	require.True(t, ledger.Open("m-third", "Edit", false, "v3"))
-	assert.True(t, ledger.HasOpen())
+	require.True(t, ledger.Open("wf-fourth", "Workflow", false, "v4"))
 
 	entry, ok := ledger.Get("a-second")
 	require.True(t, ok)
 	assert.Equal(t, "v2", entry.Data)
 	assert.True(t, entry.NoSpan)
+	assert.False(t, ledger.WasClosed("a-second"))
 
-	require.True(t, ledger.Update("a-second", func(d *string) { *d = "v2-updated" }))
-	assert.False(t, ledger.Update("missing", func(d *string) { *d = "nope" }))
-	entry, ok = ledger.Get("a-second")
-	require.True(t, ok)
-	assert.Equal(t, "v2-updated", entry.Data)
+	// Delete removes an open entry without marking it closed.
+	ledger.Delete("wf-fourth")
+	_, ok = ledger.Get("wf-fourth")
+	assert.False(t, ok)
+	assert.False(t, ledger.WasClosed("wf-fourth"))
 
 	// DrainMatching removes only matching entries in insertion order.
 	matched := ledger.DrainMatching(func(e OpenToolEntry[string]) bool {
@@ -133,7 +135,9 @@ func TestToolSpanLedger_OpenUpdateDrainAndDeduplicate(t *testing.T) {
 	require.Len(t, matched, 2)
 	assert.Equal(t, "z-first", matched[0].SpanID)
 	assert.Equal(t, "m-third", matched[1].SpanID)
-	assert.True(t, ledger.HasOpen())
+	assert.True(t, ledger.WasClosed("z-first"))
+	assert.True(t, ledger.WasClosed("m-third"))
+	assert.False(t, ledger.WasClosed("a-second"))
 
 	// Late CompleteNative on drained entry reports alreadyClosed.
 	_, wasOpen, alreadyClosed := ledger.CompleteNative("z-first")
@@ -144,34 +148,22 @@ func TestToolSpanLedger_OpenUpdateDrainAndDeduplicate(t *testing.T) {
 	_, wasOpen, alreadyClosed = ledger.CompleteNative("never-seen")
 	assert.False(t, wasOpen)
 	assert.False(t, alreadyClosed)
+	assert.False(t, ledger.WasClosed("never-seen"))
 
-	// Native completion on still-open entry removes it.
+	// Native completion on still-open entry removes it without marking it force-closed.
 	entry, wasOpen, alreadyClosed = ledger.CompleteNative("a-second")
 	assert.True(t, wasOpen)
 	assert.False(t, alreadyClosed)
-	assert.Equal(t, "v2-updated", entry.Data)
-	assert.False(t, ledger.HasOpen())
+	assert.Equal(t, "v2", entry.Data)
+	assert.False(t, ledger.WasClosed("a-second"))
 
 	// Reopening a drained ID clears its closed mark.
 	require.True(t, ledger.Open("z-first", "Bash", false, "reused"))
+	assert.False(t, ledger.WasClosed("z-first"))
 	entry, wasOpen, alreadyClosed = ledger.CompleteNative("z-first")
 	assert.True(t, wasOpen)
 	assert.False(t, alreadyClosed)
 	assert.Equal(t, "reused", entry.Data)
-
-	// MarkNativeClosed suppresses subsequent CompleteNative even without Open.
-	ledger.MarkNativeClosed("dup-final")
-	_, wasOpen, alreadyClosed = ledger.CompleteNative("dup-final")
-	assert.False(t, wasOpen)
-	assert.True(t, alreadyClosed)
-
-	// Reset clears open and closed state.
-	require.True(t, ledger.Open("after", "Bash", false, "v"))
-	ledger.Reset()
-	assert.False(t, ledger.HasOpen())
-	_, wasOpen, alreadyClosed = ledger.CompleteNative("dup-final")
-	assert.False(t, wasOpen)
-	assert.False(t, alreadyClosed)
 
 	// DrainAll removes all open entries in deterministic (Order, SpanID) order
 	// and records each drained ID in the closed set.
@@ -183,8 +175,8 @@ func TestToolSpanLedger_OpenUpdateDrainAndDeduplicate(t *testing.T) {
 	assert.Equal(t, []string{"z-all", "a-all", "m-all"}, []string{drained[0].SpanID, drained[1].SpanID, drained[2].SpanID})
 	assert.Less(t, drained[0].Order, drained[1].Order)
 	assert.Less(t, drained[1].Order, drained[2].Order)
-	assert.False(t, ledger.HasOpen())
 	assert.Nil(t, ledger.DrainAll())
+	assert.True(t, ledger.WasClosed("a-all"))
 
 	got, wasOpen, alreadyClosed := ledger.CompleteNative("a-all")
 	assert.Equal(t, OpenToolEntry[string]{}, got)
@@ -202,14 +194,13 @@ func TestCloseToolSpans_OrderNoSpanBuildFalseAndPersistError(t *testing.T) {
 	}
 
 	sink := &fakeToolLifecycleSink{persistErr: errors.New("write failed")}
-	closed := CloseToolSpans(sink, entries, agent.MessageCompletionInterrupted, func(e OpenToolEntry[string]) (agent.MessageContent, agent.SpanInfo, bool) {
+	CloseToolSpans(sink, entries, agent.MessageCompletionInterrupted, func(e OpenToolEntry[string]) (agent.MessageContent, agent.SpanInfo, bool) {
 		if e.Data == "skip" {
 			return agent.MessageContent{}, agent.SpanInfo{}, false
 		}
 		return agent.MessageContent{Original: []byte(`{"id":"` + e.SpanID + `"}`)}, agent.SpanInfo{}, true
-	}, true)
+	})
 
-	assert.Equal(t, 3, closed)
 	require.Len(t, sink.persisted, 2)
 	assert.Equal(t, "s1", sink.persisted[0].span.SpanID)
 	assert.Equal(t, "Bash", sink.persisted[0].span.SpanType)
@@ -228,8 +219,10 @@ func TestCloseToolSpans_OrderNoSpanBuildFalseAndPersistError(t *testing.T) {
 		agent.CompleteOutputProgress("s2"),
 		agent.CompleteOutputProgress("s3"),
 	}, sink.progress)
-	assert.Equal(t, 1, sink.resetCount)
-	assert.Equal(t, 0, CloseToolSpans[string](nil, entries, agent.MessageCompletionInterrupted, nil, true))
+	assert.Zero(t, sink.resetCount)
+	assert.NotPanics(t, func() {
+		CloseToolSpans[string](nil, entries, agent.MessageCompletionInterrupted, nil)
+	})
 }
 
 func TestResetSpansAndProgress(t *testing.T) {
@@ -244,4 +237,13 @@ func TestResetSpansAndProgress(t *testing.T) {
 	assert.Equal(t, 1, sink.resetCount)
 	assert.Equal(t, []agent.ProgressUpdate{agent.ResetProgress()}, sink.progress)
 	assert.Equal(t, []string{"reset_spans", fmt.Sprintf("progress:%d:", agent.ProgressReset)}, sink.events)
+}
+
+func TestChildCompletion(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, agent.MessageCompletionComplete, ChildCompletion(bgtask.StatusSucceeded))
+	assert.Equal(t, agent.MessageCompletionError, ChildCompletion(bgtask.StatusFailed))
+	assert.Equal(t, agent.MessageCompletionInterrupted, ChildCompletion(bgtask.StatusStopped))
+	assert.Equal(t, agent.MessageCompletionInterrupted, ChildCompletion(bgtask.StatusInterrupted))
+	assert.Equal(t, agent.MessageCompletionFinished, ChildCompletion(bgtask.StatusEndedWithUnknownOutcome))
 }

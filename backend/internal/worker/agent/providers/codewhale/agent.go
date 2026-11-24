@@ -336,11 +336,13 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	return a.settleSteerReply(ticket, a.steerTurn(threadID, turnID, prompt))
 }
 
-// Interrupt stops the running turn. It is a no-op when no turn runs.
+// Interrupt stops the running turn. When no turn runs, it closes any open tool
+// calls as interrupted, resets cumulative output, and resets spans and progress.
 //
-// The runtime settles the turn itself: the pending approvals and questions end
-// as cancelled, the running tools fail, and the turn completes as interrupted.
-// Each of those arrives as an event, so this method changes no state.
+// When a turn runs, the runtime settles the turn itself: the pending approvals
+// and questions end as cancelled, the running tools fail, and the turn
+// completes as interrupted. Each of those arrives as an event, so this method
+// changes no active-turn state.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()

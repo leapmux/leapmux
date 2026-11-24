@@ -32,7 +32,7 @@ describe('droidResultDivider', () => {
   })
 
   it('reports an early process exit as an interruption', () => {
-    expect(droidResultDivider(turnCompleted('process_exit'))).toEqual({ label: 'Turn interrupted', isError: true, interrupted: true })
+    expect(droidResultDivider(turnCompleted('process_exit'))).toEqual({ label: 'Turn interrupted', isError: true })
   })
 
   it('keeps a native handoff successful', () => {
@@ -56,11 +56,11 @@ describe('droidResultDivider', () => {
   // `cancelled`, for a held model request and for a running tool alike. The Worker
   // stores the frame as it arrived, so this word is the only record of the stop.
   it('states a turn that Droid cancelled as an interruption', () => {
-    expect(droidResultDivider(turnCompleted('cancelled'))).toEqual({ label: 'Turn interrupted', isError: true, interrupted: true })
+    expect(droidResultDivider(turnCompleted('cancelled'))).toEqual({ label: 'Turn interrupted', isError: true })
   })
 
   it('states a stop that LeapMux recorded as an interruption, whatever the frame says', () => {
-    expect(droidResultDivider(turnCompleted('completed'), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', isError: true, interrupted: true })
+    expect(droidResultDivider(turnCompleted('completed'), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted', isError: true })
   })
 
   // `error` is the reason that Droid states for a turn that failed. Its reason list

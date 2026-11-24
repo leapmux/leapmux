@@ -26,7 +26,7 @@ func TestACPTurnOutputOwnsTextAndIncompleteToolLifecycles(t *testing.T) {
 	output.rememberIncompleteTool("tool-1", map[string]json.RawMessage{
 		"toolCallId": json.RawMessage(`"tool-1"`),
 	}, opener, nil)
-	output.completeTool("tool-complete")
+	output.claimFinalTool("tool-complete")
 
 	turn := output.drainTurn()
 	assert.Equal(t, "answer", turn.assistantText)
@@ -128,7 +128,7 @@ func endToolCall(output *acpTurnOutput, toolCallID string) {
 		"toolCallId": json.RawMessage(`"` + toolCallID + `"`),
 		"status":     json.RawMessage(`"failed"`),
 	}, true, json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"`+toolCallID+`","status":"failed"}`))
-	output.completeTool(toolCallID)
+	output.claimFinalTool(toolCallID)
 }
 
 // Junie sends its own `failed` update for a command that a stop ended, then one more
@@ -180,7 +180,9 @@ func TestACPTurnOutputCountsACallOfThePromptOnceAcrossTheBoundary(t *testing.T) 
 	endToolCall(&output, "tool-1")
 	endToolCall(&output, "tool-1")
 
-	prompt, hasPromptBoundary := output.drainPromptTurn()
+	output.turnMu.Lock()
+	prompt, hasPromptBoundary := output.drainPromptTurnLocked(false)
+	output.turnMu.Unlock()
 	require.True(t, hasPromptBoundary)
 	assert.Equal(t, 1, prompt.completedToolUses, "the prompt made the call once")
 	assert.Zero(t, output.drainTurn().completedToolUses, "the agent turn after the boundary made no call")
@@ -494,7 +496,7 @@ func TestACPSpecMessageIDsSurviveEveryTextSnapshot(t *testing.T) {
 			var snapshot acpTurnSnapshot
 			switch path {
 			case "turn":
-				snapshot = output.drainTurnLocked()
+				snapshot = output.drainTurnLocked(false)
 			case "unowned":
 				snapshot = output.takeUnownedOutputLocked()
 			case "prompt boundary":
@@ -742,8 +744,7 @@ func TestACPClearContextStopWaitAndChildFinishResetSpans(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
 		assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
-		assert.False(t, a.wasClosed("call-reuse"), "ClearContext must reset closedSpans for the new session")
-		assert.False(t, a.wasForceClosed("call-reuse"), "ClearContext must reset forceClosedSpans for the new session")
+		assert.Equal(t, acpSpanNotClosed, a.closeKind("call-reuse"), "ClearContext must reset closedSpans for the new session")
 
 		// Reusing the same toolCallId inline-final in session 2 must still forward
 		// non-final SubagentFromToolCallUpdate notifications (such as Goose delegate updates).
@@ -756,4 +757,26 @@ func TestACPClearContextStopWaitAndChildFinishResetSpans(t *testing.T) {
 		a.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-reuse","status":"in_progress"}`))
 		assert.Equal(t, []string{"call-reuse"}, forwarded)
 	})
+}
+
+func TestACPClosedSpanMapEvictsNativeAndForcedTogether(t *testing.T) {
+	t.Parallel()
+
+	m := acpClosedSpanMap{limit: 3}
+	m.mark("forced-1", acpSpanClosedForced)
+	m.mark("native-1", acpSpanClosedNative)
+	m.mark("native-2", acpSpanClosedNative)
+	// Upgrading an existing entry to forced preserves its single slot and upgrades its kind.
+	m.mark("native-1", acpSpanClosedForced)
+	assert.Equal(t, acpSpanClosedForced, m.kind("native-1"))
+	// A forced entry cannot be downgraded to native.
+	m.mark("forced-1", acpSpanClosedNative)
+	assert.Equal(t, acpSpanClosedForced, m.kind("forced-1"))
+
+	// Adding a 4th entry evicts the oldest ("forced-1") completely.
+	m.mark("native-3", acpSpanClosedNative)
+	assert.Equal(t, acpSpanNotClosed, m.kind("forced-1"))
+	assert.Equal(t, acpSpanClosedForced, m.kind("native-1"))
+	assert.Equal(t, acpSpanClosedNative, m.kind("native-2"))
+	assert.Equal(t, acpSpanClosedNative, m.kind("native-3"))
 }

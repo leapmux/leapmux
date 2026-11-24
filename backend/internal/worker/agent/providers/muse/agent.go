@@ -62,7 +62,6 @@ type sessionState struct {
 	sink                 agent.ProviderServices
 	turnID               string
 	items                map[string]*itemState
-	closedSpans          providerkit.ClosedSpanSet
 	itemIndex            *nativeItemIndex
 	completed            map[string]turnCompletionState
 	log                  *nativeLog

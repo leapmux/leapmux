@@ -27,20 +27,22 @@ func makeClaudeClosingToolOps(entries []providerkit.OpenToolEntry[claudeOpenTool
 }
 
 type claudeConversationFrame struct {
-	msgType             string
-	envelope            *messageEnvelope
-	content             agent.MessageContent
-	destination         *claudeTranscriptDestination
-	spans               agent.SpanServices
-	prepared            *agent.CapturedTranscriptOperation
-	report              *agent.CapturedTranscriptOperation
-	retryResolution     *agent.CapturedTranscriptOperation
-	closingTools        []claudeClosingToolOp
-	closingToolsDrained bool
-	admission           *claudeOutputDecision
-	span                agent.SpanInfo
-	result              *claudeReceivedResult
-	inputEvidence       *claudeInferredTurnEvidence
+	msgType                string
+	envelope               *messageEnvelope
+	content                agent.MessageContent
+	destination            *claudeTranscriptDestination
+	spans                  agent.SpanServices
+	prepared               *agent.CapturedTranscriptOperation
+	report                 *agent.CapturedTranscriptOperation
+	retryResolution        *agent.CapturedTranscriptOperation
+	closingTools           []claudeClosingToolOp
+	closingToolsDrained    bool
+	closingCompletion      agent.MessageCompletion
+	childResultInterrupted bool
+	admission              *claudeOutputDecision
+	span                   agent.SpanInfo
+	result                 *claudeReceivedResult
+	inputEvidence          *claudeInferredTurnEvidence
 }
 
 func (destination *claudeTranscriptDestination) captureFrame(content []byte, msgType string, env *messageEnvelope) *claudeConversationFrame {
@@ -583,10 +585,23 @@ func (a *Agent) persistClaudeRetryResolution(sequence agent.TranscriptSequence, 
 	return err
 }
 
+func resetClaudeSpansAndProgress(destination *claudeTranscriptDestination, spans agent.SpanServices, isCurrent func() bool, resetNonCurrentSpans bool) {
+	current := isCurrent()
+	if spans != nil && (current || resetNonCurrentSpans) {
+		spans.ResetSpans()
+	} else if spans == nil && current {
+		destination.sink.ResetSpans()
+	}
+	if current {
+		destination.sink.ReportProgress(agent.ResetProgress())
+	}
+}
+
 func (a *Agent) persistClaudeClosingToolsInSequence(
 	sequence agent.TranscriptSequence,
 	destination *claudeTranscriptDestination,
 	spans agent.SpanServices,
+	isCurrent func() bool,
 	pending *[]claudeClosingToolOp,
 	completion agent.MessageCompletion,
 ) error {
@@ -619,7 +634,9 @@ func (a *Agent) persistClaudeClosingToolsInSequence(
 		if spans != nil {
 			spans.CloseSpan(item.entry.SpanID)
 		}
-		destination.sink.ReportProgress(agent.CompleteOutputProgress(item.entry.SpanID))
+		if isCurrent() {
+			destination.sink.ReportProgress(agent.CompleteOutputProgress(item.entry.SpanID))
+		}
 		(*pending)[0] = claudeClosingToolOp{}
 		*pending = (*pending)[1:]
 	}
@@ -635,13 +652,15 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 		}
 		return nil
 	}
-	interruptedResult := msgType == claudeMsgTypeResult && frame.live() && frame.result != nil && frame.result.interrupted && env.statesAbortedTurn()
-	if interruptedResult {
+	liveResult := msgType == claudeMsgTypeResult && frame.live() && frame.result != nil
+	userInterruptedResult := liveResult && frame.result.interrupted && env.statesAbortedTurn()
+	abortedResult := msgType == claudeMsgTypeResult && (userInterruptedResult || env.explicitlyAbortedTurn())
+	if abortedResult && liveResult {
 		if !frame.closingToolsDrained {
 			frame.closingToolsDrained = true
 			frame.closingTools = makeClaudeClosingToolOps(a.openTools.drain(""))
 		}
-		if err := a.persistClaudeClosingToolsInSequence(sequence, frame.destination, frame.spans, &frame.closingTools, agent.MessageCompletionInterrupted); err != nil {
+		if err := a.persistClaudeClosingToolsInSequence(sequence, frame.destination, frame.spans, frame.live, &frame.closingTools, agent.MessageCompletionInterrupted); err != nil {
 			return err
 		}
 	}
@@ -657,7 +676,7 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 				return nil
 			}
 			content.Metadata = a.MessageWithToolUses(raw).Metadata
-			if interruptedResult {
+			if userInterruptedResult {
 				content.Completion = agent.MessageCompletionInterrupted
 			}
 		}
@@ -687,9 +706,15 @@ func (a *Agent) persistClaudeRootFrame(sequence agent.TranscriptSequence, frame 
 			a.openTools.completeNative("", id)
 		})
 	case claudeMsgTypeResult:
-		if interruptedResult {
-			frame.spans.ResetSpans()
-			a.sink.ReportProgress(agent.ResetProgress())
+		if abortedResult {
+			if liveResult {
+				resetClaudeSpansAndProgress(frame.destination, frame.spans, frame.live, true)
+			} else {
+				frame.spans.ResetSpans()
+				if frame.live() {
+					a.openTools.drain("")
+				}
+			}
 		}
 		frame.destination.apiRetry.Reset()
 		if live && frame.result != nil {

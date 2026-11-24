@@ -1,10 +1,12 @@
 package copilot
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -184,7 +186,7 @@ func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 		return
 	}
 	delete(a.children, child.nativeAgentID)
-	completion := copilotChildCompletion(status)
+	completion := providerkit.ChildCompletion(status)
 	a.closeStreamedNativeText(child, completion)
 	a.closeOpenNativeTools(child, completion)
 	a.persistNativeFrameTo(child.sink, raw, agent.SpanInfo{})
@@ -192,17 +194,6 @@ func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 	a.publishChildTurn(child, false)
 	providerkit.LogRegistryRefusal("copilot", "close subagent", child.owner.CloseBackgroundTask(child.nativeAgentID, status))
 	child.owner.CleanupChildAgent(child.workerAgentID)
-}
-
-func copilotChildCompletion(status bgtask.Status) agent.MessageCompletion {
-	switch status {
-	case bgtask.StatusStopped, bgtask.StatusInterrupted:
-		return agent.MessageCompletionInterrupted
-	case bgtask.StatusFailed:
-		return agent.MessageCompletionError
-	default:
-		return agent.MessageCompletionComplete
-	}
 }
 
 // pauseNativeChild keeps a background subagent whose turn completed. Copilot
@@ -225,6 +216,7 @@ func (a *Agent) markNativeChildIdle(child *copilotNativeChild) {
 	a.closeStreamedNativeText(child, agent.MessageCompletionComplete)
 	providerkit.LogRegistryRefusal("copilot", "pause subagent", child.owner.UpdateBackgroundTaskStatus(child.nativeAgentID, bgtask.StatusPaused, ""))
 	a.publishChildTurn(child, false)
+	child.sink.ReportProgress(agent.ResetOutputProgress(copilotResponseSizeScope))
 	child.sink.ReportProgress(agent.ResetModelProgress())
 }
 
@@ -277,7 +269,7 @@ func (a *Agent) clearNativeChildren(completion agent.MessageCompletion, status b
 	a.closeOpenNativeTools(nil, completion)
 	children := a.children
 	a.children = nil
-	for _, child := range children {
+	for _, child := range orderedNativeChildren(children) {
 		a.closeStreamedNativeText(child, completion)
 		a.closeOpenNativeTools(child, completion)
 		a.publishChildTurn(child, false)
@@ -285,6 +277,50 @@ func (a *Agent) clearNativeChildren(completion agent.MessageCompletion, status b
 		providerkit.ResetSpansAndProgress(child.sink)
 		child.owner.CleanupChildAgent(child.workerAgentID)
 	}
+}
+
+// orderedNativeChildren sorts children deterministically with deeper nested
+// subagents before their parents, breaking ties by native agent ID.
+func orderedNativeChildren(children map[string]*copilotNativeChild) []*copilotNativeChild {
+	byWorkerID := make(map[string]*copilotNativeChild, len(children))
+	for _, child := range children {
+		if child.workerAgentID != "" {
+			byWorkerID[child.workerAgentID] = child
+		}
+	}
+	depths := make(map[string]int, len(children))
+	for id, child := range children {
+		depth := 0
+		seen := map[*copilotNativeChild]struct{}{child: {}}
+		for current := child; current.ownerAgentID != ""; {
+			parent := byWorkerID[current.ownerAgentID]
+			if parent == nil {
+				break
+			}
+			if _, cycle := seen[parent]; cycle {
+				break
+			}
+			seen[parent] = struct{}{}
+			depth++
+			current = parent
+		}
+		depths[id] = depth
+	}
+	keys := make([]string, 0, len(children))
+	for id := range children {
+		keys = append(keys, id)
+	}
+	slices.SortFunc(keys, func(left, right string) int {
+		if order := cmp.Compare(depths[right], depths[left]); order != 0 {
+			return order
+		}
+		return cmp.Compare(left, right)
+	})
+	ordered := make([]*copilotNativeChild, 0, len(keys))
+	for _, id := range keys {
+		ordered = append(ordered, children[id])
+	}
+	return ordered
 }
 
 var _ agent.ChildInterrupter = (*Agent)(nil)
@@ -354,16 +390,27 @@ func (a *Agent) childTaskID(spawnToolCallID string) (string, error) {
 
 // InterruptChild stops the running turn of one subagent with Copilot's task
 // cancel, and leaves the parent's turn running. Copilot then ends the subagent
-// with a cancelled completion, which closes its row as stopped.
+// with a cancelled completion, which closes its row as stopped. When the
+// subagent is idle, it closes any cross-turn open tools as interrupted and
+// resets the child's spans and progress without sending a cancel RPC.
 func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
-	state, known := a.childState(childKey)
-	if !known || state.idle {
-		// No turn of the subagent runs, so nothing remains to stop.
+	a.outputMu.Lock()
+	child := a.children[childKey]
+	if child == nil {
+		a.outputMu.Unlock()
 		return nil
 	}
-	taskID, err := a.childTaskID(state.spawnToolCallID)
+	if child.idle {
+		a.closeOpenNativeTools(child, agent.MessageCompletionInterrupted)
+		providerkit.ResetSpansAndProgress(child.sink)
+		a.outputMu.Unlock()
+		return nil
+	}
+	spawnToolCallID := child.spawnToolCallID
+	a.outputMu.Unlock()
+	taskID, err := a.childTaskID(spawnToolCallID)
 	if err != nil {
 		return err
 	}

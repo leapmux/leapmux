@@ -190,35 +190,23 @@ func (a *Agent) finishChild(callID string, state *childState, status bgtask.Stat
 	a.Mu.Unlock()
 }
 
-func (a *Agent) closeForegroundChildren(status bgtask.Status) {
+func (a *Agent) closeChildren(status bgtask.Status, foregroundOnly bool) {
 	if a.sink == nil {
 		return
 	}
 	a.Mu.Lock()
-	var foreground []*childState
+	var closing []*childState
 	for id, child := range a.children {
-		if !child.background {
-			foreground = append(foreground, child)
-			delete(a.children, id)
+		if foregroundOnly && child.background {
+			continue
 		}
+		closing = append(closing, child)
+		delete(a.children, id)
 	}
 	a.Mu.Unlock()
-	for _, child := range foreground {
+	for _, child := range closing {
 		if err := a.sink.CloseBackgroundTask(child.rowKey, status); err != nil {
-			slog.Warn("close a Command Code foreground child task", "error", err)
-		}
-		a.sink.CleanupChildAgent(child.childID)
-	}
-}
-
-func (a *Agent) closeChildren(status bgtask.Status) {
-	a.Mu.Lock()
-	children := a.children
-	a.children = make(map[string]*childState)
-	a.Mu.Unlock()
-	for _, child := range children {
-		if err := a.sink.CloseBackgroundTask(child.rowKey, status); err != nil {
-			slog.Warn("stop a Command Code child task", "error", err)
+			slog.Warn("close a Command Code child task", "error", err)
 		}
 		a.sink.CleanupChildAgent(child.childID)
 	}

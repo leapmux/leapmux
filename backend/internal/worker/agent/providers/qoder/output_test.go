@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -777,4 +779,154 @@ func TestQoderInterruptedResultIdleInterruptAndEOFFinishStreamCloseToolsAndReset
 		require.True(t, found)
 		assert.Equal(t, bgtask.StatusFailed, row.Status)
 	})
+}
+
+type qoderBlockingPersistSink struct {
+	agent.ProviderServices
+	mu          sync.Mutex
+	blockSpanID string
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	events      []string
+}
+
+func (s *qoderBlockingPersistSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if span.Closing && span.SpanID == s.blockSpanID && content.Completion == "" {
+		s.enteredOnce.Do(func() { close(s.entered) })
+		<-s.release
+		err := s.ProviderServices.PersistMessage(source, content, span)
+		s.mu.Lock()
+		s.events = append(s.events, "native_persist_done")
+		s.mu.Unlock()
+		return err
+	}
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func (s *qoderBlockingPersistSink) CloseSpan(spanID string) {
+	if spanID == s.blockSpanID {
+		s.mu.Lock()
+		s.events = append(s.events, "close_span")
+		s.mu.Unlock()
+	}
+	s.ProviderServices.CloseSpan(spanID)
+}
+
+func (s *qoderBlockingPersistSink) ResetSpans() {
+	s.mu.Lock()
+	s.events = append(s.events, "reset_spans")
+	s.mu.Unlock()
+	s.ProviderServices.ResetSpans()
+}
+
+type qoderNotifyWriter struct {
+	written chan struct{}
+	once    sync.Once
+}
+
+func (w *qoderNotifyWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.written) })
+	return len(p), nil
+}
+
+func (w *qoderNotifyWriter) Close() error { return nil }
+
+func TestQoderIdleInterruptSerializedAgainstHandleOutput(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newGoalAgent(t)
+	writer := &qoderNotifyWriter{written: make(chan struct{})}
+	a.SetStdinForTest(writer)
+
+	blocking := &qoderBlockingPersistSink{
+		ProviderServices: a.sink,
+		blockSpanID:      "call-race",
+		entered:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	a.sink = blocking
+
+	a.setTurnActive(true)
+	a.HandleOutput(qoderToolUseFrame("call-race"))
+	a.HandleOutput([]byte(qoderSuccessResult))
+
+	outputDone := make(chan struct{})
+	go func() {
+		defer close(outputDone)
+		a.HandleOutput(qoderToolResultFrame("call-race"))
+	}()
+	<-blocking.entered
+
+	interruptErr := make(chan error, 1)
+	go func() {
+		interruptErr <- a.Interrupt(agent.StopContext{})
+	}()
+	<-writer.written
+
+	select {
+	case err := <-interruptErr:
+		close(blocking.release)
+		<-outputDone
+		t.Fatalf("idle Interrupt completed while HandleOutput was still blocked in PersistMessage (err=%v)", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(blocking.release)
+	<-outputDone
+	require.NoError(t, <-interruptErr)
+
+	blocking.mu.Lock()
+	events := append([]string(nil), blocking.events...)
+	blocking.mu.Unlock()
+	assert.Equal(t, []string{"native_persist_done", "close_span", "reset_spans"}, events)
+}
+
+type qoderCloseOrderSink struct {
+	agent.ProviderServices
+	mu          sync.Mutex
+	closedTasks []string
+}
+
+func (s *qoderCloseOrderSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	s.mu.Lock()
+	s.closedTasks = append(s.closedTasks, rowKey)
+	s.mu.Unlock()
+	return s.ProviderServices.CloseBackgroundTask(rowKey, status)
+}
+
+func TestQoderFinishStreamClosesWorkflowsInDeterministicOrder(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newGoalAgent(t)
+	recorder := &qoderCloseOrderSink{ProviderServices: a.sink}
+	a.sink = recorder
+
+	keys := []qoderWorkflowKey{
+		{sessionID: "s-2", toolUseID: "tu-z"},
+		{sessionID: "s-1", toolUseID: "tu-b"},
+		{sessionID: "s-2", toolUseID: "tu-a"},
+		{sessionID: "s-1", toolUseID: "tu-a"},
+		{sessionID: "s-3", toolUseID: "tu-m"},
+		{sessionID: "s-1", toolUseID: "tu-z"},
+	}
+	a.mu.Lock()
+	a.workflows = make(map[qoderWorkflowKey]*qoderWorkflowRun, len(keys))
+	for _, key := range keys {
+		a.workflows[key] = &qoderWorkflowRun{key: key}
+	}
+	a.mu.Unlock()
+
+	a.finishStream()
+
+	expected := []string{
+		qoderWorkflowRowKey(qoderWorkflowKey{sessionID: "s-1", toolUseID: "tu-a"}),
+		qoderWorkflowRowKey(qoderWorkflowKey{sessionID: "s-1", toolUseID: "tu-b"}),
+		qoderWorkflowRowKey(qoderWorkflowKey{sessionID: "s-1", toolUseID: "tu-z"}),
+		qoderWorkflowRowKey(qoderWorkflowKey{sessionID: "s-2", toolUseID: "tu-a"}),
+		qoderWorkflowRowKey(qoderWorkflowKey{sessionID: "s-2", toolUseID: "tu-z"}),
+		qoderWorkflowRowKey(qoderWorkflowKey{sessionID: "s-3", toolUseID: "tu-m"}),
+	}
+	recorder.mu.Lock()
+	got := append([]string(nil), recorder.closedTasks...)
+	recorder.mu.Unlock()
+	assert.Equal(t, expected, got)
 }

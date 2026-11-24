@@ -328,24 +328,10 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 		completion = agent.MessageCompletionError
 	}
 	a.Mu.Unlock()
-	if a.IsDiscardingOutput() {
+	discarding := a.IsDiscardingOutput()
+	if discarding {
 		a.generation.DiscardMatching(func(string) bool { return true })
 		a.heldErrors = nil
-		ids := []string{""}
-		for id, child := range a.children {
-			if child.registered && !child.closed {
-				ids = append(ids, id)
-			}
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			if target, ok := a.outputTarget(id); ok {
-				a.closeToolScope(id, target, completion)
-				providerkit.ResetSpansAndProgress(target)
-			}
-		}
-		a.setTurnActive(false)
-		return
 	}
 	ids := []string{""}
 	for id, child := range a.children {
@@ -355,15 +341,19 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if target, ok := a.outputTarget(id); ok {
+		target, ok := a.outputTarget(id)
+		if !ok {
+			continue
+		}
+		if !discarding {
 			a.flushGenerationFor(id, completion)
 			a.finishOpenCompaction(target, id, completion)
 			a.flushHeldErrors(target, id, "")
 			a.retryForTarget(id).Reset()
-			// The process is gone, so no native result can follow.
-			a.closeToolScope(id, target, completion)
-			providerkit.ResetSpansAndProgress(target)
 		}
+		// The process is gone, so no native result can follow.
+		a.closeToolScope(id, target, completion)
+		providerkit.ResetSpansAndProgress(target)
 	}
 	a.setTurnActive(false)
 }

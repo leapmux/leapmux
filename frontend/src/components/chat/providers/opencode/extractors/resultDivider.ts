@@ -35,7 +35,6 @@ export function openCodeResultDivider(parsed: unknown, completion?: MessageCompl
   if (completion === MessageCompletion.INTERRUPTED || outcome === OPENCODE_NATIVE_OUTCOME.Interrupted) {
     return {
       label: turnEndLabel('interrupted'),
-      interrupted: true,
     }
   }
   if (outcome === OPENCODE_NATIVE_OUTCOME.Succeeded) {

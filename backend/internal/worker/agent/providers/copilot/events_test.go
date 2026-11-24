@@ -1498,3 +1498,49 @@ func TestNativeCopilotInterruptedTurnAndIdleInterruptSuppressLateOutputAndComple
 		assert.Equal(t, progressBefore, len(h.sink.ProgressUpdates()))
 	})
 }
+
+func TestNativeCopilotNormalTurnEndClearsResponseSizeScopeAndPreservesOpenToolOutput(t *testing.T) {
+	t.Parallel()
+
+	t.Run("root normal turn end clears copilot:response while preserving open tool OutputBytes", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newNativeCopilotForEvents(t)
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantTurnStart, map[string]any{}))
+		a.HandleOutput(nativeCopilotToolStart(t, "", "tool-1", contracts.CopilotToolBash))
+		a.sink.ReportProgress(agent.OutputExactTotalProgress("tool-1", 50))
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventAssistantStreamingDelta, map[string]any{"totalResponseSizeBytes": 120}))
+		require.Equal(t, int64(170), sink.LastSessionInfo()[contracts.SessionInfoKeyOutputBytes])
+
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+
+		assert.Contains(t, sink.ProgressUpdates(), agent.ResetOutputProgress(copilotResponseSizeScope))
+		assert.Equal(t, int64(50), sink.LastSessionInfo()[contracts.SessionInfoKeyOutputBytes],
+			"normal turn end must clear copilot:response while keeping open tool OutputBytes alive")
+	})
+
+	t.Run("background child pause clears copilot:response while preserving open child tool OutputBytes", func(t *testing.T) {
+		t.Parallel()
+		a, sink := newNativeCopilotForEvents(t)
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted, map[string]any{
+			"toolCallId": "task-1", "toolName": contracts.CopilotToolTask,
+			"arguments": map[string]any{"name": "Worker", "prompt": "Work."},
+		}))
+		a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentStarted, map[string]any{
+			"toolCallId": "task-1", "agentName": "worker", "agentDisplayName": "Worker", "executionMode": copilotExecutionBackground,
+		}))
+		child := a.children["agent-1"]
+		require.NotNil(t, child)
+		childSink := sink.Child(child.workerAgentID)
+
+		a.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-tool-1", contracts.CopilotToolBash))
+		child.sink.ReportProgress(agent.OutputExactTotalProgress("child-tool-1", 40))
+		a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventAssistantStreamingDelta, map[string]any{"totalResponseSizeBytes": 80}))
+		require.Equal(t, int64(120), childSink.LastSessionInfo()[contracts.SessionInfoKeyOutputBytes])
+
+		a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}))
+
+		assert.Contains(t, childSink.ProgressUpdates(), agent.ResetOutputProgress(copilotResponseSizeScope))
+		assert.Equal(t, int64(40), childSink.LastSessionInfo()[contracts.SessionInfoKeyOutputBytes],
+			"pausing a background child must clear copilot:response while keeping open child tool OutputBytes alive")
+	})
+}

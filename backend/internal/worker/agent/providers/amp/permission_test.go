@@ -478,9 +478,11 @@ func TestPermissionPendingHelperEndsWithTheTurn(t *testing.T) {
 			reason: errProcessExited.Error(),
 		},
 		{
-			name: "turn ends",
-			end: func(h *harness, fp *fakeProc) {
-				h.feed(fp, textLine("gave up", stopReasonEndTurn))
+			name: "teardown turn end",
+			end: func(h *harness, _ *fakeProc) {
+				h.agent.endTurn(true, func(turnState) (agent.MessageCompletion, []byte) {
+					return agent.MessageCompletionError, nil
+				})
 			},
 			reason: errTurnEnded.Error(),
 		},
@@ -501,6 +503,31 @@ func TestPermissionPendingHelperEndsWithTheTurn(t *testing.T) {
 			assert.Zero(t, h.agent.bridge.pendingCount())
 		})
 	}
+}
+
+func TestPermissionSurvivesNormalTurnEndAndCancelsOnIdleInterrupt(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.startToolTurn()
+	run := h.runHelper("shell_command", shellInput)
+	h.awaitPublished(1)
+	requestID := h.sink.LastPublishedControl().RequestID
+
+	// A normal turn end preserves open cross-turn tools, so a pending permission
+	// prompt for a surviving tool stays open until answered, interrupted, or torn down.
+	h.feed(fp, textLine("continuing later", stopReasonEndTurn))
+	require.False(t, h.turnActive())
+	assert.Equal(t, 1, h.agent.bridge.pendingCount())
+	assert.NotContains(t, h.sink.CanceledControls(), requestID)
+	run.assertStillWaits(t)
+
+	// Idle interrupt closes surviving tools and cancels their pending permission prompts.
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
+	assert.Equal(t, helperExitReject, run.exitCode(t))
+	assert.Equal(t, "LeapMux withdrew the permission request: "+errTurnInterrupted.Error()+"\n", run.stderr.String())
+	h.awaitCanceled(requestID)
+	assert.Zero(t, h.agent.bridge.pendingCount())
+	assert.Contains(t, h.sink.ClosedSpans(), "TU-shell")
 }
 
 // A helper that Amp starts after the agent stopped finds no bridge and refuses

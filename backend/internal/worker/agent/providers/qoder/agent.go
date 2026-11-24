@@ -56,6 +56,9 @@ type Agent struct {
 	// Its result consumes the flag. A turn end without a result clears it also.
 	interruptRequested bool
 
+	// outputMu serializes stdout frame dispatch against idle interrupt and exit tool cleanup.
+	// Lock order: outputMu -> mu / toolMu.
+	outputMu   sync.Mutex
 	toolMu     sync.Mutex
 	rootTools  providerkit.ToolSpanLedger[qoderOpenTool]
 	childTools map[string]*providerkit.ToolSpanLedger[qoderOpenTool]
@@ -72,7 +75,6 @@ type Agent struct {
 
 type qoderOpenTool struct {
 	raw       []byte
-	name      string
 	sessionID string
 }
 
@@ -266,13 +268,15 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return err
 	}
 	if !active {
+		a.outputMu.Lock()
 		a.mu.Lock()
-		stillIdle := !a.active
+		stillIdle := !a.active && !a.StoppedLocked()
 		a.mu.Unlock()
 		if stillIdle {
 			a.closeOpenToolsForTarget(a.sink, "", agent.MessageCompletionInterrupted, false)
 			providerkit.ResetSpansAndProgress(a.sink)
 		}
+		a.outputMu.Unlock()
 	}
 	return nil
 }

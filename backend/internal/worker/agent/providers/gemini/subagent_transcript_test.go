@@ -15,6 +15,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -276,4 +278,26 @@ func TestGeminiNormalPromptEndKeepsRunningChildOpenAndRetriesTransientCloseError
 	row, found = sink.BackgroundTask(geminiNativeChildID)
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
+}
+
+func TestGeminiIdleInterruptFinishesNativeChildren(t *testing.T) {
+	t.Parallel()
+
+	transcript, sink, _ := geminiChildTranscriptFixture(t)
+	a, _ := acptest.NewAgentForRPC(t, func() *Agent { return &Agent{} }, func(a *Agent) *acp.Base { return &a.Base })
+	services := agent.NewProviderServices(sink)
+	a.SetSinkForTest(services)
+	*a.HooksForTest() = a.configure(t.Context(), agent.Options{}, services)
+	a.children = transcript
+
+	a.pollNativeChildren()
+	row, found := sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+
+	row, found = sink.BackgroundTask(geminiNativeChildID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusInterrupted, row.Status, "idle Interrupt must finish lingering Gemini native children")
 }

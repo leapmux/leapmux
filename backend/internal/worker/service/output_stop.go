@@ -48,6 +48,8 @@ type agentStopRequest struct {
 	scope       *activityScope
 	attempt     *stopAttempt
 	controls    []controlRequestInstance
+	// beforeIdleReset pauses SettleIdleStop under st.mu before clearing spans in tests.
+	beforeIdleReset func()
 }
 
 func (s *agentOutputSink) ownsControlPublisher() bool {
@@ -223,41 +225,81 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 }
 
 // SettleIdleRootStop finalizes a delivered root interrupt when no turn is
-// active. It resets any remaining open root spans and progress unless the
-// provider explicitly requested PreserveOpenSpans, then rotates st.scope so
-// subsequent prompts and spans are not suppressed by the old stop scope.
+// active.
 func (r *agentStopRequest) SettleIdleRootStop() {
 	if r == nil || r.agentID != r.rootAgentID {
 		return
 	}
+	r.SettleIdleStop()
+}
+
+// SettleIdleStop finalizes a delivered root or multi-turn child interrupt when
+// no turn is active. It resets any remaining open spans, permission checks, and
+// progress unless the provider explicitly requested PreserveOpenSpans, then
+// rotates st.scope so subsequent prompts and spans are not suppressed by the
+// old stop scope. Registry-only children (turnSeq == 0) never report turn
+// state, so idle settlement leaves them untouched.
+func (r *agentStopRequest) SettleIdleStop() {
+	if r == nil {
+		return
+	}
+	isChild := r.agentID != r.rootAgentID
 	mutation := r.h.transcriptMutationMutex(r.rootAgentID)
 	mutation.Lock()
 	st := r.activity
 	st.mu.Lock()
-	if r.attempt.disposition != stopDelivered || st.turnActive || st.scope != r.scope {
+	if r.attempt.disposition != stopDelivered || st.turnActive || st.scope != r.scope || (isChild && st.turnSeq == 0) {
 		st.mu.Unlock()
 		mutation.Unlock()
 		return
 	}
 	preserve := r.attempt.preserveOpenSpans
-	hasSpans := r.h.hasOpenRootSpans(r.rootAgentID)
+	var hasRootSpans bool
+	if !isChild {
+		hasRootSpans = r.h.hasOpenRootSpans(r.rootAgentID)
+	}
 	var resetSink *agentOutputSink
-	if !preserve && hasSpans {
-		if value, ok := r.h.rootSinks.Load(r.rootAgentID); ok {
-			resetSink = value.(*agentOutputSink)
-			resetSink.clearPermissionChecks()
-			resetSink.currentSpanTracker().Reset()
-		} else if r.h.trackers != nil {
+	if !preserve {
+		var value any
+		var ok bool
+		if isChild {
+			value, ok = r.h.sinksByAgent.Load(r.agentID)
+		} else {
+			value, ok = r.h.rootSinks.Load(r.rootAgentID)
+		}
+		if ok {
+			candidate := value.(*agentOutputSink)
+			if r.scope.publisher == nil || candidate.turnPublisher() == r.scope.publisher {
+				resetSink = candidate
+				resetSink.clearPermissionChecks()
+				if r.beforeIdleReset != nil {
+					r.beforeIdleReset()
+				}
+				if hasRootSpans || (isChild && resetSink.currentSpanTracker().HasActiveSpans()) {
+					resetSink.currentSpanTracker().Reset()
+				}
+			}
+		} else if !isChild && hasRootSpans && r.h.trackers != nil {
+			if r.beforeIdleReset != nil {
+				r.beforeIdleReset()
+			}
 			r.h.trackers.reset(r.rootAgentID)
+		} else if isChild && r.h.trackers != nil {
+			if tracker, _, found := r.h.trackers.get(r.agentID); found && tracker.HasActiveSpans() {
+				if r.beforeIdleReset != nil {
+					r.beforeIdleReset()
+				}
+				r.h.trackers.reset(r.agentID)
+			}
 		}
 	}
 	st.scope = &activityScope{publisher: r.scope.publisher}
 	st.mu.Unlock()
-	if resetSink != nil {
+	if resetSink != nil && resetSink.progress != nil {
 		resetSink.progress.report(agent.ResetProgress())
 	}
 	mutation.Unlock()
-	if hasSpans {
+	if hasRootSpans {
 		r.h.publishSpanActivity(r.rootAgentID, settleImmediate)
 	}
 }

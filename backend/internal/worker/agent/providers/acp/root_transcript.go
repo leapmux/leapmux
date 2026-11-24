@@ -290,12 +290,7 @@ func (b *Base) captureRootSnapshotLocked(turn *acpTurnSnapshot, allTurns bool) {
 
 func (b *Base) detachRootPrompt(keepTools bool) acpTurnSnapshot {
 	b.turnMu.Lock()
-	var turn acpTurnSnapshot
-	if keepTools {
-		turn, _ = b.drainPromptTurnKeepingToolsLocked()
-	} else {
-		turn, _ = b.drainPromptTurnLocked()
-	}
+	turn, _ := b.drainPromptTurnLocked(keepTools)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, false)
 	b.Mu.Unlock()
@@ -327,7 +322,7 @@ func (b *Base) detachIdleRootTools() acpTurnSnapshot {
 
 func (b *Base) detachAllRootOutput() acpTurnSnapshot {
 	b.turnMu.Lock()
-	turn := b.drainTurnLocked()
+	turn := b.drainTurnLocked(false)
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, true)
 	b.Mu.Unlock()
@@ -337,9 +332,8 @@ func (b *Base) detachAllRootOutput() acpTurnSnapshot {
 
 func (b *Base) replaceRootSession(updateProtocol func()) acpTurnSnapshot {
 	b.turnMu.Lock()
-	turn := b.drainTurnLocked()
-	b.closedSpans.Reset()
-	b.forceClosedSpans.Reset()
+	turn := b.drainTurnLocked(false)
+	b.closedSpans.reset()
 	b.Mu.Lock()
 	b.captureRootSnapshotLocked(&turn, true)
 	b.Mu.Unlock()

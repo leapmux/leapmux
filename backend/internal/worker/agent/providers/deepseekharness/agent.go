@@ -352,6 +352,37 @@ func (a *Agent) finishAfterExit() {
 	}
 	a.exitCleaned = true
 	a.Mu.Lock()
+	streams := a.sortedStreamsLocked()
+	active := a.active
+	type activeChild struct {
+		agentID string
+		seq     uint64
+	}
+	var activeChildren []activeChild
+	for _, child := range a.children {
+		if child != nil && child.active {
+			child.active = false
+			if child.descriptor.Mode == "continuable" && child.agentID != "" {
+				activeChildren = append(activeChildren, activeChild{agentID: child.agentID, seq: a.NextTurnSeq()})
+			}
+		}
+	}
+	a.Mu.Unlock()
+	completion := a.ProcessExitCompletion()
+	_ = a.closeStreamsAndWorkflows(streams, completion, false)
+	if a.sink != nil {
+		for _, child := range activeChildren {
+			providerkit.PublishTurnStateTo(a.sink.ChildSink(child.agentID), agent.TurnState{}, child.seq)
+		}
+	}
+	if active {
+		a.setTurnState(false)
+	}
+}
+
+// sortedStreamsLocked returns all tracked session streams in deterministic key order.
+// The caller holds Mu.
+func (a *Agent) sortedStreamsLocked() []*sessionStream {
 	streamIDs := make([]string, 0, len(a.streams))
 	for id := range a.streams {
 		streamIDs = append(streamIDs, id)
@@ -361,24 +392,29 @@ func (a *Agent) finishAfterExit() {
 	for _, id := range streamIDs {
 		streams = append(streams, a.streams[id])
 	}
-	active := a.active
-	a.Mu.Unlock()
-	completion := a.ProcessExitCompletion()
+	return streams
+}
+
+// closeStreamsAndWorkflows finishes pending tools and resets spans and progress
+// for every stream, optionally settles child turn state, and closes open workflows.
+// The caller holds dispatchMu.
+func (a *Agent) closeStreamsAndWorkflows(streams []*sessionStream, completion agent.MessageCompletion, closeChildren bool) error {
+	var cleanupError error
 	resetRoot := false
 	for _, stream := range streams {
-		_ = a.finishPendingTools(stream, completion)
+		cleanupError = errors.Join(cleanupError, a.finishPendingTools(stream, completion))
 		providerkit.ResetSpansAndProgress(a.streamSink(stream))
 		if stream.childAgentID == "" {
 			resetRoot = true
+		} else if closeChildren {
+			cleanupError = errors.Join(cleanupError, a.childTurnState(stream.sessionID, false, completion))
 		}
 	}
 	if !resetRoot {
 		providerkit.ResetSpansAndProgress(a.sink)
 	}
 	a.closeOpenWorkflows(agent.IncompleteTaskStatus(completion))
-	if active {
-		a.setTurnState(false)
-	}
+	return cleanupError
 }
 
 func (a *Agent) ProcessExitCompletion() agent.MessageCompletion {

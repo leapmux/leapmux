@@ -149,7 +149,6 @@ export function claudeResultDivider(parsed: unknown, completion?: MessageComplet
   if (completion === MessageCompletion.INTERRUPTED || subtype === CLAUDE_SUBTYPE_CANCELLED) {
     return {
       label: turnEndLabel('interrupted', { durationMs }),
-      interrupted: true,
     }
   }
 

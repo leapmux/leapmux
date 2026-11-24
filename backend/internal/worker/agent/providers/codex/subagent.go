@@ -539,6 +539,7 @@ func (a *Agent) completeCodexChildRun(threadID string, transition codexChildTran
 		if transition.completion == agent.MessageCompletionInterrupted {
 			a.persistIncompleteCodexTools(threadID, false, transition.completion)
 			a.finishCodexRawExecutions(threadID, transition.completion)
+			providerkit.ResetSpansAndProgress(route.childSink)
 		}
 		if hadTurn {
 			a.publishCodexChildTurnActive(route.childSink, false)
@@ -686,8 +687,11 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 		return fmt.Errorf("%w: unknown codex subagent thread %q", agent.ErrChildRouteNotReady, childKey)
 	}
 	turnID := a.childTurnID(threadID)
-	_, err := a.interruptCodexTurn(threadID, turnID)
-	return err
+	if turnID != "" {
+		_, err := a.interruptCodexTurn(threadID, turnID)
+		return err
+	}
+	return a.interruptIdleThread(threadID, false)
 }
 
 // publishCodexChildTurnActive reports activity without a steering capability.

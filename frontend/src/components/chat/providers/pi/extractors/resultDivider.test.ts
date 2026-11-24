@@ -5,7 +5,7 @@ import { piResultDivider } from './resultDivider'
 describe('piResultDivider', () => {
   it('reads a cancelled retry divider as interrupted', () => {
     expect(piResultDivider({ type: 'agent_end', willRetry: true, duration_ms: 2000 }, MessageCompletion.INTERRUPTED))
-      .toEqual({ label: 'Turn interrupted (2.0s)', interrupted: true })
+      .toEqual({ label: 'Turn interrupted (2.0s)' })
   })
 
   it('does not label a stored divider as a retry attempt', () => {

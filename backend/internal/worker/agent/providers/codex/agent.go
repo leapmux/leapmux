@@ -474,21 +474,36 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if threadID == "" {
 		return nil
 	}
-	return a.interruptIdleMainThread(threadID)
+	return a.interruptIdleThread(threadID, true)
 }
 
-func (a *Agent) interruptIdleMainThread(threadID string) error {
+func (a *Agent) interruptIdleThread(threadID string, isMain bool) error {
+	childFilter := threadID
+	if isMain {
+		childFilter = ""
+	}
+	stillIdleLocked := func() bool {
+		if a.StoppedLocked() {
+			return false
+		}
+		if isMain {
+			return a.threadID == threadID && a.mainTurn.id == "" && a.retry == nil && a.pendingStart == nil && a.pendingSteerTurnEnd == nil
+		}
+		state := a.collabChildren[threadID]
+		return state != nil && state.turnID == ""
+	}
+
 	// Lock order: outputMu -> Mu. rawExecutionCalls is guarded by outputMu.
 	a.outputMu.Lock()
 	a.Mu.Lock()
-	if a.threadID != threadID || a.mainTurn.id != "" || a.retry != nil || a.pendingStart != nil || a.pendingSteerTurnEnd != nil {
+	if !stillIdleLocked() {
 		a.Mu.Unlock()
 		a.outputMu.Unlock()
 		return nil
 	}
 	snapshotTools := make(map[string]struct{})
 	for itemID, tool := range a.incompleteTools {
-		if tool != nil && tool.childThreadID == "" {
+		if tool != nil && tool.childThreadID == childFilter {
 			snapshotTools[itemID] = struct{}{}
 		}
 	}
@@ -509,7 +524,10 @@ func (a *Agent) interruptIdleMainThread(threadID string) error {
 
 	a.outputMu.Lock()
 	if len(snapshotTools) > 0 {
-		a.persistSnapshottedCodexTools(snapshotTools, agent.MessageCompletionInterrupted)
+		a.persistMatchingCodexTools(func(itemID string, tool *codexIncompleteTool) bool {
+			_, ok := snapshotTools[itemID]
+			return ok && tool.childThreadID == childFilter
+		}, agent.MessageCompletionInterrupted)
 	}
 	if len(snapshotRawKeys) > 0 {
 		a.finishMatchingCodexRawExecutions(agent.MessageCompletionInterrupted, func(key codexRawExecutionKey) bool {
@@ -525,10 +543,23 @@ func (a *Agent) interruptIdleMainThread(threadID string) error {
 		}
 	}
 	a.Mu.Lock()
-	reset := a.threadID == threadID && a.mainTurn.id == "" && a.retry == nil && a.pendingStart == nil && a.pendingSteerTurnEnd == nil && !a.hasOpenRootIncompleteToolsLocked() && !hasOpenRaw
+	hasOpenTools := false
+	for _, tool := range a.incompleteTools {
+		if tool != nil && tool.childThreadID == childFilter {
+			hasOpenTools = true
+			break
+		}
+	}
+	reset := stillIdleLocked() && !hasOpenTools && !hasOpenRaw
 	a.Mu.Unlock()
 	if reset {
-		providerkit.ResetSpansAndProgress(a.sink)
+		if isMain {
+			if a.sink != nil {
+				providerkit.ResetSpansAndProgress(a.sink)
+			}
+		} else if route, ok := a.lookupCodexChildRoute(threadID); ok {
+			providerkit.ResetSpansAndProgress(route.childSink)
+		}
 	}
 	a.outputMu.Unlock()
 	return stopErr

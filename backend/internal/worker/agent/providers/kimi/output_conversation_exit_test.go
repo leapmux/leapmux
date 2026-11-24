@@ -2,6 +2,7 @@ package kimi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -362,13 +363,14 @@ func TestKimiCrossTurnOpenToolReportsPostTurnOutputAndCompletesOnNativeEnd(t *te
 		assert.EqualValues(t, len("replaced output"), total.Value)
 		assert.Equal(t, "replaced output", tail.Text)
 
-		// Native item.ended completes output and model progress so OutputBytes drops to zero.
+		// Native item.ended completes output progress so OutputBytes drops to zero,
+		// while turn-scoped model progress stays refused after turn end.
 		rig.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{`+tool+`,"status":"ended","outcome":"completed","output":"final output"}}`)
 		awaitKimiTestOutput(t, rig.agent.sink)
 
 		assert.Contains(t, rig.sink.ClosedSpans(), scopeID)
 		assert.Contains(t, rig.sink.ProgressUpdates(), agent.CompleteOutputProgress(scopeID))
-		assert.Contains(t, rig.sink.ProgressUpdates(), agent.CompleteModelProgress(scopeID))
+		assert.NotContains(t, rig.sink.ProgressUpdates(), agent.CompleteModelProgress(scopeID), "turn-scoped model progress must refuse after turn end")
 		assert.Zero(t, rig.sink.ProgressSnapshot().OutputBytes, "native item.ended must clear OutputBytes")
 	})
 
@@ -393,4 +395,238 @@ func TestKimiCrossTurnOpenToolReportsPostTurnOutputAndCompletesOnNativeEnd(t *te
 		assert.Len(t, rig.sink.ProgressUpdates(), updatesBeforeLate, "late item.ended after force-close must not emit progress updates")
 		assert.Zero(t, rig.sink.ProgressSnapshot().OutputBytes)
 	})
+}
+
+func TestKimiInterruptedTurnTwoClosesEarlierToolBeforeTurnTwoDivider(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+	const tool = `"type":"tool_call","item_id":"call-1","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 30"}`
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+	rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+
+	rig.startPublicTurn(t, kimiMainAgentID, "t1", 1)
+	rig.endPublicTurn(t, kimiMainAgentID, "t1", 1, "interrupted")
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	rows := rig.sink.Messages()
+	require.Len(t, rows, 4)
+	spanID := rows[0].SpanID
+	require.NotEmpty(t, spanID)
+
+	closingIndex := -1
+	turnTwoDividerIndex := -1
+	for i, row := range rows {
+		if row.Closing && row.SpanID == spanID {
+			closingIndex = i
+		}
+		if row.TurnEnd {
+			view, err := decodeKimiConversationRecord(row.Content)
+			require.NoError(t, err)
+			if view.turn != nil && view.turn.TurnID == "t1" {
+				turnTwoDividerIndex = i
+			}
+		}
+	}
+	require.NotEqual(t, -1, closingIndex, "Turn 1 interrupted closing row must be persisted")
+	require.NotEqual(t, -1, turnTwoDividerIndex, "Turn 2 divider must be persisted")
+	assert.Less(t, closingIndex, turnTwoDividerIndex, "Turn 1 interrupted closing row must precede Turn 2 TurnEnd divider")
+}
+
+func TestKimiTurnsRecoverySnapshotCompletesOutputProgressOnToolClose(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+	const tool = `"type":"tool_call","item_id":"call-rec","step_index":1,"name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"printf hi"}`
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+	rig.conversationFrame(t, `{"type":"item.delta","turn_id":"t0","item_id":"call-rec","field":"output","delta":"hello world"}`)
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	scopeID := kimiConversationProgressID(kimiConversationFrame{SessionID: rig.sessionID(), AgentID: kimiMainAgentID, TurnID: "t0"}, "call-rec", contracts.KimiConversationItemKindToolCall)
+	require.EqualValues(t, len("hello world"), rig.sink.ProgressSnapshot().OutputBytes)
+
+	// Recovery "turns" snapshot closes the previously open tool_call without an incremental item.ended.
+	rig.conversationFrame(t, `{"type":"turns","has_more":false,"turns":[{"turn_id":"t0","ordinal":0,"kind":"agent","status":"running","started_at":"2026-11-18T00:00:00Z","steps":[],"items":[{`+tool+`,"status":"ended","outcome":"completed","output":"hello world"}]}]}`)
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	assert.Contains(t, rig.sink.ClosedSpans(), scopeID)
+	assert.Contains(t, rig.sink.ProgressUpdates(), agent.CompleteOutputProgress(scopeID))
+	assert.Zero(t, rig.sink.ProgressSnapshot().OutputBytes, "recovery snapshot tool closure must clear OutputBytes")
+}
+
+type kimiFailingCaptureScope struct {
+	agent.TranscriptScope
+	failAfter int
+	calls     int
+	resets    int
+}
+
+func (s *kimiFailingCaptureScope) CaptureTranscript(content agent.MessageContent, span agent.SpanInfo) (agent.CapturedTranscript, error) {
+	s.calls++
+	if s.calls > s.failAfter {
+		return agent.CapturedTranscript{}, errors.New("injected capture failure")
+	}
+	return s.TranscriptScope.CaptureTranscript(content, span)
+}
+
+func (s *kimiFailingCaptureScope) ResetSpans() {
+	s.resets++
+	s.TranscriptScope.ResetSpans()
+}
+
+func TestKimiFailedCaptureOrStaleSessionDoesNotMutateLiveSpans(t *testing.T) {
+	t.Parallel()
+
+	t.Run("failed capture on second row does not leak phantom open live span", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiConversationRig(t)
+		rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+		conv := rig.agent.run(kimiMainAgentID).conversation
+		pub := conv.turns["t0"]
+		require.NotNil(t, pub)
+		// Allow the first row (tool request) to capture, fail on the second row (tool result).
+		pub.scope = &kimiFailingCaptureScope{TranscriptScope: pub.scope, failAfter: 1}
+
+		rig.conversationFrame(t, `{"type":"item.ended","turn_id":"t0","item":{"type":"tool_call","item_id":"call-fail","step_index":1,"name":"Bash","status":"ended","outcome":"completed","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"command":"echo hi"},"output":"hi"}}`)
+		awaitKimiTestOutput(t, rig.agent.sink)
+
+		assert.Empty(t, conv.openLiveSpans, "failed capture must not mutate run.conversation.openLiveSpans")
+		assert.Empty(t, rig.sink.OpenSpans(), "failed capture must not open phantom live spans on the sink")
+		assert.Empty(t, rig.sink.ClosedSpans(), "failed capture must not close spans on the sink")
+	})
+
+	t.Run("stale session publication does not mutate spans on replacement session sink", func(t *testing.T) {
+		t.Parallel()
+		rig := newKimiConversationRig(t)
+		rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+		run := rig.agent.run(kimiMainAgentID)
+		turn := run.conversation.document.turns["t0"]
+		pub := run.conversation.turns["t0"]
+		require.NotNil(t, turn)
+		require.NotNil(t, pub)
+
+		// Replace the agent's live sink with a fresh session sink while holding the old turn publication.
+		replacementSink := &agenttest.ControlSink{}
+		replacementServices := agent.NewProviderServices(replacementSink)
+		replacementServices.UpdateSessionID("session_replacement")
+		rig.agent.sink = replacementServices
+		// Also expire the old sink's session so Owner().IsSessionCurrent() is false.
+		rig.sink.AdoptNativeSession("session_replacement")
+
+		// Apply a tool item to the old turn and persist through the stale publication.
+		frame, err := decodeKimiConversationFrame(kimiConversationTestFrame(t, rig.sessionID(), kimiMainAgentID, `{"type":"item.started","turn_id":"t0","item":{"type":"tool_call","item_id":"call-stale","step_index":1,"name":"Bash","status":"running","stage":"executing","created_at":"2026-11-18T00:00:00Z","started_at":"2026-11-18T00:00:00Z","input":{"command":"echo stale"}}}`))
+		require.NoError(t, err)
+		_, err = run.conversation.document.apply(frame)
+		require.NoError(t, err)
+		_ = rig.agent.persistConversationItems(run, turn, pub, frame, kimiConversationSelection{items: []string{"call-stale"}})
+
+		assert.Empty(t, replacementSink.OpenSpans(), "stale turn publication must not open spans on raw a.sink")
+		assert.Empty(t, rig.sink.OpenSpans(), "expired session publication must not mutate live spans on the old sink either")
+	})
+}
+
+func TestKimiCloseOpenToolsAcrossTurnsPreservesStateOnPersistFailure(t *testing.T) {
+	t.Parallel()
+	rig := newKimiConversationRig(t)
+	rig.startPublicTurn(t, kimiMainAgentID, "t0", 0)
+	const tool = `"type":"tool_call","item_id":"call-retry","name":"Bash","started_at":"2026-11-18T00:00:00Z","created_at":"2026-11-18T00:00:00Z","input":{"command":"sleep 30"}`
+	rig.conversationFrame(t, `{"type":"item.started","turn_id":"t0","item":{`+tool+`,"status":"running","stage":"executing"}}`)
+	rig.endPublicTurn(t, kimiMainAgentID, "t0", 0, "completed")
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	run := rig.agent.run(kimiMainAgentID)
+	pub := run.conversation.turns["t0"]
+	require.NotNil(t, pub)
+	spanID := rig.sink.Messages()[0].SpanID
+	require.NotEmpty(t, spanID)
+
+	realScope := pub.scope
+	failingScope := &kimiFailingCaptureScope{TranscriptScope: realScope, failAfter: 0}
+	pub.scope = failingScope
+
+	// First attempt fails to persist closing row.
+	rig.agent.closeOpenConversationToolsAcrossTurns(run, agent.MessageCompletionInterrupted, true)
+
+	assert.NotContains(t, pub.results, "call-retry", "failed persist must not mark tool as closed in publication.results")
+	assert.Zero(t, failingScope.resets, "failed persist must not reset publication.scope")
+	assert.NotEmpty(t, run.conversation.openLiveSpans, "failed persist must not clear openLiveSpans")
+
+	// Restore working scope: a later retry or exit must now persist the closing row.
+	pub.scope = realScope
+	rig.agent.closeOpenConversationToolsAcrossTurns(run, agent.MessageCompletionInterrupted, true)
+	awaitKimiTestOutput(t, rig.agent.sink)
+
+	assert.Contains(t, pub.results, "call-retry")
+	assert.Empty(t, run.conversation.openLiveSpans)
+	var foundClosing bool
+	for _, row := range rig.sink.Messages() {
+		if row.Closing && row.SpanID == spanID {
+			foundClosing = true
+			assert.Equal(t, agent.MessageCompletionInterrupted, row.Completion)
+		}
+	}
+	assert.True(t, foundClosing, "retry after transient failure must persist the closing row")
+}
+
+type kimiSupersededLeaseOwner struct {
+	sessionCurrent bool
+	frameCurrent   bool
+}
+
+func (o kimiSupersededLeaseOwner) IsCurrent() bool                          { return false }
+func (o kimiSupersededLeaseOwner) IsSessionCurrent() bool                   { return o.sessionCurrent }
+func (o kimiSupersededLeaseOwner) IsTranscriptFrameCurrent() bool           { return o.frameCurrent }
+func (o kimiSupersededLeaseOwner) TranscriptFrameSpans() agent.SpanServices { return nil }
+func (o kimiSupersededLeaseOwner) SnapshotTranscriptFrame(agent.SpanInfo) agent.TranscriptPublication {
+	return nil
+}
+func (o kimiSupersededLeaseOwner) PublishSessionInfo(map[string]interface{}) bool { return false }
+
+type kimiStubPublication struct {
+	owner agent.TranscriptOwner
+}
+
+func (p kimiStubPublication) Owner() agent.TranscriptOwner        { return p.owner }
+func (p kimiStubPublication) ReportProgress(agent.ProgressUpdate) {}
+
+func TestKimiCompletedTurnProgressRespectsSupersededChildLease(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	services := agent.NewProviderServices(sink)
+	pub := &kimiConversationTurnOutput{
+		writer:    &kimiConversationRecordWriter{ProviderServices: services},
+		progress:  kimiStubPublication{owner: kimiSupersededLeaseOwner{sessionCurrent: true, frameCurrent: false}},
+		completed: true,
+	}
+
+	pub.reportProgressUpdate(agent.OutputExactTotalProgress("tool-1", 42))
+	assert.Empty(t, sink.ProgressUpdates(), "completed turn from a superseded child lease must not write progress to the shared sink")
+
+	// Also verify with a real agenttest child lease superseded on the same session.
+	root := &agenttest.ControlSink{}
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "child-lease-key",
+		Title:            "Child",
+	})
+	require.NoError(t, err)
+	lease1 := root.AcquireChildSink(childID)
+	lease1.Activate()
+	lease1.Sink.UpdateSessionID("sess-1")
+	lease1.Sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	captured1 := lease1.CaptureMessage(agent.MessageContent{AgentSessionID: "sess-1"}, agent.SpanInfo{})
+	lease1.Sink.SetTurnState(agent.TurnState{Active: false}, 2)
+
+	lease2 := root.AcquireChildSink(childID)
+	_ = lease2
+
+	childSink := root.Child(childID)
+	before := len(childSink.ProgressUpdates())
+	leasedPub := &kimiConversationTurnOutput{
+		writer:    &kimiConversationRecordWriter{ProviderServices: lease1.Sink},
+		progress:  captured1.Publication,
+		completed: true,
+	}
+	leasedPub.reportProgressUpdate(agent.OutputExactTotalProgress("tool-1", 99))
+	assert.Len(t, childSink.ProgressUpdates(), before, "superseded child lease publication must refuse post-turn output progress")
 }

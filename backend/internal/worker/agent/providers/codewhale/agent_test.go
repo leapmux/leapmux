@@ -615,14 +615,8 @@ func TestCodewhaleIdleInterruptExitAndFinishChildCloseToolsAndResetSpans(t *test
 			agentID: "agent-1",
 			childID: "child-1",
 			title:   "worker",
-			openTools: map[string]string{
-				"ct-1": "bash",
-			},
-			openToolRows: map[string][]byte{
-				"ct-1": []byte(`{"kind":"message","index":0,"block":0,"message":{"role":"assistant","content":[]}}`),
-			},
-			openToolOrder: map[string]uint64{"ct-1": 0},
 		}
+		child.openTools.Open("ct-1", "bash", false, []byte(`{"kind":"message","index":0,"block":0,"message":{"role":"assistant","content":[]}}`))
 		a.finishChild(agent.NewProviderServices(childSink), child, bgtask.StatusFailed, "")
 		assert.Contains(t, childSink.ClosedSpans(), "ct-1")
 		assert.Contains(t, childSink.TurnLifecycle(), "reset_spans")

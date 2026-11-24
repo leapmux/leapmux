@@ -108,25 +108,9 @@ func (a *Agent) appendCodexToolEventLocked(itemID, text string, stdin bool) {
 // never holds more than a window per running call, whatever the command prints.
 const codexLiveTailLimit = 8192
 
-func (a *Agent) hasOpenRootIncompleteToolsLocked() bool {
-	for _, tool := range a.incompleteTools {
-		if tool != nil && tool.childThreadID == "" {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *Agent) persistIncompleteCodexTools(childThreadID string, all bool, completion agent.MessageCompletion) int {
 	return a.persistMatchingCodexTools(func(_ string, tool *codexIncompleteTool) bool {
 		return all || tool.childThreadID == childThreadID
-	}, completion)
-}
-
-func (a *Agent) persistSnapshottedCodexTools(targetIDs map[string]struct{}, completion agent.MessageCompletion) int {
-	return a.persistMatchingCodexTools(func(itemID string, tool *codexIncompleteTool) bool {
-		_, ok := targetIDs[itemID]
-		return ok && tool.childThreadID == ""
 	}, completion)
 }
 

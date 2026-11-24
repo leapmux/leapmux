@@ -253,7 +253,7 @@ func (b *Base) HasOpenRootTool(id string) bool {
 // The boundary already contains the prompt's text.
 // The live text counter now counts the agent turn, so that turn stays open.
 func (b *Base) persistFinishedTurn(frame json.RawMessage) {
-	stopped := b.IsStopped() || b.acpInterruptRequested() || acpResponseStopReason(frame) == "cancelled"
+	stopped := b.IsStopped() || b.acpInterruptRequested() || b.isCancelledTurnEnd(frame)
 	textCompletion, incomplete := b.turnOutputCompletions(stopped)
 	turn := b.detachRootPrompt(!stopped)
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agentapi.TranscriptServices, count int) {
@@ -3664,7 +3664,7 @@ func (b *Base) Interrupt(stop agentapi.StopContext) error {
 	var cancelErr error
 	if b.hooks.CancelBeforeControlWithdrawal {
 		cancelErr = b.cancelSession()
-		if cancelErr == nil || !promptActive {
+		if cancelErr == nil {
 			b.withdrawTurnControls()
 		}
 	} else {
@@ -3674,22 +3674,30 @@ func (b *Base) Interrupt(stop agentapi.StopContext) error {
 		b.withdrawTurnControls()
 		cancelErr = b.cancelSession()
 	}
+	if cancelErr != nil {
+		return cancelErr
+	}
 	if !promptActive {
 		turn := b.detachIdleRootTools()
 		if len(turn.incompleteTools) > 0 {
 			b.finishRootSnapshot(turn, agentapi.MessageCompletionInterrupted, agentapi.MessageCompletionInterrupted, RootTranscriptPromptEnded, nil)
 		}
-		b.releaseAwaitedTerminals()
 		b.turnMu.Lock()
 		b.Mu.Lock()
-		reset := !b.promptActive && !b.agentTurnActive && !b.agentTurnQueued && b.rootTarget == nil && !b.hasOpenToolsLocked()
+		idle := !b.promptActive && !b.agentTurnActive && !b.agentTurnQueued && b.rootTarget == nil && !b.hasOpenToolsLocked()
 		b.Mu.Unlock()
-		if reset {
+		if idle {
 			providerkit.ResetSpansAndProgress(b.sink)
 		}
 		b.turnMu.Unlock()
+		if len(turn.incompleteTools) > 0 || idle {
+			b.releaseAwaitedTerminals()
+		}
+		if idle && b.hooks.IdleInterrupt != nil {
+			b.hooks.IdleInterrupt()
+		}
 	}
-	return cancelErr
+	return nil
 }
 
 // HasOption returns true if any option in the slice has the given id.

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -209,9 +208,18 @@ func TestACPFinishOwnedPromptRequestSerializesPromptEndedWithStoppedAndOwnership
 			b.finishOwnedPromptRequest("session-1", nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 		}()
 
+		// Wait until finishOwnedPromptRequest holds sessionMu.RLock and blocks on sessionUpdates.mu.
+		testutil.RequireEventually(t, func() bool {
+			if !b.sessionMu.TryLock() {
+				return true
+			}
+			b.sessionMu.Unlock()
+			return false
+		})
 		select {
 		case <-hookEntered:
-		case <-time.After(20 * time.Millisecond):
+			t.Fatal("PromptEnded must not run while sessionUpdates.mu is held")
+		default:
 		}
 		b.noteACPInterruptRequested()
 		b.sessionUpdates.mu.Unlock()
@@ -250,9 +258,18 @@ func TestACPFinishOwnedPromptRequestSerializesPromptEndedWithStoppedAndOwnership
 			b.finishOwnedPromptRequest("session-1", nil, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 		}()
 
+		// Wait until finishOwnedPromptRequest holds sessionMu.RLock and blocks on sessionUpdates.mu.
+		testutil.RequireEventually(t, func() bool {
+			if !b.sessionMu.TryLock() {
+				return true
+			}
+			b.sessionMu.Unlock()
+			return false
+		})
 		select {
 		case <-hookEntered:
-		case <-time.After(20 * time.Millisecond):
+			t.Fatal("PromptEnded must not run while sessionUpdates.mu is held")
+		default:
 		}
 		b.Mu.Lock()
 		b.promptOutputDrained = true

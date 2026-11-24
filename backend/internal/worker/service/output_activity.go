@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -69,6 +70,9 @@ type agentActivity struct {
 	// Retirement also reads the flag and retains its ordering token.
 	// setTurnActive keeps root count changes away from a child entry.
 	turnActive bool
+	// turnActiveAtomic mirrors turnActive for lock-free span-activity skips.
+	// Every write holds mu via setTurnActiveLocked.
+	turnActiveAtomic atomic.Bool
 	// turnSteerable retains the accepted provider classification under mu.
 	turnSteerable bool
 
@@ -382,12 +386,26 @@ func (h *OutputHandler) publishStopMark(agentID, rootAgentID string) {
 	}()
 }
 
+func (st *agentActivity) setTurnActiveLocked(active bool) {
+	st.turnActive = active
+	st.turnActiveAtomic.Store(active)
+}
+
+func (h *OutputHandler) isTurnActiveFast(agentID string) bool {
+	if v, ok := h.activity.Load(agentID); ok {
+		return v.(*agentActivity).turnActiveAtomic.Load()
+	}
+	return false
+}
+
 // publishSpanActivity republishes a root agent's activity after its open-span
 // set transitions between empty and non-empty, off the caller's goroutine so
 // OpenSpan/CloseSpan/ResetSpans never block stdout readers or acquire st.mu
-// under provider locks.
+// under provider locks. When turnActive is already true, activityStateLocked is
+// invariant to hasOpenSpans, so the refresh is skipped; a concurrent
+// setTurnActive(false) still observes the span change under the tracker mutex.
 func (h *OutputHandler) publishSpanActivity(rootAgentID string, mode settleMode) {
-	if rootAgentID == "" || !h.beginActivityRefresh() {
+	if rootAgentID == "" || h.isTurnActiveFast(rootAgentID) || !h.beginActivityRefresh() {
 		return
 	}
 	seq := h.activitySeq.Add(1)
@@ -1240,7 +1258,7 @@ func (h *OutputHandler) recordTurnActive(agentID, rootAgentID string, active boo
 		st.turnSteerable = false
 	}
 	scope := st.scope
-	st.turnActive = active
+	st.setTurnActiveLocked(active)
 	if active && root {
 		// A fresh turn supersedes whatever the previous one left unspent, so a
 		// stale count cannot silence the alert for the turn now starting.
@@ -1536,7 +1554,7 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	mutation.Lock()
 	st := h.activityFor(rootAgentID, rootAgentID)
 	st.mu.Lock()
-	st.turnActive = false
+	st.setTurnActiveLocked(false)
 	st.turnSteerable = false
 	st.pendingControl = nil
 	// A process boundary is not a completed turn. Drop any unspent count so the

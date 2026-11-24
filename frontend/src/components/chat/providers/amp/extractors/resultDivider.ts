@@ -23,7 +23,6 @@ export function ampResultDivider(parsed: unknown, completion?: MessageCompletion
   if (completion === MessageCompletion.INTERRUPTED) {
     return {
       label: turnEndLabel('interrupted', { durationMs }),
-      interrupted: true,
     }
   }
   if (parsed.is_error === true || pickString(parsed, 'subtype') === AMP_RESULT_SUBTYPE.ErrorDuringExecution) {

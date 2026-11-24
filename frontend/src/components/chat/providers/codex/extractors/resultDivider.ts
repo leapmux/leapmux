@@ -53,7 +53,6 @@ export function codexResultDivider(parsed: unknown): TurnEnd | null {
   if (CODEX_TURN_INTERRUPTED.has(status)) {
     return {
       label: turnEndLabel('interrupted'),
-      interrupted: true,
     }
   }
   return {

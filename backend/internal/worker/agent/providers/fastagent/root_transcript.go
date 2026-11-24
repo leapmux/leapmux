@@ -75,6 +75,7 @@ type rootTranscriptGroup struct {
 	eligible, sealed        bool
 	overlap                 bool
 	epoch                   uint64
+	sessionEpoch            uint64
 	nextPosition            uint64
 	openPositions           int
 	maxRecords              int
@@ -122,13 +123,18 @@ func (a *Agent) openRootTranscript(start acp.RootTranscriptStart, delegate agent
 		panic(fmt.Sprintf("reserve the Fast Agent root transcript: %v", err))
 	}
 	a.rootMu.Lock()
+	if a.rootSession != "" && a.rootSession != start.SessionID {
+		a.rootSessionEpoch++
+		a.openRootSpans = nil
+	}
 	fresh := a.rootFresh && (a.rootSession == "" || a.rootSession == start.SessionID)
 	a.rootSession = start.SessionID
 	a.rootEpoch++
 	epoch := a.rootEpoch
+	sessionEpoch := a.rootSessionEpoch
 	a.rootFresh = false
 	a.rootMu.Unlock()
-	group := &rootTranscriptGroup{owner: a, delegate: delegate, batch: batch, start: start, fresh: fresh, logical: 1, maxRecords: fastagentRootElementLimit, epoch: epoch, eligible: !start.AgentInitiated, pending: make(map[*agent.TranscriptWriteReceipt]*rootJournalEntry)}
+	group := &rootTranscriptGroup{owner: a, delegate: delegate, batch: batch, start: start, fresh: fresh, logical: 1, maxRecords: fastagentRootElementLimit, epoch: epoch, sessionEpoch: sessionEpoch, eligible: !start.AgentInitiated, pending: make(map[*agent.TranscriptWriteReceipt]*rootJournalEntry)}
 	return &rootTranscript{group: group}
 }
 
@@ -675,12 +681,20 @@ func (group *rootTranscriptGroup) recordCloseSpan(id string) {
 	})
 }
 
-func (a *Agent) removeOpenRootSpan(id string) bool {
+func (group *rootTranscriptGroup) ownsCurrentSessionLocked() bool {
+	return group.owner.rootSession == group.start.SessionID && group.owner.rootSessionEpoch == group.sessionEpoch
+}
+
+func (group *rootTranscriptGroup) removeOpenRootSpanIfCurrent(id string) bool {
 	if id == "" {
 		return false
 	}
+	a := group.owner
 	a.rootMu.Lock()
 	defer a.rootMu.Unlock()
+	if !group.ownsCurrentSessionLocked() {
+		return false
+	}
 	before := len(a.openRootSpans)
 	a.openRootSpans = slices.DeleteFunc(a.openRootSpans, func(open fastagentOpenSpan) bool {
 		return open.spanID == id
@@ -729,7 +743,7 @@ func (group *rootTranscriptGroup) captureOne(record *rootRecord, resetOnTurnEnd 
 	if span.Closing {
 		scope.CloseSpan(span.SpanID)
 		group.recordCloseSpan(span.SpanID)
-		if group.owner.removeOpenRootSpan(span.SpanID) {
+		if group.removeOpenRootSpanIfCurrent(span.SpanID) {
 			group.delegate.CloseSpan(span.SpanID)
 		}
 	}
@@ -753,9 +767,43 @@ type rootTranscriptStream struct {
 func (stream *rootTranscriptStream) next() (agent.CapturedTranscriptOperation, bool, error) {
 	if !stream.seeded {
 		a := stream.group.owner
+		// TODO(https://github.com/leapmux/leapmux/issues/699): Seed live span geometry in TranscriptScopeFor so Fast-Agent and Kimi keep cross-turn colors without shadow open-span slices.
 		a.rootMu.Lock()
-		prior := slices.Clone(a.openRootSpans)
+		var prior []fastagentOpenSpan
+		if stream.group.ownsCurrentSessionLocked() {
+			prior = slices.Clone(a.openRootSpans)
+		}
 		a.rootMu.Unlock()
+		live := make([]fastagentOpenSpan, 0, len(prior))
+		var stale []fastagentOpenSpan
+		var staleIDs map[string]struct{}
+		for _, open := range prior {
+			if a.HasOpenRootTool(open.spanID) {
+				live = append(live, open)
+			} else {
+				stale = append(stale, open)
+				if staleIDs == nil {
+					staleIDs = make(map[string]struct{})
+				}
+				staleIDs[open.spanID] = struct{}{}
+			}
+		}
+		if len(staleIDs) > 0 {
+			a.rootMu.Lock()
+			current := stream.group.ownsCurrentSessionLocked()
+			if current {
+				a.openRootSpans = slices.DeleteFunc(a.openRootSpans, func(open fastagentOpenSpan) bool {
+					_, drop := staleIDs[open.spanID]
+					return drop
+				})
+			}
+			a.rootMu.Unlock()
+			if current {
+				for _, open := range stale {
+					stream.group.delegate.CloseSpan(open.spanID)
+				}
+			}
+		}
 		if !stream.discarded && len(stream.entries) > 0 {
 			if stream.group.scope == nil {
 				scope, err := stream.group.delegate.TranscriptScopeFor(stream.group.anchor)
@@ -764,12 +812,12 @@ func (stream *rootTranscriptStream) next() (agent.CapturedTranscriptOperation, b
 				}
 				stream.group.scope = scope
 			}
-			for _, open := range prior {
+			for _, open := range live {
 				stream.group.scope.SetSpanType(open.spanID, open.spanType)
 				stream.group.scope.OpenSpan(open.spanID, open.parentSpanID)
 			}
 		}
-		stream.group.openSpans = prior
+		stream.group.openSpans = live
 		stream.seeded = true
 	}
 	if stream.index == len(stream.entries) {
@@ -790,12 +838,39 @@ func (stream *rootTranscriptStream) next() (agent.CapturedTranscriptOperation, b
 		a := stream.group.owner
 		if stream.completion == agent.MessageCompletionInterrupted || stream.discarded {
 			a.rootMu.Lock()
-			cleared := a.openRootSpans
-			a.openRootSpans = nil
+			current := stream.group.ownsCurrentSessionLocked()
+			var prior []fastagentOpenSpan
+			if current {
+				prior = slices.Clone(a.openRootSpans)
+			}
 			a.rootMu.Unlock()
-			for _, open := range cleared {
-				if !a.HasOpenRootTool(open.spanID) {
-					stream.group.delegate.CloseSpan(open.spanID)
+			if current {
+				var toClose []fastagentOpenSpan
+				var closedIDs map[string]struct{}
+				for _, open := range prior {
+					if !a.HasOpenRootTool(open.spanID) {
+						toClose = append(toClose, open)
+						if closedIDs == nil {
+							closedIDs = make(map[string]struct{})
+						}
+						closedIDs[open.spanID] = struct{}{}
+					}
+				}
+				if len(closedIDs) > 0 {
+					a.rootMu.Lock()
+					current = stream.group.ownsCurrentSessionLocked()
+					if current {
+						a.openRootSpans = slices.DeleteFunc(a.openRootSpans, func(open fastagentOpenSpan) bool {
+							_, drop := closedIDs[open.spanID]
+							return drop
+						})
+					}
+					a.rootMu.Unlock()
+					if current {
+						for _, open := range toClose {
+							stream.group.delegate.CloseSpan(open.spanID)
+						}
+					}
 				}
 			}
 		} else {
@@ -808,17 +883,19 @@ func (stream *rootTranscriptStream) next() (agent.CapturedTranscriptOperation, b
 				}
 			}
 			a.rootMu.Lock()
-			prior := a.openRootSpans
-			a.openRootSpans = surviving
-			a.rootMu.Unlock()
-			for _, old := range prior {
-				if _, kept := survivingIDs[old.spanID]; !kept && !a.HasOpenRootTool(old.spanID) {
-					stream.group.delegate.CloseSpan(old.spanID)
-				}
+			current := stream.group.ownsCurrentSessionLocked()
+			var prior []fastagentOpenSpan
+			if current {
+				prior = a.openRootSpans
+				a.openRootSpans = surviving
 			}
-			for _, open := range surviving {
-				stream.group.delegate.SetSpanType(open.spanID, open.spanType)
-				stream.group.delegate.OpenSpan(open.spanID, open.parentSpanID)
+			a.rootMu.Unlock()
+			if current {
+				for _, old := range prior {
+					if _, kept := survivingIDs[old.spanID]; !kept && !a.HasOpenRootTool(old.spanID) {
+						stream.group.delegate.CloseSpan(old.spanID)
+					}
+				}
 			}
 		}
 		stream.group.mu.Lock()

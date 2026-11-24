@@ -38,7 +38,6 @@ export function acpStopReasonDivider(reason: string): TurnEnd {
   if (reason === ACP_STOP_CANCELLED) {
     return {
       label: turnEndLabel('interrupted'),
-      interrupted: true,
     }
   }
   return {

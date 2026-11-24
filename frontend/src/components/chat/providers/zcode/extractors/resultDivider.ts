@@ -38,7 +38,6 @@ export function zcodeResultDivider(parsed: unknown, completion?: MessageCompleti
     if (completion === MessageCompletion.INTERRUPTED) {
       return {
         label: turnEndLabel('interrupted'),
-        interrupted: true,
       }
     }
     return {
@@ -57,7 +56,6 @@ export function zcodeResultDivider(parsed: unknown, completion?: MessageCompleti
     if (completion === MessageCompletion.INTERRUPTED || resultType === ZCODE_RESULT.Cancelled) {
       return {
         label: turnEndLabel('interrupted', { durationMs: duration }),
-        interrupted: true,
       }
     }
     // `turn.completed` reports a FAILURE too. Every `error_*` result used to read
@@ -79,7 +77,6 @@ export function zcodeResultDivider(parsed: unknown, completion?: MessageCompleti
     if (completion === MessageCompletion.INTERRUPTED) {
       return {
         label: turnEndLabel('interrupted'),
-        interrupted: true,
       }
     }
     const error = pickObject(payload, 'error')

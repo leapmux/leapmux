@@ -220,6 +220,47 @@ func TestCopilotInterruptChildWithoutARunningTurn(t *testing.T) {
 	assert.Empty(t, *h.requests)
 }
 
+func TestCopilotInterruptChildWhileIdleClosesOpenToolsAndResetsSpans(t *testing.T) {
+	t.Parallel()
+	h := newCopilotTaskHarness(t, copilotTaskScript{})
+	_, childSink := startCopilotSubagent(t, h.agent, h.sink, copilotExecutionBackground)
+	h.agent.HandleOutput(nativeCopilotToolStart(t, "agent-1", "child-tool-idle", contracts.CopilotToolBash))
+	pauseCopilotSubagent(t, h.agent)
+	require.Empty(t, childSink.ClosedSpans())
+
+	require.NoError(t, h.agent.InterruptChild("agent-1", agent.StopContext{}))
+	assert.Empty(t, *h.requests, "idle child interrupt must not send a cancel RPC")
+	assert.Contains(t, childSink.ClosedSpans(), "child-tool-idle")
+	assert.Contains(t, childSink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, childSink.ProgressUpdates(), agent.ResetProgress())
+
+	var foundClosing bool
+	for _, m := range childSink.Messages() {
+		if m.Closing && m.SpanID == "child-tool-idle" {
+			foundClosing = true
+			assert.Equal(t, agent.MessageCompletionInterrupted, m.Completion)
+		}
+	}
+	assert.True(t, foundClosing, "idle InterruptChild must persist an interrupted closing row for the open tool")
+}
+
+func TestCopilotClearNativeChildrenClosesChildrenBeforeParentsDeterministically(t *testing.T) {
+	t.Parallel()
+	children := map[string]*copilotNativeChild{
+		"parent-b": {nativeAgentID: "parent-b", workerAgentID: "w-parent-b", ownerAgentID: "root"},
+		"parent-a": {nativeAgentID: "parent-a", workerAgentID: "w-parent-a", ownerAgentID: "root"},
+		"child-b":  {nativeAgentID: "child-b", workerAgentID: "w-child-b", ownerAgentID: "w-parent-a"},
+		"child-a":  {nativeAgentID: "child-a", workerAgentID: "w-child-a", ownerAgentID: "w-parent-a"},
+		"grand":    {nativeAgentID: "grand", workerAgentID: "w-grand", ownerAgentID: "w-child-b"},
+	}
+	ordered := orderedNativeChildren(children)
+	ids := make([]string, 0, len(ordered))
+	for _, c := range ordered {
+		ids = append(ids, c.nativeAgentID)
+	}
+	assert.Equal(t, []string{"grand", "child-a", "child-b", "parent-a", "parent-b"}, ids)
+}
+
 // A normal completion can reach the reader while tasks.cancel is in flight.
 // The background child then stays present but idle, so cancelled:false is a
 // successful interrupt and the completed turn leaves its row paused.

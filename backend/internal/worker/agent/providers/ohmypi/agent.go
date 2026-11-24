@@ -67,6 +67,10 @@ type Agent struct {
 	// input, context compaction and ClearContext. It is never held while a
 	// command waits for a turn to end.
 	sessionMu sync.Mutex
+	// outputMu serializes handleFrame with idle-interrupt cleanup and
+	// finishOutput. Acquire it before Process.Mu and never hold it across
+	// sessionMu or settleOpenDialogs.
+	outputMu sync.Mutex
 	// approvalWork keeps permission writes off the stdout reader.
 	approvalWork providerkit.CoalescingWork
 
@@ -436,6 +440,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Unlock()
 	if !active {
 		a.settleOpenDialogs()
+		a.outputMu.Lock()
 		a.Mu.Lock()
 		stillIdle := !a.StoppedLocked() && !a.activityStateLocked().Active
 		a.Mu.Unlock()
@@ -445,6 +450,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 			a.ResetCumulativeOutput()
 			providerkit.ResetSpansAndProgress(a.sink)
 		}
+		a.outputMu.Unlock()
 		return nil
 	}
 	return a.sendCommandDetached(CommandAbort, nil, func(_ json.RawMessage, err error) {
@@ -495,6 +501,8 @@ func (a *Agent) Wait() error {
 // model output it streamed, the tool calls it never ended, and the subagents it
 // never closed. It also clears the turn.
 func (a *Agent) finishOutput(completion agent.MessageCompletion) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	root := a.rootConversation()
 	a.flushGeneration(root, completion)
 	a.persistIncompleteTools(root, completion)

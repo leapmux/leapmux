@@ -3,6 +3,7 @@ package acp
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +12,83 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+type acpSpanCloseKind uint8
+
+const (
+	acpSpanNotClosed acpSpanCloseKind = iota
+	acpSpanClosedNative
+	acpSpanClosedForced
+)
+
+const acpClosedSpanCap = 256
+
+// acpClosedSpanMap records closed tool call IDs and their close kind in one
+// FIFO-capped structure so eviction can never desynchronize native and forced
+// close state. Callers must hold turnMu.
+type acpClosedSpanMap struct {
+	limit int
+	kinds map[string]acpSpanCloseKind
+	order []string
+}
+
+func (m *acpClosedSpanMap) effectiveLimit() int {
+	if m.limit <= 0 {
+		return acpClosedSpanCap
+	}
+	return m.limit
+}
+
+func (m *acpClosedSpanMap) mark(spanID string, kind acpSpanCloseKind) {
+	if spanID == "" || kind == acpSpanNotClosed {
+		return
+	}
+	if m.kinds == nil {
+		m.kinds = make(map[string]acpSpanCloseKind)
+	}
+	if existing, ok := m.kinds[spanID]; ok {
+		if kind > existing {
+			m.kinds[spanID] = kind
+		}
+		return
+	}
+	m.kinds[spanID] = kind
+	m.order = append(m.order, spanID)
+	limit := m.effectiveLimit()
+	if len(m.order) <= limit {
+		return
+	}
+	excess := len(m.order) - limit
+	for _, evictID := range m.order[:excess] {
+		delete(m.kinds, evictID)
+	}
+	m.order = slices.Delete(m.order, 0, excess)
+}
+
+func (m *acpClosedSpanMap) kind(spanID string) acpSpanCloseKind {
+	if spanID == "" || len(m.kinds) == 0 {
+		return acpSpanNotClosed
+	}
+	return m.kinds[spanID]
+}
+
+func (m *acpClosedSpanMap) reopen(spanID string) {
+	if spanID == "" || len(m.kinds) == 0 {
+		return
+	}
+	if _, ok := m.kinds[spanID]; !ok {
+		return
+	}
+	delete(m.kinds, spanID)
+	m.order = slices.DeleteFunc(m.order, func(id string) bool {
+		return id == spanID
+	})
+}
+
+func (m *acpClosedSpanMap) reset() {
+	clear(m.kinds)
+	m.order = m.order[:0]
+}
 
 type acpIncompleteTool struct {
 	target     *acpTranscriptTarget
@@ -91,18 +169,16 @@ type acpTurnOutput struct {
 	spawnSpansReleased  map[string]struct{}
 	turnToolUses        int
 	// endedTools is the tool calls that a final update ended in this turn, so a
-	// repeated final update counts the call no second time (see completeTool). A
+	// repeated final update counts the call no second time (see completeToolLocked). A
 	// prompt boundary keeps it, because a call of the prompt that ended before the
 	// boundary must not count for the agent turn after it.
 	endedTools map[string]struct{}
-	// closedSpans remembers tool call IDs closed by interrupt, teardown, or final
-	// status so late non-final updates and duplicate final frames are dropped.
-	// forceClosedSpans tracks the subset closed by interrupt or teardown so
-	// force-closed calls also suppress subagent update hooks (unlike native
-	// completed delegate ACKs that still forward subagent tool requests).
+	// closedSpans tracks tool call IDs closed natively (final status) or forcibly
+	// (interrupt or teardown) in one capped FIFO map. Forced closes drop every late
+	// update, while native closes suppress duplicate final frames without blocking
+	// late non-final notifications or subagent tool requests.
 	// Cleared only on session replacement, never on turn drain.
-	closedSpans      providerkit.ClosedSpanSet
-	forceClosedSpans providerkit.ClosedSpanSet
+	closedSpans acpClosedSpanMap
 	// promptBoundary is set while an agent turn waits behind a prompt, and nil
 	// otherwise.
 	promptBoundary *acpPromptBoundary
@@ -208,7 +284,7 @@ func (turn acpTurnSnapshot) releaseTranscriptAdmissions() {
 func (o *acpTurnOutput) drainTurn() acpTurnSnapshot {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
-	return o.drainTurnLocked()
+	return o.drainTurnLocked(false)
 }
 
 // holdsOpenTool reports whether the tool call toolCallID opened and did not end.
@@ -225,18 +301,11 @@ func (o *acpTurnOutput) hasOpenToolsLocked() bool {
 	return len(o.toolUpdateState) > 0
 }
 
-// wasClosed reports whether toolCallID was already closed.
-func (o *acpTurnOutput) wasClosed(toolCallID string) bool {
+// closeKind reports how toolCallID was closed, or acpSpanNotClosed if open or unseen.
+func (o *acpTurnOutput) closeKind(toolCallID string) acpSpanCloseKind {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
-	return o.closedSpans.WasClosed(toolCallID)
-}
-
-// wasForceClosed reports whether toolCallID was closed by interrupt or teardown.
-func (o *acpTurnOutput) wasForceClosed(toolCallID string) bool {
-	o.turnMu.Lock()
-	defer o.turnMu.Unlock()
-	return o.forceClosedSpans.WasClosed(toolCallID)
+	return o.closedSpans.kind(toolCallID)
 }
 
 // detachSealedTargetsLocked clears target pointers on open tools and pending
@@ -372,10 +441,10 @@ func requestFieldStates(raw json.RawMessage) bool {
 // markPromptBoundaryLocked records the end of the prompt's output, because an
 // agent turn now waits behind the prompt. It returns the prompt's text, which
 // the caller persists at once, so the agent turn's text starts a segment of its
-// own. The tool calls that are open now stay the prompt's, and drainPromptTurn
-// closes them at the prompt's end. A second call before that end changes
-// nothing: one agent turn at most waits behind a prompt. The caller holds
-// turnMu.
+// own. The tool calls that are open now stay the prompt's, and an interrupted or
+// stopped prompt end closes them through drainPromptTurnLocked. A second call
+// before that end changes nothing: one agent turn at most waits behind a prompt.
+// The caller holds turnMu.
 func (o *acpTurnOutput) markPromptBoundaryLocked() acpTurnSnapshot {
 	if o.promptBoundary != nil {
 		return acpTurnSnapshot{}
@@ -435,60 +504,56 @@ func (o *acpTurnOutput) dropPromptBoundaryLocked() bool {
 	return true
 }
 
-// drainPromptTurn drains the output of the prompt that ends now. With no
-// boundary, that is the whole turn output. With a boundary, it is only the tool
-// calls that the prompt left open, and hasPromptBoundary is true: the prompt's text was
-// persisted at the boundary, and everything else belongs to the agent turn that
-// waits, which keeps it.
-func (o *acpTurnOutput) drainPromptTurn() (snapshot acpTurnSnapshot, hasPromptBoundary bool) {
-	o.turnMu.Lock()
-	defer o.turnMu.Unlock()
-	return o.drainPromptTurnLocked()
-}
-
-func (o *acpTurnOutput) drainPromptTurnLocked() (snapshot acpTurnSnapshot, hasPromptBoundary bool) {
-	boundary := o.promptBoundary
-	if boundary == nil {
-		return o.drainTurnLocked(), false
+// drainIncompleteToolsLocked collects open tools (all open tools when filter is
+// nil, or only those present in filter), orders them as opened, reserves their
+// transcript admissions, marks each span force-closed, and forgets their state.
+// The caller holds turnMu.
+func (o *acpTurnOutput) drainIncompleteToolsLocked(filter map[string]struct{}) []acpIncompleteTool {
+	if len(o.toolUpdateState) == 0 {
+		return nil
 	}
-	o.promptBoundary = nil
-	snapshot.hasPromptBoundary = true
-	snapshot.completedToolUses = boundary.completedToolUses
-	for toolCallID := range boundary.openTools {
-		if _, open := o.toolUpdateState[toolCallID]; open {
-			snapshot.incompleteTools = append(snapshot.incompleteTools, o.incompleteToolLocked(toolCallID))
+	var tools []acpIncompleteTool
+	if filter == nil {
+		tools = make([]acpIncompleteTool, 0, len(o.toolUpdateState))
+		for toolCallID := range o.toolUpdateState {
+			tools = append(tools, o.incompleteToolLocked(toolCallID))
+		}
+	} else {
+		for toolCallID := range filter {
+			if _, open := o.toolUpdateState[toolCallID]; open {
+				tools = append(tools, o.incompleteToolLocked(toolCallID))
+			}
 		}
 	}
-	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
-	for i := range snapshot.incompleteTools {
-		snapshot.incompleteTools[i].admission = snapshot.incompleteTools[i].target.reserve()
+	if len(tools) == 0 {
+		return nil
 	}
-	snapshot.endingAdmission = boundary.target.reserve()
-	snapshot.rootTargets = appendRootTarget(nil, boundary.target)
-	for _, target := range o.foldedTargets {
-		snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, target)
+	o.sortIncompleteToolsLocked(tools)
+	for i := range tools {
+		tools[i].admission = tools[i].target.reserve()
 	}
-	o.foldedTargets = nil
-	o.promptTarget = nil
-	for _, tool := range snapshot.incompleteTools {
-		o.closedSpans.MarkClosed(tool.toolCallID)
-		o.forceClosedSpans.MarkClosed(tool.toolCallID)
+	for _, tool := range tools {
+		o.closedSpans.mark(tool.toolCallID, acpSpanClosedForced)
 		o.forgetToolLocked(tool.toolCallID)
 	}
-	return snapshot, true
+	return tools
 }
 
-// drainPromptTurnKeepingToolsLocked drains the prompt's text, tool-use count,
-// and root targets while keeping open tools alive across the turn boundary.
-// The caller holds turnMu.
-func (o *acpTurnOutput) drainPromptTurnKeepingToolsLocked() (snapshot acpTurnSnapshot, hasPromptBoundary bool) {
+// drainPromptTurnLocked drains the output of the prompt that ends now. With no
+// boundary, it drains the whole turn output. With a boundary, it drains only the
+// prompt's completed count, targets, and (when keepTools is false) the tool calls
+// that the prompt left open, returning hasPromptBoundary=true. The caller holds turnMu.
+func (o *acpTurnOutput) drainPromptTurnLocked(keepTools bool) (snapshot acpTurnSnapshot, hasPromptBoundary bool) {
 	boundary := o.promptBoundary
 	if boundary == nil {
-		return o.drainTurnKeepingToolsLocked(), false
+		return o.drainTurnLocked(keepTools), false
 	}
 	o.promptBoundary = nil
 	snapshot.hasPromptBoundary = true
 	snapshot.completedToolUses = boundary.completedToolUses
+	if !keepTools {
+		snapshot.incompleteTools = o.drainIncompleteToolsLocked(boundary.openTools)
+	}
 	snapshot.endingAdmission = boundary.target.reserve()
 	snapshot.rootTargets = appendRootTarget(nil, boundary.target)
 	for _, target := range o.foldedTargets {
@@ -504,39 +569,10 @@ func (o *acpTurnOutput) drainPromptTurnKeepingToolsLocked() (snapshot acpTurnSna
 // updateProtocol may acquire the protocol-state lock. It must not perform I/O.
 func (o *acpTurnOutput) replaceSession(updateProtocol func()) acpTurnSnapshot {
 	o.turnMu.Lock()
-	snapshot := o.drainTurnLocked()
-	o.closedSpans.Reset()
-	o.forceClosedSpans.Reset()
+	snapshot := o.drainTurnLocked(false)
+	o.closedSpans.reset()
 	updateProtocol()
 	o.turnMu.Unlock()
-	return snapshot
-}
-
-// drainTurnKeepingToolsLocked drains buffered text, completed tool counts, and
-// root targets while preserving all open tool state across non-interrupted
-// turn boundaries. The caller holds turnMu.
-func (o *acpTurnOutput) drainTurnKeepingToolsLocked() acpTurnSnapshot {
-	snapshot := o.takeBufferedTextLocked()
-	snapshot.completedToolUses = o.turnToolUses
-	snapshot.rootTargets = appendRootTarget(nil, o.promptTarget)
-	snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, o.rootTarget)
-	if o.promptBoundary != nil {
-		snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, o.promptBoundary.target)
-	}
-	for _, target := range o.foldedTargets {
-		snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, target)
-	}
-	endingTarget := o.promptTarget
-	if endingTarget == nil {
-		endingTarget = o.rootTarget
-	}
-	snapshot.endingAdmission = endingTarget.reserve()
-	o.detachSealedTargetsLocked(snapshot.rootTargets)
-	o.rootTarget, o.promptTarget = nil, nil
-	o.foldedTargets = nil
-	o.promptBoundary = nil
-	o.turnToolUses = 0
-	o.endedTools = nil
 	return snapshot
 }
 
@@ -544,41 +580,20 @@ func (o *acpTurnOutput) drainTurnKeepingToolsLocked() acpTurnSnapshot {
 // without disturbing buffered text, tool counts, or any active rootTarget.
 // The caller holds turnMu.
 func (o *acpTurnOutput) drainOpenToolsOnlyLocked() acpTurnSnapshot {
-	if len(o.toolUpdateState) == 0 {
-		return acpTurnSnapshot{}
+	return acpTurnSnapshot{
+		incompleteTools: o.drainIncompleteToolsLocked(nil),
 	}
-	snapshot := acpTurnSnapshot{
-		incompleteTools: make([]acpIncompleteTool, 0, len(o.toolUpdateState)),
-	}
-	for toolCallID := range o.toolUpdateState {
-		snapshot.incompleteTools = append(snapshot.incompleteTools, o.incompleteToolLocked(toolCallID))
-	}
-	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
-	for i := range snapshot.incompleteTools {
-		snapshot.incompleteTools[i].admission = snapshot.incompleteTools[i].target.reserve()
-	}
-	for _, tool := range snapshot.incompleteTools {
-		o.closedSpans.MarkClosed(tool.toolCallID)
-		o.forceClosedSpans.MarkClosed(tool.toolCallID)
-		o.forgetToolLocked(tool.toolCallID)
-	}
-	return snapshot
 }
 
-func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
+// drainTurnLocked drains buffered text, completed tool counts, and root targets.
+// When keepTools is true, open tools stay alive across non-interrupted turn
+// boundaries while detached from sealed targets. When keepTools is false, open
+// tools are drained and marked force-closed. The caller holds turnMu.
+func (o *acpTurnOutput) drainTurnLocked(keepTools bool) acpTurnSnapshot {
 	snapshot := o.takeBufferedTextLocked()
 	snapshot.completedToolUses = o.turnToolUses
-	snapshot.incompleteTools = make([]acpIncompleteTool, 0, len(o.toolUpdateState))
-	for toolCallID := range o.toolUpdateState {
-		snapshot.incompleteTools = append(snapshot.incompleteTools, o.incompleteToolLocked(toolCallID))
-	}
-	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
-	for i := range snapshot.incompleteTools {
-		snapshot.incompleteTools[i].admission = snapshot.incompleteTools[i].target.reserve()
-	}
-	for _, tool := range snapshot.incompleteTools {
-		o.closedSpans.MarkClosed(tool.toolCallID)
-		o.forceClosedSpans.MarkClosed(tool.toolCallID)
+	if !keepTools {
+		snapshot.incompleteTools = o.drainIncompleteToolsLocked(nil)
 	}
 	snapshot.rootTargets = appendRootTarget(nil, o.promptTarget)
 	snapshot.rootTargets = appendRootTarget(snapshot.rootTargets, o.rootTarget)
@@ -593,14 +608,18 @@ func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
 		endingTarget = o.rootTarget
 	}
 	snapshot.endingAdmission = endingTarget.reserve()
+	if keepTools {
+		o.detachSealedTargetsLocked(snapshot.rootTargets)
+	} else {
+		o.toolUpdateState = nil
+		o.toolRequestContents = nil
+		o.toolSubagentRows = nil
+		o.nextToolUpdateOrder = 0
+		o.spawnSpansReleased = nil
+	}
 	o.rootTarget, o.promptTarget = nil, nil
 	o.foldedTargets = nil
 	o.promptBoundary = nil
-	o.toolUpdateState = nil
-	o.toolRequestContents = nil
-	o.toolSubagentRows = nil
-	o.nextToolUpdateOrder = 0
-	o.spawnSpansReleased = nil
 	o.turnToolUses = 0
 	o.endedTools = nil
 	return snapshot
@@ -651,8 +670,8 @@ func (o *acpTurnOutput) forgetToolLocked(toolCallID string) string {
 func (o *acpTurnOutput) rememberIncompleteTool(toolCallID string, incoming map[string]json.RawMessage, original json.RawMessage, target *acpTranscriptTarget) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
-	o.closedSpans.Reopen(toolCallID)
-	o.forceClosedSpans.Reopen(toolCallID)
+	o.closedSpans.reopen(toolCallID)
+	delete(o.endedTools, toolCallID)
 	state := o.toolUpdateStateLocked(toolCallID, len(incoming))
 	state.target = target
 	state.original = append(json.RawMessage(nil), original...)
@@ -679,19 +698,13 @@ func (o *acpTurnOutput) toolUpdateStateLocked(toolCallID string, size int) *acpT
 	return state
 }
 
-// completeTool records that one tool call ended, and counts it for the turn
+// completeToolLocked records that one tool call ended, and counts it for the turn
 // that it belongs to: a call that the prompt left open at a boundary counts for
 // the prompt, and any other call for the running turn.
 //
 // A call counts once. An agent can repeat the final update of one call: Junie
 // sends its own `failed` update for a command that a stop ended, then one more
-// for each exit report of the client terminal.
-func (o *acpTurnOutput) completeTool(toolCallID string) string {
-	o.turnMu.Lock()
-	defer o.turnMu.Unlock()
-	return o.completeToolLocked(toolCallID)
-}
-
+// for each exit report of the client terminal. The caller holds turnMu.
 func (o *acpTurnOutput) completeToolLocked(toolCallID string) string {
 	if _, ended := o.endedTools[toolCallID]; ended {
 		return o.forgetToolLocked(toolCallID)
@@ -717,10 +730,10 @@ func (o *acpTurnOutput) completeToolLocked(toolCallID string) string {
 func (o *acpTurnOutput) claimFinalTool(toolCallID string) bool {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
-	if o.closedSpans.WasClosed(toolCallID) {
+	if o.closedSpans.kind(toolCallID) != acpSpanNotClosed {
 		return false
 	}
-	o.closedSpans.MarkClosed(toolCallID)
+	o.closedSpans.mark(toolCallID, acpSpanClosedNative)
 	o.completeToolLocked(toolCallID)
 	return true
 }

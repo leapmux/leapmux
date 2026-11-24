@@ -45,8 +45,8 @@ type codexRawExecutionCall struct {
 	// cellID identifies the cell after the exec output yields. It is empty
 	// for a cell that ended in its exec output.
 	cellID string
-	// waits holds the call ID of each wait on the cell that has no output yet.
-	waits map[string]struct{}
+	// waits maps each open wait call ID on the cell to the turn ID that started it.
+	waits map[string]string
 	// continuations holds the `output` value of each wait output, in order.
 	// Each yield returns only the output since the yield before it.
 	continuations []json.RawMessage
@@ -55,12 +55,24 @@ type codexRawExecutionCall struct {
 	ended bool
 }
 
-// awaited reports whether the model waits on the cell now: before the exec
-// output, and inside a wait. Codex omits the parent of a nested tool call, so
-// a typed tool event covers the cell only in these intervals. A tool call that
-// the model makes while the cell runs in the background is not the cell's.
-func (call *codexRawExecutionCall) awaited() bool {
-	return !call.completed && (call.output.Original == nil || len(call.waits) > 0)
+// awaitedInTurn reports whether the model waits on the cell in turnID: before
+// the exec output in execTurnID, or inside an active wait started in turnID.
+// Codex omits the parent of a nested tool call, so a typed tool event covers
+// the cell only in the turn that awaits it. A tool call that the model makes
+// while the cell runs in the background is not the cell's.
+func (call *codexRawExecutionCall) awaitedInTurn(execTurnID, turnID string) bool {
+	if call.completed {
+		return false
+	}
+	if call.output.Original == nil && execTurnID == turnID {
+		return true
+	}
+	for _, waitTurnID := range call.waits {
+		if waitTurnID == turnID {
+			return true
+		}
+	}
+	return false
 }
 
 // outputs returns every output of the cell in order, from its exec output.
@@ -218,9 +230,9 @@ func (a *Agent) startCodexCellWait(key codexRawExecutionKey, rawItem json.RawMes
 			continue
 		}
 		if call.waits == nil {
-			call.waits = make(map[string]struct{})
+			call.waits = make(map[string]string)
 		}
-		call.waits[key.callID] = struct{}{}
+		call.waits[key.callID] = key.turnID
 		return
 	}
 }
@@ -791,7 +803,7 @@ func (a *Agent) observeCodexRawExecutionTool(event codexItemEvent) {
 	}
 	result := codexStoredCommandResult{output: *command.Output, exitCode: *command.ExitCode}
 	for key, call := range a.rawExecutionCalls {
-		if key.threadID == event.threadID && key.turnID == event.turnID && call.awaited() {
+		if key.threadID == event.threadID && call.awaitedInTurn(key.turnID, event.turnID) {
 			if call.commands == nil {
 				call.commands = make(map[codexStoredCommandResult]struct{})
 			}

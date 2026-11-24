@@ -1,5 +1,4 @@
 import type { MessageCategory } from '../../messageClassifier'
-import type { TurnEnd } from '../../model/divider'
 import type { ClassificationInput } from '../registry'
 import { COPILOT_EVENT, COPILOT_EVENT_PREFIX, COPILOT_LEAPMUX_ROW_TYPE } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
@@ -145,19 +144,15 @@ export function classifyCopilotMessage(input: ClassificationInput): MessageCateg
  *
  * The runtime reports no duration for a turn, so the label carries none.
  */
-export function copilotResultDivider(parsed: unknown): TurnEnd | null {
+export function copilotResultDivider(parsed: unknown): { label: string, isError?: boolean } | null {
   if (!isObject(parsed))
     return null
   const data = copilotEvent(parsed)?.data
   if (!data)
     return null
-  if (data.aborted === true) {
-    return {
-      label: turnEndLabel('interrupted'),
-      interrupted: true,
-    }
-  }
   return {
-    label: turnEndLabel('ended'),
+    label: turnEndLabel(data.aborted === true
+      ? 'interrupted'
+      : 'ended'),
   }
 }

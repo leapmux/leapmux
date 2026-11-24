@@ -335,20 +335,18 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 		spanType = contracts.ACPUpdateToolCall
 	}
 
-	// Ask the provider's detector BEFORE persisting, so a spawn it recognizes
-	// here never reserves a color and never opens a span.
-	var obs *SubagentObservation
-	if c.b.hooks.SubagentFromToolCall != nil {
-		obs = c.b.hooks.SubagentFromToolCall(tc)
-	}
-	c.rememberToolSubagentRow(tc.ToolCallID, obs)
-
 	sink := c.sink()
 	// Persist a final tool call as a closing row. It closes an earlier pending
 	// call when one exists. A call that first arrives final opens no span.
+	// Claim before invoking provider hooks so duplicate inline-final frames do
+	// not mutate hook state or retain toolSubagentRows entries.
 	if StatusIsFinal(tc.Status) {
 		if !c.out.claimFinalTool(tc.ToolCallID) {
 			return
+		}
+		var obs *SubagentObservation
+		if c.b.hooks.SubagentFromToolCall != nil {
+			obs = c.b.hooks.SubagentFromToolCall(tc)
 		}
 		opened := sink.GetSpanType(tc.ToolCallID) != ""
 		c.completeToolOutput(tc.ToolCallID)
@@ -363,6 +361,14 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 		}
 		return
 	}
+
+	// Ask the provider's detector BEFORE persisting, so a spawn it recognizes
+	// here never reserves a color and never opens a span.
+	var obs *SubagentObservation
+	if c.b.hooks.SubagentFromToolCall != nil {
+		obs = c.b.hooks.SubagentFromToolCall(tc)
+	}
+	c.rememberToolSubagentRow(tc.ToolCallID, obs)
 	c.rememberIncompleteTool(tc.ToolCallID, update, target)
 
 	// A subagent spawn owns no span: its output lands in its own child
@@ -403,13 +409,24 @@ func (c *conversation) handleToolCallUpdate(update json.RawMessage) {
 	if tcu.ToolCallID == "" {
 		return
 	}
-	if c.out.wasClosed(tcu.ToolCallID) {
-		// A native-final tool call (such as Goose's delegate ACK) can still carry
-		// non-final subagent_tool_request updates on the spawn toolCallId while
-		// the delegated subagent runs. Forward only the subagent hook without
-		// reviving toolUpdateState or output progress. Force-closed calls
-		// (interrupt/teardown) drop every late update.
-		if !StatusIsFinal(tcu.Status) && !c.out.wasForceClosed(tcu.ToolCallID) && c.b.hooks.SubagentFromToolCallUpdate != nil {
+	switch c.out.closeKind(tcu.ToolCallID) {
+	case acpSpanNotClosed:
+	case acpSpanClosedForced:
+		// Force-closed calls (interrupt or teardown) drop every late update.
+		return
+	case acpSpanClosedNative:
+		// Duplicate final updates on a natively closed call emit no second
+		// closing row or CloseSpan. Non-final updates (such as Goose's delegate
+		// ACK notifications or subagent_tool_request events) still reach
+		// ToolNotification and SubagentFromToolCallUpdate without reviving
+		// toolUpdateState.
+		if StatusIsFinal(tcu.Status) {
+			return
+		}
+		if c.b.hooks.ToolNotification != nil && c.b.hooks.ToolNotification(tcu) {
+			return
+		}
+		if c.b.hooks.SubagentFromToolCallUpdate != nil {
 			if obs := c.b.hooks.SubagentFromToolCallUpdate(tcu); obs != nil {
 				c.applySubagentObservation(obs)
 			}

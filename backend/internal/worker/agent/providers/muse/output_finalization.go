@@ -62,7 +62,6 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 		}
 		sameTurn := item.params.Item.TurnID != nil && *item.params.Item.TurnID == turnID
 		openTool := closeOpenTools && item.opened && !item.forceClosed &&
-			!state.closedSpans.WasClosed(item.params.Item.ID) &&
 			item.params.Item.Status == contracts.MuseItemStatusInProgress &&
 			(item.params.Item.Kind == contracts.MuseItemKindToolCall || item.params.Item.Kind == contracts.MuseItemKindUserShell)
 		if sameTurn || openTool {
@@ -115,11 +114,10 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 				}
 			}
 			continue
-		} else if !closeOpenTools || !item.opened || item.forceClosed || state.closedSpans.WasClosed(params.Item.ID) {
+		} else if !closeOpenTools || !item.opened || item.forceClosed {
 			continue
 		} else {
 			item.forceClosed = true
-			state.closedSpans.MarkClosed(params.Item.ID)
 		}
 		message := pendingMessage{source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, item: item, revision: params.Item.Revision, params: cloneItemParams(params),
 			content: museItemMessageContent(slices.Clone(item.raw), params)}
@@ -246,11 +244,7 @@ func (a *Agent) closeIdleOpenTools(state *sessionState, completion agent.Message
 		if kind != contracts.MuseItemKindToolCall && kind != contracts.MuseItemKindUserShell {
 			continue
 		}
-		if state.closedSpans.WasClosed(item.params.Item.ID) {
-			continue
-		}
 		item.forceClosed = true
-		state.closedSpans.MarkClosed(item.params.Item.ID)
 		open = append(open, idleTool{
 			item:   item,
 			raw:    slices.Clone(item.raw),

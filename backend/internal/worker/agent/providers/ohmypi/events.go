@@ -24,6 +24,8 @@ var notificationEvents = func() map[string]struct{} {
 // caller waited for, and every rpc_chunk frame, never reach it: interceptFrame
 // consumed them.
 func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	slog.Debug("omp frame", "agent_id", a.AgentID(), "type", line.Type, "len", len(line.Raw))
 	root := a.rootConversation()
 	switch line.Type {

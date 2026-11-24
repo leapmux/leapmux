@@ -206,3 +206,75 @@ func TestMuseChildInterruptTargetsOnlyTheChildAndKeepsItsParentActive(t *testing
 	assert.Empty(t, sink.TurnLifecycle())
 	require.ErrorIs(t, a.InterruptChild("absent", agent.StopContext{}), agent.ErrChildRouteNotReady)
 }
+
+func TestMuseIdleChildInterruptClosesCrossTurnTools(t *testing.T) {
+	a, sink := testAgent(t)
+	childSink := sink.Child("child-agent")
+	child := &sessionState{
+		sink:            a.sink.ChildSink("child-agent"),
+		items:           make(map[string]*itemState),
+		completed:       make(map[string]turnCompletionState),
+		childKey:        "child-key",
+		childID:         "child-agent",
+		parentSessionID: "session",
+		subagentID:      "native-child",
+	}
+	a.sessions["child-session"] = child
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+		require.Equal(t, methodChildInterrupt, method)
+		var params map[string]any
+		require.NoError(t, json.Unmarshal(raw, &params))
+		result, err := json.Marshal(map[string]any{"commandId": params["commandId"], "status": "accepted"})
+		require.NoError(t, err)
+		return agenttest.RPCReply{Result: result}
+	}})
+
+	a.startTurn("child-session", "child-turn-1")
+	turn1 := "child-turn-1"
+	itemRaw, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  contracts.MuseMethodItemStarted,
+		"params": itemParams{
+			SessionID: "child-session",
+			Item: nativeItem{
+				ID: "child-tool-1", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+				Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+			},
+		},
+	})
+	require.NoError(t, err)
+	itemParamsRaw, err := json.Marshal(itemParams{
+		SessionID: "child-session",
+		Item: nativeItem{
+			ID: "child-tool-1", Kind: contracts.MuseItemKindToolCall, Tool: "bash",
+			Revision: 1, Status: contracts.MuseItemStatusInProgress, TurnID: &turn1,
+		},
+	})
+	require.NoError(t, err)
+	a.dispatcher.mu.Lock()
+	a.handleItem(itemRaw, itemParamsRaw, child)
+	turnEndRaw, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  contracts.MuseMethodTurnCompleted,
+		"params":  map[string]any{"sessionId": "child-session", "turnId": "child-turn-1", "terminal": contracts.MuseTurnOutcomeCompleted},
+	})
+	require.NoError(t, err)
+	a.finishTurn(turnEndRaw, "child-session", "child-turn-1")
+	a.dispatcher.mu.Unlock()
+	require.Empty(t, child.turnID)
+	require.Empty(t, childSink.ClosedSpans())
+
+	require.NoError(t, a.InterruptChild("child-key", agent.StopContext{}))
+	assert.Contains(t, childSink.ClosedSpans(), "child-tool-1")
+	assert.Contains(t, childSink.TurnLifecycle(), "reset_spans")
+	assert.Contains(t, childSink.ProgressUpdates(), agent.ResetProgress())
+
+	var foundClosing bool
+	for _, m := range childSink.Messages() {
+		if m.Closing && m.SpanID == "child-tool-1" {
+			foundClosing = true
+			assert.Equal(t, agent.MessageCompletionInterrupted, m.Completion)
+		}
+	}
+	assert.True(t, foundClosing, "idle InterruptChild must persist an interrupted closing row for cross-turn open tools")
+}

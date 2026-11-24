@@ -42,7 +42,7 @@ describe('kimi plugin', () => {
     expect(plugin.transcript.spanRole(parsed(result))).toBe('result')
     expect(plugin.transcript.needsRequest?.(parsed(start))).toBe(false)
     expect(plugin.transcript.needsRequest?.(parsed(result))).toBe(true)
-    expect(plugin.transcript.extractDivider?.(kimiConversationTurnRecord({ status: 'ended', outcome: 'interrupted' }))).toStrictEqual({ label: 'Turn interrupted', interrupted: true })
+    expect(plugin.transcript.extractDivider?.(kimiConversationTurnRecord({ status: 'ended', outcome: 'interrupted' }))).toStrictEqual({ label: 'Turn interrupted' })
     expect(plugin.session?.compactionBoundaryFromMessage?.(parsed(kimiConversationItemRecord({
       type: 'system',
       kind: 'compaction',

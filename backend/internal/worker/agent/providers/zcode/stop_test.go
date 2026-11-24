@@ -709,3 +709,34 @@ func TestZCodeStop_OldCompactionReceiptCannotStopItsSuccessor(t *testing.T) {
 		})
 	}
 }
+
+func TestZCodeStopAndWaitEmitResetProgressOnce(t *testing.T) {
+	t.Parallel()
+	countResetProgress := func(updates []agent.ProgressUpdate) int {
+		count := 0
+		for _, update := range updates {
+			if update.Operation == agent.ProgressReset {
+				count++
+			}
+		}
+		return count
+	}
+
+	t.Run("Stop", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		a.SimulateExitForTest()
+		a.Stop()
+		assert.Equal(t, 1, countResetProgress(sink.ProgressUpdates()))
+	})
+
+	t.Run("Wait", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+		a.SimulateExitForTest()
+		require.NoError(t, a.Wait())
+		assert.Equal(t, 1, countResetProgress(sink.ProgressUpdates()))
+	})
+}

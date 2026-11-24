@@ -162,7 +162,7 @@ describe('kiro provider', () => {
 
     it('states a reason that is not the ordinary end', () => {
       expect(plugin.transcript.extractDivider(turnEnd('max_tokens'))?.label).toContain('max_tokens')
-      expect(plugin.transcript.extractDivider(turnEnd('cancelled'))).toEqual({ label: 'Turn interrupted', interrupted: true })
+      expect(plugin.transcript.extractDivider(turnEnd('cancelled'))).toEqual({ label: 'Turn interrupted' })
     })
 
     it('still reads the prompt response of a turn LeapMux started', () => {

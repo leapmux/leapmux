@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -528,6 +529,7 @@ func (a *Agent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID string, kno
 		return true, err
 	}
 	a.replaceChildTranscript(childID)
+	a.openTools.forgetChild(childID)
 	return true, nil
 }
 
@@ -607,17 +609,11 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	}
 	if childID := a.tasks.childForTask(ev.TaskID); childID != "" {
 		if status == bgtask.StatusStopped || status == bgtask.StatusInterrupted || status == bgtask.StatusFailed {
-			if childSink := a.sink.ChildSink(childID); childSink != nil {
-				entries := a.openTools.drain(childID)
-				if len(entries) > 0 {
-					completion := agent.MessageCompletionInterrupted
-					if status == bgtask.StatusFailed {
-						completion = agent.MessageCompletionError
-					}
-					providerkit.CloseToolSpans(childSink, entries, completion, claudeBuildClosingRow, false)
-				}
-				providerkit.ResetSpansAndProgress(childSink)
+			completion := agent.MessageCompletionInterrupted
+			if status == bgtask.StatusFailed {
+				completion = agent.MessageCompletionError
 			}
+			a.closeClaudeChildOpenTools(childID, completion)
 		} else {
 			a.openTools.forgetChild(childID)
 		}
@@ -628,6 +624,46 @@ func (a *Agent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	providerkit.LogRegistryRefusal("claude", "workflow completion", a.workflows.finished(ev.TaskID, status, a.sink))
 	// Drop the index entry.
 	a.tasks.forgetTaskIndex(ev.TaskID)
+}
+
+func (a *Agent) closeClaudeChildOpenTools(childID string, completion agent.MessageCompletion) {
+	destination := a.childTranscript(childID)
+	if destination == nil {
+		a.openTools.forgetChild(childID)
+		return
+	}
+	base := destination.capture(agent.MessageContent{}, agent.SpanInfo{})
+	spans := agent.TranscriptFrameSpans(base, destination.sink)
+	isCurrent := func() bool {
+		return a.childDestinationIsCurrent(childID, destination, base)
+	}
+	var drained bool
+	var pending []claudeClosingToolOp
+	const label = "close Claude child open tools"
+	drain, err := agent.ReserveTranscriptSequence(destination.sink, label, func(sequence agent.TranscriptSequence) error {
+		if !drained {
+			if !isCurrent() {
+				return nil
+			}
+			drained = true
+			pending = makeClaudeClosingToolOps(a.openTools.drain(childID))
+		}
+		if err := a.persistClaudeClosingToolsInSequence(sequence, destination, spans, isCurrent, &pending, completion); err != nil {
+			return err
+		}
+		resetClaudeSpansAndProgress(destination, spans, isCurrent, false)
+		if isCurrent() {
+			a.openTools.forgetChild(childID)
+		}
+		return nil
+	})
+	if err == nil {
+		err = drain()
+	}
+	a.reportClaudeSequenceError(label, err)
+	if !agent.OutputRetained(err) && isCurrent() {
+		a.openTools.forgetChild(childID)
+	}
 }
 
 // workflowGroup derives the (group_key, group_label) for a workflow task from
@@ -804,6 +840,33 @@ func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame
 		_, err := sequence.Persist(*frame.report)
 		return err
 	}
+	childCurrent := func() bool {
+		return a.childDestinationIsCurrent(childID, frame.destination, frame.content)
+	}
+	if msgType == claudeMsgTypeResult {
+		if !frame.closingToolsDrained {
+			frame.closingToolsDrained = true
+			if childCurrent() && a.liveClaudeOutput() {
+				switch {
+				case a.tasks.takeInterrupted(taskID) && env.statesAbortedTurn():
+					frame.childResultInterrupted = true
+					frame.closingCompletion = agent.MessageCompletionInterrupted
+				case env.explicitlyAbortedTurn():
+					frame.closingCompletion = agent.MessageCompletionInterrupted
+				case env.IsError:
+					frame.closingCompletion = agent.MessageCompletionError
+				}
+				if frame.closingCompletion != "" {
+					frame.closingTools = makeClaudeClosingToolOps(a.openTools.drain(childID))
+				}
+			}
+		}
+		if len(frame.closingTools) > 0 {
+			if err := a.persistClaudeClosingToolsInSequence(sequence, frame.destination, frame.spans, childCurrent, &frame.closingTools, frame.closingCompletion); err != nil {
+				return err
+			}
+		}
+	}
 	if frame.prepared == nil {
 		content := frame.content
 		if frame.live() && a.liveClaudeOutput() {
@@ -828,7 +891,7 @@ func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame
 			case claudeMsgTypeResult:
 				// The result must confirm the interruption. A result that
 				// finished before Claude read stop_task keeps its outcome.
-				if a.tasks.takeInterrupted(taskID) && env.statesAbortedTurn() {
+				if frame.childResultInterrupted {
 					content.Completion = agent.MessageCompletionInterrupted
 				}
 			}
@@ -851,12 +914,16 @@ func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame
 		}
 		// The opener uses its parent depth. The result reads the rail while
 		// it remains open. Each parallel call owns its own rail.
+		var clonedRaw []byte
 		for _, block := range env.ContentBlocks() {
 			if block.Type == "tool_use" && block.ID != "" {
 				frame.spans.SetSpanType(block.ID, block.Name)
 				if !claudeToolSpawnsSubagent(block.Name) {
+					if clonedRaw == nil {
+						clonedRaw = bytes.Clone(frame.content.Original)
+					}
 					frame.spans.OpenSpan(block.ID, spawnSpanID)
-					a.openTools.open(childID, block.ID, block.Name, spawnSpanID, frame.content.AgentSessionID, frame.content.Original)
+					a.openTools.open(childID, block.ID, block.Name, spawnSpanID, frame.content.AgentSessionID, clonedRaw)
 				}
 			}
 		}
@@ -865,8 +932,13 @@ func (a *Agent) persistClaudeChildFrame(sequence agent.TranscriptSequence, frame
 			a.openTools.completeNative(childID, id)
 		})
 	case claudeMsgTypeResult:
+		if frame.closingCompletion != "" {
+			resetClaudeSpansAndProgress(frame.destination, frame.spans, childCurrent, true)
+		} else if !frame.live() && (env.explicitlyAbortedTurn() || env.IsError) {
+			frame.spans.ResetSpans()
+		}
 		if live {
-			a.finishClaudeChildResult(frame.prepared.FrozenContent().Completion, env.IsError, spawnSpanID, taskID)
+			a.finishClaudeChildResult(childID, frame.prepared.FrozenContent().Completion, env.IsError, spawnSpanID, taskID)
 		}
 	}
 	return nil
@@ -890,7 +962,7 @@ func (frame *claudeConversationFrame) persistChildHandback(sequence agent.Transc
 	return err
 }
 
-func (a *Agent) finishClaudeChildResult(completion agent.MessageCompletion, isError bool, spawnSpanID, taskID string) {
+func (a *Agent) finishClaudeChildResult(childID string, completion agent.MessageCompletion, isError bool, spawnSpanID, taskID string) {
 	// Claude Code 2.1.302 sends no child result. A build that forwards one
 	// closes the child's registry row here.
 	status := bgtask.StatusSucceeded
@@ -908,6 +980,7 @@ func (a *Agent) finishClaudeChildResult(completion agent.MessageCompletion, isEr
 		// A result can precede task_started. The later start closes its row.
 		a.tasks.recordPendingTaskEnd(spawnSpanID, status)
 	}
+	a.openTools.forgetChild(childID)
 	a.tasks.clearClaudeRestarts(spawnSpanID)
 }
 

@@ -24,7 +24,6 @@ export function mimoResultDivider(parsed: unknown, completion?: MessageCompletio
     if (completion === MessageCompletion.INTERRUPTED) {
       return {
         label: turnEndLabel('interrupted'),
-        interrupted: true,
       }
     }
     return {
@@ -36,7 +35,6 @@ export function mimoResultDivider(parsed: unknown, completion?: MessageCompletio
     if (name === MIMO_ERROR_NAME.Aborted || completion === MessageCompletion.INTERRUPTED) {
       return {
         label: turnEndLabel('interrupted'),
-        interrupted: true,
       }
     }
     return {

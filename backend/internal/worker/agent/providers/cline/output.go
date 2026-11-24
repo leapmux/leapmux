@@ -97,8 +97,8 @@ type transcript struct {
 	text strings.Builder
 	// open holds the tool calls that started and did not finish, by id.
 	open map[string]*openTool
-	// nextOrder orders the open calls, so a turn end closes them in the order
-	// they started.
+	// nextOrder orders the open calls, so an interrupted turn, an idle
+	// interrupt, or teardown closes them in the order they started.
 	nextOrder uint64
 	// written counts what reached this transcript live, so a later backfill
 	// from Cline's stored messages writes only the rest (subagent.go).

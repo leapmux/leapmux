@@ -3,7 +3,10 @@ package ohmypi
 import (
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -611,4 +614,102 @@ func TestAnUnexpectedExitKeepsTheUnfinishedOutputAsAnError(t *testing.T) {
 	assert.Equal(t, bgtask.StatusFailed, subagentRow(t, r, "Probe").Status, "the subagent ended with the process")
 	active, _ := r.sink.LastTurnActive()
 	assert.False(t, active)
+}
+
+type ompGateSink struct {
+	agent.ProviderServices
+	entered        chan struct{}
+	release        chan struct{}
+	d1Canceled     chan struct{}
+	enterOnce      sync.Once
+	cancelOnce     sync.Once
+	inPersistStart atomic.Bool
+	overlapped     atomic.Bool
+}
+
+func (s *ompGateSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if span.SpanID == "call_race" && !span.Closing {
+		s.inPersistStart.Store(true)
+		defer s.inPersistStart.Store(false)
+		s.enterOnce.Do(func() { close(s.entered) })
+		<-s.release
+	} else if span.SpanID == "call_race" && span.Closing {
+		if s.inPersistStart.Load() {
+			s.overlapped.Store(true)
+		}
+	}
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func (s *ompGateSink) CancelControlRequest(requestID string) {
+	s.ProviderServices.CancelControlRequest(requestID)
+	if requestID == "dlg-idle" {
+		s.cancelOnce.Do(func() { close(s.d1Canceled) })
+	}
+}
+
+func TestOhMyPiIdleInterruptSerializedWithHandleFrame(t *testing.T) {
+	t.Parallel()
+
+	t.Run("idle interrupt cannot interleave with concurrent tool_execution_start", func(t *testing.T) {
+		t.Parallel()
+		for range 5 {
+			r := newRig(t)
+			gate := &ompGateSink{
+				ProviderServices: r.agent.sink,
+				entered:          make(chan struct{}),
+				release:          make(chan struct{}),
+				d1Canceled:       make(chan struct{}),
+			}
+			r.agent.sink = gate
+			// Publish an idle dialog so Interrupt signals d1Canceled right before entering the idle cleanup section.
+			r.emit(`{"type":"extension_ui_request","id":"dlg-idle","method":"confirm","title":"Continue?"}`)
+
+			handleDone := make(chan struct{})
+			go func() {
+				defer close(handleDone)
+				r.agent.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"call_race","toolName":"bash","args":{"command":"sleep 10"}}`))
+			}()
+			<-gate.entered
+
+			interruptDone := make(chan error, 1)
+			go func() {
+				interruptDone <- r.agent.Interrupt(agent.StopContext{})
+			}()
+			<-gate.d1Canceled
+			for range 64 {
+				runtime.Gosched()
+			}
+			close(gate.release)
+			<-handleDone
+			require.NoError(t, <-interruptDone)
+
+			assert.False(t, gate.overlapped.Load(), "idle interrupt must not overlap an in-flight handleFrame")
+			assert.Contains(t, r.sink.ClosedSpans(), "call_race")
+			assert.Empty(t, r.sink.GetSpanType("call_race"), "call_race must not remain orphaned in live span tracker after idle interrupt")
+		}
+	})
+
+	t.Run("concurrent idle interrupt handleFrame and Stop have no race or deadlock", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				r.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+				r.agent.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"call_1","toolName":"bash","args":{"command":"echo ok"}}`))
+				r.agent.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`))
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				_ = r.agent.Interrupt(agent.StopContext{})
+			}
+		}()
+		wg.Wait()
+		r.agent.Stop()
+	})
 }

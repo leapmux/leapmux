@@ -416,12 +416,12 @@ func (h *OutputHandler) ResetSpanTracker(agentID string) {
 			publish = sink.rebindSpanTrackerLocked()
 		} else {
 			sink.clearPermissionChecks()
-			publish = sink.currentSpanTracker().ResetChanged()
+			publish = sink.currentSpanTracker().Reset()
 			h.trackers.reset(agentID)
 		}
 	} else if h.trackers != nil {
 		if tracker, kind, ok := h.trackers.get(agentID); ok {
-			publish = tracker.ResetChanged() && kind == spanTrackerRoot
+			publish = tracker.Reset() && kind == spanTrackerRoot
 		}
 	}
 	mutation.Unlock()
@@ -1369,6 +1369,7 @@ func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, co
 	return s.h.writeNotification(s.agentID, s.agentProvider, s.plugin, source, content, mode)
 }
 
+// TODO(https://github.com/leapmux/leapmux/issues/698): Unify lifetime span-tracker rebinding across all providers and remove this Claude-only branch.
 func (s *agentOutputSink) usesLifetimeSpanTracker() bool {
 	return s.agentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 }
@@ -1413,39 +1414,39 @@ func (s *agentOutputSink) rebindSpanTracker() {
 	}
 }
 
-func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
-	if s.root == nil && s.registeredCurrent() {
-		if s.currentSpanTracker().OpenSpanChanged(spanID, parentSpanID) {
-			s.h.publishSpanActivity(s.agentID, settleImmediate)
-		}
-		return
+func (s *agentOutputSink) openSpanOnTracker(tracker *SpanTracker, spanID, parentSpanID string) {
+	if tracker.OpenSpan(spanID, parentSpanID) && s.root == nil && s.registeredCurrent() {
+		s.h.publishSpanActivity(s.agentID, settleImmediate)
 	}
-	s.currentSpanTracker().OpenSpan(spanID, parentSpanID)
+}
+
+func (s *agentOutputSink) closeSpanOnTracker(tracker *SpanTracker, spanID string) {
+	s.deletePermissionChecksForSpan(spanID)
+	if tracker.CloseSpan(spanID) && s.root == nil && s.registeredCurrent() {
+		s.h.publishSpanActivity(s.agentID, settleHeld)
+	}
+}
+
+func (s *agentOutputSink) resetSpansOnTracker(tracker *SpanTracker) {
+	s.clearPermissionChecks()
+	if tracker.Reset() && s.root == nil && s.registeredCurrent() {
+		s.h.publishSpanActivity(s.agentID, settleImmediate)
+	}
+}
+
+func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
+	s.openSpanOnTracker(s.currentSpanTracker(), spanID, parentSpanID)
 }
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
 	// The call behind a closed span keeps no live tail. See PersistMessage for why
 	// the drop sits on both events.
 	s.progress.dropTail(spanID)
-	s.deletePermissionChecksForSpan(spanID)
-	if s.root == nil && s.registeredCurrent() {
-		if s.currentSpanTracker().CloseSpanChanged(spanID) {
-			s.h.publishSpanActivity(s.agentID, settleHeld)
-		}
-		return
-	}
-	s.currentSpanTracker().CloseSpan(spanID)
+	s.closeSpanOnTracker(s.currentSpanTracker(), spanID)
 }
 
 func (s *agentOutputSink) ResetSpans() {
-	s.clearPermissionChecks()
-	if s.root == nil && s.registeredCurrent() {
-		if s.currentSpanTracker().ResetChanged() {
-			s.h.publishSpanActivity(s.agentID, settleImmediate)
-		}
-		return
-	}
-	s.currentSpanTracker().Reset()
+	s.resetSpansOnTracker(s.currentSpanTracker())
 }
 
 func (s *agentOutputSink) SetSpanType(spanID, spanType string) {

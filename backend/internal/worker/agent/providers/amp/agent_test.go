@@ -943,4 +943,26 @@ func TestAmpIdleInterruptAndIdleProcessExitCloseOpenToolsAndResetSpans(t *testin
 		}
 		assert.True(t, foundClosing, "idle Stop without a live process must persist an interrupted closing row for remaining open tools")
 	})
+
+	t.Run("concurrent idle interrupt and stdout output serialize without racing", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t)
+		fp := h.send("run command")
+		h.feed(fp, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-race-1","name":"Bash","input":{"cmd":"sleep 30"}}],"stop_reason":"tool_use"}}`)
+		h.feed(fp, textLine("still running", stopReasonEndTurn))
+		require.False(t, h.turnActive())
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, h.agent.Interrupt(agent.StopContext{}))
+		}()
+		go func() {
+			defer wg.Done()
+			h.feed(fp, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-race-2","name":"Bash","input":{"cmd":"echo hi"}}],"stop_reason":"tool_use"}}`)
+			h.feed(fp, textLine("done", stopReasonEndTurn))
+		}()
+		wg.Wait()
+	})
 }

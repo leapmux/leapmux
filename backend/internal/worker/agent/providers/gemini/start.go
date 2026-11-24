@@ -26,59 +26,66 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		NewAgent:  func() *Agent { return &Agent{} },
 		Base:      func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, services agent.ProviderServices) acp.Hooks {
-			query := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
-			controls := &geminiControlServices{ProviderServices: services, query: query, currentSession: a.CurrentSessionID}
-			transcript := newGeminiToolTranscript(ctx, &geminiOutputServices{
-				ProviderServices: controls,
-				query:            query,
-				currentSession:   a.CurrentSessionID,
-				onSession:        func(sessionID string) { a.startChildTranscript(services, query, sessionID) },
-			}, query, a.observeNativeMode)
-			controls.transcript = transcript
-			return acp.Hooks{
-				WithBypassPermission:   func(claim func()) { a.WithOptionValue(agent.OptionIDPermissionMode, contracts.GeminiModeYolo, claim) },
-				PermissionAllowsBypass: permissionAllowsBypass,
-				// Gemini resumes the model after a cancelled permission answer.
-				// Stop the prompt before the answer releases its permission wait.
-				CancelBeforeControlWithdrawal: true,
-				Sink:                          transcript,
-				InitialModel:                  opts.Model(),
-				ModelSetter:                   a.setNativeModel,
-				ModeChannel:                   acp.ModeChannelPermissionMode,
-				ModeSetter:                    a.setNativePermissionMode,
-				SessionUpdateHandler:          a.handleSessionUpdate,
-				ClearProviderState: func() {
-					a.stopChildTranscript(agent.MessageCompletionInterrupted)
-					a.resetNativeModes()
-					transcript.Reset()
-				},
-				PromptEnded: func(_ error, stopped bool) acp.PromptEnding {
-					if stopped {
-						a.finishNativeChildren(agent.MessageCompletionInterrupted)
-					} else {
-						a.pollNativeChildren()
-					}
-					return acp.PromptEnding{}
-				},
-				BeforeWaitCleanup: func() {
-					completion := agent.MessageCompletionError
-					if a.IntentionalStopRequested() {
-						completion = agent.MessageCompletionInterrupted
-					}
-					a.stopChildTranscript(completion)
-				},
-				// Gemini CLI 0.62.0 cannot create a file through the host
-				// filesystem. Its ACP filesystem service maps a failed
-				// fs/read_text_file to ENOENT only when the rejection is an Error
-				// whose message says so, but its ACP SDK rejects with the plain
-				// JSON-RPC error object. write_file then takes every missing file
-				// for one that exists and cannot be read. Without the capability,
-				// Gemini reads and writes the working tree itself.
-				DisableHostFileSystem: true,
-			}
+			return a.configure(ctx, opts, services)
 		},
 		AfterHandshake: func(a *Agent, result *acp.SessionResult, opts agent.Options) error {
 			return a.ApplyPermissionModeStartup(result, opts, contracts.GeminiModeDefault, opts.Model())
 		},
 	})
+}
+
+func (a *Agent) configure(ctx context.Context, opts agent.Options, services agent.ProviderServices) acp.Hooks {
+	query := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
+	controls := &geminiControlServices{ProviderServices: services, query: query, currentSession: a.CurrentSessionID}
+	transcript := newGeminiToolTranscript(ctx, &geminiOutputServices{
+		ProviderServices: controls,
+		query:            query,
+		currentSession:   a.CurrentSessionID,
+		onSession:        func(sessionID string) { a.startChildTranscript(services, query, sessionID) },
+	}, query, a.observeNativeMode)
+	controls.transcript = transcript
+	return acp.Hooks{
+		WithBypassPermission:   func(claim func()) { a.WithOptionValue(agent.OptionIDPermissionMode, contracts.GeminiModeYolo, claim) },
+		PermissionAllowsBypass: permissionAllowsBypass,
+		// Gemini resumes the model after a cancelled permission answer.
+		// Stop the prompt before the answer releases its permission wait.
+		CancelBeforeControlWithdrawal: true,
+		Sink:                          transcript,
+		InitialModel:                  opts.Model(),
+		ModelSetter:                   a.setNativeModel,
+		ModeChannel:                   acp.ModeChannelPermissionMode,
+		ModeSetter:                    a.setNativePermissionMode,
+		SessionUpdateHandler:          a.handleSessionUpdate,
+		ClearProviderState: func() {
+			a.stopChildTranscript(agent.MessageCompletionInterrupted)
+			a.resetNativeModes()
+			transcript.Reset()
+		},
+		PromptEnded: func(_ error, stopped bool) acp.PromptEnding {
+			if stopped {
+				a.finishNativeChildren(agent.MessageCompletionInterrupted)
+			} else {
+				a.pollNativeChildren()
+			}
+			return acp.PromptEnding{}
+		},
+		IdleInterrupt: func() {
+			a.finishNativeChildren(agent.MessageCompletionInterrupted)
+		},
+		BeforeWaitCleanup: func() {
+			completion := agent.MessageCompletionError
+			if a.IntentionalStopRequested() {
+				completion = agent.MessageCompletionInterrupted
+			}
+			a.stopChildTranscript(completion)
+		},
+		// Gemini CLI 0.62.0 cannot create a file through the host
+		// filesystem. Its ACP filesystem service maps a failed
+		// fs/read_text_file to ENOENT only when the rejection is an Error
+		// whose message says so, but its ACP SDK rejects with the plain
+		// JSON-RPC error object. write_file then takes every missing file
+		// for one that exists and cannot be read. Without the capability,
+		// Gemini reads and writes the working tree itself.
+		DisableHostFileSystem: true,
+	}
 }

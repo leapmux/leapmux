@@ -1146,7 +1146,6 @@ func (a *Agent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUp
 	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.spanID()), event, payload, nil, owner)
 }
 
-// persistIncompleteZCodeTools closes each announced call that never reported its end,
 // persistIncompleteZCodeTools closes every announced call that never reported
 // its end, with completion, and returns how many it closed.
 func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) int {

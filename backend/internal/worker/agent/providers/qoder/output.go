@@ -2,6 +2,8 @@ package qoder
 
 import (
 	"bufio"
+	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,6 +51,8 @@ func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {
 
 // handleOutput dispatches one NDJSON frame.
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	if a.routeChildFrame(line.Raw) {
 		return
 	}
@@ -569,15 +573,18 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, childID st
 		sessionID = a.nativeSessionID()
 	}
 	nativeContent := qoderMessageContent(raw, sessionID)
+	var clonedRaw []byte
 	for _, block := range frame.Message.Content {
 		content := nativeContent
 		if frame.Type == contracts.QoderFrameKindAssistant && block.Type == "tool_use" && block.ID != "" && block.Name != "" {
 			stored = true
 			opened++
 			spawns := block.Name == "Agent" || block.Name == "Workflow"
+			if clonedRaw == nil {
+				clonedRaw = bytes.Clone(raw)
+			}
 			a.openToolEntry(childID, block.ID, block.Name, spawns, qoderOpenTool{
-				raw:       append([]byte(nil), raw...),
-				name:      block.Name,
+				raw:       clonedRaw,
 				sessionID: sessionID,
 			})
 			if err := providerkit.OpenToolSpan(target, content, block.ID, block.Name, spawns); err != nil {
@@ -676,13 +683,15 @@ func (a *Agent) closeOpenToolsForTarget(target agent.ProviderServices, childID s
 			Completion:     completion,
 		}
 		return content, agent.SpanInfo{SpanID: entry.SpanID, SpanType: entry.SpanType, Closing: true, NoSpan: entry.NoSpan}, true
-	}, false)
+	})
 }
 
 // finishStream closes remaining open root and child tool spans, open task and
 // workflow background rows, and resets spans and progress on process exit.
 func (a *Agent) finishStream() {
 	a.finishOnce.Do(func() {
+		a.outputMu.Lock()
+		defer a.outputMu.Unlock()
 		completion := a.ProcessExitCompletion()
 		taskStatus := agent.IncompleteTaskStatus(completion)
 		a.closeOpenToolsForTarget(a.sink, "", completion, true)
@@ -718,6 +727,9 @@ func (a *Agent) finishStream() {
 		}
 		clear(a.workflows)
 		a.mu.Unlock()
+		slices.SortFunc(workflows, func(left, right *qoderWorkflowRun) int {
+			return cmp.Or(cmp.Compare(left.key.sessionID, right.key.sessionID), cmp.Compare(left.key.toolUseID, right.key.toolUseID))
+		})
 
 		if a.sink != nil {
 			slices.Sort(taskKeys)

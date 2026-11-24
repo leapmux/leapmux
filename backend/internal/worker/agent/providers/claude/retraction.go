@@ -164,6 +164,26 @@ func (a *Agent) childTranscriptLocked(childID string) *claudeTranscriptDestinati
 	return destination
 }
 
+func (a *Agent) rootDestinationIsCurrent(destination *claudeTranscriptDestination, base agent.MessageContent) bool {
+	if !agent.TranscriptFrameIsCurrent(base) {
+		return false
+	}
+	a.transcripts.mu.Lock()
+	current := a.transcripts.root == destination
+	a.transcripts.mu.Unlock()
+	return current
+}
+
+func (a *Agent) childDestinationIsCurrent(childID string, destination *claudeTranscriptDestination, base agent.MessageContent) bool {
+	if !agent.TranscriptFrameIsCurrent(base) {
+		return false
+	}
+	a.transcripts.mu.Lock()
+	current := a.transcripts.children[childID] == destination
+	a.transcripts.mu.Unlock()
+	return current
+}
+
 func (a *Agent) replaceChildTranscript(childID string) {
 	a.transcripts.mu.Lock()
 	defer a.transcripts.mu.Unlock()

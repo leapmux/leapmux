@@ -307,6 +307,14 @@ type Hooks struct {
 	// The result can suppress a failure note or supply the agent's native failure frame.
 	// A stop ignores that frame and writes no failure note.
 	PromptEnded func(err error, stopped bool) PromptEnding
+	// IsCancelledTurnEnd reports whether a provider's native turn-end frame states
+	// cancellation when its wire shape differs from standard ACP stopReason fields.
+	// It must be pure and acquire no base locks because callers invoke it under b.Mu.
+	IsCancelledTurnEnd func(frame json.RawMessage) bool
+	// IdleInterrupt runs during an idle Base.Interrupt after session/cancel succeeds
+	// and idle root tools and spans have been reset. It does not run when a new turn
+	// started concurrently. No base locks are held.
+	IdleInterrupt func()
 	// DisableHostTerminal withholds the host terminal capability from the
 	// initialize request. A provider that runs its shell commands itself and
 	// would otherwise route them through the host terminal of LeapMux sets it:

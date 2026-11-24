@@ -766,7 +766,6 @@ func (a *Agent) Stop() {
 	if stopWasPending {
 		a.persistZCodeStopRow()
 	}
-	a.sink.ReportProgress(agent.ResetProgress())
 	a.resetZCodeSteers()
 	a.forgetZCodeConversation()
 }
@@ -782,7 +781,6 @@ func (a *Agent) Wait() error {
 	a.withdrawPendingControls()
 	a.cancelStoppedZCodeTurn()
 	a.finalizeZCodeProcessTranscript()
-	a.sink.ReportProgress(agent.ResetProgress())
 	a.resetZCodeSteers()
 	a.forgetZCodeConversation()
 	return err

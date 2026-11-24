@@ -24,23 +24,28 @@ func (publication *kimiConversationTurnOutput) toolCallState(itemID string) (ope
 	return opened, closed
 }
 
-// reportProgressUpdate routes turn-scoped progress during the active turn and
-// session-scoped progress for a cross-turn open tool whose owning turn ended.
-// Turn completion rotates the sink's turn scope, so the turn's captured
-// TranscriptPublication rejects updates once the turn finishes even though the
-// native session remains current.
+func (publication *kimiConversationTurnOutput) sessionCurrent() bool {
+	if publication.writer == nil || publication.progress == nil {
+		return false
+	}
+	owner := publication.progress.Owner()
+	if owner == nil {
+		return false
+	}
+	if frameOwner, ok := owner.(agent.TranscriptFrameOwner); ok {
+		return frameOwner.IsTranscriptFrameCurrent()
+	}
+	return owner.IsSessionCurrent()
+}
+
+// reportProgressUpdate routes every progress update through the turn's captured
+// TranscriptPublication so the Worker enforces turn-scoped model progress and
+// session-scoped output progress in one place.
 func (publication *kimiConversationTurnOutput) reportProgressUpdate(update agent.ProgressUpdate) {
-	if !publication.completed {
-		publication.progress.ReportProgress(update)
+	if publication.progress == nil {
 		return
 	}
-	if publication.writer == nil {
-		return
-	}
-	if owner := publication.progress.Owner(); owner == nil || !owner.IsSessionCurrent() {
-		return
-	}
-	publication.writer.ReportProgress(update)
+	publication.progress.ReportProgress(update)
 }
 
 // Delta publication reads only the accumulator needed by that field. In

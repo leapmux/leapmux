@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -1370,4 +1372,123 @@ func TestCodebuddyProcessExitClosesOpenToolsAndResetsProgress(t *testing.T) {
 	assert.Equal(t, 1, sink.ResetSpanCount())
 	assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
 	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+}
+
+type codebuddyBlockingPersistSink struct {
+	agent.ProviderServices
+	mu             sync.Mutex
+	blockSpanID    string
+	entered        chan struct{}
+	release        chan struct{}
+	enteredOnce    sync.Once
+	events         []string
+	syntheticClose bool
+}
+
+func (s *codebuddyBlockingPersistSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if span.Closing && span.SpanID == s.blockSpanID && content.Completion == "" {
+		s.enteredOnce.Do(func() { close(s.entered) })
+		<-s.release
+		err := s.ProviderServices.PersistMessage(source, content, span)
+		s.mu.Lock()
+		s.events = append(s.events, "native_persist_done")
+		s.mu.Unlock()
+		return err
+	}
+	if span.Closing && span.SpanID == s.blockSpanID && content.Completion == agent.MessageCompletionInterrupted {
+		s.mu.Lock()
+		s.syntheticClose = true
+		s.events = append(s.events, "synthetic_close")
+		s.mu.Unlock()
+	}
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func (s *codebuddyBlockingPersistSink) CloseSpan(spanID string) {
+	if spanID == s.blockSpanID {
+		s.mu.Lock()
+		s.events = append(s.events, "close_span")
+		s.mu.Unlock()
+	}
+	s.ProviderServices.CloseSpan(spanID)
+}
+
+func (s *codebuddyBlockingPersistSink) ResetSpans() {
+	s.mu.Lock()
+	s.events = append(s.events, "reset_spans")
+	s.mu.Unlock()
+	s.ProviderServices.ResetSpans()
+}
+
+type codebuddyNotifyWriter struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	written chan struct{}
+	once    sync.Once
+}
+
+func (w *codebuddyNotifyWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	n, err := w.buf.Write(p)
+	w.mu.Unlock()
+	w.once.Do(func() { close(w.written) })
+	return n, err
+}
+
+func (w *codebuddyNotifyWriter) Close() error { return nil }
+
+func TestCodebuddyIdleInterruptSerializedAgainstHandleOutput(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	writer := &codebuddyNotifyWriter{written: make(chan struct{})}
+	a.SetStdinForTest(writer)
+
+	blocking := &codebuddyBlockingPersistSink{
+		ProviderServices: a.sink,
+		blockSpanID:      "t-race",
+		entered:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	a.sink = blocking
+
+	// Open a tool, end the turn normally so the agent is idle while the tool remains open.
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t-race","name":"Bash"}]}}`))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false}`))
+
+	// Start a native tool_result on the reader side; it blocks mid-persistRaw.
+	outputDone := make(chan struct{})
+	go func() {
+		defer close(outputDone)
+		a.HandleOutput([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t-race","content":"ok"}]}}`))
+	}()
+	<-blocking.entered
+
+	// Fire idle Interrupt concurrently while persistRaw is mid-flight.
+	interruptErr := make(chan error, 1)
+	go func() {
+		interruptErr <- a.Interrupt(agent.StopContext{})
+	}()
+	<-writer.written
+
+	// Wait briefly to confirm Interrupt cannot finish ahead of HandleOutput, then release HandleOutput.
+	select {
+	case err := <-interruptErr:
+		close(blocking.release)
+		<-outputDone
+		t.Fatalf("idle Interrupt completed while HandleOutput was still blocked in PersistMessage (err=%v)", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(blocking.release)
+	<-outputDone
+	require.NoError(t, <-interruptErr)
+
+	blocking.mu.Lock()
+	events := append([]string(nil), blocking.events...)
+	synthetic := blocking.syntheticClose
+	blocking.mu.Unlock()
+
+	assert.False(t, synthetic, "serialized idle Interrupt must not emit a duplicate synthetic closing row after native tool_result")
+	assert.Equal(t, []string{"native_persist_done", "close_span", "reset_spans"}, events)
 }

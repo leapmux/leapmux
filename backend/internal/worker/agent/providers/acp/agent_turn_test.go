@@ -364,7 +364,9 @@ func TestAgentTurn_EndWithoutRowAfterThePromptDrainStoresTheOutputOfTheWork(t *t
 	require.NoError(t, b.SendInput("hi", nil))
 	require.True(t, b.BeginAgentTurn())
 	b.HandleOutput(acptest.Chunk("session-1", "agent_message_chunk", "Work."))
-	turn, bounded := b.drainPromptTurn()
+	b.turnMu.Lock()
+	turn, bounded := b.drainPromptTurnLocked(false)
+	b.turnMu.Unlock()
 	require.True(t, bounded)
 	require.Empty(t, turn.assistantText)
 
@@ -977,7 +979,7 @@ func TestACPTurnOutput_ASecondBoundaryChangesNothing(t *testing.T) {
 	output.appendAssistant("prompt text", "")
 	output.rememberIncompleteTool("prompt-tool", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"prompt-tool"`)},
 		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","status":"pending"}`), nil)
-	output.completeTool("done-tool")
+	output.claimFinalTool("done-tool")
 
 	output.turnMu.Lock()
 	prefix := output.markPromptBoundaryLocked()
@@ -994,7 +996,9 @@ func TestACPTurnOutput_ASecondBoundaryChangesNothing(t *testing.T) {
 	assert.Empty(t, prefix.assistantText, "a second boundary takes no text of the agent turn")
 	assert.Empty(t, prefix.thoughtText)
 
-	prompt, bounded := output.drainPromptTurn()
+	output.turnMu.Lock()
+	prompt, bounded := output.drainPromptTurnLocked(false)
+	output.turnMu.Unlock()
 	require.True(t, bounded)
 	assert.Empty(t, prompt.assistantText)
 	assert.Equal(t, 1, prompt.completedToolUses, "the prompt keeps the count of the first boundary")

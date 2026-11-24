@@ -178,4 +178,35 @@ func TestCodexYieldedChildOutputSurvivesRegistryCompletion(t *testing.T) {
 		assert.Empty(t, codexSpanRows(sink.Messages(), "child-cell"))
 		assert.Empty(t, a.rawExecutionCalls)
 	})
+
+	t.Run("interrupted completion resets child spans and progress even when registry close fails", func(t *testing.T) {
+		t.Parallel()
+		base := &agenttest.Sink{}
+		sink := &codexCloseTaskFailSink{Sink: base}
+		a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+		a.mainTurn.id = "root-turn"
+		feedCodexLines(a,
+			`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/child"}}}`,
+			`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`,
+		)
+		childSink := base.Child("child-of-spawn")
+		require.NotNil(t, childSink)
+		childSink.OpenSpan("orphan-span", "")
+		childSink.ReportProgress(agentapi.ModelTextProgress("scope-1", "thinking text"))
+
+		a.outputMu.Lock()
+		a.completeCodexChildRun("child-thread", codexChildTransition{status: bgtask.StatusStopped, completion: agentapi.MessageCompletionInterrupted})
+		a.outputMu.Unlock()
+
+		assert.Equal(t, 1, childSink.ResetSpanCount())
+		assert.Equal(t, agentapi.ProgressSnapshot{}, childSink.ProgressSnapshot())
+	})
+}
+
+type codexCloseTaskFailSink struct {
+	*agenttest.Sink
+}
+
+func (s *codexCloseTaskFailSink) CloseBackgroundTask(string, bgtask.Status) error {
+	return assert.AnError
 }

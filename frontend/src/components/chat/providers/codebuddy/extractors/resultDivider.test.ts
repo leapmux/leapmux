@@ -31,7 +31,7 @@ describe('codebuddyResultDivider', () => {
       is_error: true,
       errors: ['Interrupted'],
     }, MessageCompletion.INTERRUPTED))
-      .toEqual({ label: 'Turn interrupted', interrupted: true })
+      .toEqual({ label: 'Turn interrupted' })
     expect(codebuddyResultDivider({
       type: 'result',
       is_error: false,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 func TestTurnEndPreservesUnfinishedGeneration(t *testing.T) {
@@ -81,6 +82,10 @@ func TestDroidFinishOutputAndChildCloseResetSpansAndProgress(t *testing.T) {
 		assert.Equal(t, "droid-tool-exit-1", rows[1].SpanID)
 		assert.True(t, rows[1].Closing)
 		assert.Equal(t, agent.MessageCompletionError, rows[1].Completion)
+		var closingBody map[string]any
+		require.NoError(t, json.Unmarshal(rows[1].Content, &closingBody))
+		_, hasContent := closingBody["content"]
+		assert.False(t, hasContent, "synthetic closing tool_result must omit content so the frontend leaves call.result undefined")
 		assert.Equal(t, 1, sink.ResetSpanCount())
 		assert.Equal(t, agent.ProgressSnapshot{}, sink.ProgressSnapshot())
 	})
@@ -105,5 +110,64 @@ func TestDroidFinishOutputAndChildCloseResetSpansAndProgress(t *testing.T) {
 		}
 		require.Len(t, closing, 1)
 		assert.Equal(t, agent.MessageCompletionError, closing[0].Completion)
+		var closingBody map[string]any
+		require.NoError(t, json.Unmarshal(closing[0].Content, &closingBody))
+		_, hasContent := closingBody["content"]
+		assert.False(t, hasContent, "synthetic closing tool_result must omit content")
 	})
+}
+
+func TestDroidChildTurnEndClosesToolsBeforeDividerAndRegistryClose(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		reason     string
+		completion agent.MessageCompletion
+		wantError  bool
+	}{
+		{"completed", "completed", agent.MessageCompletionComplete, false},
+		{"error", "error", agent.MessageCompletionError, true},
+		{"cancelled", "cancelled", agent.MessageCompletionInterrupted, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSteerAgent(t)
+			a.HandleOutput([]byte(droidChildAvailable))
+			task, found := sink.BackgroundTask("child-1")
+			require.True(t, found)
+			child := sink.Child(task.ChildAgentID)
+
+			var rowsAtClose []agenttest.Message
+			sink.OnCloseBackgroundTask = func(rowKey string, _ bgtask.Status) {
+				if rowKey == "child-1" {
+					rowsAtClose = append([]agenttest.Message(nil), child.Messages()...)
+				}
+			}
+
+			a.HandleOutput(droidAuditNotification(t, "child-1", []byte(`{"type":"tool_call","toolUse":{"id":"c-tool","name":"Read","input":{"file_path":"x.txt"}}}`)))
+			a.HandleOutput(droidAuditNotification(t, "child-1", []byte(`{"type":"agent_turn_completed","reason":"`+tc.reason+`"}`)))
+
+			require.NotEmpty(t, rowsAtClose, "child transcript rows must be persisted before CloseBackgroundTask")
+			closingIdx, turnEndIdx := -1, -1
+			for i, row := range rowsAtClose {
+				if row.SpanID == "droid-tool-c-tool" && row.Closing {
+					closingIdx = i
+				}
+				if row.TurnEnd {
+					turnEndIdx = i
+				}
+			}
+			require.NotEqual(t, -1, closingIdx, "closing tool row must be persisted before CloseBackgroundTask")
+			require.NotEqual(t, -1, turnEndIdx, "turn-end divider must be persisted before CloseBackgroundTask")
+			assert.Less(t, closingIdx, turnEndIdx, "closing tool row must precede the turn-end divider")
+			assert.Equal(t, tc.completion, rowsAtClose[closingIdx].Completion)
+			var closingBody map[string]any
+			require.NoError(t, json.Unmarshal(rowsAtClose[closingIdx].Content, &closingBody))
+			_, hasContent := closingBody["content"]
+			assert.False(t, hasContent, "synthetic closing tool_result must omit content")
+			assert.Equal(t, tc.wantError, closingBody["isError"])
+			assert.Equal(t, 1, child.ResetSpanCount())
+			assert.Equal(t, agent.ProgressSnapshot{}, child.ProgressSnapshot())
+		})
+	}
 }

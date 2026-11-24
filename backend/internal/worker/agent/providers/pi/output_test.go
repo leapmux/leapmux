@@ -2332,3 +2332,34 @@ func TestPiLateToolExecutionEndAfterInterruptSuppressed(t *testing.T) {
 	a.Mu.Unlock()
 	assert.Zero(t, toolUses)
 }
+
+func TestPiNormalAndErrorAgentEndClearStartlessUpdatesWithoutDroppingOpenTools(t *testing.T) {
+	t.Parallel()
+	for _, stopReason := range []string{"stop", "error"} {
+		t.Run(stopReason, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithSink(agent.NewProviderServices(sink))
+
+			a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"tc-open","toolName":"bash","args":{"command":"sleep 30"}}`))
+			a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"tc-open","toolName":"bash","partialResult":{"content":[{"type":"text","text":"running..."}]}}`))
+			a.HandleOutput([]byte(`{"type":"tool_execution_update","toolCallId":"orphan","toolName":"bash","partialResult":{"content":[{"type":"text","text":"orphan output"}]}}`))
+			require.True(t, a.HasCumulativeOutputForTest("tc-open"))
+			require.True(t, a.HasCumulativeOutputForTest("orphan"))
+
+			a.HandleOutput([]byte(`{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"` + stopReason + `"}]}`))
+			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+
+			assert.False(t, a.HasCumulativeOutputForTest("orphan"), "startless update cumulative output must be released on %s agent_end", stopReason)
+			assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("orphan"))
+			assert.True(t, a.HasCumulativeOutputForTest("tc-open"), "started open tool cumulative output must survive %s agent_end", stopReason)
+			assert.NotContains(t, sink.ClosedSpans(), "tc-open")
+			a.Mu.Lock()
+			_, orphanPresent := a.toolStates["orphan"]
+			_, openPresent := a.toolStates["tc-open"]
+			a.Mu.Unlock()
+			assert.False(t, orphanPresent)
+			assert.True(t, openPresent)
+		})
+	}
+}

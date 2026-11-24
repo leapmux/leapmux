@@ -175,17 +175,60 @@ type mimoRootProgressSink struct {
 	owner *Agent
 }
 
+func (a *Agent) fallbackChildModelScopesLocked() []string {
+	var scopes []string
+	for partID, state := range a.parts {
+		if state.actorID == "" || state.actorID == mainActorID || state.skip || state.progressTarget == nil || state.progressTarget.childID != "" {
+			continue
+		}
+		if record := a.messages[state.messageID]; record != nil && record.sessionID != a.sessionID {
+			continue
+		}
+		scopes = append(scopes, progressScope(partID))
+	}
+	return scopes
+}
+
+func (a *Agent) processExited() bool {
+	done := a.ProcessDone()
+	if done == nil {
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s mimoRootProgressSink) ReportProgress(update agent.ProgressUpdate) {
-	if update.Operation == agent.ProgressModelReset && update.ScopeID == "" {
-		preserved := slices.Clone(update.PreserveModelScopes)
+	switch update.Operation {
+	case agent.ProgressModelReset:
+		if update.ScopeID == "" {
+			s.owner.Mu.Lock()
+			preserved := append(slices.Clone(update.PreserveModelScopes), s.owner.fallbackChildModelScopesLocked()...)
+			s.owner.Mu.Unlock()
+			update.PreserveModelScopes = preserved
+		}
+	case agent.ProgressReset:
 		s.owner.Mu.Lock()
-		for partID, state := range s.owner.parts {
-			if state.actorID != "" && state.actorID != mainActorID && !state.skip && state.progressTarget != nil && state.progressTarget.childID == "" {
-				preserved = append(preserved, progressScope(partID))
+		var preserved []string
+		hasFallbackTool := false
+		if !s.owner.StoppedLocked() && !s.owner.processExited() {
+			preserved = s.owner.fallbackChildModelScopesLocked()
+			for _, call := range s.owner.tools {
+				if call.actorID != mainActorID && call.progressTarget != nil && call.progressTarget.childID == "" && call.lastFrame != nil && call.sessionID == s.owner.sessionID {
+					hasFallbackTool = true
+					break
+				}
 			}
 		}
 		s.owner.Mu.Unlock()
-		update.PreserveModelScopes = preserved
+		if len(preserved) > 0 || hasFallbackTool {
+			update = agent.ResetModelProgressPreservingScopes(preserved)
+		}
+	default:
 	}
 	s.ProviderServices.ReportProgress(update)
 }

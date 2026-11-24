@@ -52,8 +52,12 @@ type Agent struct {
 	interruptAttempt  uint64
 	turnGeneration    uint64
 	interruptOutput   piInterruptOutput
-	heldDivider       *piHeldDivider
-	steers            providerkit.SteerLedger
+	// outputMu serializes dispatched output handling with idle-interrupt and
+	// process-exit transcript cleanup. Acquire it before a.Mu and never hold it
+	// across interruptOutput.mu, sessionMu, or settleOpenDialogs.
+	outputMu    sync.Mutex
+	heldDivider *piHeldDivider
+	steers      providerkit.SteerLedger
 	// turnStartedAt records the first agent_start until agent_settled.
 	// The final divider includes all runs and compaction in that interval.
 	// A zero value means the worker did not observe the start, so the divider omits duration.

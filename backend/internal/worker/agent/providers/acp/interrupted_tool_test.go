@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -343,4 +344,135 @@ func TestACPRPCErrorAfterStopResetsSpans(t *testing.T) {
 	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closingRows(sink, "call-err"))
 	assert.Contains(t, sink.TurnLifecycle(), "reset_spans")
 	assert.Contains(t, sink.ProgressUpdates(), agent.ResetProgress())
+}
+
+func TestACPDuplicateInlineFinalToolCallSkipsHookAndSubagentRowLeak(t *testing.T) {
+	t.Parallel()
+
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	var hookCalls int
+	b.hooks.SubagentFromToolCall = func(tc ToolCallEnvelope) *SubagentObservation {
+		hookCalls++
+		return &SubagentObservation{
+			RowKey: "row-" + tc.ToolCallID,
+			Title:  tc.Title,
+			Status: bgtask.StatusRunning,
+		}
+	}
+
+	frame := json.RawMessage(`{"toolCallId":"call-dup","kind":"execute","title":"Run","status":"completed"}`)
+	b.main().handleToolCall(frame)
+	b.main().handleToolCall(frame)
+
+	assert.Equal(t, 1, hookCalls, "duplicate inline-final tool_call must not re-invoke SubagentFromToolCall")
+	b.turnMu.Lock()
+	leakedRows := len(b.toolSubagentRows)
+	b.turnMu.Unlock()
+	assert.Zero(t, leakedRows, "duplicate inline-final tool_call must not leak toolSubagentRows")
+	assert.Equal(t, []agent.MessageCompletion{""}, closingRows(sink, "call-dup"))
+}
+
+type failingWriteCloser struct {
+	err error
+}
+
+func (f failingWriteCloser) Write([]byte) (int, error) { return 0, f.err }
+func (f failingWriteCloser) Close() error              { return nil }
+
+func TestACPIdleInterruptCancelErrorDoesNotMutateState(t *testing.T) {
+	t.Parallel()
+
+	for _, cancelBefore := range []bool{true, false} {
+		name := "cancel_after_withdrawal"
+		if cancelBefore {
+			name = "cancel_before_withdrawal"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cancelWriteErr := errors.New("stdin broken")
+			b, _ := newACPTurnBase(t, failingWriteCloser{err: cancelWriteErr})
+			sink := &agenttest.ControlSink{}
+			b.sink = agent.NewProviderServices(sink)
+			b.hooks.CancelBeforeControlWithdrawal = cancelBefore
+
+			b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-bg","kind":"execute","title":"Sleep"}`))
+			require.True(t, b.HasOpenRootTool("call-bg"))
+			b.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"session-1","options":[{"optionId":"allow_once","kind":"allow_once","name":"allow_once"}]}}`))
+			require.Equal(t, 1, sink.PublishedControlCount())
+
+			err := b.Interrupt(agent.StopContext{})
+			require.ErrorIs(t, err, cancelWriteErr)
+			assert.True(t, b.HasOpenRootTool("call-bg"), "failed cancel must keep open tools untouched")
+			assert.Empty(t, closingRows(&sink.Sink, "call-bg"), "failed cancel must not write closing rows")
+			assert.NotContains(t, sink.TurnLifecycle(), "reset_spans", "failed cancel must not reset spans")
+			assert.NotContains(t, sink.ProgressUpdates(), agent.ResetProgress(), "failed cancel must not reset progress")
+			if cancelBefore {
+				assert.Empty(t, sink.CanceledControls(), "CancelBeforeControlWithdrawal must not withdraw controls when cancel fails")
+			}
+		})
+	}
+}
+
+func TestACPNativeCloseAllowsToolNotificationAndReuseWhileForcedDropsAll(t *testing.T) {
+	t.Parallel()
+
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	var notifications []string
+	b.hooks.ToolNotification = func(tcu ToolCallUpdateEnvelope) bool {
+		notifications = append(notifications, tcu.ToolCallID)
+		return true
+	}
+
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-native","kind":"execute","title":"Delegate"}`))
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-native","status":"completed"}`))
+	notifications = nil
+	// Duplicate final update must not write a second closing row, CloseSpan, or ToolNotification.
+	closedBefore := len(sink.ClosedSpans())
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-native","status":"completed"}`))
+	assert.Equal(t, []agent.MessageCompletion{""}, closingRows(sink, "call-native"))
+	assert.Equal(t, closedBefore, len(sink.ClosedSpans()), "duplicate final update must not emit a second CloseSpan")
+	assert.Empty(t, notifications, "duplicate final update must not re-invoke ToolNotification")
+
+	// Non-final update after a native close must still reach ToolNotification.
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-native","status":"in_progress"}`))
+	assert.Equal(t, []string{"call-native"}, notifications, "native close must not block ToolNotification on late non-final updates")
+
+	// Genuine toolCallId reuse via a new non-final tool_call must reopen cleanly.
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-native","kind":"execute","title":"Reuse"}`))
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-native","status":"completed"}`))
+	assert.Equal(t, []agent.MessageCompletion{"", ""}, closingRows(sink, "call-native"))
+	assert.Equal(t, 2, b.TurnToolUsesForTest(), "reused toolCallId must count its second completion")
+
+	// Forced close via idle Interrupt must drop ToolNotification and late final updates.
+	notifications = nil
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-forced","kind":"execute","title":"Sleep"}`))
+	require.NoError(t, b.Interrupt(agent.StopContext{}))
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-forced","status":"in_progress"}`))
+	b.main().handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-forced","status":"completed"}`))
+	assert.Empty(t, notifications, "forced close must drop late ToolNotification updates")
+	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closingRows(sink, "call-forced"))
+}
+
+func TestACPWrappedResultEnvelopeCancelledStopReasonClosesOpenTools(t *testing.T) {
+	t.Parallel()
+
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	var endedStopped bool
+	b.hooks.PromptEnded = func(_ error, stopped bool) PromptEnding {
+		endedStopped = stopped
+		return PromptEnding{}
+	}
+	b.Mu.Lock()
+	b.promptActive = true
+	b.Mu.Unlock()
+	b.main().handleToolCall(json.RawMessage(`{"toolCallId":"call-wrapped","kind":"execute","title":"Sleep"}`))
+
+	b.finishPromptRequest("session-1", json.RawMessage(`{"role":"result","content":{"stopReason":"cancelled"}}`), nil)
+	assert.True(t, endedStopped, "wrapped cancelled envelope must pass stopped=true to PromptEnded")
+	assert.Equal(t, []agent.MessageCompletion{agent.MessageCompletionInterrupted}, closingRows(sink, "call-wrapped"))
+	assert.False(t, b.HasOpenRootTool("call-wrapped"))
 }

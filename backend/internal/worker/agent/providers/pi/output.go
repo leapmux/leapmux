@@ -330,6 +330,9 @@ func (a *Agent) handlePiAgentEnd(raw []byte) {
 	if willRetry {
 		providerkit.DiscardGenerationScopes(&a.generationBuffer, a.sink, a.generationBuffer.ScopeIDs())
 		a.sink.ReportProgress(agent.ResetModelProgress())
+		a.Mu.Lock()
+		a.clearPiQuestionStateLocked()
+		a.Mu.Unlock()
 	} else {
 		completion := env.retainedCompletion()
 		if interrupted {
@@ -343,6 +346,7 @@ func (a *Agent) handlePiAgentEnd(raw []byte) {
 			a.Mu.Lock()
 			a.clearPiQuestionStateLocked()
 			a.Mu.Unlock()
+			a.clearStartlessPiTools()
 		}
 	}
 	a.Mu.Lock()
@@ -885,6 +889,26 @@ func (a *Agent) discardIncompletePiTools() {
 	a.nextToolOrder = 0
 	a.Mu.Unlock()
 	a.toolCallPrompts.Clear()
+}
+
+// clearStartlessPiTools releases tool_execution_update state and cumulative
+// output counters for calls that never observed a tool_execution_start, while
+// preserving started open tools across normal and error turn endings.
+func (a *Agent) clearStartlessPiTools() {
+	a.Mu.Lock()
+	var orphanIDs []string
+	for toolCallID, tool := range a.toolStates {
+		if tool == nil || len(tool.StartFrame) == 0 {
+			delete(a.toolStates, toolCallID)
+			orphanIDs = append(orphanIDs, toolCallID)
+		}
+	}
+	a.Mu.Unlock()
+	sort.Strings(orphanIDs)
+	for _, toolCallID := range orphanIDs {
+		a.ClearCumulativeOutput(toolCallID)
+		a.sink.ReportProgress(agent.CompleteOutputProgress(toolCallID))
+	}
 }
 
 func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {

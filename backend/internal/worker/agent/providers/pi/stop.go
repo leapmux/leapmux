@@ -37,11 +37,13 @@ func (a *Agent) Stop() {
 		<-abortDone
 	}
 	a.interruptOutput.waitForDrain()
+	a.outputMu.Lock()
 	completion := a.ProcessExitCompletion()
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	providerkit.ResetSpansAndProgress(a.sink)
+	a.outputMu.Unlock()
 }
 
 // requestPiShutdownAbort permits delivery until its deadline, then returns the helper's completion channel.
@@ -80,11 +82,13 @@ func (a *Agent) Wait() error {
 	a.interruptOutput.waitForDrain()
 	a.stopPiGoalRefresh()
 	a.dialogDeadlines.StopAll()
+	a.outputMu.Lock()
 	completion := a.ProcessExitCompletion()
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	providerkit.ResetSpansAndProgress(a.sink)
+	a.outputMu.Unlock()
 	return err
 }
 
@@ -108,6 +112,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if !turnActive {
 		settleErr := a.settleOpenDialogs(scope, stop)
 		if settleErr == nil {
+			a.outputMu.Lock()
 			a.Mu.Lock()
 			stillIdle := !a.currentTurnActive && !a.StoppedLocked() && a.turnGeneration == scope.turnGeneration
 			a.Mu.Unlock()
@@ -116,6 +121,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 				a.ResetCumulativeOutput()
 				providerkit.ResetSpansAndProgress(a.sink)
 			}
+			a.outputMu.Unlock()
 		}
 		return settleErr
 	}

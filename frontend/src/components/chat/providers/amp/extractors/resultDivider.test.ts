@@ -53,7 +53,7 @@ describe('ampResultDivider', () => {
       is_error: true,
       error: 'User cancelled (SIGINT/SIGTERM)',
     }, MessageCompletion.INTERRUPTED))
-      .toEqual({ label: 'Turn interrupted', interrupted: true })
+      .toEqual({ label: 'Turn interrupted' })
   })
 
   it('answers null for another row', () => {

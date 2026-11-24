@@ -422,54 +422,62 @@ func (a *Agent) finishCascades(states []*cascadeState, completion agent.MessageC
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	root := a.root
-	if root == nil || !a.cascadeCurrentLocked(root) {
+	a.Mu.Unlock()
+	return a.interruptCascade(root, stop, "Antigravity turn")
+}
+
+func (a *Agent) interruptCascade(state *cascadeState, stop agent.StopContext, cancelLabel string) error {
+	a.Mu.Lock()
+	if state == nil || !a.cascadeCurrentLocked(state) || (state.parent != nil && state.closed) {
 		a.Mu.Unlock()
 		return nil
 	}
-	active := root.turnPhase != cascadeTurnIdle || root.sendInFlight
+	active := state.turnPhase != cascadeTurnIdle || state.sendInFlight
 	var interruptGen uint64
 	if active {
-		root.interruptGen++
-		interruptGen = root.interruptGen
-		root.interrupted = true
+		state.interruptGen++
+		interruptGen = state.interruptGen
+		state.interrupted = true
 	}
 	a.Mu.Unlock()
-	// An idle foreground can still own native background tasks. Their cancellation
+	// An idle cascade can still own native background tasks. Their cancellation
 	// must reach the runtime even when the local turn already ended.
-	if err := a.rpc.cancel(a.Context(), root.id); err != nil {
+	if err := a.rpc.cancel(a.Context(), state.id); err != nil {
 		if active {
 			a.Mu.Lock()
-			if root.interruptGen == interruptGen {
-				root.interrupted = false
+			if state.interruptGen == interruptGen {
+				state.interrupted = false
 			}
 			a.Mu.Unlock()
 		}
-		return fmt.Errorf("cancel the Antigravity turn: %w", err)
+		return fmt.Errorf("cancel the %s: %w", cancelLabel, err)
 	}
 	if !active {
+		state.updateMu.Lock()
+		defer state.updateMu.Unlock()
 		a.Mu.Lock()
-		stillIdle := a.cascadeCurrentLocked(root) && !root.closed && root.turnPhase == cascadeTurnIdle && !root.sendInFlight
+		stillIdle := a.cascadeCurrentLocked(state) && !state.closed && state.turnPhase == cascadeTurnIdle && !state.sendInFlight
 		a.Mu.Unlock()
 		if !stillIdle {
 			return nil
 		}
 		if !a.IsDiscardingOutput() {
-			if err := a.flushOpenSteps(root, agent.MessageCompletionInterrupted, true); err != nil {
+			if err := a.flushOpenSteps(state, agent.MessageCompletionInterrupted, true); err != nil {
 				slog.Error("antigravity flush idle interrupted steps", "agent_id", a.AgentID(), "error", err)
 			}
 		}
 		a.Mu.Lock()
-		current := a.cascadeCurrentLocked(root)
-		hasBackground := len(root.background) > 0
+		stillIdle = a.cascadeCurrentLocked(state) && !state.closed && state.turnPhase == cascadeTurnIdle && !state.sendInFlight
+		hasBackground := len(state.background) > 0
 		a.Mu.Unlock()
-		if !current {
+		if !stillIdle {
 			return nil
 		}
 		if hasBackground {
-			root.sink.ReportProgress(agent.ResetModelProgress())
+			state.sink.ReportProgress(agent.ResetModelProgress())
 			stop.PreserveOpenSpans()
 		} else {
-			providerkit.ResetSpansAndProgress(root.sink)
+			providerkit.ResetSpansAndProgress(state.sink)
 		}
 	}
 	return nil

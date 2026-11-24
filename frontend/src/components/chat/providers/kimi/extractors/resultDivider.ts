@@ -19,7 +19,6 @@ export function kimiResultDivider(parsed: unknown): TurnEnd | null {
       case KIMI_CONVERSATION_OUTCOME.Interrupted:
         return {
           label: turnEndLabel('interrupted', { durationMs }),
-          interrupted: true,
         }
       default:
         return {

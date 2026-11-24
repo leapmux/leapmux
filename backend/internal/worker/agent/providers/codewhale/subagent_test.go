@@ -89,7 +89,7 @@ func TestChildFinalizationRetainsFailedWrites(t *testing.T) {
 				}})
 				child := &codewhaleChild{
 					agentID: testChildID, childID: "retained-child", title: "counter", answer: "The retained report.",
-					path: filepath.Join(t.TempDir(), "absent.jsonl"), nudge: make(chan struct{}, 1), openTools: map[string]string{},
+					path: filepath.Join(t.TempDir(), "absent.jsonl"), nudge: make(chan struct{}, 1),
 				}
 				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 					Role: bgtask.RoleChildTask,
@@ -292,7 +292,7 @@ func TestSettleChildPreservesTranscriptWatcherOwnership(t *testing.T) {
 	}})
 	child := &codewhaleChild{
 		agentID: testChildID, childID: "settled-child", title: "counter",
-		path: filepath.Join(t.TempDir(), "child.jsonl"), nudge: make(chan struct{}, 1), openTools: map[string]string{},
+		path: filepath.Join(t.TempDir(), "child.jsonl"), nudge: make(chan struct{}, 1),
 	}
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		Role: bgtask.RoleChildTask,
@@ -425,11 +425,10 @@ func TestInterruptedChildRunResumesWithoutClosingItsRegistryRow(t *testing.T) {
 	rt := newFakeRuntime(t)
 	a, sink := newTestAgent(t, rt)
 	child := &codewhaleChild{
-		agentID:   testChildID,
-		childID:   "child-1",
-		path:      filepath.Join(t.TempDir(), "absent.jsonl"),
-		nudge:     make(chan struct{}, 1),
-		openTools: map[string]string{},
+		agentID: testChildID,
+		childID: "child-1",
+		path:    filepath.Join(t.TempDir(), "absent.jsonl"),
+		nudge:   make(chan struct{}, 1),
 	}
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		Role: bgtask.RoleChildTask,
@@ -664,7 +663,7 @@ func TestAnOverlongTranscriptRecordIsDropped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "child.jsonl")
 	overlong := childMaxLine + childReadChunk
 	appendTranscript(t, path, strings.Repeat("x", overlong))
-	child := &codewhaleChild{agentID: testChildID, childID: "child-1", path: path, nextIndex: 1, openTools: map[string]string{}}
+	child := &codewhaleChild{agentID: testChildID, childID: "child-1", path: path, nextIndex: 1}
 	childSink := sink.ChildSink("child-1")
 
 	for i := 0; i < 10 && child.offset < int64(overlong); i++ {
@@ -715,7 +714,7 @@ func TestTheTranscriptReaderRefusesAnythingButItsOwnFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(target, []byte(transcriptLine(t, 1, "assistant", map[string]any{"type": "text", "text": "Leaked."})), 0o600))
 	link := filepath.Join(dir, "link.jsonl")
 	require.NoError(t, os.Symlink(target, link))
-	child := &codewhaleChild{agentID: testChildID, childID: "child-1", path: link, openTools: map[string]string{}}
+	child := &codewhaleChild{agentID: testChildID, childID: "child-1", path: link}
 	a.tailChildTranscript(sink.ChildSink("child-1"), child)
 	assert.Empty(t, sink.Child("child-1").Messages(), "a link is never followed")
 
@@ -729,7 +728,7 @@ func TestTheTranscriptReaderStartsOverOnAReplacedFile(t *testing.T) {
 	a, sink := newTestAgent(t, nil)
 	path := filepath.Join(t.TempDir(), "child.jsonl")
 	appendTranscript(t, path, transcriptLine(t, 1, "assistant", map[string]any{"type": "text", "text": "One."})+transcriptLine(t, 2, "assistant", map[string]any{"type": "text", "text": "Two."}))
-	child := &codewhaleChild{agentID: testChildID, childID: "child-1", path: path, nextIndex: 1, openTools: map[string]string{}}
+	child := &codewhaleChild{agentID: testChildID, childID: "child-1", path: path, nextIndex: 1}
 	childSink := sink.ChildSink("child-1")
 	a.tailChildTranscript(childSink, child)
 	require.Len(t, sink.Child("child-1").Messages(), 2)
@@ -807,7 +806,7 @@ func TestWorkflowRunStatus(t *testing.T) {
 func TestChildRowsStayInTheChildTranscript(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
-	child := &codewhaleChild{agentID: testChildID, childID: "child-1", nextIndex: 1, openTools: map[string]string{}}
+	child := &codewhaleChild{agentID: testChildID, childID: "child-1", nextIndex: 1}
 	a.persistChildRecord(sink.ChildSink("child-1"), child, []byte(transcriptLine(t, 1, "assistant", map[string]any{"type": "text", "text": "Mine."})))
 	assert.Empty(t, sink.Messages())
 	assert.Len(t, sink.Child("child-1").Messages(), 1)

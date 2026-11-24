@@ -276,4 +276,46 @@ func TestAntigravityFatalCascadeClosesOpenToolStepsAndResetsSpans(t *testing.T) 
 		require.NotEqual(t, -1, dividerIndex, "fatal root cascade must persist turn-end divider")
 		assert.Less(t, closingIndex, dividerIndex, "tool closing row must precede the turn-end divider")
 	})
+
+	t.Run("fatal root cascade with open background task and child closes steps before error turn end without intentional stop", func(t *testing.T) {
+		t.Parallel()
+		a, sink, child := childLifecycleTestAgent(t)
+		exited := make(chan struct{})
+		close(exited)
+		a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), ProcessDone: exited})
+		cmd := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":{"toolCall":{"id":"cmd-root-bg"}},"runCommand":{"command":"sleep 30"}}`)
+		feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{cmd}))
+		a.Mu.Lock()
+		a.root.background[0] = backgroundTask{rowKey: "bg-shell", title: "sleep 30", stepIndex: 0}
+		a.Mu.Unlock()
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "bg-shell", Kind: bgtask.KindShell, Title: "sleep 30", Status: bgtask.StatusRunning}))
+		require.Equal(t, cascadeTurnActive, a.root.turnPhase)
+
+		a.fatalCascade(a.root, errors.New("root stream lost"))
+		require.Eventually(t, a.IsStopped, 5*time.Second, 5*time.Millisecond)
+
+		assert.Equal(t, agent.MessageCompletionError, a.ProcessExitCompletion(), "fatal root stream loss must classify exit as error, not interrupted")
+		bgRow, ok := sink.BackgroundTask("bg-shell")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, bgRow.Status, "fatal root stream loss must fail the open background task")
+		childRow, ok := sink.BackgroundTask(child.id)
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusFailed, childRow.Status, "fatal root stream loss must fail open child rows")
+
+		closingIndex, dividerIndex := -1, -1
+		var dividerCompletion agent.MessageCompletion
+		for i, msg := range sink.Messages() {
+			if msg.SpanID == "cmd-root-bg" && msg.Closing {
+				closingIndex = i
+			}
+			if msg.TurnEnd {
+				dividerIndex = i
+				dividerCompletion = msg.Completion
+			}
+		}
+		require.NotEqual(t, -1, closingIndex, "fatal root cascade must persist background tool closing row")
+		require.NotEqual(t, -1, dividerIndex, "fatal root cascade must persist turn-end divider")
+		assert.Less(t, closingIndex, dividerIndex, "background tool closing row must precede the turn-end divider")
+		assert.Equal(t, agent.MessageCompletionError, dividerCompletion)
+	})
 }

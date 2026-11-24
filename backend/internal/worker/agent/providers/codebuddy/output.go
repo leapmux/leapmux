@@ -22,6 +22,8 @@ func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {
 
 // handleOutput dispatches one NDJSON frame.
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	if a.consumeResumeFrame(line) {
 		return
 	}
@@ -300,7 +302,7 @@ func (a *Agent) handleResult(raw []byte) {
 		providerkit.PersistCompactionEnded(a.sink, outcome, "")
 	}
 	if interrupted {
-		a.closeOpenTools(agent.MessageCompletionInterrupted, false)
+		a.closeOpenToolsLocked(agent.MessageCompletionInterrupted, false, false)
 	}
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("codebuddy: persist turn end failed", "agent_id", a.AgentID(), "error", err)
@@ -739,11 +741,7 @@ func (a *Agent) persistRaw(raw []byte) {
 			a.mu.Lock()
 			allClosed := true
 			for _, id := range ids {
-				if _, open := a.openTools.Get(id); open {
-					allClosed = false
-					break
-				}
-				if _, _, closed := a.openTools.CompleteNative(id); !closed {
+				if !a.openTools.WasClosed(id) {
 					allClosed = false
 					break
 				}
@@ -776,16 +774,20 @@ func (a *Agent) persistRaw(raw []byte) {
 		return
 	}
 	seen := make(map[string]struct{})
+	var clonedRaw []byte
 	for _, block := range frame.Message.Content {
 		if frame.Type == contracts.CodebuddyFrameKindAssistant && block.Type == "tool_use" && strings.TrimSpace(block.ID) != "" && block.Name != "" {
 			if _, duplicate := seen[block.ID]; duplicate {
 				continue
 			}
 			seen[block.ID] = struct{}{}
+			if clonedRaw == nil {
+				clonedRaw = bytes.Clone(raw)
+			}
 			a.sink.SetSpanType(block.ID, block.Name)
 			a.sink.OpenSpan(block.ID, frame.ParentToolUseID)
 			a.mu.Lock()
-			a.openTools.Open(block.ID, block.Name, false, bytes.Clone(raw))
+			a.openTools.Open(block.ID, block.Name, false, clonedRaw)
 			a.mu.Unlock()
 		}
 		if frame.Type == contracts.CodebuddyFrameKindUser && block.Type == "tool_result" && strings.TrimSpace(block.ToolUseID) != "" {

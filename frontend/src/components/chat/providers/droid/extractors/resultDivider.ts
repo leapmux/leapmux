@@ -24,7 +24,6 @@ export function droidResultDivider(parsed: unknown, completion?: MessageCompleti
     return {
       label: turnEndLabel('interrupted'),
       isError: true,
-      interrupted: true,
     }
   }
   if (completion === MessageCompletion.ERROR) {

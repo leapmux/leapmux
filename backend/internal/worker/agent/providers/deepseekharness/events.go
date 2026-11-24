@@ -13,7 +13,6 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 type sessionStream struct {
@@ -440,10 +439,7 @@ func (a *Agent) reportStreamFailure(err error) {
 	a.streamFailure = err
 	stopDone := make(chan struct{})
 	a.failureStopDone = stopDone
-	streams := make([]*sessionStream, 0, len(a.streams))
-	for _, stream := range a.streams {
-		streams = append(streams, stream)
-	}
+	streams := a.sortedStreamsLocked()
 	controls := make(map[string]*nativeControl, len(a.controls))
 	for id, control := range a.controls {
 		if control.published {
@@ -455,22 +451,7 @@ func (a *Agent) reportStreamFailure(err error) {
 	}
 	clear(a.controls)
 	a.Mu.Unlock()
-	var cleanupError error
-	resetRoot := false
-	for _, stream := range streams {
-		cleanupError = errors.Join(cleanupError, a.finishPendingTools(stream, agent.MessageCompletionError))
-		sink := a.streamSink(stream)
-		providerkit.ResetSpansAndProgress(sink)
-		if stream.childAgentID == "" {
-			resetRoot = true
-		} else {
-			cleanupError = errors.Join(cleanupError, a.childTurnState(stream.sessionID, false, agent.MessageCompletionError))
-		}
-	}
-	if !resetRoot {
-		providerkit.ResetSpansAndProgress(a.sink)
-	}
-	a.closeOpenWorkflows(bgtask.StatusFailed)
+	cleanupError := a.closeStreamsAndWorkflows(streams, agent.MessageCompletionError, true)
 	for id, control := range controls {
 		control.sink.CancelControlRequest(id)
 	}

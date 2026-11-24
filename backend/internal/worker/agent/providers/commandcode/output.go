@@ -124,7 +124,7 @@ func (a *Agent) handleMethod(line *providerkit.ParsedLine) {
 	case methodTurnStarted:
 		a.startTurn(envelope.Params.TurnID)
 	case contracts.CommandCodeMethodTurnCompleted:
-		a.completeTurn(line.Raw, envelope.Params.TurnID, envelope.Params.StopReason, nil)
+		a.completeTurnWithTeardown(line.Raw, envelope.Params.TurnID, envelope.Params.StopReason, nil, false)
 	}
 }
 
@@ -309,10 +309,6 @@ func (a *Agent) finishTool(raw []byte, event nativeEvent) {
 	a.finishChildTool(event, opening)
 }
 
-func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFailure error) {
-	a.completeTurnWithTeardown(raw, turnID, stopReason, compactionFailure, false)
-}
-
 func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, compactionFailure error, teardown bool) {
 	if turnID == "" {
 		return
@@ -348,7 +344,7 @@ func (a *Agent) completeTurnWithTeardown(raw []byte, turnID, stopReason string, 
 	closeTools := completion == agent.MessageCompletionInterrupted || teardown
 	if closeTools {
 		a.closeUnfinishedTools(completion)
-		a.closeForegroundChildren(agent.IncompleteTaskStatus(completion))
+		a.closeChildren(agent.IncompleteTaskStatus(completion), true)
 	}
 	a.endUnfinishedCompaction(compactionFailure)
 	duration := max(int64(0), a.clock.Now().Sub(started).Milliseconds())
@@ -388,7 +384,7 @@ func (a *Agent) closeUnfinishedTools(completion agent.MessageCompletion) {
 		content := a.messageContent(e.Data.opening)
 		content.Completion = completion
 		return content, agent.SpanInfo{SpanID: e.SpanID, SpanType: e.Data.name, Closing: true}, true
-	}, false)
+	})
 }
 
 func (a *Agent) finishStream() {
@@ -398,7 +394,7 @@ func (a *Agent) finishStream() {
 	if a.IsDiscardingOutput() {
 		a.closeUnfinishedTools(completion)
 		if a.sink != nil {
-			a.closeChildren(agent.IncompleteTaskStatus(completion))
+			a.closeChildren(agent.IncompleteTaskStatus(completion), false)
 			providerkit.ResetSpansAndProgress(a.sink)
 		}
 		return
@@ -437,7 +433,7 @@ func (a *Agent) finishStream() {
 		if compacting && turnID == "" {
 			a.PublishTurnActive()
 		}
-		a.closeChildren(agent.IncompleteTaskStatus(completion))
+		a.closeChildren(agent.IncompleteTaskStatus(completion), false)
 	}
 }
 

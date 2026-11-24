@@ -115,6 +115,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			}
 			if stop != nil {
 				stop.Delivered(target)
+				stop.SettleIdleRootStop()
 			}
 			sendProtoResponse(sender, &leapmuxv1.SendAgentRawMessageResponse{})
 		})
@@ -678,6 +679,7 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 					return
 				}
 				stop.Delivered(target)
+				stop.SettleIdleStop()
 				sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
 				return
 			}

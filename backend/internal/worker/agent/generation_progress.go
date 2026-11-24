@@ -27,6 +27,19 @@ const (
 	ProgressReset
 )
 
+// IsOutputProgress reports whether op updates tool-output progress rather than
+// model generation or whole-turn progress.
+func IsOutputProgress(op ProgressOperation) bool {
+	switch op {
+	case ProgressOutputDelta, ProgressOutputTotal, ProgressOutputTail, ProgressOutputComplete, ProgressOutputReset:
+		return true
+	case ProgressModelText, ProgressNativeTokens, ProgressModelComplete, ProgressModelReset, ProgressReset:
+		return false
+	default:
+		return false
+	}
+}
+
 // ProgressUpdate carries one provider observation to the Worker sink.
 type ProgressUpdate struct {
 	Operation ProgressOperation

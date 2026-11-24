@@ -29,7 +29,7 @@ describe('acpResultDivider', () => {
       role: 'result',
       content: { stopReason: 'cancelled' },
     }))
-      .toEqual({ label: 'Turn interrupted', interrupted: true })
+      .toEqual({ label: 'Turn interrupted' })
   })
 })
 
@@ -37,24 +37,12 @@ describe('acpResultDivider', () => {
 // so the divider reads the same as the divider of a prompt.
 describe('acpStopReasonDivider', () => {
   it.each([
-    [
-      'end_turn',
-      { label: 'Turn ended' },
-    ],
-    [
-      'max_tokens',
-      { label: 'Turn ended (max_tokens)' },
-    ],
-    [
-      'cancelled',
-      { label: 'Turn interrupted', interrupted: true },
-    ],
-    [
-      '',
-      { label: 'Turn ended' },
-    ],
-  ])('labels the stop reason %j', (reason, expected) => {
-    expect(acpStopReasonDivider(reason)).toEqual(expected)
+    ['end_turn', 'Turn ended'],
+    ['max_tokens', 'Turn ended (max_tokens)'],
+    ['cancelled', 'Turn interrupted'],
+    ['', 'Turn ended'],
+  ])('labels the stop reason %j', (reason, label) => {
+    expect(acpStopReasonDivider(reason)).toEqual({ label })
   })
 })
 
@@ -66,7 +54,7 @@ describe('acpDividerReader', () => {
   it('reads the provider\'s own turn end, and the prompt response otherwise', () => {
     const read = acpDividerReader(agentTurnEnd)
     expect(read({ method: 'vendor/end_turn', reason: 'max_tokens' })).toEqual({ label: 'Turn ended (max_tokens)' })
-    expect(read({ stopReason: 'cancelled' })).toEqual({ label: 'Turn interrupted', interrupted: true })
+    expect(read({ stopReason: 'cancelled' })).toEqual({ label: 'Turn interrupted' })
     expect(read('not an object')).toBeNull()
   })
 

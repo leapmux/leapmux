@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -113,16 +114,14 @@ type Agent struct {
 
 type claudeOpenTool struct {
 	raw          []byte
-	toolName     string
 	parentSpanID string
 	sessionID    string
 }
 
 type claudeOpenToolStore struct {
-	mu            sync.Mutex
-	root          providerkit.ToolSpanLedger[claudeOpenTool]
-	children      map[string]*providerkit.ToolSpanLedger[claudeOpenTool]
-	releasedSpans map[string]struct{}
+	mu       sync.Mutex
+	root     providerkit.ToolSpanLedger[claudeOpenTool]
+	children map[string]*providerkit.ToolSpanLedger[claudeOpenTool]
 }
 
 func (s *claudeOpenToolStore) ledgerLocked(childID string, create bool) *providerkit.ToolSpanLedger[claudeOpenTool] {
@@ -143,6 +142,8 @@ func (s *claudeOpenToolStore) ledgerLocked(childID string, create bool) *provide
 	return ledger
 }
 
+// open records a non-spawning tool span. Callers supply an immutable raw frame
+// slice cloned once per assistant message.
 func (s *claudeOpenToolStore) open(childID, spanID, toolName, parentSpanID, sessionID string, raw []byte) {
 	if spanID == "" || claudeToolSpawnsSubagent(toolName) {
 		return
@@ -151,34 +152,23 @@ func (s *claudeOpenToolStore) open(childID, spanID, toolName, parentSpanID, sess
 	defer s.mu.Unlock()
 	ledger := s.ledgerLocked(childID, true)
 	ledger.Open(spanID, toolName, false, claudeOpenTool{
-		raw:          bytes.Clone(raw),
-		toolName:     toolName,
+		raw:          raw,
 		parentSpanID: parentSpanID,
 		sessionID:    sessionID,
 	})
-	if childID == "" {
-		delete(s.releasedSpans, spanID)
-	}
 }
 
-func (s *claudeOpenToolStore) completeNative(childID, spanID string) (wasOpen, alreadyClosed bool) {
+func (s *claudeOpenToolStore) completeNative(childID, spanID string) {
 	if spanID == "" {
-		return false, false
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ledger := s.ledgerLocked(childID, false)
 	if ledger == nil {
-		return false, false
+		return
 	}
-	_, wasOpen, alreadyClosed = ledger.CompleteNative(spanID)
-	if childID == "" && alreadyClosed {
-		if _, released := s.releasedSpans[spanID]; released {
-			delete(s.releasedSpans, spanID)
-			return false, false
-		}
-	}
-	return wasOpen, alreadyClosed
+	ledger.CompleteNative(spanID)
 }
 
 // wasForceClosed reports whether spanID was force-closed by interrupt or
@@ -199,22 +189,12 @@ func (s *claudeOpenToolStore) wasForceClosedLocked(childID, spanID string) bool 
 	if ledger == nil {
 		return false
 	}
-	if _, open := ledger.Get(spanID); open {
-		return false
-	}
-	if childID == "" {
-		if _, released := s.releasedSpans[spanID]; released {
-			return false
-		}
-	}
-	// Non-open entries are never mutated by CompleteNative.
-	_, _, alreadyClosed := ledger.CompleteNative(spanID)
-	return alreadyClosed
+	return ledger.WasClosed(spanID)
 }
 
 // allToolResultsForceClosed reports whether blocks contains at least one
-// tool_result block, contains no non-tool_result blocks, and every referenced
-// tool_use_id was already force-closed by interrupt or teardown (excluding
+// tool_result block, contains no non-tool_result blocks, and every tool_use_id
+// that it refers to was already force-closed by interrupt or teardown (excluding
 // workflow spans released early by task_started, whose native tool_result
 // must still persist).
 func (s *claudeOpenToolStore) allToolResultsForceClosed(childID string, blocks []contentBlock) bool {
@@ -243,12 +223,8 @@ func (s *claudeOpenToolStore) markWorkflowSpanReleased(spanID string) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.root.MarkNativeClosed(spanID)
-	if s.releasedSpans == nil {
-		s.releasedSpans = make(map[string]struct{})
-	}
-	s.releasedSpans[spanID] = struct{}{}
+	s.root.Delete(spanID)
+	s.mu.Unlock()
 }
 
 func (s *claudeOpenToolStore) drain(childID string) []providerkit.OpenToolEntry[claudeOpenTool] {
@@ -267,6 +243,13 @@ func (s *claudeOpenToolStore) forgetChild(childID string) {
 	}
 	s.mu.Lock()
 	delete(s.children, childID)
+	s.mu.Unlock()
+}
+
+func (s *claudeOpenToolStore) reset() {
+	s.mu.Lock()
+	s.root = providerkit.ToolSpanLedger[claudeOpenTool]{}
+	clear(s.children)
 	s.mu.Unlock()
 }
 
@@ -300,6 +283,16 @@ func claudeBuildClosingRow(entry providerkit.OpenToolEntry[claudeOpenTool]) (age
 	}, true
 }
 
+func (a *Agent) closeClaudeToolsOnSink(sink agent.ProviderServices, entries []providerkit.OpenToolEntry[claudeOpenTool], completion agent.MessageCompletion, discarding bool) {
+	if sink == nil {
+		return
+	}
+	if !discarding && len(entries) > 0 {
+		providerkit.CloseToolSpans(sink, entries, completion, claudeBuildClosingRow)
+	}
+	providerkit.ResetSpansAndProgress(sink)
+}
+
 func (a *Agent) Stop() {
 	a.Process.Stop()
 	a.finishClaudeProcessExit()
@@ -317,20 +310,16 @@ func (a *Agent) finishClaudeProcessExit() {
 	completion := a.ProcessExitCompletion()
 	discarding := a.IsDiscardingOutput()
 	if a.sink != nil {
-		rootEntries := a.openTools.drain("")
-		if !discarding && len(rootEntries) > 0 {
-			providerkit.CloseToolSpans(a.sink, rootEntries, completion, claudeBuildClosingRow, false)
+		a.closeClaudeToolsOnSink(a.sink, a.openTools.drain(""), completion, discarding)
+		drainedChildren := a.openTools.drainAllChildren()
+		childIDs := make([]string, 0, len(drainedChildren))
+		for childID := range drainedChildren {
+			childIDs = append(childIDs, childID)
 		}
-		providerkit.ResetSpansAndProgress(a.sink)
-		for childID, entries := range a.openTools.drainAllChildren() {
-			childSink := a.sink.ChildSink(childID)
-			if childSink == nil {
-				continue
-			}
-			if !discarding && len(entries) > 0 {
-				providerkit.CloseToolSpans(childSink, entries, completion, claudeBuildClosingRow, false)
-			}
-			providerkit.ResetSpansAndProgress(childSink)
+		slices.Sort(childIDs)
+		for _, childID := range childIDs {
+			a.closeClaudeToolsOnSink(a.sink.ChildSink(childID), drainedChildren[childID], completion, discarding)
+			a.openTools.forgetChild(childID)
 		}
 	}
 }
@@ -402,10 +391,17 @@ func (a *Agent) closeIdleOpenRootTools() {
 		destination := a.rootTranscript()
 		base := destination.capture(agent.MessageContent{}, agent.SpanInfo{})
 		spans := agent.TranscriptFrameSpans(base, destination.sink)
+		isCurrent := func() bool {
+			return a.rootDestinationIsCurrent(destination, base)
+		}
 		var drained bool
 		var pending []claudeClosingToolOp
 		return func(sequence agent.TranscriptSequence) error {
 			if !drained {
+				if !isCurrent() {
+					finish()
+					return nil
+				}
 				a.Mu.Lock()
 				active := a.turnActive
 				a.Mu.Unlock()
@@ -421,13 +417,10 @@ func (a *Agent) closeIdleOpenRootTools() {
 				}
 				pending = makeClaudeClosingToolOps(entries)
 			}
-			if err := a.persistClaudeClosingToolsInSequence(sequence, destination, spans, &pending, agent.MessageCompletionInterrupted); err != nil {
+			if err := a.persistClaudeClosingToolsInSequence(sequence, destination, spans, isCurrent, &pending, agent.MessageCompletionInterrupted); err != nil {
 				return err
 			}
-			if spans != nil {
-				spans.ResetSpans()
-			}
-			providerkit.ResetSpansAndProgress(a.sink)
+			resetClaudeSpansAndProgress(destination, spans, isCurrent, false)
 			finish()
 			return nil
 		}

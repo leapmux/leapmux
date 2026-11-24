@@ -43,8 +43,8 @@ describe('commandCodeResultDivider', () => {
   })
 
   it('states the duration of a turn that the user interrupted', () => {
-    expect(commandCodeResultDivider(turnCompleted({ stopReason: 'interrupted' }, 1500))).toEqual({ label: 'Turn interrupted (1.5s)', interrupted: true })
-    expect(commandCodeResultDivider(turnCompleted({ stopReason: 'end_turn' }, 1500), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (1.5s)', interrupted: true })
+    expect(commandCodeResultDivider(turnCompleted({ stopReason: 'interrupted' }, 1500))).toEqual({ label: 'Turn interrupted (1.5s)' })
+    expect(commandCodeResultDivider(turnCompleted({ stopReason: 'end_turn' }, 1500), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (1.5s)' })
   })
 
   it('states the duration and the native error of a failed turn', () => {

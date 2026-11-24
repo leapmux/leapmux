@@ -428,7 +428,7 @@ func TestCapturedTailRetainsItsOwnerThroughDelayedWireDelivery(t *testing.T) {
 				if firstSpan == otherSpan {
 					otherSpan = "second-span"
 				}
-				if change == "current owner" {
+				if change == "current owner" || change == "turn scope change" {
 					assert.Equal(t, 1, tails[otherSpan])
 				} else {
 					assert.Zero(t, tails[otherSpan], "the later retained tail must refuse after its owner retires")
@@ -798,4 +798,240 @@ func TestNotificationEntryColdCurrentOwnerDoesNotRestoreAStaleAggregate(t *testi
 	assert.False(t, rows[1].TranscriptOnly)
 	assert.Len(t, decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression).Messages, 1)
 	assert.Len(t, decodeNotifWrapper(t, rows[1].Content, rows[1].ContentCompression).Messages, 1)
+}
+
+func TestOutputProgressAuthorityAcrossTurnScopeAndSupersededChildLease(t *testing.T) {
+	t.Parallel()
+
+	t.Run("model progress refuses after turn scope rotation while output progress survives", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.DeadlineContext(t)
+		const rootID = "output-progress-turn-scope-root"
+		svc, services := setupRootSink(t, rootID)
+		services.UpdateSessionID("session-a")
+		services.SetTurnState(agent.TurnState{Active: true}, 1)
+
+		sink := requireRootOutputSink(t, svc.Output, rootID)
+		captured := services.CaptureMessage(agent.MessageContent{Original: []byte(`{"type":"assistant"}`)}, agent.SpanInfo{SpanID: "tool-1"})
+		require.NotNil(t, captured.Publication)
+
+		// Queue a model counter update while the turn is active, hold the publisher,
+		// then rotate turn scope before the delayed counter flushes.
+		seenToolBytes := make(chan int64, 8)
+		seenTokens := make(chan int64, 8)
+		writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "turn-scope-progress-wire"}}
+		writer.onEvent = func(event *leapmuxv1.AgentEvent) {
+			if event.AgentId != rootID {
+				return
+			}
+			info, err := capturedTailSessionInfo(event)
+			if !assert.NoError(t, err) {
+				return
+			}
+			if raw, ok := info[contracts.SessionInfoKeyThinkingTokens]; ok {
+				var tokens int64
+				if assert.NoError(t, json.Unmarshal(raw, &tokens)) {
+					seenTokens <- tokens
+				}
+			}
+			if raw, ok := info[contracts.SessionInfoKeyOutputBytes]; ok {
+				var bytes int64
+				if assert.NoError(t, json.Unmarshal(raw, &bytes)) {
+					seenToolBytes <- bytes
+				}
+			}
+		}
+		registerAgentWatch(svc, writer.channelID, rootID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+
+		// Rotate turn scope to a new turn in the same native session.
+		services.SetTurnState(agent.TurnState{Active: false}, 2)
+		services.SetTurnState(agent.TurnState{Active: true}, 3)
+
+		// Model progress on the old turn's publication must be refused.
+		captured.Publication.ReportProgress(agent.NativeTokenProgress("old-model", 91))
+		captured.Publication.ReportProgress(agent.ModelTextProgress("old-model", "ignored text"))
+		stopCapturedProgressTimers(sink.progress)
+		assert.Nil(t, sink.progress.snapshotInfo(), "model progress must refuse after turn scope rotation")
+
+		// Output progress on the same old turn's publication survives turn scope rotation.
+		captured.Publication.ReportProgress(agent.OutputExactTotalProgress("tool-1", 128))
+		captured.Publication.ReportProgress(agent.OutputTailProgress("tool-1", "still running", false))
+		stopCapturedProgressTimers(sink.progress)
+		sink.progress.flush()
+		sink.progress.flushTails()
+
+		info := sink.progress.snapshotInfo()
+		require.NotNil(t, info)
+		assert.Equal(t, int64(128), info[contracts.SessionInfoKeyOutputBytes])
+		assert.Zero(t, info[contracts.SessionInfoKeyThinkingTokens])
+		require.Len(t, sink.progress.tailSnapshots(), 1)
+
+		select {
+		case got := <-seenToolBytes:
+			assert.Equal(t, int64(128), got)
+		case <-ctx.Done():
+			t.Fatal("session-scoped output progress counter did not reach the watcher after turn scope rotation")
+		}
+
+		// Completing the tool output after turn scope rotation drops OutputBytes to 0 and drops its tail.
+		captured.Publication.ReportProgress(agent.CompleteOutputProgress("tool-1"))
+		select {
+		case got := <-seenToolBytes:
+			assert.Zero(t, got)
+		case <-ctx.Done():
+			t.Fatal("session-scoped output completion did not reach the watcher after turn scope rotation")
+		}
+		assert.Empty(t, sink.progress.tailSnapshots())
+		for len(seenTokens) > 0 {
+			assert.Zero(t, <-seenTokens, "model progress tokens must not be admitted after turn scope rotation")
+		}
+	})
+
+	t.Run("superseded child lease refuses output progress and delayed tail flush", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.DeadlineContext(t)
+		const rootID = "output-progress-child-lease-root"
+		svc, rootServices := setupRootSink(t, rootID)
+		svc.Output.processRunning = func(string) bool { return true }
+		childID, err := rootServices.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "spawn", ProviderChildKey: "lease-child", Title: "Lease Child",
+		})
+		require.NoError(t, err)
+
+		lease1 := rootServices.AcquireChildSink(childID)
+		lease1.Activate()
+		lease1.Sink.UpdateSessionID("A")
+		lease1.Sink.SetTurnState(agent.TurnState{Active: true}, 1)
+
+		childSink := svc.Output.sinkForAgent(childID)
+		require.NotNil(t, childSink)
+		publisher := childSink.progress
+
+		counterEntered, releaseCounter := make(chan struct{}), make(chan struct{})
+		currentTail := make(chan struct{})
+		var counterOnce, releaseCounterOnce, currentTailOnce sync.Once
+		finishCounter := func() { releaseCounterOnce.Do(func() { close(releaseCounter) }) }
+		defer finishCounter()
+
+		writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "child-lease-wire"}}
+		writer.onEvent = func(event *leapmuxv1.AgentEvent) {
+			if event.AgentId != childID {
+				return
+			}
+			info, decodeErr := capturedTailSessionInfo(event)
+			if !assert.NoError(t, decodeErr) {
+				return
+			}
+			if raw, ok := info[contracts.SessionInfoKeyThinkingTokens]; ok {
+				var value int64
+				if assert.NoError(t, json.Unmarshal(raw, &value)) && value == 17 {
+					counterOnce.Do(func() { close(counterEntered); <-releaseCounter })
+				}
+			}
+			if raw, ok := info[contracts.SessionInfoKeyRunningTool]; ok && string(raw) != "null" {
+				var running map[string]json.RawMessage
+				if !assert.NoError(t, json.Unmarshal(raw, &running)) {
+					return
+				}
+				var spanID string
+				if assert.NoError(t, json.Unmarshal(running[contracts.RunningToolFieldSpanId], &spanID)) && spanID == "lease2-tail" {
+					currentTailOnce.Do(func() { close(currentTail) })
+				}
+			}
+		}
+		registerAgentWatch(svc, writer.channelID, childID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+
+		// Hold the publisher goroutine on a counter frame so lease1's flushed tail waits in tailQueue.
+		lease1.Sink.ReportProgress(agent.NativeTokenProgress("model", 17))
+		stopCapturedProgressTimers(publisher)
+		publisher.flush()
+		select {
+		case <-counterEntered:
+		case <-ctx.Done():
+			t.Fatal("the counter frame did not reach the held publisher")
+		}
+
+		captured1 := lease1.CaptureMessage(agent.MessageContent{Original: []byte(`{"native":"lease1"}`)}, agent.SpanInfo{SpanID: "lease1-span"})
+		require.NotNil(t, captured1.Publication)
+		captured1.Publication.ReportProgress(agent.OutputTailProgress("lease1-queued-tail", "stale lease1 tail", false))
+		stopCapturedProgressTimers(publisher)
+		publisher.flushTails()
+		publisher.mu.Lock()
+		queued := len(publisher.tailQueue)
+		publisher.mu.Unlock()
+		require.Equal(t, 1, queued)
+
+		// Supersede lease1 with lease2 on the SAME native session "A" (only childLifetime changes).
+		// Skip lease2.Activate() so lease1's queued tail remains in tailQueue and reaches publishEmission.
+		lease2 := rootServices.AcquireChildSink(childID)
+		lease2.Sink.SetTurnState(agent.TurnState{Active: true}, 2)
+		require.Equal(t, "A", childSink.currentMessageSessionID())
+
+		// Direct output progress on superseded lease1 must be refused.
+		captured1.Publication.ReportProgress(agent.OutputExactTotalProgress("lease1-span", 512))
+		captured1.Publication.ReportProgress(agent.OutputTailProgress("lease1-late-tail", "late lease1 tail", false))
+		stopCapturedProgressTimers(publisher)
+		for _, snap := range publisher.tailSnapshots() {
+			assert.NotEqual(t, "lease1-late-tail", snap[contracts.RunningToolFieldSpanId], "superseded child lease must refuse new output tails")
+		}
+		if info := publisher.snapshotInfo(); info != nil {
+			assert.Zero(t, info[contracts.SessionInfoKeyOutputBytes], "superseded child lease must refuse output byte updates")
+		}
+
+		// Release the held publisher and push a positive control tail on lease2.
+		finishCounter()
+		captured2 := lease2.CaptureMessage(agent.MessageContent{Original: []byte(`{"native":"lease2"}`)}, agent.SpanInfo{SpanID: "lease2-span"})
+		captured2.Publication.ReportProgress(agent.OutputTailProgress("lease2-tail", "fresh lease2 tail", false))
+		stopCapturedProgressTimers(publisher)
+		publisher.flushTails()
+		select {
+		case <-currentTail:
+		case <-ctx.Done():
+			t.Fatal("lease2 positive control tail did not reach the watcher")
+		}
+
+		seenSpans := make(map[string]int)
+		for _, stream := range writer.streamsSnapshot() {
+			event := decodeWatchAgentEvent(t, stream)
+			if event.AgentId != childID {
+				continue
+			}
+			info, decodeErr := capturedTailSessionInfo(event)
+			require.NoError(t, decodeErr)
+			if raw, ok := info[contracts.SessionInfoKeyRunningTool]; ok && string(raw) != "null" {
+				var running map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(raw, &running))
+				var spanID string
+				require.NoError(t, json.Unmarshal(running[contracts.RunningToolFieldSpanId], &spanID))
+				seenSpans[spanID]++
+			}
+		}
+		assert.Zero(t, seenSpans["lease1-queued-tail"], "delayed tail flush from superseded child lease must be refused")
+		assert.Zero(t, seenSpans["lease1-late-tail"], "late tail from superseded child lease must be refused")
+		assert.Equal(t, 1, seenSpans["lease2-tail"])
+	})
+
+	t.Run("historical transcript scope refuses output progress", func(t *testing.T) {
+		t.Parallel()
+		const rootID = "output-progress-historical-root"
+		svc, services := setupRootSink(t, rootID)
+		services.UpdateSessionID("native-session")
+		services.SetTurnState(agent.TurnState{Active: true}, 1)
+
+		anchor := agent.CaptureTranscript(services, agent.MessageContent{}, agent.SpanInfo{})
+		scope, err := services.HistoricalTranscriptScopeFor(anchor)
+		require.NoError(t, err)
+		historicalCapture, err := scope.CaptureTranscript(agent.MessageContent{Original: []byte(`{"text":"old"}`)}, agent.SpanInfo{})
+		require.NoError(t, err)
+
+		sink := requireRootOutputSink(t, svc.Output, rootID)
+		pub := historicalCapture.FrozenContent().Publication
+		pub.ReportProgress(agent.OutputExactTotalProgress("hist-tool", 256))
+		pub.ReportProgress(agent.OutputTailProgress("hist-tool", "historical tail", false))
+		stopCapturedProgressTimers(sink.progress)
+
+		assert.Nil(t, sink.progress.snapshotInfo(), "historical scope must refuse output byte updates")
+		assert.Empty(t, sink.progress.tailSnapshots(), "historical scope must refuse output tails")
+	})
 }

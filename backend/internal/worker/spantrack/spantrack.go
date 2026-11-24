@@ -49,9 +49,13 @@ type SpanLine struct {
 // Color indices are 1-based and wrap around within [1, spanPaletteSize].
 const spanPaletteSize = 8
 
-// maxClosedSpanTypes caps how many closed span IDs retain their span type in
-// memory when spans outlive normal turns without an intervening Reset.
+// maxClosedSpanTypes caps how many closed or unopened span IDs retain their
+// span type in memory when spans outlive normal turns without an intervening Reset.
 const maxClosedSpanTypes = 1024
+
+// maxClosedParentEntries caps how many closed span IDs retain their parent
+// link in memory while another span remains open across turns.
+const maxClosedParentEntries = 1024
 
 // pendingSpan holds the color reserved for a span by ReserveSpanColor that
 // hasn't yet been committed by OpenSpan. Treated as "in use" by chooseColor
@@ -66,8 +70,9 @@ type SpanTracker struct {
 	mu              sync.Mutex
 	spans           []ActiveSpan
 	spanTypes       map[string]string // spanID → span type (tool name / item type)
-	closedSpanTypes []string          // FIFO of closed span IDs retained in spanTypes
+	closedSpanTypes []string          // FIFO of non-active span IDs retained in spanTypes
 	parentMap       map[string]string // spanID → parentSpanID (persists after close for ancestry lookups)
+	closedParents   []string          // FIFO of closed span IDs retained in parentMap
 	pending         *pendingSpan      // color reserved by ReserveSpanColor; consumed by matching OpenSpan.
 	rng             *rand.Rand        // lazy-initialized random source for color choice; tests inject directly.
 	deck            []int             // shuffled draw pile for primary-rule color selection; refilled when empty.
@@ -268,20 +273,23 @@ func (t *SpanTracker) chooseColor(parentSpanID string, newColumn int) int {
 	return candidates[t.randIntn(len(candidates))]
 }
 
-// OpenSpan registers a new subagent span.
-func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) {
-	t.OpenSpanChanged(spanID, parentSpanID)
-}
-
-// OpenSpanChanged registers a new span and returns true when the active set
-// transitioned from empty to non-empty.
-func (t *SpanTracker) OpenSpanChanged(spanID, parentSpanID string) bool {
+// OpenSpan registers a new subagent span and returns true when the active set
+// transitions from empty to non-empty.
+func (t *SpanTracker) OpenSpan(spanID, parentSpanID string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	wasEmpty := len(t.spans) == 0
 
-	// Record parentage (persists after close for ancestry lookups).
+	// Active spans leave the closed-entry FIFO queues so they never consume cap slots.
+	t.closedSpanTypes = slices.DeleteFunc(t.closedSpanTypes, func(id string) bool {
+		return id == spanID
+	})
+	t.closedParents = slices.DeleteFunc(t.closedParents, func(id string) bool {
+		return id == spanID
+	})
+
+	// Record parentage (persists after close for ancestry lookups up to the cap).
 	if t.parentMap == nil {
 		t.parentMap = make(map[string]string)
 	}
@@ -319,15 +327,10 @@ func (t *SpanTracker) depthOf(spanID string) int {
 	return depth
 }
 
-// Reset clears all span tracking state, returning the tracker to its
-// initial empty state. Used when the agent's context is cleared or interrupted.
-func (t *SpanTracker) Reset() {
-	t.ResetChanged()
-}
-
-// ResetChanged clears all span tracking state and returns true when the active
-// set transitioned from non-empty to empty.
-func (t *SpanTracker) ResetChanged() bool {
+// Reset clears all span tracking state, returning the tracker to its initial
+// empty state, and reports true when the active set transitions from non-empty
+// to empty. Used when the agent's context is cleared or interrupted.
+func (t *SpanTracker) Reset() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -338,6 +341,7 @@ func (t *SpanTracker) ResetChanged() bool {
 	clear(t.spanTypes)
 	t.closedSpanTypes = nil
 	clear(t.parentMap)
+	t.closedParents = nil
 	return wasNonEmpty
 }
 
@@ -352,9 +356,72 @@ func (t *SpanTracker) hasSpanLocked(spanID string) bool {
 	return false
 }
 
+// activeAncestorSetLocked collects every active or pending span ID and all of
+// its ancestors in parentMap. Must be called with t.mu held.
+func (t *SpanTracker) activeAncestorSetLocked() map[string]bool {
+	protected := make(map[string]bool, len(t.spans)+1)
+	markChain := func(start string) {
+		for cur := start; cur != "" && !protected[cur]; {
+			protected[cur] = true
+			cur = t.parentMap[cur]
+		}
+	}
+	for _, s := range t.spans {
+		markChain(s.SpanID)
+	}
+	if t.pending != nil {
+		markChain(t.pending.spanID)
+	}
+	return protected
+}
+
+// recordClosedParentLocked appends spanID to the closed-parent FIFO and evicts
+// the oldest non-ancestor closed entries past maxClosedParentEntries.
+// Must be called with t.mu held.
+func (t *SpanTracker) recordClosedParentLocked(spanID string) {
+	if spanID == "" {
+		return
+	}
+	if _, ok := t.parentMap[spanID]; !ok {
+		return
+	}
+	t.closedParents = slices.DeleteFunc(t.closedParents, func(id string) bool {
+		return id == spanID
+	})
+	t.closedParents = append(t.closedParents, spanID)
+	if len(t.closedParents) <= maxClosedParentEntries {
+		return
+	}
+	protected := t.activeAncestorSetLocked()
+	excess := len(t.closedParents) - maxClosedParentEntries
+	for _, evictID := range t.closedParents[:excess] {
+		if protected[evictID] {
+			continue
+		}
+		delete(t.parentMap, evictID)
+	}
+	t.closedParents = slices.Delete(t.closedParents, 0, excess)
+	// Prune any previously-protected ancestor whose descendants have since closed.
+	if len(t.parentMap) > maxClosedParentEntries+len(protected) {
+		recent := make(map[string]struct{}, len(t.closedParents))
+		for _, id := range t.closedParents {
+			recent[id] = struct{}{}
+		}
+		for id := range t.parentMap {
+			if protected[id] {
+				continue
+			}
+			if _, ok := recent[id]; ok {
+				continue
+			}
+			delete(t.parentMap, id)
+		}
+	}
+}
+
 // recordClosedSpanTypeLocked appends spanID to the closed-type FIFO and evicts
-// the oldest closed entries past maxClosedSpanTypes, skipping any ID that is
-// currently active or reserved in pending. Must be called with t.mu held.
+// the oldest non-active entries past maxClosedSpanTypes, skipping any ID that
+// is currently active or reserved in pending. Must be called with t.mu held.
 func (t *SpanTracker) recordClosedSpanTypeLocked(spanID string) {
 	if spanID == "" {
 		return
@@ -395,11 +462,15 @@ func (t *SpanTracker) removeSpanLocked(spanID string) {
 	}
 	if len(t.spans) == 0 {
 		clear(t.parentMap)
+		t.closedParents = nil
+	} else {
+		t.recordClosedParentLocked(spanID)
 	}
 	t.recordClosedSpanTypeLocked(spanID)
 }
 
-// CloseSpan removes a span, freeing its column and its color.
+// CloseSpan removes a span, freeing its column and its color, and returns true
+// when the active set transitions from non-empty to empty.
 //
 // The recorded span type SURVIVES up to the closed-type FIFO cap, and Reset
 // clears all types. Every reader wants the type after the span leaves the
@@ -412,13 +483,7 @@ func (t *SpanTracker) removeSpanLocked(spanID string) {
 // A caller that takes a span back while its tool call KEEPS RUNNING -- a spawn
 // recognized late -- calls this too. The column is freed either way; nothing
 // downstream distinguishes "ended" from "given back".
-func (t *SpanTracker) CloseSpan(spanID string) {
-	t.CloseSpanChanged(spanID)
-}
-
-// CloseSpanChanged removes a span and returns true when the active set
-// transitioned from non-empty to empty.
-func (t *SpanTracker) CloseSpanChanged(spanID string) bool {
+func (t *SpanTracker) CloseSpan(spanID string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -477,6 +542,9 @@ func (t *SpanTracker) SetSpanType(spanID, spanType string) {
 		t.spanTypes = make(map[string]string)
 	}
 	t.spanTypes[spanID] = spanType
+	if !t.hasSpanLocked(spanID) {
+		t.recordClosedSpanTypeLocked(spanID)
+	}
 }
 
 // GetSpanType returns the stored type for a span ID, or "".
@@ -504,9 +572,16 @@ func (t *SpanTracker) ReserveSpanColor(spanID, parentSpanID string) int32 {
 	if t.pending != nil && t.pending.spanID == spanID {
 		return int32(t.pending.color)
 	}
+	var displacedPending string
+	if t.pending != nil {
+		displacedPending = t.pending.spanID
+	}
 	column := t.resolveColumn(parentSpanID)
 	color := t.chooseColor(parentSpanID, column)
 	t.pending = &pendingSpan{spanID: spanID, color: color}
+	if displacedPending != "" && !t.hasSpanLocked(displacedPending) {
+		t.recordClosedSpanTypeLocked(displacedPending)
+	}
 	return int32(color)
 }
 

@@ -13,6 +13,7 @@ type capturedTranscriptScope struct {
 	retainedLive bool
 }
 
+// TODO(https://github.com/leapmux/leapmux/issues/699): Seed live span geometry in TranscriptScopeFor so Fast-Agent and Kimi keep cross-turn colors without shadow open-span slices.
 func (sink *agentOutputSink) TranscriptScopeFor(captured agent.CapturedTranscript) (agent.TranscriptScope, error) {
 	writer, owner, err := sink.transcriptScopeAnchor(captured)
 	if err != nil {
@@ -34,6 +35,7 @@ func (sink *agentOutputSink) HistoricalTranscriptScopeFor(captured agent.Capture
 	}
 	var empty SpanTracker
 	historical := owner.withSpanSnapshot(&empty, agent.SpanInfo{})
+	historical.historical = true
 	owner.activity.mu.Lock()
 	historical.scope = &activityScope{publisher: owner.scope.publisher}
 	owner.activity.mu.Unlock()
@@ -89,48 +91,61 @@ func (scope *capturedTranscriptScope) CaptureTranscript(content agent.MessageCon
 	return captured, nil
 }
 
-func (scope *capturedTranscriptScope) isCurrentLiveRoot() bool {
+func (scope *capturedTranscriptScope) isCurrentLiveSink() bool {
 	return scope.retainedLive &&
 		scope.anchor != nil &&
 		scope.anchor.sink != nil &&
-		scope.anchor.sink.root == nil &&
-		scope.anchor.sink.registeredCurrent() &&
-		scope.tracker == scope.anchor.sink.currentSpanTracker()
+		scope.anchor.activity != nil &&
+		scope.tracker == scope.anchor.tracker &&
+		scope.anchor.IsTranscriptFrameCurrent()
+}
+
+// canMutateRetiredTracker reports whether a non-live scope owns its tracker
+// without sharing it with a registered live sink of another session, control
+// publisher, or child lease.
+func (scope *capturedTranscriptScope) canMutateRetiredTracker() bool {
+	if !scope.retainedLive {
+		return true
+	}
+	if scope.anchor == nil || scope.anchor.sink == nil {
+		return false
+	}
+	sink := scope.anchor.sink
+	if scope.tracker != sink.currentSpanTracker() {
+		return true
+	}
+	return !sink.registeredCurrent() || sink.turnPublisherSink().processOutputRetired.Load()
 }
 
 func (scope *capturedTranscriptScope) OpenSpan(id, parent string) {
-	if scope.isCurrentLiveRoot() {
-		if scope.tracker.OpenSpanChanged(id, parent) {
-			scope.anchor.sink.h.publishSpanActivity(scope.anchor.sink.agentID, settleImmediate)
-		}
+	if scope.isCurrentLiveSink() {
+		scope.anchor.sink.openSpanOnTracker(scope.tracker, id, parent)
 		return
 	}
-	scope.tracker.OpenSpan(id, parent)
+	if scope.canMutateRetiredTracker() {
+		scope.tracker.OpenSpan(id, parent)
+	}
 }
 
 func (scope *capturedTranscriptScope) CloseSpan(id string) {
-	if scope.retainedLive {
-		scope.anchor.dropOutputTail(id)
-	}
-	if scope.isCurrentLiveRoot() {
-		scope.anchor.sink.deletePermissionChecksForSpan(id)
-		if scope.tracker.CloseSpanChanged(id) {
-			scope.anchor.sink.h.publishSpanActivity(scope.anchor.sink.agentID, settleHeld)
-		}
+	if scope.isCurrentLiveSink() {
+		scope.anchor.dropOutputTailForFrame(id)
+		scope.anchor.sink.closeSpanOnTracker(scope.tracker, id)
 		return
 	}
-	scope.tracker.CloseSpan(id)
+	if scope.canMutateRetiredTracker() {
+		scope.tracker.CloseSpan(id)
+	}
 }
 
 func (scope *capturedTranscriptScope) ResetSpans() {
-	if scope.isCurrentLiveRoot() {
-		scope.anchor.sink.clearPermissionChecks()
-		if scope.tracker.ResetChanged() {
-			scope.anchor.sink.h.publishSpanActivity(scope.anchor.sink.agentID, settleImmediate)
-		}
+	if scope.isCurrentLiveSink() {
+		scope.anchor.sink.resetSpansOnTracker(scope.tracker)
 		return
 	}
-	scope.tracker.Reset()
+	if scope.canMutateRetiredTracker() {
+		scope.tracker.Reset()
+	}
 }
 func (scope *capturedTranscriptScope) SetSpanType(id, kind string) {
 	scope.tracker.SetSpanType(id, kind)

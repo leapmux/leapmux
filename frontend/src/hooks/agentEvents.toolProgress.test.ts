@@ -551,7 +551,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   }
 
   /**
-   * Each turn-end boundary must clear both live indicators or retain both.
+   * Each lifecycle or progress-reset boundary must clear every live indicator.
    * A lost connection can omit the worker's explicit counter clear.
    * The lifecycle handler must clear every live field. Otherwise, an indicator stays stale for the rest of the session.
    * A handler that calls only clearToolProgress fails these checks.
@@ -563,20 +563,9 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     expect(s.agentSessionStore.getProgress('a1').output).toBeUndefined()
   }
 
-  it('the turn-end result divider clears every live indicator', () => {
+  it('keeps running tool progress and output bytes across normal, error, and interrupted dividers', () => {
     createRoot((dispose) => {
-      const s = boundaryStores()
-      expect(running(s.chatStore)).toHaveLength(2)
-      const msg = agentMessage({ type: 'result', subtype: 'cancelled' })
-      handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
-      expectNothingLive(s)
-      dispose()
-    })
-  })
-
-  it('keeps running tool progress across normal and error dividers and clears it on interrupted dividers', () => {
-    createRoot((dispose) => {
-      for (const nonInterrupted of [
+      for (const divider of [
         agentMessage({ type: 'result', subtype: 'success' }),
         agentMessage({ type: 'result', subtype: 'error_during_execution', is_error: true }),
         agentMessage({
@@ -589,21 +578,8 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
             error: { message: '400 Bad Request' },
           },
         }, { agentProvider: AgentProvider.CODEX }),
-      ]) {
-        const s = boundaryStores()
-        s.chatStore.setTurnRetryOffer('a1', { turnId: 't1', model: 'fast' })
-        s.chatStore.setPromptSuggestion('a1', { text: 'next step' })
-        handleResultDivider('a1', nonInterrupted, parseMessageContent(nonInterrupted), s, 'live')
-        expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
-        expect(s.chatStore.getTurnRetryOffer('a1')).toBeUndefined()
-        expect(s.chatStore.getPromptSuggestion('a1')).toBeUndefined()
-        expect(s.agentSessionStore.getProgress('a1').output?.bytes).toBe(2048)
-        expect(running(s.chatStore)).toHaveLength(2)
-        expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.permissionCheck).toBe(true)
-      }
-
-      for (const interrupted of [
         agentMessage({ type: 'result', subtype: 'success' }, { completion: MessageCompletion.INTERRUPTED }),
+        agentMessage({ type: 'result', subtype: 'cancelled' }, { agentProvider: AgentProvider.CLAUDE_CODE }),
         agentMessage({
           turn: { id: 't1', status: 'interrupted' },
         }, { agentProvider: AgentProvider.CODEX }),
@@ -623,7 +599,6 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
         }, { agentProvider: AgentProvider.GITHUB_COPILOT }),
         agentMessage({ type: 'agent_turn_completed', reason: 'cancelled' }, { agentProvider: AgentProvider.DROID }),
         agentMessage({ type: 'agent_turn_completed', reason: 'process_exit' }, { agentProvider: AgentProvider.DROID }),
-        agentMessage({ type: 'result', subtype: 'cancelled' }, { agentProvider: AgentProvider.CLAUDE_CODE }),
         agentMessage({
           type: 'agent_end',
           messages: [
@@ -638,9 +613,43 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
         }, { agentProvider: AgentProvider.OH_MY_PI }),
       ]) {
         const s = boundaryStores()
-        handleResultDivider('a1', interrupted, parseMessageContent(interrupted), s, 'live')
-        expectNothingLive(s)
+        s.chatStore.setTurnRetryOffer('a1', { turnId: 't1', model: 'fast' })
+        s.chatStore.setPromptSuggestion('a1', { text: 'next step' })
+        handleResultDivider('a1', divider, parseMessageContent(divider), s, 'live')
+        expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
+        expect(s.chatStore.getTurnRetryOffer('a1')).toBeUndefined()
+        expect(s.chatStore.getPromptSuggestion('a1')).toBeUndefined()
+        expect(s.agentSessionStore.getProgress('a1').output?.bytes).toBe(2048)
+        expect(running(s.chatStore)).toHaveLength(2)
+        expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.permissionCheck).toBe(true)
       }
+      dispose()
+    })
+  })
+
+  it('clears tool progress and generation progress on worker progress reset for the target agent only', () => {
+    createRoot((dispose) => {
+      const s = boundaryStores()
+      s.chatStore.applyToolProgress('a2', {
+        ...span('toolu_A'),
+        elapsedSeconds: 45,
+      })
+      s.agentSessionStore.applyProgress('a2', {
+        revision: 1,
+        thinkingTokens: 120,
+        output: { bytes: 512, minimum: false },
+      })
+      const reset = sessionInfoMessage({
+        running_tool: null,
+        thinking_tokens: 0,
+        output_bytes: 0,
+        generation_progress_revision: 2,
+      })
+      expect(handleAgentSessionInfo('a1', parseMessageContent(reset), s)).toBe(true)
+      expectNothingLive(s)
+      expect(s.chatStore.getToolProgress('a2', span('toolu_A'))?.elapsedSeconds).toBe(45)
+      expect(s.agentSessionStore.getProgress('a2').thinkingTokens).toBe(120)
+      expect(s.agentSessionStore.getProgress('a2').output).toEqual({ bytes: 512, minimum: false })
       dispose()
     })
   })
@@ -696,16 +705,15 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     })
   })
 
-  it('a boundary on ONE agent leaves another agent\'s spans alone', () => {
+  it('leaves another agent\'s spans alone when one agent becomes inactive', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
       s.chatStore.applyToolProgress('a2', {
         ...span('toolu_A'),
         elapsedSeconds: 30,
       })
-      const msg = agentMessage({ type: 'result', subtype: 'cancelled' })
-      handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
-      expect(running(s.chatStore)).toHaveLength(0)
+      handleAgentInactive('a1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'live', s)
+      expectNothingLive(s)
       expect(s.chatStore.getToolProgress('a2', span('toolu_A'))?.elapsedSeconds).toBe(30)
       dispose()
     })

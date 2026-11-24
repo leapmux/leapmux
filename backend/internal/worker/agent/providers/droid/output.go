@@ -777,7 +777,6 @@ func (a *Agent) closeOpenTools(target droidOutputTarget, completion agent.Messag
 				closingPayload, err := json.Marshal(map[string]any{
 					"type":      contracts.DroidToolNotificationToolResult,
 					"toolUseId": tool.id,
-					"content":   "",
 					"isError":   completion != agent.MessageCompletionComplete,
 				})
 				if err == nil {
@@ -817,16 +816,16 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	completion, status := droidTurnCompletion(n.Reason)
 	a.persistRemainingGeneration(target, completion)
 	a.flushPendingToolCalls(target)
-	if completion == agent.MessageCompletionInterrupted {
+	if completion == agent.MessageCompletionInterrupted || target.childSessionID != "" {
 		a.closeOpenTools(target, completion, false)
 	}
 	a.persistTurnEnd(payload, target)
-	if completion == agent.MessageCompletionInterrupted && target.childSessionID == "" {
-		providerkit.ResetSpansAndProgress(target.sink)
-	}
 	if target.childSessionID != "" {
 		a.closeChildSession(target.childSessionID, status)
 	} else {
+		if completion == agent.MessageCompletionInterrupted {
+			providerkit.ResetSpansAndProgress(target.sink)
+		}
 		a.endTurn()
 		a.refreshContextUsage()
 	}

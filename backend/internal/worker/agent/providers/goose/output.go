@@ -490,6 +490,40 @@ func (a *Agent) clearGooseState() {
 	a.Mu.Unlock()
 }
 
+func (a *Agent) takeActiveDelegationsLocked() []string {
+	if len(a.activeDelegations) == 0 {
+		return nil
+	}
+	cancelled := make([]string, 0, len(a.activeDelegations))
+	for id := range a.activeDelegations {
+		cancelled = append(cancelled, id)
+	}
+	clear(a.activeDelegations)
+	return cancelled
+}
+
+func (a *Agent) closeCancelledDelegations(cancelled []string) {
+	if len(cancelled) == 0 {
+		return
+	}
+	slices.Sort(cancelled)
+	for _, id := range cancelled {
+		a.ApplySubagentObservation(&acp.SubagentObservation{
+			RowKey:   id,
+			Status:   bgtask.StatusInterrupted,
+			CloseRow: true,
+			Mode:     acp.ModeCloseOnly,
+		})
+	}
+}
+
+func (a *Agent) cancelActiveDelegations() {
+	a.Mu.Lock()
+	cancelled := a.takeActiveDelegationsLocked()
+	a.Mu.Unlock()
+	a.closeCancelledDelegations(cancelled)
+}
+
 // finishGoosePrompt consumes one prompt's message, goal and compaction observations.
 func (a *Agent) finishGoosePrompt(err error, stopped bool) acp.PromptEnding {
 	a.Mu.Lock()
@@ -497,25 +531,11 @@ func (a *Agent) finishGoosePrompt(err error, stopped bool) acp.PromptEnding {
 	// Later chunks need a new buffer because this snapshot is read after unlock.
 	a.promptOutput = goosePromptOutputState{}
 	var cancelledDelegations []string
-	if stopped && len(a.activeDelegations) > 0 {
-		cancelledDelegations = make([]string, 0, len(a.activeDelegations))
-		for id := range a.activeDelegations {
-			cancelledDelegations = append(cancelledDelegations, id)
-		}
-		clear(a.activeDelegations)
+	if stopped {
+		cancelledDelegations = a.takeActiveDelegationsLocked()
 	}
 	a.Mu.Unlock()
-	if len(cancelledDelegations) > 0 {
-		slices.Sort(cancelledDelegations)
-		for _, id := range cancelledDelegations {
-			a.ApplySubagentObservation(&acp.SubagentObservation{
-				RowKey:   id,
-				Status:   bgtask.StatusInterrupted,
-				CloseRow: true,
-				Mode:     acp.ModeCloseOnly,
-			})
-		}
-	}
+	a.closeCancelledDelegations(cancelledDelegations)
 	ending := a.finishGooseGoalPrompt(output, err, stopped)
 	if !stopped && goosePromptFailureWasDisplayed(output, err) {
 		ending.NoteWritten = true

@@ -579,6 +579,8 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 	}
 	if aborted {
 		providerkit.ResetSpansAndProgress(a.sink)
+	} else {
+		a.sink.ReportProgress(agent.ResetOutputProgress(copilotResponseSizeScope))
 	}
 	a.setNativeTurnActive(false)
 }

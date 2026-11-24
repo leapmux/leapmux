@@ -194,7 +194,6 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		return
 	}
 	if existing == nil {
-		state.closedSpans.Reopen(item.Item.ID)
 		existing = &itemState{deltas: make(map[string]string), cursors: make(map[string]bool), order: state.nextItemOrder}
 		state.nextItemOrder++
 		state.items[item.Item.ID] = existing
@@ -215,7 +214,7 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		existing.nativeItemRaw = nil
 	}
 	tool := item.Item.Kind == contracts.MuseItemKindToolCall || item.Item.Kind == contracts.MuseItemKindUserShell
-	transcriptDone := existing.retainedRevision >= item.Item.Revision || (tool && (existing.forceClosed || state.closedSpans.WasClosed(item.Item.ID)))
+	transcriptDone := existing.retainedRevision >= item.Item.Revision || (tool && existing.forceClosed)
 	current := a.currentSessionState(item.SessionID, state)
 	if transcriptDone {
 		a.stateMu.Unlock()
@@ -418,7 +417,7 @@ func (a *Agent) handleDelta(raw []byte, state *sessionState) {
 	}
 	a.stateMu.Lock()
 	item := state.items[delta.ItemID]
-	if item == nil || item.params.Item.Status != contracts.MuseItemStatusInProgress || item.forceClosed || state.closedSpans.WasClosed(delta.ItemID) || item.cursors[delta.Cursor] {
+	if item == nil || item.params.Item.Status != contracts.MuseItemStatusInProgress || item.forceClosed || item.cursors[delta.Cursor] {
 		a.stateMu.Unlock()
 		return
 	}

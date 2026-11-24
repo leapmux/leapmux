@@ -275,6 +275,7 @@ func (a *Agent) claudeHandleConversationReset() {
 	}
 	a.routeClaudeRootMessage("persist Claude context reset", claudeRootMessage{
 		content: notice, source: leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notification: true,
+		resetSpans: true, resetOpenTools: true,
 	})
 }
 
@@ -422,6 +423,7 @@ type messageEnvelope struct {
 	// checkSessionInfo pins the token in the generator instead.
 	CostUSD    *float64                   `json:"total_cost_usd"`
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
+	Subtype    string                     `json:"subtype"`
 	IsError    bool                       `json:"is_error"`
 	Result     string                     `json:"result"`
 	// TerminalReason is the CLI's own statement of why the turn ended, on a
@@ -434,37 +436,42 @@ type messageEnvelope struct {
 	contentParsed bool
 }
 
-// The `terminal_reason` values that state a turn ended in an abort, as the CLI's own
-// vocabulary spells them. Claude Code 2.1.289 writes the first when a stop arrives while
-// the model streams, and the second when it arrives while a tool runs.
+// The `terminal_reason` and `subtype` values that state a turn ended in an
+// abort or cancellation, as the CLI's own vocabulary spells them.
 const (
 	claudeTerminalReasonAbortedStreaming = "aborted_streaming"
 	claudeTerminalReasonAbortedTools     = "aborted_tools"
+	claudeResultSubtypeCancelled         = "cancelled"
 )
+
+// explicitlyAbortedTurn reports whether a `result` unambiguously states an
+// abort or cancellation on the wire without falling back to `is_error`.
+func (e *messageEnvelope) explicitlyAbortedTurn() bool {
+	return e.TerminalReason == claudeTerminalReasonAbortedStreaming ||
+		e.TerminalReason == claudeTerminalReasonAbortedTools ||
+		e.Subtype == claudeResultSubtypeCancelled
+}
 
 // statesAbortedTurn reports whether a `result` states that the stop took effect, so
 // the turn ended in an abort. A turn that ended some other way before the CLI read the
 // stop keeps its own outcome.
 //
-// `terminal_reason` decides when the frame states it. It outranks `subtype` and
-// `is_error`, because neither tells an abort from a failure: an abort and a failed tool
-// both write `subtype: error_during_execution`, and an API failure writes
+// `terminal_reason` and `subtype: cancelled` decide when the frame states them.
+// Otherwise `terminal_reason` outranks `subtype` and `is_error`, because neither
+// tells an abort from a failure: an abort and a failed tool both write
+// `subtype: error_during_execution`, and an API failure writes
 // `subtype: success` with `is_error: true`. A turn that finished writes
 // `terminal_reason: completed`, and an API failure writes `api_error`.
 //
-// A `result` that states no reason falls back to `is_error`: `true` reads as an abort,
-// and `false` reads as a turn that ended without one. The fallback covers a frame that
-// omits the field. Qoder also states no reason for an abort of the model, and its
-// provider reads `is_error` the same way.
+// A `result` that states no reason and is not `cancelled` falls back to `is_error`:
+// `true` reads as an abort, and `false` reads as a turn that ended without one.
+// The fallback covers a frame that omits the field. Qoder also states no reason
+// for an abort of the model, and its provider reads `is_error` the same way.
 func (e *messageEnvelope) statesAbortedTurn() bool {
-	switch e.TerminalReason {
-	case claudeTerminalReasonAbortedStreaming, claudeTerminalReasonAbortedTools:
+	if e.explicitlyAbortedTurn() {
 		return true
-	case "":
-		return e.IsError
-	default:
-		return false
 	}
+	return e.TerminalReason == "" && e.IsError
 }
 
 // claudeUserEnvelopeMarkType classifies a persisted Claude `user`-envelope row for
@@ -528,6 +535,7 @@ func (a *Agent) processAssistantBlocks(env *messageEnvelope, spans agent.SpanSer
 
 	toolUseCount := 0
 	planFileProcessed := false
+	var clonedRaw []byte
 	for _, block := range env.ContentBlocks() {
 		if block.Type != "tool_use" {
 			continue
@@ -552,8 +560,11 @@ func (a *Agent) processAssistantBlocks(env *messageEnvelope, spans agent.SpanSer
 			// span type is still recorded above, because the tool_result path
 			// reads it back through GetSpanType to persist span_type.
 			if !claudeToolSpawnsSubagent(block.Name) {
+				if clonedRaw == nil {
+					clonedRaw = bytes.Clone(raw)
+				}
 				spans.OpenSpan(block.ID, parentSpanID)
-				a.openTools.open("", block.ID, block.Name, parentSpanID, sessionID, raw)
+				a.openTools.open("", block.ID, block.Name, parentSpanID, sessionID, clonedRaw)
 			}
 		}
 
@@ -1202,6 +1213,10 @@ func (a *Agent) claudeCodeHandleSystemInit(content []byte) {
 		a.resetTranscriptIndex()
 	}
 	a.sink.UpdateSessionID(initMsg.SessionID)
+	if previousTranscriptSession != "" && previousTranscriptSession != initMsg.SessionID {
+		a.openTools.reset()
+		providerkit.ResetSpansAndProgress(a.sink)
+	}
 	a.sink.BroadcastStatusActive(initMsg.SessionID)
 }
 

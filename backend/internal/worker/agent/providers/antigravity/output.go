@@ -619,26 +619,25 @@ func (a *Agent) flushOpenSteps(state *cascadeState, completion agent.MessageComp
 		raw   json.RawMessage
 	}
 	var pendingSteps []pending
+	collect := func(index int, record *stepState) {
+		if record == nil || record.consumed || len(record.raw) == 0 {
+			return
+		}
+		if !includeToolSteps && record.toolStep {
+			return
+		}
+		if _, background := state.background[index]; background {
+			return
+		}
+		pendingSteps = append(pendingSteps, pending{index: index, raw: append(json.RawMessage(nil), record.raw...)})
+	}
 	if includeToolSteps {
 		for index, record := range state.steps {
-			if record == nil || record.consumed || len(record.raw) == 0 {
-				continue
-			}
-			if _, background := state.background[index]; background {
-				continue
-			}
-			pendingSteps = append(pendingSteps, pending{index: index, raw: append(json.RawMessage(nil), record.raw...)})
+			collect(index, record)
 		}
 	} else {
 		for index := range state.turnSteps {
-			record := state.steps[index]
-			if record == nil || record.consumed || len(record.raw) == 0 || record.toolStep {
-				continue
-			}
-			if _, background := state.background[index]; background {
-				continue
-			}
-			pendingSteps = append(pendingSteps, pending{index: index, raw: append(json.RawMessage(nil), record.raw...)})
+			collect(index, state.steps[index])
 		}
 	}
 	a.Mu.Unlock()
@@ -714,6 +713,9 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 	state.connectErr = streamErr
 	state.sendInFlight = false
 	rootBeforeStart := state.parent == nil && !state.seenUpdate
+	if state.parent == nil && !rootBeforeStart && a.fatalStreamErr == nil {
+		a.fatalStreamErr = streamErr
+	}
 	active := state.turnPhase != cascadeTurnIdle
 	hasOpenState := state.rowOpen || len(state.controls) > 0 || len(state.background) > 0 || hasOpenToolStepsLocked(state)
 	seq := a.NextTurnSeq()
@@ -741,10 +743,12 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 		if !a.cascadeCurrent(state) {
 			return
 		}
+		a.retireAllInteractions(state)
+		a.closeBackgroundTasks(state, bgtask.StatusFailed)
 		if err := a.finishCascadeOutput(state, agent.MessageCompletionError); err != nil {
 			slog.Error("antigravity finish failed stream", "agent_id", a.AgentID(), "error", err)
 		}
-		go a.stop(state)
+		go a.stop(state, false)
 		return
 	}
 	if active || hasOpenState {
