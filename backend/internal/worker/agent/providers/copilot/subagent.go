@@ -249,6 +249,7 @@ func (a *Agent) handleBackgroundTasksChanged() {
 	type promotedChild struct {
 		sink   agent.ProviderServices
 		active bool
+		seq    uint64
 	}
 	var promoted []promotedChild
 	a.outputMu.Lock()
@@ -265,13 +266,19 @@ func (a *Agent) handleBackgroundTasksChanged() {
 				continue
 			}
 			child.background = true
-			promoted = append(promoted, promotedChild{sink: child.sink, active: !child.idle})
+			// Allocate the turn sequence while holding outputMu so a concurrent
+			// finish/idle transition that acquires outputMu afterward always
+			// receives a strictly higher sequence and cannot be overwritten.
+			a.stateMu.Lock()
+			seq := a.turnOrder.NextTurnSeq()
+			a.stateMu.Unlock()
+			promoted = append(promoted, promotedChild{sink: child.sink, active: !child.idle, seq: seq})
 		}
 	}
 	a.outputMu.Unlock()
 	for _, item := range promoted {
 		item.sink.PersistSettingsRefresh(optionmap.Map{copilotOptionExecutionMode: copilotExecutionBackground})
-		a.publishChildTurnState(item.sink, item.active, item.active)
+		providerkit.PublishTurnStateTo(item.sink, agent.TurnState{Active: item.active, Steerable: item.active}, item.seq)
 	}
 }
 

@@ -117,27 +117,45 @@ type providerCacheKey struct {
 	redirectURL string
 }
 
+// IdPHandlerDeps carries IdPHandler's collaborators.
+type IdPHandlerDeps struct {
+	SessionHasher auth.SecretHasher
+	Store         store.Store
+	Config        *config.Config
+	Settings      *settings.Manager
+	Lifecycle     *auth.CredentialLifecycleEffects
+	Keystore      *keystore.Keystore
+	// OAuthStates holds short-lived inbound OAuth authorization states in
+	// memory. Nil defaults to a fresh MemoryOAuthStateStore.
+	OAuthStates OAuthStateStore
+	// PendingOAuthSignups holds short-lived inbound OAuth signup hand-offs
+	// shared with AuthService. Nil defaults to a fresh in-memory store.
+	PendingOAuthSignups *PendingOAuthSignupStore
+}
+
 // NewIdPHandler creates a new OAuth HTTP handler.
-func NewIdPHandler(st store.Store, sessionHasher auth.SecretHasher, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, ks *keystore.Keystore, states OAuthStateStore, pendingSignups *PendingOAuthSignupStore) *IdPHandler {
-	if lifecycle == nil {
+func NewIdPHandler(deps IdPHandlerDeps) *IdPHandler {
+	if deps.Lifecycle == nil {
 		panic("oauth handler requires credential lifecycle effects")
 	}
-	if st != nil && sessionHasher.IsZero() {
+	if deps.Store != nil && deps.SessionHasher.IsZero() {
 		panic("oauth handler requires a session secret hasher when a store is configured")
 	}
+	states := deps.OAuthStates
 	if states == nil {
 		states = NewMemoryOAuthStateStore()
 	}
+	pendingSignups := deps.PendingOAuthSignups
 	if pendingSignups == nil {
 		pendingSignups = NewPendingOAuthSignupStore()
 	}
 	return &IdPHandler{
-		sessionHasher:  sessionHasher,
-		store:          st,
-		cfg:            cfg,
-		set:            set,
-		lifecycle:      lifecycle,
-		keystore:       ks,
+		sessionHasher:  deps.SessionHasher,
+		store:          deps.Store,
+		cfg:            deps.Config,
+		set:            deps.Settings,
+		lifecycle:      deps.Lifecycle,
+		keystore:       deps.Keystore,
 		states:         states,
 		pendingSignups: pendingSignups,
 		providers:      make(map[providerCacheKey]huboauth.Provider),
@@ -397,7 +415,7 @@ func (h *IdPHandler) beginOAuthFlow(w http.ResponseWriter, r *http.Request, prov
 		purpose = OAuthStatePurposeConsentLogin
 	}
 
-	if err := h.states.Create(ctx, CreateOAuthStateParams{
+	if err := h.states.Create(CreateOAuthStateParams{
 		State:        state,
 		ProviderID:   providerID,
 		PkceVerifier: verifier,
@@ -456,17 +474,8 @@ func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, p
 		return "", nil, false
 	}
 
-	oauthState, err := h.states.Get(ctx, state)
-	if err != nil {
-		// A missing/unknown state is a genuine client error (expired or forged),
-		// but this must not report a transient store error as "invalid state"
-		// and force the user to restart the whole login -- surface it as
-		// retryable, matching the ErrNotFound split the user link uses.
-		if !errors.Is(err, store.ErrNotFound) {
-			slog.Error("oauth: load state", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return "", nil, false
-		}
+	oauthState, found := h.states.Get(state)
+	if !found {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return "", nil, false
 	}
@@ -493,32 +502,21 @@ func (h *IdPHandler) consumeOAuthState(w http.ResponseWriter, r *http.Request, p
 	}
 
 	// The owner presented the nonce, so consume the single-use entry now and
-	// clear the nonce on every outcome from here on, success included. A
-	// failed delete leaves the entry live for the rest of its expiry, which is
-	// not worth failing the login over, but it must not be silent: it is the
-	// only consumption of a single-use state in the hub.
-	consumed, err := h.states.Delete(ctx, state)
-	if err != nil {
-		slog.Error("oauth: delete state", "error", err, "provider_id", providerID)
-	}
+	// clear the nonce on every outcome from here on, success included.
+	//
+	// Delete's boolean result is what makes single use the HUB's property. Two
+	// callbacks carrying the same state and the same nonce cookie -- a
+	// double-clicked callback, a browser prefetch of the Location header, a
+	// retried navigation -- both reach this line, and exactly one removes the
+	// entry. This refuses the loser here rather than at provider.Exchange, so
+	// the property no longer rests on the identity provider rejecting the
+	// second use of its authorization code. It matters most on the reauth
+	// purpose, whose completion grants an elevation.
+	consumed := h.states.Delete(state)
 	for _, c := range auth.ClearOAuthNonceCookie(oauthState.State) {
 		http.SetCookie(w, c)
 	}
-	// The delete's row count is what makes the single use the HUB's
-	// property. Two callbacks carrying the same state and the same nonce
-	// cookie -- a double-clicked callback, a browser prefetch of the
-	// Location header, a retried navigation -- both reach this line, and
-	// exactly one of them removes the row. This refuses the loser here
-	// rather than at provider.Exchange, so the property no longer rests on
-	// the identity provider rejecting the second use of its authorization
-	// code. It matters most on the reauth purpose, whose completion grants
-	// an elevation.
-	//
-	// A delete that FAILED is a different case and keeps its own trade
-	// above: the row is still live, the count is 0 for a reason that is not
-	// a second use, and refusing here would fail a legitimate login on a
-	// transient store failure.
-	if err == nil && consumed == 0 {
+	if !consumed {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return "", nil, false
 	}
@@ -668,7 +666,7 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 	// signed into an account the attacker's identity owns and can return to
 	// at any time. A fresh nonce, because the flow's first one is spent.
 	signupNonce := id.Generate()
-	signupToken, err := h.storePendingSignup(ctx, providerID, claims, oauthState.RedirectURI, hashBrowserSecret(signupNonce))
+	signupToken, err := h.storePendingSignup(providerID, claims, oauthState.RedirectURI, hashBrowserSecret(signupNonce))
 	if err != nil {
 		slog.Error("oauth: store pending signup", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -974,12 +972,12 @@ func cleanProviderDisplayName(claims *huboauth.UserClaims) string {
 	return validate.CleanName(claims.Name)
 }
 
-func (h *IdPHandler) storePendingSignup(ctx context.Context, providerID string, claims *huboauth.UserClaims, redirectURI, nonceHash string) (string, error) {
+func (h *IdPHandler) storePendingSignup(providerID string, claims *huboauth.UserClaims, redirectURI, nonceHash string) (string, error) {
 	token := id.Generate()
 	expiresAt := h.now().Add(pendingOAuthSignupExpiry).UTC()
 	displayName := cleanProviderDisplayName(claims)
 
-	if err := h.pendingSignups.Create(ctx, CreatePendingOAuthSignupParams{
+	if err := h.pendingSignups.Create(CreatePendingOAuthSignupParams{
 		Token:           token,
 		ProviderID:      providerID,
 		NonceHash:       nonceHash,

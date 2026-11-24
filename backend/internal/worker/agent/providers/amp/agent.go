@@ -58,12 +58,10 @@ type Agent struct {
 	stderrFn func(proc *ampProcess) string
 	// exportFn supplies native history in tests. Production runs the export command.
 	exportFn func(context.Context, string) ([]byte, error)
-	// pidAliveFn probes local PID liveness for background shell commands.
-	// Production defaults to ampProcessAlive; tests inject a deterministic probe.
-	pidAliveFn func(int) bool
-	// pidIdentityFn reads local process identity (PID and start time) for background shell commands.
-	// Production defaults to procutil.IdentifyProcess; tests inject a deterministic probe.
-	pidIdentityFn func(int) (procutil.ProcessIdentity, bool)
+	// inspectProcessFn inspects local PID liveness and start token for background
+	// shell commands. Production leaves it nil, which calls
+	// procutil.InspectLiveProcess; tests inject a deterministic probe.
+	inspectProcessFn func(int) procutil.LiveProcessInfo
 
 	// userEnvMu guards the three fields below. The first process start that
 	// reads the user's shell settles them.
@@ -105,8 +103,8 @@ type Agent struct {
 	// tools holds the tool calls that started and did not end, by tool-use id.
 	tools       map[string]*openTool
 	closedSpans providerkit.ClosedSpanSet
-	// shells holds the registry row and process identity of each background
-	// command of the running process, by PID. See subagent.go.
+	// shells holds the registry row and opaque process start token of each
+	// background command of the running process, by PID. See subagent.go.
 	shells             map[int]trackedShell
 	shellPollerRunning bool
 	nextOrder          uint64

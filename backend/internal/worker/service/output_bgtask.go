@@ -64,18 +64,20 @@ func renameBgTaskRowKeyLocked(cache *bgTaskCache, oldKey, newKey string) bool {
 // Strict lock order:
 // transcriptMutationMutex -> meta.opMu -> cache.Mu -> (SQLite write lock | meta.mu).
 // Never acquire meta.mu across SQLite I/O.
-type bgTaskEphemeral struct {
-	opMu       sync.Mutex
-	mu         sync.RWMutex
-	rowGen     map[string]int64
-	activeForm map[string]string
+type bgTaskEphemeralKeyState struct {
+	gen        int64
+	hasGen     bool
+	activeForm string
+	hasForm    bool
 }
 
-func newBgTaskEphemeral() *bgTaskEphemeral {
-	return &bgTaskEphemeral{
-		rowGen:     make(map[string]int64),
-		activeForm: make(map[string]string),
-	}
+type bgTaskEphemeral struct {
+	opMu          sync.Mutex
+	mu            sync.RWMutex
+	rowGen        map[string]int64
+	activeForm    map[string]string
+	recordingUndo bool
+	undo          map[string]bgTaskEphemeralKeyState
 }
 
 func (m *bgTaskEphemeral) rowGeneration(key string) int64 {
@@ -98,29 +100,69 @@ func (m *bgTaskEphemeral) activeFormOf(key string) string {
 	return form
 }
 
-func (m *bgTaskEphemeral) snapshot() (map[string]int64, map[string]string) {
-	m.mu.RLock()
-	rowGen := maps.Clone(m.rowGen)
-	activeForm := maps.Clone(m.activeForm)
-	m.mu.RUnlock()
-	return rowGen, activeForm
+// beginUndo starts key-scoped rollback tracking for one transaction.
+// Caller must hold m.opMu.
+func (m *bgTaskEphemeral) beginUndo() {
+	m.recordingUndo = true
+	m.undo = nil
 }
 
-func (m *bgTaskEphemeral) restore(rowGen map[string]int64, activeForm map[string]string) {
-	m.mu.Lock()
-	m.rowGen = rowGen
-	m.activeForm = activeForm
-	m.mu.Unlock()
+func (m *bgTaskEphemeral) recordUndoLocked(key string) {
+	if !m.recordingUndo {
+		return
+	}
+	if m.undo == nil {
+		m.undo = make(map[string]bgTaskEphemeralKeyState, 2)
+	}
+	if _, recorded := m.undo[key]; recorded {
+		return
+	}
+	gen, hasGen := m.rowGen[key]
+	form, hasForm := m.activeForm[key]
+	m.undo[key] = bgTaskEphemeralKeyState{
+		gen:        gen,
+		hasGen:     hasGen,
+		activeForm: form,
+		hasForm:    hasForm,
+	}
+}
+
+func (m *bgTaskEphemeral) commitUndo() {
+	m.recordingUndo = false
+	m.undo = nil
+}
+
+func (m *bgTaskEphemeral) rollbackUndo() {
+	if len(m.undo) > 0 {
+		m.mu.Lock()
+		for key, prev := range m.undo {
+			if prev.hasGen {
+				m.rowGen[key] = prev.gen
+			} else {
+				delete(m.rowGen, key)
+			}
+			if prev.hasForm {
+				m.activeForm[key] = prev.activeForm
+			} else {
+				delete(m.activeForm, key)
+			}
+		}
+		m.mu.Unlock()
+	}
+	m.recordingUndo = false
+	m.undo = nil
 }
 
 func (m *bgTaskEphemeral) setRowGen(key string, gen int64) {
 	m.mu.Lock()
+	m.recordUndoLocked(key)
 	m.rowGen[key] = gen
 	m.mu.Unlock()
 }
 
 func (m *bgTaskEphemeral) setActiveForm(key, form string) {
 	m.mu.Lock()
+	m.recordUndoLocked(key)
 	if form == "" {
 		delete(m.activeForm, key)
 	} else {
@@ -131,12 +173,14 @@ func (m *bgTaskEphemeral) setActiveForm(key, form string) {
 
 func (m *bgTaskEphemeral) deleteActiveForm(key string) {
 	m.mu.Lock()
+	m.recordUndoLocked(key)
 	delete(m.activeForm, key)
 	m.mu.Unlock()
 }
 
 func (m *bgTaskEphemeral) deleteKey(key string) {
 	m.mu.Lock()
+	m.recordUndoLocked(key)
 	delete(m.rowGen, key)
 	delete(m.activeForm, key)
 	m.mu.Unlock()
@@ -144,6 +188,8 @@ func (m *bgTaskEphemeral) deleteKey(key string) {
 
 func (m *bgTaskEphemeral) renameKey(oldKey, newKey string, gen int64) {
 	m.mu.Lock()
+	m.recordUndoLocked(oldKey)
+	m.recordUndoLocked(newKey)
 	form, hasForm := m.activeForm[oldKey]
 	delete(m.rowGen, oldKey)
 	delete(m.activeForm, oldKey)
@@ -160,7 +206,10 @@ func (h *OutputHandler) bgTaskEphemeral(rootAgentID string) *bgTaskEphemeral {
 	if v, ok := h.bgTaskMeta.Load(rootAgentID); ok {
 		return v.(*bgTaskEphemeral)
 	}
-	fresh := newBgTaskEphemeral()
+	fresh := &bgTaskEphemeral{
+		rowGen:     make(map[string]int64),
+		activeForm: make(map[string]string),
+	}
 	actual, _ := h.bgTaskMeta.LoadOrStore(rootAgentID, fresh)
 	return actual.(*bgTaskEphemeral)
 }
@@ -192,6 +241,7 @@ func (h *OutputHandler) bgItemFromRow(ownerID string, r db.AgentBackgroundTask) 
 		Description:    r.Description,
 		ActiveForm:     h.loadBgTaskEphemeral(ownerID).activeFormOf(r.RowKey),
 		Status:         bgtask.Status(r.Status),
+		ReviveCount:    r.ReviveCount,
 		CreatedAt:      r.CreatedAt.Time,
 		UpdatedAt:      r.UpdatedAt.Time,
 		EndedAt:        endedAt,
@@ -403,17 +453,52 @@ type registryChange struct {
 
 // applyBackgroundTaskUpsert is the persist-mutate-broadcast for an upsert. It
 // writes the DB row, mutates the cache in place, runs cap-eviction, and
-// broadcasts. A same-generation, byte-identical replay skips both the write
-// and the broadcast. A newer generation still persists its ownership claim
-// without changing visible task data.
-func (h *OutputHandler) applyBackgroundTaskUpsert(rootAgentID string, generation int64, task bgtask.Upsert) (registryChange, error) {
+// broadcasts. ActiveForm-only ticks and byte-identical replays on an
+// already-displayed row bypass SQLite transactions completely.
+func (h *OutputHandler) applyBackgroundTaskUpsert(rootAgentID string, generation int64, defaultParentID string, task bgtask.Upsert) (registryChange, error) {
+	if generation <= 0 {
+		return registryChange{}, errors.New("a runtime background task writer requires a positive output generation")
+	}
 	meta := h.bgTaskEphemeral(rootAgentID)
 	meta.opMu.Lock()
 	defer meta.opMu.Unlock()
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
-	return h.applyBackgroundTaskUpsertLocked(cache, meta, rootAgentID, generation, task)
+	if meta.rowGeneration(task.RowKey) > generation {
+		return registryChange{rows: cache.snapshot()}, nil
+	}
+	cleaned := task.Clean()
+	if cache.seeded {
+		if idx := cache.indexOf(cleaned.RowKey); idx >= 0 {
+			existing := cache.Rows[idx]
+			merged := cleaned.ToItem().PreservingBlanksFrom(existing)
+			if merged.ParentAgentID == "" {
+				merged.ParentAgentID = defaultParentID
+			}
+			if err := merged.ValidateRole(); err == nil {
+				merged.CreatedAt, merged.EndedAt, merged.ReviveCount = existing.CreatedAt, existing.EndedAt, existing.ReviveCount
+				merged = merged.PreservingBlanksFrom(existing)
+				if existing.Status.IsFinished() && !merged.Status.IsFinished() {
+					merged.Status, merged.EndedAt = existing.Status, existing.EndedAt
+				}
+				if bgTaskDurableEqual(existing, merged) && (!merged.Status.IsFinished() || !merged.EndedAt.IsZero()) {
+					if meta.rowGeneration(cleaned.RowKey) < generation {
+						meta.setRowGen(cleaned.RowKey, generation)
+					}
+					if existing.ActiveForm == merged.ActiveForm {
+						return registryChange{rows: cache.snapshot()}, nil
+					}
+					meta.setActiveForm(merged.RowKey, merged.ActiveForm)
+					cache.Rows[idx].ActiveForm = merged.ActiveForm
+					return registryChange{rows: cache.snapshot(), changed: true}, nil
+				}
+			}
+		}
+	}
+	return h.mutateBackgroundTaskRegistryLocked(cache, meta, rootAgentID, generation, []string{task.RowKey}, func(ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral) error {
+		return h.mutateBackgroundTaskUpsertLocked(ctx, reg, meta, generation, defaultParentID, task)
+	})
 }
 
 func (h *OutputHandler) withBgTaskRow(
@@ -421,116 +506,156 @@ func (h *OutputHandler) withBgTaskRow(
 	mutate func(context.Context, bgTaskView, *bgTaskEphemeral, bgtask.Item, bool, func() (int, error)) error,
 ) (registryChange, error) {
 	return h.mutateBackgroundTaskRegistry(rootAgentID, generation, []string{rowKey}, func(ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral) error {
-		row, found, err := h.claimBackgroundTaskGenerationLocked(ctx, reg, meta, rowKey, generation)
-		if err != nil {
-			return err
-		}
-		idx := reg.cache.indexOf(rowKey)
-		if !found {
-			reg.cache.dropRowLocked(rowKey)
-			reg.cache.forgetEvictedActiveLocked(rowKey)
-			meta.deleteKey(rowKey)
-			return nil
-		}
-		priorFinished := idx >= 0 && reg.cache.Rows[idx].Status.IsFinished()
-		if priorFinished && !row.Status.IsFinished() {
-			// An out-of-band DB revive cleared the previous run; drop stale in-memory activeForm
-			// before adopting the running row into cache and passing existing to mutate.
-			meta.deleteActiveForm(rowKey)
-			row.ActiveForm = ""
-		}
-		if idx >= 0 {
-			reg.cache.Rows[idx] = row
-		}
-		admit := func() (int, error) {
-			if idx >= 0 {
-				return idx, nil
-			}
-			var err error
-			idx, err = reg.admitRowLocked(ctx, row)
-			return idx, err
-		}
-		return mutate(ctx, reg, meta, row, idx >= 0, admit)
+		return h.runBgTaskRowLocked(ctx, reg, meta, rowKey, generation, mutate)
 	})
 }
 
-// applyBackgroundTaskStatus updates a row's status + active_form without
-// closing it (used for running-progress updates). A no-op when the row is
-// absent or the patch is a no-op.
-func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, generation int64, status bgtask.Status, activeForm string) (registryChange, error) {
-	activeForm = validate.StripUnreadable(activeForm, bgtask.LabelByteLimit)
-	return h.withBgTaskRow(rootAgentID, rowKey, generation, func(ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral, existing bgtask.Item, displayed bool, admit func() (int, error)) error {
-		// Finished outcomes absorb active replays. An unchanged operation still claims its generation.
-		if existing.Status.IsFinished() && !status.IsFinished() || existing.Status == status && existing.ActiveForm == activeForm {
-			return nil
+func (h *OutputHandler) runBgTaskRowLocked(
+	ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral, rowKey string, generation int64,
+	mutate func(context.Context, bgTaskView, *bgTaskEphemeral, bgtask.Item, bool, func() (int, error)) error,
+) error {
+	row, found, err := h.claimBackgroundTaskGenerationLocked(ctx, reg, meta, rowKey, generation)
+	if err != nil {
+		return err
+	}
+	idx := reg.cache.indexOf(rowKey)
+	if !found {
+		reg.cache.dropRowLocked(rowKey)
+		reg.cache.forgetEvictedActiveLocked(rowKey)
+		meta.deleteKey(rowKey)
+		return nil
+	}
+	priorFinished := idx >= 0 && reg.cache.Rows[idx].Status.IsFinished()
+	if priorFinished && !row.Status.IsFinished() {
+		// An out-of-band DB revive cleared the previous run; drop stale in-memory activeForm
+		// before adopting the running row into cache and passing existing to mutate.
+		meta.deleteActiveForm(rowKey)
+		row.ActiveForm = ""
+	}
+	if idx >= 0 {
+		reg.cache.Rows[idx] = row
+	}
+	admit := func() (int, error) {
+		if idx >= 0 {
+			return idx, nil
 		}
-		// ActiveForm-only progress ticks on an already-displayed row skip SQLite writes completely.
-		if displayed && existing.Status == status && (!status.IsFinished() || !existing.EndedAt.IsZero()) {
+		var err error
+		idx, err = reg.admitRowLocked(ctx, row)
+		return idx, err
+	}
+	return mutate(ctx, reg, meta, row, idx >= 0, admit)
+}
+
+// applyBackgroundTaskStatus updates a row's status + active_form without
+// closing it (used for running-progress updates). ActiveForm-only ticks on an
+// already-displayed row bypass SQLite transactions completely.
+func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, generation int64, status bgtask.Status, activeForm string) (registryChange, error) {
+	if generation <= 0 {
+		return registryChange{}, errors.New("a runtime background task writer requires a positive output generation")
+	}
+	activeForm = validate.StripUnreadable(activeForm, bgtask.LabelByteLimit)
+	meta := h.bgTaskEphemeral(rootAgentID)
+	meta.opMu.Lock()
+	defer meta.opMu.Unlock()
+	cache := h.bgTaskCache(rootAgentID)
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	if meta.rowGeneration(rowKey) > generation {
+		return registryChange{rows: cache.snapshot()}, nil
+	}
+	if cache.seeded {
+		if idx := cache.indexOf(rowKey); idx >= 0 {
+			existing := cache.Rows[idx]
+			if existing.Status.IsFinished() && !status.IsFinished() || existing.Status == status && existing.ActiveForm == activeForm {
+				if meta.rowGeneration(rowKey) < generation {
+					meta.setRowGen(rowKey, generation)
+				}
+				return registryChange{rows: cache.snapshot()}, nil
+			}
+			if existing.Status == status && (!status.IsFinished() || !existing.EndedAt.IsZero()) {
+				if meta.rowGeneration(rowKey) < generation {
+					meta.setRowGen(rowKey, generation)
+				}
+				meta.setActiveForm(rowKey, activeForm)
+				cache.Rows[idx].ActiveForm = activeForm
+				return registryChange{rows: cache.snapshot(), changed: true}, nil
+			}
+		}
+	}
+	return h.mutateBackgroundTaskRegistryLocked(cache, meta, rootAgentID, generation, []string{rowKey}, func(ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral) error {
+		return h.runBgTaskRowLocked(ctx, reg, meta, rowKey, generation, func(ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral, existing bgtask.Item, displayed bool, admit func() (int, error)) error {
+			// Finished outcomes absorb active replays. An unchanged operation still claims its generation.
+			if existing.Status.IsFinished() && !status.IsFinished() || existing.Status == status && existing.ActiveForm == activeForm {
+				return nil
+			}
+			// ActiveForm-only progress ticks on an already-displayed row skip SQLite writes completely.
+			if displayed && existing.Status == status && (!status.IsFinished() || !existing.EndedAt.IsZero()) {
+				idx, err := admit()
+				if err != nil {
+					return err
+				}
+				meta.setActiveForm(rowKey, activeForm)
+				reg.cache.Rows[idx].ActiveForm = activeForm
+				return nil
+			}
 			idx, err := admit()
 			if err != nil {
 				return err
 			}
-			meta.setActiveForm(rowKey, activeForm)
-			reg.cache.Rows[idx].ActiveForm = activeForm
-			return nil
-		}
-		idx, err := admit()
-		if err != nil {
-			return err
-		}
-		now := nowMillis()
-		if existing.Status != status {
-			rows, err := reg.queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
-				Status:    leapmuxv1.BackgroundTaskStatus(status),
-				UpdatedAt: sqltime.NewSQLiteTime(now), OwnerAgentID: rootAgentID, RowKey: rowKey,
-			})
-			if err != nil {
-				return err
-			}
-			if rows == 0 {
-				return errBackgroundTaskSuperseded
-			}
-		}
-		endedAt := existing.EndedAt
-		// The final status and its first end stamp commit in the same transaction.
-		// An existing end stamp is an ordinary idempotent no-op, not a generation refusal.
-		if status.IsFinished() && endedAt.IsZero() {
-			rows, err := reg.queries.StampAgentBackgroundTaskEndedAt(ctx, db.StampAgentBackgroundTaskEndedAtParams{
-				MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
-				EndedAt:        sqltime.SQLiteNullTimeOf(now), OwnerAgentID: rootAgentID, RowKey: rowKey,
-			})
-			if err != nil {
-				return err
-			}
-			if rows == 0 {
-				stored, found, readErr := h.storedBackgroundTask(ctx, reg, rowKey)
-				if readErr != nil {
-					return readErr
+			now := nowMillis()
+			if existing.Status != status {
+				rows, err := reg.queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
+					Status:    leapmuxv1.BackgroundTaskStatus(status),
+					UpdatedAt: sqltime.NewSQLiteTime(now), OwnerAgentID: rootAgentID, RowKey: rowKey,
+				})
+				if err != nil {
+					return err
 				}
-				if !found {
+				if rows == 0 {
 					return errBackgroundTaskSuperseded
 				}
-				if stored.Status != status || stored.EndedAt.IsZero() {
-					return errors.New("the stored final task has no matching end stamp")
+			}
+			endedAt := existing.EndedAt
+			// The final status and its first end stamp commit in the same transaction.
+			// An existing end stamp is an ordinary idempotent no-op, not a generation refusal.
+			if status.IsFinished() && endedAt.IsZero() {
+				rows, err := reg.queries.StampAgentBackgroundTaskEndedAt(ctx, db.StampAgentBackgroundTaskEndedAtParams{
+					MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
+					EndedAt:        sqltime.SQLiteNullTimeOf(now), OwnerAgentID: rootAgentID, RowKey: rowKey,
+				})
+				if err != nil {
+					return err
 				}
-				endedAt = stored.EndedAt
-			} else {
-				endedAt = now
+				if rows == 0 {
+					stored, found, readErr := h.storedBackgroundTask(ctx, reg, rowKey)
+					if readErr != nil {
+						return readErr
+					}
+					if !found {
+						return errBackgroundTaskSuperseded
+					}
+					if stored.Status != status || stored.EndedAt.IsZero() {
+						return errors.New("the stored final task has no matching end stamp")
+					}
+					endedAt = stored.EndedAt
+				} else {
+					endedAt = now
+				}
 			}
-		}
-		meta.setActiveForm(rowKey, activeForm)
-		reg.cache.Rows[idx].Status = status
-		reg.cache.Rows[idx].ActiveForm = activeForm
-		if existing.Status != status {
-			reg.cache.Rows[idx].UpdatedAt = now
-		}
-		reg.cache.Rows[idx].EndedAt = endedAt
-		if status.IsFinished() {
-			if err := reg.trimFinishedToCapLocked(ctx, int64(existing.Kind)); err != nil {
-				return err
+			meta.setActiveForm(rowKey, activeForm)
+			reg.cache.Rows[idx].Status = status
+			reg.cache.Rows[idx].ActiveForm = activeForm
+			if existing.Status != status {
+				reg.cache.Rows[idx].UpdatedAt = now
 			}
-		}
-		return nil
+			reg.cache.Rows[idx].EndedAt = endedAt
+			if status.IsFinished() {
+				if err := reg.trimFinishedToCapLocked(ctx, int64(existing.Kind)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	})
 }
 
@@ -602,6 +727,7 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string, ge
 		}
 		meta.deleteActiveForm(rowKey)
 		reg.cache.Rows[idx].Status = bgtask.StatusRunning
+		reg.cache.Rows[idx].ReviveCount++
 		// Activity and description belong to the run that ended, not the revived run.
 		reg.cache.Rows[idx].ActiveForm, reg.cache.Rows[idx].Description = "", ""
 		reg.cache.Rows[idx].EndedAt, reg.cache.Rows[idx].UpdatedAt = time.Time{}, now
@@ -617,8 +743,8 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string, ge
 // already active": the same count answers "no such row", and the two need
 // different repairs. Re-reading settles it without a second guess, and it also
 // adopts every field rather than the two a hand-written repair remembered --
-// active_form and description describe the run that ENDED, and the SQL clears
-// them for exactly that reason.
+// active_form (cleared in memory by the caller) and description (cleared by
+// the SQL revive) describe the run that ENDED.
 //
 // The repair is for the DISPLAY list only. A retained row that left the list has
 // no cached copy to disagree with the store, so there is nothing to adopt and
@@ -737,14 +863,9 @@ func (h *OutputHandler) captureBackgroundTaskExit(rootID string, minimumGenerati
 
 func (h *OutputHandler) applyBackgroundTaskExit(rootID string, minimumGeneration, generation int64, status bgtask.Status) error {
 	ctx := h.bgTaskCtx()
-	meta := h.bgTaskEphemeral(rootID)
-	meta.opMu.Lock()
-	cache := h.bgTaskCache(rootID)
-	cache.Mu.Lock()
-	rowGenSnap, activeFormSnap := meta.snapshot()
-	reg := cache.on(h.queries, rootID)
 	var before, snapshot []bgtask.Item
-	err := reg.inTransactionLocked(ctx, h.db, func(tx bgTaskView) error {
+	err := h.withBgTaskTx(ctx, rootID, func(tx bgTaskView, meta *bgTaskEphemeral) error {
+		cache := tx.cache
 		if err := tx.ensureSeededLocked(ctx); err != nil {
 			return err
 		}
@@ -787,14 +908,9 @@ func (h *OutputHandler) applyBackgroundTaskExit(rootID string, minimumGeneration
 		return nil
 	})
 	if err != nil {
-		meta.restore(rowGenSnap, activeFormSnap)
-	}
-	cache.Mu.Unlock()
-	meta.opMu.Unlock()
-	if err != nil {
 		return err
 	}
-	if !bgTaskVisibleRowsEqual(before, snapshot) {
+	if !slices.Equal(before, snapshot) {
 		h.broadcastBackgroundTasks(rootID, snapshot)
 	}
 	// Derive the current tree rather than announcing that a replacement process exited.
@@ -836,15 +952,10 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 	// Provider titles need cleaning. Keep a blank registry title so an existing title survives.
 	// The child insert supplies the same generated fallback that OpenAgent uses.
 	spec.Title = validate.CleanName(spec.Title)
-	meta := s.h.bgTaskEphemeral(s.rootAgentID)
-	meta.opMu.Lock()
-	cache := s.h.bgTaskCache(s.rootAgentID)
-	cache.Mu.Lock()
-	rowGenSnap, activeFormSnap := meta.snapshot()
-	reg := cache.on(s.h.queries, s.rootAgentID)
 	var childID string
 	var change registryChange
-	err := reg.inTransactionLocked(ctx, s.h.db, func(tx bgTaskView) error {
+	err := s.h.withBgTaskTx(ctx, s.rootAgentID, func(tx bgTaskView, meta *bgTaskEphemeral) error {
+		cache := tx.cache
 		if rowKey != "" {
 			// Reject a superseded source before seeding or changing child identity.
 			if meta.rowGeneration(rowKey) > s.outputGeneration {
@@ -855,7 +966,7 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 			}
 		}
 		before := cache.snapshot()
-		beforeWork := captureBgTaskWorkStateLocked(cache)
+		beforeEvicted := len(cache.evictedActive.entries)
 		var existing bgtask.Item
 		var found bool
 		var err error
@@ -911,7 +1022,7 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 				if idx := cache.indexOf(rowKey); idx >= 0 {
 					cache.Rows[idx] = existing
 				}
-			} else if err := s.h.mutateBackgroundTaskUpsertLocked(ctx, tx, meta, s.outputGeneration, bgtask.Upsert{
+			} else if err := s.h.mutateBackgroundTaskUpsertLocked(ctx, tx, meta, s.outputGeneration, s.agentID, bgtask.Upsert{
 				RowKey: rowKey, Role: spec.RegistryRole, Kind: bgtask.KindSubagent, ChildAgentID: childID,
 				ParentAgentID: s.agentID, Title: spec.Title, Status: bgtask.StatusRunning,
 			}); err != nil {
@@ -920,16 +1031,11 @@ func (s *agentOutputSink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, e
 		}
 		change = registryChange{
 			rows:                  cache.snapshot(),
-			changed:               !bgTaskVisibleRowsEqual(before, cache.Rows),
-			backgroundWorkChanged: !beforeWork.equal(captureBgTaskWorkStateLocked(cache)),
+			changed:               !slices.Equal(before, cache.Rows),
+			backgroundWorkChanged: bgTaskWorkStateChanged(before, cache.Rows, beforeEvicted, len(cache.evictedActive.entries)),
 		}
 		return nil
 	})
-	if err != nil {
-		meta.restore(rowGenSnap, activeFormSnap)
-	}
-	cache.Mu.Unlock()
-	meta.opMu.Unlock()
 	if errors.Is(err, errBackgroundTaskSuperseded) {
 		return "", fmt.Errorf("the native child belongs to a newer physical output source: %w", agent.ErrChildIdentityRefused)
 	}
@@ -1298,7 +1404,7 @@ func (s *agentOutputSink) cleanupChildLifetime(childAgentID string, child *agent
 			return false
 		}
 		s.freezeChildLifetimeLocked(child)
-		if !s.h.cleanupChildMapsLocked(childAgentID, removal, true) {
+		if !s.h.cleanupChildMapsLocked(childAgentID, removal) {
 			mutation.Unlock()
 			continue
 		}
@@ -1306,6 +1412,7 @@ func (s *agentOutputSink) cleanupChildLifetime(childAgentID string, child *agent
 		agentIDs := child.retireRegisteredTree()
 		s.h.enqueueProgressClears(agentIDs)
 		mutation.Unlock()
+		s.h.clearBlockingControlsForCleanup(childAgentID, s.rootAgentID, child)
 		s.h.watcher.DrainAgentEvents(childAgentID)
 		s.h.drainProgressClears(agentIDs)
 		return true
@@ -1355,11 +1462,12 @@ func (s *agentOutputSink) cleanupUncachedChild(childAgentID string) {
 			mutation.Unlock()
 			return
 		}
-		if !s.h.cleanupChildMapsLocked(childAgentID, removal, true) {
+		if !s.h.cleanupChildMapsLocked(childAgentID, removal) {
 			mutation.Unlock()
 			continue
 		}
 		mutation.Unlock()
+		s.h.clearBlockingControlsForCleanup(childAgentID, s.rootAgentID, nil)
 		s.h.watcher.DrainAgentEvents(childAgentID)
 		return
 	}
@@ -1439,16 +1547,12 @@ func (s *agentOutputSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	// every status change, close and rename addressed the normalized one, and
 	// the task would sit Running for the life of the process.
 	//
-	// The parent agent id is the agent that owns THIS sink. Providers that
-	// spawn subagents don't need to thread it through every call site -- the
-	// sink knows its own identity. For a root sink this is the root; for a
-	// child sink it's the child (correct for grandchild spawns).
-	if task.ParentAgentID == "" {
-		task.ParentAgentID = s.agentID
-	}
+	// Default a blank ParentAgentID to s.agentID inside the upsert merge AFTER
+	// PreservingBlanksFrom so a root-sink update without ParentAgentID keeps a
+	// grandchild's stored parent instead of overwriting it with the root.
 	return s.applyAndBroadcast(task.RowKey, func(root, key string) (registryChange, error) {
 		task.RowKey = key
-		return s.h.applyBackgroundTaskUpsert(root, s.outputGeneration, task)
+		return s.h.applyBackgroundTaskUpsert(root, s.outputGeneration, s.agentID, task)
 	})
 }
 
@@ -1471,9 +1575,16 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 	// The zero Status is StatusUnspecified, so a miss returns that alongside
 	// ok=false. Callers must still read ok: the two are different answers, and
 	// only ok tells "no such row" from "a row with no status".
-	var noStatus bgtask.Status
+	item, found, err := s.lookupBackgroundTask(rowKey)
+	if err != nil || !found {
+		return "", bgtask.StatusUnspecified, false, err
+	}
+	return item.ChildAgentID, item.Status, true, nil
+}
+
+func (s *agentOutputSink) lookupBackgroundTask(rowKey string) (bgtask.Item, bool, error) {
 	if rowKey == "" {
-		return "", noStatus, false, nil
+		return bgtask.Item{}, false, nil
 	}
 	// Apply the same complete-key derivation as every registry mutation.
 	// A long native key must find the row that its earlier upsert created.
@@ -1487,12 +1598,12 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 	// such row" there closes a live span and leaves the row finished.
 	if err := cache.on(s.h.queries, s.rootAgentID).ensureSeededLocked(s.h.bgTaskCtx()); err != nil {
 		cache.Mu.Unlock()
-		return "", noStatus, false, fmt.Errorf("seed background tasks for %s: %w", s.rootAgentID, err)
+		return bgtask.Item{}, false, fmt.Errorf("seed background tasks for %s: %w", s.rootAgentID, err)
 	}
 	if idx := cache.indexOf(rowKey); idx >= 0 {
-		childID, status := cache.Rows[idx].ChildAgentID, cache.Rows[idx].Status
+		item := cache.Rows[idx]
 		cache.Mu.Unlock()
-		return childID, status, true, nil
+		return item, true, nil
 	}
 	// The lock is released BEFORE the DB read, the way resolveStoredChildAgent
 	// releases it around its own: this miss path runs on every FIRST task_started
@@ -1516,12 +1627,12 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 		// A DB failure stays the THIRD answer, distinct from a miss, for the same
 		// reason the seed failure above does: a caller that reads "no such row"
 		// from a database it could not read treats a live subagent as brand new.
-		return "", noStatus, false, err
+		return bgtask.Item{}, false, err
 	}
 	if !found {
-		return "", noStatus, false, nil
+		return bgtask.Item{}, false, nil
 	}
-	return row.ChildAgentID, row.Status, true, nil
+	return row, true, nil
 }
 
 // LookupChildIdentity resolves a stored registry key to its durable child
@@ -1660,7 +1771,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 				if _, err := reg.deleteRowLocked(ctx, oldKey, true); err != nil {
 					return err
 				}
-				if bgTaskVisibleEqual(resolvedTarget, target) {
+				if resolvedTarget == target {
 					return nil
 				}
 				resolvedTarget.UpdatedAt = nowMillis()
@@ -1683,7 +1794,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 				if _, err := reg.deleteRowLocked(ctx, oldKey, true); err != nil {
 					return err
 				}
-				return s.h.mutateBackgroundTaskUpsertLocked(ctx, reg, meta, s.outputGeneration, bgtask.Upsert{
+				return s.h.mutateBackgroundTaskUpsertLocked(ctx, reg, meta, s.outputGeneration, s.agentID, bgtask.Upsert{
 					RowKey: newKey, Role: resolvedTarget.Role, Kind: resolvedTarget.Kind, ChildAgentID: resolvedTarget.ChildAgentID,
 					ParentAgentID: resolvedTarget.ParentAgentID, GroupKey: resolvedTarget.GroupKey, GroupLabel: resolvedTarget.GroupLabel,
 					Title: resolvedTarget.Title, TitleIsCommand: resolvedTarget.TitleIsCommand, Description: resolvedTarget.Description,
@@ -1714,19 +1825,9 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	return nil
 }
 
-// applyBackgroundTaskUpsertLocked commits an upsert and its eviction together.
-// A failed write restores the database and the display cache when the handler owns a database handle.
-// A test handler without that handle restores its cache only.
-// The caller must hold meta.opMu and cache.Mu.
-func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, meta *bgTaskEphemeral, rootAgentID string, generation int64, task bgtask.Upsert) (registryChange, error) {
-	return h.mutateBackgroundTaskRegistryLocked(cache, meta, rootAgentID, generation, []string{task.RowKey}, func(ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral) error {
-		return h.mutateBackgroundTaskUpsertLocked(ctx, reg, meta, generation, task)
-	})
-}
-
 // mutateBackgroundTaskUpsertLocked preserves the existing replay and finished-state rules.
 // The caller owns the transaction, cache mirror, meta.opMu, and cache mutex.
-func (h *OutputHandler) mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral, generation int64, task bgtask.Upsert) error {
+func (h *OutputHandler) mutateBackgroundTaskUpsertLocked(ctx context.Context, reg bgTaskView, meta *bgTaskEphemeral, generation int64, defaultParentID string, task bgtask.Upsert) error {
 	task = task.Clean()
 	cache := reg.cache
 	existing, found, err := h.claimBackgroundTaskGenerationLocked(ctx, reg, meta, task.RowKey, generation)
@@ -1736,6 +1837,9 @@ func (h *OutputHandler) mutateBackgroundTaskUpsertLocked(ctx context.Context, re
 	idx := cache.indexOf(task.RowKey)
 	now := nowMillis()
 	merged := task.ToItem().PreservingBlanksFrom(existing)
+	if merged.ParentAgentID == "" {
+		merged.ParentAgentID = defaultParentID
+	}
 	if err := merged.ValidateRole(); err != nil {
 		return err
 	}
@@ -1744,7 +1848,7 @@ func (h *OutputHandler) mutateBackgroundTaskUpsertLocked(ctx context.Context, re
 		if idx >= 0 {
 			cache.Rows[idx] = existing
 		}
-		merged.CreatedAt, merged.EndedAt = existing.CreatedAt, existing.EndedAt
+		merged.CreatedAt, merged.EndedAt, merged.ReviveCount = existing.CreatedAt, existing.EndedAt, existing.ReviveCount
 		merged = merged.PreservingBlanksFrom(existing)
 		// Finished rows absorb active replays, while their descriptive fields may still change.
 		if existing.Status.IsFinished() && !merged.Status.IsFinished() {
@@ -1752,7 +1856,7 @@ func (h *OutputHandler) mutateBackgroundTaskUpsertLocked(ctx context.Context, re
 		} else if merged.Status.IsFinished() && !existing.Status.IsFinished() {
 			merged.EndedAt = now
 		}
-		if bgTaskVisibleEqual(existing.WithUpdatedAt(merged.UpdatedAt), merged) {
+		if existing.WithUpdatedAt(merged.UpdatedAt) == merged {
 			return nil
 		}
 		// ActiveForm-only progress ticks on an already-displayed row skip SQLite writes completely,
@@ -1822,26 +1926,10 @@ func writeBackgroundTaskItemLocked(ctx context.Context, reg bgTaskView, meta *bg
 
 var errBackgroundTaskSuperseded = errors.New("a newer physical output writer owns this background task")
 
-func bgTaskVisibleEqual(a, b bgtask.Item) bool {
-	return a == b
-}
-
 func bgTaskDurableEqual(a, b bgtask.Item) bool {
 	a.ActiveForm, b.ActiveForm = "", ""
 	a.UpdatedAt, b.UpdatedAt = time.Time{}, time.Time{}
 	return a == b
-}
-
-func bgTaskVisibleRowsEqual(a, b []bgtask.Item) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !bgTaskVisibleEqual(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
 }
 
 func (h *OutputHandler) storedBackgroundTask(ctx context.Context, reg bgTaskView, key string) (bgtask.Item, bool, error) {
@@ -1872,6 +1960,32 @@ func (h *OutputHandler) claimBackgroundTaskGenerationLocked(ctx context.Context,
 	return row, true, nil
 }
 
+func (h *OutputHandler) withBgTaskTx(ctx context.Context, rootID string, fn func(tx bgTaskView, meta *bgTaskEphemeral) error) error {
+	meta := h.bgTaskEphemeral(rootID)
+	meta.opMu.Lock()
+	defer meta.opMu.Unlock()
+	cache := h.bgTaskCache(rootID)
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	return h.runBgTaskTxLocked(ctx, cache, meta, rootID, fn)
+}
+
+func (h *OutputHandler) runBgTaskTxLocked(
+	ctx context.Context, cache *bgTaskCache, meta *bgTaskEphemeral, rootID string,
+	fn func(tx bgTaskView, meta *bgTaskEphemeral) error,
+) error {
+	meta.beginUndo()
+	err := cache.on(h.queries, rootID).inTransactionLocked(ctx, h.db, func(tx bgTaskView) error {
+		return fn(tx, meta)
+	})
+	if err != nil {
+		meta.rollbackUndo()
+		return err
+	}
+	meta.commitUndo()
+	return nil
+}
+
 func (h *OutputHandler) mutateBackgroundTaskRegistry(root string, generation int64, keys []string, mutate func(context.Context, bgTaskView, *bgTaskEphemeral) error) (registryChange, error) {
 	meta := h.bgTaskEphemeral(root)
 	meta.opMu.Lock()
@@ -1888,43 +2002,49 @@ type bgTaskWorkEntry struct {
 	working       bool
 }
 
-type bgTaskWorkState struct {
-	entries       map[bgTaskWorkEntry]int
-	evictedActive int
+func bgTaskWorkEntryFor(row bgtask.Item) (bgTaskWorkEntry, bool) {
+	working := row.Status.IsWorking()
+	if !working && row.ChildAgentID == "" {
+		return bgTaskWorkEntry{}, false
+	}
+	return bgTaskWorkEntry{
+		parentAgentID: row.ParentAgentID,
+		childAgentID:  row.ChildAgentID,
+		working:       working,
+	}, true
 }
 
-// captureBgTaskWorkStateLocked captures the working-task and parent/child
-// linkage multiset of cache. Caller must hold cache.Mu.
-func captureBgTaskWorkStateLocked(cache *bgTaskCache) bgTaskWorkState {
-	entries := make(map[bgTaskWorkEntry]int, len(cache.Rows))
-	for _, row := range cache.Rows {
-		working := row.Status.IsWorking()
-		if !working && row.ChildAgentID == "" {
-			continue
+func bgTaskWorkStateChanged(before, after []bgtask.Item, beforeEvicted, afterEvicted int) bool {
+	if beforeEvicted != afterEvicted {
+		return true
+	}
+	if len(before) == len(after) {
+		same := true
+		for i := range before {
+			ea, oka := bgTaskWorkEntryFor(before[i])
+			eb, okb := bgTaskWorkEntryFor(after[i])
+			if oka != okb || ea != eb {
+				same = false
+				break
+			}
 		}
-		entry := bgTaskWorkEntry{
-			parentAgentID: row.ParentAgentID,
-			childAgentID:  row.ChildAgentID,
-			working:       working,
-		}
-		entries[entry]++
-	}
-	return bgTaskWorkState{
-		entries:       entries,
-		evictedActive: len(cache.evictedActive.entries),
-	}
-}
-
-func (s bgTaskWorkState) equal(other bgTaskWorkState) bool {
-	if s.evictedActive != other.evictedActive || len(s.entries) != len(other.entries) {
-		return false
-	}
-	for entry, count := range s.entries {
-		if other.entries[entry] != count {
+		if same {
 			return false
 		}
 	}
-	return true
+	beforeMap := make(map[bgTaskWorkEntry]int, len(before))
+	for _, row := range before {
+		if entry, ok := bgTaskWorkEntryFor(row); ok {
+			beforeMap[entry]++
+		}
+	}
+	afterMap := make(map[bgTaskWorkEntry]int, len(after))
+	for _, row := range after {
+		if entry, ok := bgTaskWorkEntryFor(row); ok {
+			afterMap[entry]++
+		}
+	}
+	return !maps.Equal(beforeMap, afterMap)
 }
 
 func (h *OutputHandler) mutateBackgroundTaskRegistryLocked(cache *bgTaskCache, meta *bgTaskEphemeral, root string, generation int64, keys []string, mutate func(context.Context, bgTaskView, *bgTaskEphemeral) error) (registryChange, error) {
@@ -1932,10 +2052,8 @@ func (h *OutputHandler) mutateBackgroundTaskRegistryLocked(cache *bgTaskCache, m
 		return registryChange{}, errors.New("a runtime background task writer requires a positive output generation")
 	}
 	ctx := h.bgTaskCtx()
-	rowGenSnap, activeFormSnap := meta.snapshot()
-	reg := cache.on(h.queries, root)
 	var change registryChange
-	err := reg.inTransactionLocked(ctx, h.db, func(tx bgTaskView) error {
+	err := h.runBgTaskTxLocked(ctx, cache, meta, root, func(tx bgTaskView, meta *bgTaskEphemeral) error {
 		// A stale logical mutation must not even trigger cold-seed reclamation or display admission.
 		for _, key := range keys {
 			if meta.rowGeneration(key) > generation {
@@ -1946,20 +2064,18 @@ func (h *OutputHandler) mutateBackgroundTaskRegistryLocked(cache *bgTaskCache, m
 			return err
 		}
 		before := cache.snapshot()
-		beforeWork := captureBgTaskWorkStateLocked(cache)
+		beforeEvicted := len(cache.evictedActive.entries)
 		if err := mutate(ctx, tx, meta); err != nil {
 			return err
 		}
+		changed := !slices.Equal(before, cache.Rows)
 		change = registryChange{
 			rows:                  cache.snapshot(),
-			changed:               !bgTaskVisibleRowsEqual(before, cache.Rows),
-			backgroundWorkChanged: !beforeWork.equal(captureBgTaskWorkStateLocked(cache)),
+			changed:               changed,
+			backgroundWorkChanged: bgTaskWorkStateChanged(before, cache.Rows, beforeEvicted, len(cache.evictedActive.entries)),
 		}
 		return nil
 	})
-	if err != nil {
-		meta.restore(rowGenSnap, activeFormSnap)
-	}
 	if errors.Is(err, errBackgroundTaskSuperseded) {
 		return registryChange{rows: cache.snapshot()}, nil
 	}

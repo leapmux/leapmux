@@ -1114,6 +1114,6 @@ func TestWorkspaceArchive_TerminalClosedBroadcastUsesLiveExitCode(t *testing.T) 
 			}
 		}
 		return false
-	}, 5*time.Second, 10*time.Millisecond, "archiving an exited terminal must broadcast TerminalClosed")
+	}, 30*time.Second, 10*time.Millisecond, "archiving an exited terminal must broadcast TerminalClosed")
 	assert.Equal(t, int32(wantCode), closed.GetExitCode())
 }

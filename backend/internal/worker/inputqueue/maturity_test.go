@@ -156,7 +156,7 @@ func TestMaturityWaitsForDrainRecoveredAfterRecovery(t *testing.T) {
 	dispatcher := &recordingDispatcher{}
 	manager := NewManager(store, dispatcher, &recordingObserver{})
 	t.Cleanup(manager.StopAndWait)
-	require.NoError(t, manager.RecoverState(t.Context()))
+	require.NoError(t, manager.RecoverState(t.Context(), nil))
 	advanceClock(t, clock.Mock, 10*time.Minute)
 	waitForDrainToSettle(t, manager, "agent-1")
 	assert.Empty(t, dispatchedIDs(dispatcher), "a recovered queue waits for DrainRecovered")
@@ -187,7 +187,7 @@ func TestMaturityWaitsForRecoveryAdmissionDuringPublication(t *testing.T) {
 	}}
 	manager = NewManager(store, dispatcher, observer)
 	t.Cleanup(manager.StopAndWait)
-	require.NoError(t, manager.RecoverState(t.Context()))
+	require.NoError(t, manager.RecoverState(t.Context(), nil))
 	require.True(t, published)
 	assert.Empty(t, dispatchedIDs(dispatcher), "publication must not dispatch before owner reconciliation")
 	require.NoError(t, manager.DrainRecovered(t.Context()))
@@ -453,7 +453,7 @@ func TestMaturityRecoveryRestoresTheTimer(t *testing.T) {
 	dispatcher := &recordingDispatcher{}
 	managerTwo := NewManager(NewStore(database, second), dispatcher, &recordingObserver{})
 	t.Cleanup(managerTwo.StopAndWait)
-	require.NoError(t, managerTwo.RecoverState(t.Context()))
+	require.NoError(t, managerTwo.RecoverState(t.Context(), nil))
 	require.NoError(t, managerTwo.DrainRecovered(t.Context()))
 	waitForDrainToSettle(t, managerTwo, "agent-1")
 	assert.Empty(t, dispatchedIDs(dispatcher), "a future head waits for its deadline after recovery")

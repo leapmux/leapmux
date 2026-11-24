@@ -128,7 +128,7 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		return err
 	}
 	if !answer.NonBlocking {
-		if removed, ok := svc.Output.deleteBlockingControl(agentID, answer.RequestID, answer.ClaimToken); ok {
+		if removed, ok := svc.Output.controls.deleteBlocking(agentID, answer.RequestID, answer.ClaimToken); ok {
 			removedRequestID = removed.RequestID
 		}
 	}

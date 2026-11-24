@@ -1432,15 +1432,8 @@ func (a *Agent) handleThreadStatusChanged(params json.RawMessage) {
 			status:     bgtask.StatusFailed,
 			completion: agent.MessageCompletionError,
 		})
-	case "notLoaded":
-		if a.codexChildRunningForStatus(notif.ThreadID, false) {
-			a.completeCodexChildRun(notif.ThreadID, codexChildTransition{
-				status:     bgtask.StatusEndedWithUnknownOutcome,
-				completion: agent.MessageCompletionComplete,
-			})
-		}
-	case "idle":
-		if a.codexChildRunningForStatus(notif.ThreadID, true) {
+	case "notLoaded", "idle":
+		if a.codexChildRunningForStatus(notif.ThreadID, notif.Status.Type == "idle") {
 			a.completeCodexChildRun(notif.ThreadID, codexChildTransition{
 				status:     bgtask.StatusEndedWithUnknownOutcome,
 				completion: agent.MessageCompletionComplete,

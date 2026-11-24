@@ -22,13 +22,14 @@ SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq ASC;
 INSERT INTO agent_background_tasks (
     owner_agent_id, row_key, seq, kind, role, child_agent_id, parent_agent_id,
     group_key, group_label, title, title_is_command, description,
-    status, created_at, updated_at, ended_at
+    status, revive_count, created_at, updated_at, ended_at
 )
 SELECT sqlc.arg(new_root_id), source.row_key, source.seq, source.kind, source.role,
        sqlc.arg(new_child_id), sqlc.arg(new_parent_id),
        source.group_key, source.group_label, source.title, source.title_is_command, source.description,
        CASE WHEN source.status < sqlc.arg(min_final_status)
             THEN sqlc.arg(interrupted_status) ELSE source.status END AS status,
+       source.revive_count,
        source.created_at,
        CASE WHEN source.status < sqlc.arg(min_final_status)
             THEN sqlc.arg(copy_time) ELSE source.updated_at END AS updated_at,
@@ -184,10 +185,11 @@ WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
 -- transcript-close release.
 -- name: ReviveAgentBackgroundTask :execrows
 UPDATE agent_background_tasks SET
-    status      = sqlc.arg(status),
-    description = '',
-    ended_at    = NULL,
-    updated_at  = sqlc.arg(updated_at)
+    status       = sqlc.arg(status),
+    description  = '',
+    ended_at     = NULL,
+    revive_count = revive_count + 1,
+    updated_at   = sqlc.arg(updated_at)
 WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
   AND status >= sqlc.arg(min_final_status);
 

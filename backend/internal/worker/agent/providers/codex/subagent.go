@@ -98,8 +98,7 @@ type codexChildState struct {
 	prompt                 string
 	phase                  codexChildPhase
 	sawActiveStatus        bool
-	seenActivities         map[codexActivityKey]struct{}
-	seenActivityOrder      []codexActivityKey
+	seenActivities         providerkit.CappedMap[codexActivityKey, struct{}]
 	startedWakeItems       map[string]struct{}
 	startedAnonWakes       int
 	finalTransition        codexChildTransition
@@ -124,21 +123,10 @@ func (s *codexChildState) displayTitle() string {
 }
 
 func (s *codexChildState) recordSeenActivity(key codexActivityKey) {
-	if s.seenActivities == nil {
-		s.seenActivities = make(map[codexActivityKey]struct{})
+	if s.seenActivities.Cap() == 0 {
+		s.seenActivities = providerkit.NewCappedMap[codexActivityKey, struct{}](codexSeenActivityLimit)
 	}
-	if _, exists := s.seenActivities[key]; exists {
-		return
-	}
-	if len(s.seenActivityOrder) >= codexSeenActivityLimit {
-		evicted := s.seenActivityOrder[0]
-		delete(s.seenActivities, evicted)
-		copy(s.seenActivityOrder, s.seenActivityOrder[1:])
-		s.seenActivityOrder[len(s.seenActivityOrder)-1] = key
-	} else {
-		s.seenActivityOrder = append(s.seenActivityOrder, key)
-	}
-	s.seenActivities[key] = struct{}{}
+	s.seenActivities.Set(key, struct{}{})
 }
 
 type codexChildRoute struct {
@@ -255,15 +243,6 @@ func (a *Agent) upsertCodexChildRegistryRow(
 				slog.Warn("codex collab persist prompt failed", "thread", threadID, "error", err)
 			}
 		}
-		if parentAgentID == "" {
-			// A pre-restart row resolved through LookupBackgroundTask already exists
-			// with its durable parent_agent_id. Update only status/activity so a root
-			// upsert cannot replace a grandchild's stored parent with the root agent.
-			if !transition.finished() && a.activeCollabChild(threadID) {
-				a.reviveFinishedCollabChild(threadID)
-			}
-			return route, routed, a.sink.UpdateBackgroundTaskStatus(threadID, transition.status, transition.activity)
-		}
 	}
 	err := a.upsertCollabChildRow(bgtask.Upsert{
 		RowKey:        threadID,
@@ -346,7 +325,7 @@ func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID
 		key := codexActivityKey{id: act.ID, kind: act.Kind}
 		a.Mu.Lock()
 		state := a.codexChildStateLocked(act.AgentThreadID)
-		_, seen := state.seenActivities[key]
+		seen := state.seenActivities.Has(key)
 		a.Mu.Unlock()
 		if seen {
 			return true

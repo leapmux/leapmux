@@ -2,7 +2,6 @@ package service
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -58,7 +57,7 @@ type DeviceAuthorization struct {
 	RequestedScopes string
 	GrantedScopes   string
 	State           DeviceAuthorizationState
-	UserID          string
+	UserID          userid.UserID
 	AuthGeneration  int64
 	ExpiresAt       time.Time
 	LastPolledAt    *time.Time
@@ -105,13 +104,13 @@ type DeviceInvalidateToken struct {
 // with two-phase reservation and invalidation guards so concurrent SQL
 // transactions stay linearizable without holding any mutex across SQL I/O.
 type DeviceAuthorizationStore interface {
-	Create(ctx context.Context, p CreateDeviceAuthorizationParams) error
-	Get(ctx context.Context, deviceCodeHash []byte) (*DeviceAuthorization, error)
-	GetByUserCode(ctx context.Context, userCode string) (*DeviceAuthorization, error)
-	TouchPoll(ctx context.Context, deviceCodeHash []byte, now time.Time) error
-	DenyByUserCode(ctx context.Context, userCode string) (int64, error)
-	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationParams, now time.Time) (int64, error)
-	Consume(ctx context.Context, deviceCodeHash []byte, now time.Time) (int64, error)
+	Create(p CreateDeviceAuthorizationParams) error
+	Get(deviceCodeHash []byte) (*DeviceAuthorization, bool)
+	GetByUserCode(userCode string) (*DeviceAuthorization, bool)
+	TouchPoll(deviceCodeHash []byte, now time.Time)
+	DenyByUserCode(userCode string) bool
+	ApproveByUserCode(p ApproveDeviceAuthorizationParams, now time.Time) (bool, error)
+	Consume(deviceCodeHash []byte, now time.Time) bool
 	DeleteExpired(now time.Time) int64
 
 	// Two-phase token issuance: reserve before SQL transaction, check
@@ -123,7 +122,7 @@ type DeviceAuthorizationStore interface {
 
 	// Two-phase step-up approval: reserve before SQL elevation write, commit
 	// or release after.
-	ReserveApproveByUserCode(userCode string, userID userid.UserID, now time.Time) (DeviceGrantReservation, bool)
+	ReserveApproveByUserCode(userCode string, userID userid.UserID, authGeneration int64, now time.Time) (DeviceGrantReservation, bool)
 	CommitApproveByUserCode(res DeviceGrantReservation, p ApproveDeviceAuthorizationParams)
 	ReleaseApproveByUserCode(res DeviceGrantReservation)
 
@@ -136,7 +135,7 @@ type DeviceAuthorizationStore interface {
 	AbortInvalidate(tok DeviceInvalidateToken)
 
 	// Generation-selective user revocation (post-commit observer).
-	ConsumeApprovedForUserBeforeGeneration(userID string, userAuthGeneration int64, now time.Time) int64
+	ConsumeApprovedForUserBeforeGeneration(userID userid.UserID, userAuthGeneration int64, now time.Time) int64
 }
 
 type deviceAuthEntry struct {
@@ -149,15 +148,95 @@ type deviceAuthEntry struct {
 type consumeReservation struct {
 	key            string
 	clientID       string
-	userID         string
+	userID         userid.UserID
 	authGeneration int64
 	invalidated    bool
 }
 
 type approveReservation struct {
-	key      string
-	userCode string
-	userID   userid.UserID
+	key            string
+	clientID       string
+	userCode       string
+	userID         userid.UserID
+	authGeneration int64
+	invalidated    bool
+}
+
+// withDeviceInvalidation holds tok across fn, committing the invalidation when
+// fn returns nil and aborting it on any error or panic.
+func withDeviceInvalidation(
+	ds DeviceAuthorizationStore,
+	tok DeviceInvalidateToken,
+	now func() time.Time,
+	fn func() error,
+) error {
+	committed := false
+	defer func() {
+		if !committed {
+			ds.AbortInvalidate(tok)
+		}
+	}()
+	if err := fn(); err != nil {
+		return err
+	}
+	ds.CommitInvalidate(tok, now().UTC())
+	committed = true
+	return nil
+}
+
+// withDeviceConsume reserves deviceCodeHash at reserveNow, runs fn with an
+// invalidation check, commits at now().UTC() on nil return, and releases on
+// any error or panic.
+func withDeviceConsume(
+	ds DeviceAuthorizationStore,
+	deviceCodeHash []byte,
+	reserveNow time.Time,
+	now func() time.Time,
+	fn func(isInvalidated func() bool) error,
+) error {
+	res, ok := ds.ReserveConsume(deviceCodeHash, reserveNow)
+	if !ok {
+		return errAuthorizationGrantUnavailable
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			ds.ReleaseConsume(res)
+		}
+	}()
+	if err := fn(func() bool { return ds.IsInvalidated(res) }); err != nil {
+		return err
+	}
+	ds.CommitConsume(res, now().UTC())
+	committed = true
+	return nil
+}
+
+// withDeviceStepUpApprove reserves p.UserCode for step-up approval across fn,
+// committing the approval when fn returns nil and releasing it on any error
+// or panic.
+func withDeviceStepUpApprove(
+	ds DeviceAuthorizationStore,
+	p ApproveDeviceAuthorizationParams,
+	now time.Time,
+	fn func() error,
+) error {
+	res, ok := ds.ReserveApproveByUserCode(p.UserCode, p.UserID, p.AuthGeneration, now)
+	if !ok {
+		return errDeviceGrantNotApprovable
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			ds.ReleaseApproveByUserCode(res)
+		}
+	}()
+	if err := fn(); err != nil {
+		return err
+	}
+	ds.CommitApproveByUserCode(res, p)
+	committed = true
+	return nil
 }
 
 type invalidateMode int
@@ -172,15 +251,15 @@ type invalidationGuard struct {
 	id       uint64
 	mode     invalidateMode
 	clientID string
-	userID   string
+	userID   userid.UserID
 }
 
-func (g *invalidationGuard) matches(clientID, userID string) bool {
+func (g *invalidationGuard) matches(clientID string, userID userid.UserID) bool {
 	if g.clientID != clientID {
 		return false
 	}
 	if g.mode == invalidateModeUserClient {
-		return g.userID == userID
+		return g.userID.MatchesUser(userID)
 	}
 	return true
 }
@@ -196,6 +275,7 @@ type MemoryDeviceAuthorizationStore struct {
 	invalidations map[uint64]*invalidationGuard
 	nextID        uint64
 	maxEntries    int
+	minExpiresAt  time.Time
 	now           func() time.Time
 }
 
@@ -227,7 +307,7 @@ func (s *MemoryDeviceAuthorizationStore) allocIDLocked() uint64 {
 	return id
 }
 
-func (s *MemoryDeviceAuthorizationStore) hasActiveInvalidationLocked(clientID, userID string) bool {
+func (s *MemoryDeviceAuthorizationStore) hasActiveInvalidationLocked(clientID string, userID userid.UserID) bool {
 	for _, g := range s.invalidations {
 		if g.matches(clientID, userID) {
 			return true
@@ -236,7 +316,7 @@ func (s *MemoryDeviceAuthorizationStore) hasActiveInvalidationLocked(clientID, u
 	return false
 }
 
-func (s *MemoryDeviceAuthorizationStore) Create(_ context.Context, p CreateDeviceAuthorizationParams) error {
+func (s *MemoryDeviceAuthorizationStore) Create(p CreateDeviceAuthorizationParams) error {
 	if len(p.DeviceCodeHash) != deviceCodeHashLength {
 		return fmt.Errorf("device_code_hash must be %d bytes: %w", deviceCodeHashLength, store.ErrInvalidArgument)
 	}
@@ -260,12 +340,15 @@ func (s *MemoryDeviceAuthorizationStore) Create(_ context.Context, p CreateDevic
 		return store.ErrConflict
 	}
 	if len(s.byHash) >= s.maxEntries {
-		s.evictExpiredLocked(now)
+		if s.minExpiresAt.IsZero() || s.minExpiresAt.Before(now) {
+			s.evictExpiredLocked(now)
+		}
 		if len(s.byHash) >= s.maxEntries {
 			return errDeviceAuthCapacity
 		}
 	}
 
+	exp := p.ExpiresAt.UTC()
 	entry := &deviceAuthEntry{
 		key: key,
 		row: DeviceAuthorization{
@@ -275,65 +358,68 @@ func (s *MemoryDeviceAuthorizationStore) Create(_ context.Context, p CreateDevic
 			ClientID:        p.ClientID,
 			RequestedScopes: p.RequestedScopes,
 			State:           DeviceAuthorizationStatePending,
-			ExpiresAt:       p.ExpiresAt.UTC(),
+			ExpiresAt:       exp,
 			CreatedAt:       now,
 			ElevateTokenID:  p.ElevateTokenID,
 		},
 	}
+	wasEmpty := len(s.byHash) == 0
 	s.byHash[key] = entry
 	s.byUserCode[p.UserCode] = entry
+	if wasEmpty || (!s.minExpiresAt.IsZero() && exp.Before(s.minExpiresAt)) {
+		s.minExpiresAt = exp
+	}
 	return nil
 }
 
-func (s *MemoryDeviceAuthorizationStore) Get(_ context.Context, deviceCodeHash []byte) (*DeviceAuthorization, error) {
+func (s *MemoryDeviceAuthorizationStore) Get(deviceCodeHash []byte) (*DeviceAuthorization, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.byHash[string(deviceCodeHash)]
 	if !ok {
-		return nil, store.ErrNotFound
+		return nil, false
 	}
-	return cloneDeviceAuthorization(&entry.row), nil
+	return cloneDeviceAuthorization(&entry.row), true
 }
 
-func (s *MemoryDeviceAuthorizationStore) GetByUserCode(_ context.Context, userCode string) (*DeviceAuthorization, error) {
+func (s *MemoryDeviceAuthorizationStore) GetByUserCode(userCode string) (*DeviceAuthorization, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.byUserCode[userCode]
 	if !ok {
-		return nil, store.ErrNotFound
+		return nil, false
 	}
-	return cloneDeviceAuthorization(&entry.row), nil
+	return cloneDeviceAuthorization(&entry.row), true
 }
 
-func (s *MemoryDeviceAuthorizationStore) TouchPoll(_ context.Context, deviceCodeHash []byte, now time.Time) error {
+func (s *MemoryDeviceAuthorizationStore) TouchPoll(deviceCodeHash []byte, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.byHash[string(deviceCodeHash)]
 	if !ok {
-		return nil
+		return
 	}
 	ts := now.UTC()
 	entry.row.LastPolledAt = &ts
-	return nil
 }
 
-func (s *MemoryDeviceAuthorizationStore) DenyByUserCode(_ context.Context, userCode string) (int64, error) {
+func (s *MemoryDeviceAuthorizationStore) DenyByUserCode(userCode string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.byUserCode[userCode]
 	if !ok {
-		return 0, nil
+		return false
 	}
 	if entry.row.State != DeviceAuthorizationStatePending || entry.row.ConsumedAt != nil || entry.approveResID != 0 {
-		return 0, nil
+		return false
 	}
 	entry.row.State = DeviceAuthorizationStateDenied
-	return 1, nil
+	return true
 }
 
-func (s *MemoryDeviceAuthorizationStore) ApproveByUserCode(_ context.Context, p ApproveDeviceAuthorizationParams, now time.Time) (int64, error) {
+func (s *MemoryDeviceAuthorizationStore) ApproveByUserCode(p ApproveDeviceAuthorizationParams, now time.Time) (bool, error) {
 	if p.UserID.IsZero() {
-		return 0, fmt.Errorf("approve device authorization requires a user id: %w", store.ErrInvalidArgument)
+		return false, fmt.Errorf("approve device authorization requires a user id: %w", store.ErrInvalidArgument)
 	}
 	nowUTC := now.UTC()
 
@@ -341,44 +427,55 @@ func (s *MemoryDeviceAuthorizationStore) ApproveByUserCode(_ context.Context, p 
 	defer s.mu.Unlock()
 	entry, ok := s.byUserCode[p.UserCode]
 	if !ok {
-		return 0, nil
+		return false, nil
 	}
 	if entry.row.State != DeviceAuthorizationStatePending ||
 		entry.row.ConsumedAt != nil ||
 		!entry.row.ExpiresAt.After(nowUTC) ||
-		entry.approveResID != 0 {
-		return 0, nil
+		entry.approveResID != 0 ||
+		s.hasActiveInvalidationLocked(entry.row.ClientID, p.UserID) {
+		return false, nil
 	}
 	entry.row.State = DeviceAuthorizationStateApproved
-	entry.row.UserID = p.UserID.String()
+	entry.row.UserID = p.UserID
 	entry.row.GrantedScopes = p.GrantedScopes
 	entry.row.AuthGeneration = p.AuthGeneration
-	return 1, nil
+	return true, nil
 }
 
-func (s *MemoryDeviceAuthorizationStore) Consume(_ context.Context, deviceCodeHash []byte, now time.Time) (int64, error) {
+func (s *MemoryDeviceAuthorizationStore) canConsumeLocked(entry *deviceAuthEntry, nowUTC time.Time) bool {
+	if entry.row.State != DeviceAuthorizationStateApproved ||
+		entry.row.UserID.IsZero() ||
+		entry.row.ConsumedAt != nil ||
+		!entry.row.ExpiresAt.After(nowUTC) ||
+		entry.consumeResID != 0 ||
+		entry.approveResID != 0 {
+		return false
+	}
+	return !s.hasActiveInvalidationLocked(entry.row.ClientID, entry.row.UserID)
+}
+
+func (s *MemoryDeviceAuthorizationStore) noteEvictableLocked(entry *deviceAuthEntry) {
+	if entry.consumeResID != 0 || entry.approveResID != 0 {
+		return
+	}
+	if !s.minExpiresAt.IsZero() && entry.row.ExpiresAt.Before(s.minExpiresAt) {
+		s.minExpiresAt = entry.row.ExpiresAt
+	}
+}
+
+func (s *MemoryDeviceAuthorizationStore) Consume(deviceCodeHash []byte, now time.Time) bool {
 	nowUTC := now.UTC()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.byHash[string(deviceCodeHash)]
-	if !ok {
-		return 0, nil
-	}
-	if entry.row.State != DeviceAuthorizationStateApproved ||
-		entry.row.UserID == "" ||
-		entry.row.ConsumedAt != nil ||
-		!entry.row.ExpiresAt.After(nowUTC) ||
-		entry.consumeResID != 0 ||
-		entry.approveResID != 0 {
-		return 0, nil
-	}
-	if s.hasActiveInvalidationLocked(entry.row.ClientID, entry.row.UserID) {
-		return 0, nil
+	if !ok || !s.canConsumeLocked(entry, nowUTC) {
+		return false
 	}
 	ts := nowUTC
 	entry.row.ConsumedAt = &ts
-	return 1, nil
+	return true
 }
 
 func (s *MemoryDeviceAuthorizationStore) ReserveConsume(deviceCodeHash []byte, now time.Time) (DeviceGrantReservation, bool) {
@@ -388,18 +485,7 @@ func (s *MemoryDeviceAuthorizationStore) ReserveConsume(deviceCodeHash []byte, n
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.byHash[key]
-	if !ok {
-		return DeviceGrantReservation{}, false
-	}
-	if entry.row.State != DeviceAuthorizationStateApproved ||
-		entry.row.UserID == "" ||
-		entry.row.ConsumedAt != nil ||
-		!entry.row.ExpiresAt.After(nowUTC) ||
-		entry.consumeResID != 0 ||
-		entry.approveResID != 0 {
-		return DeviceGrantReservation{}, false
-	}
-	if s.hasActiveInvalidationLocked(entry.row.ClientID, entry.row.UserID) {
+	if !ok || !s.canConsumeLocked(entry, nowUTC) {
 		return DeviceGrantReservation{}, false
 	}
 
@@ -427,6 +513,21 @@ func (s *MemoryDeviceAuthorizationStore) IsInvalidated(res DeviceGrantReservatio
 	return s.hasActiveInvalidationLocked(cr.clientID, cr.userID)
 }
 
+func (s *MemoryDeviceAuthorizationStore) popConsumeReservationLocked(id uint64) (*consumeReservation, *deviceAuthEntry) {
+	cr, ok := s.consumeRes[id]
+	if !ok {
+		return nil, nil
+	}
+	delete(s.consumeRes, id)
+	entry, exists := s.byHash[cr.key]
+	if !exists || entry.consumeResID != id {
+		return cr, nil
+	}
+	entry.consumeResID = 0
+	s.noteEvictableLocked(entry)
+	return cr, entry
+}
+
 func (s *MemoryDeviceAuthorizationStore) CommitConsume(res DeviceGrantReservation, now time.Time) {
 	if res.id == 0 {
 		return
@@ -435,17 +536,10 @@ func (s *MemoryDeviceAuthorizationStore) CommitConsume(res DeviceGrantReservatio
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cr, ok := s.consumeRes[res.id]
-	if !ok {
-		return
-	}
-	delete(s.consumeRes, res.id)
-	if entry, exists := s.byHash[cr.key]; exists && entry.consumeResID == res.id {
-		entry.consumeResID = 0
-		if entry.row.ConsumedAt == nil {
-			ts := nowUTC
-			entry.row.ConsumedAt = &ts
-		}
+	_, entry := s.popConsumeReservationLocked(res.id)
+	if entry != nil && entry.row.ConsumedAt == nil {
+		ts := nowUTC
+		entry.row.ConsumedAt = &ts
 	}
 }
 
@@ -455,21 +549,14 @@ func (s *MemoryDeviceAuthorizationStore) ReleaseConsume(res DeviceGrantReservati
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cr, ok := s.consumeRes[res.id]
-	if !ok {
-		return
-	}
-	delete(s.consumeRes, res.id)
-	if entry, exists := s.byHash[cr.key]; exists && entry.consumeResID == res.id {
-		entry.consumeResID = 0
-		if cr.invalidated && entry.row.ConsumedAt == nil {
-			ts := s.currentTime()
-			entry.row.ConsumedAt = &ts
-		}
+	cr, entry := s.popConsumeReservationLocked(res.id)
+	if entry != nil && cr.invalidated && entry.row.ConsumedAt == nil {
+		ts := s.currentTime()
+		entry.row.ConsumedAt = &ts
 	}
 }
 
-func (s *MemoryDeviceAuthorizationStore) ReserveApproveByUserCode(userCode string, userID userid.UserID, now time.Time) (DeviceGrantReservation, bool) {
+func (s *MemoryDeviceAuthorizationStore) ReserveApproveByUserCode(userCode string, userID userid.UserID, authGeneration int64, now time.Time) (DeviceGrantReservation, bool) {
 	if userCode == "" || userID.IsZero() {
 		return DeviceGrantReservation{}, false
 	}
@@ -485,18 +572,36 @@ func (s *MemoryDeviceAuthorizationStore) ReserveApproveByUserCode(userCode strin
 		entry.row.ConsumedAt != nil ||
 		!entry.row.ExpiresAt.After(nowUTC) ||
 		entry.approveResID != 0 ||
-		entry.consumeResID != 0 {
+		entry.consumeResID != 0 ||
+		s.hasActiveInvalidationLocked(entry.row.ClientID, userID) {
 		return DeviceGrantReservation{}, false
 	}
 
 	resID := s.allocIDLocked()
 	entry.approveResID = resID
 	s.approveRes[resID] = &approveReservation{
-		key:      entry.key,
-		userCode: userCode,
-		userID:   userID,
+		key:            entry.key,
+		clientID:       entry.row.ClientID,
+		userCode:       userCode,
+		userID:         userID,
+		authGeneration: authGeneration,
 	}
 	return DeviceGrantReservation{id: resID, key: entry.key}, true
+}
+
+func (s *MemoryDeviceAuthorizationStore) popApproveReservationLocked(id uint64) (*approveReservation, *deviceAuthEntry) {
+	ar, ok := s.approveRes[id]
+	if !ok {
+		return nil, nil
+	}
+	delete(s.approveRes, id)
+	entry, exists := s.byHash[ar.key]
+	if !exists || entry.approveResID != id {
+		return ar, nil
+	}
+	entry.approveResID = 0
+	s.noteEvictableLocked(entry)
+	return ar, entry
 }
 
 func (s *MemoryDeviceAuthorizationStore) CommitApproveByUserCode(res DeviceGrantReservation, p ApproveDeviceAuthorizationParams) {
@@ -505,20 +610,19 @@ func (s *MemoryDeviceAuthorizationStore) CommitApproveByUserCode(res DeviceGrant
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ar, ok := s.approveRes[res.id]
-	if !ok {
+	ar, entry := s.popApproveReservationLocked(res.id)
+	if entry == nil || entry.row.State != DeviceAuthorizationStatePending || entry.row.ConsumedAt != nil {
 		return
 	}
-	delete(s.approveRes, res.id)
-	if entry, exists := s.byHash[ar.key]; exists && entry.approveResID == res.id {
-		entry.approveResID = 0
-		if entry.row.State == DeviceAuthorizationStatePending && entry.row.ConsumedAt == nil {
-			entry.row.State = DeviceAuthorizationStateApproved
-			entry.row.UserID = p.UserID.String()
-			entry.row.GrantedScopes = p.GrantedScopes
-			entry.row.AuthGeneration = p.AuthGeneration
-		}
+	if ar.invalidated {
+		ts := s.currentTime()
+		entry.row.ConsumedAt = &ts
+		return
 	}
+	entry.row.State = DeviceAuthorizationStateApproved
+	entry.row.UserID = p.UserID
+	entry.row.GrantedScopes = p.GrantedScopes
+	entry.row.AuthGeneration = p.AuthGeneration
 }
 
 func (s *MemoryDeviceAuthorizationStore) ReleaseApproveByUserCode(res DeviceGrantReservation) {
@@ -527,51 +631,36 @@ func (s *MemoryDeviceAuthorizationStore) ReleaseApproveByUserCode(res DeviceGran
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ar, ok := s.approveRes[res.id]
-	if !ok {
-		return
+	ar, entry := s.popApproveReservationLocked(res.id)
+	if entry != nil && ar.invalidated && entry.row.ConsumedAt == nil {
+		ts := s.currentTime()
+		entry.row.ConsumedAt = &ts
 	}
-	delete(s.approveRes, res.id)
-	if entry, exists := s.byHash[ar.key]; exists && entry.approveResID == res.id {
-		entry.approveResID = 0
+}
+
+func (s *MemoryDeviceAuthorizationStore) beginInvalidate(mode invalidateMode, clientID string, userID userid.UserID) DeviceInvalidateToken {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.allocIDLocked()
+	s.invalidations[id] = &invalidationGuard{
+		id:       id,
+		mode:     mode,
+		clientID: clientID,
+		userID:   userID,
 	}
+	return DeviceInvalidateToken{id: id}
 }
 
 func (s *MemoryDeviceAuthorizationStore) BeginInvalidateForUserClient(clientID string, userID userid.UserID) DeviceInvalidateToken {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id := s.allocIDLocked()
-	s.invalidations[id] = &invalidationGuard{
-		id:       id,
-		mode:     invalidateModeUserClient,
-		clientID: clientID,
-		userID:   userID.String(),
-	}
-	return DeviceInvalidateToken{id: id}
+	return s.beginInvalidate(invalidateModeUserClient, clientID, userID)
 }
 
 func (s *MemoryDeviceAuthorizationStore) BeginInvalidateForClient(clientID string) DeviceInvalidateToken {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id := s.allocIDLocked()
-	s.invalidations[id] = &invalidationGuard{
-		id:       id,
-		mode:     invalidateModeClient,
-		clientID: clientID,
-	}
-	return DeviceInvalidateToken{id: id}
+	return s.beginInvalidate(invalidateModeClient, clientID, userid.UserID{})
 }
 
 func (s *MemoryDeviceAuthorizationStore) BeginDeleteForClient(clientID string) DeviceInvalidateToken {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id := s.allocIDLocked()
-	s.invalidations[id] = &invalidationGuard{
-		id:       id,
-		mode:     invalidateModeDeleteClient,
-		clientID: clientID,
-	}
-	return DeviceInvalidateToken{id: id}
+	return s.beginInvalidate(invalidateModeDeleteClient, clientID, userid.UserID{})
 }
 
 func (s *MemoryDeviceAuthorizationStore) CommitInvalidate(tok DeviceInvalidateToken, now time.Time) {
@@ -593,12 +682,17 @@ func (s *MemoryDeviceAuthorizationStore) CommitInvalidate(tok DeviceInvalidateTo
 			cr.invalidated = true
 		}
 	}
+	for _, ar := range s.approveRes {
+		if g.matches(ar.clientID, ar.userID) {
+			ar.invalidated = true
+		}
+	}
 
 	switch g.mode {
 	case invalidateModeUserClient:
 		for _, entry := range s.byHash {
 			if entry.row.ClientID == g.clientID &&
-				entry.row.UserID == g.userID &&
+				entry.row.UserID.MatchesUser(g.userID) &&
 				entry.row.State == DeviceAuthorizationStateApproved &&
 				entry.row.ConsumedAt == nil {
 				ts := nowUTC
@@ -621,6 +715,9 @@ func (s *MemoryDeviceAuthorizationStore) CommitInvalidate(tok DeviceInvalidateTo
 				}
 			}
 		}
+		if len(s.byHash) == 0 {
+			s.minExpiresAt = time.Time{}
+		}
 	}
 }
 
@@ -633,8 +730,8 @@ func (s *MemoryDeviceAuthorizationStore) AbortInvalidate(tok DeviceInvalidateTok
 	delete(s.invalidations, tok.id)
 }
 
-func (s *MemoryDeviceAuthorizationStore) ConsumeApprovedForUserBeforeGeneration(userID string, userAuthGeneration int64, now time.Time) int64 {
-	if userID == "" {
+func (s *MemoryDeviceAuthorizationStore) ConsumeApprovedForUserBeforeGeneration(userID userid.UserID, userAuthGeneration int64, now time.Time) int64 {
+	if userID.IsZero() {
 		return 0
 	}
 	nowUTC := now.UTC()
@@ -643,14 +740,19 @@ func (s *MemoryDeviceAuthorizationStore) ConsumeApprovedForUserBeforeGeneration(
 	defer s.mu.Unlock()
 
 	for _, cr := range s.consumeRes {
-		if cr.userID == userID && auth.ShouldEvictForUserGeneration(cr.authGeneration, userAuthGeneration) {
+		if cr.userID.MatchesUser(userID) && auth.ShouldEvictForUserGeneration(cr.authGeneration, userAuthGeneration) {
 			cr.invalidated = true
+		}
+	}
+	for _, ar := range s.approveRes {
+		if ar.userID.MatchesUser(userID) && auth.ShouldEvictForUserGeneration(ar.authGeneration, userAuthGeneration) {
+			ar.invalidated = true
 		}
 	}
 
 	var consumed int64
 	for _, entry := range s.byHash {
-		if entry.row.UserID == userID &&
+		if entry.row.UserID.MatchesUser(userID) &&
 			entry.row.State == DeviceAuthorizationStateApproved &&
 			entry.row.ConsumedAt == nil &&
 			auth.ShouldEvictForUserGeneration(entry.row.AuthGeneration, userAuthGeneration) {
@@ -670,6 +772,7 @@ func (s *MemoryDeviceAuthorizationStore) DeleteExpired(now time.Time) int64 {
 
 func (s *MemoryDeviceAuthorizationStore) evictExpiredLocked(now time.Time) int64 {
 	var deleted int64
+	var minRem time.Time
 	for key, entry := range s.byHash {
 		if entry.consumeResID != 0 || entry.approveResID != 0 {
 			continue
@@ -680,8 +783,13 @@ func (s *MemoryDeviceAuthorizationStore) evictExpiredLocked(now time.Time) int64
 				delete(s.byUserCode, entry.row.UserCode)
 			}
 			deleted++
+			continue
+		}
+		if minRem.IsZero() || entry.row.ExpiresAt.Before(minRem) {
+			minRem = entry.row.ExpiresAt
 		}
 	}
+	s.minExpiresAt = minRem
 	return deleted
 }
 

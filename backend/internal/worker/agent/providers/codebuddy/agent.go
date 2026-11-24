@@ -114,9 +114,6 @@ type codebuddyModelInfo struct {
 	Description string `json:"description"`
 }
 
-// AgentID returns the worker's identifier for this agent.
-func (a *Agent) AgentIDValue() string { return a.AgentID() }
-
 // NativeTurnRestartRequired reports when the next prompt needs a new process
 // to apply native Plan settings or restore input after a rejected plan.
 func (a *Agent) NativeTurnRestartRequired() bool {

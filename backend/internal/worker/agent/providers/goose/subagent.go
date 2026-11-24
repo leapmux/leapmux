@@ -2,7 +2,6 @@ package goose
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 
@@ -85,31 +84,6 @@ func gooseSubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation
 	}
 }
 
-// gooseReportID returns the per-run report ID for one subagent session.
-// Job 1 uses the bare session ID; resumed runs append "#<run>".
-func gooseReportID(sessionID string, run int) string {
-	if run >= 2 {
-		return fmt.Sprintf("%s#%d", sessionID, run)
-	}
-	return sessionID
-}
-
-// bumpGooseRunSeqLocked advances a session's run counter when a resumed run
-// starts. Caller must hold a.Mu.
-func (a *Agent) bumpGooseRunSeqLocked(sessionID string) {
-	if sessionID == "" {
-		return
-	}
-	if a.runSeq == nil {
-		a.runSeq = make(map[string]int)
-	}
-	if a.runSeq[sessionID] < 1 {
-		a.runSeq[sessionID] = 2
-		return
-	}
-	a.runSeq[sessionID]++
-}
-
 // observeGooseSubagentCall tracks open subagents and resume call-to-session
 // mappings when Goose opens a delegate tool_call.
 func (a *Agent) observeGooseSubagentCall(tc acp.ToolCallEnvelope) *acp.SubagentObservation {
@@ -138,18 +112,21 @@ func (a *Agent) observeGooseSubagentCall(tc acp.ToolCallEnvelope) *acp.SubagentO
 			}
 			a.pendingResumeNotices[obs.RowKey] = true
 			delete(a.pendingResumeAcks, obs.RowKey)
-			a.bumpGooseRunSeqLocked(obs.RowKey)
 		}
-		if a.activeDelegations == nil {
-			a.activeDelegations = make(map[string]struct{})
-		}
-		a.activeDelegations[obs.RowKey] = struct{}{}
+		a.markActiveDelegationLocked(obs.RowKey)
 	}
 	return obs
 }
 
+func (a *Agent) markActiveDelegationLocked(rowKey string) {
+	if a.activeDelegations == nil {
+		a.activeDelegations = make(map[string]struct{})
+	}
+	a.activeDelegations[rowKey] = struct{}{}
+}
+
 // observeGooseSubagentNotice adapts inline subagent lifecycle notices to this
-// agent's open-subagent tracking, resume guards, and per-run report IDs.
+// agent's open-subagent tracking and resume guards.
 func (a *Agent) observeGooseSubagentNotice(text string) *acp.SubagentObservation {
 	obs := gooseSubagentNotice(text)
 	if obs == nil || obs.RowKey == "" {
@@ -165,26 +142,19 @@ func (a *Agent) observeGooseSubagentNotice(text string) *acp.SubagentObservation
 		if _, open := a.activeDelegations[obs.RowKey]; open {
 			return nil
 		}
-		a.bumpGooseRunSeqLocked(obs.RowKey)
 		if a.pendingResumeAcks == nil {
 			a.pendingResumeAcks = make(map[string]bool)
 		}
 		a.pendingResumeAcks[obs.RowKey] = true
-		if a.activeDelegations == nil {
-			a.activeDelegations = make(map[string]struct{})
-		}
-		a.activeDelegations[obs.RowKey] = struct{}{}
+		a.markActiveDelegationLocked(obs.RowKey)
 		return obs
 	}
 	if obs.CloseRow || obs.Status.IsFinished() {
 		delete(a.activeDelegations, obs.RowKey)
-		obs.ReportID = gooseReportID(obs.RowKey, a.runSeq[obs.RowKey])
+		obs.ReportID = obs.RowKey
 		return obs
 	}
-	if a.activeDelegations == nil {
-		a.activeDelegations = make(map[string]struct{})
-	}
-	a.activeDelegations[obs.RowKey] = struct{}{}
+	a.markActiveDelegationLocked(obs.RowKey)
 	return obs
 }
 
@@ -372,16 +342,7 @@ func (a *Agent) observeGooseSubagentUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 		}
 		a.gooseChildRenames[obs.RenameFrom] = obs.RowKey
 		delete(a.activeDelegations, obs.RenameFrom)
-		if a.runSeq == nil {
-			a.runSeq = make(map[string]int)
-		}
-		if a.runSeq[obs.RowKey] == 0 {
-			a.runSeq[obs.RowKey] = 1
-		}
-		if a.activeDelegations == nil {
-			a.activeDelegations = make(map[string]struct{})
-		}
-		a.activeDelegations[obs.RowKey] = struct{}{}
+		a.markActiveDelegationLocked(obs.RowKey)
 		return obs
 	}
 	if obs.ReviveRow {
@@ -403,15 +364,11 @@ func (a *Agent) observeGooseSubagentUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 		if _, open := a.activeDelegations[obs.RowKey]; open {
 			return nil
 		}
-		a.bumpGooseRunSeqLocked(obs.RowKey)
 		if a.pendingResumeNotices == nil {
 			a.pendingResumeNotices = make(map[string]bool)
 		}
 		a.pendingResumeNotices[obs.RowKey] = true
-		if a.activeDelegations == nil {
-			a.activeDelegations = make(map[string]struct{})
-		}
-		a.activeDelegations[obs.RowKey] = struct{}{}
+		a.markActiveDelegationLocked(obs.RowKey)
 		return obs
 	}
 	renamed := a.gooseChildRenames[tcu.ToolCallID]

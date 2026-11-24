@@ -2,50 +2,96 @@ package service
 
 import (
 	"context"
-	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 type deviceGrantConsumeRecorder struct {
 	DeviceAuthorizationStore
-	rows   int64
-	err    error
-	calls  int
-	digest []byte
-	now    time.Time
+	consumed bool
+	calls    int
+	digest   []byte
+	now      time.Time
 }
 
-func (s *deviceGrantConsumeRecorder) Consume(_ context.Context, digest []byte, now time.Time) (int64, error) {
+func (s *deviceGrantConsumeRecorder) Consume(digest []byte, now time.Time) bool {
 	s.calls++
 	s.digest = append([]byte(nil), digest...)
 	s.now = now
-	return s.rows, s.err
+	return s.consumed
 }
-func TestSpendDeviceGrantPreservesStoreTimeAndResult(t *testing.T) {
+
+func TestAnswerElevationPollPassesHandlerTimeAndMapsConsumeResult(t *testing.T) {
 	t.Parallel()
-	fault := errors.New("consume fault")
+
+	now := time.Date(2026, time.November, 13, 4, 5, 6, 7, time.UTC)
 	for _, tc := range []struct {
-		name      string
-		rows      int64
-		err, want error
+		name       string
+		consumed   bool
+		wantStatus int
+		wantBody   string
 	}{
-		{"one", 1, nil, nil}, {"zero", 0, nil, errAuthorizationGrantUnavailable}, {"negative", -1, nil, errAuthorizationGrantUnavailable}, {"multiple", 2, nil, errAuthorizationGrantUnavailable}, {"store failure", 0, fault, fault},
+		{"consumed", true, http.StatusOK, `{"elevated":true}`},
+		{"not consumed", false, http.StatusBadRequest, `{"error":"invalid_grant","error_description":"device_code expired or already consumed"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			recorder := &deviceGrantConsumeRecorder{rows: tc.rows, err: tc.err}
+			st := hubtestutil.OpenTestStore(t)
+			hubtestutil.CreateTestAdmin(t, st)
+			admin, err := st.Users().GetByUsername(t.Context(), hubtestutil.TestAdminUsername)
+			require.NoError(t, err)
+			uid := userid.MustNew(admin.ID)
+
+			tokenID := "tok-elevation-poll"
+			exp := now.Add(time.Hour)
+			require.NoError(t, st.APITokens().Create(t.Context(), store.CreateAPITokenParams{
+				Issuance:         store.APITokenIssuanceDeviceCode,
+				ID:               tokenID,
+				UserID:           uid,
+				ClientID:         oauthapp.ControlCLIClientID,
+				InstallationName: "test",
+				GrantedScopes:    "workspace:read",
+				SecretHash:       []byte("secret-hash-elevation-poll-01234"),
+				ExpiresAt:        &exp,
+			}))
+			n, err := st.APITokens().Elevate(t.Context(), store.ElevateAPITokenParams{
+				TokenID:            tokenID,
+				UserID:             uid,
+				ElevationProvenAt:  now,
+				ElevationExpiresAt: now.Add(auth.ElevationWindow),
+			}, now)
+			require.NoError(t, err)
+			require.EqualValues(t, 1, n)
+
+			recorder := &deviceGrantConsumeRecorder{consumed: tc.consumed}
+			h := NewOAuthServerHandler(OAuthServerDeps{
+				SessionHasher:        hubtestutil.TestSecretHasher(),
+				Store:                st,
+				Lifecycle:            auth.NewCredentialLifecycleEffects(nil, nil, nil),
+				Notices:              NewCredentialNotices(nil, mail.Renderer{}),
+				ServingCtx:           context.Background(),
+				DeviceAuthorizations: recorder,
+			})
+			h.Now = func() time.Time { return now }
+
 			digest := []byte{0, 1, 255}
-			now := time.Date(2026, time.November, 13, 4, 5, 6, 7, time.UTC)
-			err := spendDeviceGrant(t.Context(), recorder, digest, now)
-			if tc.want == nil {
-				require.NoError(t, err)
-			} else {
-				require.ErrorIs(t, err, tc.want)
-				assert.Same(t, tc.want, err)
-			}
+			req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+			rec := httptest.NewRecorder()
+			h.answerElevationPoll(rec, req, &DeviceAuthorization{ElevateTokenID: tokenID}, digest)
+
+			assert.Equal(t, tc.wantStatus, rec.Code)
+			assert.JSONEq(t, tc.wantBody, rec.Body.String())
 			assert.Equal(t, 1, recorder.calls)
 			assert.Equal(t, digest, recorder.digest)
 			assert.Equal(t, now, recorder.now)

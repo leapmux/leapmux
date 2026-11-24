@@ -1,13 +1,13 @@
 package service
 
 import (
+	"cmp"
 	"slices"
 	"sync"
 	"time"
-
-	"github.com/leapmux/leapmux/internal/util/sqltime"
-	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+const maxClosedQuakeIDs = 4096
 
 // QuakeTerminal holds the in-memory metadata for an active quake terminal.
 // Quake terminals live strictly in memory for the current Worker process and
@@ -24,27 +24,15 @@ type QuakeTerminal struct {
 	CreatedAt     time.Time
 }
 
-func (q QuakeTerminal) toDBTerminal() db.Terminal {
-	return db.Terminal{
-		ID:            q.ID,
-		WorkingDir:    q.WorkingDir,
-		ShellStartDir: q.ShellStartDir,
-		Shell:         q.Shell,
-		Title:         q.Title,
-		Cols:          q.Cols,
-		Rows:          q.Rows,
-		Screen:        []byte{},
-		StartupError:  q.StartupError,
-		CreatedAt:     sqltime.NewSQLiteTime(q.CreatedAt),
-	}
-}
-
 // QuakeTerminalStore tracks open quake terminals in memory, enforcing at most
-// one active quake terminal per working directory.
+// one active quake terminal per working directory. It also remembers recently
+// closed quake IDs so late RestartTerminal RPCs still return FailedPrecondition.
 type QuakeTerminalStore struct {
-	mu    sync.Mutex
-	byID  map[string]*QuakeTerminal
-	byDir map[string]*QuakeTerminal
+	mu          sync.Mutex
+	byID        map[string]*QuakeTerminal
+	byDir       map[string]*QuakeTerminal
+	closedIDs   map[string]struct{}
+	closedOrder []string
 
 	// Package-internal test hooks for deterministic concurrent-open tests.
 	afterRegister  func(id string)
@@ -54,8 +42,9 @@ type QuakeTerminalStore struct {
 // NewQuakeTerminalStore constructs an empty in-memory QuakeTerminalStore.
 func NewQuakeTerminalStore() *QuakeTerminalStore {
 	return &QuakeTerminalStore{
-		byID:  make(map[string]*QuakeTerminal),
-		byDir: make(map[string]*QuakeTerminal),
+		byID:      make(map[string]*QuakeTerminal),
+		byDir:     make(map[string]*QuakeTerminal),
+		closedIDs: make(map[string]struct{}),
 	}
 }
 
@@ -74,6 +63,7 @@ func (s *QuakeTerminalStore) RegisterOrAdopt(q QuakeTerminal) (QuakeTerminal, bo
 	}
 	stored := new(QuakeTerminal)
 	*stored = q
+	delete(s.closedIDs, q.ID)
 	s.byID[q.ID] = stored
 	s.byDir[q.WorkingDir] = stored
 	afterHook := s.afterRegister
@@ -121,6 +111,17 @@ func (s *QuakeTerminalStore) Has(id string) bool {
 	return ok
 }
 
+// IsKnownQuake reports whether id is an active or previously closed quake terminal.
+func (s *QuakeTerminalStore) IsKnownQuake(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[id]; ok {
+		return true
+	}
+	_, closed := s.closedIDs[id]
+	return closed
+}
+
 // ListOpen returns copies of every active quake terminal.
 func (s *QuakeTerminalStore) ListOpen() []QuakeTerminal {
 	s.mu.Lock()
@@ -133,16 +134,7 @@ func (s *QuakeTerminalStore) ListOpen() []QuakeTerminal {
 		out = append(out, *q)
 	}
 	slices.SortFunc(out, func(a, b QuakeTerminal) int {
-		if cmp := a.CreatedAt.Compare(b.CreatedAt); cmp != 0 {
-			return cmp
-		}
-		if a.ID < b.ID {
-			return -1
-		}
-		if a.ID > b.ID {
-			return 1
-		}
-		return 0
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
 	})
 	return out
 }
@@ -193,7 +185,7 @@ func (s *QuakeTerminalStore) SetStartupError(id, errMsg string) bool {
 	return true
 }
 
-// Delete removes id from the store.
+// Delete removes id from the store and remembers it as a closed quake ID.
 func (s *QuakeTerminalStore) Delete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -204,5 +196,16 @@ func (s *QuakeTerminalStore) Delete(id string) {
 	delete(s.byID, id)
 	if s.byDir[q.WorkingDir] == q {
 		delete(s.byDir, q.WorkingDir)
+	}
+	if _, recorded := s.closedIDs[id]; !recorded {
+		if len(s.closedOrder) >= maxClosedQuakeIDs {
+			evicted := s.closedOrder[0]
+			copy(s.closedOrder, s.closedOrder[1:])
+			s.closedOrder[len(s.closedOrder)-1] = ""
+			s.closedOrder = s.closedOrder[:len(s.closedOrder)-1]
+			delete(s.closedIDs, evicted)
+		}
+		s.closedIDs[id] = struct{}{}
+		s.closedOrder = append(s.closedOrder, id)
 	}
 }

@@ -759,3 +759,88 @@ func TestNativeCopilotBackgroundTasksChangedReleasesOutputMuBeforeSinkCalls(t *t
 	assert.False(t, checker.refreshLocked, "outputMu must not be held during PersistSettingsRefresh")
 	assert.False(t, checker.turnStateLocked, "outputMu must not be held during PublishTurnState")
 }
+
+type orderedTurnStateSink struct {
+	agent.ProviderServices
+	mu              sync.Mutex
+	onRefresh       func()
+	publishedStates []agent.TurnState
+	publishedSeqs   []uint64
+}
+
+func (s *orderedTurnStateSink) PersistSettingsRefresh(options optionmap.Map) {
+	if s.onRefresh != nil {
+		s.onRefresh()
+	}
+	s.ProviderServices.PersistSettingsRefresh(options)
+}
+
+func (s *orderedTurnStateSink) SetTurnState(state agent.TurnState, seq uint64) {
+	s.mu.Lock()
+	s.publishedStates = append(s.publishedStates, state)
+	s.publishedSeqs = append(s.publishedSeqs, seq)
+	s.mu.Unlock()
+	s.ProviderServices.SetTurnState(state, seq)
+}
+
+func TestNativeCopilotBackgroundPromotionTurnSeqPrecedesConcurrentFinish(t *testing.T) {
+	t.Parallel()
+	h := newCopilotTaskHarness(t, copilotTaskScript{
+		list: `{"tasks":[{"type":"agent","id":"worker-task","toolCallId":"task-1"}]}`,
+	})
+	a, sink := h.agent, h.sink
+	_, childSink := startCopilotSubagent(t, a, sink, "sync")
+
+	enteredRefresh := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	var refreshOnce sync.Once
+
+	a.outputMu.Lock()
+	child := a.children["agent-1"]
+	require.NotNil(t, child)
+	recorder := &orderedTurnStateSink{
+		ProviderServices: child.sink,
+		onRefresh: func() {
+			refreshOnce.Do(func() {
+				close(enteredRefresh)
+				<-releaseRefresh
+			})
+		},
+	}
+	child.sink = recorder
+	a.outputMu.Unlock()
+
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionBackgroundTasksChanged, map[string]any{}))
+	<-enteredRefresh
+
+	// While background promotion is between outputMu.Unlock() and SetTurnState,
+	// finishNativeSubagent finishes the child and publishes Active: false.
+	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentFailed, map[string]any{
+		"toolCallId": "task-1", "error": "boom",
+	}))
+	close(releaseRefresh)
+	require.Eventually(t, a.backgroundWork.Idle, offReaderWait, time.Millisecond)
+
+	recorder.mu.Lock()
+	require.Len(t, recorder.publishedStates, 2)
+	// Find the sequence of the Active:false (finish) vs Active:true (promotion) calls.
+	var sawPromo, sawFinish bool
+	var finishSeq, promoSeq uint64
+	for i, st := range recorder.publishedStates {
+		if st.Active && st.Steerable {
+			sawPromo = true
+			promoSeq = recorder.publishedSeqs[i]
+		} else if !st.Active && !st.Steerable {
+			sawFinish = true
+			finishSeq = recorder.publishedSeqs[i]
+		}
+	}
+	recorder.mu.Unlock()
+	assert.True(t, sawPromo, "background promotion must publish an active steerable turn state")
+	assert.True(t, sawFinish, "concurrent finish must publish an inactive non-steerable turn state")
+	assert.Positive(t, promoSeq)
+	assert.Greater(t, finishSeq, promoSeq, "concurrent finish must receive a strictly higher turn sequence than the earlier background promotion")
+	latest, published := childSink.LatestTurnState()
+	require.True(t, published)
+	assert.Equal(t, agent.TurnState{Active: false, Steerable: false}, latest)
+}

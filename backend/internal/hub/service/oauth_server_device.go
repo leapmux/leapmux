@@ -80,7 +80,7 @@ func (h *OAuthServerHandler) handleDeviceAuthorization(w http.ResponseWriter, r 
 	if !ok {
 		return
 	}
-	grant, err := h.createDeviceGrant(r.Context(), CreateDeviceAuthorizationParams{
+	grant, err := h.createDeviceGrant(CreateDeviceAuthorizationParams{
 		DeviceName:      normalizeInstallationName(r.FormValue("installation_name")),
 		ClientID:        app.ClientID,
 		RequestedScopes: stored,
@@ -122,7 +122,7 @@ const DeviceGrantDrawLimit = 4
 // ONE helper for the two insert sites -- an app login and a credential step-up
 // -- because they share the row. A redraw that only one of them performed
 // would leave the other answering 500 for the same collision.
-func (h *OAuthServerHandler) createDeviceGrant(ctx context.Context, p CreateDeviceAuthorizationParams) (deviceGrant, error) {
+func (h *OAuthServerHandler) createDeviceGrant(p CreateDeviceAuthorizationParams) (deviceGrant, error) {
 	var err error
 	for range DeviceGrantDrawLimit {
 		deviceCode := id.Generate()
@@ -132,7 +132,7 @@ func (h *OAuthServerHandler) createDeviceGrant(ctx context.Context, p CreateDevi
 		// verifycode.Format adds the display form (XXX-XXX) when the response
 		// builds verification_uri_complete.
 		p.UserCode = verifycode.Generate()
-		if err = h.deviceAuths.Create(ctx, p); err == nil {
+		if err = h.deviceAuths.Create(p); err == nil {
 			return deviceGrant{DeviceCode: deviceCode, UserCode: p.UserCode}, nil
 		}
 		if !errors.Is(err, store.ErrConflict) {
@@ -189,11 +189,7 @@ func (h *OAuthServerHandler) handleDevice(w http.ResponseWriter, r *http.Request
 
 func (h *OAuthServerHandler) renderDevicePage(w http.ResponseWriter, r *http.Request, user *auth.UserInfo) {
 	userCode := r.URL.Query().Get("user_code")
-	grant, err := h.liveGrantByUserCode(r.Context(), userCode)
-	if err != nil {
-		writeInternalError(w, "device authorization lookup failed", err)
-		return
-	}
+	grant := h.liveGrantByUserCode(userCode)
 	elevating := isElevationGrant(grant)
 	data := devicePageData{UserCode: userCode, Elevating: elevating}
 	// The two grant kinds identify their subject from DIFFERENT sources, and
@@ -238,11 +234,7 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 	// The grant decides what approval MEANS, and this handler reads it before
 	// it resolves the scope: a step-up grants no scope, so asking for one here
 	// would refuse a non-administrator for a widening this flow never performs.
-	grant, err := h.liveGrantByUserCode(r.Context(), normalized)
-	if err != nil {
-		writeInternalError(w, "device authorization lookup failed", err)
-		return
-	}
+	grant := h.liveGrantByUserCode(normalized)
 	elevating := isElevationGrant(grant)
 
 	// DENY actually returns, and it is final: the approve statements match a
@@ -250,22 +242,13 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 	// it the poller waited out the whole ten-minute expiry to learn that a
 	// person refused.
 	//
-	// The nil check mirrors the allow branch, and so does the ROWS check: a
+	// The nil check mirrors the allow branch, and so does the boolean check: a
 	// code that is unknown, mistyped or already answered denies nothing, and
 	// rendering the "Refused" success page for it told the person at the
 	// keyboard they blocked a grant that stayed pending -- or, for a grant
 	// already approved, that they stopped a credential the poller kept.
 	if r.PostFormValue("decision") != consentDecisionAllow {
-		if grant == nil {
-			http.Error(w, errDeviceGrantNotApprovable.Error(), http.StatusBadRequest)
-			return
-		}
-		rows, err := h.deviceAuths.DenyByUserCode(r.Context(), normalized)
-		if err != nil {
-			writeInternalError(w, "device authorization denial failed", err)
-			return
-		}
-		if rows == 0 {
+		if grant == nil || !h.deviceAuths.DenyByUserCode(normalized) {
 			http.Error(w, errDeviceGrantNotApprovable.Error(), http.StatusBadRequest)
 			return
 		}
@@ -337,7 +320,7 @@ func (h *OAuthServerHandler) approveOrDenyDevice(w http.ResponseWriter, r *http.
 	if elevating {
 		elevateTokenID = grant.ElevateTokenID
 	}
-	err = h.approveGrant(r.Context(), ApproveDeviceAuthorizationParams{
+	err := h.approveGrant(r.Context(), ApproveDeviceAuthorizationParams{
 		UserCode:       normalized,
 		UserID:         user.ID,
 		GrantedScopes:  granted,
@@ -397,31 +380,18 @@ func (h *OAuthServerHandler) approveGrant(
 ) error {
 	now := h.now().UTC()
 	if elevateTokenID == "" {
-		rows, err := h.deviceAuths.ApproveByUserCode(ctx, p, now)
+		approved, err := h.deviceAuths.ApproveByUserCode(p, now)
 		if err != nil {
 			return fmt.Errorf("approve device authorization: %w", err)
 		}
-		if rows == 0 {
+		if !approved {
 			return errDeviceGrantNotApprovable
 		}
 		return nil
 	}
-	res, ok := h.deviceAuths.ReserveApproveByUserCode(p.UserCode, p.UserID, now)
-	if !ok {
-		return errDeviceGrantNotApprovable
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			h.deviceAuths.ReleaseApproveByUserCode(res)
-		}
-	}()
-	if err := h.elevateGrantedToken(ctx, h.store, elevateTokenID, p.UserID); err != nil {
-		return err
-	}
-	h.deviceAuths.CommitApproveByUserCode(res, p)
-	committed = true
-	return nil
+	return withDeviceStepUpApprove(h.deviceAuths, p, now, func() error {
+		return h.elevateGrantedToken(ctx, h.store, elevateTokenID, p.UserID)
+	})
 }
 
 // isElevationGrant reports whether approving this grant VERIFIES an app
@@ -443,30 +413,22 @@ func isElevationGrant(row *DeviceAuthorization) bool {
 // answer from the same grant. Read separately, a page could identify the app
 // from a live grant and decide its verb from a missing one.
 //
-// A MISS is nil with no error, and it tells a caller nothing it could not
-// already learn: reaching this stage needs a signed-in and elevated session, and
-// the POST beside it already answers "is this code live" by approving or
-// refusing. An expired or already-consumed grant is a miss for the same reason
-// -- neither can be approved.
-//
-// A store FAILURE is an error, and the two must stay apart. Folded together, a
-// transient read failure rendered the issuance page for a step-up grant, and
-// the POST then approved that grant while it skipped the elevation the approval
-// exists to write.
-func (h *OAuthServerHandler) liveGrantByUserCode(ctx context.Context, rawUserCode string) (*DeviceAuthorization, error) {
+// A MISS returns nil and tells a caller nothing it could not already learn:
+// reaching this stage needs a signed-in and elevated session, and the POST
+// beside it already answers "is this code live" by approving or refusing. An
+// expired or already-consumed grant is a miss for the same reason -- neither
+// can be approved.
+func (h *OAuthServerHandler) liveGrantByUserCode(rawUserCode string) *DeviceAuthorization {
 	normalized := verifycode.Normalize(rawUserCode)
 	if normalized == "" {
-		return nil, nil
+		return nil
 	}
-	row, err := h.deviceAuths.GetByUserCode(ctx, normalized)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
+	row, ok := h.deviceAuths.GetByUserCode(normalized)
+	if !ok {
+		return nil
 	}
 	if row.ConsumedAt != nil || !h.now().UTC().Before(row.ExpiresAt) {
-		return nil, nil
+		return nil
 	}
-	return row, nil
+	return row
 }

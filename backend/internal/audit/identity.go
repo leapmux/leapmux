@@ -67,6 +67,11 @@ var identityComparisonSites = map[string]string{
 	// Admission locks the key's preflight owner, then checks the consumed key
 	// still belongs to that owner. A blank or changed creator must not pass.
 	"internal/hub/service.(*WorkerConnectorService).Register": "TestRegisterRefusesAConsumedKeyWithAnotherCreator",
+	// In-memory device authorization and WebAuthn ceremony invalidation/eviction paths.
+	"internal/hub/service.(*invalidationGuard).matches":                                             "TestMemoryDeviceAuthorizationStore_TwoPhaseInvalidateAndDelete",
+	"internal/hub/service.(*MemoryDeviceAuthorizationStore).CommitInvalidate":                       "TestMemoryDeviceAuthorizationStore_TwoPhaseInvalidateAndDelete",
+	"internal/hub/service.(*MemoryDeviceAuthorizationStore).ConsumeApprovedForUserBeforeGeneration": "TestMemoryDeviceAuthorizationStore_ConsumeApprovedForUserBeforeGeneration",
+	"internal/hub/webauthn.(*SessionStore).DeleteByUserBeforeGeneration":                            "TestSessionStore_DeleteByUserBeforeGeneration",
 
 	// ---- hub/crdt: grant polarity ----
 

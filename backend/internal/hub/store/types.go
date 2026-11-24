@@ -1740,9 +1740,6 @@ const (
 // IsSession reports whether the reference identifies a user_sessions row.
 func (k CredentialRefKind) IsSession() bool { return k == CredentialRefKindSession }
 
-// IsToken reports whether the reference identifies an api_tokens row.
-func (k CredentialRefKind) IsToken() bool { return k == CredentialRefKindToken }
-
 // CredentialRef identifies one credential an authorization code row points at: the
 // credential a step-up VERIFIES, or the credential the exchange MINTED.
 //

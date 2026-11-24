@@ -1176,6 +1176,19 @@ func TestWaitAndProcKillCloseTrackedShells(t *testing.T) {
 		row, _ := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-1"))
 		assert.Equal(t, bgtask.StatusStopped, row.Status)
 	})
+
+	t.Run("write to proc kill with JSON-escaped slashes closes tracked shell", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.emit(
+			frameBackgroundBashStart,
+			frameBackgroundBashEnd,
+			`{"type":"tool_execution_start","toolCallId":"call_kill_esc","toolName":"write","args":{"path":"proc:\/\/bash-1\/kill"}}`,
+			`{"type":"tool_execution_end","toolCallId":"call_kill_esc","toolName":"write","result":{"content":[]},"isError":false}`,
+		)
+		row, _ := r.sink.BackgroundTask(shellRowKey(r.agent.sessionID, "bash-1"))
+		assert.Equal(t, bgtask.StatusStopped, row.Status, "RFC 8259 escaped slashes in proc:// kill URI must close the shell")
+	})
 }
 
 func TestReusedSubagentRevivesRowAndWritesDistinctReport(t *testing.T) {

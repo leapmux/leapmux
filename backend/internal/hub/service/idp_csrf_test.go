@@ -99,7 +99,7 @@ func stateFromLoginResponse(t *testing.T, resp *http.Response) string {
 func seedOAuthState(t *testing.T, states service.OAuthStateStore, providerID, nonceHash string) string {
 	t.Helper()
 	state := id.Generate()
-	require.NoError(t, states.Create(context.Background(), service.CreateOAuthStateParams{
+	require.NoError(t, states.Create(service.CreateOAuthStateParams{
 		State:        state,
 		ProviderID:   providerID,
 		PkceVerifier: "verifier",
@@ -135,8 +135,8 @@ func TestOAuthLogin_SetsNonceCookieAndStoresOnlyItsHash(t *testing.T) {
 
 	// The row stores only the hash. A read of oauth_states must not yield a
 	// value that completes somebody's in-flight login.
-	row, err := env.states.Get(context.Background(), state)
-	require.NoError(t, err)
+	row, ok := env.states.Get(state)
+	require.True(t, ok)
 	assert.NotEmpty(t, row.NonceHash)
 	assert.NotEqual(t, cookie.Value, row.NonceHash, "the raw nonce must never be stored")
 	assert.Equal(t, hashNonceForTest(cookie.Value), row.NonceHash)
@@ -163,8 +163,8 @@ func TestOAuthCallback_WithoutNonceCookie_Refuses(t *testing.T) {
 	// owner-only. Consuming it here would let anyone who learns a live
 	// state destroy the owner's in-flight login with one request, and the
 	// owner's real callback would then report "invalid or expired state".
-	surviving, err := env.states.Get(context.Background(), state)
-	require.NoError(t, err, "a refused callback must not consume somebody else's flow")
+	surviving, ok := env.states.Get(state)
+	require.True(t, ok, "a refused callback must not consume somebody else's flow")
 	assert.Equal(t, state, surviving.State)
 }
 
@@ -334,8 +334,8 @@ func TestOAuthFlowBindingUnderSecureCookies(t *testing.T) {
 	assert.Equal(t, "/", cookie.Path)
 	assert.Empty(t, cookie.Domain)
 
-	row, err := env.states.Get(context.Background(), state)
-	require.NoError(t, err)
+	row, ok := env.states.Get(state)
+	require.True(t, ok)
 	assert.Equal(t, hashNonceForTest(cookie.Value), row.NonceHash)
 
 	// The matching cookie passes the guard.
@@ -472,8 +472,8 @@ func TestCompleteOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 	// that really started the flow.
 	_, err = env.store.Users().GetByUsername(ctx, "victim")
 	assert.ErrorIs(t, err, store.ErrNotFound)
-	_, err = env.pendingSignups.Get(ctx, token)
-	assert.NoError(t, err, "a refused signup must not consume somebody else's pending row")
+	_, ok := env.pendingSignups.Get(token)
+	assert.True(t, ok, "a refused signup must not consume somebody else's pending row")
 }
 
 // TestCompleteOAuthSignup_WrongBindingCookie_Refuses pins that any nonce is
@@ -508,7 +508,7 @@ func TestCompleteOAuthSignup_UnboundRowRefuses(t *testing.T) {
 	providerID := createTestProvider(t, env.store, env.ks)
 	token := id.Generate()
 	expiresAt := time.Now().Add(5 * time.Minute).UTC()
-	require.NoError(t, env.pendingSignups.Create(ctx, service.CreatePendingOAuthSignupParams{
+	require.NoError(t, env.pendingSignups.Create(service.CreatePendingOAuthSignupParams{
 		Token:           token,
 		ProviderID:      providerID,
 		ProviderSubject: "sub-1",
@@ -530,7 +530,6 @@ func TestCompleteOAuthSignup_UnboundRowRefuses(t *testing.T) {
 func TestOAuthCallback_NewUserBindsThePendingSignup(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	env := setupOAuthTestEnv(t)
 	enableSignup(t, env.set)
 	providerID := createTestOIDCProviderWithStubClaims(t, env.store, env.ks, "newcomer@example.com", "sub-new")
@@ -563,8 +562,8 @@ func TestOAuthCallback_NewUserBindsThePendingSignup(t *testing.T) {
 	assert.True(t, cookie.HttpOnly, "script must not read the signup nonce")
 	assert.Equal(t, "/", cookie.Path)
 
-	pending, err := env.pendingSignups.Get(ctx, signupToken)
-	require.NoError(t, err)
+	pending, ok := env.pendingSignups.Get(signupToken)
+	require.True(t, ok)
 	assert.NotEqual(t, cookie.Value, pending.NonceHash, "the raw nonce must never be stored")
 	assert.Equal(t, hashNonceForTest(cookie.Value), pending.NonceHash)
 }

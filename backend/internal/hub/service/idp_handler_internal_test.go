@@ -223,7 +223,14 @@ func TestBuildProviderDoesNotCacheADeletedProvider(t *testing.T) {
 		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub",
 		ClientID: "cid", ClientSecret: secret, Enabled: true,
 	}))
-	h := NewIdPHandler(st, hubtestutil.TestSecretHasher(), &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks, nil, nil)
+	h := NewIdPHandler(IdPHandlerDeps{
+		SessionHasher: hubtestutil.TestSecretHasher(),
+		Store:         st,
+		Config:        &config.Config{},
+		Settings:      set,
+		Lifecycle:     auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Keystore:      ks,
+	})
 
 	// A build that races nothing caches, so the assertion below fails for
 	// the reason it states rather than because nothing ever caches.
@@ -286,7 +293,14 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	require.NoError(t, set.Load(context.Background()))
 	require.NoError(t, settings.KeySessionDurationSeconds.Set(context.Background(), set, int64(configured/time.Second)))
 
-	h := NewIdPHandler(st, hubtestutil.TestSecretHasher(), &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks, nil, nil)
+	h := NewIdPHandler(IdPHandlerDeps{
+		SessionHasher: hubtestutil.TestSecretHasher(),
+		Store:         st,
+		Config:        &config.Config{},
+		Settings:      set,
+		Lifecycle:     auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Keystore:      ks,
+	})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/idp/test/callback", nil)
@@ -325,18 +339,17 @@ func TestInvalidateProviderDropsEveryEntry(t *testing.T) {
 	kept := providerCacheKey{providerID: "okta", redirectURL: "http://a/cb"}
 	h.providers[kept] = stub
 
-	ctx := context.Background()
 	exp := time.Now().UTC().Add(10 * time.Minute)
-	require.NoError(t, h.states.Create(ctx, CreateOAuthStateParams{
+	require.NoError(t, h.states.Create(CreateOAuthStateParams{
 		State: "state-gh", ProviderID: "gh", Purpose: OAuthStatePurposeLogin, ExpiresAt: exp,
 	}))
-	require.NoError(t, h.states.Create(ctx, CreateOAuthStateParams{
+	require.NoError(t, h.states.Create(CreateOAuthStateParams{
 		State: "state-okta", ProviderID: "okta", Purpose: OAuthStatePurposeLogin, ExpiresAt: exp,
 	}))
-	require.NoError(t, h.pendingSignups.Create(ctx, CreatePendingOAuthSignupParams{
+	require.NoError(t, h.pendingSignups.Create(CreatePendingOAuthSignupParams{
 		Token: "signup-gh", ProviderID: "gh", ProviderSubject: "sub-gh", ExpiresAt: exp,
 	}))
-	require.NoError(t, h.pendingSignups.Create(ctx, CreatePendingOAuthSignupParams{
+	require.NoError(t, h.pendingSignups.Create(CreatePendingOAuthSignupParams{
 		Token: "signup-okta", ProviderID: "okta", ProviderSubject: "sub-okta", ExpiresAt: exp,
 	}))
 
@@ -346,15 +359,15 @@ func TestInvalidateProviderDropsEveryEntry(t *testing.T) {
 	_, ok := h.providers[kept]
 	assert.True(t, ok, "the eviction is per provider id, not a cache flush")
 
-	_, err := h.states.Get(ctx, "state-gh")
-	assert.ErrorIs(t, err, store.ErrNotFound, "invalidated provider states must be evicted")
-	_, err = h.states.Get(ctx, "state-okta")
-	assert.NoError(t, err, "other provider states must remain readable")
+	_, ok = h.states.Get("state-gh")
+	assert.False(t, ok, "invalidated provider states must be evicted")
+	_, ok = h.states.Get("state-okta")
+	assert.True(t, ok, "other provider states must remain readable")
 
-	_, err = h.pendingSignups.Get(ctx, "signup-gh")
-	assert.ErrorIs(t, err, store.ErrNotFound, "invalidated provider pending signups must be evicted")
-	_, err = h.pendingSignups.Get(ctx, "signup-okta")
-	assert.NoError(t, err, "other provider pending signups must remain readable")
+	_, ok = h.pendingSignups.Get("signup-gh")
+	assert.False(t, ok, "invalidated provider pending signups must be evicted")
+	_, ok = h.pendingSignups.Get("signup-okta")
+	assert.True(t, ok, "other provider pending signups must remain readable")
 
 	// Idempotent: an id with no entries is the state a second delete finds.
 	h.InvalidateProvider("gh")

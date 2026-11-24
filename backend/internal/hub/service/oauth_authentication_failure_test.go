@@ -81,9 +81,9 @@ type oauthAuthenticationDevices struct {
 	faults *oauthAuthenticationFaults
 }
 
-func (s oauthAuthenticationDevices) Create(ctx context.Context, p service.CreateDeviceAuthorizationParams) error {
+func (s oauthAuthenticationDevices) Create(p service.CreateDeviceAuthorizationParams) error {
 	s.faults.grantWrites.Add(1)
-	return s.DeviceAuthorizationStore.Create(ctx, p)
+	return s.DeviceAuthorizationStore.Create(p)
 }
 
 type oauthAuthenticationCodes struct {
@@ -330,8 +330,8 @@ func TestOAuthAppStepUp_OtherIssuancesAllowed(t *testing.T) {
 	checkGrant := func(t *testing.T, deviceAuths service.DeviceAuthorizationStore, validator *auth.TokenValidator, bearer string, resp *http.Response) {
 		t.Helper()
 		grant := decodeStepUpGrant(t, resp)
-		row, err := deviceAuths.Get(t.Context(), validator.HashSecret(grant.DeviceCode))
-		require.NoError(t, err, "the response's device code must locate the pending grant")
+		row, ok := deviceAuths.Get(validator.HashSecret(grant.DeviceCode))
+		require.True(t, ok, "the response's device code must locate the pending grant")
 		assert.Equal(t, service.DeviceAuthorizationStatePending, row.State)
 		assert.Equal(t, verifycode.Format(row.UserCode), grant.UserCode)
 		user, err := validator.ValidateBearer(t.Context(), bearer)

@@ -2,16 +2,19 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -2165,4 +2168,393 @@ func TestBgTask_UpsertActiveFormOnFinishedRowWithNullEndedAtStampsEndedAt(t *tes
 	require.Len(t, items, 1)
 	assert.False(t, items[0].EndedAt.IsZero(), "display cache must reflect stamped EndedAt")
 	assert.Equal(t, "finalizing", items[0].ActiveForm)
+}
+
+func TestBgTaskEphemeral_UndoRollbackAndCommit(t *testing.T) {
+	t.Parallel()
+
+	newMeta := func() *bgTaskEphemeral {
+		return &bgTaskEphemeral{
+			rowGen:     make(map[string]int64),
+			activeForm: make(map[string]string),
+		}
+	}
+
+	t.Run("multiple writes, new key, deleteKey, and deleteActiveForm roll back cleanly", func(t *testing.T) {
+		t.Parallel()
+		meta := newMeta()
+		meta.setRowGen("k1", 1)
+		meta.setActiveForm("k1", "initial-1")
+		meta.setRowGen("k2", 2)
+		meta.setActiveForm("k2", "initial-2")
+		meta.setRowGen("k3", 3)
+		meta.setActiveForm("k3", "initial-3")
+
+		meta.beginUndo()
+		meta.setRowGen("k1", 5)
+		meta.setActiveForm("k1", "mid-1")
+		meta.setRowGen("k1", 9)
+		meta.setActiveForm("k1", "final-1")
+
+		meta.setRowGen("new-key", 10)
+		meta.setActiveForm("new-key", "brand-new")
+
+		meta.deleteKey("k2")
+		meta.deleteActiveForm("k3")
+
+		meta.rollbackUndo()
+
+		assert.Equal(t, int64(1), meta.rowGeneration("k1"))
+		assert.Equal(t, "initial-1", meta.activeFormOf("k1"))
+		assert.Zero(t, meta.rowGeneration("new-key"))
+		assert.Empty(t, meta.activeFormOf("new-key"))
+		_, hasNewGen := meta.rowGen["new-key"]
+		_, hasNewForm := meta.activeForm["new-key"]
+		assert.False(t, hasNewGen)
+		assert.False(t, hasNewForm)
+
+		assert.Equal(t, int64(2), meta.rowGeneration("k2"))
+		assert.Equal(t, "initial-2", meta.activeFormOf("k2"))
+		assert.Equal(t, int64(3), meta.rowGeneration("k3"))
+		assert.Equal(t, "initial-3", meta.activeFormOf("k3"))
+	})
+
+	t.Run("renameKey restores both oldKey and pre-existing newKey on rollback", func(t *testing.T) {
+		t.Parallel()
+		meta := newMeta()
+		meta.setRowGen("old-key", 4)
+		meta.setActiveForm("old-key", "old-form")
+		meta.setRowGen("new-key", 5)
+		meta.setActiveForm("new-key", "existing-new-form")
+
+		meta.beginUndo()
+		meta.renameKey("old-key", "new-key", 9)
+		assert.Zero(t, meta.rowGeneration("old-key"))
+		assert.Empty(t, meta.activeFormOf("old-key"))
+		assert.Equal(t, int64(9), meta.rowGeneration("new-key"))
+		assert.Equal(t, "old-form", meta.activeFormOf("new-key"))
+
+		meta.rollbackUndo()
+		assert.Equal(t, int64(4), meta.rowGeneration("old-key"))
+		assert.Equal(t, "old-form", meta.activeFormOf("old-key"))
+		assert.Equal(t, int64(5), meta.rowGeneration("new-key"))
+		assert.Equal(t, "existing-new-form", meta.activeFormOf("new-key"))
+	})
+
+	t.Run("commitUndo retains values and disables recording for later mutations", func(t *testing.T) {
+		t.Parallel()
+		meta := newMeta()
+		meta.setRowGen("k1", 1)
+		meta.setActiveForm("k1", "before")
+
+		meta.beginUndo()
+		meta.setRowGen("k1", 7)
+		meta.setActiveForm("k1", "committed")
+		meta.commitUndo()
+
+		// Mutations after commitUndo are not recorded, so a later rollbackUndo is a no-op.
+		meta.setRowGen("k1", 8)
+		meta.setActiveForm("k1", "after-commit")
+		meta.rollbackUndo()
+
+		assert.Equal(t, int64(8), meta.rowGeneration("k1"))
+		assert.Equal(t, "after-commit", meta.activeFormOf("k1"))
+		assert.False(t, meta.recordingUndo)
+		assert.Nil(t, meta.undo)
+	})
+}
+
+type countingFaultBgTaskDBTX struct {
+	calls atomic.Int64
+}
+
+func (c *countingFaultBgTaskDBTX) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	c.calls.Add(1)
+	return nil, errors.New("unexpected SQLite ExecContext on fast path")
+}
+
+func (c *countingFaultBgTaskDBTX) PrepareContext(context.Context, string) (*sql.Stmt, error) {
+	c.calls.Add(1)
+	return nil, errors.New("unexpected SQLite PrepareContext on fast path")
+}
+
+func (c *countingFaultBgTaskDBTX) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	c.calls.Add(1)
+	return nil, errors.New("unexpected SQLite QueryContext on fast path")
+}
+
+func (c *countingFaultBgTaskDBTX) QueryRowContext(context.Context, string, ...any) *sql.Row {
+	c.calls.Add(1)
+	return nil
+}
+
+func TestBgTask_FastPathsBypassSQLiteAndEnforceInvariants(t *testing.T) {
+	t.Parallel()
+	const rootID = "fast-path-root"
+	svc, rootSink := setupRootSink(t, rootID)
+
+	// Seed a grandchild running row with ReviveCount > 0 and a finished row.
+	childID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "span-child",
+		ProviderChildKey: "child-1",
+		Title:            "Child",
+	})
+	require.NoError(t, err)
+	childSink := rootSink.ChildSink(childID)
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		SpawnSpanID:      "span-gc",
+		ProviderChildKey: "gc-1",
+		Title:            "Grandchild",
+	})
+	require.NoError(t, err)
+	require.NoError(t, rootSink.CloseBackgroundTask("gc-1", bgtask.StatusSucceeded))
+	require.NoError(t, rootSink.ReviveBackgroundTask("gc-1"))
+	require.NoError(t, rootSink.UpdateBackgroundTaskStatus("gc-1", bgtask.StatusRunning, "initial-gc"))
+
+	require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:     "done-1",
+		Kind:       bgtask.KindShell,
+		Title:      "Done Shell",
+		Status:     bgtask.StatusRunning,
+		ActiveForm: "finishing",
+	}))
+	require.NoError(t, rootSink.CloseBackgroundTask("done-1", bgtask.StatusSucceeded))
+
+	// Warm the cache and verify initial expectations.
+	warmItems, err := svc.Output.LoadBackgroundTasks(t.Context(), rootID)
+	require.NoError(t, err)
+	var gcBefore, doneBefore bgtask.Item
+	for _, it := range warmItems {
+		switch it.RowKey {
+		case "gc-1":
+			gcBefore = it
+		case "done-1":
+			doneBefore = it
+		}
+	}
+	require.Equal(t, int64(1), gcBefore.ReviveCount)
+	require.Equal(t, childID, gcBefore.ParentAgentID)
+	require.Equal(t, bgtask.StatusSucceeded, doneBefore.Status)
+	require.False(t, doneBefore.EndedAt.IsZero())
+
+	// Replace Output's DB handle with a closed SQLite handle and a counting faulting DBTX.
+	closedDB, err := sqlitedb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	require.NoError(t, closedDB.Close())
+
+	liveDB := svc.Output.db
+	liveQueries := svc.Output.queries
+	faultCounter := &countingFaultBgTaskDBTX{}
+	svc.Output.db = closedDB
+	svc.Output.queries = db.New(faultCounter)
+	t.Cleanup(func() {
+		svc.Output.db = liveDB
+		svc.Output.queries = liveQueries
+	})
+
+	meta := svc.Output.bgTaskEphemeral(rootID)
+	gen1 := meta.rowGeneration("gc-1")
+	require.Positive(t, gen1)
+	gen2 := gen1 + 1
+	gen3 := gen2 + 1
+
+	// generation <= 0 returns error on both methods.
+	for _, badGen := range []int64{0, -1} {
+		_, err = svc.Output.applyBackgroundTaskUpsert(rootID, badGen, rootID, bgtask.Upsert{
+			RowKey: "gc-1", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning,
+		})
+		require.Error(t, err)
+		_, err = svc.Output.applyBackgroundTaskStatus(rootID, "gc-1", badGen, bgtask.StatusRunning, "bad")
+		require.Error(t, err)
+	}
+	assert.Zero(t, faultCounter.calls.Load())
+
+	// 1. ActiveForm-only upsert with blank ParentAgentID preserves grandchild ParentAgentID & ReviveCount, advances rowGen, zero SQL.
+	change, err := svc.Output.applyBackgroundTaskUpsert(rootID, gen2, rootID, bgtask.Upsert{
+		Role:         bgtask.RoleChildTask,
+		RowKey:       "gc-1",
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: grandchildID,
+		Title:        "Grandchild",
+		Status:       bgtask.StatusRunning,
+		ActiveForm:   "upsert-tick",
+	})
+	require.NoError(t, err)
+	assert.True(t, change.changed)
+	assert.Equal(t, gen2, meta.rowGeneration("gc-1"))
+	assert.Equal(t, "upsert-tick", meta.activeFormOf("gc-1"))
+	gcAfterUpsert := registrySnapshotRow(t, svc, rootID, "gc-1")
+	assert.Equal(t, childID, gcAfterUpsert.ParentAgentID, "blank-parent upsert must preserve grandchild ParentAgentID")
+	assert.Equal(t, int64(1), gcAfterUpsert.ReviveCount, "fast-path upsert must preserve ReviveCount")
+	assert.Equal(t, "upsert-tick", gcAfterUpsert.ActiveForm)
+
+	// 2. Identical upsert replay executes zero SQL and advances rowGen when G3 > G2.
+	change, err = svc.Output.applyBackgroundTaskUpsert(rootID, gen3, rootID, bgtask.Upsert{
+		Role:         bgtask.RoleChildTask,
+		RowKey:       "gc-1",
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: grandchildID,
+		Title:        "Grandchild",
+		Status:       bgtask.StatusRunning,
+		ActiveForm:   "upsert-tick",
+	})
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, gen3, meta.rowGeneration("gc-1"))
+
+	// 3. Stale upsert (G1 < G3) is fenced early with zero SQL and no state change.
+	change, err = svc.Output.applyBackgroundTaskUpsert(rootID, gen1, rootID, bgtask.Upsert{
+		RowKey: "gc-1", Kind: bgtask.KindSubagent, Title: "Stale", Status: bgtask.StatusFailed, ActiveForm: "stale",
+	})
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, "upsert-tick", meta.activeFormOf("gc-1"))
+	assert.Equal(t, gen3, meta.rowGeneration("gc-1"))
+
+	// 4. ActiveForm-only status tick, identical replay, and stale fencing execute zero SQL.
+	gen4 := gen3 + 1
+	change, err = svc.Output.applyBackgroundTaskStatus(rootID, "gc-1", gen4, bgtask.StatusRunning, "status-tick")
+	require.NoError(t, err)
+	assert.True(t, change.changed)
+	assert.Equal(t, gen4, meta.rowGeneration("gc-1"))
+	assert.Equal(t, "status-tick", meta.activeFormOf("gc-1"))
+
+	gen5 := gen4 + 1
+	change, err = svc.Output.applyBackgroundTaskStatus(rootID, "gc-1", gen5, bgtask.StatusRunning, "status-tick")
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, gen5, meta.rowGeneration("gc-1"))
+
+	change, err = svc.Output.applyBackgroundTaskStatus(rootID, "gc-1", gen1, bgtask.StatusFailed, "stale-status")
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, "status-tick", meta.activeFormOf("gc-1"))
+	assert.Equal(t, gen5, meta.rowGeneration("gc-1"))
+
+	// 5. Finished-row absorbing active replay on both upsert and status bypasses SQL and advances rowGen.
+	doneGen := meta.rowGeneration("done-1")
+	change, err = svc.Output.applyBackgroundTaskUpsert(rootID, doneGen+1, rootID, bgtask.Upsert{
+		RowKey:     "done-1",
+		Kind:       bgtask.KindShell,
+		Title:      "Done Shell",
+		Status:     bgtask.StatusRunning,
+		ActiveForm: "finishing",
+	})
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, doneGen+1, meta.rowGeneration("done-1"))
+	assert.Equal(t, bgtask.StatusSucceeded, registrySnapshotRow(t, svc, rootID, "done-1").Status)
+
+	change, err = svc.Output.applyBackgroundTaskStatus(rootID, "done-1", doneGen+2, bgtask.StatusRunning, "late-running")
+	require.NoError(t, err)
+	assert.False(t, change.changed)
+	assert.Equal(t, doneGen+2, meta.rowGeneration("done-1"))
+	doneAfter := registrySnapshotRow(t, svc, rootID, "done-1")
+	assert.Equal(t, bgtask.StatusSucceeded, doneAfter.Status)
+	assert.Equal(t, doneBefore.EndedAt, doneAfter.EndedAt)
+
+	assert.Zero(t, faultCounter.calls.Load(), "every fast-path case must execute zero SQLite queries")
+
+	// 6. Invalid Role on a warm upsert must not take the fast path and must return a validation error.
+	svc.Output.db = liveDB
+	svc.Output.queries = liveQueries
+	_, err = svc.Output.applyBackgroundTaskUpsert(rootID, gen5+1, rootID, bgtask.Upsert{
+		Role:   bgtask.Role(999),
+		RowKey: "gc-1",
+		Kind:   bgtask.KindSubagent,
+		Status: bgtask.StatusRunning,
+	})
+	require.ErrorContains(t, err, "invalid background task role")
+}
+
+func TestBgTaskWorkStateChanged(t *testing.T) {
+	t.Parallel()
+
+	runningA := bgtask.Item{RowKey: "a", ParentAgentID: "root", ChildAgentID: "c1", Status: bgtask.StatusRunning}
+	runningB := bgtask.Item{RowKey: "b", ParentAgentID: "root", ChildAgentID: "c2", Status: bgtask.StatusRunning}
+	finishedUnlinked := bgtask.Item{RowKey: "shell-done", ParentAgentID: "root", Status: bgtask.StatusSucceeded}
+	finishedLinked := bgtask.Item{RowKey: "a", ParentAgentID: "root", ChildAgentID: "c1", Status: bgtask.StatusSucceeded}
+	runningUnlinked := bgtask.Item{RowKey: "s1", ParentAgentID: "root", Status: bgtask.StatusRunning}
+	runningUnlinked2 := bgtask.Item{RowKey: "s2", ParentAgentID: "root", Status: bgtask.StatusRunning}
+
+	cases := []struct {
+		name          string
+		before        []bgtask.Item
+		after         []bgtask.Item
+		beforeEvicted int
+		afterEvicted  int
+		want          bool
+	}{
+		{
+			name:          "evicted active count changed",
+			before:        []bgtask.Item{runningA},
+			after:         []bgtask.Item{runningA},
+			beforeEvicted: 0,
+			afterEvicted:  1,
+			want:          true,
+		},
+		{
+			name:   "identical order",
+			before: []bgtask.Item{runningA, runningB},
+			after:  []bgtask.Item{runningA, runningB},
+			want:   false,
+		},
+		{
+			name:   "same multiset in different order",
+			before: []bgtask.Item{runningA, runningB},
+			after:  []bgtask.Item{runningB, runningA},
+			want:   false,
+		},
+		{
+			name:   "adding finished unlinked row",
+			before: []bgtask.Item{runningA},
+			after:  []bgtask.Item{runningA, finishedUnlinked},
+			want:   false,
+		},
+		{
+			name:   "removing finished unlinked row",
+			before: []bgtask.Item{runningA, finishedUnlinked},
+			after:  []bgtask.Item{runningA},
+			want:   false,
+		},
+		{
+			name:   "changing ParentAgentID",
+			before: []bgtask.Item{runningA},
+			after:  []bgtask.Item{{RowKey: "a", ParentAgentID: "other-parent", ChildAgentID: "c1", Status: bgtask.StatusRunning}},
+			want:   true,
+		},
+		{
+			name:   "changing ChildAgentID",
+			before: []bgtask.Item{runningA},
+			after:  []bgtask.Item{{RowKey: "a", ParentAgentID: "root", ChildAgentID: "c-other", Status: bgtask.StatusRunning}},
+			want:   true,
+		},
+		{
+			name:   "changing Status working to finished",
+			before: []bgtask.Item{runningA},
+			after:  []bgtask.Item{finishedLinked},
+			want:   true,
+		},
+		{
+			name:   "changing Status finished to working",
+			before: []bgtask.Item{finishedLinked},
+			after:  []bgtask.Item{runningA},
+			want:   true,
+		},
+		{
+			name:   "changing duplicate working counts",
+			before: []bgtask.Item{runningUnlinked},
+			after:  []bgtask.Item{runningUnlinked, runningUnlinked2},
+			want:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, bgTaskWorkStateChanged(tc.before, tc.after, tc.beforeEvicted, tc.afterEvicted))
+		})
+	}
 }

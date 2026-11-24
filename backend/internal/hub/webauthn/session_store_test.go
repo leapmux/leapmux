@@ -86,13 +86,6 @@ func TestSessionStore_LifecycleReplacementAndConsumption(t *testing.T) {
 		_, ok = s.Get("bob-login-1")
 		assert.True(t, ok, "same kind for another user must survive")
 
-		// DeleteByUserAndKind removes only that kind.
-		assert.EqualValues(t, 1, s.DeleteByUserAndKind(alice.String(), KindElevation))
-		_, ok = s.Get("alice-elev-1")
-		assert.False(t, ok)
-		_, ok = s.Get("alice-login-2")
-		assert.True(t, ok)
-
 		// Anonymous KindSignup ceremonies coexist.
 		require.NoError(t, s.Create(CeremonySession{
 			ID: "signup-a", Kind: KindSignup,
@@ -187,6 +180,112 @@ func TestSessionStore_LifecycleReplacementAndConsumption(t *testing.T) {
 		_, ok = s2.Get("e3")
 		assert.True(t, ok)
 	})
+
+	t.Run("out-of-order expiry at capacity", func(t *testing.T) {
+		cur := now
+		s := NewSessionStore()
+		s.maxEntries = 2
+		s.now = func() time.Time { return cur }
+
+		require.NoError(t, s.Create(CeremonySession{
+			ID: "c1", Kind: KindSignup, SessionData: &gowebauthn.SessionData{Challenge: "1"},
+			ExpiresAt: cur.Add(time.Hour),
+		}))
+		require.NoError(t, s.Create(CeremonySession{
+			ID: "c2", Kind: KindSignup, SessionData: &gowebauthn.SessionData{Challenge: "2"},
+			ExpiresAt: cur.Add(time.Second),
+		}))
+
+		cur = now.Add(time.Second)
+		assert.ErrorIs(t, s.Create(CeremonySession{
+			ID: "c3", Kind: KindSignup, SessionData: &gowebauthn.SessionData{Challenge: "3"},
+			ExpiresAt: cur.Add(time.Hour),
+		}), errWebAuthnSessionCapacity)
+
+		cur = now.Add(2 * time.Second)
+		require.NoError(t, s.Create(CeremonySession{
+			ID: "c3", Kind: KindSignup, SessionData: &gowebauthn.SessionData{Challenge: "3"},
+			ExpiresAt: cur.Add(time.Hour),
+		}))
+		_, ok := s.Get("c2")
+		assert.False(t, ok)
+		_, ok = s.Get("c1")
+		assert.True(t, ok)
+		_, ok = s.Get("c3")
+		assert.True(t, ok)
+	})
+
+	t.Run("per-user replacement at capacity", func(t *testing.T) {
+		charlie := userid.MustNew("user-charlie")
+
+		t.Run("maxEntries=2", func(t *testing.T) {
+			cur := now
+			s := NewSessionStore()
+			s.maxEntries = 2
+			s.now = func() time.Time { return cur }
+
+			require.NoError(t, s.Create(CeremonySession{
+				ID: "alice-1", Kind: KindLogin, UserID: alice,
+				SessionData: &gowebauthn.SessionData{Challenge: "a1"}, ExpiresAt: cur.Add(time.Hour),
+			}))
+			require.NoError(t, s.Create(CeremonySession{
+				ID: "bob-1", Kind: KindLogin, UserID: bob,
+				SessionData: &gowebauthn.SessionData{Challenge: "b1"}, ExpiresAt: cur.Add(2 * time.Hour),
+			}))
+
+			// Replacing (alice, KindLogin) at capacity must succeed and track the shorter expiry.
+			require.NoError(t, s.Create(CeremonySession{
+				ID: "alice-2", Kind: KindLogin, UserID: alice,
+				SessionData: &gowebauthn.SessionData{Challenge: "a2"}, ExpiresAt: cur.Add(time.Second),
+			}))
+			_, ok := s.Get("alice-1")
+			assert.False(t, ok)
+			_, ok = s.Get("alice-2")
+			assert.True(t, ok)
+
+			cur = cur.Add(2 * time.Second)
+			require.NoError(t, s.Create(CeremonySession{
+				ID: "charlie-1", Kind: KindLogin, UserID: charlie,
+				SessionData: &gowebauthn.SessionData{Challenge: "c1"}, ExpiresAt: cur.Add(time.Hour),
+			}))
+			_, ok = s.Get("alice-2")
+			assert.False(t, ok)
+			_, ok = s.Get("charlie-1")
+			assert.True(t, ok)
+			_, ok = s.Get("bob-1")
+			assert.True(t, ok)
+		})
+
+		t.Run("maxEntries=1", func(t *testing.T) {
+			cur := now
+			s := NewSessionStore()
+			s.maxEntries = 1
+			s.now = func() time.Time { return cur }
+
+			require.NoError(t, s.Create(CeremonySession{
+				ID: "alice-1", Kind: KindLogin, UserID: alice,
+				SessionData: &gowebauthn.SessionData{Challenge: "a1"}, ExpiresAt: cur.Add(time.Hour),
+			}))
+			require.NoError(t, s.Create(CeremonySession{
+				ID: "alice-2", Kind: KindLogin, UserID: alice,
+				SessionData: &gowebauthn.SessionData{Challenge: "a2"}, ExpiresAt: cur.Add(time.Second),
+			}))
+			_, ok := s.Get("alice-1")
+			assert.False(t, ok)
+			_, ok = s.Get("alice-2")
+			assert.True(t, ok)
+
+			cur = cur.Add(2 * time.Second)
+			require.NoError(t, s.Create(CeremonySession{
+				ID: "bob-1", Kind: KindLogin, UserID: bob,
+				SessionData: &gowebauthn.SessionData{Challenge: "b1"}, ExpiresAt: cur.Add(time.Hour),
+			}))
+			_, ok = s.Get("alice-2")
+			assert.False(t, ok)
+			_, ok = s.Get("bob-1")
+			assert.True(t, ok)
+		})
+	})
 }
 
 func TestSessionStore_DeleteByUserBeforeGeneration(t *testing.T) {
@@ -208,7 +307,8 @@ func TestSessionStore_DeleteByUserBeforeGeneration(t *testing.T) {
 		SessionData: &gowebauthn.SessionData{Challenge: "b1"}, ExpiresAt: now.Add(time.Minute),
 	}))
 
-	assert.EqualValues(t, 1, s.DeleteByUserBeforeGeneration(userA.String(), 2))
+	assert.Zero(t, s.DeleteByUserBeforeGeneration(userid.UserID{}, 2), "zero user ID must evict nothing")
+	assert.EqualValues(t, 1, s.DeleteByUserBeforeGeneration(userA, 2))
 	_, ok := s.Get("a-gen1")
 	assert.False(t, ok, "older generation ceremony for user A must be evicted")
 	_, ok = s.Get("a-gen2")
@@ -217,7 +317,7 @@ func TestSessionStore_DeleteByUserBeforeGeneration(t *testing.T) {
 	assert.True(t, ok, "user B ceremony must survive")
 
 	// Non-positive generation evicts all remaining sessions for user A.
-	assert.EqualValues(t, 1, s.DeleteByUserBeforeGeneration(userA.String(), 0))
+	assert.EqualValues(t, 1, s.DeleteByUserBeforeGeneration(userA, 0))
 	_, ok = s.Get("a-gen2")
 	assert.False(t, ok)
 	_, ok = s.Get("b-gen1")

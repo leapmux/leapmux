@@ -58,6 +58,12 @@ WHERE client_id = sqlc.arg(client_id)
   AND revoked_at IS NULL
   AND elevation_allowed;
 
+-- name: LockActiveOAuthClient :one
+-- SQLite transactions acquire the write lock at BEGIN IMMEDIATE.
+SELECT client_id FROM oauth_clients
+WHERE client_id = sqlc.arg(client_id)
+  AND revoked_at IS NULL;
+
 -- name: GetOAuthClientIcon :one
 -- The icon bytes, their media type, and the three facts that gate serving
 -- them, for the /oauth/apps/<id>/icon asset

@@ -2324,3 +2324,257 @@ func TestEnsureChildAgentAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, beforeRefusal, final)
 }
+
+func TestReviveBackgroundTask_DurableReviveCountScopesReportsAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "Worker",
+	})
+	require.NoError(t, err)
+
+	// Run 1 persists report under bare ReportID and closes.
+	stored, err := sink.PersistChildSubagentReport(agent.ChildSubagentReportWrite{
+		RowKey: "task-1",
+		Write:  agent.SubagentReportWrite{ReportID: "rep-1", Report: agent.SubagentReport{Text: "Run 1 report"}},
+	})
+	require.NoError(t, err)
+	assert.True(t, stored)
+	stored, err = sink.PersistSubagentReport(agent.SubagentReportWrite{
+		ReportID: "rep-1", RowKey: "task-1", Report: agent.SubagentReport{Text: "Parent Run 1 report"},
+	})
+	require.NoError(t, err)
+	assert.True(t, stored)
+	stored, err = sink.PersistSubagentReport(agent.SubagentReportWrite{
+		ReportID: "rep-1", RowKey: "task-1", Report: agent.SubagentReport{Text: "Parent Run 1 duplicate"},
+	})
+	require.NoError(t, err)
+	assert.False(t, stored)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
+
+	// Run 2 revives and persists under durable revive_count=1 (#2).
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+	stored, err = sink.PersistChildSubagentReport(agent.ChildSubagentReportWrite{
+		RowKey: "task-1",
+		Write:  agent.SubagentReportWrite{ReportID: "rep-1", Report: agent.SubagentReport{Text: "Run 2 report"}},
+	})
+	require.NoError(t, err)
+	assert.True(t, stored)
+	// Duplicate write during Run 2 stays deduplicated.
+	stored, err = sink.PersistChildSubagentReport(agent.ChildSubagentReportWrite{
+		RowKey: "task-1",
+		Write:  agent.SubagentReportWrite{ReportID: "rep-1", Report: agent.SubagentReport{Text: "Run 2 duplicate"}},
+	})
+	require.NoError(t, err)
+	assert.False(t, stored)
+	stored, err = sink.PersistSubagentReport(agent.SubagentReportWrite{
+		ReportID: "rep-1", RowKey: "task-1", Report: agent.SubagentReport{Text: "Parent Run 2 report"},
+	})
+	require.NoError(t, err)
+	assert.True(t, stored)
+	stored, err = sink.PersistSubagentReport(agent.SubagentReportWrite{
+		ReportID: "rep-1", RowKey: "task-1", Report: agent.SubagentReport{Text: "Parent Run 2 duplicate"},
+	})
+	require.NoError(t, err)
+	assert.False(t, stored)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
+
+	// Simulate Worker restart by resetting in-memory caches and creating a new sink on the same DB.
+	svc.Output.bgtasks = sync.Map{}
+	svc.Output.bgTaskMeta = sync.Map{}
+	restartedSink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+	// Run 3 revives after restart; durable revive_count increments to 2 (#3) and does not collide with Run 1 or Run 2.
+	require.NoError(t, restartedSink.ReviveBackgroundTask("task-1"))
+	stored, err = restartedSink.PersistChildSubagentReport(agent.ChildSubagentReportWrite{
+		RowKey: "task-1",
+		Write:  agent.SubagentReportWrite{ReportID: "rep-1", Report: agent.SubagentReport{Text: "Run 3 report"}},
+	})
+	require.NoError(t, err)
+	assert.True(t, stored)
+
+	// Parent-scoped mirror report with RowKey also avoids post-restart collision.
+	stored, err = restartedSink.PersistSubagentReport(agent.SubagentReportWrite{
+		ReportID: "rep-1", RowKey: "task-1", Report: agent.SubagentReport{Text: "Parent Run 3 report"},
+	})
+	require.NoError(t, err)
+	assert.True(t, stored)
+	stored, err = restartedSink.PersistSubagentReport(agent.SubagentReportWrite{
+		ReportID: "rep-1", RowKey: "task-1", Report: agent.SubagentReport{Text: "Parent Run 3 duplicate"},
+	})
+	require.NoError(t, err)
+	assert.False(t, stored)
+
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 3)
+	for i, want := range []string{"Run 1 report", "Run 2 report", "Run 3 report"} {
+		wrapped, ok := msgs[i]["messages"].([]any)
+		require.True(t, ok)
+		require.Len(t, wrapped, 1)
+		payload, ok := wrapped[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, want, payload[contracts.NotificationFieldText])
+	}
+
+	parentMsgs := transcriptMessages(t, svc, "root-1")
+	require.Len(t, parentMsgs, 3)
+	for i, want := range []string{"Parent Run 1 report", "Parent Run 2 report", "Parent Run 3 report"} {
+		wrapped, ok := parentMsgs[i]["messages"].([]any)
+		require.True(t, ok)
+		require.Len(t, wrapped, 1)
+		payload, ok := wrapped[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, want, payload[contracts.NotificationFieldText])
+	}
+}
+
+func TestUpsertBackgroundTask_BlankParentDefaultsPostMergeAndPreservesGrandchildParent(t *testing.T) {
+	t.Parallel()
+
+	svc, rootSink := setupRootSink(t, "root-1")
+	childID, err := rootSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-child", ProviderChildKey: "child-1", Title: "Child",
+	})
+	require.NoError(t, err)
+	childSink := rootSink.ChildSink(childID)
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-gc", ProviderChildKey: "gc-1", Title: "Grandchild",
+	})
+	require.NoError(t, err)
+	require.Equal(t, childID, registrySnapshotRow(t, svc, "root-1", "gc-1").ParentAgentID)
+
+	// Updating the grandchild via the root sink with a blank ParentAgentID must
+	// keep childID instead of overwriting it with root-1.
+	require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:       "gc-1",
+		Kind:         bgtask.KindSubagent,
+		ChildAgentID: grandchildID,
+		Title:        "Grandchild updated",
+		Status:       bgtask.StatusRunning,
+	}))
+	assert.Equal(t, childID, registrySnapshotRow(t, svc, "root-1", "gc-1").ParentAgentID)
+
+	// A brand-new row from rootSink with blank ParentAgentID still defaults to root-1.
+	require.NoError(t, rootSink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "shell-root",
+		Kind:   bgtask.KindShell,
+		Title:  "make test",
+		Status: bgtask.StatusRunning,
+	}))
+	assert.Equal(t, "root-1", registrySnapshotRow(t, svc, "root-1", "shell-root").ParentAgentID)
+}
+
+type failingBgTaskLookupDBTX struct {
+	db.DBTX
+}
+
+func (f failingBgTaskLookupDBTX) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, "-- name: GetAgentBackgroundTaskByRowKey :one") {
+		return f.DBTX.QueryRowContext(ctx, "SELECT missing_bgtask_lookup_column")
+	}
+	return f.DBTX.QueryRowContext(ctx, query, args...)
+}
+
+func TestPersistSubagentReport_AbsentRowKeyAndLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-empty RowKey absent from registry persists with unscoped ReportID", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := setupRootSink(t, "root-absent-rowkey")
+
+		stored, err := sink.PersistSubagentReport(agent.SubagentReportWrite{
+			ReportID: "rep-unscoped",
+			RowKey:   "missing-row-key",
+			Report:   agent.SubagentReport{Text: "Unscoped report"},
+		})
+		require.NoError(t, err)
+		assert.True(t, stored)
+
+		// Repeating with empty RowKey and the same ReportID deduplicates,
+		// confirming the first write used the unscoped ReportID.
+		stored, err = sink.PersistSubagentReport(agent.SubagentReportWrite{
+			ReportID: "rep-unscoped",
+			Report:   agent.SubagentReport{Text: "Duplicate unscoped report"},
+		})
+		require.NoError(t, err)
+		assert.False(t, stored)
+
+		msgs := transcriptMessages(t, svc, "root-absent-rowkey")
+		require.Len(t, msgs, 1)
+		wrapped, ok := msgs[0]["messages"].([]any)
+		require.True(t, ok)
+		require.Len(t, wrapped, 1)
+		payload, ok := wrapped[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "Unscoped report", payload[contracts.NotificationFieldText])
+	})
+
+	t.Run("failing lookupBackgroundTask DB read returns error without writing a message", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := setupRootSink(t, "root-lookup-fail")
+
+		// Warm the empty cache so lookupBackgroundTask reaches the DB point lookup.
+		_, err := svc.Output.LoadBackgroundTasks(t.Context(), "root-lookup-fail")
+		require.NoError(t, err)
+		svc.Output.queries = db.New(failingBgTaskLookupDBTX{DBTX: svc.DB})
+
+		stored, err := sink.PersistSubagentReport(agent.SubagentReportWrite{
+			ReportID: "rep-fail",
+			RowKey:   "missing-row-key",
+			Report:   agent.SubagentReport{Text: "Should not persist"},
+		})
+		require.Error(t, err)
+		assert.False(t, stored)
+		assert.Empty(t, transcriptMessages(t, svc, "root-lookup-fail"))
+	})
+}
+
+func TestPersistChildSubagentReport_RejectsUnavailableChildRows(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty RowKey", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := setupRootSink(t, "root-empty-rowkey")
+		stored, err := sink.PersistChildSubagentReport(agent.ChildSubagentReportWrite{
+			RowKey: "",
+			Write:  agent.SubagentReportWrite{ReportID: "rep-1", Report: agent.SubagentReport{Text: "No row key"}},
+		})
+		require.Error(t, err)
+		assert.False(t, stored)
+		assert.Empty(t, transcriptMessages(t, svc, "root-empty-rowkey"))
+	})
+
+	t.Run("missing RowKey", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := setupRootSink(t, "root-missing-rowkey")
+		stored, err := sink.PersistChildSubagentReport(agent.ChildSubagentReportWrite{
+			RowKey: "no-such-row",
+			Write:  agent.SubagentReportWrite{ReportID: "rep-1", Report: agent.SubagentReport{Text: "Missing row"}},
+		})
+		require.Error(t, err)
+		assert.False(t, stored)
+		assert.Empty(t, transcriptMessages(t, svc, "root-missing-rowkey"))
+	})
+
+	t.Run("row with empty ChildAgentID", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := setupRootSink(t, "root-unlinked-rowkey")
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: "shell-only",
+			Kind:   bgtask.KindShell,
+			Title:  "Unlinked shell",
+			Status: bgtask.StatusRunning,
+		}))
+		stored, err := sink.PersistChildSubagentReport(agent.ChildSubagentReportWrite{
+			RowKey: "shell-only",
+			Write:  agent.SubagentReportWrite{ReportID: "rep-1", Report: agent.SubagentReport{Text: "Unlinked row"}},
+		})
+		require.Error(t, err)
+		assert.False(t, stored)
+		assert.Empty(t, transcriptMessages(t, svc, "root-unlinked-rowkey"))
+	})
+}

@@ -352,7 +352,7 @@ func (c *conversation) handleToolCall(update json.RawMessage) {
 		opened := sink.GetSpanType(tc.ToolCallID) != ""
 		c.completeToolOutput(tc.ToolCallID)
 		finalObs := obs
-		if finalObs != nil && !finalObs.CloseRow && !finalObs.Status.IsFinished() {
+		if finalObs != nil && !finalObs.CloseRow && !finalObs.KeepOpen && !finalObs.Status.IsFinished() {
 			cloned := *finalObs
 			cloned.Status = FinalStatus(tc.Status)
 			cloned.CloseRow = true

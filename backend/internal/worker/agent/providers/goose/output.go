@@ -481,7 +481,6 @@ func (a *Agent) clearGooseState() {
 	clear(a.gooseChildRenames)
 	clear(a.gooseOutput)
 	clear(a.activeDelegations)
-	clear(a.runSeq)
 	clear(a.resumedCalls)
 	clear(a.pendingResumeNotices)
 	clear(a.pendingResumeAcks)

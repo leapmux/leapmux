@@ -117,9 +117,6 @@ type childState struct {
 	// row reports StatusInterrupted and the divider reads "Subagent
 	// interrupted"; a model-side cancel keeps the plain stop word.
 	interrupted map[string]bool
-	// runSeq counts runs per subagent ID so woken runs write distinct report IDs
-	// instead of colliding with earlier runs.
-	runSeq map[string]int
 }
 
 // linkedSubagent is the registry row and the child session of one subagent.
@@ -191,32 +188,6 @@ func (c *childState) rememberFinishedRowKeyLocked(subagentID, rowKey string) {
 		c.finishedRowKeys = make(map[string]string)
 	}
 	c.finishedRowKeys[subagentID] = rowKey
-}
-
-// bumpRunSeqLocked advances a subagent's run counter when a woken run revives
-// its row. Caller must hold stateMu.
-func (c *childState) bumpRunSeqLocked(subagentID string) {
-	if subagentID == "" {
-		return
-	}
-	if c.runSeq == nil {
-		c.runSeq = make(map[string]int)
-	}
-	if c.runSeq[subagentID] < 1 {
-		c.runSeq[subagentID] = 2
-		return
-	}
-	c.runSeq[subagentID]++
-}
-
-// reportIDLocked returns the per-run report ID for one subagent.
-// Job 1 uses the bare subagent ID; woken runs append "#<run>".
-// Caller must hold stateMu.
-func (c *childState) reportIDLocked(subagentID string) string {
-	if run := c.runSeq[subagentID]; run >= 2 {
-		return fmt.Sprintf("%s#%d", subagentID, run)
-	}
-	return subagentID
 }
 
 // grokToolMeta is the part of a tool call's `_meta["x.ai/tool"]` that LeapMux reads.
@@ -337,32 +308,32 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 					a.children.settledBeforeSpawn = make(map[string]bool)
 				}
 				a.children.settledBeforeSpawn[subagentID] = true
-				reportID := a.children.reportIDLocked(subagentID)
 				a.stateMu.Unlock()
 				return &acp.SubagentObservation{
 					RowKey:   tcu.ToolCallID,
 					Status:   early.status,
 					CloseRow: true,
 					Mode:     acp.ModeCloseOnly,
-					ReportID: reportID,
+					ReportID: subagentID,
 					Report:   agent.SubagentReport{Text: early.report},
 				}
 			}
-			if a.children.backgroundSpawns == nil {
-				a.children.backgroundSpawns = make(map[string]string)
+			_, alreadyActive := a.children.subagents[subagentID]
+			_, alreadyFinished := a.children.finishedRowKeys[subagentID]
+			if !alreadyActive && !alreadyFinished {
+				if a.children.backgroundSpawns == nil {
+					a.children.backgroundSpawns = make(map[string]string)
+				}
+				a.children.backgroundSpawns[subagentID] = tcu.ToolCallID
 			}
-			a.children.backgroundSpawns[subagentID] = tcu.ToolCallID
 			a.stateMu.Unlock()
 			return nil
 		}
 	}
 	a.stateMu.Lock()
 	a.dropPendingLocked(tcu.ToolCallID)
-	reportID := ""
-	if output.SubagentID != "" {
-		reportID = a.children.reportIDLocked(output.SubagentID)
-	}
 	a.stateMu.Unlock()
+	reportID := output.SubagentID
 	report := output.Output
 	if report == "" && tcu.Status == "completed" {
 		report = acp.ToolCallText(tcu.Content)
@@ -403,30 +374,26 @@ type grokSubagentSpawned struct {
 }
 
 func (a *Agent) takePendingSpawnLocked(rawDesc, subagentType string) (string, bool) {
-	if rawDesc != "" {
+	take := func(match func(pendingSpawn) bool) (string, bool) {
 		for i, spawn := range a.children.pending {
-			if spawn.description == rawDesc {
+			if match(spawn) {
 				a.children.pending = append(a.children.pending[:i], a.children.pending[i+1:]...)
 				return spawn.toolCallID, true
 			}
 		}
 		return "", false
 	}
+	if rawDesc != "" {
+		return take(func(spawn pendingSpawn) bool { return spawn.description == rawDesc })
+	}
 	if subagentType != "" {
-		for i, spawn := range a.children.pending {
-			if (spawn.description == "" && spawn.subagentType == subagentType) || spawn.description == subagentType {
-				a.children.pending = append(a.children.pending[:i], a.children.pending[i+1:]...)
-				return spawn.toolCallID, true
-			}
+		if id, ok := take(func(spawn pendingSpawn) bool {
+			return (spawn.description == "" && spawn.subagentType == subagentType) || spawn.description == subagentType
+		}); ok {
+			return id, true
 		}
 	}
-	for i, spawn := range a.children.pending {
-		if spawn.description == "" {
-			a.children.pending = append(a.children.pending[:i], a.children.pending[i+1:]...)
-			return spawn.toolCallID, true
-		}
-	}
-	return "", false
+	return take(func(spawn pendingSpawn) bool { return spawn.description == "" })
 }
 
 // handleSubagentSpawned links a child session to its registry row, opens a row
@@ -467,7 +434,6 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 	} else if prevRowKey, wasFinished := a.children.finishedRowKeys[spawned.SubagentID]; wasFinished {
 		delete(a.children.finishedRowKeys, spawned.SubagentID)
 		rowKey, linked, revive = prevRowKey, true, true
-		a.children.bumpRunSeqLocked(spawned.SubagentID)
 	} else if spawned.WorkflowRunID == "" {
 		rowKey, linked = a.takePendingSpawnLocked(rawDesc, subagentType)
 	}
@@ -492,7 +458,6 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 	if early, hasEarly := a.children.earlyFinished[spawned.SubagentID]; hasEarly {
 		delete(a.children.earlyFinished, spawned.SubagentID)
 		a.children.rememberFinishedRowKeyLocked(spawned.SubagentID, rowKey)
-		reportID := a.children.reportIDLocked(spawned.SubagentID)
 		a.stateMu.Unlock()
 		if !linked || revive {
 			openRow(revive)
@@ -502,7 +467,7 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 			Status:   early.status,
 			CloseRow: true,
 			Mode:     acp.ModeCloseOnly,
-			ReportID: reportID,
+			ReportID: spawned.SubagentID,
 			Report:   agent.SubagentReport{Text: early.report},
 		})
 		return
@@ -513,9 +478,6 @@ func (a *Agent) handleSubagentSpawned(rootSessionID string, update json.RawMessa
 	if !revive && !linked && a.Sink() != nil {
 		if _, existingStatus, found, err := a.Sink().LookupBackgroundTask(rowKey); err == nil && found && existingStatus.IsFinished() {
 			revive = true
-			a.stateMu.Lock()
-			a.children.bumpRunSeqLocked(spawned.SubagentID)
-			a.stateMu.Unlock()
 		}
 	}
 	if !linked || revive {
@@ -592,8 +554,8 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 	if known {
 		a.children.rememberFinishedRowKeyLocked(finished.SubagentID, rowKey)
 	}
-	reportID := a.children.reportIDLocked(finished.SubagentID)
 	a.stateMu.Unlock()
+	reportID := finished.SubagentID
 
 	// A cancel WE asked for is a user interrupt, not a plain stop: the row
 	// closes as StatusInterrupted and the divider reads "Subagent interrupted".

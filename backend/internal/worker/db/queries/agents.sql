@@ -122,9 +122,6 @@ WHERE id = sqlc.arg(agent_id)
   AND workspace_archived = 0
   AND closed_at IS NULL;
 
--- name: ReopenAgent :exec
-UPDATE agents SET closed_at = NULL WHERE id = ?;
-
 -- name: SetAgentOptions :exec
 UPDATE agents SET options = ? WHERE id = ?;
 
@@ -239,9 +236,6 @@ WHERE id = sqlc.arg(id) AND closed_at IS NULL
 -- and option_groups TEXT columns that this caller never looks at.
 -- name: GetAgentForInactiveBroadcast :one
 SELECT id, agent_session_id, agent_provider FROM agents WHERE id = ?;
-
--- name: UpdateAgentPlanFilePath :exec
-UPDATE agents SET plan_file_path = ? WHERE id = ?;
 
 -- name: UpdateAgentPlan :exec
 UPDATE agents SET plan_file_path = ?, plan_title = ? WHERE id = ?;

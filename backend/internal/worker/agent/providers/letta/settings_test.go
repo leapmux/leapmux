@@ -2,6 +2,7 @@ package letta
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -203,4 +204,72 @@ func TestLettaDeviceStatusTracksBackgroundProcesses(t *testing.T) {
 	row, ok = sink.BackgroundTask(monRow.RowKey)
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+}
+
+type lettaCloseFailSink struct {
+	agent.ProviderServices
+	closeErr error
+}
+
+// OutputQueue returns nil so queueRegistryClose runs synchronously and returns
+// CloseBackgroundTask errors directly to reconcileBackgroundProcesses.
+func (*lettaCloseFailSink) OutputQueue() *agent.OutputQueue { return nil }
+
+func (s *lettaCloseFailSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	if s.closeErr != nil {
+		return s.closeErr
+	}
+	return s.ProviderServices.CloseBackgroundTask(rowKey, status)
+}
+
+func TestLettaReconcileBackgroundProcessesCloseFailureRollbackAndAgentTaskFilter(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	failingSink := &lettaCloseFailSink{ProviderServices: a.sink}
+	a.sink = failingSink
+
+	currentRuntime := map[string]any{"agent_id": "agent-local-1", "conversation_id": "local-conv-1"}
+	marshalStatus := func(processes []any) []byte {
+		frame, err := json.Marshal(map[string]any{
+			"type":          "update_device_status",
+			"runtime":       currentRuntime,
+			"device_status": map[string]any{"background_processes": processes},
+		})
+		require.NoError(t, err)
+		return frame
+	}
+
+	// Open one tracked shell row.
+	a.HandleOutput(marshalStatus([]any{
+		map[string]any{"process_id": "bash-1", "kind": "bash", "command": "npm run dev", "status": "running"},
+	}))
+	rowKey := lettaBackgroundProcessRowPrefix + "bash-1"
+	row, ok := sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	require.Equal(t, bgtask.StatusRunning, row.Status)
+	require.Contains(t, a.backgroundProcesses, rowKey)
+
+	// When CloseBackgroundTask fails, the row stays tracked and running.
+	failingSink.closeErr = errors.New("registry close refused")
+	a.HandleOutput(marshalStatus([]any{}))
+	assert.Contains(t, a.backgroundProcesses, rowKey, "failed close must keep row tracked for retry")
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+	// Clearing the error lets the next empty snapshot close the row and empty tracking.
+	failingSink.closeErr = nil
+	a.HandleOutput(marshalStatus([]any{}))
+	row, ok = sink.BackgroundTask(rowKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
+	assert.Empty(t, a.backgroundProcesses)
+
+	// An agent_task entry with a non-empty subagent_id must be skipped without creating a shell row.
+	a.HandleOutput(marshalStatus([]any{
+		map[string]any{"kind": "agent_task", "subagent_id": "sub-1", "process_id": "p-1", "status": "running"},
+	}))
+	_, agentTaskRowExists := sink.BackgroundTask(lettaBackgroundProcessRowPrefix + "p-1")
+	assert.False(t, agentTaskRowExists, "agent_task entries must not create background shell rows")
+	assert.Empty(t, a.backgroundProcesses)
 }

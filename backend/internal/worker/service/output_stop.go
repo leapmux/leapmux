@@ -49,6 +49,9 @@ type agentStopRequest struct {
 }
 
 func (s *agentOutputSink) ownsControlPublisher() bool {
+	if s.retired.Load() {
+		return false
+	}
 	publisher, adopted := s.h.turnPublisher.Load(s.rootAgentID)
 	return !adopted || publisher == s.turnPublisher()
 }
@@ -206,7 +209,7 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 			continue
 		}
 		seen[control] = struct{}{}
-		request, ok := r.h.deleteBlockingControl(r.agentID, control.RequestID, control.ClaimToken)
+		request, ok := r.h.controls.deleteBlocking(r.agentID, control.RequestID, control.ClaimToken)
 		if !ok {
 			continue
 		}

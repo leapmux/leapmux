@@ -596,12 +596,6 @@ func (c *registryCache[T, K]) forgetEvictedActiveLocked(key K) {
 	c.evictedActive.remove(key)
 }
 
-// EvictedActiveCount reports the task count of hidden working rows.
-// Activity-only markers retain working state without increasing this count. Caller holds c.Mu.
-func (c *registryCache[T, K]) EvictedActiveCount() int32 {
-	return c.evictedActive.count()
-}
-
 // dropStoredRowLocked deletes the persisted row unless ops.retention keeps it,
 // and is the ONE place that asks the question. A registry without retention
 // deletes every row.

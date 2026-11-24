@@ -152,3 +152,83 @@ func TestQuakeTerminalStore_LifecycleAndConcurrency(t *testing.T) {
 		assert.Len(t, store.ListOpen(), 1)
 	})
 }
+
+func TestQuakeTerminalStore_IsKnownQuakeAndClosedEviction(t *testing.T) {
+	t.Parallel()
+
+	t.Run("IsKnownQuake tracks active and deleted entries", func(t *testing.T) {
+		t.Parallel()
+		store := NewQuakeTerminalStore()
+
+		assert.False(t, store.IsKnownQuake("quake-1"))
+		store.Delete("never-existed")
+		assert.False(t, store.IsKnownQuake("never-existed"))
+
+		_, created := store.RegisterOrAdopt(QuakeTerminal{
+			ID:         "quake-1",
+			WorkingDir: "/repo/a",
+		})
+		require.True(t, created)
+		assert.True(t, store.Has("quake-1"))
+		assert.True(t, store.IsKnownQuake("quake-1"))
+
+		store.Delete("quake-1")
+		assert.False(t, store.Has("quake-1"))
+		assert.True(t, store.IsKnownQuake("quake-1"))
+	})
+
+	t.Run("FIFO eviction caps closed ID history at maxClosedQuakeIDs", func(t *testing.T) {
+		t.Parallel()
+		store := NewQuakeTerminalStore()
+		const overflow = 3
+		total := maxClosedQuakeIDs + overflow
+
+		for i := range total {
+			id := fmt.Sprintf("quake-%05d", i)
+			_, created := store.RegisterOrAdopt(QuakeTerminal{
+				ID:         id,
+				WorkingDir: fmt.Sprintf("/repo/%d", i),
+			})
+			require.True(t, created)
+			store.Delete(id)
+		}
+
+		for i := range overflow {
+			id := fmt.Sprintf("quake-%05d", i)
+			assert.False(t, store.IsKnownQuake(id), "oldest closed ID %s must be evicted", id)
+		}
+		for i := overflow; i < total; i++ {
+			id := fmt.Sprintf("quake-%05d", i)
+			assert.True(t, store.IsKnownQuake(id), "recent closed ID %s must remain known", id)
+		}
+		store.mu.Lock()
+		closedIDsLen := len(store.closedIDs)
+		closedOrderLen := len(store.closedOrder)
+		store.mu.Unlock()
+		assert.Equal(t, maxClosedQuakeIDs, closedIDsLen)
+		assert.Equal(t, maxClosedQuakeIDs, closedOrderLen)
+	})
+
+	t.Run("ListOpen tie-breaks equal CreatedAt by ID ascending", func(t *testing.T) {
+		t.Parallel()
+		store := NewQuakeTerminalStore()
+		createdAt := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+
+		_, created := store.RegisterOrAdopt(QuakeTerminal{
+			ID:         "quake-b",
+			WorkingDir: "/repo/b",
+			CreatedAt:  createdAt,
+		})
+		require.True(t, created)
+		_, created = store.RegisterOrAdopt(QuakeTerminal{
+			ID:         "quake-a",
+			WorkingDir: "/repo/a",
+			CreatedAt:  createdAt,
+		})
+		require.True(t, created)
+
+		open := store.ListOpen()
+		require.Len(t, open, 2)
+		assert.Equal(t, []string{"quake-a", "quake-b"}, []string{open[0].ID, open[1].ID})
+	})
+}

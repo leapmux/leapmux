@@ -352,6 +352,7 @@ type Item struct {
 	Description    string
 	ActiveForm     string
 	Status         Status
+	ReviveCount    int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	EndedAt        time.Time // zero == active
@@ -415,6 +416,9 @@ func (i Item) PreservingBlanksFrom(existing Item) Item {
 	}
 	if i.ActiveForm == "" {
 		i.ActiveForm = existing.ActiveForm
+	}
+	if i.ReviveCount == 0 {
+		i.ReviveCount = existing.ReviveCount
 	}
 	return i
 }

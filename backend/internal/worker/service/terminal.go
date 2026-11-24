@@ -330,7 +330,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// title as a live overlay instead -- see the SignalTitle case in this
 	// file for the reason.
 	registerTerminalGuarded(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure,
-		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RenameTerminalRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RenameTerminalRequest, term terminalRecord, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Clean the title, never refuse it -- the same rule OpenAgent,
@@ -348,17 +348,13 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				// title after it exits -- the same precedence ListTerminals
 				// applies, so a client polling either RPC reads one answer.
 				sendProtoResponse(sender, &leapmuxv1.RenameTerminalResponse{
-					Title: svc.effectiveTerminalTitle(dbTerm),
+					Title: svc.effectiveTerminalTitle(term),
 				})
 				return
 			}
 
 			svc.Terminals.UpdateTitle(terminalID, title)
-			if svc.QuakeTerminals.Has(terminalID) {
-				svc.QuakeTerminals.UpdateTitle(terminalID, title)
-			} else if err := svc.Queries.UpdateTerminalTitle(bgCtx(), db.UpdateTerminalTitleParams{
-				ID: dbTerm.ID, Title: title,
-			}); err != nil {
+			if err := svc.terminalCatalog().updateTitle(bgCtx(), term.ID, title); err != nil {
 				slog.Error("failed to update terminal title", "terminal_id", terminalID, "error", err)
 				sendInternalError(sender, "failed to update terminal title")
 				return
@@ -434,8 +430,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// same id set the rest of this handler already walks. Widening the ids
 		// rather than building a second result list is what keeps them on the
 		// live path: the manager pass below owns the in-memory ring, and a
-		// quake terminal resolved straight from its DB row would hand the
-		// client a stale screen for a shell that is still running.
+		// quake terminal resolved straight from its QuakeTerminalStore record
+		// would omit the live screen buffer of a shell that is still running.
 		if len(quakeWorkingDirs) > 0 {
 			quakeRows := svc.QuakeTerminals.ListByWorkingDirs(quakeWorkingDirs)
 			widened := slices.Clone(tabIDs)
@@ -469,30 +465,15 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// from hydration for the life of the page. Surfacing the error
 		// instead rejects the client's promise and keeps its backoff
 		// running, matching ListAgents on the same failure.
-		dbTerminals, err := svc.Queries.ListTerminalsByIDs(ctx, tabIDs)
+		records, err := svc.terminalCatalog().listByIDs(ctx, tabIDs)
 		if err != nil {
-			slog.Error("failed to list terminals from DB", "tab_ids", tabIDs, "error", err)
+			slog.Error("failed to list terminals", "tab_ids", tabIDs, "error", err)
 			sendInternalError(sender, "failed to list terminals")
 			return
 		}
-		dbByID := make(map[string]struct{}, len(dbTerminals))
-		for i := range dbTerminals {
-			dbByID[dbTerminals[i].ID] = struct{}{}
-		}
-		quakeIDs := make(map[string]bool)
-		for _, id := range tabIDs {
-			if _, exists := dbByID[id]; exists {
-				continue
-			}
-			if q, ok := svc.QuakeTerminals.Get(id); ok {
-				quakeIDs[id] = true
-				dbByID[id] = struct{}{}
-				dbTerminals = append(dbTerminals, q.toDBTerminal())
-			}
-		}
-		rowsByID := make(map[string]*db.Terminal, len(dbTerminals))
-		for i := range dbTerminals {
-			rowsByID[dbTerminals[i].ID] = &dbTerminals[i]
+		rowsByID := make(map[string]*terminalRecord, len(records))
+		for i := range records {
+			rowsByID[records[i].ID] = &records[i]
 		}
 
 		// Run git FIRST. It is the one slow step of this call: a large working
@@ -508,9 +489,9 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// The row of a terminal holds the directory that the terminal finally runs
 		// in (see gitModePlan.PlannedWorkingDir), and the Manager takes the same
 		// directory. Git therefore needs no state that the call reads later.
-		gitStatuses := svc.terminalGitStatuses(ctx, tabIDs, dbTerminals)
+		gitStatuses := svc.terminalGitStatuses(ctx, tabIDs, records)
 
-		// Collect from the in-memory manager and DB-only rows. This is the read of
+		// Collect from the in-memory manager and catalog-only rows. This is the read of
 		// the runtime state: see the note above the call to git.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
@@ -519,7 +500,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			seen[e.ID] = true
 			row := rowsByID[e.ID]
 			if row == nil {
-				row = &db.Terminal{ID: e.ID}
+				row = &terminalRecord{ID: e.ID}
 			}
 			status, startupError, startupMessage := svc.deriveTerminalStatus(row)
 			ti := &leapmuxv1.TerminalInfo{
@@ -534,13 +515,13 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Status:          status,
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
-				Quake:           quakeIDs[e.ID],
+				Quake:           row.IsQuake,
 				GitStatus:       gitStatuses[e.ID],
 			}
 			terminals = append(terminals, ti)
 		}
 
-		for _, ts := range dbTerminals {
+		for _, ts := range records {
 			if seen[ts.ID] {
 				continue
 			}
@@ -558,7 +539,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Status:          status,
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
-				Quake:           quakeIDs[ts.ID],
+				Quake:           ts.IsQuake,
 				GitStatus:       gitStatuses[ts.ID],
 			}
 			terminals = append(terminals, ti)
@@ -753,25 +734,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 
 	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
 
-	var (
-		closedDuringSpawn   bool
-		archivedDuringSpawn bool
-		postSpawnTitle      string
-	)
-	if spawnInfo.IsQuake {
-		q, ok := svc.QuakeTerminals.Get(terminalID)
-		closedDuringSpawn = !ok
-		if ok {
-			postSpawnTitle = q.Title
-		}
-	} else {
-		postSpawn, postSpawnErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
-		if postSpawnErr == nil {
-			closedDuringSpawn = postSpawn.ClosedAt.Valid
-			archivedDuringSpawn = postSpawn.WorkspaceArchived
-			postSpawnTitle = postSpawn.Title
-		}
-	}
+	closedDuringSpawn, archivedDuringSpawn, postSpawnTitle := svc.terminalCatalog().postSpawnState(bgCtx(), terminalID, spawnInfo.IsQuake)
 	switch svc.TerminalStartup.interruptionOf(h, closedDuringSpawn, archivedDuringSpawn) {
 	case interruptionClosed:
 		if startErr == nil {
@@ -966,14 +929,7 @@ func (svc *Service) failTerminalStartup(terminalID string, gm gitModeResult, cau
 // terminals.startup_error column so the startup panel survives a worker
 // restart that wipes the in-memory registry.
 func (svc *Service) persistTerminalStartupError(terminalID, errMsg string) {
-	if svc.QuakeTerminals.Has(terminalID) {
-		svc.QuakeTerminals.SetStartupError(terminalID, errMsg)
-		return
-	}
-	if err := svc.Queries.SetTerminalStartupError(bgCtx(), db.SetTerminalStartupErrorParams{
-		StartupError: errMsg,
-		ID:           terminalID,
-	}); err != nil {
+	if err := svc.terminalCatalog().setStartupError(bgCtx(), terminalID, errMsg); err != nil {
 		action := "persist"
 		if errMsg == "" {
 			action = "clear"
@@ -1017,7 +973,7 @@ func buildTerminalFailedStatus(errMsg string) *leapmuxv1.TerminalStatusChange {
 // ResolveGitDir states which of the start directory and the working directory
 // counts. One call to BatchGetGitStatus runs git once for each distinct
 // directory, so terminals that share a repository share one git process.
-func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows []db.Terminal) map[string]*leapmuxv1.GitRepoStatus {
+func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows []terminalRecord) map[string]*leapmuxv1.GitRepoStatus {
 	dirByID := make(map[string]string, len(rows))
 	for i := range rows {
 		dirByID[rows[i].ID] = gitutil.ResolveGitDir(rows[i].ShellStartDir, rows[i].WorkingDir)
@@ -1074,7 +1030,7 @@ func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows 
 // startupError is empty unless the status is STARTUP_FAILED, and
 // startupMessage is empty unless it is STARTING. derivedTerminalStatusEvent and
 // ListTerminals copy all three into the reply and rely on that.
-func (svc *Service) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
+func (svc *Service) deriveTerminalStatus(t *terminalRecord) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
 	if sup, errStr, msg, ok := svc.TerminalStartup.status(t.ID); ok {
 		return sup, errStr, msg
 	}
@@ -1091,7 +1047,7 @@ func (svc *Service) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.Termi
 // states for t. deriveTerminalStatus sets startupError only for STARTUP_FAILED
 // and startupMessage only for STARTING, so one status change carries all three
 // as they are, and a new status needs no case here.
-func (svc *Service) derivedTerminalStatusEvent(t *db.Terminal) *leapmuxv1.TerminalEvent {
+func (svc *Service) derivedTerminalStatusEvent(t *terminalRecord) *leapmuxv1.TerminalEvent {
 	status, startupError, startupMessage := svc.deriveTerminalStatus(t)
 	return &leapmuxv1.TerminalEvent{
 		TerminalId: t.ID,
@@ -1112,7 +1068,7 @@ func (svc *Service) derivedTerminalStatusEvent(t *db.Terminal) *leapmuxv1.Termin
 // RenameTerminal calls it on the path that stores nothing (the request's
 // title cleaned to empty), so the reply reports the title in force instead of
 // the empty string the handler refused to store.
-func (svc *Service) effectiveTerminalTitle(row db.Terminal) string {
+func (svc *Service) effectiveTerminalTitle(row terminalRecord) string {
 	if meta, ok := svc.Terminals.GetMeta(row.ID); ok {
 		return meta.Title
 	}
@@ -1163,7 +1119,7 @@ func (svc *Service) broadcastTerminalFailed(terminalID, errMsg string) {
 // The row holds only the id because succeedTerminalStartup cleared the persisted
 // error, the one other field that deriveTerminalStatus reads.
 func (svc *Service) broadcastTerminalStatusAfterStartup(terminalID string) {
-	row := db.Terminal{ID: terminalID}
+	row := terminalRecord{ID: terminalID}
 	svc.Watchers.PublishDerivedTerminalStatus(terminalID, func() *leapmuxv1.TerminalEvent {
 		return svc.derivedTerminalStatusEvent(&row)
 	})
@@ -1423,10 +1379,7 @@ func (svc *Service) shellIsLive(terminalID string, shellRuns func() bool) bool {
 // it answered.
 //
 // A stale entry whose shell is gone is removed here rather than handed back.
-func (svc *Service) adoptExistingQuakeTerminal(sender channel.ResponseWriter, isQuake bool, workingDir string) bool {
-	if !isQuake {
-		return false
-	}
+func (svc *Service) adoptExistingQuakeTerminal(sender channel.ResponseWriter, workingDir string) bool {
 	existing, ok := svc.QuakeTerminals.GetByWorkingDir(workingDir)
 	if !ok {
 		return false

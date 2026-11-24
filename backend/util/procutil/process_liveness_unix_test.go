@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package amp
+package procutil
 
 import (
 	"io"
@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAmpProcessAliveReturnsFalseForZombie verifies that an exited child process
-// waiting to be reaped (zombie state) is reported as not alive.
-func TestAmpProcessAliveReturnsFalseForZombie(t *testing.T) {
+// TestInspectLiveProcessReturnsFalseForZombie verifies that an exited child
+// process waiting to be reaped (zombie state) is reported as not alive.
+func TestInspectLiveProcessReturnsFalseForZombie(t *testing.T) {
 	t.Parallel()
 
 	cmd := exec.Command("/bin/sh", "-c", "exit 0")
@@ -41,5 +41,7 @@ func TestAmpProcessAliveReturnsFalseForZombie(t *testing.T) {
 		return strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
 	}, 30*time.Second, 5*time.Millisecond, "child process %d did not enter zombie state", pid)
 
-	assert.False(t, ampProcessAlive(pid), "an unreaped zombie process must not be reported alive")
+	info := InspectLiveProcess(pid)
+	assert.False(t, info.Alive, "an unreaped zombie process must not be reported alive")
+	assert.Zero(t, info.StartToken)
 }

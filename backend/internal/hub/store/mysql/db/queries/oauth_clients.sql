@@ -48,6 +48,15 @@ WHERE client_id = sqlc.arg(client_id)
   AND elevation_allowed
 FOR UPDATE;
 
+-- name: LockActiveOAuthClient :one
+-- Hold a row lock on the active registration so RevokeOAuthClient serializes
+-- against concurrent credential mints. FOR UPDATE is used rather than FOR
+-- SHARE because TiDB rejects FOR SHARE / LOCK IN SHARE MODE by default.
+SELECT client_id FROM oauth_clients
+WHERE client_id = sqlc.arg(client_id)
+  AND revoked_at IS NULL
+FOR UPDATE;
+
 -- name: GetOAuthClientIcon :one
 -- The icon bytes, their media type, and the three facts that gate serving
 -- them, for the /oauth/apps/<id>/icon asset

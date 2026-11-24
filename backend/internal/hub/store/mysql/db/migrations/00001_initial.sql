@@ -639,7 +639,7 @@ CREATE TABLE oauth_authorization_codes (
     minted_ref_id         VARCHAR(255) NOT NULL DEFAULT '',
     -- The credential that this code VERIFIES, when it verifies one rather
     -- than issuing one. One reference carries at most one target. No foreign
-    -- key, for the reason device_authorizations.elevate_token_id gives.
+    -- key, deliberately: see the sqlite twin.
     step_up_kind          SMALLINT CHECK (step_up_kind BETWEEN 1 AND 2),
     step_up_ref_id        VARCHAR(255) NOT NULL DEFAULT '',
     -- What this code redeems into, decided at consent and read at redeem. See

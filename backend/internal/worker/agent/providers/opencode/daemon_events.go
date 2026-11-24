@@ -220,25 +220,14 @@ func (b *FamilyBase) clearSessionState() {
 			delete(b.childSessions, callID)
 		}
 	}
-	b.earlyChildEvents = nil
-	b.earlyChildEventOrder = nil
-	b.finishedForegroundSessions = nil
-	b.finishedForegroundOrder = nil
-	for callID, owner := range b.finalizedTaskCalls {
-		if rootSessionID == "" || owner != rootSessionID {
-			delete(b.finalizedTaskCalls, callID)
-		}
-	}
-	if len(b.finalizedTaskCalls) == 0 {
-		b.finalizedTaskCallOrder = nil
+	b.earlyChildEvents.Reset()
+	b.finishedForegroundSessions.Reset()
+	if rootSessionID == "" {
+		b.finalizedTaskCalls.Reset()
 	} else {
-		kept := b.finalizedTaskCallOrder[:0]
-		for _, callID := range b.finalizedTaskCallOrder {
-			if _, ok := b.finalizedTaskCalls[callID]; ok {
-				kept = append(kept, callID)
-			}
-		}
-		b.finalizedTaskCallOrder = kept
+		b.finalizedTaskCalls.DeleteFunc(func(_ string, owner string) bool {
+			return owner != rootSessionID
+		})
 	}
 	for callID, reused := range b.reusedTaskCalls {
 		if rootSessionID == "" || reused.rootSessionID != rootSessionID {

@@ -2,7 +2,9 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -466,7 +468,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		owner := userid.MustNew(alice.ID)
 		clientID := seedApp(t, st, "ran-a-flow", alice.ID, store.OAuthClientSourceUser)
 
-		// An unredeemed authorization code references the app under the same
+		// An unredeemed authorization code refers to the app under the same
 		// RESTRICT key as a credential, but is not history.
 		authorizationCode := id.Generate()
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
@@ -639,6 +641,82 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		require.NoError(t, err)
 		require.EqualValues(t, 1, rows)
 		assert.ErrorIs(t, lock(retiredID), store.ErrNotFound)
+
+		require.ErrorIs(t, st.OAuthClients().LockActive(ctx, appID), store.ErrLockingReadOutsideTransaction)
+		lockActive := func(clientID string) error {
+			return st.RunInTransaction(ctx, func(tx store.Store) error {
+				return tx.OAuthClients().LockActive(ctx, clientID)
+			})
+		}
+		require.NoError(t, lockActive(appID))
+		assert.ErrorIs(t, lockActive("unknown-client"), store.ErrNotFound)
+		assert.ErrorIs(t, lockActive(retiredID), store.ErrNotFound)
+	})
+
+	t.Run("LockActive serializes concurrent token creation against client revocation", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "lock-active-race")
+		ownerID := userid.MustNew(owner.ID)
+		raceCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+
+		for i := range 10 {
+			appID := seedApp(t, st, fmt.Sprintf("lock-active-race-app-%d", i), owner.ID, store.OAuthClientSourceUser)
+			start := make(chan struct{})
+			var (
+				wg        sync.WaitGroup
+				mintErr   error
+				revokeErr error
+			)
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				mintErr = st.RunInTransaction(raceCtx, func(tx store.Store) error {
+					if err := tx.OAuthClients().LockActive(raceCtx, appID); err != nil {
+						return err
+					}
+					return tx.APITokens().Create(raceCtx, store.CreateAPITokenParams{
+						Issuance:         store.APITokenIssuanceDeviceCode,
+						ID:               id.Generate(),
+						UserID:           ownerID,
+						ClientID:         appID,
+						InstallationName: "race-client",
+						GrantedScopes:    "workspace:read",
+						SecretHash:       []byte("race-hash"),
+					})
+				})
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				revokeErr = st.RunInTransaction(raceCtx, func(tx store.Store) error {
+					rows, err := tx.OAuthClients().Revoke(raceCtx, store.OAuthClientOwnershipParams{
+						ClientID:     appID,
+						CallerUserID: ownerID,
+					})
+					if err != nil {
+						return err
+					}
+					if rows != 1 {
+						return fmt.Errorf("expected 1 revoked app row, got %d", rows)
+					}
+					_, err = tx.OAuthClients().RevokeTokens(raceCtx, appID)
+					return err
+				})
+			}()
+			close(start)
+			wg.Wait()
+
+			require.NoError(t, revokeErr, "iteration %d: Revoke transaction must succeed", i)
+			if mintErr != nil {
+				assert.Truef(t, errors.Is(mintErr, store.ErrNotFound),
+					"iteration %d: mint must succeed or fail with ErrNotFound, got %v", i, mintErr)
+			}
+			live, err := st.OAuthClients().CountLiveTokens(raceCtx, appID)
+			require.NoError(t, err)
+			assert.Zero(t, live, "iteration %d: no live api_tokens row may survive concurrent revocation", i)
+		}
 	})
 
 	t.Run("a write refuses an unminted caller", func(t *testing.T) {

@@ -88,7 +88,7 @@ func TestTerminalOutput_SnapshotReplayNeverBroadcastsBell(t *testing.T) {
 
 	w := newTestWriter()
 	sink := newReplaySink(w, 0, nil, nil)
-	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
+	row, err := svc.terminalCatalog().get(context.Background(), terminalID)
 	require.NoError(t, err)
 	svc.replayTerminalCatchUp(sink, terminalID, 0, row)
 

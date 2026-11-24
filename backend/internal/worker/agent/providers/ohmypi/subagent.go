@@ -1,7 +1,6 @@
 package ohmypi
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,9 +149,6 @@ type subagentState struct {
 	activeForm string
 	// report is what the subagent yielded, the row's report when it ends.
 	report string
-	// run is the 1-based run number for this rowKey so reused turns write
-	// distinct report IDs.
-	run int
 }
 
 // rowUpsert returns the registry row of a running subagent, from what the worker
@@ -334,11 +330,6 @@ func (a *Agent) startSubagent(payload subagentLifecycle) {
 	if a.subagents == nil {
 		a.subagents = make(map[string]*subagentState)
 	}
-	if a.subagentRuns == nil {
-		a.subagentRuns = make(map[string]int)
-	}
-	a.subagentRuns[rowKey]++
-	state.run = a.subagentRuns[rowKey]
 	a.subagents[payload.ID] = state
 	a.Mu.Unlock()
 	providerkit.LogRegistryRefusal("ohmypi", "upsert", a.sink.UpsertBackgroundTask(row))
@@ -373,14 +364,10 @@ func (a *Agent) finishSubagent(state *subagentState, status bgtask.Status) {
 	report := state.report
 	a.Mu.Unlock()
 	if report != "" && state.childID != "" {
-		reportID := "omp:" + state.rowKey
-		if state.run > 1 {
-			reportID = fmt.Sprintf("omp:%s#%d", state.rowKey, state.run)
-		}
 		providerkit.PersistChildSubagentReport(a.sink, agent.ChildSubagentReportWrite{
 			RowKey: state.rowKey,
 			Write: agent.SubagentReportWrite{
-				ReportID: reportID,
+				ReportID: "omp:" + state.rowKey,
 				Report:   agent.SubagentReport{Label: state.title, Text: report},
 			},
 		})
@@ -874,7 +861,7 @@ func procKillJobID(target string) (string, bool) {
 // closeCancelledShell closes a tracked SHELL row when a `write` call targets
 // `proc://<jobID>/kill`, which cancels the job and suppresses async-result.
 func (a *Agent) closeCancelledShell(args json.RawMessage) {
-	if len(args) == 0 || !bytes.Contains(args, []byte(procURIPrefix)) {
+	if len(args) == 0 {
 		return
 	}
 	a.Mu.Lock()

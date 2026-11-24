@@ -1,7 +1,6 @@
 package amp
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -174,66 +173,25 @@ func isAmpPluginRefusal(text string) bool {
 	return strings.HasPrefix(trimmed, "Tool rejected by plugin:") || strings.HasPrefix(trimmed, "Plugin error:")
 }
 
-// trackedShell records the registry row and process identity of one tracked
+// trackedShell records the registry row and opaque start token of one tracked
 // background shell command.
 type trackedShell struct {
-	rowKey   string
-	identity procutil.ProcessIdentity
+	rowKey     string
+	startToken int64
 }
 
-// ampLinuxStatAlive reports whether a Linux /proc/<pid>/stat payload describes
-// a process that is still alive (not zombie 'Z' or dead 'X'/'x').
-// Unrecognized or truncated payloads return true conservatively.
-func ampLinuxStatAlive(data []byte) bool {
-	end := bytes.LastIndexByte(data, ')')
-	if end < 0 {
-		return true
+// inspectPID inspects the local process identified by pid.
+func (a *Agent) inspectPID(pid int) procutil.LiveProcessInfo {
+	if a.inspectProcessFn != nil {
+		return a.inspectProcessFn(pid)
 	}
-	rest := data[end+1:]
-	for len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n' || rest[0] == '\r') {
-		rest = rest[1:]
-	}
-	if len(rest) == 0 {
-		return true
-	}
-	switch rest[0] {
-	case 'Z', 'X', 'x':
-		return false
-	default:
-		return true
-	}
+	return procutil.InspectLiveProcess(pid)
 }
 
-// isPIDAlive checks whether the local process with pid still runs.
-func (a *Agent) isPIDAlive(pid int) bool {
-	if a.pidAliveFn != nil {
-		return a.pidAliveFn(pid)
-	}
-	return ampProcessAlive(pid)
-}
-
-// identifyPID reads the local process identity for pid.
-func (a *Agent) identifyPID(pid int) (procutil.ProcessIdentity, bool) {
-	if a.pidIdentityFn != nil {
-		return a.pidIdentityFn(pid)
-	}
-	return procutil.IdentifyProcess(pid)
-}
-
-// isShellAlive reports whether pid is still alive and, when identity was
-// captured at open time, still belongs to the same process.
-func (a *Agent) isShellAlive(pid int, identity procutil.ProcessIdentity) bool {
-	if !a.isPIDAlive(pid) {
-		return false
-	}
-	if identity.IsZero() {
-		return true
-	}
-	current, ok := a.identifyPID(pid)
-	if !ok {
-		return false
-	}
-	return current == identity
+// isShellAlive reports whether pid is still alive and, when startToken was
+// captured at open time, still belongs to the same process instance.
+func (a *Agent) isShellAlive(pid int, startToken int64) bool {
+	return a.inspectPID(pid).SameProcess(startToken)
 }
 
 // noteShellResult processes one shell-tool result for a background command.
@@ -262,7 +220,7 @@ func (a *Agent) noteShellResult(tool *openTool, text string, isError bool) {
 		a.mu.Lock()
 		shell, tracked := a.shells[input.PID]
 		a.mu.Unlock()
-		if !tracked || a.isShellAlive(input.PID, shell.identity) {
+		if !tracked || a.isShellAlive(input.PID, shell.startToken) {
 			return
 		}
 		a.closeShellRow(input.PID, closeStatus)
@@ -300,11 +258,11 @@ func (a *Agent) openShellRow(tool *openTool, pid int) {
 		title = fmt.Sprintf("Process %d", pid)
 	}
 	rowKey := shellRowKey(tool.id)
-	// Capture process identity outside a.mu so OS process inspection never blocks
-	// lock holders.
-	identity, ok := a.identifyPID(pid)
-	if !ok {
-		identity = procutil.ProcessIdentity{}
+	// Capture the process start token outside a.mu so OS process inspection
+	// never blocks lock holders.
+	var startToken int64
+	if info := a.inspectPID(pid); info.Alive && info.StartToken > 0 {
+		startToken = info.StartToken
 	}
 	a.mu.Lock()
 	earlier, reused := a.shells[pid]
@@ -329,7 +287,7 @@ func (a *Agent) openShellRow(tool *openTool, pid int) {
 	// returns, so the poller cannot delete a dead PID and run a no-op close before
 	// the registry row exists.
 	a.mu.Lock()
-	a.shells[pid] = trackedShell{rowKey: rowKey, identity: identity}
+	a.shells[pid] = trackedShell{rowKey: rowKey, startToken: startToken}
 	a.ensureShellPollerLocked()
 	a.mu.Unlock()
 }
@@ -360,9 +318,9 @@ func (a *Agent) pollShellLiveness() {
 	ticker := a.clock.NewTicker(ampShellPollInterval, "amp", "shell-liveness")
 	defer ticker.Stop()
 	type shellEntry struct {
-		pid      int
-		rowKey   string
-		identity procutil.ProcessIdentity
+		pid        int
+		rowKey     string
+		startToken int64
 	}
 	for {
 		select {
@@ -379,7 +337,7 @@ func (a *Agent) pollShellLiveness() {
 		}
 		entries := make([]shellEntry, 0, len(a.shells))
 		for pid, shell := range a.shells {
-			entries = append(entries, shellEntry{pid: pid, rowKey: shell.rowKey, identity: shell.identity})
+			entries = append(entries, shellEntry{pid: pid, rowKey: shell.rowKey, startToken: shell.startToken})
 		}
 		a.mu.Unlock()
 
@@ -387,7 +345,7 @@ func (a *Agent) pollShellLiveness() {
 			if a.ctx.Err() != nil {
 				return
 			}
-			if a.isShellAlive(entry.pid, entry.identity) {
+			if a.isShellAlive(entry.pid, entry.startToken) {
 				continue
 			}
 			a.mu.Lock()

@@ -143,7 +143,16 @@ func setupOAuthTestEnvOver(
 		handlerStates = wrapStates(states)
 	}
 	pendingSignups := service.NewPendingOAuthSignupStore()
-	idpHandler := service.NewIdPHandler(handlerStore, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks, handlerStates, pendingSignups)
+	idpHandler := service.NewIdPHandler(service.IdPHandlerDeps{
+		SessionHasher:       hubtestutil.TestSecretHasher(),
+		Store:               handlerStore,
+		Config:              cfg,
+		Settings:            set,
+		Lifecycle:           auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Keystore:            ks,
+		OAuthStates:         handlerStates,
+		PendingOAuthSignups: pendingSignups,
+	})
 
 	mux := http.NewServeMux()
 	idpHandler.RegisterRoutes(mux)
@@ -310,7 +319,7 @@ func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
 
 	const nonce = "expired-flow-nonce"
 	// Create an already-expired state.
-	err := env.states.Create(context.Background(), service.CreateOAuthStateParams{
+	err := env.states.Create(service.CreateOAuthStateParams{
 		State:        "expired-state",
 		ProviderID:   providerID,
 		PkceVerifier: "test-verifier",
@@ -429,7 +438,16 @@ func setupOAuthSignupEnv(t *testing.T, st store.Store) *oauthTestEnv {
 	pendingSignups := service.NewPendingOAuthSignupStore()
 
 	// Register OAuth HTTP routes.
-	idpHandler := service.NewIdPHandler(st, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks, states, pendingSignups)
+	idpHandler := service.NewIdPHandler(service.IdPHandlerDeps{
+		SessionHasher:       hubtestutil.TestSecretHasher(),
+		Store:               st,
+		Config:              cfg,
+		Settings:            set,
+		Lifecycle:           auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Keystore:            ks,
+		OAuthStates:         states,
+		PendingOAuthSignups: pendingSignups,
+	})
 	idpHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
@@ -503,7 +521,7 @@ func insertPendingSignup(t *testing.T, pendingSignups *service.PendingOAuthSignu
 func seedPendingSignup(t *testing.T, pendingSignups *service.PendingOAuthSignupStore, p service.CreatePendingOAuthSignupParams) {
 	t.Helper()
 	p.NonceHash = hashNonceForTest(testSignupNonce)
-	require.NoError(t, pendingSignups.Create(context.Background(), p))
+	require.NoError(t, pendingSignups.Create(p))
 }
 
 // --- GetPendingOAuthSignup RPC tests ---
@@ -630,8 +648,8 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	assert.True(t, user.GetMayElevateThroughAProvider())
 
 	// Verify that the flow consumed the pending signup.
-	_, err = env.pendingSignups.Get(context.Background(), signupToken)
-	require.Error(t, err)
+	_, ok := env.pendingSignups.Get(signupToken)
+	assert.False(t, ok)
 }
 
 func TestCompleteOAuthSignup_RechecksAdmission(t *testing.T) {
@@ -796,8 +814,8 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 
 	// The handler should NOT delete the pending row, so the user can retry
 	// with a different username.
-	_, err = env.pendingSignups.Get(context.Background(), signupToken)
-	require.NoError(t, err)
+	_, ok := env.pendingSignups.Get(signupToken)
+	assert.True(t, ok)
 }
 
 func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
@@ -877,7 +895,15 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 
 	mux := http.NewServeMux()
 	pendingSignups := service.NewPendingOAuthSignupStore()
-	idpHandler := service.NewIdPHandler(st, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks, nil, pendingSignups)
+	idpHandler := service.NewIdPHandler(service.IdPHandlerDeps{
+		SessionHasher:       hubtestutil.TestSecretHasher(),
+		Store:               st,
+		Config:              cfg,
+		Settings:            set,
+		Lifecycle:           auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Keystore:            ks,
+		PendingOAuthSignups: pendingSignups,
+	})
 	idpHandler.RegisterRoutes(mux)
 
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
@@ -1133,8 +1159,8 @@ func TestAutoLinkByEmail_RequiresTrustedProviderAndVerifiedAccount(t *testing.T)
 			require.NotEmpty(t, token)
 			nonce := signupNonceCookie(t, response, token)
 			require.NotNil(t, nonce)
-			pending, err := env.pendingSignups.Get(t.Context(), token)
-			require.NoError(t, err)
+			pending, ok := env.pendingSignups.Get(token)
+			require.True(t, ok)
 			assert.Equal(t, providerID, pending.ProviderID)
 			assert.Equal(t, subject, pending.ProviderSubject)
 			assert.Equal(t, email, pending.Email)
@@ -1163,8 +1189,8 @@ func TestOAuthCallback_NewUser_CompletesBoundSignedSignup(t *testing.T) {
 	nonce := signupNonceCookie(t, response, token)
 	require.NotNil(t, nonce)
 	require.NotEmpty(t, nonce.Value)
-	pending, err := env.pendingSignups.Get(t.Context(), token)
-	require.NoError(t, err)
+	pending, ok := env.pendingSignups.Get(token)
+	require.True(t, ok)
 	assert.Equal(t, providerID, pending.ProviderID)
 	assert.Equal(t, subject, pending.ProviderSubject)
 	assert.Equal(t, email, pending.Email)
@@ -1191,8 +1217,8 @@ func TestOAuthCallback_NewUser_CompletesBoundSignedSignup(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 		_, err = env.store.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
 		assert.ErrorIs(t, err, store.ErrNotFound)
-		_, err = env.pendingSignups.Get(t.Context(), token)
-		require.NoError(t, err)
+		_, ok = env.pendingSignups.Get(token)
+		require.True(t, ok)
 		assert.Empty(t, info.ResponseHeader().Get("Set-Cookie"))
 	}
 
@@ -1215,8 +1241,8 @@ func TestOAuthCallback_NewUser_CompletesBoundSignedSignup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, userID, link.UserID)
 	assertCallbackSession(t, env.store, sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie")), userID)
-	_, err = env.pendingSignups.Get(t.Context(), token)
-	assert.ErrorIs(t, err, store.ErrNotFound)
+	_, ok = env.pendingSignups.Get(token)
+	assert.False(t, ok)
 
 	_, err = env.client.CompleteOAuthSignup(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "signedsignupagain"})
 	require.Error(t, err)
@@ -1260,15 +1286,15 @@ func performLoginCallback(t *testing.T, server *httptest.Server, states service.
 	nonce := oauthNonceCookie(t, login, state)
 	require.NotNil(t, nonce)
 	require.NotEmpty(t, nonce.Value)
-	storedState, err := states.Get(t.Context(), state)
-	require.NoError(t, err)
+	storedState, ok := states.Get(state)
+	require.True(t, ok)
 	assert.Equal(t, providerID, storedState.ProviderID)
 	assert.Equal(t, redirect, storedState.RedirectURI)
 	assert.NotEqual(t, nonce.Value, storedState.NonceHash)
 	assert.Equal(t, hashNonceForTest(nonce.Value), storedState.NonceHash)
 	response := completeCallback(t, server, providerID, state, nonce)
-	_, err = states.Get(t.Context(), state)
-	assert.ErrorIs(t, err, store.ErrNotFound)
+	_, ok = states.Get(state)
+	assert.False(t, ok)
 	return response
 }
 
@@ -1386,8 +1412,8 @@ func TestOAuthLogin_ConsentRouteForcesARePromptAndStampsTheWindow(t *testing.T) 
 			linkedProviderUser(t, env.store, providerID, subject, email, false)
 
 			state, nonce, authURL := beginLogin(t, env.server, providerID, tc.redirect)
-			stored, err := env.states.Get(t.Context(), state)
-			require.NoError(t, err)
+			stored, ok := env.states.Get(state)
+			require.True(t, ok)
 			assert.Equal(t, service.OAuthStatePurposeConsentLogin, stored.Purpose)
 			// The prompt asks for a fresh authentication. The maximum age
 			// is the additional limit that a conforming provider enforces.
@@ -1581,8 +1607,8 @@ func TestOAuthLogin_NearMissPathsAreNotConsentRoutes(t *testing.T) {
 			linkedProviderUser(t, env.store, providerID, subject, "near-miss@example.com", false)
 
 			state, nonce, authURL := beginLogin(t, env.server, providerID, tc.redirect)
-			stored, err := env.states.Get(t.Context(), state)
-			require.NoError(t, err)
+			stored, ok := env.states.Get(state)
+			require.True(t, ok)
 			assert.Equal(t, service.OAuthStatePurposeLogin, stored.Purpose)
 			assert.Empty(t, authURL.Query().Get("prompt"), "a near-miss path is not a consent route")
 			assert.Empty(t, authURL.Query().Get("max_age"), "a near-miss path is not a consent route")
@@ -1762,14 +1788,14 @@ type purposeRewritingStates struct {
 	purpose service.OAuthStatePurpose
 }
 
-func (s purposeRewritingStates) Get(ctx context.Context, state string) (*service.OAuthState, error) {
-	row, err := s.OAuthStateStore.Get(ctx, state)
-	if err != nil {
-		return nil, err
+func (s purposeRewritingStates) Get(state string) (*service.OAuthState, bool) {
+	row, ok := s.OAuthStateStore.Get(state)
+	if !ok {
+		return nil, false
 	}
 	rewritten := *row
 	rewritten.Purpose = s.purpose
-	return &rewritten, nil
+	return &rewritten, true
 }
 
 // TestOAuthCallback_RefusesAnUnknownPurpose pins the fail-CLOSED shape of
@@ -1857,10 +1883,10 @@ type barrierStates struct {
 	barrier *stateReadBarrier
 }
 
-func (s barrierStates) Get(ctx context.Context, state string) (*service.OAuthState, error) {
-	row, err := s.OAuthStateStore.Get(ctx, state)
+func (s barrierStates) Get(state string) (*service.OAuthState, bool) {
+	row, ok := s.OAuthStateStore.Get(state)
 	s.barrier.arrive(s.t)
-	return row, err
+	return row, ok
 }
 
 // TestOAuthCallback_ConcurrentCallbacksSpendTheStateOnce pins the single use
@@ -2048,8 +2074,8 @@ func TestIdPProviderLookup_DistinguishesAbsenceFromStoreFailure(t *testing.T) {
 					assert.NotContains(t, logs.String(), "identity provider lookup failed")
 				}
 				if action == "callback" {
-					_, err := env.states.Get(context.Background(), state)
-					assert.ErrorIs(t, err, store.ErrNotFound, "browser-bound state is consumed before provider loading")
+					_, ok := env.states.Get(state)
+					assert.False(t, ok, "browser-bound state is consumed before provider loading")
 					assert.NotEmpty(t, resp.Cookies(), "the callback must clear its nonce even when provider loading fails")
 				}
 				expectedStates := 0
@@ -2198,8 +2224,8 @@ func TestCompleteOAuthSignupRequiresALiveExistingUser(t *testing.T) {
 				link, err := base.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
 				require.NoError(t, err)
 				assert.Equal(t, user.ID, link.UserID)
-				_, err = env.pendingSignups.Get(t.Context(), token)
-				require.ErrorIs(t, err, store.ErrNotFound)
+				_, ok := env.pendingSignups.Get(token)
+				assert.False(t, ok)
 				assert.Zero(t, observed.reads.Load())
 				return
 			}
@@ -2211,8 +2237,8 @@ func TestCompleteOAuthSignupRequiresALiveExistingUser(t *testing.T) {
 			require.ErrorIs(t, err, store.ErrNotFound)
 			_, err = st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
 			require.ErrorIs(t, err, store.ErrNotFound)
-			_, err = env.pendingSignups.Get(t.Context(), token)
-			require.NoError(t, err, "refused admission must retain the bound pending signup")
+			_, ok := env.pendingSignups.Get(token)
+			require.True(t, ok, "refused admission must retain the bound pending signup")
 		})
 	}
 }

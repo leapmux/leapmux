@@ -455,7 +455,7 @@ func TestPriorityMaturedRetryStaysBehindAnUncertainDelivery(t *testing.T) {
 	require.Equal(t, "message", prepared.Item.ID)
 
 	clock.Set(*retry.ScheduledAt)
-	snapshots, err := store.Recover(ctx)
+	snapshots, err := store.Recover(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, snapshots, 1)
 	assert.Equal(t, []string{"message", retry.ID}, itemIDs(snapshots[0]))

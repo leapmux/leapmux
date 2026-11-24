@@ -729,10 +729,11 @@ CREATE TABLE oauth_authorization_codes (
     -- to name it. An empty id means nothing was minted.
     minted_ref_id         TEXT NOT NULL DEFAULT '',
     -- The credential that this code VERIFIES, when it verifies one rather
-    -- than issuing one. One reference carries at most one
-    -- target is structural, since a reference holds one kind and one id. No
-    -- foreign key, for the reason device_authorizations.elevate_token_id
-    -- gives.
+    -- than issuing one. Carrying at most one target is structural, since a
+    -- reference holds one kind and one id. No foreign key, deliberately: a
+    -- revoked or deleted credential must make redemption a no-op rather than
+    -- fail the insert, and redemption re-reads the target under the approving
+    -- user's own id.
     step_up_kind          INTEGER CHECK (step_up_kind IS NULL OR typeof(step_up_kind) = 'integer') CHECK (step_up_kind BETWEEN 1 AND 2),
     step_up_ref_id        TEXT NOT NULL DEFAULT '',
     -- What this code redeems into, decided at consent and read at redeem. The

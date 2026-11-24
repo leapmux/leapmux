@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/webauthn"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 func newMigratedWebAuthnService(t *testing.T) (*webauthn.Service, store.Store, *webauthn.SessionStore) {
@@ -454,4 +455,72 @@ func TestFinishElevationReturnsTheExactVerifiedRegistrationIdentity(t *testing.T
 	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid)
 	assert.Empty(t, replay.RowID)
 	assert.Empty(t, replay.CredentialID)
+}
+
+func TestCeremonyRejectsStaleUserAuthGeneration(t *testing.T) {
+	svc, st, sessions := newMigratedWebAuthnService(t)
+	userID := seedUser(t, st)
+	rp := virtualwebauthn.RelyingParty{Name: "LeapMux", ID: "localhost", Origin: "http://localhost"}
+
+	// Register one passkey so login and elevation ceremonies can be started.
+	authenticator := virtualwebauthn.NewAuthenticator()
+	credential := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	regID, regOpts, err := svc.BeginRegistration(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	parsedReg, err := virtualwebauthn.ParseAttestationOptions(regOpts)
+	require.NoError(t, err)
+	attestation := virtualwebauthn.CreateAttestationResponse(rp, authenticator, credential, *parsedReg)
+	finished, err := svc.VerifyRegistration(t.Context(), userID, regID, attestation)
+	require.NoError(t, err)
+	_, err = svc.StoreCredential(t.Context(), st, id.Generate(), userID, finished, "Primary key")
+	require.NoError(t, err)
+	authenticator.AddCredential(credential)
+
+	// Start login, elevation, registration, and recovery ceremonies at the current auth_generation.
+	loginID, loginOpts, err := svc.BeginLogin(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	parsedLogin, err := virtualwebauthn.ParseAssertionOptions(loginOpts)
+	require.NoError(t, err)
+	loginAssertion := virtualwebauthn.CreateAssertionResponse(rp, authenticator, credential, *parsedLogin)
+
+	elevID, elevOpts, err := svc.BeginElevation(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	parsedElev, err := virtualwebauthn.ParseAssertionOptions(elevOpts)
+	require.NoError(t, err)
+	elevAssertion := virtualwebauthn.CreateAssertionResponse(rp, authenticator, credential, *parsedElev)
+
+	secondRegID, secondRegOpts, err := svc.BeginRegistration(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	parsedSecondReg, err := virtualwebauthn.ParseAttestationOptions(secondRegOpts)
+	require.NoError(t, err)
+	secondCredential := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	secondAttestation := virtualwebauthn.CreateAttestationResponse(rp, authenticator, secondCredential, *parsedSecondReg)
+
+	const recoveryTokenHash = "recovery-tok-hash"
+	recID, recOpts, err := svc.BeginRecoveryRegistration(t.Context(), userID, rp.Origin, recoveryTokenHash)
+	require.NoError(t, err)
+	parsedRec, err := virtualwebauthn.ParseAttestationOptions(recOpts)
+	require.NoError(t, err)
+	recCredential := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	recAttestation := virtualwebauthn.CreateAttestationResponse(rp, authenticator, recCredential, *parsedRec)
+
+	// Bump users.auth_generation directly in SQL without evicting the in-memory
+	// SessionStore (simulating the post-commit window or another Hub instance).
+	n, err := st.Users().RevokeUserTokens(t.Context(), userid.MustNew(userID))
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	_, _, err = svc.FinishLogin(t.Context(), loginID, loginAssertion)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid, "FinishLogin must reject a ceremony from an older auth_generation")
+
+	_, err = svc.FinishElevation(t.Context(), userID, elevID, elevAssertion)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid, "FinishElevation must reject a ceremony from an older auth_generation")
+
+	_, err = svc.VerifyRegistration(t.Context(), userID, secondRegID, secondAttestation)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid, "VerifyRegistration must reject a ceremony from an older auth_generation")
+
+	_, _, err = svc.VerifyRecoveryRegistration(t.Context(), recID, recAttestation, recoveryTokenHash)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid, "VerifyRecoveryRegistration must reject a ceremony from an older auth_generation")
+	_, ok := sessions.Get(recID)
+	assert.False(t, ok, "VerifyRecoveryRegistration must consume the stale recovery session")
 }

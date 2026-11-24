@@ -1034,7 +1034,7 @@ func TestCopilotNativeEvents_RootTurnEndPreservesBackgroundChildToolsAndText(t *
 	}
 	assert.True(t, sawChildStreamed, "child streamed text must flush when child goes idle")
 
-	// Terminal child failure closes its remaining open tool.
+	// Final child failure closes its remaining open tool.
 	a.HandleOutput(nativeCopilotEvent(t, "agent-1", contracts.CopilotEventSubagentFailed, map[string]any{"toolCallId": "task-1"}))
 	assert.NotContains(t, a.openTools, "child-tool")
 }

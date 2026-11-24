@@ -646,19 +646,16 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *leapmuxv1.GetO
 //
 // now is a parameter so both callers pass the service's clock seam rather
 // than this function reading a second wall clock beside it.
-func loadPendingOAuthSignup(ctx context.Context, pendingSignups *PendingOAuthSignupStore, token string, now time.Time) (*PendingOAuthSignup, error) {
+func loadPendingOAuthSignup(pendingSignups *PendingOAuthSignupStore, token string, now time.Time) (*PendingOAuthSignup, error) {
 	if token == "" {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "signup_token is required")
 	}
-	pending, err := pendingSignups.Get(ctx, token)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired signup token")
-		}
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+	pending, ok := pendingSignups.Get(token)
+	if !ok {
+		return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired signup token")
 	}
 	if auth.IsExpired(now, pending.ExpiresAt) {
-		_, _ = pendingSignups.Delete(ctx, token)
+		pendingSignups.Delete(token)
 		return nil, connect.Errorf(connect.CodeNotFound, "signup token expired")
 	}
 	return pending, nil
@@ -691,7 +688,7 @@ func (s *AuthService) assertSignupBrowser(ctx context.Context, header *connect.H
 
 func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *leapmuxv1.GetPendingOAuthSignupRequest) (*leapmuxv1.GetPendingOAuthSignupResponse, error) {
 	info := serverCallInfo(ctx)
-	pending, err := loadPendingOAuthSignup(ctx, s.pendingSignups, req.GetSignupToken(), s.now().UTC())
+	pending, err := loadPendingOAuthSignup(s.pendingSignups, req.GetSignupToken(), s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -719,7 +716,7 @@ func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *leapmuxv1.
 func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.CompleteOAuthSignupRequest) (*leapmuxv1.CompleteOAuthSignupResponse, error) {
 	info := serverCallInfo(ctx)
 	signupToken := req.GetSignupToken()
-	pending, err := loadPendingOAuthSignup(ctx, s.pendingSignups, signupToken, s.now().UTC())
+	pending, err := loadPendingOAuthSignup(s.pendingSignups, signupToken, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -732,6 +729,9 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	}
 	oauthProvider, provErr := s.store.OAuthProviders().GetByID(ctx, pending.ProviderID)
 	if provErr != nil {
+		if errors.Is(provErr, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, "invalid or expired signup token")
+		}
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
 	}
 	if !oauthProvider.Enabled {
@@ -756,7 +756,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		ProviderSubject: pending.ProviderSubject,
 	})
 	if err == nil {
-		_, _ = s.pendingSignups.Delete(ctx, signupToken)
+		s.pendingSignups.Delete(signupToken)
 		return nil, connect.Errorf(connect.CodeAlreadyExists, "this identity is already linked to an account")
 	}
 	if !errors.Is(err, store.ErrNotFound) {
@@ -861,7 +861,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		nextResend = &next
 	}
 
-	_, _ = s.pendingSignups.Delete(ctx, signupToken)
+	s.pendingSignups.Delete(signupToken)
 
 	finalUser := user
 	finalUID, mintErr := mintRowUserID(finalUser.ID)

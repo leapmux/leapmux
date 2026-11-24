@@ -669,6 +669,10 @@ CREATE TABLE agent_background_tasks (
     -- TestBackgroundTaskFinalStatusesAreTheTopOfTheRange verifies that this
     -- split agrees with bgtask.Status.IsFinished for every declared status.
     status          INTEGER NOT NULL CHECK (typeof(status) = 'integer') CHECK (status BETWEEN 1 AND 8),
+    -- Counts how many times ReviveAgentBackgroundTask reopened this row from a
+    -- final status. Report persistence uses this durable epoch to scope report
+    -- IDs across resumed runs and Worker restarts.
+    revive_count    INTEGER NOT NULL DEFAULT 0 CHECK (revive_count >= 0),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     ended_at        DATETIME,

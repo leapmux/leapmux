@@ -36,13 +36,13 @@ UPDATE terminals SET
 WHERE id = sqlc.arg(id);
 
 -- Read before the runtime snapshot so a concurrent rename cannot be overwritten by that snapshot.
--- name: GetTerminalExitState :one
+-- name: GetTerminalTitle :one
 SELECT title FROM terminals WHERE id = ?;
 
--- ListTerminalExitStatesByIDs batches GetTerminalExitState for busy-work
+-- ListTerminalTitlesByIDs batches GetTerminalTitle for busy-work
 -- inspection so quitting or switching mode avoids N+1 lookups while still
 -- skipping the 100KB screen BLOB.
--- name: ListTerminalExitStatesByIDs :many
+-- name: ListTerminalTitlesByIDs :many
 SELECT id, title FROM terminals WHERE id IN (sqlc.slice('ids'));
 
 -- name: UpdateTerminalTitle :exec

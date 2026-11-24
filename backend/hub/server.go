@@ -805,8 +805,10 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	lifecycle := auth.NewCredentialLifecycleEffects(authContexts, channelSvc, cMgr,
 		auth.WithUserInfoObserver(connectorSvc.RedeliverWorkerIdentity),
 		auth.WithUserRevokedObserver(func(userID string, gen int64) {
-			webauthnSessions.DeleteByUserBeforeGeneration(userID, gen)
-			deviceAuths.ConsumeApprovedForUserBeforeGeneration(userID, gen, time.Now().UTC())
+			if uid, ok := userid.New(userID); ok {
+				webauthnSessions.DeleteByUserBeforeGeneration(uid, gen)
+				deviceAuths.ConsumeApprovedForUserBeforeGeneration(uid, gen, time.Now().UTC())
+			}
 		}),
 	)
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
@@ -835,7 +837,16 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 
 	// INBOUND OAuth: the hub as a client of an identity provider, at
 	// /auth/idp/*.
-	idpHandler := service.NewIdPHandler(st, hasher, cfg, setMgr, lifecycle, ks, oauthStates, pendingSignups)
+	idpHandler := service.NewIdPHandler(service.IdPHandlerDeps{
+		SessionHasher:       hasher,
+		Store:               st,
+		Config:              cfg,
+		Settings:            setMgr,
+		Lifecycle:           lifecycle,
+		Keystore:            ks,
+		OAuthStates:         oauthStates,
+		PendingOAuthSignups: pendingSignups,
+	})
 	idpHandler.RegisterRoutes(mux)
 
 	// OUTBOUND OAuth: the hub as an OAuth 2.1 authorization server, at
@@ -868,7 +879,17 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// UserService drives credential-rotation paths (ChangePassword) through the
 	// shared lifecycle, whose RevokeUserPreservingSession hard-closes every
 	// channel a user owns alongside the delegation-token revocation.
-	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer, ks, webauthnSessions, deviceAuths)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:                st,
+		Config:               cfg,
+		Settings:             setMgr,
+		Lifecycle:            lifecycle,
+		Mail:                 mailSender,
+		Renderer:             mailRenderer,
+		Keystore:             ks,
+		WebAuthnSessions:     webauthnSessions,
+		DeviceAuthorizations: deviceAuths,
+	})
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 
 	// The admin services: the authenticated, online surface of hub

@@ -453,7 +453,7 @@ func (a *Agent) handlePiMessageEnd(raw []byte) {
 	content := a.piMessageEndContent(raw)
 	content.Completion = a.piMessageTextCompletion(raw)
 	// Update child status from the nested custom message before persisting it.
-	a.applyPiSubagentNotification(raw)
+	piApplySubagentNotificationTracked(a.sink, raw, a.trackOpenBgTask, a.untrackOpenBgTask)
 	a.persistPiThinking(raw)
 	if err := a.orderedSink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
 		slog.Error("pi persist message_end", "agent_id", a.AgentID(), "error", err)
@@ -688,7 +688,6 @@ func (a *Agent) handlePiToolExecutionStart(raw []byte) {
 					}
 				}
 				a.Mu.Lock()
-				a.bumpSubagentRunSeqLocked(resumeID)
 				if tool := a.toolStates[env.ToolCallID]; tool != nil {
 					tool.rowKey = resumeID
 					tool.resumed = true
@@ -909,7 +908,6 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 		resumed = tool.resumed
 		startArgs = tool.Args
 	}
-	run := a.subagentRunSeq[rowKey]
 	a.Mu.Unlock()
 	a.ClearCumulativeOutput(env.ToolCallID)
 	a.sink.ReportProgress(agent.CompleteOutputProgress(env.ToolCallID))
@@ -935,7 +933,6 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 			Prompt:     prompt,
 			IsError:    env.IsError,
 			Resumed:    resumed,
-			Run:        run,
 		})
 		if stillRunning {
 			a.trackOpenBgTask(finalKey)
@@ -962,7 +959,7 @@ func (a *Agent) handlePiToolExecutionEnd(raw []byte) {
 		if len(args) == 0 {
 			args = startArgs
 		}
-		if closedKey := piApplyGetSubagentResult(a.sink, args, env.Result, a.subagentReportID); closedKey != "" {
+		if closedKey := piApplyGetSubagentResult(a.sink, args, env.Result); closedKey != "" {
 			a.untrackOpenBgTask(closedKey)
 		}
 	}
@@ -1019,7 +1016,7 @@ func (a *Agent) clearStartlessPiTools() {
 }
 
 func (a *Agent) persistIncompletePiTools(completion agent.MessageCompletion) {
-	status := piSubagentStatusForCompletion(completion)
+	status := agent.IncompleteTaskStatus(completion)
 	if a.IsDiscardingOutput() {
 		a.discardIncompletePiToolsWithStatus(status)
 		return

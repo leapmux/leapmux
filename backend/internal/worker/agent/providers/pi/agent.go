@@ -77,11 +77,7 @@ type Agent struct {
 	// openBgTasks tracks registry row keys for background Agent and
 	// SubagentWorkflow runs so ClearContext, Stop, and Wait close them.
 	// Guarded by a.Mu.
-	openBgTasks map[string]struct{}
-	// subagentRunSeq counts runs per subagent row key so resumed runs write
-	// distinct report IDs instead of colliding with earlier runs.
-	// Guarded by a.Mu.
-	subagentRunSeq        map[string]int
+	openBgTasks           map[string]struct{}
 	nextToolOrder         uint64
 	questionDialogs       map[string]*piQuestionSource
 	customQuestionAnswers map[piQuestionKey]*piCustomQuestionAnswer
@@ -444,7 +440,6 @@ func (a *Agent) ClearContext() (string, error) {
 	// A reused tool-call ID would also open the new transcript with the old instruction.
 	clear(a.toolStates)
 	a.closedSpans.Reset()
-	clear(a.subagentRunSeq)
 	a.clearPiQuestionStateLocked()
 	// The plan menu this mark refers to died with the replaced session.
 	a.freshImplementationPending = false

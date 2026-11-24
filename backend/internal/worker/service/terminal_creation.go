@@ -108,7 +108,7 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 	// -- share a single shell instead of racing to spawn two.
 	// Answered before the id is minted, so the duplicate call
 	// creates no row, no startup entry and no goroutine.
-	if svc.adoptExistingQuakeTerminal(sender, isQuake, workingDir) {
+	if isQuake && svc.adoptExistingQuakeTerminal(sender, workingDir) {
 		return
 	}
 
@@ -174,10 +174,8 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 	}
 	runtime := &terminalCreationRuntime{Startup: creationStartupIntent{Plan: plan}, Options: terminal.Options{ID: terminalID, Shell: shell, WorkingDir: plan.PlannedWorkingDir, ShellStartDir: shellStartDir, Cols: uint16(cols), Rows: uint16(rows)}, Title: terminalTitle}
 	if isQuake {
-		// Quake terminals live strictly in memory; beginTerminalStartup ran
-		// above so any concurrent opener that adopts this entry observes a live
-		// startup immediately.
-		existing, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+		var ok bool
+		startupCtx, startupHandle, ok = svc.registerQuakeTerminal(sender, QuakeTerminal{
 			ID:            terminalID,
 			WorkingDir:    plan.PlannedWorkingDir,
 			ShellStartDir: shellStartDir,
@@ -185,42 +183,9 @@ func (svc *Service) prepareTerminalCreation(ctx context.Context, caller channel.
 			Title:         terminalTitle,
 			Cols:          int64(cols),
 			Rows:          int64(rows),
-			CreatedAt:     nowMillis(),
-		})
-		if !created {
-			svc.TerminalStartup.abandon(startupHandle)
-			if svc.quakeShellIsLive(existing.ID) {
-				sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
-					TerminalId: existing.ID,
-					Title:      existing.Title,
-				})
-				return
-			}
-			svc.closeQuakeTerminal(existing.ID)
-			// Retry once after reaping a dead concurrent winner.
-			startupCtx, startupHandle = svc.beginTerminalStartup(terminalID, shell)
-			if startupHandle == nil {
-				svc.sendStartupRefused(sender, "a startup for this terminal is already in progress")
-				return
-			}
-			existing, created = svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
-				ID:            terminalID,
-				WorkingDir:    plan.PlannedWorkingDir,
-				ShellStartDir: shellStartDir,
-				Shell:         shell,
-				Title:         terminalTitle,
-				Cols:          int64(cols),
-				Rows:          int64(rows),
-				CreatedAt:     nowMillis(),
-			})
-			if !created {
-				svc.TerminalStartup.abandon(startupHandle)
-				if svc.adoptExistingQuakeTerminal(sender, true, workingDir) {
-					return
-				}
-				sendInternalError(sender, "failed to register quake terminal")
-				return
-			}
+		}, startupCtx, startupHandle)
+		if !ok {
+			return
 		}
 	} else {
 		params := db.UpsertTerminalParams{
@@ -407,4 +372,48 @@ func (svc *Service) refreshCreationTerminalDimensions(ctx context.Context, runti
 		}
 		return nil
 	})
+}
+
+const maxQuakeRegisterAttempts = 8
+
+// registerQuakeTerminal registers a new quake terminal in memory, adopting a
+// live concurrent winner or reaping a dead one until registration converges.
+// On false, this helper has already abandoned the startup handle and answered sender.
+func (svc *Service) registerQuakeTerminal(
+	sender channel.ResponseWriter,
+	candidate QuakeTerminal,
+	startupCtx context.Context,
+	startupHandle *startupEntry,
+) (context.Context, *startupEntry, bool) {
+	// Quake terminals live strictly in memory; beginTerminalStartup ran
+	// before this call so any concurrent opener that adopts candidate
+	// observes a live startup immediately.
+	for attempt := 0; attempt < maxQuakeRegisterAttempts; attempt++ {
+		if attempt > 0 {
+			startupCtx, startupHandle = svc.beginTerminalStartup(candidate.ID, candidate.Shell)
+			if startupHandle == nil {
+				svc.sendStartupRefused(sender, "a startup for this terminal is already in progress")
+				return nil, nil, false
+			}
+		}
+		candidate.CreatedAt = nowMillis()
+		existing, created := svc.QuakeTerminals.RegisterOrAdopt(candidate)
+		if created {
+			return startupCtx, startupHandle, true
+		}
+		svc.TerminalStartup.abandon(startupHandle)
+		if svc.quakeShellIsLive(existing.ID) {
+			sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
+				TerminalId: existing.ID,
+				Title:      existing.Title,
+			})
+			return nil, nil, false
+		}
+		svc.closeQuakeTerminal(existing.ID)
+	}
+	if svc.adoptExistingQuakeTerminal(sender, candidate.WorkingDir) {
+		return nil, nil, false
+	}
+	sendInternalError(sender, "failed to register quake terminal")
+	return nil, nil, false
 }

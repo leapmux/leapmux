@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // TestPostTouchPollOAuthError_ApprovalWithNoUserIsNotUsable pins the poll
@@ -33,38 +34,39 @@ func TestPostTouchPollOAuthError_ApprovalWithNoUserIsNotUsable(t *testing.T) {
 		sessionHasher: hubtestutil.TestSecretHasher(),
 	}
 
+	user1 := userid.MustNew("user-1")
 	for name, tc := range map[string]struct {
 		row      DeviceAuthorization
 		wantCode string
 		wantStop bool
 	}{
 		"pending": {
-			row:      DeviceAuthorization{State: DeviceAuthorizationStatePending, UserID: ""},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStatePending},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"denied": {
-			row:      DeviceAuthorization{State: DeviceAuthorizationStateDenied, UserID: "user-1"},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStateDenied, UserID: user1},
 			wantCode: "access_denied",
 			wantStop: true,
 		},
 		"approved but with no user": {
-			row:      DeviceAuthorization{State: DeviceAuthorizationStateApproved, UserID: ""},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStateApproved},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"unspecified": {
-			row:      DeviceAuthorization{State: DeviceAuthorizationStateUnspecified, UserID: "user-1"},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStateUnspecified, UserID: user1},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"an ordinal past the last declared state": {
-			row:      DeviceAuthorization{State: DeviceAuthorizationState(99), UserID: "user-1"},
+			row:      DeviceAuthorization{State: DeviceAuthorizationState(99), UserID: user1},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"approved by a real user": {
-			row:      DeviceAuthorization{State: DeviceAuthorizationStateApproved, UserID: "user-1"},
+			row:      DeviceAuthorization{State: DeviceAuthorizationStateApproved, UserID: user1},
 			wantCode: "",
 			wantStop: false,
 		},

@@ -360,10 +360,10 @@ func TestCLIStepUp_AFailedElevationRollsBackTheApproval(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.NotContains(t, rec.Body.String(), forcedErr.Error(), "the refusal must not leak the store error")
 
-	row, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
-	require.NoError(t, err)
+	row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
+	require.True(t, ok)
 	assert.Equal(t, service.DeviceAuthorizationStatePending, row.State, "a failed elevation must roll the approval back")
-	assert.Empty(t, row.UserID, "a rolled-back approval identifies nobody")
+	assert.True(t, row.UserID.IsZero(), "a rolled-back approval identifies nobody")
 
 	token, err := env.store.APITokens().GetByID(ctx, tokenID)
 	require.NoError(t, err)
@@ -386,12 +386,12 @@ func TestCLIStepUp_ThePollReadsTheCredentialNotTheApprovalFlag(t *testing.T) {
 	grant := decodeStepUpGrant(t, startStepUp(t, env, bearer, "operator-laptop"))
 
 	// Approve the grant through the store alone, so nothing stamps a window.
-	rows, err := env.deviceAuths.ApproveByUserCode(ctx, service.ApproveDeviceAuthorizationParams{
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
 		UserCode: verifycode.Normalize(grant.UserCode),
 		UserID:   userid.MustNew(env.userID),
 	}, env.now().UTC())
 	require.NoError(t, err)
-	require.Equal(t, int64(1), rows)
+	require.True(t, approved)
 
 	resp := pollStepUp(t, env, grant.DeviceCode)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -399,8 +399,8 @@ func TestCLIStepUp_ThePollReadsTheCredentialNotTheApprovalFlag(t *testing.T) {
 	assert.Equal(t, "invalid_grant", body["error"])
 	assert.NotContains(t, body, "elevated")
 
-	after, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
-	require.NoError(t, err)
+	after, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
+	require.True(t, ok)
 	assert.Nil(t, after.ConsumedAt, "a refusal must not spend the grant")
 
 	token, err := env.store.APITokens().GetByID(ctx, tokenID)
@@ -466,7 +466,6 @@ func TestCLIStepUp_TheActivationPageSaysAnExpiredCredentialGrantsNothing(t *test
 // page, present and cleaned in the row.
 func TestCLIStepUp_TheIssuancePageNamesTheAppAndNotTheRequestersLabel(t *testing.T) {
 	env := setupAPIAuth(t)
-	ctx := context.Background()
 
 	// A label chosen to impersonate the owner's own machine, which is what
 	// rendering it would let a stolen credential do. The control character is
@@ -487,8 +486,8 @@ func TestCLIStepUp_TheIssuancePageNamesTheAppAndNotTheRequestersLabel(t *testing
 	// The label survives where it belongs, normalized. Without this half, the
 	// endpoint could stop recording it and the assertions above would still
 	// pass.
-	row, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(grant["device_code"].(string)))
-	require.NoError(t, err)
+	row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(grant["device_code"].(string)))
+	require.True(t, ok)
 	assert.Equal(t, "Owner\u0027s MacBook Pro", row.DeviceName,
 		"normalizeInstallationName still cleans the stored label")
 }
@@ -530,13 +529,12 @@ func TestCLIStepUp_BothGrantLegsAnswerTheSameShape(t *testing.T) {
 
 	// The ask itself still differs, where it is now recorded. Without this the
 	// assertions above would pass with the scope dropped entirely.
-	ctx := context.Background()
-	loginRow, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(login["device_code"].(string)))
-	require.NoError(t, err)
+	loginRow, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(login["device_code"].(string)))
+	require.True(t, ok)
 	assert.Equal(t, "admin:read", loginRow.RequestedScopes)
 
-	stepUpRow, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(stepUp["device_code"].(string)))
-	require.NoError(t, err)
+	stepUpRow, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(stepUp["device_code"].(string)))
+	require.True(t, ok)
 	assert.Empty(t, stepUpRow.RequestedScopes, "a step-up widens nothing, so it asks for nothing")
 }
 

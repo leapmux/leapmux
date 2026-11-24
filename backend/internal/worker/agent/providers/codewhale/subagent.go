@@ -1305,9 +1305,15 @@ func (c *workflowJournalCursor) read(root *os.Root, relPath string) (map[string]
 			return nil, false, err
 		}
 	}
-	data, err := io.ReadAll(io.LimitReader(file, workflowJournalLimit))
-	if err != nil {
-		return nil, false, err
+	readLimit := min(opened.Size()-startOffset, workflowJournalLimit)
+	data := make([]byte, 0, max(readLimit, 0))
+	if readLimit > 0 {
+		buf := make([]byte, readLimit)
+		n, readErr := io.ReadFull(file, buf)
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			return nil, false, readErr
+		}
+		data = buf[:n]
 	}
 	parseOffset := startOffset
 	if truncatedHead {
@@ -1323,22 +1329,16 @@ func (c *workflowJournalCursor) read(root *os.Root, relPath string) (map[string]
 		parseOffset += int64(idx + 1)
 	}
 	nextOffset := parseOffset
+	tail := data
 	if lastNL := bytes.LastIndexByte(data, '\n'); lastNL >= 0 {
 		parseWorkflowJournalLines(data[:lastNL], c.statuses)
 		nextOffset = parseOffset + int64(lastNL+1)
-		tail := bytes.TrimSpace(data[lastNL+1:])
-		if len(tail) == 0 {
-			nextOffset = parseOffset + int64(len(data))
-		} else {
-			parseWorkflowJournalLines(tail, c.statuses)
-		}
+		tail = data[lastNL+1:]
+	}
+	if trimmed := bytes.TrimSpace(tail); len(trimmed) == 0 {
+		nextOffset = parseOffset + int64(len(data))
 	} else {
-		tail := bytes.TrimSpace(data)
-		if len(tail) == 0 {
-			nextOffset = parseOffset + int64(len(data))
-		} else {
-			parseWorkflowJournalLines(tail, c.statuses)
-		}
+		parseWorkflowJournalLines(trimmed, c.statuses)
 	}
 	c.info = opened
 	c.size = opened.Size()
@@ -1348,7 +1348,7 @@ func (c *workflowJournalCursor) read(root *os.Root, relPath string) (map[string]
 }
 
 func parseWorkflowJournalLines(data []byte, statuses map[string]bgtask.Status) {
-	for _, rawLine := range bytes.Split(data, []byte{'\n'}) {
+	for rawLine := range bytes.SplitSeq(data, []byte{'\n'}) {
 		line := bytes.TrimSpace(rawLine)
 		if len(line) == 0 {
 			continue
@@ -1359,19 +1359,6 @@ func parseWorkflowJournalLines(data []byte, statuses map[string]bgtask.Status) {
 		}
 		statuses[entry.Run.RunID] = workflowRunStatus(entry.Run.Status)
 	}
-}
-
-// readWorkflowJournalStatuses reads a workspace-confined JSONL workflow journal
-// via os.OpenRoot and returns the latest status observed for each run_id.
-func readWorkflowJournalStatuses(workingDir, relPath string) (map[string]bgtask.Status, error) {
-	root, err := os.OpenRoot(workingDir)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
-	var cursor workflowJournalCursor
-	statuses, _, err := cursor.read(root, relPath)
-	return statuses, err
 }
 
 // closeOpenWorkflows closes every active workflow row at process exit.

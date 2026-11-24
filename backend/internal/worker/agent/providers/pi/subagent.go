@@ -2,7 +2,6 @@ package pi
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -22,36 +21,6 @@ import (
 // polling, which suppresses a separate subagent-notification when it returns a
 // final status.
 const piToolGetSubagentResult = "get_subagent_result"
-
-func piSubagentReportID(agentID string, run int) string {
-	if run >= 2 {
-		return fmt.Sprintf("%s#%d", agentID, run)
-	}
-	return agentID
-}
-
-// bumpSubagentRunSeqLocked advances the run counter for a resumed subagent.
-// Caller must hold a.Mu.
-func (a *Agent) bumpSubagentRunSeqLocked(rowKey string) {
-	if rowKey == "" {
-		return
-	}
-	if a.subagentRunSeq == nil {
-		a.subagentRunSeq = make(map[string]int)
-	}
-	if a.subagentRunSeq[rowKey] < 1 {
-		a.subagentRunSeq[rowKey] = 2
-		return
-	}
-	a.subagentRunSeq[rowKey]++
-}
-
-func (a *Agent) subagentReportID(agentID string) string {
-	a.Mu.Lock()
-	run := a.subagentRunSeq[agentID]
-	a.Mu.Unlock()
-	return piSubagentReportID(agentID, run)
-}
 
 func (a *Agent) trackOpenBgTask(rowKey string) {
 	if rowKey == "" {
@@ -99,17 +68,6 @@ func (a *Agent) closeOpenBgTasks(status bgtask.Status) {
 	}
 	for _, rowKey := range rowKeys {
 		providerkit.LogRegistryRefusal("pi", "close", a.sink.CloseBackgroundTask(rowKey, status))
-	}
-}
-
-func piSubagentStatusForCompletion(completion agent.MessageCompletion) bgtask.Status {
-	switch completion {
-	case agent.MessageCompletionError:
-		return bgtask.StatusFailed
-	case agent.MessageCompletionFinished:
-		return bgtask.StatusEndedWithUnknownOutcome
-	default:
-		return bgtask.StatusStopped
 	}
 }
 
@@ -284,7 +242,6 @@ type piSubagentEndInput struct {
 	Prompt     string
 	IsError    bool
 	Resumed    bool
-	Run        int
 }
 
 // piApplySubagentEndState applies a tool_execution_end outcome for an Agent
@@ -351,14 +308,10 @@ func piApplySubagentEndState(sink subagentServices, in piSubagentEndInput) (stri
 			status, ok = bgtask.StatusFailed, true
 		}
 		if report := piSubagentReportText(in.Result); report != "" {
-			reportID := piSubagentReportID(finalKey, in.Run)
-			if in.Resumed && in.Run < 2 {
-				reportID = in.ToolCallID
-			}
 			providerkit.PersistChildSubagentReport(sink, agent.ChildSubagentReportWrite{
 				RowKey: finalKey,
 				Write: agent.SubagentReportWrite{
-					ReportID: reportID,
+					ReportID: finalKey,
 					Report:   agent.SubagentReport{Text: report},
 				},
 			})
@@ -423,7 +376,7 @@ func piApplySubagentEndState(sink subagentServices, in piSubagentEndInput) (stri
 // piApplyGetSubagentResult closes a background subagent row when a
 // get_subagent_result tool call returns a final status (suppressing a separate
 // subagent-notification). Returns the closed agent ID, or "" when no row closed.
-func piApplyGetSubagentResult(sink subagentServices, args, result json.RawMessage, reportIDFor func(string) string) string {
+func piApplyGetSubagentResult(sink subagentServices, args, result json.RawMessage) string {
 	if sink == nil || len(result) == 0 {
 		return ""
 	}
@@ -468,14 +421,10 @@ func piApplyGetSubagentResult(sink subagentServices, args, result json.RawMessag
 		report = strings.TrimSpace(details.ResultPreview)
 	}
 	if report != "" {
-		reportID := agentID
-		if reportIDFor != nil {
-			reportID = reportIDFor(agentID)
-		}
 		providerkit.PersistChildSubagentReport(sink, agent.ChildSubagentReportWrite{
 			RowKey: agentID,
 			Write: agent.SubagentReportWrite{
-				ReportID: reportID,
+				ReportID: agentID,
 				Report:   agent.SubagentReport{Text: report},
 			},
 		})
@@ -484,11 +433,7 @@ func piApplyGetSubagentResult(sink subagentServices, args, result json.RawMessag
 	return agentID
 }
 
-func (a *Agent) applyPiSubagentNotification(raw []byte) {
-	piApplySubagentNotificationTracked(a.sink, raw, a.trackOpenBgTask, a.untrackOpenBgTask, a.subagentReportID)
-}
-
-func piApplySubagentNotificationTracked(sink subagentServices, raw []byte, onOpen, onClose func(string), reportIDFor func(string) string) {
+func piApplySubagentNotificationTracked(sink subagentServices, raw []byte, onOpen, onClose func(string)) {
 	type details struct {
 		ID          string `json:"id"`
 		Status      string `json:"status"`
@@ -513,14 +458,10 @@ func piApplySubagentNotificationTracked(sink subagentServices, raw []byte, onOpe
 			return
 		}
 		if status, ok := piFinalStatus(d.Status); ok {
-			reportID := d.ID
-			if reportIDFor != nil {
-				reportID = reportIDFor(d.ID)
-			}
 			providerkit.PersistChildSubagentReport(sink, agent.ChildSubagentReportWrite{
 				RowKey: d.ID,
 				Write: agent.SubagentReportWrite{
-					ReportID: reportID,
+					ReportID: d.ID,
 					Report:   agent.SubagentReport{Text: d.Result},
 				},
 			})

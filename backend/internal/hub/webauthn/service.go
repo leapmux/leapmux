@@ -197,6 +197,9 @@ func (s *Service) validateAssertion(ctx context.Context, sessionID string, wantK
 	if err != nil {
 		return nil, VerifiedCredentialIdentity{}, err
 	}
+	if stored.source.AuthGeneration != sess.UserAuthGeneration {
+		return nil, VerifiedCredentialIdentity{}, fmt.Errorf("%w: user auth generation changed", ErrCeremonyInvalid)
+	}
 	parsed, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(credentialJSON))
 	if err != nil {
 		return nil, VerifiedCredentialIdentity{}, fmt.Errorf("%w: parse: %w", ErrAssertionRejected, err)
@@ -270,8 +273,8 @@ func (s *Service) BeginRegistration(ctx context.Context, userID, origin string) 
 // this runs a keystore decrypt per existing credential plus a JSON, base64,
 // and CBOR parse of a caller-supplied body capped only at the 4 MiB request
 // limit. Holding the writer lock for all of that queues every other write
-// on the hub behind one registration. The ceremony consume is its own
-// atomic conditional UPDATE, so it does not need to share the caller's
+// on the hub behind one registration. The ceremony consume runs in memory
+// under SessionStore's mutex, so it does not need to share the caller's
 // transaction either -- only the credential INSERT does.
 //
 // FinishSignUp and CompleteAccountRecoveryPassword already order their expensive work
@@ -363,6 +366,9 @@ func (s *Service) verifyRegistration(ctx context.Context, sessionID string, want
 	waUser, err := s.loadUserIdentity(ctx, userID)
 	if err != nil {
 		return "", FinishedSignUpCredential{}, err
+	}
+	if waUser.source.AuthGeneration != sess.UserAuthGeneration {
+		return "", FinishedSignUpCredential{}, fmt.Errorf("%w: user auth generation changed", ErrCeremonyInvalid)
 	}
 	cred, err := verifyAttestation(s.w, waUser, *sessionData, credentialJSON)
 	if err != nil {

@@ -765,6 +765,11 @@ type OAuthClientStore interface {
 	// until the caller's transaction ends. It returns ErrNotFound when the
 	// app is missing, retired, or cannot elevate.
 	LockForElevation(ctx context.Context, clientID string) error
+	// LockActive locks an active (unrevoked) app registration in shared mode
+	// until the caller's transaction ends so a concurrent Revoke waits before
+	// retiring the app and sweeping its credentials. Returns ErrNotFound when
+	// the app is missing or already revoked.
+	LockActive(ctx context.Context, clientID string) error
 	// GetIcon reads the icon bytes, their media type, and the facts that gate
 	// serving them, for the /oauth/apps/<id>/icon asset endpoint. It is a
 	// separate read because the full-row queries carry only whether an icon

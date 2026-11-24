@@ -31,7 +31,7 @@ func TestCredentialConstructors_RequireHashersOnlyForCredentialCapableStores(t *
 			NewAuthService(AuthServiceDeps{Store: st, SessionHasher: hasher, Lifecycle: lifecycle})
 		}},
 		{"identity provider", "oauth handler requires a session secret hasher when a store is configured", func(st store.Store, hasher auth.SecretHasher) {
-			NewIdPHandler(st, hasher, nil, nil, lifecycle, nil, nil, nil)
+			NewIdPHandler(IdPHandlerDeps{Store: st, SessionHasher: hasher, Lifecycle: lifecycle})
 		}},
 		{"OAuth server", "OAuth server requires a session secret hasher when a store is configured", func(st store.Store, hasher auth.SecretHasher) {
 			NewOAuthServerHandler(OAuthServerDeps{Store: st, SessionHasher: hasher, Lifecycle: lifecycle, ServingCtx: context.Background(), Notices: NewCredentialNotices(nil, mail.Renderer{})})

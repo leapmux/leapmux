@@ -202,11 +202,23 @@ func setupUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTe
 	deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, nil, nil,
 		auth.WithUserRevokedObserver(func(userID string, gen int64) {
-			webauthnSessions.DeleteByUserBeforeGeneration(userID, gen)
-			deviceAuths.ConsumeApprovedForUserBeforeGeneration(userID, gen, time.Now().UTC())
+			if uid, ok := userid.New(userID); ok {
+				webauthnSessions.DeleteByUserBeforeGeneration(uid, gen)
+				deviceAuths.ConsumeApprovedForUserBeforeGeneration(uid, gen, time.Now().UTC())
+			}
 		}),
 	)
-	userSvc := service.NewUserService(serviceStoreOver(st, wrap), testConfig(), set, lifecycle, mail.NewStubSender(), mail.Renderer{}, ks, webauthnSessions, deviceAuths)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:                serviceStoreOver(st, wrap),
+		Config:               testConfig(),
+		Settings:             set,
+		Lifecycle:            lifecycle,
+		Mail:                 mail.NewStubSender(),
+		Renderer:             mail.Renderer{},
+		Keystore:             ks,
+		WebAuthnSessions:     webauthnSessions,
+		DeviceAuthorizations: deviceAuths,
+	})
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -274,7 +286,14 @@ func setupOAuthUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *u
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(serviceStoreOver(st, wrap), testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     serviceStoreOver(st, wrap),
+		Config:    testConfig(),
+		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+	})
 
 	mux := http.NewServeMux()
 	// Same bearer rung as setupUserTest, so bearerFor works on either env.
@@ -1106,7 +1125,14 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, Policy: servicetest.AuthPolicy(set)})
 	t.Cleanup(contexts.Stop)
 
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    testConfig(),
+		Settings:  set,
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+	})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -1444,7 +1470,14 @@ func setupResendUserTestWith(t *testing.T, seed regKeySeed) (*userTestEnv, *mail
 	if seed != nil {
 		seed(t, set)
 	}
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    testConfig(),
+		Settings:  set,
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:      rec,
+		Renderer:  mail.Renderer{},
+	})
 
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
@@ -1815,7 +1848,14 @@ func newConcurrentSessionRemovalEnv(t *testing.T, remove func(ctx context.Contex
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
-	userSvc := service.NewUserService(hooked, testConfig(), servicetest.NewSettingsManager(t, hooked, nil), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     hooked,
+		Config:    testConfig(),
+		Settings:  servicetest.NewSettingsManager(t, hooked, nil),
+		Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil),
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+	})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -3038,7 +3078,14 @@ func TestResendVerificationEmail_SMTPEnableTransition(t *testing.T) {
 	seedSMTP(t, set)
 
 	rec := &mailSenderDouble{}
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    testConfig(),
+		Settings:  set,
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:      rec,
+		Renderer:  mail.Renderer{},
+	})
 
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
@@ -3262,7 +3309,15 @@ func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    testConfig(),
+		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+		Keystore:  ks,
+	})
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
@@ -3316,7 +3371,16 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 	// listen address), mirroring the ceremony-test harness.
 	set := servicetest.NewSettingsManager(t, st, nil)
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks, sessions, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:            st,
+		Config:           testConfig(),
+		Settings:         set,
+		Lifecycle:        auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:             mail.NewStubSender(),
+		Renderer:         mail.Renderer{},
+		Keystore:         ks,
+		WebAuthnSessions: sessions,
+	})
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
@@ -3416,7 +3480,16 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 
 	set := servicetest.NewSettingsManager(t, st, nil)
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks, sessions, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:            st,
+		Config:           testConfig(),
+		Settings:         set,
+		Lifecycle:        auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:             mail.NewStubSender(),
+		Renderer:         mail.Renderer{},
+		Keystore:         ks,
+		WebAuthnSessions: sessions,
+	})
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
@@ -3527,7 +3600,14 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.SoloMode = true
-	userSvc := service.NewUserService(st, cfg, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    cfg,
+		Settings:  servicetest.NewSettingsManager(t, st, nil),
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+	})
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
@@ -3609,7 +3689,6 @@ func TestUserRevokedObserver_EvictsOlderGenerationCeremoniesAndSparesNewer(t *te
 	t.Parallel()
 
 	env := setupUserTest(t)
-	ctx := context.Background()
 	now := time.Now().UTC()
 	uid := userid.MustNew(env.userID)
 
@@ -3634,33 +3713,33 @@ func TestUserRevokedObserver_EvictsOlderGenerationCeremoniesAndSparesNewer(t *te
 
 	hashGen1 := hubtestutil.TestSecretHasher().Hash("device-gen-1")
 	hashGen2 := hubtestutil.TestSecretHasher().Hash("device-gen-2")
-	require.NoError(t, env.deviceAuths.Create(ctx, service.CreateDeviceAuthorizationParams{
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		DeviceCodeHash: hashGen1,
 		UserCode:       "GEN001",
 		ClientID:       oauthapp.ControlCLIClientID,
 		ExpiresAt:      now.Add(5 * time.Minute),
 	}))
-	n, err := env.deviceAuths.ApproveByUserCode(ctx, service.ApproveDeviceAuthorizationParams{
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
 		UserCode:       "GEN001",
 		UserID:         uid,
 		AuthGeneration: 1,
 	}, now)
 	require.NoError(t, err)
-	require.EqualValues(t, 1, n)
+	require.True(t, approved)
 
-	require.NoError(t, env.deviceAuths.Create(ctx, service.CreateDeviceAuthorizationParams{
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		DeviceCodeHash: hashGen2,
 		UserCode:       "GEN002",
 		ClientID:       oauthapp.ControlCLIClientID,
 		ExpiresAt:      now.Add(5 * time.Minute),
 	}))
-	n, err = env.deviceAuths.ApproveByUserCode(ctx, service.ApproveDeviceAuthorizationParams{
+	approved, err = env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
 		UserCode:       "GEN002",
 		UserID:         uid,
 		AuthGeneration: 2,
 	}, now)
 	require.NoError(t, err)
-	require.EqualValues(t, 1, n)
+	require.True(t, approved)
 
 	env.lifecycle.UserRevoked(env.userID, 2)
 
@@ -3670,11 +3749,11 @@ func TestUserRevokedObserver_EvictsOlderGenerationCeremoniesAndSparesNewer(t *te
 	require.True(t, ok, "current generation WebAuthn ceremony must survive")
 	assert.Equal(t, int64(2), keptWA.UserAuthGeneration)
 
-	devGen1, err := env.deviceAuths.Get(ctx, hashGen1)
-	require.NoError(t, err)
+	devGen1, ok := env.deviceAuths.Get(hashGen1)
+	require.True(t, ok)
 	assert.NotNil(t, devGen1.ConsumedAt, "older generation approved device grant must be consumed")
 
-	devGen2, err := env.deviceAuths.Get(ctx, hashGen2)
-	require.NoError(t, err)
+	devGen2, ok := env.deviceAuths.Get(hashGen2)
+	require.True(t, ok)
 	assert.Nil(t, devGen2.ConsumedAt, "current generation approved device grant must remain valid")
 }

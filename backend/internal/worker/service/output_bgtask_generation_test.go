@@ -537,6 +537,10 @@ func TestBackgroundTaskRejectedSQLRestoresClaimAndDisplayAdmission(t *testing.T)
 			replacement := newTestRootOutputSink(t, svc.Output, "rollback-generation", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			before, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), "rollback-generation")
 			require.NoError(t, err)
+			meta := svc.Output.bgTaskEphemeral("rollback-generation")
+			retainedGenBefore := meta.rowGeneration("retained")
+			retainedFormBefore := meta.activeFormOf("retained")
+			require.NotZero(t, retainedGenBefore)
 			cache := svc.Output.bgTaskCache("rollback-generation")
 			cache.Mu.Lock()
 			mirror := cache.mirrorLocked()
@@ -547,8 +551,10 @@ WHEN NEW.owner_agent_id = 'rollback-generation' AND NEW.row_key = 'retained' BEG
 			if operation == "status" {
 				require.NoError(t, replacement.UpdateBackgroundTaskStatus("retained", bgtask.StatusFailed, "Rejected final activity"))
 			} else {
-				require.NoError(t, replacement.UpsertBackgroundTask(bgtask.Upsert{RowKey: "retained", Kind: bgtask.KindSubagent, Title: "Rejected final title", Status: bgtask.StatusFailed}))
+				require.NoError(t, replacement.UpsertBackgroundTask(bgtask.Upsert{RowKey: "retained", Kind: bgtask.KindSubagent, Title: "Rejected final title", ActiveForm: "Rejected final activity", Status: bgtask.StatusFailed}))
 			}
+			assert.Equal(t, retainedGenBefore, meta.rowGeneration("retained"), "rollback must restore the retained row generation")
+			assert.Equal(t, retainedFormBefore, meta.activeFormOf("retained"), "rollback must restore the retained active form")
 			after, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), "rollback-generation")
 			require.NoError(t, err)
 			assert.Equal(t, before, after, "a zero-row mutation must roll back its claim, eviction, and resequence")

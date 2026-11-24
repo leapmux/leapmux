@@ -1311,4 +1311,60 @@ func TestGrokWakeOriginAndWorkflowRevival(t *testing.T) {
 		row, _ = sink.BackgroundTask("workflow:wf-reuse")
 		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	})
+
+	t.Run("trailing background launch tool_call_update after early finish and spawn does not break subsequent wake revival", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(spawnCall(t, "call-bg-trail", "Worker", "Job 1.", true))
+		// Out-of-order: subagent_finished arrives first, then initial subagent_spawned consumes it.
+		a.HandleOutput(finished(t, "sub-trail", "completed", "Job 1 done."))
+		a.HandleOutput(spawned(t, "sub-trail", "Worker", nil))
+		row, ok := sink.BackgroundTask("call-bg-trail")
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+		// Trailing background launch tool_call_update arrives AFTER subagent already finished.
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call_update", "toolCallId": "call-bg-trail", "status": "completed",
+			"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": "Subagent started in background.\nsubagent_id: sub-trail\n"}}},
+		}))
+
+		// A later wake must revive call-bg-trail and bump runSeq rather than silently staying finished.
+		a.HandleOutput(spawned(t, "sub-trail", "Worker", map[string]any{"wake_origin": "user_message"}))
+		assert.Equal(t, []string{"call-bg-trail"}, sink.RevivedTasks(), "wake after trailing launch update must revive the finished row")
+		row, _ = sink.BackgroundTask("call-bg-trail")
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
+
+	t.Run("background launch update for already-active subagent does not poison backgroundSpawns or wake revival", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+		a.HandleOutput(spawnCall(t, "call-bg-active", "Worker", "Job 1.", true))
+		a.HandleOutput(spawned(t, "sub-active", "Worker", nil))
+
+		// Background launch tool_call_update arrives while sub-active is already active in children.subagents.
+		a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
+			"sessionUpdate": "tool_call_update", "toolCallId": "call-bg-active", "status": "completed",
+			"rawOutput": map[string]any{
+				"type": "Text",
+				"text": "Subagent started in background.\nsubagent_id: sub-active\ndescription: Worker\n",
+			},
+		}))
+
+		a.stateMu.Lock()
+		_, recorded := a.children.backgroundSpawns["sub-active"]
+		a.stateMu.Unlock()
+		assert.False(t, recorded, "already-active subagent must not be recorded in backgroundSpawns")
+
+		a.HandleOutput(finished(t, "sub-active", "completed", "Job 1 done."))
+		row, ok := sink.BackgroundTask("call-bg-active")
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+		a.HandleOutput(spawned(t, "sub-active", "Worker", map[string]any{"wake_origin": "user_message"}))
+		assert.Contains(t, sink.RevivedTasks(), "call-bg-active")
+		row, ok = sink.BackgroundTask("call-bg-active")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+	})
 }

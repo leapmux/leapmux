@@ -334,9 +334,9 @@ func TestDecodeZCodeSubagentLifecycleTransition(t *testing.T) {
 	assert.Equal(t, bgtask.StatusSucceeded, transition.status)
 	assert.True(t, transition.final)
 	assert.Equal(t, "Final report", transition.report.Text)
-	assert.Equal(t, zcodeFinalReportID("spawn-1", 0), transition.reportID)
-	assert.Equal(t, "zcode-final:spawn-1", zcodeFinalReportID("spawn-1", 1))
-	assert.Equal(t, "zcode-final:spawn-1#2", zcodeFinalReportID("spawn-1", 2))
+	assert.Equal(t, zcodeFinalReportID("spawn-1"), transition.reportID)
+	assert.Equal(t, "zcode-final:spawn-1", zcodeFinalReportID("spawn-1"))
+	assert.Equal(t, "zcode-final:spawn-1#2", agent.ScopeSubagentReportID(zcodeFinalReportID("spawn-1"), 1))
 	assert.Equal(t, "model request failed", transition.failure)
 }
 
@@ -1534,5 +1534,117 @@ func TestZCodeSendMessageWakeAuthorizationIsolationAndDeterminism(t *testing.T) 
 		assert.Empty(t, idx.endedBySession)
 		assert.Empty(t, idx.endedByTask)
 		assert.Empty(t, idx.endedByAgent)
+	})
+}
+
+func TestZCodeChildIndexSortedIndicesAndReviveForNewTask(t *testing.T) {
+	t.Parallel()
+
+	t.Run("overwriting agentID and name updates sorted indices and SendMessage targeting", func(t *testing.T) {
+		t.Parallel()
+		var idx zcodeChildIndex
+		idx.rememberChild("spawn-1", "", "child-1")
+		idx.rememberAgent("spawn-1", "agent-old")
+		idx.rememberAgent("spawn-1", "agent-new")
+		assert.NotContains(t, idx.agentSpawns, "agent-old")
+		assert.Equal(t, []string{"spawn-1"}, idx.agentSpawns["agent-new"])
+
+		idx.rememberName("spawn-1", "name-old")
+		idx.rememberName("spawn-1", "name-new")
+		assert.NotContains(t, idx.nameSpawns, "name-old")
+		assert.Equal(t, []string{"spawn-1"}, idx.nameSpawns["name-new"])
+
+		idx.completeSendMessage("sm-old-agent", true, []string{"agent-old"})
+		assert.False(t, idx.spawns["spawn-1"].authorizedWake, "old agent ID must not authorize wake")
+		idx.completeSendMessage("sm-old-name", true, []string{"name-old"})
+		assert.False(t, idx.spawns["spawn-1"].authorizedWake, "old name must not authorize wake")
+
+		idx.completeSendMessage("sm-new-agent", true, []string{"agent-new"})
+		assert.True(t, idx.spawns["spawn-1"].authorizedWake, "new agent ID must authorize wake")
+
+		idx.spawns["spawn-1"].authorizedWake = false
+		idx.completeSendMessage("sm-new-name", true, []string{"name-new"})
+		assert.True(t, idx.spawns["spawn-1"].authorizedWake, "new name must authorize wake")
+	})
+
+	t.Run("duplicate active spawn names deterministically authorize lowest spanID", func(t *testing.T) {
+		t.Parallel()
+		var idx zcodeChildIndex
+		idx.rememberChild("spawn-b", "", "child-b")
+		idx.rememberName("spawn-b", "worker")
+		idx.rememberChild("spawn-a", "", "child-a")
+		idx.rememberName("spawn-a", "worker")
+
+		assert.Equal(t, []string{"spawn-a", "spawn-b"}, idx.nameSpawns["worker"])
+		idx.completeSendMessage("sm-dup-name", true, []string{"worker"})
+		assert.True(t, idx.spawns["spawn-a"].authorizedWake, "lowest spanID must receive wake authorization")
+		assert.False(t, idx.spawns["spawn-b"].authorizedWake, "higher spanID must not receive wake authorization")
+	})
+
+	t.Run("agentSpawns, nameSpawns, and endedByName move and clear in lockstep", func(t *testing.T) {
+		t.Parallel()
+		var idx zcodeChildIndex
+		idx.rememberChild("spawn-1", "", "child-1")
+		idx.rememberSession("spawn-1", "sess-1")
+		idx.rememberAgent("spawn-1", "agent-1")
+		idx.rememberName("spawn-1", "worker")
+		assert.Equal(t, map[string][]string{"agent-1": {"spawn-1"}}, idx.agentSpawns)
+		assert.Equal(t, map[string][]string{"worker": {"spawn-1"}}, idx.nameSpawns)
+		assert.Empty(t, idx.endedByName)
+
+		idx.takeChild("spawn-1")
+		assert.Empty(t, idx.agentSpawns)
+		assert.Empty(t, idx.nameSpawns)
+		assert.Equal(t, map[string][]string{"worker": {"spawn-1"}}, idx.endedByName)
+
+		idx.mu.Lock()
+		regKey, ok := idx.reviveLocked("spawn-1")
+		idx.mu.Unlock()
+		require.True(t, ok)
+		assert.Equal(t, "sess-1", regKey)
+		assert.Empty(t, idx.endedByName)
+		assert.Equal(t, map[string][]string{"agent-1": {"spawn-1"}}, idx.agentSpawns)
+		assert.Equal(t, map[string][]string{"worker": {"spawn-1"}}, idx.nameSpawns)
+
+		idx.takeChild("spawn-1")
+		assert.Empty(t, idx.agentSpawns)
+		assert.Empty(t, idx.nameSpawns)
+		assert.Equal(t, map[string][]string{"worker": {"spawn-1"}}, idx.endedByName)
+
+		idx.clear()
+		assert.Empty(t, idx.spawns)
+		assert.Empty(t, idx.ended)
+		assert.Empty(t, idx.agentSpawns)
+		assert.Empty(t, idx.nameSpawns)
+		assert.Empty(t, idx.endedByName)
+	})
+
+	t.Run("reviveForNewTask rejects empty and previous task IDs even when authorized", func(t *testing.T) {
+		t.Parallel()
+		var idx zcodeChildIndex
+		idx.rememberChild("spawn-1", "", "child-1")
+		idx.rememberSession("spawn-1", "sess-1")
+		idx.rememberTask("spawn-1", "prev-task")
+		idx.rememberName("spawn-1", "worker")
+
+		idx.completeSendMessage("sm-auth", true, []string{"worker"})
+		require.True(t, idx.spawns["spawn-1"].authorizedWake)
+		idx.takeChild("spawn-1")
+		require.True(t, idx.ended["spawn-1"].authorizedWake)
+
+		regKey, ok := idx.reviveForNewTask("spawn-1", "")
+		assert.Empty(t, regKey)
+		assert.False(t, ok)
+		assert.True(t, idx.hasEnded("spawn-1"))
+
+		regKey, ok = idx.reviveForNewTask("spawn-1", "prev-task")
+		assert.Empty(t, regKey)
+		assert.False(t, ok)
+		assert.True(t, idx.hasEnded("spawn-1"))
+
+		regKey, ok = idx.reviveForNewTask("spawn-1", "new-task")
+		assert.Equal(t, "sess-1", regKey)
+		assert.True(t, ok)
+		assert.False(t, idx.hasEnded("spawn-1"))
 	})
 }

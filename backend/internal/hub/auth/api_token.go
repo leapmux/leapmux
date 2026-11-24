@@ -261,12 +261,15 @@ func (v *TokenValidator) MintAccessBearer(kind BearerKind, tokenID string, now t
 	if accessTTL <= 0 {
 		return MintedAccessBearer{}, errors.New("access TTL must be positive")
 	}
-	access := MintAccessSecret()
+	return v.newAccessBearer(kind, tokenID, MintAccessSecret(), now, accessTTL), nil
+}
+
+func (v *TokenValidator) newAccessBearer(kind BearerKind, tokenID, secret string, now time.Time, ttl time.Duration) MintedAccessBearer {
 	return MintedAccessBearer{
-		AccessBearer:    FormatBearer(kind, tokenID, access),
-		AccessHash:      v.HashSecret(access),
-		AccessExpiresAt: now.Add(accessTTL),
-	}, nil
+		AccessBearer:    FormatBearer(kind, tokenID, secret),
+		AccessHash:      v.HashSecret(secret),
+		AccessExpiresAt: now.Add(ttl),
+	}
 }
 
 // MintedBearerPair carries the (access, refresh) outputs of one mint
@@ -282,9 +285,8 @@ type MintedBearerPair struct {
 }
 
 // MintBearerPair generates a fresh (access, refresh) pair bound to
-// tokenID for the given BearerKind. Centralises bearer formatting +
-// hash + TTL derivation so api_token and delegation_token issuers
-// can't drift on shape.
+// tokenID for the given BearerKind, sharing bearer formatting, secret
+// hashing, and TTL derivation with MintAccessBearer and DeriveRefreshBearerPair.
 func (v *TokenValidator) MintBearerPair(kind BearerKind, tokenID string, now time.Time, accessTTL, refreshTTL time.Duration) MintedBearerPair {
 	return v.newBearerPair(kind, tokenID, MintAccessSecret(), MintAccessSecret(), now, accessTTL, refreshTTL)
 }
@@ -295,13 +297,15 @@ func (v *TokenValidator) MintBearerPair(kind BearerKind, tokenID string, now tim
 // bearer wire format, secret hashing, and TTL derivation live in one place and
 // cannot drift between them.
 func (v *TokenValidator) newBearerPair(kind BearerKind, tokenID, access, refresh string, now time.Time, accessTTL, refreshTTL time.Duration) MintedBearerPair {
+	accessHalf := v.newAccessBearer(kind, tokenID, access, now, accessTTL)
+	refreshHalf := v.newAccessBearer(kind, tokenID, refresh, now, refreshTTL)
 	return MintedBearerPair{
-		AccessBearer:     FormatBearer(kind, tokenID, access),
-		RefreshBearer:    FormatBearer(kind, tokenID, refresh),
-		AccessHash:       v.HashSecret(access),
-		RefreshHash:      v.HashSecret(refresh),
-		AccessExpiresAt:  now.Add(accessTTL),
-		RefreshExpiresAt: now.Add(refreshTTL),
+		AccessBearer:     accessHalf.AccessBearer,
+		RefreshBearer:    refreshHalf.AccessBearer,
+		AccessHash:       accessHalf.AccessHash,
+		RefreshHash:      refreshHalf.AccessHash,
+		AccessExpiresAt:  accessHalf.AccessExpiresAt,
+		RefreshExpiresAt: refreshHalf.AccessExpiresAt,
 	}
 }
 

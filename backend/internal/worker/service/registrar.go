@@ -325,7 +325,7 @@ func registerAgentGuardedByID[T any, PT agentScopedRequest[T]](
 func terminalGuardedHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
-	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
+	fn func(ctx context.Context, caller channel.Caller, req PT, row terminalRecord, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
 	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
 		row, ok := svc.requireTerminal(sender, decoded.GetTerminalId())
@@ -344,7 +344,7 @@ func terminalGuardedHandler[T any, PT terminalScopedRequest[T]](
 func registerTerminalGuarded[T any, PT terminalScopedRequest[T]](
 	o ownerOnlyRegistrar,
 	procedure string,
-	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
+	fn func(ctx context.Context, caller channel.Caller, req PT, row terminalRecord, sender channel.ResponseWriter),
 ) {
 	scope := o.r.declared(procedure).scope
 	o.Register(procedure, terminalGuardedHandler[T, PT](o.r.svc, scope, fn))
@@ -395,7 +395,7 @@ func registerTerminalForRestartGuarded(
 ) {
 	scope := o.r.declared(procedure).scope
 	o.Register(procedure, decodeInto[leapmuxv1.RestartTerminalRequest, *leapmuxv1.RestartTerminalRequest](func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
-		if o.r.svc.QuakeTerminals.Has(decoded.GetTerminalId()) {
+		if o.r.svc.QuakeTerminals.IsKnownQuake(decoded.GetTerminalId()) {
 			sendFailedPrecondition(sender, "a quake terminal does not restart; open the panel again for a fresh shell")
 			return
 		}

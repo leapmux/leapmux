@@ -37,28 +37,48 @@ type UserService struct {
 	clockSeam
 }
 
-// NewUserService creates a new UserService. renderer carries the hub's
-// public URL used to build absolute deep-links in the verification
-// emails sent on email-change and resend. ks encrypts passkey material;
-// pass nil only in tests that do not exercise passkey RPCs.
-func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, sender mail.Sender, renderer mail.Renderer, ks *keystore.Keystore, webauthnSessions *hubwebauthn.SessionStore, deviceAuths DeviceAuthorizationStore) *UserService {
-	if lifecycle == nil {
+// UserServiceDeps carries UserService's collaborators.
+type UserServiceDeps struct {
+	Store     store.Store
+	Config    *config.Config
+	Settings  *settings.Manager
+	Lifecycle *auth.CredentialLifecycleEffects
+	Mail      mail.Sender
+	// Renderer carries the hub's public URL used to build absolute deep-links
+	// in verification emails sent on email-change and resend.
+	Renderer mail.Renderer
+	// Keystore encrypts passkey material. Pass nil only in tests that do not
+	// exercise passkey RPCs.
+	Keystore *keystore.Keystore
+	// WebAuthnSessions holds in-flight WebAuthn ceremonies shared with
+	// AuthService. Nil defaults to a fresh in-memory store.
+	WebAuthnSessions *hubwebauthn.SessionStore
+	// DeviceAuthorizations holds short-lived RFC 8628 device grants in memory.
+	// Nil defaults to a fresh MemoryDeviceAuthorizationStore.
+	DeviceAuthorizations DeviceAuthorizationStore
+}
+
+// NewUserService creates a new UserService.
+func NewUserService(deps UserServiceDeps) *UserService {
+	if deps.Lifecycle == nil {
 		panic("user service requires credential lifecycle effects")
 	}
+	webauthnSessions := deps.WebAuthnSessions
 	if webauthnSessions == nil {
 		webauthnSessions = hubwebauthn.NewSessionStore()
 	}
+	deviceAuths := deps.DeviceAuthorizations
 	if deviceAuths == nil {
 		deviceAuths = NewMemoryDeviceAuthorizationStore()
 	}
 	return &UserService{
-		store:            st,
-		cfg:              cfg,
-		set:              set,
-		lifecycle:        lifecycle,
-		mail:             sender,
-		renderer:         renderer,
-		keystore:         ks,
+		store:            deps.Store,
+		cfg:              deps.Config,
+		set:              deps.Settings,
+		lifecycle:        deps.Lifecycle,
+		mail:             deps.Mail,
+		renderer:         deps.Renderer,
+		keystore:         deps.Keystore,
 		webauthnSessions: webauthnSessions,
 		deviceAuths:      deviceAuths,
 	}

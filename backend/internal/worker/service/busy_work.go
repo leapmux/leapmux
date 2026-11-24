@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
-	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/util/validate"
 	"github.com/leapmux/leapmux/worker/busywork"
 )
@@ -109,25 +108,14 @@ func (svc *Service) InspectBusyWork(ctx context.Context) busywork.Snapshot {
 					})
 				}
 				if len(unresolvedIDs) > 0 {
-					exitStates := svc.busyTerminalExitStates(ctx, unresolvedIDs)
+					titles := svc.terminalCatalog().resolveBusyTitles(ctx, unresolvedIDs)
 					for i := range snapshot.Terminals {
 						if snapshot.Terminals[i].Title != "" {
 							continue
 						}
-						tabID := snapshot.Terminals[i].TabID
-						if q, ok := svc.QuakeTerminals.Get(tabID); ok {
-							if cleaned := validate.CleanName(q.Title); cleaned != "" {
-								snapshot.Terminals[i].Title = cleaned
-							} else {
-								snapshot.Terminals[i].Title = "Quake Terminal"
-							}
+						if resolved, ok := titles[snapshot.Terminals[i].TabID]; ok && resolved != "" {
+							snapshot.Terminals[i].Title = resolved
 							continue
-						}
-						if state, ok := exitStates[tabID]; ok {
-							if cleaned := validate.CleanName(state.Title); cleaned != "" {
-								snapshot.Terminals[i].Title = cleaned
-								continue
-							}
 						}
 						snapshot.Terminals[i].Title = "Terminal"
 					}
@@ -169,28 +157,6 @@ func (svc *Service) busyAgentTitles(ctx context.Context, agentIDs []string) map[
 		}
 	}
 	return titles
-}
-
-func (svc *Service) busyTerminalExitStates(ctx context.Context, terminalIDs []string) map[string]db.ListTerminalExitStatesByIDsRow {
-	states := make(map[string]db.ListTerminalExitStatesByIDsRow, len(terminalIDs))
-	if svc.Queries == nil || ctx.Err() != nil {
-		return states
-	}
-	for start := 0; start < len(terminalIDs); start += busyWorkTitleBatchSize {
-		if ctx.Err() != nil {
-			break
-		}
-		end := min(start+busyWorkTitleBatchSize, len(terminalIDs))
-		rows, err := svc.Queries.ListTerminalExitStatesByIDs(ctx, terminalIDs[start:end])
-		if err != nil {
-			slog.Warn("inspect busy terminal titles failed", "count", end-start, "error", err)
-			continue
-		}
-		for _, row := range rows {
-			states[row.ID] = row
-		}
-	}
-	return states
 }
 
 func cleanBusyTaskLabel(row bgtask.Item) string {

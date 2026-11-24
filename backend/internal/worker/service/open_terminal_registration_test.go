@@ -1,11 +1,14 @@
 package service
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -174,3 +177,200 @@ const (
 	startupInFlight
 	startupFailed
 )
+
+func TestRegisterQuakeTerminal_ReapsDeadWinnerAndConverges(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	dir := t.TempDir()
+	w := newTestWriter()
+
+	// Seed a dead quake winner with no PTY and no startup claim.
+	_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+		ID:         "dead-winner",
+		WorkingDir: dir,
+		Title:      "Dead Quake",
+	})
+	require.True(t, created)
+	require.False(t, svc.quakeShellIsLive("dead-winner"))
+
+	startupCtx, startupHandle := svc.beginTerminalStartup("fresh-quake", testutil.TestShell())
+	require.NotNil(t, startupHandle)
+
+	gotCtx, gotHandle, ok := svc.registerQuakeTerminal(w, QuakeTerminal{
+		ID:         "fresh-quake",
+		WorkingDir: dir,
+		Shell:      testutil.TestShell(),
+		Title:      "Fresh Quake",
+	}, startupCtx, startupHandle)
+
+	require.True(t, ok)
+	require.NotNil(t, gotCtx)
+	require.NotNil(t, gotHandle)
+	assert.Empty(t, w.errors)
+	assert.Empty(t, w.responses)
+	assert.True(t, svc.quakeShellIsLive("fresh-quake"))
+	assert.False(t, svc.QuakeTerminals.Has("dead-winner"))
+	assert.True(t, svc.QuakeTerminals.IsKnownQuake("dead-winner"))
+	assert.True(t, svc.QuakeTerminals.Has("fresh-quake"))
+
+	registered, found := svc.QuakeTerminals.GetByWorkingDir(dir)
+	require.True(t, found)
+	assert.Equal(t, "fresh-quake", registered.ID)
+
+	svc.TerminalStartup.abandon(gotHandle)
+	requireStartupsReleased(t, &svc.TerminalStartup.startupCore)
+}
+
+func TestRegisterQuakeTerminal_RetryStartupRefusedOnAttemptOne(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	dir := t.TempDir()
+	w := newTestWriter()
+
+	_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+		ID:         "dead-0",
+		WorkingDir: dir,
+		Title:      "Dead 0",
+	})
+	require.True(t, created)
+	svc.terminalCleanups.claim("dead-0")
+	require.True(t, svc.terminalCleanups.register("dead-0", func() {
+		svc.TerminalStartup.closeClaims()
+	}))
+
+	startupCtx, startupHandle := svc.beginTerminalStartup("fresh-quake", testutil.TestShell())
+	require.NotNil(t, startupHandle)
+
+	gotCtx, gotHandle, ok := svc.registerQuakeTerminal(w, QuakeTerminal{
+		ID:         "fresh-quake",
+		WorkingDir: dir,
+		Shell:      testutil.TestShell(),
+		Title:      "Fresh Quake",
+	}, startupCtx, startupHandle)
+
+	assert.False(t, ok)
+	assert.Nil(t, gotCtx)
+	assert.Nil(t, gotHandle)
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code)
+	requireStartupsReleased(t, &svc.TerminalStartup.startupCore)
+}
+
+func TestRegisterQuakeTerminal_ExhaustsAttemptsAcrossDeadWinners(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no live terminal at final state returns internal error", func(t *testing.T) {
+		t.Parallel()
+		svc, _, _ := setupTestService(t)
+		dir := t.TempDir()
+		w := newTestWriter()
+
+		seedDead := func(id string) {
+			_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+				ID:         id,
+				WorkingDir: dir,
+				Title:      id,
+			})
+			require.True(t, created)
+		}
+
+		seedDead("dead-0")
+		for i := range maxQuakeRegisterAttempts - 1 {
+			currID := fmt.Sprintf("dead-%d", i)
+			nextID := fmt.Sprintf("dead-%d", i+1)
+			svc.terminalCleanups.claim(currID)
+			require.True(t, svc.terminalCleanups.register(currID, func() {
+				// Delete the reaped entry before seeding the next dead winner because
+				// closeQuakeTerminal runs terminalCleanups before QuakeTerminals.Delete.
+				svc.QuakeTerminals.Delete(currID)
+				seedDead(nextID)
+			}))
+		}
+
+		startupCtx, startupHandle := svc.beginTerminalStartup("fresh-quake", testutil.TestShell())
+		require.NotNil(t, startupHandle)
+
+		gotCtx, gotHandle, ok := svc.registerQuakeTerminal(w, QuakeTerminal{
+			ID:         "fresh-quake",
+			WorkingDir: dir,
+			Shell:      testutil.TestShell(),
+			Title:      "Fresh Quake",
+		}, startupCtx, startupHandle)
+
+		assert.False(t, ok)
+		assert.Nil(t, gotCtx)
+		assert.Nil(t, gotHandle)
+		assert.Empty(t, w.responses)
+		require.Len(t, w.errors, 1)
+		assert.Equal(t, int32(codes.Internal), w.errors[0].code)
+		assert.Equal(t, "failed to register quake terminal", w.errors[0].message)
+		requireStartupsReleased(t, &svc.TerminalStartup.startupCore)
+	})
+
+	t.Run("live terminal at final state is adopted", func(t *testing.T) {
+		t.Parallel()
+		svc, _, _ := setupTestService(t)
+		dir := t.TempDir()
+		w := newTestWriter()
+
+		seedDead := func(id string) {
+			_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+				ID:         id,
+				WorkingDir: dir,
+				Title:      id,
+			})
+			require.True(t, created)
+		}
+
+		seedDead("dead-0")
+		for i := range maxQuakeRegisterAttempts - 1 {
+			currID := fmt.Sprintf("dead-%d", i)
+			nextID := fmt.Sprintf("dead-%d", i+1)
+			svc.terminalCleanups.claim(currID)
+			require.True(t, svc.terminalCleanups.register(currID, func() {
+				svc.QuakeTerminals.Delete(currID)
+				seedDead(nextID)
+			}))
+		}
+		var liveHandle *startupEntry
+		lastDeadID := fmt.Sprintf("dead-%d", maxQuakeRegisterAttempts-1)
+		svc.terminalCleanups.claim(lastDeadID)
+		require.True(t, svc.terminalCleanups.register(lastDeadID, func() {
+			svc.QuakeTerminals.Delete(lastDeadID)
+			liveHandle = svc.TerminalStartup.begin("live-final", func() {})
+			require.NotNil(t, liveHandle)
+			_, created := svc.QuakeTerminals.RegisterOrAdopt(QuakeTerminal{
+				ID:         "live-final",
+				WorkingDir: dir,
+				Title:      "Live Final Quake",
+			})
+			require.True(t, created)
+		}))
+
+		startupCtx, startupHandle := svc.beginTerminalStartup("fresh-quake", testutil.TestShell())
+		require.NotNil(t, startupHandle)
+
+		gotCtx, gotHandle, ok := svc.registerQuakeTerminal(w, QuakeTerminal{
+			ID:         "fresh-quake",
+			WorkingDir: dir,
+			Shell:      testutil.TestShell(),
+			Title:      "Fresh Quake",
+		}, startupCtx, startupHandle)
+
+		assert.False(t, ok)
+		assert.Nil(t, gotCtx)
+		assert.Nil(t, gotHandle)
+		assert.Empty(t, w.errors)
+		require.Len(t, w.responses, 1)
+		var resp leapmuxv1.OpenTerminalResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		assert.Equal(t, "live-final", resp.GetTerminalId())
+		assert.Equal(t, "Live Final Quake", resp.GetTitle())
+
+		require.NotNil(t, liveHandle)
+		svc.TerminalStartup.abandon(liveHandle)
+		requireStartupsReleased(t, &svc.TerminalStartup.startupCore)
+	})
+}

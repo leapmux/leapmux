@@ -43,11 +43,12 @@ type userKindKey struct {
 // SessionStore holds in-flight WebAuthn ceremonies in memory, replacing any
 // prior per-user ceremony of the same kind atomically on Create.
 type SessionStore struct {
-	mu         sync.Mutex
-	byID       map[string]*CeremonySession
-	byUserKind map[userKindKey]*CeremonySession
-	maxEntries int
-	now        func() time.Time
+	mu           sync.Mutex
+	byID         map[string]*CeremonySession
+	byUserKind   map[userKindKey]*CeremonySession
+	maxEntries   int
+	minExpiresAt time.Time
+	now          func() time.Time
 }
 
 // NewSessionStore returns an empty SessionStore with the default capacity cap.
@@ -107,7 +108,9 @@ func (s *SessionStore) Create(sess CeremonySession) error {
 	}
 
 	if previous == nil && len(s.byID) >= s.maxEntries {
-		s.evictExpiredLocked(now)
+		if s.minExpiresAt.IsZero() || s.minExpiresAt.Before(now) {
+			s.evictExpiredLocked(now)
+		}
 		if len(s.byID) >= s.maxEntries {
 			return errWebAuthnSessionCapacity
 		}
@@ -116,7 +119,11 @@ func (s *SessionStore) Create(sess CeremonySession) error {
 	if previous != nil {
 		delete(s.byID, previous.ID)
 	}
+	wasEmpty := len(s.byID) == 0
 	s.byID[stored.ID] = stored
+	if wasEmpty || (!s.minExpiresAt.IsZero() && stored.ExpiresAt.Before(s.minExpiresAt)) {
+		s.minExpiresAt = stored.ExpiresAt
+	}
 	if perUser {
 		s.byUserKind[uk] = stored
 	}
@@ -162,29 +169,12 @@ func (s *SessionStore) Consume(id string, kind Kind, expectedTokenHash string, n
 	return cloneCeremonySession(sess), nil
 }
 
-// DeleteByUserAndKind removes the open ceremony for (userID, kind), if any.
-func (s *SessionStore) DeleteByUserAndKind(userID string, kind Kind) int64 {
-	if userID == "" {
-		return 0
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	uk := userKindKey{userID: userID, kind: kind}
-	sess, ok := s.byUserKind[uk]
-	if !ok {
-		return 0
-	}
-	s.deleteLocked(sess)
-	return 1
-}
-
 // DeleteByUserBeforeGeneration removes every ceremony for userID whose
 // recorded UserAuthGeneration is older than userAuthGeneration per
 // auth.ShouldEvictForUserGeneration. When userAuthGeneration <= 0, every
 // ceremony for userID is removed.
-func (s *SessionStore) DeleteByUserBeforeGeneration(userID string, userAuthGeneration int64) int64 {
-	if userID == "" {
+func (s *SessionStore) DeleteByUserBeforeGeneration(userID userid.UserID, userAuthGeneration int64) int64 {
+	if userID.IsZero() {
 		return 0
 	}
 	s.mu.Lock()
@@ -192,7 +182,7 @@ func (s *SessionStore) DeleteByUserBeforeGeneration(userID string, userAuthGener
 
 	var deleted int64
 	for _, sess := range s.byID {
-		if sess.UserID.String() == userID && auth.ShouldEvictForUserGeneration(sess.UserAuthGeneration, userAuthGeneration) {
+		if sess.UserID.MatchesUser(userID) && auth.ShouldEvictForUserGeneration(sess.UserAuthGeneration, userAuthGeneration) {
 			s.deleteLocked(sess)
 			deleted++
 		}
@@ -209,12 +199,18 @@ func (s *SessionStore) DeleteExpired(now time.Time) int64 {
 
 func (s *SessionStore) evictExpiredLocked(now time.Time) int64 {
 	var deleted int64
+	var minRem time.Time
 	for _, sess := range s.byID {
 		if sess.ExpiresAt.Before(now) {
 			s.deleteLocked(sess)
 			deleted++
+			continue
+		}
+		if minRem.IsZero() || sess.ExpiresAt.Before(minRem) {
+			minRem = sess.ExpiresAt
 		}
 	}
+	s.minExpiresAt = minRem
 	return deleted
 }
 
@@ -225,6 +221,9 @@ func (s *SessionStore) deleteLocked(sess *CeremonySession) {
 		if s.byUserKind[uk] == sess {
 			delete(s.byUserKind, uk)
 		}
+	}
+	if len(s.byID) == 0 {
+		s.minExpiresAt = time.Time{}
 	}
 }
 

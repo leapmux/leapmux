@@ -10,6 +10,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -461,26 +462,6 @@ func (p lettaBackgroundProcess) key() string {
 	return strings.TrimSpace(p.ID)
 }
 
-func lettaBackgroundProcessStatus(proc lettaBackgroundProcess) bgtask.Status {
-	switch strings.ToLower(strings.TrimSpace(proc.Status)) {
-	case "", "running", "started", "starting", "active":
-		return bgtask.StatusRunning
-	case "pending", "queued":
-		return bgtask.StatusPending
-	case "completed", "succeeded", "exited", "done":
-		if proc.ExitCode != nil && *proc.ExitCode != 0 {
-			return bgtask.StatusFailed
-		}
-		return bgtask.StatusSucceeded
-	case "failed", "error":
-		return bgtask.StatusFailed
-	case "killed", "stopped", "cancelled", "canceled", "terminated":
-		return bgtask.StatusStopped
-	default:
-		return bgtask.StatusRunning
-	}
-}
-
 func lettaExitStatus(completion agent.MessageCompletion) bgtask.Status {
 	switch completion {
 	case agent.MessageCompletionError:
@@ -495,11 +476,7 @@ func lettaExitStatus(completion agent.MessageCompletion) bgtask.Status {
 // reconcileBackgroundProcesses diffs device_status.background_processes against
 // tracked shell rows under dispatchMu.
 func (a *Agent) reconcileBackgroundProcesses(processes []lettaBackgroundProcess) {
-	if a.backgroundProcesses == nil {
-		a.backgroundProcesses = make(map[string]struct{})
-	}
-	active := make(map[string]struct{}, len(processes))
-	handled := make(map[string]struct{}, len(processes))
+	snapshots := make([]providerkit.BackgroundProcessSnapshot, 0, len(processes))
 	for _, proc := range processes {
 		if proc.Kind == "agent_task" && strings.TrimSpace(proc.SubagentID) != "" {
 			continue
@@ -508,57 +485,25 @@ func (a *Agent) reconcileBackgroundProcesses(processes []lettaBackgroundProcess)
 		if id == "" {
 			continue
 		}
-		rowKey := lettaBackgroundProcessRowPrefix + id
-		status := lettaBackgroundProcessStatus(proc)
-		if status.IsFinished() {
-			delete(active, rowKey)
-			handled[rowKey] = struct{}{}
-			if _, tracked := a.backgroundProcesses[rowKey]; tracked {
-				if err := a.queueRegistryClose(rowKey, status); err != nil {
-					slog.Warn("letta: close background process failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
-					continue
-				}
-				delete(a.backgroundProcesses, rowKey)
-			}
-			continue
-		}
-		title, isCommand := strings.TrimSpace(proc.Description), false
-		if title == "" && strings.TrimSpace(proc.Command) != "" {
-			title, isCommand = strings.TrimSpace(proc.Command), true
-		}
-		if title == "" {
-			title = "Background process"
-		}
-		if err := a.queueRegistryUpsert(bgtask.Upsert{
-			RowKey:         rowKey,
-			Kind:           bgtask.KindShell,
-			ParentAgentID:  a.AgentID(),
+		title, isCommand := providerkit.BackgroundProcessTitle(proc.Description, "", proc.Command)
+		snapshots = append(snapshots, providerkit.BackgroundProcessSnapshot{
+			RowKey:         lettaBackgroundProcessRowPrefix + id,
 			Title:          title,
 			TitleIsCommand: isCommand,
-			Status:         status,
-		}); err != nil {
-			slog.Warn("letta: upsert background process failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
-			continue
-		}
-		active[rowKey] = struct{}{}
-		handled[rowKey] = struct{}{}
-		a.backgroundProcesses[rowKey] = struct{}{}
+			Status:         providerkit.BackgroundProcessStatus(proc.Status, proc.ExitCode),
+		})
 	}
-	var evicted []string
-	for rowKey := range a.backgroundProcesses {
-		if _, stillActive := active[rowKey]; !stillActive {
-			if _, alreadyHandled := handled[rowKey]; !alreadyHandled {
-				evicted = append(evicted, rowKey)
+	for _, op := range providerkit.ReconcileBackgroundProcesses(&a.backgroundProcesses, a.AgentID(), snapshots) {
+		if op.Upsert != nil {
+			if err := a.queueRegistryUpsert(*op.Upsert); err != nil {
+				slog.Warn("letta: upsert background process failed", "agent_id", a.AgentID(), "row_key", op.Upsert.RowKey, "error", err)
 			}
-		}
-	}
-	sort.Strings(evicted)
-	for _, rowKey := range evicted {
-		if err := a.queueRegistryClose(rowKey, bgtask.StatusEndedWithUnknownOutcome); err != nil {
-			slog.Warn("letta: close evicted background process failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
 			continue
 		}
-		delete(a.backgroundProcesses, rowKey)
+		if err := a.queueRegistryClose(op.RowKey, op.CloseStatus); err != nil {
+			slog.Warn("letta: close background process failed", "agent_id", a.AgentID(), "row_key", op.RowKey, "error", err)
+			a.backgroundProcesses[op.RowKey] = struct{}{}
+		}
 	}
 }
 

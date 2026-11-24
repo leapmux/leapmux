@@ -543,20 +543,6 @@ func TestCodex_ThreadClosedUnknownTurnStatusAndThreadStatusChanged(t *testing.T)
 	})
 }
 
-// rootDefaultingParentSink mimics production agentOutputSink.UpsertBackgroundTask,
-// which fills an empty ParentAgentID with the root agent ID.
-type rootDefaultingParentSink struct {
-	agent.ProviderServices
-	rootAgentID string
-}
-
-func (s *rootDefaultingParentSink) UpsertBackgroundTask(task bgtask.Upsert) error {
-	if task.ParentAgentID == "" {
-		task.ParentAgentID = s.rootAgentID
-	}
-	return s.ProviderServices.UpsertBackgroundTask(task)
-}
-
 func TestCodex_ResumedGrandchildPreservesOriginalParentAgentID(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -577,8 +563,7 @@ func TestCodex_ResumedGrandchildPreservesOriginalParentAgentID(t *testing.T) {
 		RowKey: "grandchild-thread", Kind: bgtask.KindSubagent, ChildAgentID: grandchildID, ParentAgentID: childID, Title: "Grandchild", Status: bgtask.StatusSucceeded,
 	}))
 
-	wrapped := &rootDefaultingParentSink{ProviderServices: rootServices, rootAgentID: "test-agent"}
-	a := newCodexAgentWithSink(wrapped)
+	a := newCodexAgentWithSink(rootServices)
 
 	// Resumed grandchild starts a new turn after restart (empty collabChildren).
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"grandchild-thread","turn":{"id":"gc-turn-2"}}}`)))
@@ -645,7 +630,7 @@ func TestCodex_SeenActivitiesIsCapped(t *testing.T) {
 
 	a.Mu.Lock()
 	state := a.collabChildren["child-1"]
-	count := len(state.seenActivities)
+	count := state.seenActivities.Len()
 	a.Mu.Unlock()
 	assert.LessOrEqual(t, count, 256, "seenActivities must cap its retained keys")
 }

@@ -319,7 +319,7 @@ func TestTerminalReplayNeverBlocksOnAStalledSender(t *testing.T) {
 	sink := newReplaySink(replaying, 0, nil, nil)
 	replayed := runStalledTestWork(t, stalled, func() {
 		for _, terminalID := range []string{id, other} {
-			row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
+			row, err := svc.terminalCatalog().get(context.Background(), terminalID)
 			assert.NoError(t, err)
 			svc.replayTerminalCatchUp(sink, terminalID, 0, row)
 		}
@@ -350,7 +350,7 @@ func replayIntoStalledDrain(t *testing.T, svc *Service, id string, stalled *stal
 	t.Helper()
 	testCtx := testutil.DeadlineContext(t)
 	seedTerminal(t, svc, id)
-	row, err := svc.Queries.GetTerminal(context.Background(), id)
+	row, err := svc.terminalCatalog().get(context.Background(), id)
 	require.NoError(t, err)
 	watchTerminal(svc, id, stalled)
 
@@ -429,7 +429,7 @@ func TestTerminalStatusKeepsItsOrderUnderConcurrentEmittersAndReplays(t *testing
 	for i := range terminals {
 		id := fmt.Sprintf("term-%d", i)
 		seedTerminal(t, svc, id)
-		row, err := svc.Queries.GetTerminal(context.Background(), id)
+		row, err := svc.terminalCatalog().get(context.Background(), id)
 		require.NoError(t, err)
 		writers[i] = newTestWriter()
 		writers[i].channelID = id + "-channel"
@@ -563,7 +563,7 @@ func TestReplayTerminalStatusReachesOnlyItsSubscriber(t *testing.T) {
 
 	svc, _, _ := setupTestService(t)
 	seedTerminal(t, svc, "term")
-	row, err := svc.Queries.GetTerminal(context.Background(), "term")
+	row, err := svc.terminalCatalog().get(context.Background(), "term")
 	require.NoError(t, err)
 	watcher := newTestWriter()
 	watcher.channelID = "other-watcher"

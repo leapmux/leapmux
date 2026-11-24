@@ -194,7 +194,7 @@ func (b *FamilyBase) taskPartRowKey(rootSessionID, callID, childSessionID string
 	if child := b.childSessions[childSessionID]; child != nil && child.background && (child.rootSessionID == "" || child.rootSessionID == rootSessionID) {
 		return childSessionID, true
 	}
-	if owner, finalized := b.finalizedTaskCalls[callID]; finalized && (owner == "" || owner == rootSessionID) {
+	if owner, finalized := b.finalizedTaskCalls.Get(callID); finalized && (owner == "" || owner == rootSessionID) {
 		return "", false
 	}
 	return callID, true
@@ -467,7 +467,7 @@ func (b *FamilyBase) subagentFromToolCall(tc acp.ToolCallEnvelope) *acp.Subagent
 	b.markTaskCallFinalized(tc.ToolCallID, rootSessionID)
 	title := openCodeTaskTitle(tc.Title, input)
 	freshSpawn := input.argumentsReady && input.taskID == ""
-	return b.finalizeTaskObservation(rootSessionID, tc.ToolCallID, title, tc.Status, tc.RawOutput, nil, reusedTaskID, input.prompt, freshSpawn, true)
+	return b.finalizeTaskObservation(rootSessionID, tc.ToolCallID, title, tc.Status, tc.RawOutput, tc.Content, reusedTaskID, input.prompt, freshSpawn, true)
 }
 
 func (b *FamilyBase) resolveSpawnObservation(toolCallID, callTitle string, rawInput json.RawMessage, knownTask, fromUpdate bool) *acp.SubagentObservation {
@@ -592,63 +592,46 @@ func (b *FamilyBase) finalizeTaskObservation(
 		spawnSpanID = callID
 	}
 
+	obs := &acp.SubagentObservation{
+		RowKey:           rowKey,
+		RenameFrom:       renameFrom,
+		ChildAgentKey:    childKey,
+		ChildSpawnSpanID: spawnSpanID,
+		Title:            title,
+		Prompt:           prompt,
+		Spawns:           freshSpawn,
+		ReportID:         callID,
+	}
 	status := acp.FinalStatus(rawStatus)
 	if out.background && out.sessionID != "" && status == bgtask.StatusSucceeded {
 		if earlyStatus, closedEarly := b.claimBackgroundChildLaunch(rootSessionID, callID, reusedTaskID, out.sessionID); closedEarly {
 			if b.takeTaskChildStop(callID, reusedTaskID, out.sessionID) && earlyStatus != bgtask.StatusSucceeded {
 				earlyStatus = bgtask.StatusInterrupted
 			}
-			return &acp.SubagentObservation{
-				RowKey:           rowKey,
-				RenameFrom:       renameFrom,
-				ChildAgentKey:    childKey,
-				ChildSpawnSpanID: spawnSpanID,
-				Title:            title,
-				Status:           earlyStatus,
-				CloseRow:         true,
-				Mode:             closeMode,
-				Prompt:           prompt,
-				Spawns:           freshSpawn,
-				ReportID:         callID,
-				Report:           agent.SubagentReport{},
-			}
+			obs.Status = earlyStatus
+			obs.CloseRow = true
+			obs.Mode = closeMode
+			return obs
 		}
-		return &acp.SubagentObservation{
-			RowKey:           rowKey,
-			RenameFrom:       renameFrom,
-			ChildAgentKey:    childKey,
-			ChildSpawnSpanID: spawnSpanID,
-			Title:            title,
-			Status:           bgtask.StatusRunning,
-			CloseRow:         false,
-			Mode:             acp.ModeUpsert,
-			Prompt:           prompt,
-			Spawns:           freshSpawn,
-			ReportID:         callID,
-			Report:           agent.SubagentReport{},
-		}
+		obs.Status = bgtask.StatusRunning
+		obs.CloseRow = false
+		obs.KeepOpen = true
+		obs.ReviveRow = reusedTaskID != ""
+		obs.Mode = acp.ModeUpsert
+		return obs
 	}
 
 	b.finishForegroundChildTracking(callID, reusedTaskID, rowKey)
 	if b.takeTaskChildStop(callID, reusedTaskID, rowKey) && status != bgtask.StatusSucceeded {
 		status = bgtask.StatusInterrupted
 	}
-	return &acp.SubagentObservation{
-		RowKey:           rowKey,
-		RenameFrom:       renameFrom,
-		ChildAgentKey:    childKey,
-		ChildSpawnSpanID: spawnSpanID,
-		Title:            title,
-		Status:           status,
-		CloseRow:         true,
-		Mode:             closeMode,
-		Prompt:           prompt,
-		Spawns:           freshSpawn,
-		ReportID:         callID,
-		Report: agent.SubagentReport{
-			Text: openCodeSubagentReport(acp.ToolCallText(content), out.background),
-		},
+	obs.Status = status
+	obs.CloseRow = true
+	obs.Mode = closeMode
+	obs.Report = agent.SubagentReport{
+		Text: openCodeSubagentReport(acp.ToolCallText(content), out.background),
 	}
+	return obs
 }
 
 func (b *FamilyBase) handleChildDaemonEvent(sessionID, eventType string, properties json.RawMessage) {
@@ -681,11 +664,11 @@ func (b *FamilyBase) finishBackgroundChildSession(sessionID string, status bgtas
 	b.childSessionsMu.Lock()
 	child := b.childSessions[sessionID]
 	if child == nil || !child.background {
-		if _, finishedFG := b.finishedForegroundSessions[sessionID]; finishedFG {
+		if b.finishedForegroundSessions.Has(sessionID) {
 			b.childSessionsMu.Unlock()
 			return
 		}
-		prev, exists := b.earlyChildEvents[sessionID]
+		prev, exists := b.earlyChildEvents.Get(sessionID)
 		if !exists || (prev == bgtask.StatusSucceeded && status != bgtask.StatusSucceeded) {
 			b.recordEarlyChildEventLocked(sessionID, status)
 		}
@@ -694,7 +677,7 @@ func (b *FamilyBase) finishBackgroundChildSession(sessionID string, status bgtas
 	}
 	rootSessionID := child.rootSessionID
 	delete(b.childSessions, sessionID)
-	delete(b.earlyChildEvents, sessionID)
+	b.earlyChildEvents.Delete(sessionID)
 	b.childSessionsMu.Unlock()
 	if b.takeChildStop(sessionID) && status != bgtask.StatusSucceeded {
 		status = bgtask.StatusInterrupted
@@ -713,9 +696,9 @@ func (b *FamilyBase) finishBackgroundChildSession(sessionID string, status bgtas
 func (b *FamilyBase) claimBackgroundChildLaunch(rootSessionID, callID, reusedTaskID, sessionID string) (bgtask.Status, bool) {
 	b.childSessionsMu.Lock()
 	defer b.childSessionsMu.Unlock()
-	delete(b.finishedForegroundSessions, sessionID)
-	if earlyStatus, ok := b.earlyChildEvents[sessionID]; ok {
-		delete(b.earlyChildEvents, sessionID)
+	b.finishedForegroundSessions.Delete(sessionID)
+	if earlyStatus, ok := b.earlyChildEvents.Get(sessionID); ok {
+		b.earlyChildEvents.Delete(sessionID)
 		delete(b.childSessions, callID)
 		if reusedTaskID != "" {
 			delete(b.childSessions, reusedTaskID)
@@ -758,12 +741,12 @@ func (b *FamilyBase) finishForegroundChildTracking(callID, reusedTaskID, rowKey 
 	delete(b.childSessions, callID)
 	if reusedTaskID != "" {
 		delete(b.childSessions, reusedTaskID)
-		delete(b.earlyChildEvents, reusedTaskID)
+		b.earlyChildEvents.Delete(reusedTaskID)
 		b.recordFinishedForegroundSessionLocked(reusedTaskID)
 	}
 	if rowKey != "" {
 		delete(b.childSessions, rowKey)
-		delete(b.earlyChildEvents, rowKey)
+		b.earlyChildEvents.Delete(rowKey)
 		b.recordFinishedForegroundSessionLocked(rowKey)
 	}
 }
@@ -773,45 +756,27 @@ func (b *FamilyBase) clearEarlyChildEvent(sessionID string) {
 		return
 	}
 	b.childSessionsMu.Lock()
-	delete(b.earlyChildEvents, sessionID)
-	delete(b.finishedForegroundSessions, sessionID)
+	b.earlyChildEvents.Delete(sessionID)
+	b.finishedForegroundSessions.Delete(sessionID)
 	b.childSessionsMu.Unlock()
 }
 
+func setOpenCodeCappedLocked[V any](m *providerkit.CappedMap[string, V], key string, value V) {
+	if m.Cap() == 0 {
+		*m = providerkit.NewCappedMap[string, V](openCodeMaxTrackedEntries)
+	}
+	m.Set(key, value)
+}
+
 func (b *FamilyBase) recordEarlyChildEventLocked(sessionID string, status bgtask.Status) {
-	if b.earlyChildEvents == nil {
-		b.earlyChildEvents = make(map[string]bgtask.Status)
-	}
-	_, existed := b.earlyChildEvents[sessionID]
-	b.earlyChildEvents[sessionID] = status
-	if existed {
-		return
-	}
-	b.earlyChildEventOrder = append(b.earlyChildEventOrder, sessionID)
-	for len(b.earlyChildEvents) > openCodeMaxTrackedEntries && len(b.earlyChildEventOrder) > 0 {
-		oldest := b.earlyChildEventOrder[0]
-		b.earlyChildEventOrder = b.earlyChildEventOrder[1:]
-		delete(b.earlyChildEvents, oldest)
-	}
+	setOpenCodeCappedLocked(&b.earlyChildEvents, sessionID, status)
 }
 
 func (b *FamilyBase) recordFinishedForegroundSessionLocked(sessionID string) {
 	if sessionID == "" {
 		return
 	}
-	if b.finishedForegroundSessions == nil {
-		b.finishedForegroundSessions = make(map[string]struct{})
-	}
-	if _, existed := b.finishedForegroundSessions[sessionID]; existed {
-		return
-	}
-	b.finishedForegroundSessions[sessionID] = struct{}{}
-	b.finishedForegroundOrder = append(b.finishedForegroundOrder, sessionID)
-	for len(b.finishedForegroundSessions) > openCodeMaxTrackedEntries && len(b.finishedForegroundOrder) > 0 {
-		oldest := b.finishedForegroundOrder[0]
-		b.finishedForegroundOrder = b.finishedForegroundOrder[1:]
-		delete(b.finishedForegroundSessions, oldest)
-	}
+	setOpenCodeCappedLocked(&b.finishedForegroundSessions, sessionID, struct{}{})
 }
 
 func (b *FamilyBase) markTaskCallFinalized(callID, rootSessionID string) {
@@ -821,20 +786,7 @@ func (b *FamilyBase) markTaskCallFinalized(callID, rootSessionID string) {
 	b.childSessionsMu.Lock()
 	defer b.childSessionsMu.Unlock()
 	delete(b.reusedTaskCalls, callID)
-	if b.finalizedTaskCalls == nil {
-		b.finalizedTaskCalls = make(map[string]string)
-	}
-	_, existed := b.finalizedTaskCalls[callID]
-	b.finalizedTaskCalls[callID] = rootSessionID
-	if existed {
-		return
-	}
-	b.finalizedTaskCallOrder = append(b.finalizedTaskCallOrder, callID)
-	for len(b.finalizedTaskCalls) > openCodeMaxTrackedEntries && len(b.finalizedTaskCallOrder) > 0 {
-		oldest := b.finalizedTaskCallOrder[0]
-		b.finalizedTaskCallOrder = b.finalizedTaskCallOrder[1:]
-		delete(b.finalizedTaskCalls, oldest)
-	}
+	setOpenCodeCappedLocked(&b.finalizedTaskCalls, callID, rootSessionID)
 }
 
 func (b *FamilyBase) isTaskCallFinalized(callID, rootSessionID string) bool {
@@ -843,7 +795,7 @@ func (b *FamilyBase) isTaskCallFinalized(callID, rootSessionID string) bool {
 	}
 	b.childSessionsMu.Lock()
 	defer b.childSessionsMu.Unlock()
-	owner, finalized := b.finalizedTaskCalls[callID]
+	owner, finalized := b.finalizedTaskCalls.Get(callID)
 	return finalized && (owner == "" || owner == rootSessionID)
 }
 

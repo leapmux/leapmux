@@ -16,7 +16,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/util/procutil"
 )
 
 var _ agent.StartFunc = Start
@@ -132,8 +131,6 @@ func newAgent(opts agent.Options, sink agent.ProviderServices, config launchConf
 		clock:          clock,
 		ctx:            ctx,
 		cancel:         cancel,
-		pidAliveFn:     ampProcessAlive,
-		pidIdentityFn:  procutil.IdentifyProcess,
 		threadID:       opts.ResumeSessionID,
 		agentMode:      launchAgentMode(opts),
 		fastMode:       launchFastMode(opts),

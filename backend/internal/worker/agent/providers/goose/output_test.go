@@ -415,7 +415,6 @@ func TestGooseClearProviderStateResetsMaps(t *testing.T) {
 	a.gooseChildRenames = map[string]string{"delegate-1": "20261019_2"}
 	a.gooseOutput = map[string]gooseOutputState{"shell-1": {sequence: 1, bytes: 5, tail: "hello"}}
 	a.activeDelegations = map[string]struct{}{"20261019_2": {}}
-	a.runSeq = map[string]int{"20261019_2": 2}
 	a.resumedCalls = map[string]string{"delegate-2": "20261019_2"}
 	a.pendingResumeNotices = map[string]bool{"20261019_2": true}
 	a.pendingResumeAcks = map[string]bool{"20261019_2": true}
@@ -429,7 +428,6 @@ func TestGooseClearProviderStateResetsMaps(t *testing.T) {
 	assert.Empty(t, a.gooseChildRenames)
 	assert.Empty(t, a.gooseOutput)
 	assert.Empty(t, a.activeDelegations)
-	assert.Empty(t, a.runSeq)
 	assert.Empty(t, a.resumedCalls)
 	assert.Empty(t, a.pendingResumeNotices)
 	assert.Empty(t, a.pendingResumeAcks)

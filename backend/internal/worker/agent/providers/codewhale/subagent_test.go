@@ -1135,6 +1135,17 @@ func (rt *fakeRuntime) handlerFor(method, path string) http.HandlerFunc {
 	return rt.handlers[method+" "+path]
 }
 
+func readWorkflowJournalStatuses(workingDir, relPath string) (map[string]bgtask.Status, error) {
+	root, err := os.OpenRoot(workingDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	var cursor workflowJournalCursor
+	statuses, _, err := cursor.read(root, relPath)
+	return statuses, err
+}
+
 func TestCodewhaleWorkflowJournalPollingAndExitClose(t *testing.T) {
 	t.Parallel()
 	t.Run("readWorkflowJournalStatuses decodes tagged snapshot and ignores progress and event lines", func(t *testing.T) {
@@ -1213,6 +1224,42 @@ func TestCodewhaleWorkflowJournalPollingAndExitClose(t *testing.T) {
 		assert.True(t, reread)
 		assert.Equal(t, int64(len(replaced)), cursor.offset)
 		assert.Equal(t, map[string]bgtask.Status{"run-3": bgtask.StatusFailed}, statuses)
+	})
+
+	t.Run("workflowJournalCursor handles empty journal and trailing line without newline", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		relPath := filepath.Join(".codewhale", "workflow-runs.jsonl")
+		journalPath := filepath.Join(dir, relPath)
+		require.NoError(t, os.MkdirAll(filepath.Dir(journalPath), 0o755))
+		require.NoError(t, os.WriteFile(journalPath, nil, 0o600))
+
+		root, err := os.OpenRoot(dir)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = root.Close() })
+
+		var cursor workflowJournalCursor
+		statuses, reread, err := cursor.read(root, relPath)
+		require.NoError(t, err)
+		assert.True(t, reread)
+		assert.Empty(t, statuses)
+		assert.Zero(t, cursor.offset)
+
+		line := `{"kind":"snapshot","run":{"run_id":"run-1","status":"running"}}`
+		require.NoError(t, os.WriteFile(journalPath, []byte(line), 0o600))
+		statuses, reread, err = cursor.read(root, relPath)
+		require.NoError(t, err)
+		assert.True(t, reread)
+		assert.Equal(t, bgtask.StatusRunning, statuses["run-1"])
+		assert.Zero(t, cursor.offset, "offset stays at 0 when the valid line has no trailing newline")
+
+		trailing := "\n  \t"
+		appendTranscript(t, journalPath, trailing)
+		statuses, reread, err = cursor.read(root, relPath)
+		require.NoError(t, err)
+		assert.True(t, reread)
+		assert.Equal(t, int64(len(line)+len(trailing)), cursor.offset)
+		assert.Equal(t, bgtask.StatusRunning, statuses["run-1"])
 	})
 
 	t.Run("journal final line closes tracked workflow", func(t *testing.T) {

@@ -35,11 +35,10 @@ import (
 //
 // The ceremony is the DEVICE-CODE ceremony, unchanged: the CLI asks, the hub
 // returns a user code and a URL, a human approves it in a browser, the CLI
-// polls. The two flows share the row, the TTL, the poll throttle, the
-// slow_down throttle, the expiry sweep and the activation page; they differ in
-// what the approval does, which is what device_authorizations.elevate_token_id
-// records. A second table would be a second copy of every one of those
-// rules.
+// polls. The two flows share the in-memory store, the TTL, the poll throttle,
+// the slow_down throttle, the expiry sweep and the activation page; they
+// differ in what the approval does, which is what DeviceAuthorization.ElevateTokenID
+// records. A second store would be a second copy of every one of those rules.
 //
 // The browser is not an implementation detail. It is the only place a person
 // can answer a password or a passkey prompt, and it is deliberately somewhere
@@ -118,7 +117,7 @@ func (h *OAuthServerHandler) handleStepUpAuthorization(w http.ResponseWriter, r 
 	if !ok {
 		return
 	}
-	grant, err := h.createDeviceGrant(r.Context(), CreateDeviceAuthorizationParams{
+	grant, err := h.createDeviceGrant(CreateDeviceAuthorizationParams{
 		DeviceName: normalizeInstallationName(r.FormValue("installation_name")),
 		ClientID:   row.ClientID,
 		// A step-up asks for NOTHING. It widens no grant; it only proves that
@@ -150,10 +149,10 @@ var errElevationGrantUnavailable = errors.New("that command-line credential is n
 // elevates nothing: the store statement carries the owner equality, so the
 // update matches no row and this reports the same refusal an expired one gets.
 //
-// It writes through the TRANSACTION its caller opened, so the approval and the
-// window commit together or not at all. It emits no cache effect of its own:
-// approveGrant's callback may run more than once, and the caller invalidates
-// the cached UserInfo after the commit instead.
+// The caller reserves the in-memory step-up grant before calling this, so a
+// failed elevation reverts the grant to pending with no approver recorded. It
+// emits no cache effect of its own: the caller invalidates the cached UserInfo
+// after approval succeeds.
 func (h *OAuthServerHandler) elevateGrantedToken(ctx context.Context, tx store.Store, tokenID string, owner userid.UserID) error {
 	now := h.now().UTC()
 	n, err := tx.APITokens().Elevate(ctx, store.ElevateAPITokenParams{

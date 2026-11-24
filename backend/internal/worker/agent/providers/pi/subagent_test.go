@@ -30,7 +30,7 @@ func piApplySubagentEnd(sink subagentServices, result json.RawMessage, toolCallI
 }
 
 func piApplySubagentNotification(sink subagentServices, raw []byte) {
-	piApplySubagentNotificationTracked(sink, raw, nil, nil, nil)
+	piApplySubagentNotificationTracked(sink, raw, nil, nil)
 }
 
 func TestPi_ExtractDescription(t *testing.T) {

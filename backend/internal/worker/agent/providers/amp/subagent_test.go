@@ -3,7 +3,6 @@ package amp
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -409,10 +408,10 @@ func TestShellLivenessPollerClosesExitedPIDOnce(t *testing.T) {
 	var alive atomic.Bool
 	alive.Store(true)
 	probed := make(chan int, 8)
-	h.agent.pidAliveFn = func(pid int) bool {
+	h.agent.inspectProcessFn = func(pid int) procutil.LiveProcessInfo {
 		result := alive.Load()
 		probed <- pid
-		return result
+		return procutil.LiveProcessInfo{Alive: result}
 	}
 
 	var closes atomic.Int32
@@ -422,6 +421,13 @@ func TestShellLivenessPollerClosesExitedPIDOnce(t *testing.T) {
 	defer tickerTrap.Close()
 
 	fp := startBackgroundCommand(h, "npm run dev", 4242)
+	// Drain the initial inspection performed by openShellRow.
+	select {
+	case pid := <-probed:
+		assert.Equal(t, 4242, pid)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for initial openShellRow inspection")
+	}
 	assert.Equal(t, ampShellPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
 
 	// Advancing a tick while the PID is alive leaves the shell row running.
@@ -465,7 +471,9 @@ func TestShellLivenessPollerRestartsAfterEmptying(t *testing.T) {
 
 	var alive atomic.Bool
 	alive.Store(false)
-	h.agent.pidAliveFn = func(int) bool { return alive.Load() }
+	h.agent.inspectProcessFn = func(int) procutil.LiveProcessInfo {
+		return procutil.LiveProcessInfo{Alive: alive.Load()}
+	}
 
 	tickerTrap := h.clock.Trap().NewTicker("amp", "shell-liveness")
 	defer tickerTrap.Close()
@@ -516,7 +524,9 @@ func TestNonJSONShellToolErrorClosesDeadProcess(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			h := newHarness(t)
-			h.agent.pidAliveFn = func(int) bool { return tc.alive }
+			h.agent.inspectProcessFn = func(int) procutil.LiveProcessInfo {
+				return procutil.LiveProcessInfo{Alive: tc.alive}
+			}
 			fp := startBackgroundCommand(h, "npm run dev", 4242)
 			h.feed(fp, assistantLine("["+toolUseBlock("TU-err", tc.tool, `{"pid":4242}`)+"]", "tool_use"))
 			h.feed(fp, toolResultLine("TU-err", tc.text, true))
@@ -528,60 +538,37 @@ func TestNonJSONShellToolErrorClosesDeadProcess(t *testing.T) {
 	}
 }
 
-func TestAmpProcessAliveBoundaries(t *testing.T) {
-	t.Parallel()
-	assert.False(t, ampProcessAlive(0))
-	assert.False(t, ampProcessAlive(-1))
-	if overflow := int64(math.MaxInt32) + 1; overflow <= math.MaxInt {
-		assert.False(t, ampProcessAlive(int(overflow)))
-	}
-	assert.True(t, ampProcessAlive(os.Getpid()))
-}
-
-func TestAmpLinuxStatAlive(t *testing.T) {
+func TestNonJSONShellToolErrorClosesReusedPID(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name string
-		data string
-		want bool
+		name          string
+		initialToken  int64
+		followUpToken int64
+		wantStatus    bgtask.Status
 	}{
-		{name: "running process", data: "1234 (node) R 1 1234 1234 0 -1", want: true},
-		{name: "sleeping process", data: "1234 (bash) S 1 1234 1234 0 -1", want: true},
-		{name: "zombie process", data: "1234 (sh) Z 1 1234 1234 0 -1", want: false},
-		{name: "dead uppercase X", data: "1234 (sh) X 1 1234 1234 0 -1", want: false},
-		{name: "dead lowercase x", data: "1234 (sh) x 1 1234 1234 0 -1", want: false},
-		{name: "comm containing spaces and parentheses zombie", data: "1234 (my ) weird (proc)) Z 1 1234 1234", want: false},
-		{name: "comm containing spaces and parentheses running", data: "1234 (my ) weird (proc)) S 1 1234 1234", want: true},
-		{name: "whitespace before state", data: "1234 (sh) \t\n Z 1", want: false},
-		{name: "empty payload returns true conservatively", data: "", want: true},
-		{name: "missing closing paren returns true conservatively", data: "1234 (sh Z 1", want: true},
-		{name: "truncated after closing paren returns true conservatively", data: "1234 (sh)   ", want: true},
+		{name: "different start token closes row", initialToken: 1000, followUpToken: 2000, wantStatus: bgtask.StatusEndedWithUnknownOutcome},
+		{name: "missing start token on later EPERM closes row when initial token was captured", initialToken: 1000, followUpToken: 0, wantStatus: bgtask.StatusEndedWithUnknownOutcome},
+		{name: "missing start token throughout keeps row running conservatively", initialToken: 0, followUpToken: 0, wantStatus: bgtask.StatusRunning},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, ampLinuxStatAlive([]byte(tc.data)))
+			h := newHarness(t)
+			var startToken atomic.Int64
+			startToken.Store(tc.initialToken)
+			h.agent.inspectProcessFn = func(int) procutil.LiveProcessInfo {
+				return procutil.LiveProcessInfo{Alive: true, StartToken: startToken.Load()}
+			}
+
+			fp := startBackgroundCommand(h, "npm run dev", 4242)
+			startToken.Store(tc.followUpToken)
+			h.feed(fp, assistantLine("["+toolUseBlock("TU-err", contracts.AmpShellToolShellCommandStatus, `{"pid":4242}`)+"]", "tool_use"))
+			h.feed(fp, toolResultLine("TU-err", "Error: ESRCH: no such process", true))
+
+			row, ok := h.sink.BackgroundTask(shellRowKey("TU-dev"))
+			require.True(t, ok)
+			assert.Equal(t, tc.wantStatus, row.Status)
 		})
 	}
-}
-
-func TestNonJSONShellToolErrorClosesReusedPID(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t)
-	h.agent.pidAliveFn = func(int) bool { return true }
-	var startTime atomic.Int64
-	startTime.Store(1000)
-	h.agent.pidIdentityFn = func(pid int) (procutil.ProcessIdentity, bool) {
-		return procutil.ProcessIdentity{PID: pid, StartTime: startTime.Load()}, true
-	}
-
-	fp := startBackgroundCommand(h, "npm run dev", 4242)
-	startTime.Store(2000)
-	h.feed(fp, assistantLine("["+toolUseBlock("TU-err", contracts.AmpShellToolShellCommandStatus, `{"pid":4242}`)+"]", "tool_use"))
-	h.feed(fp, toolResultLine("TU-err", "Error: ESRCH: no such process", true))
-
-	row, ok := h.sink.BackgroundTask(shellRowKey("TU-dev"))
-	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, row.Status)
 }
 
 func TestShellLivenessPollerClosesReusedPID(t *testing.T) {
@@ -590,15 +577,11 @@ func TestShellLivenessPollerClosesReusedPID(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 
 	probed := make(chan int, 8)
-	h.agent.pidAliveFn = func(pid int) bool {
+	var startToken atomic.Int64
+	startToken.Store(1000)
+	h.agent.inspectProcessFn = func(pid int) procutil.LiveProcessInfo {
 		probed <- pid
-		return true
-	}
-
-	var startTime atomic.Int64
-	startTime.Store(1000)
-	h.agent.pidIdentityFn = func(pid int) (procutil.ProcessIdentity, bool) {
-		return procutil.ProcessIdentity{PID: pid, StartTime: startTime.Load()}, true
+		return procutil.LiveProcessInfo{Alive: true, StartToken: startToken.Load()}
 	}
 
 	closed := make(chan bgtask.Status, 4)
@@ -610,9 +593,16 @@ func TestShellLivenessPollerClosesReusedPID(t *testing.T) {
 	defer tickerTrap.Close()
 
 	fp := startBackgroundCommand(h, "npm run dev", 4242)
+	// Drain the single inspection performed by openShellRow.
+	select {
+	case pid := <-probed:
+		assert.Equal(t, 4242, pid)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for initial openShellRow inspection")
+	}
 	assert.Equal(t, ampShellPollInterval, testutil.WaitForTimer(t, ctx, tickerTrap))
 
-	// First tick sees the original process identity and keeps the row running.
+	// First tick sees the original process token and keeps the row running.
 	h.clock.Advance(ampShellPollInterval).MustWait(ctx)
 	select {
 	case pid := <-probed:
@@ -625,8 +615,8 @@ func TestShellLivenessPollerClosesReusedPID(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.Empty(t, closed)
 
-	// Simulate PID reuse: the PID is still alive, but its start time changed.
-	startTime.Store(2000)
+	// Simulate PID reuse: the PID is still alive, but its start token changed.
+	startToken.Store(2000)
 	h.clock.Advance(ampShellPollInterval).MustWait(ctx)
 	select {
 	case pid := <-probed:

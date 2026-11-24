@@ -176,7 +176,6 @@ func TestOAuthReauth_RequiresASession(t *testing.T) {
 func TestOAuthReauth_RecordsThePurposeAndTheSessionAndForcesAPrompt(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	env := setupOAuthTestEnv(t)
 	providerID := createTestOIDCProviderWithStubClaims(t, env.store, env.ks, "user@example.com", "sub-1")
 	cookie, _, sessionID := reauthSession(t, env.store, providerID, "sub-1")
@@ -189,8 +188,8 @@ func TestOAuthReauth_RecordsThePurposeAndTheSessionAndForcesAPrompt(t *testing.T
 	// nothing at all.
 	assert.Equal(t, "login", authURL.Query().Get("prompt"))
 
-	row, err := env.states.Get(ctx, state)
-	require.NoError(t, err)
+	row, ok := env.states.Get(state)
+	require.True(t, ok)
 	assert.Equal(t, service.OAuthStatePurposeReauth, row.Purpose)
 	assert.Equal(t, sessionID, row.SessionID,
 		"the state specifies the session it will elevate, so the callback cannot point elsewhere")
@@ -200,7 +199,6 @@ func TestOAuthReauth_RecordsThePurposeAndTheSessionAndForcesAPrompt(t *testing.T
 func TestOAuthLogin_RecordsTheLoginPurposeAndNoSession(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	env := setupOAuthTestEnv(t)
 	providerID := createTestProvider(t, env.store, env.ks)
 
@@ -209,8 +207,8 @@ func TestOAuthLogin_RecordsTheLoginPurposeAndNoSession(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	state := stateFromLoginResponse(t, resp)
 
-	row, err := env.states.Get(ctx, state)
-	require.NoError(t, err)
+	row, ok := env.states.Get(state)
+	require.True(t, ok)
 	assert.Equal(t, service.OAuthStatePurposeLogin, row.Purpose)
 	assert.Empty(t, row.SessionID, "a login elevates nothing")
 
@@ -346,8 +344,8 @@ func TestOAuthReauth_RefusesWithoutTheBrowserBinding(t *testing.T) {
 	assert.Nil(t, row.ElevationExpiresAt)
 
 	// The refusal leaves the row alone, so the real browser can still finish.
-	_, err = env.states.Get(ctx, state)
-	assert.NoError(t, err)
+	_, ok := env.states.Get(state)
+	assert.True(t, ok)
 }
 
 // The account-shape rule.

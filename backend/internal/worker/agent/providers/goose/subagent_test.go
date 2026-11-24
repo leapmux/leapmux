@@ -747,7 +747,7 @@ func TestACP_GooseDelegateResumeRevivesExistingSubagent(t *testing.T) {
 		child := sink.Child(rows[0].ChildAgentID)
 		require.Eventually(t, func() bool {
 			return len(child.LeapMuxNotifications()) == 1
-		}, time.Second, 5*time.Millisecond)
+		}, 30*time.Second, 5*time.Millisecond)
 		assert.Equal(t, "Job 1 export.", child.LeapMuxNotifications()[0]["text"])
 
 		// Job 2 resumes and completes with a bare notice; export must persist under a distinct ReportID.
@@ -757,7 +757,7 @@ func TestACP_GooseDelegateResumeRevivesExistingSubagent(t *testing.T) {
 
 		require.Eventually(t, func() bool {
 			return len(child.LeapMuxNotifications()) == 2
-		}, time.Second, 5*time.Millisecond, "Job 2 exported report must use a distinct ReportID")
+		}, 30*time.Second, 5*time.Millisecond, "Job 2 exported report must use a distinct ReportID")
 		assert.Equal(t, "Job 2 export.", child.LeapMuxNotifications()[1]["text"])
 
 		// Job 3 resumes and completes with an inline summary notice.

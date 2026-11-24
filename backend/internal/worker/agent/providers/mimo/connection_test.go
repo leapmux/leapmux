@@ -332,3 +332,85 @@ func TestEventStreamReconnectReconcilesActorsAndWorkflows(t *testing.T) {
 		}, "reconnect closes absent actor and workflow")
 	})
 }
+
+func TestReconcileWorkflowsLocked(t *testing.T) {
+	t.Parallel()
+
+	t.Run("404 closes active workflow when turn and actors are idle", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		feed(a, workflowEvent(t, eventWorkflowStarted, testSessionID, "wf_1", map[string]any{"name": "review"}))
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+
+		server.respond("GET /workflows", http.StatusNotFound, `{}`)
+		a.dispatchMu.Lock()
+		a.reconcileWorkflowsLocked(testutil.DeadlineContext(t), testSessionID)
+		a.dispatchMu.Unlock()
+
+		assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+	})
+
+	t.Run("404 keeps workflow running while turn is active", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
+		feed(a, workflowEvent(t, eventWorkflowStarted, testSessionID, "wf_1", map[string]any{"name": "review"}))
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+
+		server.respond("GET /workflows", http.StatusNotFound, `{}`)
+		a.dispatchMu.Lock()
+		a.reconcileWorkflowsLocked(testutil.DeadlineContext(t), testSessionID)
+		a.dispatchMu.Unlock()
+
+		assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+	})
+
+	t.Run("404 keeps workflow running while a session actor is running", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+		feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+		feed(a, workflowEvent(t, eventWorkflowStarted, testSessionID, "wf_1", map[string]any{"name": "review"}))
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+
+		a.Mu.Lock()
+		require.False(t, a.turnActive)
+		require.Positive(t, a.runningActorsLocked())
+		a.Mu.Unlock()
+
+		server.respond("GET /workflows", http.StatusNotFound, `{}`)
+		a.dispatchMu.Lock()
+		a.reconcileWorkflowsLocked(testutil.DeadlineContext(t), testSessionID)
+		a.dispatchMu.Unlock()
+
+		assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+	})
+
+	t.Run("200 with running workflow keeps it running", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		feed(a, workflowEvent(t, eventWorkflowStarted, testSessionID, "wf_1", map[string]any{"name": "review"}))
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+
+		server.respond("GET /workflows", http.StatusOK, `[{"runID":"wf_1","sessionID":"ses_test","status":"running"}]`)
+		a.dispatchMu.Lock()
+		a.reconcileWorkflowsLocked(testutil.DeadlineContext(t), testSessionID)
+		a.dispatchMu.Unlock()
+
+		assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+	})
+
+	t.Run("500 keeps active workflow running", func(t *testing.T) {
+		t.Parallel()
+		a, sink, server := newSinkTestAgent(t)
+		feed(a, workflowEvent(t, eventWorkflowStarted, testSessionID, "wf_1", map[string]any{"name": "review"}))
+		require.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+
+		server.respond("GET /workflows", http.StatusInternalServerError, `{}`)
+		a.dispatchMu.Lock()
+		a.reconcileWorkflowsLocked(testutil.DeadlineContext(t), testSessionID)
+		a.dispatchMu.Unlock()
+
+		assert.Equal(t, bgtask.StatusRunning, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+	})
+}

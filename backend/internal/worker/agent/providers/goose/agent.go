@@ -38,9 +38,6 @@ type Agent struct {
 	// completed/failed notice, prompt error/interrupt, or idle interrupt closes
 	// them. Guarded by a.Mu.
 	activeDelegations map[string]struct{}
-	// runSeq counts runs per subagent session ID so resumed runs write distinct
-	// report IDs instead of colliding with earlier runs.
-	runSeq map[string]int
 	// resumedCalls records delegate toolCallIDs that already revived a session
 	// row on tool_call so their later ACK does not re-revive it.
 	resumedCalls map[string]string

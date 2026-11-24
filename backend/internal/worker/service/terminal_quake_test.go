@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -386,7 +387,7 @@ func TestCloseTerminalTab_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *te
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, closeAgent)
 	require.Empty(t, closeAgent.errors)
 
-	require.True(t, svc.QuakeTerminals.Has(quakeID), "the terminal tab still references the directory")
+	require.True(t, svc.QuakeTerminals.Has(quakeID), "the terminal tab still refers to the directory")
 
 	closeTab := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: terminalTabIdent(tabID)}, closeTab)
@@ -732,7 +733,7 @@ func TestCloseTab_FileTabClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *tes
 	closeAgent := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, closeAgent)
 	require.Empty(t, closeAgent.errors)
-	require.True(t, svc.QuakeTerminals.Has(terminalID), "the file tab still references the directory")
+	require.True(t, svc.QuakeTerminals.Has(terminalID), "the file tab still refers to the directory")
 
 	revoke := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: fileTabIdent("file-1")}, revoke)
@@ -1074,7 +1075,7 @@ func TestQuakeTerminal_ZeroSQLiteRowsAndCleanRestart(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 
-	// Gate spawn so we can exercise RenameTerminal and ListTerminals while STARTING.
+	// Hold spawn so we can exercise RenameTerminal and ListTerminals while STARTING.
 	spawnStarted := make(chan struct{})
 	releaseSpawn := make(chan struct{})
 	releaseOnce := sync.OnceFunc(func() { close(releaseSpawn) })
@@ -1167,4 +1168,30 @@ func TestQuakeTerminal_ZeroSQLiteRowsAndCleanRestart(t *testing.T) {
 	assert.False(t, svc.Terminals.HasTerminal(terminalID))
 	require.NoError(t, svc.DB.QueryRowContext(ctx, "SELECT count(*) FROM terminals").Scan(&termCount))
 	assert.Zero(t, termCount)
+}
+
+func TestRestartTerminal_ExitedQuakeTerminalReturnsFailedPrecondition(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
+
+	// Simulate the shell exiting so closeQuakeTerminalOnShellExit removes the active entry.
+	svc.closeQuakeTerminalOnShellExit(terminalID)
+	require.Eventually(t, func() bool {
+		return !svc.QuakeTerminals.Has(terminalID)
+	}, 30*time.Second, 10*time.Millisecond)
+
+	wRestart := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+		TerminalId: terminalID,
+	}, wRestart)
+	require.Len(t, wRestart.errors, 1)
+	assert.Equal(t, codeFailedPrecondition, wRestart.errors[0].code,
+		"restarting an exited quake terminal must return FailedPrecondition, not NotFound")
 }

@@ -941,8 +941,8 @@ func TestOpenCodeChildTrackingMapsAreCappedAndCleaned(t *testing.T) {
 	}
 
 	family.childSessionsMu.Lock()
-	earlyLen := len(family.earlyChildEvents)
-	finalizedLen := len(family.finalizedTaskCalls)
+	earlyLen := family.earlyChildEvents.Len()
+	finalizedLen := family.finalizedTaskCalls.Len()
 	family.childSessionsMu.Unlock()
 	assert.LessOrEqual(t, earlyLen, 512, "earlyChildEvents must stay capped")
 	assert.LessOrEqual(t, finalizedLen, 512, "finalizedTaskCalls must stay capped")
@@ -961,7 +961,144 @@ func TestOpenCodeChildTrackingMapsAreCappedAndCleaned(t *testing.T) {
 	// Trailing daemon idle for a session already finished in foreground must not buffer into earlyChildEvents.
 	family.handleDaemonEvent(json.RawMessage(`{"type":"session.status","properties":{"sessionID":"ses-fg-done","status":{"type":"idle"}}}`))
 	family.childSessionsMu.Lock()
-	_, bufferedAfterFG := family.earlyChildEvents["ses-fg-done"]
+	bufferedAfterFG := family.earlyChildEvents.Has("ses-fg-done")
 	family.childSessionsMu.Unlock()
 	assert.False(t, bufferedAfterFG, "foreground-finished session must not buffer trailing earlyChildEvents")
+}
+
+func TestOpenCodeInlineFinalToolCallBackgroundAndReportPreservation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("inline-final background launch stays running and revives reused task", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+
+		// Job 1 runs and completes so ses-bg-reuse is finished.
+		family.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Job 1."))
+		family.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-bg-reuse", "Job 1 done."))
+		row, ok := sink.BackgroundTask("ses-bg-reuse")
+		require.True(t, ok)
+		require.Equal(t, bgtask.StatusSucceeded, row.Status)
+
+		// Job 2 arrives as an inline-final background launch tool_call reusing ses-bg-reuse.
+		raw, err := json.Marshal(map[string]any{
+			"sessionUpdate": "tool_call",
+			"toolCallId":    "call-2",
+			"title":         "task",
+			"kind":          "think",
+			"status":        "completed",
+			"rawInput": map[string]any{
+				"description":   "Job 2",
+				"prompt":        "Run in background.",
+				"subagent_type": "explore",
+				"task_id":       "ses-bg-reuse",
+			},
+			"rawOutput": map[string]any{
+				"metadata": map[string]any{
+					"sessionId":  "ses-bg-reuse",
+					"background": true,
+				},
+			},
+		})
+		require.NoError(t, err)
+		family.HandleToolCallForTest(raw)
+
+		assert.Contains(t, sink.RevivedTasks(), "ses-bg-reuse", "inline-final reused background launch must revive the finished row")
+		row, ok = sink.BackgroundTask("ses-bg-reuse")
+		require.True(t, ok)
+		assert.Equal(t, bgtask.StatusRunning, row.Status, "inline-final background launch must stay running until daemon SSE completes")
+	})
+
+	t.Run("inline-final foreground tool_call preserves content report text", func(t *testing.T) {
+		t.Parallel()
+		family, sink := newOpenCodeFamilyBaseWithQueue(t)
+		raw, err := json.Marshal(map[string]any{
+			"sessionUpdate": "tool_call",
+			"toolCallId":    "call-inline-fg",
+			"title":         "task",
+			"kind":          "think",
+			"status":        "completed",
+			"rawInput": map[string]any{
+				"description":   "Quick check",
+				"prompt":        "Check status.",
+				"subagent_type": "explore",
+			},
+			"rawOutput": map[string]any{
+				"metadata": map[string]any{
+					"sessionId": "ses-inline-fg",
+				},
+			},
+			"content": []any{
+				map[string]any{
+					"type": "content",
+					"content": map[string]any{
+						"type": "text",
+						"text": "Inline final report text.",
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		family.HandleToolCallForTest(raw)
+
+		row, ok := sink.BackgroundTask("ses-inline-fg")
+		require.True(t, ok)
+		require.NotEmpty(t, row.ChildAgentID)
+		child := sink.Child(row.ChildAgentID)
+		require.Len(t, child.LeapMuxNotifications(), 1, "inline-final foreground task must persist its report text")
+		assert.Equal(t, "Inline final report text.", child.LeapMuxNotifications()[0]["text"])
+	})
+
+	t.Run("capped tracking map stays within limit on delete and keeps re-inserted live entries", func(t *testing.T) {
+		t.Parallel()
+		family, _ := newOpenCodeFamilyBaseWithQueue(t)
+
+		// Insert target, delete it, fill to cap, re-insert target, then insert one more.
+		family.childSessionsMu.Lock()
+		family.recordEarlyChildEventLocked("ses-target", bgtask.StatusSucceeded)
+		family.earlyChildEvents.Delete("ses-target")
+		for i := range openCodeMaxTrackedEntries {
+			family.recordEarlyChildEventLocked(fmt.Sprintf("ses-pad-%04d", i), bgtask.StatusSucceeded)
+		}
+		// Re-insert ses-target so it is the NEWEST entry; it must survive the next eviction.
+		family.recordEarlyChildEventLocked("ses-target", bgtask.StatusFailed)
+		family.recordEarlyChildEventLocked("ses-after-target", bgtask.StatusSucceeded)
+		status, stillPresent := family.earlyChildEvents.Get("ses-target")
+		entryLen := family.earlyChildEvents.Len()
+		family.childSessionsMu.Unlock()
+
+		assert.True(t, stillPresent, "re-inserted live entry must not be evicted prematurely")
+		assert.Equal(t, bgtask.StatusFailed, status)
+		assert.LessOrEqual(t, entryLen, openCodeMaxTrackedEntries, "tracked map must stay within cap")
+	})
+}
+
+func TestFamilyBaseClearSessionState(t *testing.T) {
+	t.Parallel()
+	family, _ := newOpenCodeFamilyBaseWithQueue(t)
+	require.Equal(t, "session-1", family.CurrentSessionID())
+
+	family.childSessionsMu.Lock()
+	family.recordEarlyChildEventLocked("ses-early", bgtask.StatusSucceeded)
+	family.recordFinishedForegroundSessionLocked("ses-fg")
+	family.childSessionsMu.Unlock()
+	family.markTaskCallFinalized("call-s1", "session-1")
+	family.markTaskCallFinalized("call-s2", "session-2")
+
+	family.clearSessionState()
+
+	family.childSessionsMu.Lock()
+	assert.Zero(t, family.earlyChildEvents.Len())
+	assert.Zero(t, family.finishedForegroundSessions.Len())
+	assert.True(t, family.finalizedTaskCalls.Has("call-s1"), "current session finalized calls must stay")
+	assert.False(t, family.finalizedTaskCalls.Has("call-s2"), "other session finalized calls must be removed")
+	assert.Equal(t, 1, family.finalizedTaskCalls.Len())
+	family.childSessionsMu.Unlock()
+
+	family.SetSessionIDForTest("")
+	family.clearSessionState()
+
+	family.childSessionsMu.Lock()
+	assert.Zero(t, family.finalizedTaskCalls.Len(), "empty current session must reset finalizedTaskCalls")
+	family.childSessionsMu.Unlock()
 }

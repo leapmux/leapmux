@@ -78,9 +78,8 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		home:          t.TempDir(),
 	}, bridge, dir, clock)
 	h.agent.startFn = h.start
-	h.agent.pidAliveFn = func(int) bool { return true }
-	h.agent.pidIdentityFn = func(int) (procutil.ProcessIdentity, bool) {
-		return procutil.ProcessIdentity{}, false
+	h.agent.inspectProcessFn = func(int) procutil.LiveProcessInfo {
+		return procutil.LiveProcessInfo{Alive: true}
 	}
 	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
 		return json.Marshal(map[string]any{"id": threadID, "messages": []any{}})

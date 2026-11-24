@@ -415,7 +415,7 @@ func TestExecuteControlResponseWaitsForRootLifecycle(t *testing.T) {
 				assert.Zero(t, sends.Load(), "delivery must wait for the root process lifecycle")
 				switch mutation {
 				case "retired":
-					_, ok := svc.Output.deleteBlockingControl(child.ID, plan.requestMeta.RequestID, plan.requestMeta.ClaimToken)
+					_, ok := svc.Output.controls.deleteBlocking(child.ID, plan.requestMeta.RequestID, plan.requestMeta.ClaimToken)
 					require.True(t, ok)
 				case "replaced":
 					createTestControlRequest(t, t.Context(), svc.Output, testControlRequestParams{

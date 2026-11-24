@@ -65,7 +65,9 @@ func setupAccountRecoveryAuthServiceFull(t *testing.T, sender mail.Sender, confi
 	t.Cleanup(sc.Stop)
 	sessions := hubwebauthn.NewSessionStore()
 	lifecycle := auth.NewCredentialLifecycleEffects(sc, nil, nil, auth.WithUserRevokedObserver(func(userID string, gen int64) {
-		sessions.DeleteByUserBeforeGeneration(userID, gen)
+		if uid, ok := userid.New(userID); ok {
+			sessions.DeleteByUserBeforeGeneration(uid, gen)
+		}
 	}))
 	authSvc := newInitializedAuthService(t, service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:            st,

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -22,6 +21,130 @@ var (
 	errOAuthStateCapacity         = errors.New("the OAuth state store is at capacity")
 	errPendingOAuthSignupCapacity = errors.New("the pending OAuth signup store is at capacity")
 )
+
+// expiringStore is a mutex-guarded, capacity-capped in-memory map keyed by an
+// opaque string token whose entries expire at a per-entry timestamp and belong
+// to an OAuth provider.
+type expiringStore[V any] struct {
+	mu           sync.Mutex
+	entries      map[string]*V
+	maxEntries   int
+	minExpiresAt time.Time
+	capacityErr  error
+	now          func() time.Time
+	providerID   func(*V) string
+	expiresAt    func(*V) time.Time
+}
+
+func newExpiringStore[V any](
+	maxEntries int,
+	capacityErr error,
+	providerID func(*V) string,
+	expiresAt func(*V) time.Time,
+) expiringStore[V] {
+	return expiringStore[V]{
+		entries:     make(map[string]*V),
+		maxEntries:  maxEntries,
+		capacityErr: capacityErr,
+		now:         time.Now,
+		providerID:  providerID,
+		expiresAt:   expiresAt,
+	}
+}
+
+func (s *expiringStore[V]) currentTime() time.Time {
+	if s.now != nil {
+		return s.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (s *expiringStore[V]) create(key string, entry *V, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.entries[key]; exists {
+		return store.ErrConflict
+	}
+	if len(s.entries) >= s.maxEntries {
+		if s.minExpiresAt.IsZero() || s.minExpiresAt.Before(now) {
+			s.evictExpiredLocked(now)
+		}
+		if len(s.entries) >= s.maxEntries {
+			return s.capacityErr
+		}
+	}
+	wasEmpty := len(s.entries) == 0
+	s.entries[key] = entry
+	exp := s.expiresAt(entry)
+	if wasEmpty || (!s.minExpiresAt.IsZero() && exp.Before(s.minExpiresAt)) {
+		s.minExpiresAt = exp
+	}
+	return nil
+}
+
+func (s *expiringStore[V]) get(key string) (*V, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.entries[key]
+	if !ok {
+		return nil, false
+	}
+	cp := *entry
+	return &cp, true
+}
+
+func (s *expiringStore[V]) delete(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.entries[key]; !ok {
+		return false
+	}
+	delete(s.entries, key)
+	if len(s.entries) == 0 {
+		s.minExpiresAt = time.Time{}
+	}
+	return true
+}
+
+func (s *expiringStore[V]) deleteByProvider(providerID string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var deleted int64
+	for key, entry := range s.entries {
+		if s.providerID(entry) == providerID {
+			delete(s.entries, key)
+			deleted++
+		}
+	}
+	if len(s.entries) == 0 {
+		s.minExpiresAt = time.Time{}
+	}
+	return deleted
+}
+
+func (s *expiringStore[V]) deleteExpired(now time.Time) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.evictExpiredLocked(now.UTC())
+}
+
+func (s *expiringStore[V]) evictExpiredLocked(now time.Time) int64 {
+	var deleted int64
+	var minRem time.Time
+	for key, entry := range s.entries {
+		exp := s.expiresAt(entry)
+		if exp.Before(now) {
+			delete(s.entries, key)
+			deleted++
+			continue
+		}
+		if minRem.IsZero() || exp.Before(minRem) {
+			minRem = exp
+		}
+	}
+	s.minExpiresAt = minRem
+	return deleted
+}
 
 // OAuthStatePurpose identifies why an inbound OAuth flow started.
 type OAuthStatePurpose int
@@ -80,39 +203,32 @@ type CreateOAuthStateParams struct {
 // OAuthStateStore stores short-lived inbound OAuth states in memory. It is an
 // interface so concurrency-barrier and fault-injection tests can wrap it.
 type OAuthStateStore interface {
-	Create(ctx context.Context, p CreateOAuthStateParams) error
-	Get(ctx context.Context, state string) (*OAuthState, error)
-	Delete(ctx context.Context, state string) (int64, error)
+	Create(p CreateOAuthStateParams) error
+	Get(state string) (*OAuthState, bool)
+	Delete(state string) bool
 	DeleteByProvider(providerID string) int64
 	DeleteExpired(now time.Time) int64
 }
 
 // MemoryOAuthStateStore is the in-memory OAuthStateStore implementation.
 type MemoryOAuthStateStore struct {
-	mu         sync.Mutex
-	entries    map[string]*OAuthState
-	maxEntries int
-	now        func() time.Time
+	expiringStore[OAuthState]
 }
 
 // NewMemoryOAuthStateStore returns an empty MemoryOAuthStateStore with the
 // default capacity cap.
 func NewMemoryOAuthStateStore() *MemoryOAuthStateStore {
 	return &MemoryOAuthStateStore{
-		entries:    make(map[string]*OAuthState),
-		maxEntries: maxOAuthStates,
-		now:        time.Now,
+		expiringStore: newExpiringStore(
+			maxOAuthStates,
+			errOAuthStateCapacity,
+			func(e *OAuthState) string { return e.ProviderID },
+			func(e *OAuthState) time.Time { return e.ExpiresAt },
+		),
 	}
 }
 
-func (s *MemoryOAuthStateStore) currentTime() time.Time {
-	if s.now != nil {
-		return s.now().UTC()
-	}
-	return time.Now().UTC()
-}
-
-func (s *MemoryOAuthStateStore) Create(_ context.Context, p CreateOAuthStateParams) error {
+func (s *MemoryOAuthStateStore) Create(p CreateOAuthStateParams) error {
 	if p.State == "" {
 		return fmt.Errorf("oauth state is required: %w", store.ErrInvalidArgument)
 	}
@@ -124,19 +240,7 @@ func (s *MemoryOAuthStateStore) Create(_ context.Context, p CreateOAuthStatePara
 	}
 
 	now := s.currentTime()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.entries[p.State]; exists {
-		return store.ErrConflict
-	}
-	if len(s.entries) >= s.maxEntries {
-		s.evictExpiredLocked(now)
-		if len(s.entries) >= s.maxEntries {
-			return errOAuthStateCapacity
-		}
-	}
-	s.entries[p.State] = &OAuthState{
+	return s.create(p.State, &OAuthState{
 		State:        p.State,
 		ProviderID:   p.ProviderID,
 		PkceVerifier: p.PkceVerifier,
@@ -146,59 +250,23 @@ func (s *MemoryOAuthStateStore) Create(_ context.Context, p CreateOAuthStatePara
 		SessionID:    p.SessionID,
 		ExpiresAt:    p.ExpiresAt.UTC(),
 		CreatedAt:    now,
-	}
-	return nil
+	}, now)
 }
 
-func (s *MemoryOAuthStateStore) Get(_ context.Context, state string) (*OAuthState, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, ok := s.entries[state]
-	if !ok {
-		return nil, store.ErrNotFound
-	}
-	cp := *entry
-	return &cp, nil
+func (s *MemoryOAuthStateStore) Get(state string) (*OAuthState, bool) {
+	return s.get(state)
 }
 
-func (s *MemoryOAuthStateStore) Delete(_ context.Context, state string) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.entries[state]; !ok {
-		return 0, nil
-	}
-	delete(s.entries, state)
-	return 1, nil
+func (s *MemoryOAuthStateStore) Delete(state string) bool {
+	return s.delete(state)
 }
 
 func (s *MemoryOAuthStateStore) DeleteByProvider(providerID string) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var deleted int64
-	for key, entry := range s.entries {
-		if entry.ProviderID == providerID {
-			delete(s.entries, key)
-			deleted++
-		}
-	}
-	return deleted
+	return s.deleteByProvider(providerID)
 }
 
 func (s *MemoryOAuthStateStore) DeleteExpired(now time.Time) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.evictExpiredLocked(now.UTC())
-}
-
-func (s *MemoryOAuthStateStore) evictExpiredLocked(now time.Time) int64 {
-	var deleted int64
-	for key, entry := range s.entries {
-		if entry.ExpiresAt.Before(now) {
-			delete(s.entries, key)
-			deleted++
-		}
-	}
-	return deleted
+	return s.deleteExpired(now)
 }
 
 // PendingOAuthSignup holds one short-lived inbound OAuth signup hand-off while
@@ -230,47 +298,28 @@ type CreatePendingOAuthSignupParams struct {
 
 // PendingOAuthSignupStore holds short-lived pending OAuth signups in memory.
 type PendingOAuthSignupStore struct {
-	mu         sync.Mutex
-	entries    map[string]*PendingOAuthSignup
-	maxEntries int
-	now        func() time.Time
+	expiringStore[PendingOAuthSignup]
 }
 
 // NewPendingOAuthSignupStore returns an empty PendingOAuthSignupStore with the
 // default capacity cap.
 func NewPendingOAuthSignupStore() *PendingOAuthSignupStore {
 	return &PendingOAuthSignupStore{
-		entries:    make(map[string]*PendingOAuthSignup),
-		maxEntries: maxPendingOAuthSignups,
-		now:        time.Now,
+		expiringStore: newExpiringStore(
+			maxPendingOAuthSignups,
+			errPendingOAuthSignupCapacity,
+			func(e *PendingOAuthSignup) string { return e.ProviderID },
+			func(e *PendingOAuthSignup) time.Time { return e.ExpiresAt },
+		),
 	}
 }
 
-func (s *PendingOAuthSignupStore) currentTime() time.Time {
-	if s.now != nil {
-		return s.now().UTC()
-	}
-	return time.Now().UTC()
-}
-
-func (s *PendingOAuthSignupStore) Create(_ context.Context, p CreatePendingOAuthSignupParams) error {
+func (s *PendingOAuthSignupStore) Create(p CreatePendingOAuthSignupParams) error {
 	if p.Token == "" {
 		return fmt.Errorf("pending signup token is required: %w", store.ErrInvalidArgument)
 	}
 	now := s.currentTime()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.entries[p.Token]; exists {
-		return store.ErrConflict
-	}
-	if len(s.entries) >= s.maxEntries {
-		s.evictExpiredLocked(now)
-		if len(s.entries) >= s.maxEntries {
-			return errPendingOAuthSignupCapacity
-		}
-	}
-	s.entries[p.Token] = &PendingOAuthSignup{
+	return s.create(p.Token, &PendingOAuthSignup{
 		Token:           p.Token,
 		ProviderID:      p.ProviderID,
 		NonceHash:       p.NonceHash,
@@ -280,57 +329,21 @@ func (s *PendingOAuthSignupStore) Create(_ context.Context, p CreatePendingOAuth
 		RedirectURI:     p.RedirectURI,
 		ExpiresAt:       p.ExpiresAt.UTC(),
 		CreatedAt:       now,
-	}
-	return nil
+	}, now)
 }
 
-func (s *PendingOAuthSignupStore) Get(_ context.Context, token string) (*PendingOAuthSignup, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, ok := s.entries[token]
-	if !ok {
-		return nil, store.ErrNotFound
-	}
-	cp := *entry
-	return &cp, nil
+func (s *PendingOAuthSignupStore) Get(token string) (*PendingOAuthSignup, bool) {
+	return s.get(token)
 }
 
-func (s *PendingOAuthSignupStore) Delete(_ context.Context, token string) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.entries[token]; !ok {
-		return 0, nil
-	}
-	delete(s.entries, token)
-	return 1, nil
+func (s *PendingOAuthSignupStore) Delete(token string) bool {
+	return s.delete(token)
 }
 
 func (s *PendingOAuthSignupStore) DeleteByProvider(providerID string) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var deleted int64
-	for key, entry := range s.entries {
-		if entry.ProviderID == providerID {
-			delete(s.entries, key)
-			deleted++
-		}
-	}
-	return deleted
+	return s.deleteByProvider(providerID)
 }
 
 func (s *PendingOAuthSignupStore) DeleteExpired(now time.Time) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.evictExpiredLocked(now.UTC())
-}
-
-func (s *PendingOAuthSignupStore) evictExpiredLocked(now time.Time) int64 {
-	var deleted int64
-	for key, entry := range s.entries {
-		if entry.ExpiresAt.Before(now) {
-			delete(s.entries, key)
-			deleted++
-		}
-	}
-	return deleted
+	return s.deleteExpired(now)
 }

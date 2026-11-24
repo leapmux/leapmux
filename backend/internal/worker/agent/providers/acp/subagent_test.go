@@ -830,3 +830,85 @@ func TestACP_ApplySubagentObservationForSessionReportsRefusalAndNil(t *testing.T
 		RowKey: "nested-refused", Status: bgtask.StatusRunning,
 	}), "child session observation refusal returns false")
 }
+
+func TestACP_FinalToolCallHonorsKeepOpen(t *testing.T) {
+	t.Parallel()
+
+	t.Run("KeepOpen keeps row running and in openRows while persisting closing frame", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+		b.hooks.SubagentFromToolCall = func(tc ToolCallEnvelope) *SubagentObservation {
+			return &SubagentObservation{
+				RowKey:   "bg-1",
+				Title:    "Background task",
+				Status:   bgtask.StatusRunning,
+				KeepOpen: true,
+				Spawns:   true,
+			}
+		}
+
+		b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-bg","title":"Task","status":"completed"}`))
+
+		row, found := sink.BackgroundTask("bg-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusRunning, row.Status)
+
+		b.openRows.mu.Lock()
+		_, trackedOpen := b.openRows.keys["bg-1"]
+		b.openRows.mu.Unlock()
+		assert.True(t, trackedOpen, "KeepOpen row must stay tracked in openRows")
+
+		var closingFrames []agenttest.Message
+		for _, msg := range sink.Messages() {
+			if msg.SpanID == "call-bg" && msg.Closing {
+				closingFrames = append(closingFrames, msg)
+			}
+		}
+		require.Len(t, closingFrames, 1, "completed tool_call frame must still persist as closing")
+
+		b.retireSession("session-1")
+		row, found = sink.BackgroundTask("bg-1")
+		require.True(t, found)
+		assert.Equal(t, bgtask.StatusStopped, row.Status, "retireSession must close the open KeepOpen row")
+		assert.Empty(t, b.openRows.takeAll())
+	})
+
+	t.Run("KeepOpen combined with CloseRow or finished status still closes row", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name     string
+			closeRow bool
+		}{
+			{name: "CloseRow true with StatusFailed", closeRow: true},
+			{name: "CloseRow false with StatusFailed", closeRow: false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+				b.hooks.SubagentFromToolCall = func(env ToolCallEnvelope) *SubagentObservation {
+					return &SubagentObservation{
+						RowKey:   "bg-fail",
+						Title:    "Background task",
+						Status:   bgtask.StatusFailed,
+						KeepOpen: true,
+						CloseRow: tc.closeRow,
+						Spawns:   true,
+					}
+				}
+
+				b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"call-bg-fail","title":"Task","status":"completed"}`))
+
+				row, found := sink.BackgroundTask("bg-fail")
+				require.True(t, found)
+				assert.Equal(t, bgtask.StatusFailed, row.Status)
+
+				b.openRows.mu.Lock()
+				_, trackedOpen := b.openRows.keys["bg-fail"]
+				b.openRows.mu.Unlock()
+				assert.False(t, trackedOpen, "a closed row must not remain in openRows")
+			})
+		}
+	})
+}

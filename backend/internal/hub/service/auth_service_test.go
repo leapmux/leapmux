@@ -78,7 +78,7 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 		service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(), Renderer: mail.Renderer{}})
 	})
 	assert.Panics(t, func() {
-		service.NewUserService(nil, nil, nil, nil, nil, mail.Renderer{}, nil, nil, nil)
+		service.NewUserService(service.UserServiceDeps{Renderer: mail.Renderer{}})
 	})
 	assert.Panics(t, func() {
 		service.NewWorkerDelegationHandler(nil, nil, nil)
@@ -761,7 +761,14 @@ func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    testConfig(),
+		Settings:  set,
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+	})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -979,7 +986,14 @@ func setupEmailVerificationTestServer(t *testing.T, emailVerificationRequired bo
 	// and the fixture would refuse a call the hub admits.
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, nil, nil)
 
-	userSvc := service.NewUserService(st, testConfig(), set, lifecycle, mail.NewStubSender(), mail.Renderer{}, nil, nil, nil)
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:     st,
+		Config:    testConfig(),
+		Settings:  set,
+		Lifecycle: lifecycle,
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+	})
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 
@@ -1496,6 +1510,28 @@ func TestCompleteOAuthSignupReportsNoElevationDeadline(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, resp.GetSessionReport().GetElevationExpiresAt(),
 		"an OAuth completion proved no factor, so the report carries no deadline")
+}
+
+func TestCompleteOAuthSignupReturnsNotFoundWhenProviderDeleted(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthTestEnvWithAuthService(t)
+	providerID := createTestProvider(t, env.store, env.ks)
+	signupToken := id.Generate()
+	insertPendingSignup(t, env.pendingSignups, providerID, signupToken, "bob@example.com", "Bob", "sub-bob", time.Now().Add(5*time.Minute).UTC())
+
+	// Delete the provider row directly in SQL without evicting pendingSignups
+	// (simulating the race between DB commit and local/remote cache eviction).
+	require.NoError(t, env.store.OAuthProviders().Delete(context.Background(), providerID))
+
+	_, err := env.client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "bobuser",
+		DisplayName: "Bob User",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"a deleted OAuth provider must reject the pending signup with NotFound rather than Internal")
 }
 
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {

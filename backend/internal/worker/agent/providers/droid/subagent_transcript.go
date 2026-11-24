@@ -85,7 +85,8 @@ func newDroidChildTail(a *Agent, sessionID, dataRoot string, initial *droidArchi
 // withValidatedDroidArchive opens one child archive file confined to dataRoot
 // after verifying that every path component is a regular directory or file and
 // that the opened file descriptor matches the Lstat identity.
-func withValidatedDroidArchive(dataRoot, workDir, sessionID string, fn func(file *os.File, opened os.FileInfo) error) (err error) {
+// When skipIfUnchanged returns true for the Lstat FileInfo, the file is not opened.
+func withValidatedDroidArchive(dataRoot, workDir, sessionID string, skipIfUnchanged func(os.FileInfo) bool, fn func(file *os.File, opened os.FileInfo) error) (err error) {
 	root, err := os.OpenRoot(dataRoot)
 	if err != nil {
 		return err
@@ -112,6 +113,9 @@ func withValidatedDroidArchive(dataRoot, workDir, sessionID string, fn func(file
 	}
 	if !pathInfo.Mode().IsRegular() {
 		return errors.New("droid child archive is not a regular file")
+	}
+	if skipIfUnchanged != nil && skipIfUnchanged(pathInfo) {
+		return nil
 	}
 	file, err := root.Open(fileName)
 	if err != nil {
@@ -145,7 +149,7 @@ func (a *Agent) probeChildArchiveEnd(sessionID string) (*droidArchivePosition, e
 		return nil, errors.New("droid data root is unavailable")
 	}
 	var pos *droidArchivePosition
-	err := withValidatedDroidArchive(dataRoot, a.workingDir, sessionID, func(file *os.File, opened os.FileInfo) error {
+	err := withValidatedDroidArchive(dataRoot, a.workingDir, sessionID, nil, func(file *os.File, opened os.FileInfo) error {
 		if opened.Size() == 0 {
 			return nil
 		}
@@ -441,7 +445,10 @@ func validDroidSessionID(value string) bool {
 // read rejects symlink escapes and file replacement before it reads new bytes.
 func (t *droidChildTail) read() ([]byte, error) {
 	var data []byte
-	err := withValidatedDroidArchive(t.dataRoot, t.workDir, t.sessionID, func(file *os.File, opened os.FileInfo) error {
+	skipUnchanged := func(pathInfo os.FileInfo) bool {
+		return t.fileInfo != nil && os.SameFile(t.fileInfo, pathInfo) && pathInfo.Size() == t.offset
+	}
+	err := withValidatedDroidArchive(t.dataRoot, t.workDir, t.sessionID, skipUnchanged, func(file *os.File, opened os.FileInfo) error {
 		if t.fileInfo != nil && !os.SameFile(t.fileInfo, opened) {
 			return errors.New("droid child archive file changed identity")
 		}

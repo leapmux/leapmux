@@ -1,7 +1,6 @@
 package service_test
 
 import (
-	"context"
 	"net/http"
 	"net/url"
 	"testing"
@@ -26,7 +25,6 @@ func TestDeviceApproval_AnAbsentDecisionDeniesFinally(t *testing.T) {
 	t.Parallel()
 
 	env := setupAPIAuth(t)
-	ctx := context.Background()
 	cookie := env.elevatedAdminCookie(t)
 
 	deviceCode, userCode := startDeviceAuthorization(t, env, nil)
@@ -37,8 +35,8 @@ func TestDeviceApproval_AnAbsentDecisionDeniesFinally(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, bodyOf(t, resp), "Refused")
 
-	row, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
-	require.NoError(t, err)
+	row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
+	require.True(t, ok)
 	assert.Equal(t, service.DeviceAuthorizationStateDenied, row.State, "an absent decision must record a denial")
 	assert.Empty(t, row.GrantedScopes, "a denial grants nothing")
 
@@ -49,10 +47,10 @@ func TestDeviceApproval_AnAbsentDecisionDeniesFinally(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = retry.Body.Close() }()
 
-	after, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
-	require.NoError(t, err)
+	after, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
+	require.True(t, ok)
 	assert.Equal(t, service.DeviceAuthorizationStateDenied, after.State, "a denial is final")
-	assert.Empty(t, after.UserID, "a denied grant must never bind an account")
+	assert.True(t, after.UserID.IsZero(), "a denied grant must never bind an account")
 }
 
 // TestDeviceApproval_DenyingAnUnknownCodeIsNotSuccess pins the deny branch's

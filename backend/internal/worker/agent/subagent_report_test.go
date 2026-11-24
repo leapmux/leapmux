@@ -57,3 +57,29 @@ func TestSubagentReportNotificationPayloadOmitsBlankReportsAndOptionalFields(t *
 		contracts.NotificationFieldText: "native output",
 	}, payload)
 }
+
+func TestScopeSubagentReportID(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		reportID    string
+		reviveCount int64
+		want        string
+	}{
+		{name: "empty report ID with negative reviveCount", reportID: "", reviveCount: -1, want: ""},
+		{name: "empty report ID with zero reviveCount", reportID: "", reviveCount: 0, want: ""},
+		{name: "empty report ID with reviveCount 1", reportID: "", reviveCount: 1, want: ""},
+		{name: "empty report ID with reviveCount 2", reportID: "", reviveCount: 2, want: ""},
+		{name: "zero reviveCount leaves report ID unchanged", reportID: "report-1", reviveCount: 0, want: "report-1"},
+		{name: "negative reviveCount leaves report ID unchanged", reportID: "report-1", reviveCount: -1, want: "report-1"},
+		{name: "first revival appends #2", reportID: "report-1", reviveCount: 1, want: "report-1#2"},
+		{name: "second revival appends #3", reportID: "report-1", reviveCount: 2, want: "report-1#3"},
+		{name: "preserves exact whitespace bytes on revival", reportID: " report-1 ", reviveCount: 1, want: " report-1 #2"},
+		{name: "preserves exact whitespace bytes without revival", reportID: " report-1 ", reviveCount: 0, want: " report-1 "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, ScopeSubagentReportID(tc.reportID, tc.reviveCount))
+		})
+	}
+}

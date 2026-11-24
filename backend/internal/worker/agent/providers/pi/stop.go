@@ -48,7 +48,7 @@ func (a *Agent) finishPiProcessExit() {
 	completion := a.ProcessExitCompletion()
 	a.flushPiGeneration(completion)
 	a.persistIncompletePiTools(completion)
-	a.closeOpenBgTasks(piSubagentStatusForCompletion(completion))
+	a.closeOpenBgTasks(agent.IncompleteTaskStatus(completion))
 	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	providerkit.ResetSpansAndProgress(a.sink)
 }

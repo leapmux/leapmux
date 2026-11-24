@@ -91,7 +91,15 @@ func setupProofTestUser(t *testing.T) *proofTestUser {
 	set := servicetest.NewSettingsManager(t, st, ks)
 	require.NoError(t, settings.KeyPublicURL.Set(t.Context(), set, passkeyTestOrigin))
 	wrapped := &proofMutationStore{Store: st}
-	svc := service.NewUserService(wrapped, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks, nil, nil)
+	svc := service.NewUserService(service.UserServiceDeps{
+		Store:     wrapped,
+		Config:    testConfig(),
+		Settings:  set,
+		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:      mail.NewStubSender(),
+		Renderer:  mail.Renderer{},
+		Keystore:  ks,
+	})
 	return &proofTestUser{base: st, wrapped: wrapped, service: svc, ks: ks, info: info, token: token, userID: uid, sessionID: hubtestutil.SessionIDFromCookie(t, token)}
 }
 func assertProofRefusedWithoutEndingSession(t *testing.T, st store.Store, token, sessionID string) {

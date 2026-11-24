@@ -619,48 +619,46 @@ func (s *AppService) RevokeApp(
 		return nil, err
 	}
 
-	refs, err := s.store.OAuthClients().ListTokenRefs(ctx, app.ClientID)
-	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
-	}
-
-	inv := s.deviceAuths.BeginInvalidateForClient(app.ClientID)
-	committed := false
-	defer func() {
-		if !committed {
-			s.deviceAuths.AbortInvalidate(inv)
-		}
-	}()
-
-	var revoked int64
-	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		rows, err := tx.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
-			ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
+	var (
+		ids     []string
+		revoked int64
+	)
+	if err := withDeviceInvalidation(s.deviceAuths, s.deviceAuths.BeginInvalidateForClient(app.ClientID), s.now, func() error {
+		return s.store.RunInTransaction(ctx, func(tx store.Store) error {
+			rows, err := tx.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
+				ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
+			})
+			if err != nil {
+				return err
+			}
+			if rows == 0 {
+				return store.ErrNotFound
+			}
+			refs, err := tx.OAuthClients().ListTokenRefs(ctx, app.ClientID)
+			if err != nil {
+				return fmt.Errorf("list app credentials: %w", err)
+			}
+			attemptIDs := make([]string, 0, len(refs))
+			for _, ref := range refs {
+				attemptIDs = append(attemptIDs, ref.ID)
+			}
+			revoked, err = tx.OAuthClients().RevokeTokens(ctx, app.ClientID)
+			if err != nil {
+				return err
+			}
+			ids = attemptIDs
+			return nil
 		})
-		if err != nil {
-			return err
-		}
-		if rows == 0 {
-			return store.ErrNotFound
-		}
-		revoked, err = tx.OAuthClients().RevokeTokens(ctx, app.ClientID)
-		return err
 	}); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, "no such app")
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("revoke app: %w", err))
 	}
-	s.deviceAuths.CommitInvalidate(inv, s.now().UTC())
-	committed = true
 
 	// AFTER the commit, so a retried transaction cannot apply these twice.
 	// ONE batched eviction for the whole set, with the channel sweep per row
 	// inside the batch.
-	ids := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		ids = append(ids, ref.ID)
-	}
 	s.lifecycle.BearerRevokedBatch(auth.BearerKindAPI, ids)
 	return &leapmuxv1.RevokeAppResponse{RevokedCredentialCount: revoked}, nil
 }
@@ -708,24 +706,23 @@ func (s *AppService) DeleteApp(
 		return nil, connect.Errorf(connect.CodeFailedPrecondition,
 			"this app holds %d credential(s), %d of them live; revoke it instead of deleting it", held, live)
 	}
-	inv := s.deviceAuths.BeginDeleteForClient(app.ClientID)
-	committed := false
-	defer func() {
-		if !committed {
-			s.deviceAuths.AbortInvalidate(inv)
+	if err := withDeviceInvalidation(s.deviceAuths, s.deviceAuths.BeginDeleteForClient(app.ClientID), s.now, func() error {
+		rows, err := s.store.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
+			ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
+		})
+		if err != nil {
+			return err
 		}
-	}()
-	rows, err := s.store.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
-		ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
-	})
-	if err != nil {
+		if rows == 0 {
+			return store.ErrNotFound
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, "no such app")
+		}
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete app: %w", err))
 	}
-	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, "no such app")
-	}
-	s.deviceAuths.CommitInvalidate(inv, s.now().UTC())
-	committed = true
 	return &leapmuxv1.DeleteAppResponse{}, nil
 }
 

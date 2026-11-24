@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -508,17 +509,18 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 
 	deviceCode := id.Generate()
 	userCode := id.Generate()
-	require.NoError(t, env.deviceAuths.Create(ctx, service.CreateDeviceAuthorizationParams{
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode),
 		UserCode:       userCode,
 		ClientID:       oauthapp.ControlCLIClientID,
 		ExpiresAt:      time.Now().Add(10 * time.Minute),
 	}))
-	_, err := env.deviceAuths.ApproveByUserCode(ctx, service.ApproveDeviceAuthorizationParams{
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
 		UserCode: userCode,
 		UserID:   uid,
 	}, time.Now().UTC())
 	require.NoError(t, err)
+	require.True(t, approved)
 
 	_, err = env.client.DisconnectApp(authedReq(ctx, &leapmuxv1.DisconnectAppRequest{
 		ClientId: oauthapp.ControlCLIClientID,
@@ -528,8 +530,8 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, time.Now().UTC())
 	assert.Error(t, err, "the outstanding authorization code must die with the disconnect")
 
-	row, err := env.deviceAuths.Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
-	require.NoError(t, err)
+	row, ok := env.deviceAuths.Get(hubtestutil.TestSecretHasher().Hash(deviceCode))
+	require.True(t, ok)
 	assert.NotNil(t, row.ConsumedAt, "the approved-but-unpolled device grant must die with the disconnect")
 }
 
@@ -567,7 +569,15 @@ func TestDisconnectApp_ConcurrentWithDeviceTokenMintLeavesNoLiveToken(t *testing
 		set := servicetest.NewSettingsManager(t, st, nil)
 		deviceAuths := service.NewMemoryDeviceAuthorizationStore()
 
-		userSvc := service.NewUserService(st, testConfig(), set, lifecycle, mail.NewStubSender(), mail.Renderer{}, nil, nil, deviceAuths)
+		userSvc := service.NewUserService(service.UserServiceDeps{
+			Store:                st,
+			Config:               testConfig(),
+			Settings:             set,
+			Lifecycle:            lifecycle,
+			Mail:                 mail.NewStubSender(),
+			Renderer:             mail.Renderer{},
+			DeviceAuthorizations: deviceAuths,
+		})
 		mux := http.NewServeMux()
 		srv := httptest.NewServer(mux)
 		t.Cleanup(srv.Close)
@@ -585,21 +595,21 @@ func TestDisconnectApp_ConcurrentWithDeviceTokenMintLeavesNoLiveToken(t *testing
 			deviceCode := id.Generate()
 			userCode := verifycode.Generate()
 			now := time.Now().UTC()
-			require.NoError(t, deviceAuths.Create(ctx, service.CreateDeviceAuthorizationParams{
+			require.NoError(t, deviceAuths.Create(service.CreateDeviceAuthorizationParams{
 				DeviceCodeHash: tv.HashSecret(deviceCode),
 				UserCode:       userCode,
 				ClientID:       oauthapp.ControlCLIClientID,
 				DeviceName:     "racer",
 				ExpiresAt:      now.Add(10 * time.Minute),
 			}))
-			n, err := deviceAuths.ApproveByUserCode(ctx, service.ApproveDeviceAuthorizationParams{
+			approved, err := deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
 				UserCode:       userCode,
 				UserID:         uid,
 				GrantedScopes:  "workspace:read",
 				AuthGeneration: admin.AuthGeneration,
 			}, now)
 			require.NoError(t, err)
-			require.EqualValues(t, 1, n)
+			require.True(t, approved)
 
 			start := make(chan struct{})
 			var (
@@ -689,7 +699,15 @@ func TestDisconnectApp_ConcurrentWithDeviceTokenMintLeavesNoLiveToken(t *testing
 				}))
 			},
 		}
-		userSvc := service.NewUserService(wrapped, testConfig(), set, lifecycle, mail.NewStubSender(), mail.Renderer{}, nil, nil, deviceAuths)
+		userSvc := service.NewUserService(service.UserServiceDeps{
+			Store:                wrapped,
+			Config:               testConfig(),
+			Settings:             set,
+			Lifecycle:            lifecycle,
+			Mail:                 mail.NewStubSender(),
+			Renderer:             mail.Renderer{},
+			DeviceAuthorizations: deviceAuths,
+		})
 
 		resp, err := userSvc.DisconnectApp(auth.WithUser(ctx, userInfo), &leapmuxv1.DisconnectAppRequest{
 			ClientId: oauthapp.ControlCLIClientID,
@@ -702,4 +720,63 @@ func TestDisconnectApp_ConcurrentWithDeviceTokenMintLeavesNoLiveToken(t *testing
 		assert.NotNil(t, row.RevokedAt)
 		assert.True(t, closer.closed(lateTokenID), "BearerRevokedBatch must receive tokens committed just before the transaction")
 	})
+}
+
+type failUserAuthTxStore struct {
+	store.Store
+	err error
+}
+
+func (s failUserAuthTxStore) RunInUserAuthTransaction(context.Context, userid.UserID, func(store.Store) error) error {
+	return s.err
+}
+
+func TestDisconnectApp_AbortsDeviceInvalidationWhenTransactionFails(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	ctx := context.Background()
+	uid := userid.MustNew(env.userID)
+	now := time.Now().UTC()
+
+	deviceCode := id.Generate()
+	hash := hubtestutil.TestSecretHasher().Hash(deviceCode)
+	require.NoError(t, env.deviceAuths.Create(service.CreateDeviceAuthorizationParams{
+		DeviceCodeHash: hash,
+		UserCode:       id.Generate(),
+		ClientID:       oauthapp.ControlCLIClientID,
+		ExpiresAt:      now.Add(10 * time.Minute),
+	}))
+	rowBefore, ok := env.deviceAuths.Get(hash)
+	require.True(t, ok)
+	approved, err := env.deviceAuths.ApproveByUserCode(service.ApproveDeviceAuthorizationParams{
+		UserCode:      rowBefore.UserCode,
+		UserID:        uid,
+		GrantedScopes: "workspace:read",
+	}, now)
+	require.NoError(t, err)
+	require.True(t, approved)
+
+	userSvc := service.NewUserService(service.UserServiceDeps{
+		Store:                failUserAuthTxStore{Store: env.store, err: errors.New("forced user auth tx failure")},
+		Config:               testConfig(),
+		Settings:             servicetest.NewSettingsManager(t, env.store, nil),
+		Lifecycle:            auth.NewCredentialLifecycleEffects(nil, nil, nil),
+		Mail:                 mail.NewStubSender(),
+		Renderer:             mail.Renderer{},
+		DeviceAuthorizations: env.deviceAuths,
+	})
+
+	_, err = userSvc.DisconnectApp(auth.WithUser(ctx, &auth.UserInfo{ID: uid, Username: "alice"}), &leapmuxv1.DisconnectAppRequest{
+		ClientId: oauthapp.ControlCLIClientID,
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+
+	row, ok := env.deviceAuths.Get(hash)
+	require.True(t, ok)
+	assert.Nil(t, row.ConsumedAt, "a rolled-back DisconnectApp must leave the approved device grant unconsumed")
+	res, reserved := env.deviceAuths.ReserveConsume(hash, now)
+	require.True(t, reserved, "AbortInvalidate must unblock ReserveConsume after a failed DisconnectApp")
+	env.deviceAuths.ReleaseConsume(res)
 }
